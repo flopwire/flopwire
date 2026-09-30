@@ -1,0 +1,6 @@
+0b7e2c1a-0000-4000-8000-000000000002:8
+agent-b000000000000002:3
+agent-b000000000000003:2
+agent-b000000000000001:1
+[4 sessions, 14 hits]
+[left out your own session 019a0000-0000-7000-8000-00000000c0de and its subagents; --include-self includes them]

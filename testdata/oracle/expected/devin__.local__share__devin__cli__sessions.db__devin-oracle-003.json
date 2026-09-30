@@ -1,0 +1,82 @@
+{
+  "connector": "devin",
+  "source_path": ".local/share/devin/cli/sessions.db/devin-oracle-003",
+  "conversations": [
+    {
+      "agent_slug": "devin",
+      "external_id": "devin-oracle-003",
+      "title": "Port cache to redis",
+      "workspace": "/tmp/oracle-gamma",
+      "source_path": ".local/share/devin/cli/sessions.db/devin-oracle-003",
+      "started_at": 1790160000000,
+      "ended_at": 1790160100000,
+      "metadata": {
+        "session_id": "devin-oracle-003",
+        "model": "swe-1-7",
+        "agent_mode": "normal",
+        "main_chain_id": 16,
+        "main_chain_nodes": 6,
+        "off_chain_nodes": 10,
+        "source": "sqlite"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790160002000,
+          "content": "port the cache to redis",
+          "extra": {
+            "message_id": "dm-302",
+            "is_user_input": true
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "swe-1-7",
+          "created_at": 1790160013000,
+          "content": "Swapping the map for a redis client (resumed).\n[tool_call: edit]",
+          "extra": {
+            "message_id": "dm-307"
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "edit",
+              "call_id": "edit:0#bbb",
+              "arguments": {
+                "path": "src/cache.go"
+              }
+            }
+          ]
+        },
+        {
+          "idx": 2,
+          "role": "tool",
+          "author": null,
+          "created_at": 1790160014000,
+          "content": "edited src/cache.go",
+          "extra": {
+            "message_id": "dm-308",
+            "tool_call_id": "edit:0#bbb"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 3,
+          "role": "assistant",
+          "author": "swe-1-7",
+          "created_at": 1790160015000,
+          "content": "The redis cache is in place.",
+          "extra": {
+            "message_id": "dm-313"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

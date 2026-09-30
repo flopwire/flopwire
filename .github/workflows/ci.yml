@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6-bookworm
+        env:
+          POSTGRES_DB: flopwire
+          POSTGRES_USER: flopwire
+          POSTGRES_PASSWORD: flopwire-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flopwire -d flopwire"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      # Postgres integration tests create and drop their own databases.
+      FLOPWIRE_TEST_DATABASE_URL: postgres://flopwire:flopwire-ci@127.0.0.1:5432/flopwire?sslmode=disable
+      # S3 integration tests (pgtest.NewBucket) create their own buckets.
+      FLOPWIRE_TEST_S3_ENDPOINT: 127.0.0.1:9000
+      FLOPWIRE_TEST_S3_ACCESS_KEY: flopwire
+      FLOPWIRE_TEST_S3_SECRET_KEY: flopwire-ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      # MinIO is a step, not a service: services cannot pass `server /data`.
+      # Same pinned image as compose.yaml.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 127.0.0.1:9000:9000 \
+            -e MINIO_ROOT_USER=flopwire -e MINIO_ROOT_PASSWORD=flopwire-ci-secret \
+            cgr.dev/chainguard/minio@sha256:71674988a1c7ddd5724928633199152b11e4ddefd6c6ce2d60772ff4a8f22ca9 server /data
+          for i in $(seq 60); do
+            curl -fsS http://127.0.0.1:9000/minio/health/ready && exit 0
+            sleep 1
+          done
+          docker logs minio
+          exit 1
+      # The backup round trip needs pg_dump/pg_restore >= the server major (17);
+      # the runner image ships 16.
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
+          sudo apt-get install -y -q --no-install-recommends postgresql-client-17 >/dev/null
+          echo /usr/lib/postgresql/17/bin >>"$GITHUB_PATH"
+      - run: pnpm --dir web install --frozen-lockfile
+      # macOS is the main agent platform but CI runs Linux: vet both, so the
+      # darwin-only files (kqueue watcher, file identity, caller detection)
+      # at least compile and pass vet.
+      - name: Vet (linux and darwin)
+        run: |
+          GOOS=linux go vet ./...
+          GOOS=darwin go vet ./...
+      - name: Go tests
+        run: scripts/ci-go-test.sh -race ./...
+      - run: pnpm --dir web test
+      - run: pnpm --dir web build
+      - run: scripts/validate-release-tag_test.sh
+      - name: Build the image with the release version
+        env:
+          FLOPWIRE_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+        run: |
+          docker build --build-arg VERSION="$FLOPWIRE_BUILD_VERSION" -t flopwire:test .
+          test "$(docker run --rm flopwire:test version)" = "$FLOPWIRE_BUILD_VERSION"
+          docker run --rm --entrypoint pg_dump flopwire:test --version
+      - name: Boot from fresh Compose volumes as the non-root user
+        env:
+          FLOPWIRE_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+        run: scripts/validate-fresh-compose.sh flopwire:test linux/amd64 "$FLOPWIRE_BUILD_VERSION"

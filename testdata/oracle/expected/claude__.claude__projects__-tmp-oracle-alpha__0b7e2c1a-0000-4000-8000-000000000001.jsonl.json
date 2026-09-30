@@ -1,0 +1,262 @@
+{
+  "connector": "claude",
+  "source_path": ".claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "claude_code",
+      "external_id": "-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+      "title": "why does the login test flake?",
+      "workspace": "/tmp/oracle-alpha",
+      "source_path": ".claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+      "started_at": 1790157600000,
+      "ended_at": 1790157625000,
+      "metadata": {
+        "source": "claude_code",
+        "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+        "cliSessionId": null,
+        "gitBranch": "main",
+        "permissionMode": null,
+        "bodyAvailable": true,
+        "sidechain": false,
+        "parentSessionId": null
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790157600000,
+          "content": "why does the login test flake?",
+          "extra": {
+            "parentUuid": null,
+            "isSidechain": false,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "why does the login test flake?"
+            },
+            "uuid": "c1000000-0000-4000-8000-000000000001",
+            "timestamp": "2026-09-23T10:00:00.000Z"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "claude-opus-4-1",
+          "created_at": 1790157603000,
+          "content": "I will ask a subagent to read the test.",
+          "extra": {
+            "parentUuid": "c1000000-0000-4000-8000-000000000002",
+            "isSidechain": false,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "type": "assistant",
+            "message": {
+              "id": "msg_01oracle0001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-opus-4-1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "I will ask a subagent to read the test."
+                }
+              ],
+              "stop_reason": null,
+              "usage": {
+                "input_tokens": 10,
+                "output_tokens": 9
+              }
+            },
+            "requestId": "req_oracle_1",
+            "uuid": "c1000000-0000-4000-8000-000000000003",
+            "timestamp": "2026-09-23T10:00:03.000Z"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 2,
+          "role": "assistant",
+          "author": "claude-opus-4-1",
+          "created_at": 1790157604000,
+          "content": "[Tool: Task - Read login test]",
+          "extra": {
+            "parentUuid": "c1000000-0000-4000-8000-000000000003",
+            "isSidechain": false,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "type": "assistant",
+            "message": {
+              "id": "msg_01oracle0001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-opus-4-1",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "toolu_oracle_1",
+                  "name": "Task",
+                  "input": {
+                    "description": "Read login test",
+                    "prompt": "Read tests/login.test.ts and report the timer setup.",
+                    "subagent_type": "general-purpose"
+                  }
+                }
+              ],
+              "stop_reason": "tool_use",
+              "usage": {
+                "input_tokens": 10,
+                "output_tokens": 30
+              }
+            },
+            "requestId": "req_oracle_1",
+            "uuid": "c1000000-0000-4000-8000-000000000004",
+            "timestamp": "2026-09-23T10:00:04.000Z"
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "Task",
+              "call_id": "toolu_oracle_1",
+              "arguments": {
+                "description": "Read login test",
+                "prompt": "Read tests/login.test.ts and report the timer setup.",
+                "subagent_type": "general-purpose"
+              }
+            }
+          ]
+        },
+        {
+          "idx": 3,
+          "role": "tool",
+          "author": null,
+          "created_at": 1790157610000,
+          "content": "The test uses real timers; setTimeout(500) races the assertion.",
+          "extra": {
+            "source": "tool_result",
+            "tool_use_id": "toolu_oracle_1"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 4,
+          "role": "assistant",
+          "author": "claude-opus-4-1",
+          "created_at": 1790157612000,
+          "content": "[Tool: Bash - Run the login test]",
+          "extra": {
+            "parentUuid": "c1000000-0000-4000-8000-000000000005",
+            "isSidechain": false,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "type": "assistant",
+            "message": {
+              "id": "msg_01oracle0002",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-opus-4-1",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "toolu_oracle_2",
+                  "name": "Bash",
+                  "input": {
+                    "command": "bun test tests/login.test.ts",
+                    "description": "Run the login test"
+                  }
+                }
+              ],
+              "stop_reason": "tool_use",
+              "usage": {
+                "input_tokens": 20,
+                "output_tokens": 12
+              }
+            },
+            "requestId": "req_oracle_2",
+            "uuid": "c1000000-0000-4000-8000-000000000006",
+            "timestamp": "2026-09-23T10:00:12.000Z"
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "Bash",
+              "call_id": "toolu_oracle_2",
+              "arguments": {
+                "command": "bun test tests/login.test.ts",
+                "description": "Run the login test"
+              }
+            }
+          ]
+        },
+        {
+          "idx": 5,
+          "role": "tool",
+          "author": null,
+          "created_at": 1790157615000,
+          "content": "tests/login.test.ts:14: expected 200, received 401\nexit code 1",
+          "extra": {
+            "source": "tool_result",
+            "tool_use_id": "toolu_oracle_2",
+            "is_error": true
+          },
+          "snippets": []
+        },
+        {
+          "idx": 6,
+          "role": "assistant",
+          "author": "claude-opus-4-1",
+          "created_at": 1790157625000,
+          "content": "Use fake timers: vi.useFakeTimers() before the login call.",
+          "extra": {
+            "parentUuid": "c1000000-0000-4000-8000-000000000008",
+            "isSidechain": false,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "type": "assistant",
+            "message": {
+              "id": "msg_01oracle0003",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-opus-4-1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Use fake timers: vi.useFakeTimers() before the login call."
+                }
+              ],
+              "stop_reason": "end_turn",
+              "usage": {
+                "input_tokens": 30,
+                "output_tokens": 14
+              }
+            },
+            "requestId": "req_oracle_3",
+            "uuid": "c1000000-0000-4000-8000-000000000009",
+            "timestamp": "2026-09-23T10:00:25.000Z"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

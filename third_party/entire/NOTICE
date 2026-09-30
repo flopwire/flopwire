@@ -1,0 +1,8 @@
+Entire CLI
+https://github.com/entireio/cli
+Commit 2dbea8bff1db7188158420b1c863dfa2d9cd7b4a
+Copyright (c) 2026 Entire Inc. MIT License (see LICENSE in this directory).
+
+Reference only; nothing is vendored. Ported by hand into Flopwire:
+- internal/transcript/codex/events.go: apply_patch envelope path extraction
+  (cmd/entire/cli/agent/codex/transcript.go)

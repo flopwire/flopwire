@@ -1,0 +1,156 @@
+{
+  "connector": "claude",
+  "source_path": ".claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001/subagents/agent-a1b2c3.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "claude_code",
+      "external_id": "-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001/subagents/agent-a1b2c3.jsonl",
+      "title": "Read tests/login.test.ts and report the timer setup.",
+      "workspace": "/tmp/oracle-alpha",
+      "source_path": ".claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001/subagents/agent-a1b2c3.jsonl",
+      "started_at": 1790157605000,
+      "ended_at": 1790157609000,
+      "metadata": {
+        "source": "claude_code",
+        "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+        "cliSessionId": null,
+        "gitBranch": "main",
+        "permissionMode": null,
+        "bodyAvailable": true,
+        "sidechain": true,
+        "parentSessionId": "0b7e2c1a-0000-4000-8000-000000000001"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790157605000,
+          "content": "Read tests/login.test.ts and report the timer setup.",
+          "extra": {
+            "parentUuid": null,
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "agentId": "a1b2c3",
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Read tests/login.test.ts and report the timer setup."
+            },
+            "uuid": "c2000000-0000-4000-8000-000000000001",
+            "timestamp": "2026-09-23T10:00:05.000Z"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "claude-sonnet-4-5",
+          "created_at": 1790157606000,
+          "content": "[Tool: Read - /tmp/oracle-alpha/tests/login.test.ts]",
+          "extra": {
+            "parentUuid": "c2000000-0000-4000-8000-000000000001",
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "agentId": "a1b2c3",
+            "type": "assistant",
+            "message": {
+              "id": "msg_01oraclesub1",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-4-5",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "toolu_oracle_sub1",
+                  "name": "Read",
+                  "input": {
+                    "file_path": "/tmp/oracle-alpha/tests/login.test.ts"
+                  }
+                }
+              ],
+              "stop_reason": "tool_use",
+              "usage": {
+                "input_tokens": 5,
+                "output_tokens": 5
+              }
+            },
+            "requestId": "req_oracle_sub1",
+            "uuid": "c2000000-0000-4000-8000-000000000002",
+            "timestamp": "2026-09-23T10:00:06.000Z"
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "Read",
+              "call_id": "toolu_oracle_sub1",
+              "arguments": {
+                "file_path": "/tmp/oracle-alpha/tests/login.test.ts"
+              }
+            }
+          ]
+        },
+        {
+          "idx": 2,
+          "role": "tool",
+          "author": null,
+          "created_at": 1790157607000,
+          "content": "     1\tit('logs in', async () => {\n     2\t  setTimeout(done, 500)\n     3\t})",
+          "extra": {
+            "source": "tool_result",
+            "tool_use_id": "toolu_oracle_sub1"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 3,
+          "role": "assistant",
+          "author": "claude-sonnet-4-5",
+          "created_at": 1790157609000,
+          "content": "The test uses real timers; setTimeout(500) races the assertion.",
+          "extra": {
+            "parentUuid": "c2000000-0000-4000-8000-000000000003",
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-alpha",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000001",
+            "version": "2.1.0",
+            "gitBranch": "main",
+            "agentId": "a1b2c3",
+            "type": "assistant",
+            "message": {
+              "id": "msg_01oraclesub2",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-4-5",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "The test uses real timers; setTimeout(500) races the assertion."
+                }
+              ],
+              "stop_reason": "end_turn",
+              "usage": {
+                "input_tokens": 5,
+                "output_tokens": 12
+              }
+            },
+            "requestId": "req_oracle_sub2",
+            "uuid": "c2000000-0000-4000-8000-000000000004",
+            "timestamp": "2026-09-23T10:00:09.000Z"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

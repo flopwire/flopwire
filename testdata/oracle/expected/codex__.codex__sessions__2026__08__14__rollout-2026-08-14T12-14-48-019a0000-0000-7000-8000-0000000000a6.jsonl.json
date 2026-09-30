@@ -1,0 +1,68 @@
+{
+  "connector": "codex",
+  "source_path": ".codex/sessions/2026/08/14/rollout-2026-08-14T12-14-48-019a0000-0000-7000-8000-0000000000a6.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "codex",
+      "external_id": "2026/08/14/rollout-2026-08-14T12-14-48-019a0000-0000-7000-8000-0000000000a6",
+      "title": "fix the lint error too",
+      "workspace": "/tmp/oracle-gamma",
+      "source_path": ".codex/sessions/2026/08/14/rollout-2026-08-14T12-14-48-019a0000-0000-7000-8000-0000000000a6.jsonl",
+      "started_at": 1786709640000,
+      "ended_at": 1786709641000,
+      "metadata": {
+        "source": "rollout"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1786709640500,
+          "content": "fix the lint error too",
+          "extra": {
+            "timestamp": "2026-08-14T12:14:00.500Z",
+            "ordinal": 21,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_f_u1",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "fix the lint error too"
+                }
+              ]
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1786709641000,
+          "content": "Removed the unused variable.",
+          "extra": {
+            "timestamp": "2026-08-14T12:14:01.000Z",
+            "ordinal": 22,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_f_a1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Removed the unused variable."
+                }
+              ]
+            }
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

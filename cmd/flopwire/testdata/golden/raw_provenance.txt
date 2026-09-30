@@ -1,0 +1,1 @@
+{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/tmp/oracle-alpha","sessionId":"0b7e2c1a-0000-4000-8000-000000000001","version":"2.1.0","gitBranch":"main","type":"user","message":{"role":"user","content":"why does the login test flake?"},"uuid":"c1000000-0000-4000-8000-000000000001","timestamp":"2026-09-23T10:00:00.000Z"}

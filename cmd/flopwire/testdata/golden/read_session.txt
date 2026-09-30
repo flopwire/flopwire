@@ -1,0 +1,20 @@
+# claude  0b7e2c1a-0000-4000-8000-000000000001  /tmp/oracle-alpha  on main  device local  2026-09-23 10:00Z to 2026-09-23 10:00Z  9 msgs  "why does the login test flake?"
+>> 0b7e2c1a-0000-4000-8000-000000000001/966656  2026-09-23 10:00Z  user
+     1  why does the login test flake?
+   0b7e2c1a-0000-4000-8000-000000000001/2375680  2026-09-23 10:00Z  thinking
+    Check the timer setup first.
+   0b7e2c1a-0000-4000-8000-000000000001/4853760  2026-09-23 10:00Z  assistant
+    I will ask a subagent to read the test.
+   0b7e2c1a-0000-4000-8000-000000000001/7233536  2026-09-23 10:00Z  tool_call(Task)
+    {"description":"Read login test","prompt":"Read tests/login.test.ts and report the timer setup.","subagent_type":"general-purpose"}
+   0b7e2c1a-0000-4000-8000-000000000001/10178560  2026-09-23 10:00Z  tool_result(Task)
+    The test uses real timers; setTimeout(500) races the assertion.
+   0b7e2c1a-0000-4000-8000-000000000001/13578240  2026-09-23 10:00Z  tool_call(Bash)
+    {"command":"bun test tests/login.test.ts","description":"Run the login test"}
+   0b7e2c1a-0000-4000-8000-000000000001/16302080  2026-09-23 10:00Z  tool_result(Bash) error
+    tests/login.test.ts:14: expected 200, received 401
+    exit code 1
+   0b7e2c1a-0000-4000-8000-000000000001/18780160  2026-09-23 10:00Z  system
+    Conversation compacted
+   0b7e2c1a-0000-4000-8000-000000000001/20672512  2026-09-23 10:00Z  assistant
+    Use fake timers: vi.useFakeTimers() before the login call.

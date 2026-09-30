@@ -1,0 +1,14 @@
+franken_agent_detection (FAD)
+https://github.com/Dicklesworthstone/franken_agent_detection
+Crate franken-agent-detection 0.3.1, git c06d1cb14e0edb1cd82f1c58021d86b6beacd2de
+Copyright (c) 2026 Jeff Emanuel. MIT License (see LICENSE in this directory).
+
+Use in Flopwire:
+- tools/fad-dump depends on the crate (=0.3.1) as a test-time oracle. It is
+  never shipped or run by Flopwire at runtime.
+- Go parsers under internal/transcript port format knowledge from FAD's
+  connectors. Each such file names the FAD source path and commit in its
+  header.
+
+FAD is distinct from coding_agent_session_search (CASS), whose license adds
+an OpenAI/Anthropic rider. Nothing is copied from CASS.

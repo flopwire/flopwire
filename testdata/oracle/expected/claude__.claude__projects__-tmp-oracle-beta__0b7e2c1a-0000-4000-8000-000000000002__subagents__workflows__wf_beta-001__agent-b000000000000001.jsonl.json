@@ -1,0 +1,90 @@
+{
+  "connector": "claude",
+  "source_path": ".claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/workflows/wf_beta-001/agent-b000000000000001.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "claude_code",
+      "external_id": "-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/workflows/wf_beta-001/agent-b000000000000001.jsonl",
+      "title": "Review the retry change for correctness.",
+      "workspace": "/tmp/oracle-beta",
+      "source_path": ".claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/workflows/wf_beta-001/agent-b000000000000001.jsonl",
+      "started_at": 1790161214000,
+      "ended_at": 1790161215000,
+      "metadata": {
+        "source": "claude_code",
+        "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+        "cliSessionId": null,
+        "gitBranch": "fix/retry",
+        "permissionMode": null,
+        "bodyAvailable": true,
+        "sidechain": true,
+        "parentSessionId": "0b7e2c1a-0000-4000-8000-000000000002"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790161214000,
+          "content": "Review the retry change for correctness.",
+          "extra": {
+            "parentUuid": null,
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000001",
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Review the retry change for correctness."
+            },
+            "uuid": "d2000000-0000-4000-8000-000000000001",
+            "timestamp": "2026-09-23T11:00:14.000Z"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "claude-sonnet-4-5",
+          "created_at": 1790161215000,
+          "content": "The change looks correct.",
+          "extra": {
+            "parentUuid": "d2000000-0000-4000-8000-000000000001",
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000001",
+            "type": "assistant",
+            "message": {
+              "id": "msg_w1",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-4-5",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "The change looks correct."
+                }
+              ],
+              "usage": {
+                "input_tokens": 3,
+                "output_tokens": 4
+              }
+            },
+            "requestId": "req_w1",
+            "uuid": "d2000000-0000-4000-8000-000000000002",
+            "timestamp": "2026-09-23T11:00:15.000Z"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

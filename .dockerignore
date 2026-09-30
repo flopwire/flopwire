@@ -1,0 +1,13 @@
+.git
+.env
+.impeccable
+bin
+coverage
+tmp
+web/node_modules
+web/dist
+*.db
+*.db-shm
+*.db-wal
+*.pem
+*.key

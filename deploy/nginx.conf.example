@@ -1,0 +1,29 @@
+# Terminate TLS here. Keep the flopwire listener private to this proxy.
+# Run flopwire with FLOPWIRE_TLS=proxy (or `flopwire serve --tls=proxy`) so it
+# serves plain HTTP to this proxy only; it logs a warning saying so.
+limit_req_zone $binary_remote_addr zone=flopwire_auth:10m rate=10r/m;
+
+server {
+    listen 443 ssl http2;
+    server_name flopwire.example.com;
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    client_max_body_size 9m;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 65s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
+
+    location ~ ^/v1/(login|invites/claim|device-rotations/) {
+        limit_req zone=flopwire_auth burst=5 nodelay;
+        proxy_pass http://flopwire:8080;
+    }
+
+    location / {
+        proxy_pass http://flopwire:8080;
+    }
+}

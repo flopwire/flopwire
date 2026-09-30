@@ -1,0 +1,14 @@
+agentboard
+https://github.com/gbasin/agentboard
+Commit 4fb640dd9b539413d2ba2fdcf5385a7b51478797
+Copyright (c) 2025 Gary Basin. MIT License (see LICENSE in this directory).
+
+Adapted into Flopwire:
+- tools/fad-dump (from tools/fad-dump)
+- scripts/regen-oracle.sh (from scripts/regen-fad-fixtures.ts)
+- testdata/oracle/seeds/devin.sql (from tests/fixtures/fad/seeds/devin.sql)
+- internal/transcript/oracle (approach from src/server/__tests__/fadParity.test.ts)
+- internal/transcript/codex/subagent.go (Codex subagent link rules from
+  src/server/logDiscovery.ts extractCodexSubagentLink and
+  src/server/subagentLogs.ts, read at commit
+  4b2f9c88c4f92b333f7758fd3481082eb899a69f)

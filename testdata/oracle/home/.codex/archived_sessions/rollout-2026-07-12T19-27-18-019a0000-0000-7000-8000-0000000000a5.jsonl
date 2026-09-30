@@ -1,0 +1,7 @@
+{"timestamp":"2026-07-12T19:27:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"019a0000-0000-7000-8000-0000000000a2","id":"019a0000-0000-7000-8000-0000000000a5","parent_thread_id":"019a0000-0000-7000-8000-0000000000a2","timestamp":"2026-07-12T19:27:00.000Z","cwd":"/tmp/oracle-gamma","originator":"codex_exec","cli_version":"0.144.1","source":{"subagent":"review"},"thread_source":"subagent","model_provider":"openai","history_mode":"paginated","subagent_history_start_ordinal":2}}
+{"timestamp":"2026-07-12T19:27:00.500Z","ordinal":1,"type":"response_item","payload":{"type":"message","id":"msg_b_u1","role":"user","content":[{"type":"input_text","text":"summarize the failing CI job"}]}}
+{"timestamp":"2026-07-12T19:27:01.000Z","ordinal":2,"type":"event_msg","payload":{"type":"entered_review_mode","target":"uncommitted"}}
+{"timestamp":"2026-07-12T19:27:01.500Z","ordinal":3,"type":"response_item","payload":{"type":"message","id":"msg_e_u1","role":"user","content":[{"type":"input_text","text":"Review the uncommitted diff for correctness."}]}}
+{"timestamp":"2026-07-12T19:27:02.000Z","ordinal":4,"type":"response_item","payload":{"type":"message","id":"msg_e_a1","role":"assistant","content":[{"type":"output_text","text":"No blocking issues."}]}}
+{"timestamp":"2026-07-12T19:27:02.500Z","ordinal":5,"type":"event_msg","payload":{"type":"exited_review_mode"}}
+{"timestamp":"2026-07-12T19:27:03.000Z","ordinal":6,"type":"event_msg","payload":{"type":"task_complete","turn_id":"r1"}}

@@ -1,0 +1,86 @@
+{
+  "hits": [
+    {
+      "address": "019a0000-0000-7000-8000-0000000000a1/11526144",
+      "message_id": "63",
+      "conversation_id": "9",
+      "agent": "codex",
+      "session_id": "019a0000-0000-7000-8000-0000000000a1",
+      "ordinal": 11526144,
+      "title": "add a health check endpoint",
+      "repo": "/tmp/oracle-beta",
+      "device": "local",
+      "branches": [
+        "main"
+      ],
+      "kind": "tool_result",
+      "tool_name": "exec_command",
+      "ts": "2026-03-20T09:00:06Z",
+      "lines": [
+        {
+          "n": 4,
+          "text": "exit status 1",
+          "match": true
+        }
+      ],
+      "provenance": {
+        "source_id": "9",
+        "path": "$HOME/.codex/sessions/2026/03/20/rollout-2026-03-20T09-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl",
+        "generation": 1,
+        "line_no": 14,
+        "byte_offset": 2814,
+        "byte_len": 222
+      }
+    }
+  ],
+  "total": 1,
+  "total_sessions": 1,
+  "exact": true,
+  "excluded": "left out your own session 019a0000-0000-7000-8000-00000000c0de and its subagents; --include-self includes them",
+  "session_info": [
+    {
+      "address": "019a0000-0000-7000-8000-0000000000a1",
+      "id": "9",
+      "agent": "codex",
+      "session_id": "019a0000-0000-7000-8000-0000000000a1",
+      "title": "add a health check endpoint",
+      "cwd": "/tmp/oracle-beta",
+      "repo": "/tmp/oracle-beta",
+      "device": "local",
+      "started_at": "2026-03-20T09:00:00Z",
+      "last_activity_at": "2026-03-20T09:00:21Z",
+      "messages": 12,
+      "branches": [
+        "main"
+      ],
+      "digest": {
+        "intent": "add a health check endpoint",
+        "repos": [
+          "/tmp/oracle-beta"
+        ],
+        "branches": [
+          "main"
+        ],
+        "duration_s": 21,
+        "messages": {
+          "assistant": 2,
+          "injected": 1,
+          "thinking": 1,
+          "tool_call": 3,
+          "tool_result": 3,
+          "user": 2
+        },
+        "files_edited": [
+          "internal/api/server.go",
+          "internal/api/health.go"
+        ],
+        "commands": 2,
+        "tools": {
+          "apply_patch": 1,
+          "exec_command": 2
+        },
+        "last": "Middleware order: auth rejects the unauthenticated probe."
+      }
+    }
+  ]
+}

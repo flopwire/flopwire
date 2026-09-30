@@ -1,0 +1,141 @@
+{
+  "connector": "codex",
+  "source_path": ".codex/sessions/2026/09/15/rollout-2026-09-15T10-05-00-019a0000-0000-7000-8000-0000000000a4.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "codex",
+      "external_id": "2026/09/15/rollout-2026-09-15T10-05-00-019a0000-0000-7000-8000-0000000000a4",
+      "title": "run the tests and fix what breaks",
+      "workspace": "/tmp/oracle-delta",
+      "source_path": ".codex/sessions/2026/09/15/rollout-2026-09-15T10-05-00-019a0000-0000-7000-8000-0000000000a4.jsonl",
+      "started_at": 1789466700000,
+      "ended_at": 1789466704000,
+      "metadata": {
+        "source": "rollout"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1789466701000,
+          "content": "run the tests and fix what breaks",
+          "extra": {
+            "timestamp": "2026-09-15T10:05:01.000Z",
+            "ordinal": 2,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_c_u1",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "run the tests and fix what breaks"
+                }
+              ]
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1789466701500,
+          "content": "Fixed the off-by-one in parse.go; tests pass.",
+          "extra": {
+            "timestamp": "2026-09-15T10:05:01.500Z",
+            "ordinal": 3,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_c_a1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Fixed the off-by-one in parse.go; tests pass."
+                }
+              ]
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 2,
+          "role": "developer",
+          "author": null,
+          "created_at": 1789466702500,
+          "content": "You are a subagent named Noether.",
+          "extra": {
+            "timestamp": "2026-09-15T10:05:02.500Z",
+            "ordinal": 5,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_d_dev",
+              "role": "developer",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "You are a subagent named Noether."
+                }
+              ]
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 3,
+          "role": "agent",
+          "author": null,
+          "created_at": 1789466703500,
+          "content": "Check that parse.go handles empty input.",
+          "extra": {
+            "timestamp": "2026-09-15T10:05:03.500Z",
+            "ordinal": 7,
+            "type": "response_item",
+            "payload": {
+              "type": "agent_message",
+              "id": "amsg_d_1",
+              "author": "/root",
+              "recipient": "/root/checker",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "Check that parse.go handles empty input."
+                }
+              ]
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 4,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1789466704000,
+          "content": "Empty input returns 0; TestParseEmpty covers it.",
+          "extra": {
+            "timestamp": "2026-09-15T10:05:04.000Z",
+            "ordinal": 8,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_d_a1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Empty input returns 0; TestParseEmpty covers it."
+                }
+              ]
+            }
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

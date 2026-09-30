@@ -1,0 +1,68 @@
+{
+  "connector": "codex",
+  "source_path": ".codex/sessions/2026/09/23/rollout-2026-09-23T10-00-04-019a0000-0000-7000-8000-00000000c0df.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "codex",
+      "external_id": "2026/09/23/rollout-2026-09-23T10-00-04-019a0000-0000-7000-8000-00000000c0df",
+      "title": "review the router change",
+      "workspace": "/tmp/oracle-alpha",
+      "source_path": ".codex/sessions/2026/09/23/rollout-2026-09-23T10-00-04-019a0000-0000-7000-8000-00000000c0df.jsonl",
+      "started_at": 1790157604000,
+      "ended_at": 1790157604900,
+      "metadata": {
+        "source": "rollout"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790157604100,
+          "content": "review the router change",
+          "extra": {
+            "timestamp": "2026-09-23T10:00:04.100Z",
+            "type": "response_item",
+            "ordinal": 1,
+            "payload": {
+              "type": "message",
+              "id": "msg_oracle_cu1",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "review the router change"
+                }
+              ]
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1790157604900,
+          "content": "Looks right; chi.NewRouter returns *Mux.",
+          "extra": {
+            "timestamp": "2026-09-23T10:00:04.900Z",
+            "type": "response_item",
+            "ordinal": 2,
+            "payload": {
+              "type": "message",
+              "id": "msg_oracle_ca1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Looks right; chi.NewRouter returns *Mux."
+                }
+              ]
+            }
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "connector": "claude",
+  "source_path": ".claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/agent-b000000000000002.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "claude_code",
+      "external_id": "-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/agent-b000000000000002.jsonl",
+      "title": "Find every retry call site.",
+      "workspace": "/tmp/oracle-beta",
+      "source_path": ".claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/agent-b000000000000002.jsonl",
+      "started_at": 1790161214000,
+      "ended_at": 1790161219000,
+      "metadata": {
+        "source": "claude_code",
+        "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+        "cliSessionId": null,
+        "gitBranch": "fix/retry",
+        "permissionMode": null,
+        "bodyAvailable": true,
+        "sidechain": true,
+        "parentSessionId": "0b7e2c1a-0000-4000-8000-000000000002"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790161214000,
+          "content": "Find every retry call site.",
+          "extra": {
+            "parentUuid": null,
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000002",
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Find every retry call site."
+            },
+            "uuid": "d3000000-0000-4000-8000-000000000001",
+            "timestamp": "2026-09-23T11:00:14.000Z"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "claude-haiku-4-5",
+          "created_at": 1790161215000,
+          "content": "[Tool: Agent - Nested check]",
+          "extra": {
+            "parentUuid": "d3000000-0000-4000-8000-000000000001",
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000002",
+            "type": "assistant",
+            "message": {
+              "id": "msg_a1",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-haiku-4-5",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "toolu_n1",
+                  "name": "Agent",
+                  "input": {
+                    "description": "Nested check",
+                    "prompt": "Check the CI retry config."
+                  }
+                }
+              ],
+              "usage": {
+                "input_tokens": 3,
+                "output_tokens": 4
+              }
+            },
+            "requestId": "req_a1",
+            "uuid": "d3000000-0000-4000-8000-000000000002",
+            "timestamp": "2026-09-23T11:00:15.000Z"
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "Agent",
+              "call_id": "toolu_n1",
+              "arguments": {
+                "description": "Nested check",
+                "prompt": "Check the CI retry config."
+              }
+            }
+          ]
+        },
+        {
+          "idx": 2,
+          "role": "tool",
+          "author": null,
+          "created_at": 1790161218000,
+          "content": "CI retries twice.",
+          "extra": {
+            "source": "tool_result",
+            "tool_use_id": "toolu_n1"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 3,
+          "role": "assistant",
+          "author": "claude-haiku-4-5",
+          "created_at": 1790161219000,
+          "content": "Three call sites use fixed delays.",
+          "extra": {
+            "parentUuid": "d3000000-0000-4000-8000-000000000003",
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000002",
+            "type": "assistant",
+            "message": {
+              "id": "msg_a2",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-haiku-4-5",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Three call sites use fixed delays."
+                }
+              ],
+              "usage": {
+                "input_tokens": 3,
+                "output_tokens": 6
+              }
+            },
+            "requestId": "req_a2",
+            "uuid": "d3000000-0000-4000-8000-000000000004",
+            "timestamp": "2026-09-23T11:00:19.000Z"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

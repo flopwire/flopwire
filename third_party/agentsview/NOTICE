@@ -1,0 +1,12 @@
+agentsview
+https://github.com/kenn-io/agentsview
+Commit 563023de1d7b7f5af50ad5967c101341a44a2bfc
+Copyright (c) 2026 Kenn Software LLC. MIT License (see LICENSE in this directory).
+
+Reference only; nothing is vendored. Ported by hand into Flopwire:
+- internal/transcript/codex/events.go: apply_patch path extraction
+  (internal/parser/codex.go extractPatchedFiles)
+- internal/transcript/codex/records.go: plaintext versus Fernet
+  encrypted_content in agent_message items (isCodexEncryptedToolContent)
+- internal/transcript/codex/subagent.go: subagent parent thread id rule
+  (codexSubagentParentThreadID)

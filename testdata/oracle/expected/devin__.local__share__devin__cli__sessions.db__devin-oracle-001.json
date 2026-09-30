@@ -1,0 +1,95 @@
+{
+  "connector": "devin",
+  "source_path": ".local/share/devin/cli/sessions.db/devin-oracle-001",
+  "conversations": [
+    {
+      "agent_slug": "devin",
+      "external_id": "devin-oracle-001",
+      "title": "Fix login bug",
+      "workspace": "/tmp/oracle-alpha",
+      "source_path": ".local/share/devin/cli/sessions.db/devin-oracle-001",
+      "started_at": 1790157600000,
+      "ended_at": 1790157700000,
+      "metadata": {
+        "session_id": "devin-oracle-001",
+        "model": "swe-1-7",
+        "agent_mode": "normal",
+        "main_chain_id": 7,
+        "main_chain_nodes": 6,
+        "off_chain_nodes": 1,
+        "source": "sqlite"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790157601000,
+          "content": "fix the login bug",
+          "extra": {
+            "message_id": "dm-002",
+            "is_user_input": true
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "swe-1-7",
+          "created_at": 1790157602000,
+          "content": "Reading auth.ts.\n[tool_call: read]",
+          "extra": {
+            "message_id": "dm-003",
+            "thinking": "Start with the auth module."
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "read",
+              "call_id": "call_d1",
+              "arguments": {
+                "path": "auth.ts"
+              }
+            }
+          ]
+        },
+        {
+          "idx": 2,
+          "role": "tool",
+          "author": null,
+          "created_at": 1790157604000,
+          "content": "export function login() { return fetch(url) }",
+          "extra": {
+            "message_id": "dm-005",
+            "tool_call_id": "call_d1"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 3,
+          "role": "assistant",
+          "author": "swe-1-7",
+          "created_at": 1790157605000,
+          "content": "login() never awaits fetch; adding await.",
+          "extra": {
+            "message_id": "dm-006"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 4,
+          "role": "user",
+          "author": null,
+          "created_at": 1790157606000,
+          "content": "now add tests",
+          "extra": {
+            "message_id": "dm-007",
+            "is_user_input": true
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

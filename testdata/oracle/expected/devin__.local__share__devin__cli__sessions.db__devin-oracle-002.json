@@ -1,0 +1,49 @@
+{
+  "connector": "devin",
+  "source_path": ".local/share/devin/cli/sessions.db/devin-oracle-002",
+  "conversations": [
+    {
+      "agent_slug": "devin",
+      "external_id": "devin-oracle-002",
+      "title": "list the migrations",
+      "workspace": "/tmp/oracle-beta",
+      "source_path": ".local/share/devin/cli/sessions.db/devin-oracle-002",
+      "started_at": 1790158000000,
+      "ended_at": 1790158010000,
+      "metadata": {
+        "session_id": "devin-oracle-002",
+        "model": "swe-1-7",
+        "agent_mode": "normal",
+        "main_chain_id": 2,
+        "main_chain_nodes": 2,
+        "off_chain_nodes": 0,
+        "source": "sqlite"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790158001000,
+          "content": "list the migrations",
+          "extra": {
+            "message_id": "dm-101",
+            "is_user_input": true
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "swe-1-7",
+          "created_at": 1790158002000,
+          "content": "There are three migrations.",
+          "extra": {
+            "message_id": "dm-102"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

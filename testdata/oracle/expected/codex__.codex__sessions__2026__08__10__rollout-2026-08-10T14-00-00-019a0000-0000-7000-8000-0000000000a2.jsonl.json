@@ -1,0 +1,199 @@
+{
+  "connector": "codex",
+  "source_path": ".codex/sessions/2026/08/10/rollout-2026-08-10T14-00-00-019a0000-0000-7000-8000-0000000000a2.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "codex",
+      "external_id": "2026/08/10/rollout-2026-08-10T14-00-00-019a0000-0000-7000-8000-0000000000a2",
+      "title": "summarize the failing CI job",
+      "workspace": "/tmp/oracle-gamma",
+      "source_path": ".codex/sessions/2026/08/10/rollout-2026-08-10T14-00-00-019a0000-0000-7000-8000-0000000000a2.jsonl",
+      "started_at": 1786370400000,
+      "ended_at": 1786370408000,
+      "metadata": {
+        "source": "rollout"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "developer",
+          "author": null,
+          "created_at": 1786370401500,
+          "content": "<permissions instructions>sandbox: workspace-write</permissions instructions>",
+          "extra": {
+            "timestamp": "2026-08-10T14:00:01.500Z",
+            "ordinal": 3,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_b_dev",
+              "role": "developer",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "<permissions instructions>sandbox: workspace-write</permissions instructions>"
+                }
+              ],
+              "internal_chat_message_metadata_passthrough": {
+                "turn_id": "019a0000-0000-7000-9000-00000000b001",
+                "create_time": 1786370400.1
+              }
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "user",
+          "author": null,
+          "created_at": 1786370403000,
+          "content": "summarize the failing CI job",
+          "extra": {
+            "timestamp": "2026-08-10T14:00:03.000Z",
+            "ordinal": 6,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_b_u1",
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "summarize the failing CI job"
+                }
+              ],
+              "internal_chat_message_metadata_passthrough": {
+                "turn_id": "019a0000-0000-7000-9000-00000000b001",
+                "create_time": 1786370400.1
+              }
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 2,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1786370405500,
+          "content": "Checking the CI logs.",
+          "extra": {
+            "timestamp": "2026-08-10T14:00:05.500Z",
+            "ordinal": 11,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_b_a1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Checking the CI logs."
+                }
+              ],
+              "phase": "commentary",
+              "internal_chat_message_metadata_passthrough": {
+                "turn_id": "019a0000-0000-7000-9000-00000000b001",
+                "create_time": 1786370400.1
+              }
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 3,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1786370406000,
+          "content": "[Tool: exec]",
+          "extra": {
+            "timestamp": "2026-08-10T14:00:06.000Z",
+            "ordinal": 12,
+            "type": "response_item",
+            "payload": {
+              "type": "custom_tool_call",
+              "id": "ctc_b_1",
+              "status": "completed",
+              "call_id": "call_b_1",
+              "name": "exec",
+              "input": "text(await tools.exec_command({cmd:\"gh run view 42 --log-failed\"}));\n",
+              "internal_chat_message_metadata_passthrough": {
+                "turn_id": "019a0000-0000-7000-9000-00000000b001",
+                "create_time": 1786370400.1
+              }
+            }
+          },
+          "snippets": [],
+          "invocations": [
+            {
+              "kind": "tool",
+              "name": "exec",
+              "call_id": "call_b_1",
+              "arguments": "text(await tools.exec_command({cmd:\"gh run view 42 --log-failed\"}));\n"
+            }
+          ]
+        },
+        {
+          "idx": 4,
+          "role": "tool",
+          "author": null,
+          "created_at": 1786370407000,
+          "content": "Script completed\nWall time 1.2 seconds\nOutput:\n\nlint: src/app.ts:14:3 error no-unused-vars",
+          "extra": {
+            "timestamp": "2026-08-10T14:00:07.000Z",
+            "ordinal": 14,
+            "type": "response_item",
+            "payload": {
+              "type": "custom_tool_call_output",
+              "id": "ctco_b_1",
+              "call_id": "call_b_1",
+              "output": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 1.2 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "lint: src/app.ts:14:3 error no-unused-vars"
+                }
+              ],
+              "internal_chat_message_metadata_passthrough": {
+                "turn_id": "019a0000-0000-7000-9000-00000000b001",
+                "create_time": 1786370400.1
+              }
+            }
+          },
+          "snippets": []
+        },
+        {
+          "idx": 5,
+          "role": "assistant",
+          "author": null,
+          "created_at": 1786370408000,
+          "content": "CI fails on lint: an unused variable in src/app.ts line 14.",
+          "extra": {
+            "timestamp": "2026-08-10T14:00:08.000Z",
+            "ordinal": 16,
+            "type": "response_item",
+            "payload": {
+              "type": "message",
+              "id": "msg_b_a2",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "CI fails on lint: an unused variable in src/app.ts line 14."
+                }
+              ],
+              "phase": "final_answer",
+              "internal_chat_message_metadata_passthrough": {
+                "turn_id": "019a0000-0000-7000-9000-00000000b001",
+                "create_time": 1786370400.1
+              }
+            }
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

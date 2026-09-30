@@ -1,0 +1,12 @@
+gitleaks
+https://github.com/gitleaks/gitleaks
+Commit b58d3f102cf3a2c84cb7f923d05c25c9b1aed84b
+Copyright (c) 2019 Zachary Rice. MIT License (see LICENSE in this directory).
+
+Reference only; nothing is vendored. Ported by hand into Flopwire:
+- internal/redact/rules.go: vendor token shapes from config/gitleaks.toml
+  (aws-access-token, github-*, gitlab-pat, anthropic-*, openai-api-key,
+  slack-*, stripe-access-token, gcp-api-key, npm-access-token,
+  pypi-upload-token, huggingface-access-token, sendgrid-api-token,
+  digitalocean-*, databricks-api-token, linear-api-key, age-secret-key,
+  private-key, jwt), rewritten as Go regexes with keyword prefilters.

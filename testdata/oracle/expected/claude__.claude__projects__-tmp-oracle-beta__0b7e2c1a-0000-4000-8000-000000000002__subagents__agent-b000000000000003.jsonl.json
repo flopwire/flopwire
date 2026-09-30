@@ -1,0 +1,90 @@
+{
+  "connector": "claude",
+  "source_path": ".claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/agent-b000000000000003.jsonl",
+  "conversations": [
+    {
+      "agent_slug": "claude_code",
+      "external_id": "-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/agent-b000000000000003.jsonl",
+      "title": "Check the CI retry config.",
+      "workspace": "/tmp/oracle-beta",
+      "source_path": ".claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002/subagents/agent-b000000000000003.jsonl",
+      "started_at": 1790161216000,
+      "ended_at": 1790161217000,
+      "metadata": {
+        "source": "claude_code",
+        "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+        "cliSessionId": null,
+        "gitBranch": "fix/retry",
+        "permissionMode": null,
+        "bodyAvailable": true,
+        "sidechain": true,
+        "parentSessionId": "0b7e2c1a-0000-4000-8000-000000000002"
+      },
+      "messages": [
+        {
+          "idx": 0,
+          "role": "user",
+          "author": null,
+          "created_at": 1790161216000,
+          "content": "Check the CI retry config.",
+          "extra": {
+            "parentUuid": null,
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000003",
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Check the CI retry config."
+            },
+            "uuid": "d4000000-0000-4000-8000-000000000001",
+            "timestamp": "2026-09-23T11:00:16.000Z"
+          },
+          "snippets": []
+        },
+        {
+          "idx": 1,
+          "role": "assistant",
+          "author": "claude-haiku-4-5",
+          "created_at": 1790161217000,
+          "content": "CI retries twice.",
+          "extra": {
+            "parentUuid": "d4000000-0000-4000-8000-000000000001",
+            "isSidechain": true,
+            "userType": "external",
+            "cwd": "/tmp/oracle-beta",
+            "sessionId": "0b7e2c1a-0000-4000-8000-000000000002",
+            "version": "2.1.0",
+            "gitBranch": "fix/retry",
+            "agentId": "b000000000000003",
+            "type": "assistant",
+            "message": {
+              "id": "msg_n1",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-haiku-4-5",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "CI retries twice."
+                }
+              ],
+              "usage": {
+                "input_tokens": 3,
+                "output_tokens": 2
+              }
+            },
+            "requestId": "req_n1",
+            "uuid": "d4000000-0000-4000-8000-000000000002",
+            "timestamp": "2026-09-23T11:00:17.000Z"
+          },
+          "snippets": []
+        }
+      ]
+    }
+  ]
+}

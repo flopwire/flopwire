@@ -1,0 +1,7 @@
+$ cat deploy/.env
+DATABASE_URL={{DB_URL}}
+{{ENV_SECRET}}
+SLACK_BOT={{SLACK}}
+$ cat deploy/id_rsa
+{{PEM}}
+$ echo done

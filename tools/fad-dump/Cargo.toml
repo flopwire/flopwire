@@ -1,0 +1,18 @@
+# Adapted from gbasin/agentboard tools/fad-dump/Cargo.toml
+# (MIT, Copyright (c) 2025 Gary Basin) at commit 4fb640dd9b539413d2ba2fdcf5385a7b51478797.
+[package]
+name = "fad-dump"
+version = "0.2.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Test-only oracle: dumps franken_agent_detection NormalizedConversations (with extra and invocations) for Flopwire parser parity tests. Never shipped."
+
+[dependencies]
+# FAD, the connector crate underneath CASS (MIT, Jeff Emanuel):
+# https://github.com/Dicklesworthstone/franken_agent_detection, git c06d1cb.
+# Wave-1 harnesses are Claude Code, Codex (both in "connectors") and Devin.
+franken-agent-detection = { version = "=0.3.1", features = ["connectors", "devin"] }
+serde_json = "1"
+
+[workspace]

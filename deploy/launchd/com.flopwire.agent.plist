@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for the Flopwire device agent (docs/two-laptop.md).
+  Replace /Users/YOU with your home directory and the flopwire path with the
+  installed binary, then copy to ~/Library/LaunchAgents/.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.flopwire.agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/flopwire</string>
+    <string>agent</string>
+    <string>run</string>
+  </array>
+
+  <!-- Start at login. Restart after a failure (non-zero exit), not after
+       a clean stop (SIGTERM from launchctl bootout exits 0). -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/flopwire-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/flopwire-agent.log</string>
+</dict>
+</plist>

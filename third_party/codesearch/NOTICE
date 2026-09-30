@@ -1,0 +1,13 @@
+google/codesearch
+https://github.com/google/codesearch
+git 74a12a911a79b901d1158c48d011b2da1b090fc9
+Copyright (c) 2011 The Go Authors. BSD 3-Clause License (see LICENSE in this
+directory).
+
+Use in Flopwire:
+- internal/retrieval/regexq/plan.go ports index/regexp.go (RegexpQuery: the
+  regular expression to trigram query planner). The file header names the
+  source path and commit and lists the changes: trigrams are counted in
+  Unicode characters (SQLite FTS5 trigram tokens) instead of bytes, literals
+  and classes are folded to the index's case-insensitive form, and set and
+  query operations no longer share backing storage.

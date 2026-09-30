@@ -1,0 +1,16 @@
+{
+  "title": "Choose flopwire's admin-console visual world",
+  "question": "The restrained direction fits the health-first brief. Keep it, re-roll, or explicitly choose the familiar category standard.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Ref Log Control Plane",
+      "kicker": "ASSIGNED DIRECTION",
+      "lineage": "Git reflogs, status porcelain, merge queues, and operator runbooks",
+      "body": "A calm operational surface where every state change reads as attributable history. The first view is one ingestion-to-index pipeline with freshness, pressure, and failure shown in place—not a grid of metric cards. Restrained graphite, paper white, and one state color keep the interface quiet. Honest risk: it may feel overly developer-specific to a nontechnical administrator."
+    }
+  ],
+  "reroll": true,
+  "canon": true,
+  "steer": true
+}

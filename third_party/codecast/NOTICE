@@ -1,0 +1,8 @@
+codecast
+https://github.com/codecast-sh/codecast
+Commit 55ec36ee4ca54de86a1298797c6aba95a8b7d976
+Copyright (c) 2025 Codecast. MIT License (see LICENSE in this directory).
+
+Reference only; nothing is vendored. Ported by hand into Flopwire:
+- internal/transcript/codex/subagent.go: Codex thread_spawn subagents versus
+  codex exec review children versus forks (packages/cli/src/parser.ts)

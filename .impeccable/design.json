@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-21T00:00:00Z",
+  "title": "Design System: flopwire",
+  "extensions": {
+    "colorMeta": {
+      "ref-ink": {"role":"primary","displayName":"Ref Ink","canonical":"#18201b","tonalRamp":["#111612","#18201b","#2d3830","#4d5a50","#778279","#a8b0aa","#d5d9d6","#f2f4f2"]},
+      "paper": {"role":"neutral","displayName":"Paper","canonical":"#f3f4ef","tonalRamp":["#1a1c19","#30332e","#51554e","#777c73","#a5aaa0","#ced1c9","#e8eae4","#f7f8f4"]},
+      "healthy": {"role":"primary","displayName":"Healthy","canonical":"#176b45","tonalRamp":["#092217","#0d3825","#125234","#176b45","#3d8b66","#70ad8c","#abd1bd","#e0f1e8"]}
+    },
+    "typographyMeta": {
+      "headline": {"displayName":"Headline","purpose":"Route identity and overall system state."},
+      "body": {"displayName":"Body","purpose":"Runbook explanations and operational detail."},
+      "label": {"displayName":"Porcelain label","purpose":"Identifiers, timestamps, and measurements only."}
+    },
+    "shadows": [],
+    "motion": [{"name":"state-settle","value":"180ms cubic-bezier(0.22, 1, 0.36, 1)","purpose":"One in-place transition when pipeline state changes."}],
+    "breakpoints": [{"name":"compact","value":"760px"},{"name":"wide","value":"1180px"}]
+  },
+  "components": [
+    {"name":"Primary Button","kind":"button","refersTo":"button-primary","description":"Decisive administrative action.","html":"<button class=\"ds-btn-primary\">Create invite</button>","css":".ds-btn-primary{background:#18201b;color:#fff;border:0;border-radius:6px;padding:10px 14px;font:600 14px ui-sans-serif;}.ds-btn-primary:hover{background:#28322b}.ds-btn-primary:focus-visible{outline:2px solid #176b45;outline-offset:2px}"},
+    {"name":"Secondary Button","kind":"button","refersTo":"button-secondary","description":"Routine or reversible action.","html":"<button class=\"ds-btn-secondary\">Review devices</button>","css":".ds-btn-secondary{background:#fff;color:#18201b;border:1px solid #cbd1c9;border-radius:6px;padding:9px 13px;font:600 14px ui-sans-serif}.ds-btn-secondary:hover{border-color:#667168}.ds-btn-secondary:focus-visible{outline:2px solid #176b45;outline-offset:2px}"},
+    {"name":"Text Field","kind":"input","refersTo":"input","description":"Compact operational input.","html":"<input class=\"ds-input\" value=\"member@example.com\" aria-label=\"Email\">","css":".ds-input{background:#fff;color:#18201b;border:1px solid #cbd1c9;border-radius:6px;padding:10px 12px;font:400 15px ui-sans-serif}.ds-input:focus{border-color:#18201b;outline:2px solid rgba(23,107,69,.25);outline-offset:1px}"}
+  ],
+  "narrative": {
+    "northStar": "The Ref Log",
+    "overview": "flopwire feels like an attributable operations record rather than a generic SaaS dashboard. State flows in one direction, mutations remain legible as history, and every health signal answers what changed, where, and who can act.",
+    "keyCharacteristics": ["Health-first and causal, not metric-first.","Flat, attributable, and operational.","Restrained system typography with monospace reserved for identifiers and measurements.","One visible ingest-to-index flow anchors the primary surface."],
+    "rules": [
+      {"name":"State-Is-Meaning","body":"Never use healthy, warning, or danger colors as decoration.","section":"colors"},
+      {"name":"Porcelain","body":"Monospace marks machine-shaped data only.","section":"typography"},
+      {"name":"Flat Record","body":"Historical and operational content stays on the same plane.","section":"elevation"}
+    ],
+    "dos": ["Do show health in causal order from collection through retrieval.","Do attach actors, devices, and timestamps to every administrative mutation."],
+    "donts": ["Don't build the page from interchangeable metric cards.","Don't use state color for decoration or brand emphasis.","Don't use monospace as a costume for technical credibility."]
+  }
+}

@@ -1,0 +1,10 @@
+{"id":"019a0000-0000-7000-8000-0000000000a7","timestamp":"2025-08-20T12:00:00.000Z","instructions":null,"git":{"commit_hash":"0123456789abcdef0123456789abcdef01234567","branch":"main","repository_url":"https://example.invalid/oracle.git"}}
+{"record_type":"state"}
+{"type":"message","id":null,"role":"user","content":[{"type":"input_text","text":"list the repo"}]}
+{"record_type":"state"}
+{"type":"reasoning","id":"rs_legacy_1","summary":[{"type":"summary_text","text":"**Listing files**"}],"content":null,"encrypted_content":"gAAAAABoracleG1"}
+{"type":"function_call","id":"fc_legacy_1","name":"shell","arguments":"{\"command\": [\"bash\", \"-lc\", \"ls\"]}","call_id":"call_g_1"}
+{"type":"function_call_output","call_id":"call_g_1","output":"{\"output\": \"README.md\\ngo.mod\\n\", \"metadata\": {\"exit_code\": 0, \"duration_seconds\": 0.1}}"}
+{"type":"function_call","id":"fc_legacy_2","name":"shell","arguments":"{\"command\": [\"bash\", \"-lc\", \"cat missing.txt\"]}","call_id":"call_g_2"}
+{"type":"function_call_output","call_id":"call_g_2","output":"{\"output\": \"cat: missing.txt: No such file or directory\\n\", \"metadata\": {\"exit_code\": 1, \"duration_seconds\": 0.0}}"}
+{"type":"message","id":null,"role":"assistant","content":[{"type":"output_text","text":"The repo has README.md and go.mod."}]}

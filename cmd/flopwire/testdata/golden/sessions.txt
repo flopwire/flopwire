@@ -1,0 +1,28 @@
+0b7e2c1a-0000-4000-8000-000000000002  claude  ended 2026-09-23  oracle-beta@fix/retry  24 msgs  "the upload retry test is flaky; find out why"  ✗1
+    last: "Done: backoff added."
+agent-b000000000000002  claude  ended 2026-09-23  oracle-beta@fix/retry  4 msgs  "Find every retry call site."  sub of 0b7e2c1a-0000-4000-8000-000000000002
+    last: "Three call sites use fixed delays."
+agent-b000000000000003  claude  ended 2026-09-23  oracle-beta@fix/retry  2 msgs  "Check the CI retry config."  sub of agent-b000000000000002
+    last: "CI retries twice."
+agent-b000000000000001  claude  ended 2026-09-23  oracle-beta@fix/retry  2 msgs  "Review the retry change for correctness."  sub of 0b7e2c1a-0000-4000-8000-000000000002
+    last: "The change looks correct."
+0b7e2c1a-0000-4000-8000-000000000001  claude  ended 2026-09-23  oracle-alpha@main  9 msgs  "why does the login test flake?"  ✗1
+    last: "Use fake timers: vi.useFakeTimers() before the login call."
+agent-a1  claude  ended 2026-09-23  oracle-alpha@main  4 msgs  "Read tests/login.test.ts and report the timer setup."  sub of 0b7e2c1a-0000-4000-8000-000000000001
+    last: "The test uses real timers; setTimeout(500) races the assertion."
+019a0000-0000-7000-8000-0000000000a4  codex  ended 2026-09-15  oracle-delta  3 msgs  "Check that parse.go handles empty input."  sub of 019a0000-0000-7000-8000-0000000000a3
+    last: "Empty input returns 0; TestParseEmpty covers it."
+019a0000-0000-7000-8000-0000000000a3  codex  ended 2026-09-15  oracle-delta@main  16 msgs  "run the tests and fix what breaks"  1 file  ✗2
+    last: "Fixed the off-by-one in parse.go; tests pass."
+019a0000-0000-7000-8000-0000000000a6  codex  ended 2026-08-14  oracle-gamma  2 msgs  "fix the lint error too"
+    last: "Removed the unused variable."
+019a0000-0000-7000-8000-0000000000a2  codex  ended 2026-08-10  oracle-gamma  6 msgs  "summarize the failing CI job"
+    last: "CI fails on lint: an unused variable in src/app.ts line 14."
+019a0000-0000-7000-8000-0000000000a5  codex  ended 2026-07-12  oracle-gamma  2 msgs  "Review the uncommitted diff for correctness."  sub of 019a0000-0000-7000-8000-0000000000a2
+    last: "No blocking issues."
+019a0000-0000-7000-8000-0000000000a1  codex  ended 2026-03-20  oracle-beta@main  12 msgs  "add a health check endpoint"  2 files
+    last: "Middleware order: auth rejects the unauthenticated probe."
+019a0000-0000-7000-8000-0000000000a7  codex  7 msgs  "list the repo"  ✗1
+    last: "The repo has README.md and go.mod."
+[13 sessions]
+[left out your own session 019a0000-0000-7000-8000-00000000c0de and its subagents; --include-self includes them]

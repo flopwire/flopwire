@@ -1,0 +1,6 @@
+Flopwire includes or adapts material from the following projects. Their
+license texts and notices are under third_party/<name>/.
+
+- franken_agent_detection 0.3.1 (MIT, Copyright (c) 2026 Jeff Emanuel):
+  third_party/fad/
+- agentboard (MIT, Copyright (c) 2025 Gary Basin): third_party/agentboard/

@@ -1,0 +1,38 @@
+# Curated from `cass search` invocations found in this device's
+# transcripts. Skipped: help, wildcard and --robot-format sessions runs,
+# templated ${q} strings, and queries holding account-like numbers or
+# people's names. Filters kept: --workspace -> repo, --agent -> agent,
+# absolute --since. Relative windows (--today, --days N, --week,
+# --since=-3h) are dropped: the date each was run on is not recorded.
+# Every query is bounded by until: 2026-09-29 (added by the script), so
+# newer sessions cannot push expected hits off the first page.
+# scripts/acceptance-expect.py derives `expect` by brute force over the raw
+# transcripts and writes queries.yaml; `source` is the original invocation.
+- {name: session-uuid, verb: find, query: "01a01119-bc4c-7d10-91f3-617775628632", source: "cass search '01a01119-bc4c-7d10-91f3-617775628632'"}
+- {name: issue-250-papercut, verb: search, query: "issue 250 papercut", source: "cass search 'issue 250 papercut'"}
+- {name: gh-issue-edit-250, verb: find, query: "gh issue edit 250", source: "cass search 'gh issue edit 250'"}
+- {name: pandora-recent, verb: search, query: "pandora", since: "2026-09-22", source: "cass search 'pandora' --since 2026-09-22"}
+- {name: launchd-pandora, verb: search, query: "launchd", repo: ~/Code/pandora, since: "2026-09-22", source: "cass search 'launchd' --workspace ~/Code/pandora --since 2026-09-22"}
+- {name: tmux, verb: search, query: "tmux", source: "cass search tmux --since=-3h --mode lexical"}
+- {name: pueue, verb: search, query: "pueue", since: "2026-09-15", source: "cass search pueue --since 2026-09-15"}
+- {name: ms-playwright, verb: find, query: "ms-playwright", source: "cass search 'ms-playwright'"}
+- {name: missing-scope, verb: find, query: "missing required scope read:project", source: "cass search 'missing required scope read:project' --week"}
+- {name: gh-project-item-list, verb: find, query: "gh project item-list", source: "cass search 'gh project item-list' --week"}
+- {name: hero-capitalization, verb: search, query: "hero capitalization", source: "cass search 'hero capitalization'"}
+- {name: clean-macos-vm, verb: search, query: "clean macOS VM", source: "cass search 'clean macOS 26.6.2 VM'"}
+- {name: apple-virtual-machine, verb: search, query: "Apple Virtual Machine", source: "cass search 'Apple Virtual Machine 1'"}
+- {name: merge-head-sessionpane, verb: search, query: "MERGE_HEAD SessionPane", repo: ~/Code/atrium, source: "cass search 'MERGE_HEAD SessionPane' --workspace ~/Code/atrium --today"}
+- {name: sessionpane-path, verb: find, query: "surface/web/src/sessions/SessionPane.tsx", repo: ~/Code/atrium, source: "cass search 'surface/web/src/sessions/SessionPane.tsx' --workspace ~/Code/atrium --today"}
+- {name: skiphtml-urltransform, verb: search, query: "skipHtml urlTransform", repo: ~/Code/atrium, source: "cass search 'skipHtml urlTransform safeUrlTransform MENTION_URL_PREFIX' --workspace ~/Code/atrium"}
+- {name: collapse-threshold, verb: find, query: "COLLAPSE_CHAR_THRESHOLD", repo: ~/Code/atrium, source: "cass search 'COLLAPSE_CHAR_THRESHOLD' --workspace ~/Code/atrium"}
+- {name: compact-markdown-text, verb: find, query: "CompactMarkdownText", repo: ~/Code/atrium, source: "cass search 'CompactMarkdownText' --workspace ~/Code/atrium"}
+- {name: capability-snapshots-migration, verb: find, query: "063_session_capability_snapshots.sql", repo: ~/Code/atrium, source: "cass search 'surface/server/migrations/063_session_capability_snapshots.sql' --workspace ~/Code/atrium --days 3"}
+- {name: live-e2e-codex-live, verb: find, query: "live-e2e-codex-live", repo: ~/Code/agent-fanout, source: "cass search 'live-e2e-codex-live' --workspace ~/Code/agent-fanout --today"}
+- {name: durable-controller, verb: search, query: "durable controller", repo: ~/Code/agent-fanout, source: "cass search 'durable controller' --workspace ~/Code/agent-fanout --today"}
+- {name: livekit-turn-domain, verb: find, query: "LIVEKIT_TURN_DOMAIN", source: "cass search 'turnhard-0703 LIVEKIT_TURN_DOMAIN pnpm-store'"}
+- {name: vmpass2, verb: search, query: "vmPass2", source: "cass search 'vmPass2'"}
+- {name: blob-unavailable, verb: find, query: "blob_unavailable", source: "cass search blob_unavailable"}
+- {name: durable-before-commit, verb: find, query: "durable-before-commit", source: "cass search durable-before-commit"}
+- {name: self-expires, verb: find, query: "stays until it self-expires", source: "cass search 'stays until it self-expires' --week"}
+- {name: dev-browser-playwright, verb: search, query: "dev-browser playwright chromium install", source: "cass search 'dev-browser cache redownload playwright chromium install'"}
+- {name: error-common-term, verb: search, query: "error", source: "cass search test (a very common term; latency check for ranked search)"}
