@@ -61,6 +61,18 @@ These need section 1.
 
 ## 5. Local acceptance
 
+The nightly A/B run on GitHub Actions is the primary signal for
+performance drift ([docs/perf](perf/README.md#nightly-a-b)). It compares
+`main` with the latest release on a synthetic corpus every night. The
+local run below is a reality check on the real corpus before a release.
+
+1. Read each open `perf-regression` issue. Fix the regression, or explain
+   it in the release PR and accept it (see
+   [Accept a regression](perf/README.md#accept-a-regression)).
+2. Read the step summary of the most recent nightly run on `main`. It
+   compares `main` with the latest release tag.
+3. Then run the local set below.
+
 `scripts/acceptance.sh` builds the binary and runs `flopwire bench acceptance`
 in four parts, plus the FAD parity sample. It writes a JSON record of the
 run and compares it with the previous release's record. It takes 10 to 15
