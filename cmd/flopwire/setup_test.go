@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMain lets the test binary stand in for the Claude Code CLI: run
@@ -739,5 +740,31 @@ func TestSetupSameSource(t *testing.T) {
 		if got := sameSource(c.m, c.src); got != c.want {
 			t.Errorf("sameSource(%+v, %q) = %v, want %v", c.m, c.src, got, c.want)
 		}
+	}
+}
+
+// TestSetupHarnessCommandTimeoutHolds: a harness command that leaves a
+// child holding its output open (claude cloning with git) still ends at
+// the timeout, and setup reports it.
+func TestSetupHarnessCommandTimeoutHolds(t *testing.T) {
+	f := newSetupFixture(t, true)
+	bin := filepath.Join(f.dir, "bin")
+	if err := os.Remove(filepath.Join(bin, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.287; exit 0; fi\nsleep 20 &\nsleep 20\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/bin"+string(os.PathListSeparator)+"/usr/bin")
+	defer func(d time.Duration) { harnessCommandTimeout = d }(harnessCommandTimeout)
+	harnessCommandTimeout = 200 * time.Millisecond
+	start := time.Now()
+	rep, _, err := f.run()
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("setup took %s with a %s command timeout", took, harnessCommandTimeout)
+	}
+	if !errors.Is(err, errReported) || !strings.Contains(f.claude(rep).Error, "timed out") {
+		t.Fatalf("want a timed-out error; got %v %+v", err, f.claude(rep))
 	}
 }

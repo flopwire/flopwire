@@ -243,6 +243,9 @@ func runHarnessCommand(ctx context.Context, name string, args ...string) ([]byte
 	var out, errb bytes.Buffer
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	// A child the harness started (git for a clone) can hold the output
+	// open after the harness is killed; stop waiting for it.
+	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		err = fmt.Errorf("timed out after %s", harnessCommandTimeout)
