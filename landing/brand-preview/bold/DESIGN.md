@@ -1,13 +1,64 @@
-# Flopwire editorial preview
+---
+name: Flopwire editorial redesign
+description: An editorial comparison prototype built around a large conversation spread.
+colors:
+  paper: "#f4f0e6"
+  ink: "#161616"
+  muted: "#5e5b54"
+  orange: "#ed6038"
+  rule: "#c9c3b6"
+  evidence-surface: "#e9e3d7"
+typography:
+  display:
+    fontFamily: "Plex Mono, monospace"
+    fontSize: "clamp(38px, 6.3vw, 96px)"
+    fontWeight: 700
+    lineHeight: 1.09
+    letterSpacing: "-.04em"
+  body:
+    fontFamily: "Plex Sans, sans-serif"
+    fontSize: "18px"
+    lineHeight: 1.55
+---
 
-Mode: Persuade. A broader editorial redesign for comparison with the other brand previews.
+# Design System: Flopwire editorial redesign
 
-The oversized Plex Mono headline leads into a full-width black conversation spread. Alex’s API constraint and Sam’s client response are stacked in reading order, with identities in a narrow margin on desktop. No stepped windows or side-by-side hero. The orange fw ligature is part of the masthead and footer; its native 512:356 proportion is preserved. The wordmark stays Plex Mono bold.
+## Overview
 
-Cream paper, black ink, orange connection accents. Display type tops out at 96px. Body copy uses bundled Plex Sans. All font assets are self-hosted. Discovery reads as a directory, retrieval as two connected text panes, provenance as a large source quotation beside a diff. The orange compatibility spread breaks the paper rhythm. Collection rules form a ledger rather than cards. Setup keeps the actual source-build commands and a working copy control.
+Bold replaces the incumbent composition with an editorial rhythm: oversized type, a full-width black conversation spread, a large source quotation, and an orange compatibility spread. Alex's API constraint and Sam's response remain in reading order, with identity in a narrow desktop margin. This is a comparison prototype, not a selected production redesign.
 
-All pagination examples are labeled illustrative and synthetic. Original landing privacy wording, link destinations, command names, hosted status, and product name are retained. No additional privacy or platform claims are introduced.
+The orange fw reconstruction anchors masthead and footer beside a bold lowercase Plex Mono wordmark. Shared asset limitations and completed review checks are recorded in [the comparison design document](../DESIGN.md).
 
-At 700px the conversation identities, directory, search panes, quote, policy ledger, and setup stack. Code wraps except installation commands, which scroll within their own surface. Focus rings and a skip link support keyboard access. Copy has a selection fallback and status announcement. There are no hidden explanations or entrance animations.
+## Colors
 
-Local verification checks asset paths, anchor IDs, command preservation, and JavaScript syntax. Browser layout and screenshot verification await the orchestrator’s combined QA at 1440px and 390px.
+Warm cream paper and black ink carry the page. The compatibility section uses a broad orange fill; lighter orange links identify sources inside the dark conversation. Muted rules and warm evidence fills separate dense tool content.
+
+## Typography
+
+Bundled Plex Mono carries the headline, wordmark, section titles, conversation, quotes, commands, and labels. Bundled Plex Sans carries body explanations. The desktop display reaches 96px; the mobile headline uses a smaller fluid scale. The contrast between large conversation type and compact source metadata is deliberate.
+
+## Layout
+
+The page caps at 1600px with 5vw side padding. The headline spans the hero above introductory copy and actions. The conversation is one wide black spread rather than stepped windows. Discovery reads as a directory; retrieval pairs matching lines with their source; provenance puts a quotation beside the diff; sharing uses a policy ledger.
+
+At 700px, identities, directory, retrieval panes, quotation, policy rows, and setup stack. Side padding becomes 22px. Code wraps except installation commands, which scroll within their own surface.
+
+## Elevation & Depth
+
+Large contrasting fills, thin rules, and typography create hierarchy. There are no shadows or entrance animations.
+
+## Shapes
+
+Rectangular spreads, evidence panes, and buttons dominate. The fw image retains its 512:356 proportion. The composition relies on type and space rather than rounded cards.
+
+## Components
+
+Primary actions use black fill and cream text; outline actions invert on hover. Keyboard focus uses a distinct dark orange outline, and a skip link reaches the content. The installation terminal is black with a bordered copy control. Copy includes a status announcement and selection fallback in code; browser checks passed mocked successful writes and command selection with a fallback announcement when clipboard writes reject. Successful OS clipboard writes remain unverified. Pagination, search, and diff examples retain their illustrative or synthetic labels.
+
+## Do's and Don'ts
+
+- Do preserve the broad conversation spread and editorial type hierarchy when extending this direction.
+- Do retain installation commands, link destinations, and the existing privacy wording.
+- Do keep all example evidence visibly illustrative.
+- Don't introduce stepped hero windows or treat this comparison as the production choice.
+- Don't describe the reconstructed identity as an exact original vector or confirmed font match.

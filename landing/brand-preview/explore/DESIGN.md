@@ -1,13 +1,65 @@
-# Exploratory Flopwire preview
+---
+name: Flopwire connected sessions
+description: An annotated session route connects shared context to its source evidence.
+colors:
+  paper: "#faf9f6"
+  ink: "#17191b"
+  muted: "#5e605b"
+  line: "#c9c9c0"
+  orange: "#d52e19"
+  soft: "#eeede7"
+typography:
+  display:
+    fontFamily: "Plex, monospace"
+    fontSize: "clamp(40px, 3.8vw, 55px)"
+    fontWeight: 500
+    lineHeight: 1.16
+    letterSpacing: "-.04em"
+  body:
+    fontFamily: "Plex, monospace"
+    fontSize: "15px"
+    fontWeight: 400
+    lineHeight: 1.7
+---
 
-Mode: Persuade. Connected session evidence is the visual idea. The page uses the supplied reconstructed fw mark, a bold Plex Mono wordmark, paper, ink, and orange. All typography uses the existing self-hosted Plex Mono family, following the pinned brand.
+# Design System: Flopwire connected sessions
 
-The hero is a horizontal annotated route: Alex knows the pagination constraint; the live update carries the constraint and a source reference; Sam applies it to the client. The SVG arrow has a specific routing purpose. Source addresses and links connect this mechanism to the full discovery, grep, read, and commit examples below. No ornamental network, grid, invented metrics, or section counters.
+## Overview
 
-The rest of the page changes composition with the evidence: session directory beside explanation, search and source passage together, diff beside its rationale, dark local-to-team topology, policy ledger, and source setup. The current product copy, privacy statement, command names, compatibility, and meaningful external links are retained. Workflow, search output, and diff examples are explicitly illustrative; the sessions are synthetic.
+Explore uses connected session evidence as its organizing idea. An annotated route carries Alex's pagination constraint and source reference to Sam's client work. Source addresses and links connect that mechanism to discovery, grep, read, and commit examples below. This is one of three comparison prototypes, with no selected winner.
 
-At mobile widths the route follows source order vertically. Source passages remain visible. Long setup commands scroll within their own container. Home links use the fw image with its 512:356 aspect ratio and empty alt inside a labeled link. Keyboard focus, skip navigation, and a clipboard status announcement are included. Copy has a selection fallback. No content depends on motion or JavaScript.
+The reconstructed orange fw mark and bold lowercase Plex Mono wordmark anchor the header; the footer uses the black mark. Shared asset limitations and completed review checks are recorded in [the comparison design document](../DESIGN.md).
 
-Metadata has a 12px floor after the mechanical detector flagged smaller text.
+## Colors
 
-Validation: internal anchor and local asset inspection plus JavaScript syntax check. Desktop 1440 and mobile 390 browser inspection awaits the orchestrator's combined verification. No screenshot QA is claimed.
+Paper and ink carry reading surfaces. Orange marks routing, source links, selected headline emphasis, and focus. Soft neutral fills distinguish transferred context and code. A dark local-to-team topology interrupts the paper sections.
+
+## Typography
+
+All type uses the bundled Plex Mono family. The headline uses medium weight; identity and wordmark use stronger weights. Metadata has a 12px floor. Monospace prose and compact evidence produce a denser mobile reading experience than the other directions; this remains an explicit comparison tradeoff.
+
+## Layout
+
+The page caps at 1440px with 64px desktop side padding. The hero introduction sits above a three-part route: sender, transfer, receiver. Discovery places a session directory beside its explanation; retrieval pairs search and source passage; provenance pairs rationale and diff; sharing uses policy rows.
+
+Below 760px, side padding becomes 22px and the route follows source order vertically. A left rule replaces the desktop arrow. Evidence panes and setup stack, while source passages remain visible. Long installation commands scroll locally.
+
+## Elevation & Depth
+
+The page is flat. Thin rules, soft context fills, and the dark topology section separate surfaces without shadows.
+
+## Shapes
+
+Rectangular evidence panels and buttons establish the form. Small circular ports indicate source and receiver; the connecting line has a routing purpose. Logo images retain the 512:356 proportion.
+
+## Components
+
+Primary actions use ink fill with an orange hover state. Outline actions remain quiet. The annotated route displays session identity, repository, constraint, transfer, and source address; the SVG arrow belongs to that mechanism. Keyboard focus, skip navigation, and a clipboard status announcement are present. Copy includes a selection fallback in code; browser checks passed mocked successful writes and command selection with a fallback announcement when clipboard writes reject. Successful OS clipboard writes remain unverified. Workflow, search output, and diffs remain explicitly illustrative; sessions are synthetic.
+
+## Do's and Don'ts
+
+- Do keep source passages and addresses visible beside the relevant evidence.
+- Do preserve source order when the route stacks on mobile.
+- Do retain command names, meaningful links, and existing privacy wording.
+- Don't add ornamental networks, invented metrics, or unlabeled activity to this direction.
+- Don't treat the reconstructed mark or Plex Mono wordmark as verified original brand assets.

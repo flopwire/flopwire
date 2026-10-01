@@ -1,13 +1,69 @@
-# Focused brand refresh
+---
+name: Flopwire focused refresh
+description: Preserve the incumbent composition with the reconstructed fw identity.
+colors:
+  paper: "#faf9f6"
+  ink: "#17191b"
+  muted: "#60615f"
+  line: "#cbc9c1"
+  signal: "#df3717"
+  signal-ink: "#bd2e13"
+  soft: "#eeede8"
+typography:
+  display:
+    fontFamily: "Plex, ui-monospace, monospace"
+    fontSize: "clamp(42px, 3.9vw, 60px) at widths above 1100px"
+    lineHeight: 1.1
+    letterSpacing: "-.04em"
+  body:
+    fontFamily: "PlexSans, system-ui, sans-serif"
+    fontSize: "17px"
+    lineHeight: 1.7
+  wordmark:
+    fontFamily: "Plex, ui-monospace, monospace"
+    fontWeight: 700
+    letterSpacing: "-.035em"
+rounded:
+  route-label: "30px"
+---
 
-Mode: Persuade. Preserve the current landing page composition, copy, section order, stepped exchange, visible examples, paper surface, and Plex Mono / Plex Sans pairing.
+# Design System: Flopwire focused refresh
 
-The supplied heavy fw ligature replaces the wire emblem in both home links. Images retain the 512:356 aspect ratio, with empty alt text inside labeled links. The Plex Mono wordmark uses weight 700. The shared SVG is a hand reconstruction, not the original designer vector.
+## Overview
 
-Orange #df3717 carries the mark, primary buttons, connectors, and focus rings. Small orange text uses #bd2e13 for contrast on paper. Primary buttons use bold 19px white type, which meets the large-text contrast threshold on the supplied orange. Other typography and spacing follow the original page.
+Focused preserves the original landing composition, section order, stepped exchange, paper surface, and Plex Mono/Plex Sans pairing. The reconstructed orange fw ligature replaces the wire emblem in header and footer; the lowercase wordmark becomes bold. This remains one of three comparison prototypes, with no selected winner.
 
-Keep local font paths, current installation command names, and the original privacy wording. Synthetic workflow and retrieval examples are labeled illustrative. Copy retains the original clipboard fallback and status announcement. Home links target #top.
+Shared asset limitations and completed review checks are recorded in [the comparison design document](../DESIGN.md). The mark is approximate and Plex Mono is not a confirmed reference-font match.
 
-Checks: local asset paths, anchor destinations, logo dimensions, command/copy preservation, and JavaScript syntax. Desktop 1440px and mobile 390px rendering, clipboard interaction, and screenshots await the orchestrator’s combined browser verification.
+## Colors
 
-The mechanical detector flagged inherited 11px metadata and compact window chrome. Those remain consistent with the original landing design and its mobile metadata floor. Its dash advisory counts CLI double-hyphen flags; command names and options remain intact. Review these surfaces during combined browser QA.
+Orange carries the mark, primary actions, connection lines, and focus rings. Its darker companion carries small orange text and hover states. Paper, ink, thin neutral rules, and soft code backgrounds retain the incumbent visual hierarchy.
+
+## Typography
+
+Plex Mono identifies the wordmark, headline, session screens, commands, and metadata. Plex Sans carries prose. Primary orange buttons use bold white type (19px). Inherited window chrome and some mobile metadata remain compact (11px); this is a density tradeoff in the preserved design.
+
+## Layout
+
+The page caps at 1440px with 56px desktop side padding. The hero splits copy and two offset session screens; the pill connector bridges the screens. Later sections alternate open prose and bordered evidence surfaces. Desktop story spacing is generous (130px at section starts).
+
+Below 760px, the hero and provenance sections stack, side padding becomes 24px, and story spacing reduces. Installation commands scroll within their own container. Preserve the original stepped exchange rather than adopting either alternate hero.
+
+## Elevation & Depth
+
+Flat paper surfaces, borders, and soft code fills create hierarchy. Session screens have no drop shadow.
+
+## Shapes
+
+Most evidence panels and buttons are rectangular. The connecting annotation is a pill; avatars and window dots are circular. Header and footer marks preserve the 512:356 proportion.
+
+## Components
+
+Header and footer home links target `#top` and wrap decorative logo images in labeled links. Orange primary actions and ink outline actions have explicit hover and focus treatments. Skip navigation and visible source links support keyboard access. Source passages, discovery, search, and diffs retain their illustrative labels. The installation copy control includes status announcements and a selection fallback in code; browser checks passed mocked successful writes and command selection with a fallback announcement when clipboard writes reject. Successful OS clipboard writes remain unverified.
+
+## Do's and Don'ts
+
+- Do preserve the incumbent layout, product wording, installation commands, and privacy wording.
+- Do keep synthetic workflow and retrieval examples labeled illustrative.
+- Do retain the distinction between display orange and small-text orange.
+- Don't describe the reconstructed mark or wordmark font as final brand assets.
