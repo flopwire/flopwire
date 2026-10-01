@@ -1,6 +1,6 @@
 # Retrieval example capture
 
-`pagination.jsonl` is a synthetic Claude Code transcript. `grep.txt` and `read.txt` are unedited output from the retrieval CLI built at `abda135`. The homepage uses these outputs verbatim, with HTML escaping.
+`pagination.jsonl` is a synthetic Claude Code transcript. `grep.txt` and `read.txt` are unedited output from the retrieval CLI built at `abda135`. These preserve the original positional headers for comparison with the intended format.
 
 To reproduce from the repository root:
 
@@ -27,7 +27,7 @@ Run in a separate shell to keep the fixture configuration isolated. No server is
 
 ## Branch-history capture
 
-`api-change.jsonl` is a synthetic Claude transcript with a successful git commit tool result. Index it separately, using the same isolated setup as above. The homepage uses this exact projection:
+`api-change.jsonl` is a synthetic Claude transcript with a successful git commit tool result. Index it separately, using the same isolated setup as above. The earlier preview used this projection:
 
 ```sh
 flopwire sessions --repo app --branch api-users --json |
@@ -38,7 +38,7 @@ Output is saved in `branch-session.json`. The underlying session has full ID `79
 
 ## JSON retrieval captures
 
-The preview projects these working CLI responses with `jq`:
+The earlier preview projected these working CLI responses with `jq`:
 
 ```sh
 flopwire grep -n -F next_cursor --include-self --json |
@@ -48,3 +48,16 @@ flopwire read 0b7e2c1a/3026944:1 -B 1 --json |
 ```
 
 The captures are `transcript-grep.json` and `read.json`. They use the pagination index above. Messaging examples project the existing Peer and SendResponse schemas; their CLI capture is tracked in #55.
+
+## Intended interface fixtures
+
+The earlier captures above document the CLI before the output-format decision. They remain source evidence; their `jq` projections are no longer shown on the homepage.
+
+The homepage now displays these direct responses:
+
+- `intended-sessions.json`: lean `sessions` envelope with existing `session_id`, `agent`, `title`, `branches`, and `digest.commits` fields.
+- `intended-peers.json`: presence contract using named fields and the same full session ID.
+- `intended-send.json`: queued receipt contract. It confirms queue acceptance, not delivery.
+- `intended-grep.txt` and `intended-read.txt`: readable transcript content with the intended labeled headers.
+
+These are intended contracts, not captured default CLI output. The `sessions` JSON default and labeled headers need a follow-up PR. Presence and send need captures from the messaging CLI. The recipient hook must land before capturing the reply exchange. Re-capture after those changes and compare against these fixtures. See [the output-format decision](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818).

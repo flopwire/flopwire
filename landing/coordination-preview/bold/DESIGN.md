@@ -13,3 +13,7 @@ All examples use `../examples.css`. Commands and output share a dark terminal wi
 Page spacing uses `../layout.css`: 80px section intervals, 64px at tablet widths, and 56px on mobile. Section introductions separate from content by 32px, or 24px on mobile. Device stages use aligned rows on desktop and stack below 1000px.
 
 Branch history identifies the session behind the change. Presence checks that same session ID. The optional presence detail is expandable. Grep comparison terminals sit side by side on desktop and stack below 1000px. Source context uses body-sized text with agent, branch, and message-address attribution.
+
+## Agent output contract
+
+Lookups return lean JSON records directly. Searches and reads return readable text with labeled headers. Presence and send panels identify contract examples. A queued receipt does not demonstrate delivery. Keep narration outside terminal panels and label command and output separately.

@@ -1,0 +1,3 @@
+## session: 0b7e2c1a-0000-4000-8000-000000000001 agent: claude repo: app branch: api-cursors
+3026944:1 assistant: The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.
+[1 hit in 1 session]

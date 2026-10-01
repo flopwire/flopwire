@@ -1,0 +1,8 @@
+{
+  "id": "m1a2b3c4d5e6f7a8",
+  "state": "queued",
+  "to": {
+    "session": "79b2d8ef-0000-4000-8000-000000000001",
+    "busy": true
+  }
+}

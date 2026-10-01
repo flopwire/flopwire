@@ -1,0 +1,13 @@
+{
+  "sessions": [
+    {
+      "session_id": "79b2d8ef-0000-4000-8000-000000000001",
+      "agent": "claude",
+      "title": "Rename user response field",
+      "branches": ["api-users"],
+      "digest": {
+        "commits": ["a81f3c2"]
+      }
+    }
+  ]
+}

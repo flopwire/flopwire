@@ -1,0 +1,5 @@
+# session: 0b7e2c1a-0000-4000-8000-000000000001 agent: claude repo: app branch: api-cursors
+  0b7e2c1a-0000-4000-8000-000000000001/1404928 user
+  Why does the client need the API’s cursor?
+>>0b7e2c1a-0000-4000-8000-000000000001/3026944 assistant
+> 1 The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.

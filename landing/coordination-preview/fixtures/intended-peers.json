@@ -1,0 +1,12 @@
+{
+  "peers": [
+    {
+      "session": "79b2d8ef-0000-4000-8000-000000000001",
+      "agent": "claude",
+      "user": "gary",
+      "repo": "/work/acme/app",
+      "branch": "api-users",
+      "busy": true
+    }
+  ]
+}

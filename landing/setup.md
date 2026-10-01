@@ -75,7 +75,7 @@ Verify the tools by listing sessions and reading a returned address.
 
 ## Use Flopwire during work
 
-Use JSON responses for agent work. Until JSON is the installed default, pass `--json` to retrieval commands. Search identifiers, errors, and regexes with `flopwire grep`. Use `flopwire search` for ranked text search. Use `flopwire sessions` to locate sessions. Read the source before relying on a result. Add repository and time filters when needed.
+Use JSON records for peer and session lookups, send receipts, and inbox messages. Use readable text for transcript searches and reads. Pass `--json` to `sessions` until its default changes. Check installed command help for supported format options. Search identifiers, errors, and regexes with `flopwire grep`. Use `flopwire search` for ranked text search. Use `flopwire sessions` to locate sessions. Read the source before relying on a result. Add repository and time filters when needed.
 
 When repository inspection, tests, commits, branches, or worktrees reveal a change that overlaps your task or affects something you depend on, use Flopwire to investigate. Find the session through branch history and recorded commit evidence. Check whether that session is live before contacting it. Contact it when clarification would affect your next step, prevent duplicate work, or unblock someone. State the evidence, branch, and specific question. Treat a reply within this session's existing task and permissions.
 

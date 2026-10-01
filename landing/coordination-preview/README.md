@@ -1,31 +1,30 @@
-# Local-to-network homepage previews
+# Agent communication homepage preview
 
-Open `/coordination-preview/` to compare Editorial and Connected sessions at desktop and mobile widths. Both retain the orange fw mark and lead with “A communication network for coding agents.”
+Two homepage directions share the same examples and output contract. Open `index.html` to compare them. The production homepage is unchanged.
 
-The page shows the setup progression once: start locally, add devices under the same account, then invite teammates to the same server. The architecture diagram shows a daemon and SQLite index on each device, plus the shared server's Postgres and object storage. Local queries and --server queries are distinguished.
+## Agent workflow
 
-All command examples share `examples.css`, including the hero, device progression, and search/read flow. Code changes use one diff treatment. Agent setup and configuration rules have explicit labels.
+A client agent notices commit `a81f3c2` changing the `/users` response on `api-users`. It searches branch history, matches the recorded commit, checks the full session ID in live presence, and contacts that session. Presence is expandable to keep the story readable. Narration stays outside terminal panels. Commands and output have separate labels.
 
-The first example starts from a concrete commit on another branch. Codex queries branch history as JSON, matches the commit in the session digest, checks that same session ID in live presence, and asks about the API contract. The presence check is expandable so the main story stays readable. Narration is outside the terminal; commands and output are labeled.
+The preview shows intended lean responses directly, without `jq` projections:
 
-The branch-history result is captured from the built retrieval CLI against `fixtures/api-change.jsonl`, then projected with the exact `jq` command shown. The commit ID was extracted from a successful git commit tool result. `fixtures/branch-session.json` contains the projected output. The stored title comes from the transcript's first prompt.
+| Commands | Default output |
+| --- | --- |
+| `sessions`, `peers`, `send` receipt, `inbox` | JSON records |
+| `grep`, `search`, `read` | Readable text with labeled metadata headers |
 
-All agent-facing commands return JSON by default in the chosen CLI contract. The project direction is recorded in the root README. The API and device protocol already use JSON; the messaging CLI still needs implementation and capture. The presence projection uses the actual API field names. The send receipt projects the existing structured SendResponse fields. Implementation and a real exchange capture are tracked in [#55](https://github.com/flopwire/flopwire/issues/55). The server and device bus are merged in #41 and #49. The page does not claim to monitor Git events automatically.
+The same split applies to MCP. JSON lookups offer an explicit text view; transcript commands offer JSON. The project README and [decision on #55](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818) document the contract.
 
-The grep comparison shows captured system grep and Flopwire output side by side, using shared `-n -F` flags. The retrieval side requests `--json` and projects named fields with `jq`. The file fixture is `fixtures/src/pagination.ts`; transcript search uses `fixtures/pagination.jsonl`. The read result appears below the comparison. The source-context section shows a compact excerpt attributed to the actual agent, branch, and message address. The setup document links to `agent-tools.md`, which explains title provenance, commit attribution, retrieval addresses, and JSON parsing.
+## Examples and implementation
 
-The setup button copies one instruction to read `setup.md`. The file lives at `landing/setup.md`. On preview hosts, the page resolves its URL against the current host so the copied instruction opens the served file. On flopwire.com, it uses the canonical URL. Production publication is a separate action.
+The branch-history example derives its title and commit from `fixtures/api-change.jsonl`. The commit is extracted from a successful git commit tool result. The stored title comes from the first task prompt. The displayed JSON preserves the `sessions` envelope and existing field names. Its lean default is an intended response; the `sessions` default change is pending.
 
-Setup preserves existing configuration. With no server connection, it starts locally with `--no-sync`. Connecting later removes that flag, enrolls the device, and applies path rules before upload. Existing account login is separate from claiming a new account's invitation.
+Presence and send panels are labeled **Contract example**. The message bus server (#41, #51) and device agent (#49) are merged. The messaging CLI is in progress on `feat/bus-cli`. The recipient hook is not built. A queued receipt does not demonstrate delivery. The final reply and code change show the intended exchange after delivery; they are not a captured live exchange.
 
-The performance table names Flopwire, CASS, Entire, SpecStory, and AgentsView. Unmeasured cells contain dashes. The methodology links to issue #39. No comparative values or performance claims are invented.
+The grep comparison keeps shared `-n -F` flags and shows text on both sides. File output is captured from system grep. Transcript content and addresses come from the pagination fixture. Labeled headers are the intended format; installed output still uses positional headers. Re-capture after the header follow-up lands. `read` keeps transcript text and role labels visible without JSON escaping.
 
-The pages need no build step and use the bundled fonts in the parent landing assets directory. Serve `landing/` to include the setup document.
+`fixtures/intended-*` files contain the displayed contracts. Earlier captures remain in `fixtures/` as source evidence. See its README for reproduction steps. `landing/agent-tools.md` explains title provenance, commit attribution, addresses, formats, and implementation status.
 
-## Verification
+## Preview checks
 
-Both directions passed checks at 1440px and 390px: page overflow, images, internal anchors, clipboard success/reset/fallback, and comparison controls. The setup document returns HTTP 200. Visual review covered the simplified hero exchange, setup stages, diagram, and benchmark table. Installation instructions were checked against the source documentation; no clean-machine installation was performed.
-
-The design detector reports the inherited cream palette and editorial display leading, plus table placeholder dashes and CLI flags as dash density. The setup stages use horizontal rules rather than boxed panels. Deslop review covers prose separately from code and measurement placeholders.
-
-The complete spacing audit is in [VISUAL-AUDIT.md](VISUAL-AUDIT.md). Shared page intervals and responsive column behavior are defined in `layout.css`. The audit includes both full pages and checks from 320px to 1440px.
+Check both directions on desktop and mobile. Check expanded presence, terminal wrapping, internal links, setup clipboard success and fallback, and the comparison controls. Parse the JSON examples and match the same full session ID across history, presence, and the send recipient. Keep search and read output as text.

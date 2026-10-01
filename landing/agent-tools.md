@@ -18,7 +18,7 @@ A session can move to a different branch after creating a commit. Match historic
 
 The current retrieval CLI has a branch filter. It does not have a dedicated commit filter. Commit IDs in a digest come from successful `git commit` tool results; commits merely mentioned in a log are not attributed as created by that session. If several sessions match the branch, inspect their digests and source messages.
 
-Add `--server` to search shared history. Local retrieval sees this device's index. The homepage's branch example is captured against a local fixture.
+Add `--server` to search shared history. Local retrieval sees this device's index. The homepage’s branch example uses a local transcript fixture.
 
 ## Titles and task descriptions
 
@@ -32,25 +32,32 @@ Peer presence uses the stored transcript title. Retrieval also includes a digest
 
 The digest's intent uses the first task prompt. If that prompt is too weak to describe the task, it uses the harness title or another usable prompt. A title or intent describes the session's task. Neither is a continuously generated status summary.
 
-## JSON-first commands
+## Output formats
 
-The chosen CLI contract is JSON by default across retrieval and messaging, with an explicit `--text` view for humans. The server's existing peers API already returns named JSON fields. Retrieval currently needs `--json` to select JSON. The messaging CLI adapters and the default-format change are tracked in [#55](https://github.com/flopwire/flopwire/issues/55).
+CLI and MCP tools use the same defaults:
 
-The response has a `peers` array. Each peer includes `session`, `agent`, `user`, `user_id`, `busy`, `own`, and `seen_at`. Optional fields include `user_name`, `device`, `repo`, `branch`, and `title`. A peer in this response is live. `busy` is a boolean, not a separate positional column.
+| Commands | Default | Explicit alternative |
+| --- | --- | --- |
+| `peers`, `sessions`, `send` receipt, `inbox` | JSON records | CLI `--text`; MCP `format: "text"` |
+| `grep`, `search`, `read` | Readable transcript text | CLI `--json`; MCP `format: "json"` |
 
-Use a JSON parser. Preserve strings containing spaces, quotes, and Unicode. Do not split text output on whitespace. Do not depend on key order. Use the session ID as the contact identifier.
+Lookups return named facts that an agent acts on exactly. Searches and reads preserve transcript newlines and code. JSON records from MCP use `structuredContent` and `outputSchema`. Keep defaults lean. Fetch deeper metadata or more context when needed.
 
-The homepage uses `jq` to select fields. Its projected output is JSON, not raw full-response output. The branch-history capture uses the current retrieval CLI. The presence example uses the existing API schema and the chosen messaging CLI contract; it is not a captured messaging CLI run.
+Parse JSON records by field name. Preserve strings containing spaces, quotes, and Unicode. Preserve full session IDs. Match history's `session_id` against presence's `session`; key order does not matter.
+
+The `peers` response contains a `peers` array. A returned peer is live. `busy` is a boolean. A send receipt contains an `id`, a delivery `state`, and the recipient in `to`. `queued` confirms acceptance into the queue, not delivery or a reply.
+
+The contract is recorded in [#55](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818). The messaging CLI is in progress. The `sessions` JSON default and labeled text headers need a follow-up PR. Use `sessions --json` until that default changes. The homepage shows intended lean responses directly, without projection helpers; presence and send are contract examples.
 
 ## Search and read
 
 `flopwire grep PATTERN` searches this device. Add `--server` to search shared history. Use `-F` for a literal string. Use repository and time filters to narrow results.
 
-A heading begins with `## SESSION`. A hit begins with `MESSAGE:LINE`. Combine them as `SESSION/MESSAGE:LINE` and pass that address to `flopwire read`. Use `-B` and `-A` to read surrounding messages.
+The intended grep header begins with `## session: SESSION` and uses labeled fields for metadata. A hit begins with `MESSAGE:LINE`. Combine them as `SESSION/MESSAGE:LINE` and pass that address to `flopwire read`. Use `-B` and `-A` to read surrounding messages. Installed versions still use positional headers until the follow-up PR lands.
 
 The `read` output includes session metadata and message addresses. `>>` marks the selected message. Role labels identify user, assistant, and tool messages. Indented lines are message content.
 
-Use `--json` on retrieval commands until JSON becomes the default. `-n -F` works in both `grep` and `flopwire grep`. Flopwire's regex engine and search target differ from system grep. Read the command help for the supported options.
+Use `--json` when you need structured search or read results. `-n -F` works in both `grep` and `flopwire grep`. Flopwire's regex engine and search target differ from system grep. Read the command help for the supported options.
 
 ## Ask a question
 
@@ -63,6 +70,6 @@ State the evidence, branch, and specific question. Apply the receiving session's
 
 Use `request` when an answer is needed. The default intent is `inform`. Use `done` to report completed work. Keep shell quoting intact. The `--` separator ends option parsing.
 
-A `sent` receipt acknowledges delivery handling. It is not the peer's answer. A busy peer receives the message at its next tool call. An idle peer receives it at the next human prompt. Sending does not wake an idle agent.
+The server and device agent can queue messages. The recipient hook is not implemented, so queued messages do not yet appear in the receiving session. The intended hook delivers to a busy agent at its next tool call and to an idle agent at the next human prompt. Sending does not wake an idle agent.
 
 Continue independent work while waiting. Read the peer's actual reply before treating the question as resolved.
