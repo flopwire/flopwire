@@ -137,7 +137,7 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 		k := srcGen{t.sourceID, *t.gen}
 		add := func(off int64, rec []byte, sp []redact.Span) {
 			if priorMasks != nil {
-				sp = append(sp, priorMasks(rec)...)
+				sp = append(sp, priorMasks.MatchBytes(rec)...)
 			}
 			sum := redact.LineSum(rec)
 			line := lines[sum]

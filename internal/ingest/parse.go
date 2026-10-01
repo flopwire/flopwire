@@ -625,7 +625,7 @@ func serverExtractionContract(agent string) string {
 // server's redaction pass; nil when there are none.
 func LineMasks(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
-}) (redact.LineMasks, error) {
+}) (*redact.LineCatalog, error) {
 	catalog, err := loadLineMasks(ctx, q)
 	if err != nil {
 		return nil, err
@@ -633,7 +633,7 @@ func LineMasks(ctx context.Context, q interface {
 	if catalog.Empty() {
 		return nil, nil
 	}
-	return catalog.MatchBytes, nil
+	return catalog, nil
 }
 
 func loadLineMasks(ctx context.Context, q interface {

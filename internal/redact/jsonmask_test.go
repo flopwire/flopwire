@@ -73,13 +73,7 @@ func TestReaderAtLineMasks(t *testing.T) {
 	lines := strings.SplitAfter(src, "\n")
 	sum := LineSum([]byte(lines[1]))
 	x := NewReaderAt(strings.NewReader(src), Lines)
-	x.SetLineMasks(func(line []byte) []Span {
-		s := LineSum(line)
-		if s == sum {
-			return []Span{{6, 20}}
-		}
-		return nil
-	})
+	x.SetLineMasks(NewLineCatalog([]LineMask{{SHA: sum, Spans: []Span{{6, 20}}}}))
 	out := make([]byte, len(src))
 	x.ReadAt(out, 0)
 	want := lines[0] + "{\"a\":\"[REDACTED]****\"}\n" + lines[2]

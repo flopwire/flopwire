@@ -87,29 +87,27 @@ type ReaderAt struct {
 	counts    map[string]int64
 	seen      map[int64]bool
 
-	lineMasks LineMasks
+	lineMasks   *LineCatalog
+	maskLineOff int64
+	maskSpans   []Span
 }
 
-// LineMasks returns the spans (relative to the line) to mask in a line
-// by their bytes (including partly masked variants): the lines of
-// messages redacted after the fact (notes/redaction.md). Nil: none.
-type LineMasks func(line []byte) []Span
-
-// LineSum is the key LineMasks is asked with.
+// LineSum identifies a record without its structural line terminators.
 func LineSum(line []byte) [32]byte {
 	return sha256.Sum256(bytes.TrimRight(line, "\r\n"))
 }
 
 // SetLineMasks makes Lines-mode reads also mask redacted message lines.
-func (x *ReaderAt) SetLineMasks(f LineMasks) {
+func (x *ReaderAt) SetLineMasks(f *LineCatalog) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.lineMasks, x.valid = f, false
+	x.maskLineOff, x.maskSpans = -1, nil
 }
 
 // NewReaderAt wraps r. A zero Mode (Off) returns reads unchanged.
 func NewReaderAt(r io.ReaderAt, mode Mode) *ReaderAt {
-	return &ReaderAt{r: r, mode: mode, eof: -1, countFrom: -1}
+	return &ReaderAt{r: r, mode: mode, eof: -1, countFrom: -1, maskLineOff: -1}
 }
 
 // CountFrom starts counting matches that begin at or after off (each
@@ -178,6 +176,9 @@ func (x *ReaderAt) load(pos int64) error {
 			return err
 		}
 	}
+	// load may reuse the old segment buffer before a later read fails.
+	// Never retain a valid cache entry for that partially rebuilt segment.
+	x.valid = false
 	s := line + (pos-line)/SegMax*SegMax
 	raw, err := x.raw(s, s+SegMax)
 	if err != nil {
@@ -222,13 +223,22 @@ func (x *ReaderAt) load(pos int64) error {
 			x.counts[m.Rule]++
 		}
 	}
-	if x.lineMasks != nil && x.mode == Lines && s == line && (nl || x.eof >= 0 && e == x.eof) {
-		raw := ctx[s-cs : e-cs]
-		for _, sp := range x.lineMasks(raw) {
-			if sp.Start >= 0 && sp.End <= len(raw) && sp.Start < sp.End {
-				marker(seg[sp.Start:sp.End], nil, MessageRule, false)
+	if x.lineMasks != nil && x.mode == Lines {
+		if x.maskLineOff != line {
+			var spans []Span
+			if s == line && (nl || x.eof >= 0 && e == x.eof) {
+				// The entire short line is already in the raw context.
+				spans = x.lineMasks.MatchBytes(ctx[s-cs : e-cs])
+			} else {
+				var err error
+				spans, err = x.lineMasks.MatchLine(x.r, line)
+				if err != nil {
+					return err
+				}
 			}
+			x.maskLineOff, x.maskSpans = line, spans
 		}
+		fillLineSpans(seg, s-line, x.maskSpans)
 	}
 	x.seg, x.segOff, x.lineOff, x.nl, x.valid = seg, s, line, nl, true
 	return nil

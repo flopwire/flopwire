@@ -17,6 +17,7 @@ import (
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/ingest"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -359,4 +360,68 @@ func (s *server) syncer() *devicesync.Syncer {
 	}
 	s.t.Cleanup(sy.Close)
 	return sy
+}
+
+// Historical archives remain untouched by policy. Manual line evidence must
+// still mask a long archived record at raw reads and at an explicit reparse.
+func TestLargeArchivedRecordManualMasks(t *testing.T) {
+	ctx := context.Background()
+	s := newServerChunks(t, devicesync.ChunkParams{Min: 64 << 10, Avg: 128 << 10, Max: 256 << 10})
+	sess := uuid.NewString()
+	path := filepath.Join(s.home, ".claude", "projects", "-w-large", sess+".jsonl")
+	content := codename + strings.Repeat("x", redact.SegMax) + codename + strings.Repeat("y", redact.SegMax)
+	raw := []byte(jline(map[string]any{"type": "user", "uuid": uuid.NewString(), "sessionId": sess, "timestamp": "2026-09-30T12:00:00Z", "cwd": "/w/large", "message": map[string]any{"role": "user", "content": content}}))
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sy.Sync(ctx, devicesync.SourceSpec{Path: path, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, Parser: claude.ParserName}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.rowsWith("BLUEFALCON") == 0 {
+		t.Fatal("fixture did not parse its secret")
+	}
+	var source, message string
+	var gen int64
+	if err := s.pool.QueryRow(ctx, `SELECT source_id::text,id::text,source_generation FROM messages WHERE strpos(text,'BLUEFALCON')>0 LIMIT 1`).Scan(&source, &message, &gen); err != nil {
+		t.Fatal(err)
+	}
+	spans, ok := redact.MaskRecord(raw, []string{codename}, false)
+	if !ok || len(spans) != 2 {
+		t.Fatalf("fixture spans=%v", spans)
+	}
+	id := uuid.NewString()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO message_redactions(id,requested_by,message_id,all_copies,by_admin,messages,chunks,tails,created_at) VALUES($1,$2,$3,false,false,1,0,0,now())`, id, s.userID, message); err != nil {
+		t.Fatal(err)
+	}
+	sum := redact.LineSum(raw)
+	if _, err := s.pool.Exec(ctx, `INSERT INTO redacted_lines(line_sha,spans,redaction_id,proof) VALUES($1,$2,$3,$4)`, sum[:], spans, id, redact.NewLineProof(raw, spans)); err != nil {
+		t.Fatal(err)
+	}
+	// Ask only for the far-away secret; the read starts beyond the first segment.
+	got, err := s.client.Raw(ctx, source, gen, int64(spans[1].Start), int64(spans[1].End-spans[1].Start))
+	if err != nil || bytes.Contains(got, []byte("BLUEFALCON")) || !bytes.Contains(got, []byte("[REDACTED")) {
+		t.Fatalf("raw range err=%v bytes=%q", err, got)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE source_parse_state SET reparse=true,requested_seq=requested_seq+1 WHERE source_id=$1`, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.count(`SELECT count(*) FROM messages WHERE NOT superseded AND strpos(text,'BLUEFALCON')>0`) != 0 {
+		t.Fatal("reparse exposed a manually masked large record")
+	}
+	if s.count(`SELECT count(*) FROM messages WHERE NOT superseded AND strpos(text,'[REDACTED')>0`) == 0 {
+		t.Fatal("reparse produced no masked live row")
+	}
+	// Proves the raw reader, rather than an archive rewrite, did the masking.
+	if !s.archiveHas("BLUEFALCON") {
+		t.Fatal("historical archive was unexpectedly rewritten")
+	}
 }
