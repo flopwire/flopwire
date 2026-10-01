@@ -552,7 +552,7 @@ type attachConnector struct {
 }
 
 func (c *attachConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := (&sqlite.Driver{}).Open(c.dsn)
+	conn, err := c.Driver().Open(c.dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -570,4 +570,15 @@ func (c *attachConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-func (c *attachConnector) Driver() driver.Driver { return &sqlite.Driver{} }
+// Driver is sqliteDriver's, so tests count read connections too.
+func (c *attachConnector) Driver() driver.Driver {
+	if sqliteDriver == "sqlite" {
+		return &sqlite.Driver{}
+	}
+	db, err := sql.Open(sqliteDriver, "")
+	if err != nil {
+		return &sqlite.Driver{}
+	}
+	defer db.Close()
+	return db.Driver()
+}
