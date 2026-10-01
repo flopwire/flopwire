@@ -10,6 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const (
+	staleVersionsBatch = `SELECT id::text,text,enrichment FROM messages WHERE source_id=$1
+    AND redaction_rules IS DISTINCT FROM $2 ORDER BY id LIMIT 64 FOR UPDATE NOWAIT`
+	sourceConversationsBatch = `SELECT c.id::text,COALESCE(c.title,''),c.digest FROM conversations c
+    WHERE c.id::text>$2 AND (c.source_id=$1 OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=$1 AND m.conversation_id=c.id))
+    ORDER BY c.id::text LIMIT 64 FOR UPDATE NOWAIT`
+)
+
 // maskStoredVersions applies new rules to historical row versions too. A
 // reparse can supersede an old row; it must not leave its secret searchable.
 // Batch commits are idempotent. Only derived data changes, never the archive.
@@ -17,8 +25,7 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 	for {
 		n := 0
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT id::text,text,enrichment FROM messages WHERE source_id=$1
-    AND redaction_rules IS DISTINCT FROM $2 ORDER BY id LIMIT 64 FOR UPDATE NOWAIT`, source, redact.RulesVersion)
+			rows, err := tx.Query(ctx, staleVersionsBatch, source, redact.RulesVersion)
 			if err != nil {
 				return archiveLockError(err)
 			}
@@ -60,9 +67,7 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 	for {
 		var ids []string
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT c.id::text,COALESCE(c.title,''),c.digest FROM conversations c
-    WHERE c.id::text>$2 AND (c.source_id=$1 OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=$1 AND m.conversation_id=c.id))
-    ORDER BY c.id::text LIMIT 64 FOR UPDATE NOWAIT`, source, last)
+			rows, err := tx.Query(ctx, sourceConversationsBatch, source, last)
 			if err != nil {
 				return archiveLockError(err)
 			}
