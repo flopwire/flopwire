@@ -27,9 +27,11 @@ package store
 // administrator's retry.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -216,22 +218,22 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 		}
 		// The doomed set: the session on every device of its user, and every
 		// subagent conversation below, linked or still waiting for its
-		// parent's id.
-		type doomed struct{ id, device, agent, session string }
+		// parent's id. parent is the session it was reached from.
+		type doomed struct{ id, device, agent, session, parent string }
 		var set []doomed
 		rows, err := tx.Query(ctx, `WITH RECURSIVE d AS (
-				SELECT id,device_id,agent,session_id FROM conversations WHERE user_id=$1 AND agent=$2 AND session_id=$3 AND ($4<>'device' OR device_id=$5)
+				SELECT id,device_id,agent,session_id,''::text AS parent FROM conversations WHERE user_id=$1 AND agent=$2 AND session_id=$3 AND ($4<>'device' OR device_id=$5)
 				UNION
-				SELECT c.id,c.device_id,c.agent,c.session_id FROM conversations c JOIN d ON c.parent_conversation_id=d.id
+				SELECT c.id,c.device_id,c.agent,c.session_id,d.session_id FROM conversations c JOIN d ON c.parent_conversation_id=d.id
 					OR (c.parent_conversation_id IS NULL AND c.user_id=$1 AND c.agent=d.agent AND c.parent_native_session_id=d.session_id)
 				WHERE c.user_id=$1 AND ($4<>'device' OR c.device_id=$5))
-			SELECT id::text,device_id::text,agent,session_id FROM d ORDER BY agent,session_id,id`, owner, agent, session, scope, scopedDevice)
+			SELECT id::text,device_id::text,agent,session_id,parent FROM d`, owner, agent, session, scope, scopedDevice)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var d doomed
-			if err := rows.Scan(&d.id, &d.device, &d.agent, &d.session); err != nil {
+			if err := rows.Scan(&d.id, &d.device, &d.agent, &d.session, &d.parent); err != nil {
 				rows.Close()
 				return err
 			}
@@ -241,10 +243,41 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 		if err = rows.Err(); err != nil {
 			return err
 		}
+		// A parse flush of a subagent takes its parent's session lock and
+		// then its own, so the session locks go parent first at every
+		// depth, then in (agent, session) order.
+		type sessKey struct{ agent, session string }
+		parentOf := map[sessKey]string{}
+		for _, d := range set {
+			if d.parent != "" {
+				parentOf[sessKey{d.agent, d.session}] = d.parent
+			}
+		}
+		depth := func(d doomed) int {
+			n, k := 0, sessKey{d.agent, d.session}
+			for k.agent != agent || k.session != session {
+				p, ok := parentOf[k]
+				if !ok || n > len(set) { // not reached from a parent, or a cycle
+					break
+				}
+				k, n = sessKey{k.agent, p}, n+1
+			}
+			return n
+		}
+		depths := make(map[string]int, len(set))
+		for _, d := range set {
+			depths[d.id] = depth(d)
+		}
+		slices.SortFunc(set, func(a, b doomed) int {
+			return cmp.Or(cmp.Compare(depths[a.id], depths[b.id]), cmp.Compare(a.agent, b.agent), cmp.Compare(a.session, b.session), cmp.Compare(a.id, b.id))
+		})
+		set = slices.CompactFunc(set, func(a, b doomed) bool { return a.id == b.id })
 		ids := make([]string, 0, len(set))
-		for i, d := range set {
+		locked := map[sessKey]bool{{agent, session}: true}
+		for _, d := range set {
 			ids = append(ids, d.id)
-			if (d.agent != agent || d.session != session) && (i == 0 || set[i-1].agent != d.agent || set[i-1].session != d.session) {
+			if k := (sessKey{d.agent, d.session}); !locked[k] {
+				locked[k] = true
 				if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, ConversationLockKey(owner, d.agent, d.session)); err != nil {
 					return err
 				}

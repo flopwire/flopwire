@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -69,6 +70,55 @@ func TestDeletionLocksConversationsInSessionOrder(t *testing.T) {
 		t.Fatalf("recount %v, deletion %v", lockErr, delErr)
 	}
 	if n := f.count(t, `SELECT count(*) FROM conversations WHERE id=$1 OR id=$2`, f.convA, child); n != 0 {
+		t.Fatalf("%d doomed conversations left", n)
+	}
+}
+
+// A parse flush of a subagent session takes the session lock of its parent
+// and then its own (ingest sink.conversation). A deletion of the root takes
+// the lock of every session in its tree, so it must take a parent's before
+// its subagents' at every depth: here the grandchild's session sorts before
+// its parent's.
+func TestDeletionLocksNestedSubagentSessionsParentFirst(t *testing.T) {
+	ctx := context.Background()
+	f := newDeletionFixture(t)
+	child, grand := uuid.NewString(), uuid.NewString()
+	exec(t, f.pool, `INSERT INTO conversations(id,agent,session_id,device_id,user_id,parent_conversation_id,parent_native_session_id,depth)
+		VALUES($1,'codex','z-child',$2,$3,$4,'sess-1',1)`, child, f.device, f.user, f.convA)
+	exec(t, f.pool, `INSERT INTO conversations(id,agent,session_id,device_id,user_id,parent_conversation_id,parent_native_session_id,depth)
+		VALUES($1,'codex','b-grand',$2,$3,$4,'z-child',2)`, grand, f.device, f.user, child)
+
+	// The flush of the grandchild: its parent's session lock is held.
+	flush, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flush.Rollback(ctx)
+	lock := `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`
+	if _, err := flush.Exec(ctx, lock, ConversationLockKey(f.user, "codex", "z-child")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.p.RequestConversationDeletion(ctx, f.convA, f.user, f.device, true)
+		done <- err
+	}()
+	waitForLockWait(t, f)
+	// Then its own.
+	_, lockErr := flush.Exec(ctx, lock, ConversationLockKey(f.user, "codex", "b-grand"))
+	if lockErr == nil {
+		lockErr = flush.Commit(ctx)
+	} else {
+		_ = flush.Rollback(ctx)
+	}
+	delErr := <-done
+	if isDeadlock(lockErr) || isDeadlock(delErr) {
+		t.Fatalf("deletion deadlocked with a subagent flush: flush %v, deletion %v", lockErr, delErr)
+	}
+	if lockErr != nil || delErr != nil {
+		t.Fatalf("flush %v, deletion %v", lockErr, delErr)
+	}
+	if n := f.count(t, `SELECT count(*) FROM conversations WHERE id=ANY($1::uuid[])`, []string{f.convA, child, grand}); n != 0 {
 		t.Fatalf("%d doomed conversations left", n)
 	}
 }
