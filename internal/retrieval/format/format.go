@@ -699,6 +699,9 @@ type RedactResult struct {
 	// Skipped lists other users' byte-identical copies left unredacted:
 	// they stored the record first, so only an admin may redact them.
 	Skipped []SkippedCopies `json:"skipped,omitempty"`
+	// SkippedHidden counts such copies in conversations an admin path rule
+	// hid: they are not described.
+	SkippedHidden int `json:"skipped_hidden,omitempty"`
 }
 
 // SkippedCopies are the rows of one source a redaction left out.

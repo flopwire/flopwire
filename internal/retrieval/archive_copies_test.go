@@ -527,3 +527,131 @@ func TestRedactForgedCopyAfterOwnerReparse(t *testing.T) {
 		t.Errorf("skipped %+v, want Gary's source with both versions", res.Skipped)
 	}
 }
+
+// Gary's row grows in place after Bob copied its line: the tool output
+// that Claude persisted to tool-results/ reaches the server after the
+// session file, and fills in the row's text. The record's raw bytes did
+// not change, so Gary still stored them first, and Bob's redaction must
+// leave Gary's rows and archive alone.
+func TestRedactForgedCopyAfterOwnerTextGrows(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	sess := "30000000-0000-4000-8000-0000000000a8"
+	dir := filepath.Join(s.home, ".claude", "projects", "-w-grow")
+	main := filepath.Join(dir, sess+".jsonl")
+	comp := filepath.Join(dir, sess, "tool-results", "toolu_g1.txt")
+	os.MkdirAll(filepath.Dir(comp), 0o700)
+	preview := "<persisted-output>\nOutput too large (40KB). Full output saved to: " + comp +
+		"\n\nPreview (first 2KB):\nkey=BLUEFALCON-PREVIEW\n...\n</persisted-output>"
+	data := jline(map[string]any{"type": "user", "uuid": "30000000-0000-4000-8000-0000000000c3", "timestamp": "2026-09-30T12:00:02.000Z", "sessionId": sess, "cwd": "/w/grow",
+		"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_g1", "content": preview}}}})
+	for i := range 60 {
+		data += jline(map[string]any{"type": "assistant", "uuid": fmt.Sprintf("30000000-0000-4000-8000-3%011d", i), "timestamp": "2026-09-30T12:00:03.000Z",
+			"sessionId": sess, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("filler %d %s", i, strings.Repeat("lorem ipsum ", 15))}}}})
+	}
+	if err := os.WriteFile(main, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sy.Sync(ctx, devicesync.SourceSpec{Path: main, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, SessionKey: sess, Parser: claude.ParserName}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gary := s.hiddenMessageAt(main)
+	var before time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT first_seen_at FROM messages WHERE id=$1`, gary).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	bob := s.member("bob@example.test")
+	const forged = "/w/bob/grow.jsonl"
+	s.rawUploadAs(bob, syncproto.Source{Path: forged, FileID: "copy:grow", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: claude.ParserName, SessionKey: sess}, 0, []byte(data))
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The full output arrives: Gary's row text grows in place.
+	if err := os.WriteFile(comp, []byte(preview+"\nrest of the full output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sy.Sync(ctx, devicesync.SourceSpec{Path: comp, Agent: transcript.AgentClaude, StorageKind: transcript.StorageCompanion, Parent: main}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	var grown bool
+	if err := s.pool.QueryRow(ctx, `SELECT version,strpos(text,'rest of the full output')>0 FROM messages WHERE id=$1`, gary).Scan(&version, &grown); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 || !grown {
+		t.Fatalf("fixture: Gary's row did not grow in place (version %d, grown %v)", version, grown)
+	}
+	res, err := s.redact(bob, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessageAt(forged)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.drainRepairs(s.queue)
+	s.purge()
+	if s.rowsAt(main, "BLUEFALCON") != 1 || !s.sourceHas(main, "BLUEFALCON") {
+		t.Error("Bob's redaction rewrote Gary's row or archive")
+	}
+	if len(res.Skipped) != 1 {
+		t.Errorf("skipped %+v, want Gary's source", res.Skipped)
+	}
+	var after time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT first_seen_at FROM messages WHERE id=$1`, gary).Scan(&after); err != nil || !after.Equal(before) {
+		t.Errorf("Gary's first_seen_at moved from %v to %v (%v)", before, after, err)
+	}
+}
+
+// A skipped copy in a conversation an admin path rule hid is counted, not
+// described: the redacting member learns neither its owner, device nor
+// source.
+func TestRedactSkippedHiddenCopyIsAnonymous(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, _, _ := s.writeRedactFixtures()
+	if err := s.sy.Sync(ctx, specs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := s.member("bob@example.test")
+	const forged = "/w/bob/forged.jsonl"
+	s.rawUploadAs(bob, syncproto.Source{Path: forged, FileID: "copy:forged", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: specs[0].Parser, SessionKey: specs[0].SessionKey}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE conversations SET hidden_at=now(),hidden_rule='secret/**',hidden_root=id
+		WHERE id=(SELECT conversation_id FROM messages WHERE id=$1)`, s.hiddenMessageAt(specs[0].Path)); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.redact(bob, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessageAt(forged) + ":2-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skipped) != 0 || res.SkippedHidden != 1 {
+		t.Fatalf("result %+v, want one anonymous skipped copy", res)
+	}
+	raw, _ := json.Marshal(res)
+	var src string
+	if err := s.pool.QueryRow(ctx, `SELECT id::text FROM sources WHERE path=$1`, specs[0].Path).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{"gary@example.test", "laptop-a", src} {
+		if bytes.Contains(raw, []byte(leak)) {
+			t.Errorf("result names %q: %s", leak, raw)
+		}
+	}
+	if s.rowsAt(specs[0].Path, "BLUEFALCON") != 1 {
+		t.Error("Gary's hidden row was redacted")
+	}
+}

@@ -76,7 +76,7 @@ Flags:`)
 				fmt.Printf("; old chunks purge in job %s", res.JobID)
 			}
 			fmt.Println()
-			printSkipped(res.Skipped)
+			printSkipped(res.Skipped, res.SkippedHidden)
 		case *admin:
 			return errors.New("--admin needs a server: run flopwire login")
 		default:
@@ -126,17 +126,20 @@ func redactLocal(ctx context.Context, address string, all bool) (int, error) {
 
 // printSkipped lists other users' byte-identical copies a redaction left
 // alone because they uploaded the record first: who and where, no text.
-func printSkipped(skipped []format.SkippedCopies) {
-	if len(skipped) == 0 {
+func printSkipped(skipped []format.SkippedCopies, hidden int) {
+	if len(skipped) == 0 && hidden == 0 {
 		return
 	}
-	n := 0
+	n := hidden
 	for _, sk := range skipped {
 		n += sk.Messages
 	}
-	fmt.Printf("server: %d copies in %d sources of other users not redacted (they uploaded the record first):\n", n, len(skipped))
+	fmt.Printf("server: %d copies of other users not redacted (they uploaded the record first):\n", n)
 	for _, sk := range skipped {
 		fmt.Printf("  %s on %s: %d messages (source %s)\n", sk.User, sk.Device, sk.Messages, sk.SourceID)
+	}
+	if hidden > 0 {
+		fmt.Printf("  %d messages in conversations hidden by an admin path rule\n", hidden)
 	}
 	fmt.Println("  An admin can redact them with flopwire redact --admin.")
 }

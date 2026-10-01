@@ -642,14 +642,21 @@ func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search s
 
 // update queues an in-place update: metadata always, text when withText.
 func (s *sink) update(b *pgx.Batch, id string, m *transcript.Message, search string, enrichment []byte, withText bool) {
+	// first_seen_at is when the server first stored the record's raw
+	// bytes (a redaction's first-uploader rule). New text from the same
+	// byte range of the same source generation (text filled in from
+	// context, such as a persisted tool output that arrived later) keeps
+	// it: those bytes are immutable. New text from other bytes, or in a row
+	// without a byte range (a Devin row, whose bytes are not pinned), is
+	// stored from now. The SET expressions read the row before the update.
 	b.Queue(`UPDATE messages SET superseded=false,superseded_by=NULL,superseded_in_generation=NULL,source_id=$2,source_generation=$3,
-			on_active_path=$4,is_error=$5,enrichment=$6,line_no=$7,byte_offset=$8,byte_len=$9,parent_native_id=$10,tool_name=$11,ts=COALESCE($12,ts),parse_attempt=$13,parser=$14,redaction_rules=$15,kind=$16,role=$17,ordinal=$18,tool_call_id=$19,locator=$20
+			on_active_path=$4,is_error=$5,enrichment=$6,line_no=$7,byte_offset=$8,byte_len=$9,parent_native_id=$10,tool_name=$11,ts=COALESCE($12,ts),parse_attempt=$13,parser=$14,redaction_rules=$15,kind=$16,role=$17,ordinal=$18,tool_call_id=$19,locator=$20,
+			first_seen_at=CASE WHEN $21::bool AND NOT COALESCE(byte_offset=$8 AND byte_len=$9 AND source_id=$2::uuid AND source_generation=$3,false)
+				THEN now() ELSE first_seen_at END
 		WHERE id=$1`, id, s.src.id, s.src.generation, m.OnActivePath, errPtr(m), enrichment, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen),
-		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt, m.Parser, redact.RulesVersion, m.Kind.String(), nullStr(clean(m.Role)), m.Ordinal, nullStr(clean(m.ToolCallID)), nullStr(locator(m)))
+		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt, m.Parser, redact.RulesVersion, m.Kind.String(), nullStr(clean(m.Role)), m.Ordinal, nullStr(clean(m.ToolCallID)), nullStr(locator(m)), withText)
 	if withText {
-		// New text is a new record for first_seen_at (a redaction's first
-		// uploader rule): the row stores it from now.
-		b.Queue(`UPDATE messages SET text=$2,text_len=$3,content_sha=$4,first_seen_at=now() WHERE id=$1`, id, search, m.FullLen, m.ContentSHA[:])
+		b.Queue(`UPDATE messages SET text=$2,text_len=$3,content_sha=$4 WHERE id=$1`, id, search, m.FullLen, m.ContentSHA[:])
 	}
 }
 
