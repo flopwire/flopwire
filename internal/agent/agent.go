@@ -502,6 +502,17 @@ func (a *Agent) markDiscovered() {
 	a.discoveredOnce.Do(func() { close(a.discovered) })
 }
 
+// waitDiscovered waits for the first discovery pass (see markDiscovered)
+// or for ctx to end.
+func (a *Agent) waitDiscovered(ctx context.Context) error {
+	select {
+	case <-a.discovered:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // gate stats t and queues it when its tuple moved or is racy. urgent puts
 // it at the front of the queue.
 func (a *Agent) gate(t *target, now time.Time, urgent bool) bool {
@@ -802,10 +813,8 @@ func (a *Agent) mergeUrgent(ctx context.Context, f *found) {
 // while the agent starts) waits for it: until then a session id resolves
 // to nothing, and a partial merge would make load skip the stored gates.
 func (a *Agent) FlushPath(ctx context.Context, path, session string) (string, error) {
-	select {
-	case <-a.discovered:
-	case <-ctx.Done():
-		return "", ctx.Err()
+	if err := a.waitDiscovered(ctx); err != nil {
+		return "", err
 	}
 	t := a.lookup(path, session)
 	if t == nil && path != "" {
