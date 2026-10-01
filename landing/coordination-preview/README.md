@@ -16,6 +16,6 @@ The pages need no build step and use the bundled fonts in the parent landing ass
 
 ## Verification
 
-Both directions passed checks at 1440px and 390px: page overflow, images, internal anchors, clipboard success/reset/fallback, and comparison controls. The setup document returns HTTP 200. Visual review covered the CLI exchange, setup stages, diagram, and benchmark table. Installation instructions were checked against the source documentation; no clean-machine installation was performed.
+Both directions passed checks at 1440px and 390px: page overflow, images, internal anchors, clipboard success/reset/fallback, and comparison controls. The setup document returns HTTP 200. Visual review covered the simplified hero exchange, setup stages, diagram, and benchmark table. Installation instructions were checked against the source documentation; no clean-machine installation was performed.
 
 The design detector reports the inherited cream palette and editorial display leading, plus table placeholder dashes and CLI flags as dash density. The setup stages use horizontal rules rather than boxed panels. Deslop review covers prose separately from code and measurement placeholders.

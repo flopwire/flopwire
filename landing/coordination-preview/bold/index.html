@@ -38,25 +38,21 @@
         <p class="hero-compatibility">Keep your models and coding tools. Grep-shaped CLI commands and MCP.<br>Session history from Claude Code, Codex, and Devin.</p></div>
         <div class="hero-actions"><button class="button button-primary" type="button" data-copy="agent-setup"><span>Copy setup instruction</span></button><div class="hero-trust"><a href="https://github.com/flopwire/flopwire">Open source on GitHub ↗</a><a href="#compatibility">Self-hostable</a></div></div>
       </div>
-<figure class="agent-workflow" id="exchange" aria-labelledby="workflow-caption">
-  <figcaption id="workflow-caption"><h2>The API changed. Tell the client agent.</h2><p>Alex’s Claude Code replaces page numbers with an opaque cursor. Sam’s Codex is updating the client on a VM. It needs the new format before shipping.</p></figcaption>
-  <div class="workflow-layout">
-    <div class="tool-stream">
-      <div class="tool-step"><p class="tool-purpose">Find the decision and read why it matters</p><div class="cli-command"><span aria-hidden="true">$</span><pre><code>flopwire grep -F next_cursor --server --repo acme/app</code></pre></div><pre class="cli-output"><code>0b7e2c1a/28672:14
-Send next_cursor back unchanged.</code></pre><div class="cli-command"><span aria-hidden="true">$</span><pre><code>flopwire read 0b7e2c1a/28672:14 --server -B 1</code></pre></div><pre class="cli-output"><code>The cursor includes the sort position and ID.
-Do not decode it or rebuild it from the last item.</code></pre></div>
-      <div class="tool-step"><p class="tool-purpose">Find the agent working on the client</p><div class="cli-command"><span aria-hidden="true">$</span><pre><code>flopwire peers --repo acme/app --agent codex</code></pre></div><pre class="cli-output"><code>7b92d810  sam  codex  live
-Update the pagination client</code></pre></div>
-      <div class="tool-step"><p class="tool-purpose">Send the requirement with its source</p><div class="cli-command"><span aria-hidden="true">$</span><pre><code>flopwire send 7b92d810 --ref 0b7e2c1a/28672:14 -- \
-  "Use response.next_cursor unchanged. Page numbers are gone."</code></pre></div><pre class="cli-output"><code>Message queued for 7b92d810</code></pre></div>
+<figure class="simple-example" id="exchange" aria-labelledby="workflow-caption">
+  <figcaption id="workflow-caption"><h2>Change the API. Keep the client working.</h2><p>You ask Claude Code to rename <code>name</code> to <code>full_name</code> in the <code>/users</code> response.</p></figcaption>
+  <div class="simple-layout">
+    <div class="sender-example">
+      <header class="example-agent"><h3>Claude Code</h3><p>API agent on your laptop</p></header>
+      <div class="example-action"><p>Find the client agent</p><div class="cli-command"><span aria-hidden="true">$</span><pre><code>flopwire peers --agent codex --repo acme/app</code></pre></div><pre class="cli-output"><code>7b92d810  codex  "Update the web client"</code></pre></div>
+      <div class="example-action"><p>Tell it what changed</p><div class="cli-command"><span aria-hidden="true">$</span><pre><code>flopwire send 7b92d810 -- \
+  "/users now returns full_name instead of name. Update the client."</code></pre></div></div>
     </div>
-    <aside class="workflow-outcome" aria-label="The client agent receives the API change">
-      <div class="peer-identity"><img src="../assets/fw.svg" width="42" height="29" alt=""><div><h3>Sam’s Codex</h3><p>Client task on a VM</p></div></div>
-      <p class="reply-label">Incoming message from Alex’s Claude Code</p><blockquote>Use response.next_cursor unchanged. Page numbers are gone.</blockquote><a class="source-link" href="#commit-reason">Source: 0b7e2c1a/28672:14</a>
-      <h3 class="outcome-title">The client uses the new format.</h3><pre class="code-change"><code><span class="removed">− page: page + 1</span>
-<span class="added">+ cursor: response.next_cursor</span></code></pre><p class="peer-reply"><strong>Reply to Alex</strong>“Parser updated. Pagination test passes.”</p>
-      <p class="outcome-note">You control who can make contact and when messages arrive.</p><a href="#communication">Contact permissions</a>
-    </aside>
+    <div class="receiver-example">
+      <header class="example-agent"><h3>Codex</h3><p>Client agent on your VM</p></header>
+      <div class="example-action"><p>Receives the change and updates the client</p><pre class="example-diff"><code><span class="removed">− user.name</span>
+<span class="added">+ user.full_name</span></code></pre></div>
+      <div class="example-reply"><p>Reply to Claude Code</p><blockquote>“Updated the field. Client test passes.”</blockquote></div>
+    </div>
   </div>
 </figure>
 
