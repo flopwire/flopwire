@@ -466,3 +466,64 @@ func (s *server) hiddenMessageAt(path string) string {
 	}
 	return id
 }
+
+// A reparse (a parser or rules upgrade) stores a new version of Gary's
+// record from the same bytes, so its first_seen_at is later than a copy
+// Bob uploaded before the reparse. Gary still stored the record first: his
+// superseded version says so. Bob's redaction must leave Gary's rows and
+// archive alone.
+func TestRedactForgedCopyAfterOwnerReparse(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, _, _ := s.writeRedactFixtures()
+	if err := s.sy.Sync(ctx, specs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := s.member("bob@example.test")
+	const forged = "/w/bob/forged.jsonl"
+	s.rawUploadAs(bob, syncproto.Source{Path: forged, FileID: "copy:forged", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: specs[0].Parser, SessionKey: specs[0].SessionKey}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// What a reparse whose parser extracts different text does to Gary's
+	// row (sink.insert, version+1): the old version is superseded and a new
+	// row for the same record bytes is stored now, after Bob's copy.
+	gary := s.hiddenMessageAt(specs[0].Path)
+	if _, err := s.pool.Exec(ctx, `
+		WITH old AS (UPDATE messages SET superseded=true,superseded_in_generation=source_generation WHERE id=$1 RETURNING *)
+		INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
+			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules)
+		SELECT gen_random_uuid(),conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
+			text||' (reparsed)',text_len,content_sha,version+1,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules
+		FROM old`, gary); err != nil {
+		t.Fatal(err)
+	}
+	var bobRow string
+	if err := s.pool.QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN sources src ON src.id=m.source_id
+		WHERE src.path=$1 AND strpos(m.text,'BLUEFALCON')>0 AND NOT m.superseded`, forged).Scan(&bobRow); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.redact(bob, "/v1/redactions", format.RedactRequest{Address: bobRow + ":2-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.drainRepairs(s.queue)
+	s.purge()
+	if n := s.rowsAt(specs[0].Path, "BLUEFALCON"); n != 2 {
+		t.Errorf("Gary's rows holding the line: %d, want 2 (untouched)", n)
+	}
+	if !s.sourceHas(specs[0].Path, "BLUEFALCON") {
+		t.Error("Gary's archive was rewritten by Bob's redaction")
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Messages != 2 {
+		t.Errorf("skipped %+v, want Gary's source with both versions", res.Skipped)
+	}
+}

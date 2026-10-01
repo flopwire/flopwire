@@ -258,11 +258,28 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		copyIDs = append(copyIDs, c.id)
 		targets = append(targets, c)
 	}
+	// A user holds a line from the earliest of their rows that hold it,
+	// superseded versions included: a reparse stores a new version of the
+	// same bytes later, and must not make its owner look like the later
+	// uploader.
+	type userLine struct {
+		user string
+		sum  [32]byte
+	}
+	theirFirst := map[userLine]time.Time{}
+	for _, m := range others {
+		for _, sum := range m.sums {
+			k := userLine{m.c.user, sum}
+			if first, ok := theirFirst[k]; !ok || m.c.firstSeen.Before(first) {
+				theirFirst[k] = m.c.firstSeen
+			}
+		}
+	}
 	skipped := map[string]*format.SkippedCopies{}
 	for _, m := range others {
 		first := true
 		for _, sum := range m.sums {
-			if own, ok := ownFirst[sum]; !ok || !own.Before(m.c.firstSeen) {
+			if own, ok := ownFirst[sum]; !ok || !own.Before(theirFirst[userLine{m.c.user, sum}]) {
 				first = false
 			}
 		}
