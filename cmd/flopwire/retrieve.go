@@ -83,8 +83,26 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		indexPath = local.IndexPath()
 	}
 	if _, err := os.Stat(indexPath); err != nil {
-		return nil, fmt.Errorf("no local index at %s (run the device agent, set FLOPWIRE_INDEX, or pass --server)", indexPath)
+		return nil, &noIndexError{path: indexPath}
 	}
+	lb, err := openLocalBackend(indexPath)
+	if err != nil {
+		return nil, err
+	}
+	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close}, nil
+}
+
+// noIndexError: the local index does not exist yet, because the device
+// agent has never run on this machine (or FLOPWIRE_INDEX points elsewhere).
+type noIndexError struct{ path string }
+
+func (e *noIndexError) Error() string {
+	return fmt.Sprintf("no local index at %s (run the device agent, set FLOPWIRE_INDEX, or pass --server)", e.path)
+}
+
+// openLocalBackend opens the local index read-only, with the server client
+// for raw reads of files that are gone when a server is configured.
+func openLocalBackend(indexPath string) (*local.Backend, error) {
 	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -93,7 +111,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	if c, err := serverClient(); err == nil && c.Server != "" {
 		lb.Remote = c
 	}
-	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: s.Close}, nil
+	return lb, nil
 }
 
 func serverClient() (client.HTTP, error) {
