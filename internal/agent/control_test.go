@@ -2,11 +2,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/devicebus"
 )
 
 // D12: `agent run --once` against a running agent asks it for a pass over
@@ -106,5 +111,91 @@ func TestControlRedact(t *testing.T) {
 	}
 	if _, err := Call(ctx, sock, Request{Op: "redact", Address: "nosuchsession/1"}); err == nil {
 		t.Fatal("unknown address accepted")
+	}
+}
+
+// Without a server, the control socket routes between the device's own
+// sessions: send, pending (each message once), peers, inbox, held, and the
+// bus in status.
+func TestControlBusLocal(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sweep, f.cfg.FastLane = time.Hour, time.Hour
+	b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	f.cfg.Bus = b
+	f.a = New(f.store, f.cfg)
+	f.once()
+	f.a.now = func() time.Time { return f.alphaLast().Add(5 * time.Minute) }
+	live, err := f.a.BusPresence(ctx)
+	if err != nil || len(live) < 2 {
+		t.Fatalf("presence: %d sessions, %v", len(live), err)
+	}
+	from, to := live[0], live[1]
+
+	runCtx, cancel := context.WithCancel(ctx)
+	sock := filepath.Join(shortTemp(t), "a.sock")
+	done := make(chan error, 2)
+	go func() { done <- f.a.Run(runCtx) }()
+	go func() { done <- f.a.Serve(runCtx, sock) }()
+	defer func() {
+		cancel()
+		<-done
+		<-done
+	}()
+	waitFor(t, func() bool { _, err := Call(ctx, sock, Request{Op: "ping"}); return err == nil })
+
+	resp, err := Call(ctx, sock, Request{Op: "send", Send: &busproto.SendRequest{FromSession: from.SessionID, To: to.SessionID, Body: "local hello", Intent: "request"}})
+	if err != nil || resp.Sent == nil || resp.Sent.State != busproto.StateQueued || resp.Sent.Sender != busproto.SenderOwn {
+		t.Fatalf("send: %+v %v", resp.Sent, err)
+	}
+	// A refusal comes back as a *busproto.Error with its code.
+	_, err = Call(ctx, sock, Request{Op: "send", Send: &busproto.SendRequest{FromSession: from.SessionID, To: to.SessionID, Body: "local hello"}})
+	var be *busproto.Error
+	if !errors.As(err, &be) || be.Code != busproto.CodeDuplicate || be.MessageID == "" {
+		t.Fatalf("duplicate over the socket: %v", err)
+	}
+	// Several hooks of the recipient ask at once: one gets the message.
+	got := make(chan []busproto.Envelope, 4)
+	for range 4 {
+		go func() {
+			r, err := Call(ctx, sock, Request{Op: "pending", Session: to.SessionID})
+			if err != nil {
+				t.Error(err)
+			}
+			got <- r.Messages
+		}()
+	}
+	n := 0
+	for range 4 {
+		for _, e := range <-got {
+			if e.Body != "local hello" || e.From != from.SessionID || e.User != "gary" {
+				t.Errorf("envelope %+v", e)
+			}
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("delivered %d times", n)
+	}
+	r, err := Call(ctx, sock, Request{Op: "peers", Peers: &busproto.PeersQuery{Session: from.SessionID}})
+	if err != nil || r.Peers == nil || slices.ContainsFunc(r.Peers.Peers, func(p busproto.Peer) bool { return p.Session == from.SessionID }) || len(r.Peers.Peers) == 0 {
+		t.Fatalf("peers: %+v %v", r.Peers, err)
+	}
+	r, err = Call(ctx, sock, Request{Op: "inbox", Inbox: &busproto.InboxQuery{Session: from.SessionID}})
+	if err != nil || r.Inbox == nil || len(r.Inbox.Messages) != 2 {
+		t.Fatalf("inbox: %+v %v", r.Inbox, err)
+	}
+	if r, err := Call(ctx, sock, Request{Op: "held"}); err != nil || len(r.Held) != 0 {
+		t.Fatalf("held: %+v %v", r, err)
+	}
+	r, err = Call(ctx, sock, Request{Op: "status"})
+	if err != nil || r.Bus == nil || r.Bus.State != devicebus.StateLocal {
+		t.Fatalf("status: %+v %v", r.Bus, err)
+	}
+	if _, err := Call(ctx, sock, Request{Op: "send"}); err == nil {
+		t.Fatal("send without a request accepted")
 	}
 }
