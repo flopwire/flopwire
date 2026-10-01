@@ -95,7 +95,9 @@ jobs:
   # A cancelled run (a newer push superseded it) reports nothing here.
   perf-gate:
     needs: [bench, comment]
-    if: ${{ !cancelled() }}
+    # always(): a cancelled run must report a failed gate, never a skipped one
+    # (GitHub counts a skipped required check as passing).
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
