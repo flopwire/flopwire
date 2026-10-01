@@ -191,6 +191,59 @@ func TestPreviousLinkResolvesWhenOldSourceArrivesLate(t *testing.T) {
 	}
 }
 
+// A late old source's rows are retired and its digests recounted
+// together: a failure between the two leaves neither, and the retry
+// does both. Reads take message counts from digests (retrieval
+// messageCount), so a digest counting retired rows would show until a
+// retry re-parsed the source, or for good if it never did (quarantine).
+func TestLateSupersedeRecountsAtomically(t *testing.T) {
+	e := newEnv(t)
+	sid := "019f0000-0000-7000-8000-00000000f401"
+	oldPath := "/h/.codex/sessions/2026/09/15/rollout-2026-09-15T10-00-00-" + sid + ".jsonl"
+	newPath := "/h/.codex/archived_sessions/rollout-2026-09-15T10-00-00-" + sid + ".jsonl"
+	flush := func(path string, prev *syncproto.SourceRef, text string) {
+		t.Helper()
+		data := []byte(strings.Join([]string{
+			codexRec(0, "session_meta", `{"id":"`+sid+`","cwd":"/x","source":"cli"}`),
+			codexRec(1, "response_item", `{"type":"message","role":"user","content":[{"type":"input_text","text":"`+text+`"}]}`),
+		}, "\n") + "\n")
+		h := syncproto.Sum(data)
+		resp, err := e.client.Flush(e.ctx, &syncproto.FlushRequest{
+			Header: syncproto.FlushHeader{Version: syncproto.Version, CapturedAt: time.Now(),
+				Source:  syncproto.Source{Path: path, FileID: "1:7", Agent: "codex", StorageKind: "jsonl_append", Parser: codex.Name, SessionKey: sid, Previous: prev},
+				Entries: []syncproto.Entry{{Ordinal: 0, Hash: h, Offset: 0, Size: int64(len(data))}},
+				Bodies:  bodyOf(data)},
+			Payload: zpayload(data)})
+		if err != nil || resp.Status != syncproto.StatusOK {
+			t.Fatalf("flush %s: %+v %v", path, resp, err)
+		}
+	}
+	flush(newPath, &syncproto.SourceRef{Path: oldPath, FileID: "1:7"}, "new copy")
+	e.drain()
+	flush(oldPath, nil, "old copy")
+	fault := errors.New("injected fault after the late supersede")
+	afterLateSupersede = func() error { return fault }
+	err := e.queue.Drain(e.ctx)
+	afterLateSupersede = nil
+	if !errors.Is(err, fault) {
+		t.Fatalf("drain with the fault: %v", err)
+	}
+	consistent := func(when string) {
+		t.Helper()
+		if n := e.count(`SELECT count(*) FROM conversations c WHERE NOT c.digest_stale AND
+			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) <>
+			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE)`); n != 0 {
+			t.Fatalf("%s: %d conversations whose digest count is not their live rows", when, n)
+		}
+	}
+	consistent("after the fault")
+	e.drain() // the retry
+	if n := e.count(`SELECT count(*) FROM messages m JOIN sources s ON s.id=m.source_id WHERE s.path=$1 AND NOT m.superseded`, oldPath); n != 0 {
+		t.Fatalf("%d live rows of the replaced source", n)
+	}
+	consistent("after the retry")
+}
+
 // A path whose file identity goes 1:7 -> 1:8 -> 1:7 (inode reuse): each new
 // identity names the previous one. The current file's rows must stay live.
 func TestPreviousCycleKeepsCurrentRowsLive(t *testing.T) {
