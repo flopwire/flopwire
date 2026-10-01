@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -22,8 +23,10 @@ var techWords = []string{
 }
 
 // vocab is techWords plus pronounceable filler words built from a fixed
-// syllable set (no q, x, z, j). It is the same for every seed.
-var vocab = func() []string {
+// syllable set (no q, x, z, j). It is the same for every seed. It is built
+// on first use: the package is linked into every flopwire command, and an
+// eager build would cost each CLI invocation its startup time.
+var vocab = sync.OnceValue(func() []string {
 	cons := "bcdfghklmnprstvw"
 	vows := "aeiou"
 	out := append([]string(nil), techWords...)
@@ -37,11 +40,11 @@ var vocab = func() []string {
 		out = append(out, string(b))
 	}
 	return out
-}()
+})
 
 // b64 is a fixed block of base64 characters; image data and encrypted
-// blobs are slices of it.
-var b64 = func() []byte {
+// blobs are slices of it. Built on first use, like vocab.
+var b64 = sync.OnceValue(func() []byte {
 	const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	r := rand.New(rand.NewPCG(3, 4))
 	b := make([]byte, 1<<20)
@@ -49,7 +52,7 @@ var b64 = func() []byte {
 		b[i] = alpha[r.IntN(len(alpha))]
 	}
 	return b
-}()
+})
 
 // rng wraps the per-file generator with the helpers the writers use.
 type rng struct{ *rand.Rand }
@@ -62,7 +65,8 @@ func newRNG(seed, stream uint64) rng {
 // tech words are common and filler words rare, like real text.
 func (r rng) word() string {
 	u := r.Float64()
-	return vocab[int(u*u*u*float64(len(vocab)))]
+	v := vocab()
+	return v[int(u*u*u*float64(len(v)))]
 }
 
 // prose appends about n bytes of space-separated words (no JSON escaping
@@ -104,10 +108,11 @@ func (r rng) output(dst []byte, n int, raw bool) []byte {
 
 // blob appends n base64 characters.
 func (r rng) blob(dst []byte, n int) []byte {
+	b := b64()
 	for n > 0 {
-		off := r.IntN(len(b64) / 2)
-		k := min(n, len(b64)-off)
-		dst = append(dst, b64[off:off+k]...)
+		off := r.IntN(len(b) / 2)
+		k := min(n, len(b)-off)
+		dst = append(dst, b[off:off+k]...)
 		n -= k
 	}
 	return dst
