@@ -1,0 +1,12 @@
+// Static homepage on Cloudflare Workers. Deploy: npx wrangler deploy -c landing/wrangler.jsonc
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "flopwire-landing",
+  "account_id": "dfefc1d9720023344673dd03775353c1",
+  "compatibility_date": "2026-09-30",
+  "assets": { "directory": "." },
+  "routes": [
+    { "pattern": "flopwire.com", "custom_domain": true },
+    { "pattern": "www.flopwire.com", "custom_domain": true }
+  ]
+}
