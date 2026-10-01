@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -522,6 +523,36 @@ func TestPresenceChangeRepolls(t *testing.T) {
 	last := srv.lastPoll()
 	if len(last.Sessions) != 1 || !last.Sessions[0].Busy || last.Cursor != 0 {
 		t.Fatalf("poll after the change: %+v", last)
+	}
+}
+
+// Presence that changes while no poll is in flight (here during a
+// backoff) also resets the cursor: the poll that first reports a new
+// session asks for the whole set at once instead of holding on a cursor
+// that is past messages the new session makes deliverable.
+func TestPresenceChangeBetweenPollsResetsCursor(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("s1", "claude", "/src/api", false))
+	var off atomic.Int64 // the test's clock runs ahead to expire the presence cache
+	cfg := testConfig(srv, nil)
+	cfg.Now = func() time.Time { return time.Now().Add(time.Duration(off.Load())) }
+	cfg.BackoffMin, cfg.BackoffMax = 400*time.Millisecond, 400*time.Millisecond
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	run(t, b)
+	waitFor(t, "a poll", func() bool { return srv.pollCount() == 1 })
+	srv.pollCh <- pollReply{resp: busproto.PollResponse{Cursor: 9}}
+	waitFor(t, "the second poll", func() bool { return srv.pollCount() == 2 })
+	srv.pollCh <- pollReply{err: errors.New("connection reset")}
+	waitFor(t, "backing off", func() bool { return b.Status(ctx).State == StateBackoff })
+	p.set(sess("s1", "claude", "/src/api", false), sess("s2", "codex", "/src/api", false))
+	off.Add(int64(2 * time.Second))
+	waitFor(t, "the poll after the backoff", func() bool { return srv.pollCount() >= 3 })
+	srv.mu.Lock()
+	third := srv.polls[2]
+	srv.mu.Unlock()
+	if len(third.Sessions) != 2 || third.Cursor != 0 {
+		t.Fatalf("first poll with the new session: %d sessions, cursor %d", len(third.Sessions), third.Cursor)
 	}
 }
 

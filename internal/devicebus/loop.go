@@ -131,7 +131,14 @@ func (b *Bus) runServer(ctx context.Context) {
 			if all, err := b.sessions(ctx); err != nil {
 				b.log.Warn("devicebus: presence", "err", err)
 			} else {
-				sent = serverPresence(all)
+				cur := serverPresence(all)
+				if !slices.Equal(cur, sent) {
+					// Changed since the last poll (between polls, or during
+					// a backoff): reset the cursor, as the in-flight check
+					// below does.
+					cursor = 0
+				}
+				sent = cur
 			}
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
