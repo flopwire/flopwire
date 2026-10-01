@@ -245,6 +245,19 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 			return err
 		}
 		res.JobID = applied.JobID
+		// A parse flush holds its conversations from their upsert and then
+		// writes their message rows: lock the conversations first, in the
+		// order every multi-conversation writer takes them, before any
+		// message row (store.LockConversationsSQL).
+		var convs []string
+		for _, t := range targets {
+			if _, ok := newText[t.id]; ok {
+				convs = append(convs, t.conv)
+			}
+		}
+		if _, err := tx.Exec(ctx, store.LockConversationsSQL, convs); err != nil {
+			return err
+		}
 		for _, t := range targets {
 			txt, ok := newText[t.id]
 			if !ok {
@@ -257,10 +270,10 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 				return err
 			}
 			// The conversation's title is the first line of its first
-			// prompt: it holds the redacted text too.
+			// prompt: it holds the redacted text too. (Locked above.)
 			var title string
 			var dg []byte
-			if err := tx.QueryRow(ctx, `SELECT COALESCE(title,''),digest FROM conversations WHERE id=$1 FOR UPDATE`, t.conv).Scan(&title, &dg); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(title,''),digest FROM conversations WHERE id=$1`, t.conv).Scan(&title, &dg); err != nil {
 				return err
 			}
 			if nt := maskTitle(title, t.text, txt, needles); nt != title {
