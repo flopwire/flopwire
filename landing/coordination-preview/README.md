@@ -25,3 +25,5 @@ The pages need no build step and use the bundled fonts in the parent landing ass
 Both directions passed checks at 1440px and 390px: page overflow, images, internal anchors, clipboard success/reset/fallback, and comparison controls. The setup document returns HTTP 200. Visual review covered the simplified hero exchange, setup stages, diagram, and benchmark table. Installation instructions were checked against the source documentation; no clean-machine installation was performed.
 
 The design detector reports the inherited cream palette and editorial display leading, plus table placeholder dashes and CLI flags as dash density. The setup stages use horizontal rules rather than boxed panels. Deslop review covers prose separately from code and measurement placeholders.
+
+The complete spacing audit is in [VISUAL-AUDIT.md](VISUAL-AUDIT.md). Shared page intervals and responsive column behavior are defined in `layout.css`. The audit includes both full pages and checks from 320px to 1440px.
