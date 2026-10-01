@@ -22,4 +22,12 @@ The exchange and search results are illustrative client-side examples. They do n
 
 ## Verification
 
-Checked at 1536px desktop and 390px mobile: no document overflow, replay/pause, reduced motion, keyboard-operated disclosures, context expansion, and clipboard fallback. The compatibility table scrolls horizontally on narrow screens. No live backend integration or clean-machine installation test was performed.
+Story revision checked at 1440px desktop and 390px mobile: no document overflow, replay/pause, reduced motion, keyboard-operated disclosures, context expansion, and clipboard fallback. The compatibility table scrolls horizontally on narrow screens. No live backend integration or clean-machine installation test was performed.
+
+## Story revision
+
+The story uses one pagination change across live coordination, grep/read, and commit provenance. Examples are synthetic and use the existing `flopwire` command name. CLI and MCP retrieval shapes were checked against `docs/search.md` and `cmd/flopwire/mcp.go` on main.
+
+Performance lives behind a link to the benchmark method until results exist. Before adding comparisons, measure the same corpus and tasks across transcript grep, full-session reading, and alternative retrieval. Record retrieval success, total context returned (including follow-up reads), latency percentiles, corpus size, hardware, and cache conditions. Do not present acceptance thresholds as measured results.
+
+The private preview targets v0.1 messaging and commit provenance. Validate both end-to-end before public launch. The installed code and available adapters determine compatibility claims.

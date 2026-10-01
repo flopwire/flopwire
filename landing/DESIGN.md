@@ -1,23 +1,29 @@
-# Flopwire landing design
+# Flopwire landing page
 
-Mode: Persuade. Warm paper, IBM Plex Mono, ink, and vermilion continue the approved direction.
+Mode: Persuade. The v0.1 launch story leads with teammates using different harnesses and machines. A single pagination change connects the examples.
 
 ## Reading order
 
-1. Connect coding agents: one example exchange across teammates, harnesses, and machines.
-2. Find the context: one search result with an optional source conversation.
-3. Get started: one setup destination, followed by optional installation, compatibility, and agent-tool details.
+1. Live exchange: Alex sends the API constraint; Sam changes the client code. A disclosure shows discovery through the repo and recent sessions.
+2. Grep: compact results from both teammates, then an address-based read of the surrounding conversation. CLI is visible; equivalent MCP calls are optional.
+3. Commit provenance: a diff opens the discussion explaining why the cursor must stay intact.
+4. Environments: local indexing, team retrieval, supported transcript sources.
+5. Setup: open source, collection controls, installation, hosted coming soon, benchmark method.
 
-The hero is the only live-update explanation. Search has one example rather than multiple tabs. Setup details use native disclosure elements. The hosted offering is a small note, not a separate section.
+Use whitespace between sections. Borders identify terminal windows and code surfaces, not every paragraph or page section. Avoid repeated explanations and status labels.
 
-## Visual rules
+## Typography and color
 
-Paper #faf9f6, ink #17191b, muted #60615f, lines #cbc9c1, accent #d52e19. Body 15px, supporting copy 12–14px, hero 44–64px, section headings 30–42px. Keep messages and explanations comfortably readable on mobile. Use thin borders only for separation and the two examples. Screen frames, restrained window chrome, teammate avatars, and laptop/cloud icons identify the two environments. Keep messages prominent and omit repeated status labels. The search example uses the same screen framing.
+IBM Plex Sans for explanatory text and section headings. IBM Plex Mono for the wordmark, hero title, commands, tool responses, session metadata, and measurements. Both are self-hosted under the bundled OFL license.
 
-Maximum width 1440px; margins reduce at 1050px and 760px. Hero and search stack below 760px. Long installation commands and the compatibility table scroll inside their containers.
+Paper #faf9f6; ink #17191b; muted #60615f; vermilion #d52e19. Restrained warm highlights mark search matches. Diff additions use #246448; removals #785a53. Prose is 18–20px in primary explanations; desktop terminal text 12–14px. Smaller mobile metadata remains at least 11px.
 
-## Interaction
+## Behavior
 
-Exchange animation is on demand, with pause and reduced-motion support. The hero’s source link opens and focuses the source conversation. Source, installation, compatibility, and tool details use native details/summary elements. Copy has a selection fallback. Preserve visible focus indicators, labels, and a skip link.
+The exchange plays once on entering view, with replay/pause. Content remains readable throughout. Search highlights animate once on entry; clicking a result reveals a read call and the surrounding passage. Commit discussion is a keyboard-accessible disclosure; the hero source link reveals and focuses it. Reduced motion disables automatic animations. No scroll locking or scroll scrubbing.
 
-All workflow data is illustrative. See README.md for public-release checks.
+At 760px, sections stack. Code wraps where useful; installation commands scroll inside their container. Native details/summary elements hold supporting material. Focus rings, skip link, status announcements, and clipboard selection fallback remain.
+
+## Truth boundaries
+
+Examples are synthetic. Retrieval commands follow the current `flopwire` CLI/MCP schema. Messaging and commit-to-discussion are v0.1 release requirements; the page is a launch preview. Compatibility does not claim every harness has the same messaging support. Do not show performance numbers until measured.
