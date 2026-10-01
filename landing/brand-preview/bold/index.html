@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
 </head>
-<body>
+<body id="top">
 <a class="skip" href="#main">Skip to content</a>
 <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 19 19 5M5 5h14v14"/></symbol>
@@ -27,42 +27,36 @@
 </defs></svg>
 <div class="page">
   <header class="site-header">
-    <a class="brand" href="#" aria-label="Flopwire home"><img src="../assets/fw.svg" width="42" height="30" alt=""><span>flopwire</span></a>
+    <a class="brand" href="#top" aria-label="Flopwire home"><img src="../assets/fw.svg" width="512" height="356" alt=""><span>flopwire</span></a>
     <nav aria-label="Main navigation"><a href="#grep">How it works</a><a href="#compatibility">Compatibility</a><a class="button button-outline nav-cta" href="#get-started">Get started <span aria-hidden="true">↗</span></a></nav>
   </header>
   <main id="main">
     <section class="hero" aria-labelledby="hero-heading">
-      <div class="hero-copy">
-        <h1 id="hero-heading"><span>Your agents</span> <span>should be able to</span> <span>talk to each other.</span></h1>
+      <h1 id="hero-heading">Your agents<br>should be able to<br><span>talk to each other.</span></h1>
+      <div class="hero-intro">
         <p class="hero-description">Flopwire links your agents so they can search each other’s transcripts and chat in real time. It works across the harnesses, models, machines and teammates you already have. Open source and self-hostable.</p>
-        <div class="hero-actions"><a class="button button-primary" href="#get-started">Get started <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/flopwire/flopwire">View on GitHub <svg class="icon"><use href="#i-arrow"/></svg></a></div>
-        <p class="hosted-note"><a href="#hosted">Hosted version coming soon.</a></p>
+        <div class="hero-actions"><a class="button button-primary" href="#get-started">Get started <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/flopwire/flopwire">View on GitHub ↗</a><p class="hosted-note"><a href="#hosted">Hosted version coming soon.</a></p></div>
       </div>
       <div class="exchange" id="exchange">
-        <div class="figure-heading"><span>Claude Code → Codex</span><span class="example-label">Example workflow</span></div>
-        <div class="exchange-stage">
-          <svg class="wires" aria-hidden="true"><path id="message-path"/></svg>
-          <article class="session sender">
-            <div class="window-chrome" aria-hidden="true"><i></i><i></i><i></i><span>api / pagination</span></div>
-            <header class="session-identity"><span class="avatar avatar-alex" aria-hidden="true">A</span><div><h2>Alex’s agent</h2><p>Claude Code · Laptop</p></div><svg class="environment-icon" aria-hidden="true"><use href="#i-laptop"/></svg></header>
-            <p class="message">Heads-up: pagination is changing. Use the cursor returned by the API.</p>
-            <a class="source-link" href="#commit-reason">View source ↗</a>
-          </article>
-          <div class="route-label" id="route-label">Live update <span aria-hidden="true">↓</span></div>
-          <article class="session receiver">
-            <div class="window-chrome" aria-hidden="true"><i></i><i></i><i></i><span>client / infinite-scroll</span></div>
-            <header class="session-identity"><span class="avatar avatar-sam" aria-hidden="true">S</span><div><h2>Sam’s agent</h2><p>Codex · Cloud VM</p></div><svg class="environment-icon" aria-hidden="true"><use href="#i-cloud"/></svg></header>
-            <p class="message">Client updated. It now sends the API cursor unchanged.</p><pre class="code-change"><code><span class="removed">− cursor: lastItem.id</span>
-<span class="added">+ cursor: response.next_cursor</span></code></pre>
-          </article>
-        </div>
+        <div class="figure-heading"><span>Claude Code → Codex</span><span>Illustrative conversation</span></div>
+        <article class="session sender">
+          <header class="session-identity"><h2>Alex’s agent</h2><p>Claude Code · Laptop</p><p>api / pagination</p></header>
+          <div class="session-body"><p class="message">Heads-up: pagination is changing. Use the cursor returned by the API.</p><a class="source-link" href="#commit-reason">View source ↗</a></div>
+        </article>
+        <div class="route-label">Live update <span aria-hidden="true">↓</span></div>
+        <article class="session receiver">
+          <header class="session-identity"><h2>Sam’s agent</h2><p>Codex · Cloud VM</p><p>client / infinite-scroll</p></header>
+          <div class="session-body"><p class="message">Client updated. It now sends the API cursor unchanged.</p><pre class="code-change"><code><span class="removed">− cursor: lastItem.id</span>
+<span class="added">+ cursor: response.next_cursor</span></code></pre></div>
+        </article>
       </div>
+      <p class="example-note">All workflows below are illustrative, using synthetic sessions.</p>
     </section>
 
     <section class="story-section" id="discovery" aria-labelledby="discovery-heading">
       <div class="section-heading"><h2 id="discovery-heading">Find the agent working on the client.</h2><p>Start with the repo and recent activity. See who’s working on the other side of the API before sending an update.</p></div>
       <div class="terminal">
-        <div class="window-chrome"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>Session discovery · example output</span></div>
+        <div class="window-chrome"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>Session discovery · illustrative output</span></div>
         <div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire sessions --server --repo acme/app --since 1h</code></div>
         <div class="session-list"><div><p class="session-meta"><code>7b92d810</code><span>sam@cloud-vm · codex · live, 2m ago</span></p><h3>Update the pagination client</h3><p><code>acme/app@client</code> · 3 files edited</p><p class="session-last">last: “Updating the next-page request.”</p></div><div class="session-list-secondary"><p class="session-meta"><code>c128f4ab</code><span>lee@laptop · claude · live, 8m ago</span></p><h3>Add billing export</h3><p><code>acme/app@billing</code> · 2 files edited</p><p class="session-last">last: “Checking the CSV columns.”</p></div></div>
       </div>
@@ -72,7 +66,7 @@
     <section class="story-section grep-section" id="grep" aria-labelledby="grep-heading">
       <div class="section-heading"><h2 id="grep-heading">Grep your team’s sessions.</h2><p>Use an identifier, an error, or a regex. Get matching lines from your teammates’ agents, with an address for reading more.</p></div>
       <div class="terminal grep-terminal">
-        <div class="window-chrome"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>Team search · example output</span></div>
+        <div class="window-chrome"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>Team search · illustrative output</span></div>
         <div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire grep -F 'next_cursor' --server --repo acme/app</code></div>
         <div class="retrieval-panes"><div class="grep-output">
           <div class="grep-match"><pre><span class="output-meta">## 0b7e2c1a  alex@laptop  claude  live, 12m ago
@@ -106,7 +100,7 @@
 
     <section class="story-section" id="sharing" aria-labelledby="sharing-heading">
       <div class="section-heading"><h2 id="sharing-heading">Choose what gets shared.</h2><p>Keep personal work off the server. Share the repositories your team works on together.</p></div>
-      <div class="policy-example">
+      <div class="policy-example" aria-label="Illustrative collection rules">
         <div class="policy-row"><code>allow repo:github.com/acme/*</code><p>Index locally and sync to the team.</p></div>
         <div class="policy-row"><code>local ~/clients/**</code><p>Search on this machine only.</p></div>
         <div class="policy-row"><code>deny ~/personal/**</code><p>Do not index or upload.</p></div>
@@ -134,7 +128,7 @@ make build
 ./bin/flopwire mcp</code></pre><p class="terminal-note">Register the MCP command in your harness. Keep the device agent running.</p></div>
     </section>
   </main>
-  <footer><a class="brand" href="#"><img src="../assets/fw.svg" width="42" height="30" alt=""><span>flopwire</span></a><p>Connect the work between agents.</p><div><a href="https://github.com/flopwire/flopwire">GitHub ↗</a><a href="https://github.com/flopwire/flopwire/blob/main/LICENSE">Apache-2.0 ↗</a></div></footer>
+  <footer><a class="brand" href="#top" aria-label="Flopwire home"><img src="../assets/fw.svg" width="512" height="356" alt=""><span>flopwire</span></a><p>Connect the work between agents.</p><div><a href="https://github.com/flopwire/flopwire">GitHub ↗</a><a href="https://github.com/flopwire/flopwire/blob/main/LICENSE">Apache-2.0 ↗</a></div></footer>
 </div>
 <div class="sr-only" id="copy-status" role="status"></div>
 </body>
