@@ -171,6 +171,14 @@ func Update(prev []byte, c Conv, msgs []*transcript.Message, n Counts) []byte {
 // message counted last adds only its growth (Claude repeats a message's
 // usage on its lines, which follow one another).
 func Append(prev []byte, c Conv, msgs []*transcript.Message, failed, subagents int) []byte {
+	return AppendRows(prev, c, msgs, msgs, failed, subagents)
+}
+
+// AppendRows is Append for a batch that also rewrote existing rows
+// without changing anything the counts depend on (a re-parse that only
+// refreshed them): every row of fold is folded, and only the rows of
+// count, the new ones, add to the counts.
+func AppendRows(prev []byte, c Conv, fold, count []*transcript.Message, failed, subagents int) []byte {
 	d := Parse(prev)
 	n := Counts{Messages: map[string]int{}, Tools: map[string]int{}, Failed: d.Failed + failed, Subagents: subagents}
 	for k, v := range d.Messages {
@@ -185,7 +193,7 @@ func Append(prev []byte, c Conv, msgs []*transcript.Message, failed, subagents i
 	if d.State != nil {
 		n.Usage = d.State.Usage
 	}
-	for _, m := range msgs {
+	for _, m := range count {
 		if m.Superseded {
 			continue
 		}
@@ -212,7 +220,7 @@ func Append(prev []byte, c Conv, msgs []*transcript.Message, failed, subagents i
 		}
 	}
 	d.setConv(c)
-	for _, m := range msgs {
+	for _, m := range fold {
 		d.Fold(m)
 	}
 	d.SetCounts(n)

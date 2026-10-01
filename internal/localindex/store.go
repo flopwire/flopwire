@@ -201,8 +201,13 @@ func Open(path string, opts Options) (*Store, error) {
 	return s, nil
 }
 
+// sqliteDriver is the database/sql driver of the write and shard
+// connections. Tests set it to perfguard.SQLiteDriver, which wraps
+// "sqlite" to count statements and pages on the connections a test claims.
+var sqliteDriver = "sqlite"
+
 func openWriter(path string, opts Options) (*Store, error) {
-	wdb, err := sql.Open("sqlite", dsn(path, false, opts.WriteCacheMB, false))
+	wdb, err := sql.Open(sqliteDriver, dsn(path, false, opts.WriteCacheMB, false))
 	if err != nil {
 		return nil, err
 	}

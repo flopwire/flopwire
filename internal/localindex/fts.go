@@ -134,7 +134,7 @@ func openShard(index string, indexID int64, schema, table string, detail Detail,
 	// 32KB pages: FTS5 reads and writes segments sequentially (flushes,
 	// merges), and every page is one pread or pwrite; at 4KB those
 	// syscalls were a third of a bulk load's CPU.
-	db, err := sql.Open("sqlite", dsn(sh.path, false, cacheMB, true))
+	db, err := sql.Open(sqliteDriver, dsn(sh.path, false, cacheMB, true))
 	if err != nil {
 		return nil, err
 	}
