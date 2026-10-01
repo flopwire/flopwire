@@ -79,8 +79,8 @@ func TestDigestRefreshedOnEveryAppend(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].SessionID != "agent-x" || len(rows[0].Digest) == 0 {
 		t.Fatalf("branch filter: %v %+v", err, rows)
 	}
-	if n, err := s.CountConversations(ctx, ListOptions{Filter: Filter{Branches: []string{"main"}}}); err != nil || n != 2 {
-		t.Fatalf("branch count: %d %v", n, err)
+	if rows, err := s.ListConversations(ctx, ListOptions{Filter: Filter{Branches: []string{"main"}}}); err != nil || len(rows) != 2 {
+		t.Fatalf("branch count: %d %v", len(rows), err)
 	}
 	// Oldest first.
 	rows, _ = s.ListConversations(ctx, ListOptions{Oldest: true})
@@ -88,8 +88,8 @@ func TestDigestRefreshedOnEveryAppend(t *testing.T) {
 		t.Fatalf("oldest first: %+v", rows)
 	}
 	// IdleBefore leaves out sessions active since.
-	if n, _ := s.CountConversations(ctx, ListOptions{Filter: Filter{IdleBefore: t0.Add(3 * time.Second)}}); n != 1 {
-		t.Fatalf("idle before: %d", n)
+	if rows, _ := s.ListConversations(ctx, ListOptions{Filter: Filter{IdleBefore: t0.Add(3 * time.Second)}}); len(rows) != 1 {
+		t.Fatalf("idle before: %d", len(rows))
 	}
 }
 
@@ -156,11 +156,15 @@ func TestOutline(t *testing.T) {
 	if err := s.DB().QueryRow(`SELECT id FROM conversations WHERE session_id = 's1'`).Scan(&conv); err != nil {
 		t.Fatal(err)
 	}
-	o, err := s.Outline(ctx, conv, 1, 10)
+	all, err := s.Outline(ctx, conv, nil, 10)
+	if err != nil || len(all.Rows) != 3 {
+		t.Fatalf("outline: %v %+v", err, all)
+	}
+	o, err := s.Outline(ctx, conv, &OutlineKey{Ordinal: all.Rows[0].Ordinal, ID: all.Rows[0].ID}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Total != 3 || len(o.Rows) != 2 || o.Rows[0].NativeID != "c" || !o.Failed["t1"] || len(o.Spawned[o.Rows[1].ID]) != 1 || o.Spawned[o.Rows[1].ID][0] != "agent-k" {
+	if len(o.Rows) != 2 || o.Rows[0].NativeID != "c" || !o.Failed["t1"] || len(o.Spawned[o.Rows[1].ID]) != 1 || o.Spawned[o.Rows[1].ID][0] != "agent-k" {
 		t.Fatalf("outline %+v failed %v spawned %v", o, o.Failed, o.Spawned)
 	}
 }

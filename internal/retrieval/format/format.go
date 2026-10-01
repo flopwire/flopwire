@@ -391,19 +391,24 @@ type Context struct {
 	// MoreBefore and MoreAfter report messages beyond the ones returned.
 	MoreBefore bool `json:"more_before,omitempty"`
 	MoreAfter  bool `json:"more_after,omitempty"`
-	// Outline is read --outline's answer (Messages is then empty):
-	// entries OutlineOffset.. of OutlineTotal; OutlineNext is the offset
-	// of the next page, 0 when none.
-	Outline       []OutlineEntry `json:"outline,omitempty"`
-	OutlineTotal  int            `json:"outline_total,omitempty"`
-	OutlineOffset int            `json:"outline_offset,omitempty"`
-	OutlineNext   int            `json:"outline_next,omitempty"`
+	// Outline is read --outline's answer (Messages is then empty): one
+	// page of entries. OutlineMore says entries follow; OutlineNext is the
+	// cursor that reads them (ReadQuery.Cursor). An outline answer's
+	// Outline is never nil, so an empty page (omitzero keeps it on the
+	// wire) still renders as an outline.
+	Outline     []OutlineEntry `json:"outline,omitzero"`
+	OutlineMore bool           `json:"outline_more,omitempty"`
+	OutlineNext string         `json:"outline_next,omitempty"`
 }
 
 // OutlineEntry is one line of a session's outline: a user prompt, or a
 // tool call as tool(args summary).
 type OutlineEntry struct {
-	Address string     `json:"address"`
+	Address string `json:"address"`
+	// ID and Ordinal are the message's id and ordinal, the entry's place
+	// in the outline's order (OutlineCursor).
+	ID      string     `json:"id"`
+	Ordinal int64      `json:"ordinal"`
 	TS      *time.Time `json:"ts,omitempty"`
 	Kind    string     `json:"kind"` // user or tool_call
 	Tool    string     `json:"tool,omitempty"`
@@ -414,8 +419,8 @@ type OutlineEntry struct {
 	Subagents []string `json:"subagents,omitempty"`
 }
 
-// OutlinePage checks an outline request's offset and limit and returns
-// the page size.
+// OutlinePage checks an outline request's limit and returns the page
+// size.
 func OutlinePage(q ReadQuery) (int, error) {
 	switch {
 	case q.Limit <= 0:
@@ -429,8 +434,8 @@ func OutlinePage(q ReadQuery) (int, error) {
 // NewOutlineEntry renders a user or tool_call row as an outline entry:
 // the prompt trimmed to one line, or the call's args summary (paths under
 // root relative to it).
-func NewOutlineEntry(addr string, ts *time.Time, kind, tool, text, root string) OutlineEntry {
-	e := OutlineEntry{Address: addr, TS: ts, Kind: kind, Tool: tool}
+func NewOutlineEntry(addr, id string, ordinal int64, ts *time.Time, kind, tool, text, root string) OutlineEntry {
+	e := OutlineEntry{Address: addr, ID: id, Ordinal: ordinal, TS: ts, Kind: kind, Tool: tool}
 	if kind == "tool_call" {
 		e.Text = digest.CallSummary(tool, text, root, OutlineArgs)
 	} else {
@@ -477,12 +482,13 @@ type Page struct {
 	SessionInfo []ConversationInfo `json:"session_info,omitempty"`
 }
 
-// Sessions is the sessions answer: conversations, newest activity first.
+// Sessions is the sessions answer: one page of conversations, newest
+// activity first. HasMore says sessions follow; Next is the cursor that
+// reads them (see SessionCursor).
 type Sessions struct {
 	Sessions []ConversationInfo `json:"sessions"`
-	Total    int                `json:"total"`
-	Offset   int                `json:"offset,omitempty"`
-	Next     int                `json:"next_offset,omitempty"`
+	HasMore  bool               `json:"has_more,omitempty"`
+	Next     string             `json:"next_cursor,omitempty"`
 	Notes    []string           `json:"notes,omitempty"`
 	Excluded string             `json:"excluded,omitempty"`
 }
@@ -597,10 +603,11 @@ type ReadQuery struct {
 	MaxChars   int    `json:"max_chars,omitempty"`   // text per focus message; neighbours get a quarter; default 4000
 	LineOffset int    `json:"line_offset,omitempty"` // first line of the focus text to show
 	// Outline reads the session's skeleton instead (Context.Outline):
-	// entries Offset..Offset+Limit (default OutlineLimit).
-	Outline bool `json:"outline,omitempty"`
-	Offset  int  `json:"offset,omitempty"`
-	Limit   int  `json:"limit,omitempty"`
+	// Limit entries (default OutlineLimit) after Cursor (from the start
+	// when empty).
+	Outline bool   `json:"outline,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
 	// Self marks Address as the caller's own session id (read self):
 	// matched exactly, and on the server only among the caller's own
 	// sessions (Filters.Owner).
@@ -622,7 +629,9 @@ func (q ReadQuery) Values(v url.Values) url.Values {
 	}
 	if q.Outline {
 		v.Set("outline", "true")
-		setNum(v, "offset", q.Offset)
+		if q.Cursor != "" {
+			v.Set("cursor", q.Cursor)
+		}
 		setNum(v, "limit", q.Limit)
 	}
 	return v
@@ -642,10 +651,8 @@ func ParseReadQuery(v url.Values) (ReadQuery, error) {
 			return q, err
 		}
 	}
-	if q.Outline { // offset and limit page the outline
-		if q.Offset, err = num(v, "offset"); err != nil {
-			return q, err
-		}
+	if q.Outline { // cursor and limit page the outline
+		q.Cursor = v.Get("cursor")
 		if q.Limit, err = num(v, "limit"); err != nil {
 			return q, err
 		}

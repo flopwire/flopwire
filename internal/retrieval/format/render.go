@@ -70,12 +70,20 @@ func (s Style) more(addr, dir string) string {
 	return fmt.Sprintf("flopwire read %s %s 10", addr, flag)
 }
 
-// outlineAt is the call reading an outline on from offset n.
-func (s Style) outlineAt(addr string, n int) string {
+// cursor is the argument that reads the next sessions page.
+func (s Style) cursor(c string) string {
 	if s.MCP {
-		return fmt.Sprintf("flopwire_read address=%s outline=true offset=%d", addr, n)
+		return "cursor=" + c
 	}
-	return fmt.Sprintf("flopwire read %s --outline --offset %d", addr, n)
+	return "--cursor " + c
+}
+
+// outlineAt is the call reading an outline on after cursor c.
+func (s Style) outlineAt(addr, c string) string {
+	if s.MCP {
+		return fmt.Sprintf("flopwire_read address=%s outline=true cursor=%s", addr, c)
+	}
+	return fmt.Sprintf("flopwire read %s --outline --cursor %s", addr, c)
 }
 
 func (s Style) flag(cli, mcp string) string {
@@ -416,15 +424,15 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 	}
 	shown, next, cut := len(lines), s.Next, ""
 	if shown < len(s.Sessions) {
-		next, cut = s.Offset+shown, budgetNote(st)
+		next, cut = SessionCursor(s.Sessions[shown-1]), budgetNote(st)
 	}
 	switch {
 	case len(s.Sessions) == 0:
 		e.printf("[no sessions]\n")
-	case next > 0:
-		e.printf("[showing %d-%d of %d sessions; %snext: %s]\n", s.Offset+1, s.Offset+shown, s.Total, cut, st.offset(next))
+	case next != "":
+		e.printf("[%d %s shown, more follow; %snext: %s]\n", shown, plural(shown, "session", "sessions"), cut, st.cursor(next))
 	default:
-		e.printf("[%d %s]\n", s.Total, plural(s.Total, "session", "sessions"))
+		e.printf("[%d %s, end of list]\n", shown, plural(shown, "session", "sessions"))
 	}
 	excluded(e, s.Excluded)
 	return e.err
@@ -465,7 +473,7 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 	}
 	header := fmt.Sprintf("# %s  %s\n", strings.Join(head, "  "), quoteTitle(c.Title))
 	e.printf("%s", header)
-	if cx.Outline != nil || cx.OutlineTotal > 0 {
+	if cx.Outline != nil || cx.OutlineMore {
 		return writeOutline(e, cx, st, len(header))
 	}
 	// Under a budget, the header and the two "more messages" hints are
@@ -722,19 +730,19 @@ func writeOutline(e *errWriter, cx *Context, st Style, used int) error {
 	next := cx.OutlineNext
 	cut := ""
 	if shown < len(cx.Outline) {
-		next, cut = cx.OutlineOffset+shown, budgetNote(st)
+		next, cut = OutlineCursor(cx.Outline[shown-1]), budgetNote(st)
 	}
 	session := cx.Conversation.Address
 	if session == "" {
 		session = cx.Conversation.SessionID
 	}
 	switch {
-	case cx.OutlineTotal == 0:
+	case len(cx.Outline) == 0:
 		e.printf("[no prompts or tool calls]\n")
-	case next > 0:
-		e.printf("[outline %d-%d of %d; %snext: %s]\n", cx.OutlineOffset+1, cx.OutlineOffset+shown, cx.OutlineTotal, cut, st.outlineAt(session, next))
+	case next != "":
+		e.printf("[outline: %d %s shown, more follow; %snext: %s]\n", shown, plural(shown, "entry", "entries"), cut, st.outlineAt(session, next))
 	default:
-		e.printf("[outline %d-%d of %d]\n", cx.OutlineOffset+1, cx.OutlineOffset+shown, cx.OutlineTotal)
+		e.printf("[outline: %d %s, end of outline]\n", shown, plural(shown, "entry", "entries"))
 	}
 	return e.err
 }

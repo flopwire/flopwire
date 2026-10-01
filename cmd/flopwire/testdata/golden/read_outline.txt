@@ -16,4 +16,4 @@
   0b7e2c1a-0000-4000-8000-000000000002/59088896  Workflow(Review retry change)  → sub agent-b000000000000001
   0b7e2c1a-0000-4000-8000-000000000002/64409600  Agent(Explore: Scan retries)  → sub agent-b000000000000002
   0b7e2c1a-0000-4000-8000-000000000002/69898240  TodoWrite()
-[outline 1-10 of 10]
+[outline: 10 entries, end of outline]

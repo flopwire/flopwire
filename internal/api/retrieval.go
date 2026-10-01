@@ -25,7 +25,8 @@ import (
 type Retrieval interface {
 	Grep(ctx context.Context, q format.GrepQuery, f format.Filters) (*format.Page, error)
 	Search(ctx context.Context, q format.SearchQuery, f format.Filters) (*format.Page, error)
-	Sessions(ctx context.Context, glob string, offset int, f format.Filters) (*format.Sessions, error)
+	// Sessions lists one page of sessions after cursor (format.SessionCursor).
+	Sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error)
 	// Read resolves an address (a path address prefers the caller's
 	// device) and returns the message with its neighbours.
 	Read(ctx context.Context, deviceID string, q format.ReadQuery, f format.Filters) (*format.Context, error)
@@ -269,19 +270,15 @@ func (a *API) sessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := r.URL.Query()
-	offset, err := strconv.Atoi(orZero(v.Get("offset")))
-	if err != nil || offset < 0 {
-		problem(w, 400, "offset: bad value")
-		return
-	}
+	cursor := v.Get("cursor")
 	ctx, cancel, ok := budgetContext(w, r)
 	if !ok {
 		return
 	}
 	defer cancel()
 	glob := v.Get("glob")
-	meta := map[string]any{"glob": glob, "offset": offset, "filters": f}
-	out, err := a.retrieval.Sessions(ctx, glob, offset, f)
+	meta := map[string]any{"glob": glob, "cursor": cursor, "filters": f}
+	out, err := a.retrieval.Sessions(ctx, glob, cursor, f)
 	if err != nil {
 		a.retrievalFailed(w, r, "sessions.list", "conversation", "", meta, err)
 		return

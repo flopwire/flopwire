@@ -329,12 +329,12 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	if sp, err = f.s.Search(ctx, format.SearchQuery{Query: "ocelot fence"}, format.Filters{}); err != nil || len(sp.Hits) != 2 || sp.Hits[0].Kind != "assistant" {
 		t.Fatalf("search kind boost: %+v %v", sp, err)
 	}
-	// Sessions: newest first, glob, totals.
-	ss, err := f.s.Sessions(ctx, "", 0, format.Filters{})
-	if err != nil || ss.Total != 2 || ss.Sessions[0].SessionID != "sess-2" || ss.Sessions[0].Address != "sess-2" || ss.Sessions[1].Messages != 6 {
+	// Sessions: newest first, glob, the last page.
+	ss, err := f.s.Sessions(ctx, "", "", format.Filters{})
+	if err != nil || len(ss.Sessions) != 2 || ss.HasMore || ss.Sessions[0].SessionID != "sess-2" || ss.Sessions[0].Address != "sess-2" || ss.Sessions[1].Messages != 6 {
 		t.Fatalf("sessions: %+v %v", ss, err)
 	}
-	if ss, err = f.s.Sessions(ctx, "web*", 0, format.Filters{}); err != nil || ss.Total != 1 || ss.Sessions[0].SessionID != "sess-2" {
+	if ss, err = f.s.Sessions(ctx, "web*", "", format.Filters{}); err != nil || len(ss.Sessions) != 1 || ss.Sessions[0].SessionID != "sess-2" {
 		t.Fatalf("sessions glob: %+v %v", ss, err)
 	}
 	// Read: the addresses grep printed; an ambiguous prefix says so.
@@ -392,8 +392,8 @@ func TestServerAgentListAndSelfExclusion(t *testing.T) {
 	if p, err = f.s.Search(ctx, format.SearchQuery{Query: "pangolin"}, ex); err != nil || sessionsOf(p.Hits) != "other" {
 		t.Fatalf("search self-exclusion: %s %v", sessionsOf(p.Hits), err)
 	}
-	ss, err := f.s.Sessions(ctx, "", 0, ex)
-	if err != nil || ss.Total != 1 || ss.Sessions[0].SessionID != "other" {
+	ss, err := f.s.Sessions(ctx, "", "", ex)
+	if err != nil || len(ss.Sessions) != 1 || ss.Sessions[0].SessionID != "other" {
 		t.Fatalf("sessions self-exclusion: %+v %v", ss, err)
 	}
 	// session scopes grep and search to one session (by a unique prefix)
@@ -482,7 +482,7 @@ func TestSessionsReadRawStatementTimeout(t *testing.T) {
 		return func() { cancel(); <-done; lock.Rollback(ctx) }
 	}
 	for name, call := range map[string]func(context.Context) error{
-		"sessions": func(c context.Context) error { _, err := f.s.Sessions(c, "", 0, format.Filters{}); return err },
+		"sessions": func(c context.Context) error { _, err := f.s.Sessions(c, "", "", format.Filters{}); return err },
 		"read": func(c context.Context) error {
 			_, err := f.s.Read(c, "", format.ReadQuery{Address: "sess-1/1"}, format.Filters{})
 			return err

@@ -9,8 +9,7 @@ import (
 // prompts and tool calls in order (live rows on the active path), the
 // tool calls that failed, and the subagents each call spawned.
 type Outline struct {
-	Rows  []*Row
-	Total int // user and tool_call rows in the conversation
+	Rows []*Row
 	// Failed holds the tool call ids whose call or result is marked
 	// failed.
 	Failed map[string]bool
@@ -22,14 +21,23 @@ type Outline struct {
 // outlineWhere selects the outline rows of conversation ?.
 const outlineWhere = ` WHERE m.conversation_id = ? AND m.superseded = 0 AND m.on_active_path IS NOT 0 AND m.kind IN ('user', 'tool_call')`
 
-// Outline returns rows offset..offset+limit of a conversation's outline.
-func (s *Store) Outline(ctx context.Context, convID int64, offset, limit int) (*Outline, error) {
+// OutlineKey is an outline row's place in the outline's order.
+type OutlineKey struct {
+	Ordinal int64
+	ID      int64
+}
+
+// Outline returns up to limit rows of a conversation's outline, after
+// the row after when it is set.
+func (s *Store) Outline(ctx context.Context, convID int64, after *OutlineKey, limit int) (*Outline, error) {
 	out := &Outline{Failed: map[string]bool{}, Spawned: map[int64][]string{}}
-	if err := s.rdb.QueryRowContext(ctx, `SELECT count(*) FROM messages m`+outlineWhere, convID).Scan(&out.Total); err != nil {
-		return nil, err
+	where, args := outlineWhere, []any{convID}
+	if after != nil {
+		where += ` AND (m.ordinal > ? OR m.ordinal = ? AND m.id > ?)`
+		args = append(args, after.Ordinal, after.Ordinal, after.ID)
 	}
-	err := s.stream(ctx, `SELECT `+rowCols+rowFrom+outlineWhere+` ORDER BY m.ordinal, m.id LIMIT ? OFFSET ?`,
-		[]any{convID, limit, offset}, func(r *Row) bool {
+	err := s.stream(ctx, `SELECT `+rowCols+rowFrom+where+` ORDER BY m.ordinal, m.id LIMIT ?`,
+		append(args, limit), func(r *Row) bool {
 			out.Rows = append(out.Rows, r)
 			return true
 		})

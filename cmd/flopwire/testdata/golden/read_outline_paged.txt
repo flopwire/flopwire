@@ -9,4 +9,4 @@
   019a0000-0000-7000-8000-0000000000a1/6004736  exec_command(rg -n NewRouter)
   019a0000-0000-7000-8000-0000000000a1/7688192  apply_patch(internal/api/server.go, internal/api/health.go)
   019a0000-0000-7000-8000-0000000000a1/10723328  exec_command(go test ./internal/api/)
-[outline 2-4 of 5; next: flopwire read 019a0000-0000-7000-8000-0000000000a1 --outline --offset 4]
+[outline: 3 entries shown, more follow; next: flopwire read 019a0000-0000-7000-8000-0000000000a1 --outline --cursor 10723328.62]

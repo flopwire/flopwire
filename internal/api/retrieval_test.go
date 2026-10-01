@@ -78,7 +78,7 @@ func (d *deadlineRetrieval) note(ctx context.Context) error {
 	return fmt.Errorf("timed out after 2s: %w", context.DeadlineExceeded)
 }
 
-func (d *deadlineRetrieval) Sessions(ctx context.Context, _ string, _ int, _ format.Filters) (*format.Sessions, error) {
+func (d *deadlineRetrieval) Sessions(ctx context.Context, _, _ string, _ format.Filters) (*format.Sessions, error) {
 	return nil, d.note(ctx)
 }
 

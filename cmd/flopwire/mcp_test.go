@@ -25,7 +25,7 @@ func (b *blockingBackend) Grep(ctx context.Context, q format.GrepQuery, f format
 func (b *blockingBackend) Search(ctx context.Context, q format.SearchQuery, f format.Filters) (*format.Page, error) {
 	return &format.Page{}, nil
 }
-func (b *blockingBackend) Sessions(ctx context.Context, glob string, offset int, f format.Filters) (*format.Sessions, error) {
+func (b *blockingBackend) Sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error) {
 	return &format.Sessions{}, nil
 }
 func (b *blockingBackend) Read(ctx context.Context, q format.ReadQuery, f format.Filters) (*format.Context, error) {

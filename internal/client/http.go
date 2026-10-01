@@ -125,13 +125,13 @@ func (c HTTP) Search(ctx context.Context, q format.SearchQuery, f format.Filters
 }
 
 // Sessions lists conversations on the server (GET /v1/sessions).
-func (c HTTP) Sessions(ctx context.Context, glob string, offset int, f format.Filters) (*format.Sessions, error) {
+func (c HTTP) Sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error) {
 	v := f.Values()
 	if glob != "" {
 		v.Set("glob", glob)
 	}
-	if offset > 0 {
-		v.Set("offset", strconv.Itoa(offset))
+	if cursor != "" {
+		v.Set("cursor", cursor)
 	}
 	var out format.Sessions
 	err := c.do(ctx, "GET", "/v1/sessions?"+v.Encode(), nil, nil, &out)

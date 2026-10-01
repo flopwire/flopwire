@@ -43,7 +43,7 @@ func TestFiltersRoundTrip(t *testing.T) {
 	if got, err := ParseReadQuery(r.Values(f.Values())); err != nil || got != r {
 		t.Fatalf("read query round trip: %+v %v", got, err)
 	}
-	r = ReadQuery{Address: "abc", Outline: true, Offset: 5, Limit: 9}
+	r = ReadQuery{Address: "abc", Outline: true, Cursor: "5.x", Limit: 9}
 	if got, err := ParseReadQuery(r.Values(url.Values{})); err != nil || got != r {
 		t.Fatalf("outline query round trip: %+v %v", got, err)
 	}
@@ -218,13 +218,34 @@ func TestBudgetEndsPageWithNextOffset(t *testing.T) {
 	if err := WriteSearch(&b, p, st); err != nil || len(b.String()) > 2300 || !regexp.MustCompile(`output budget of 2000 bytes reached; next: offset=\d+\]`).MatchString(b.String()) {
 		t.Fatalf("search under a budget: %v\n%s", err, b.String())
 	}
-	s := &Sessions{Total: 400}
+	// The budget cuts the sessions page; the next page starts after the
+	// last session shown, not after the last one fetched.
+	s := &Sessions{HasMore: true, Next: "fetched-page-end"}
 	for i := range 400 {
-		s.Sessions = append(s.Sessions, ConversationInfo{Address: fmt.Sprintf("s%03d", i), Agent: "claude", Title: strings.Repeat("t", 80), Messages: 3})
+		at := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(-time.Duration(i) * time.Microsecond)
+		s.Sessions = append(s.Sessions, ConversationInfo{Address: fmt.Sprintf("s%03d", i), ID: fmt.Sprintf("c%03d", i), LastActivityAt: &at,
+			Agent: "claude", Title: strings.Repeat("t", 80), Messages: 3})
 	}
 	b.Reset()
-	if err := WriteSessions(&b, s, Style{Budget: 2000}); err != nil || len(b.String()) > 2300 || !regexp.MustCompile(`\[showing 1-(\d+) of 400 sessions; output budget of 2000 bytes reached; next: --offset \d+\]`).MatchString(b.String()) {
+	err := WriteSessions(&b, s, Style{Budget: 2000})
+	m := regexp.MustCompile(`\[(\d+) sessions shown, more follow; output budget of 2000 bytes reached; next: --cursor (\S+)\]`).FindStringSubmatch(b.String())
+	if err != nil || len(b.String()) > 2300 || m == nil {
 		t.Fatalf("sessions under a budget: %v\n%s", err, b.String())
+	}
+	if shown, _ := strconv.Atoi(m[1]); shown == 0 || m[2] != SessionCursor(s.Sessions[shown-1]) || !strings.Contains(b.String(), s.Sessions[shown-1].Address) {
+		t.Fatalf("sessions cursor %q is not after the last shown of %s:\n%s", m[2], m[1], b.String())
+	}
+	// Without the budget the page's own cursor is printed; the last page
+	// says so.
+	b.Reset()
+	s.Sessions = s.Sessions[:2]
+	if err := WriteSessions(&b, s, Style{MCP: true}); err != nil || !strings.Contains(b.String(), "[2 sessions shown, more follow; next: cursor=fetched-page-end]") {
+		t.Fatalf("sessions page: %v\n%s", err, b.String())
+	}
+	b.Reset()
+	s.HasMore, s.Next = false, ""
+	if err := WriteSessions(&b, s, Style{}); err != nil || !strings.Contains(b.String(), "[2 sessions, end of list]") {
+		t.Fatalf("last sessions page: %v\n%s", err, b.String())
 	}
 }
 
