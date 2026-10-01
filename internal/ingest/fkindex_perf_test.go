@@ -24,6 +24,7 @@ func TestPerfSourceLookupPlansUseIndexes(t *testing.T) {
 		name, sql string
 		args      []any
 	}{
+		{"refuse: lock conversations", refuseLockSQL, []any{ids, uuid.NewString(), "claude", []string{"s1"}}},
 		{"refuse: conversations", refuseConversationsSQL, []any{ids, uuid.NewString(), "claude", []string{"s1"}}},
 		{"refuse: messages", refuseMessagesSQL, []any{ids}},
 		{"parse: had stored", hadStoredSQL, []any{id}},
