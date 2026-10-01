@@ -5,6 +5,13 @@ tests on throwaway sessions and by reading the Codex source at tag
 `rust-v0.158.0`. This note supersedes spec section 9.1 and the delivery
 bullets of 9.2 in `notes/local-search/README.md` where they differ.
 
+> 2026-10-01: the v1 design is in [`plan.md`](plan.md). It delivers through
+> hooks and does not wake idle sessions, so the socket and the queue below
+> are not used in v1; they remain the route for a later opt-in wake.
+> [`probes-2026-10-01.md`](probes-2026-10-01.md) holds the hook, Devin,
+> opencode and cloud tests. One correction from them: a message queued to a
+> running `codex exec` thread is lost when the process exits.
+
 The question: can Flopwire deliver a message into a Claude Code or Codex
 session that the user launched normally, with no wrapper and no launch
 flags? Config installed ahead of time (settings, hooks, MCP servers) is

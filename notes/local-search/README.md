@@ -850,6 +850,10 @@ the model.
 
 ## 9. Message bus (design now, build last)
 
+> Superseded on 2026-10-01 by `notes/message-bus/plan.md`: direct messages
+> only, hook delivery, no wake. This section is kept for the harness survey
+> and the reasoning behind the carried decisions.
+
 ### 9.1 What the harnesses offer today
 
 > Delivery mechanisms were re-verified on 2026-09-28 against live sessions.
