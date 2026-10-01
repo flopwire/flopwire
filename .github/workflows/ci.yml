@@ -130,6 +130,10 @@ jobs:
         run: |
           GOOS=linux go vet ./...
           GOOS=darwin go vet ./...
+      # The go-test shards run with -race, under which TestPackageInitCost
+      # skips its dependency caps. Run the init guards once without -race.
+      - name: Init cost guards (no -race)
+        run: go test -count=1 -run '^(TestPackageInitCost|TestInitAndVersionRunNoProgram)$' -v ./cmd/flopwire
       - run: pnpm --dir web test
       - run: pnpm --dir web build
       - run: scripts/validate-release-tag_test.sh
