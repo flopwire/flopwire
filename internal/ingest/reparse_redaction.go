@@ -5,27 +5,47 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"slices"
 
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/jackc/pgx/v5"
 )
 
+// The rules upgrade reads every stored version of a source, superseded ones
+// included, through messages_source_idx (source_id, superseded). Each query
+// below reads the source's rows once: the ids to rewrite are listed first,
+// then locked and rewritten 64 at a time by primary key. Rows a batch finds
+// already stamped (a concurrent upgrade got there first) are skipped.
 const (
-	staleVersionsBatch = `SELECT id::text,text,enrichment FROM messages WHERE source_id=$1
-    AND redaction_rules IS DISTINCT FROM $2 ORDER BY id LIMIT 64 FOR UPDATE NOWAIT`
-	sourceConversationsBatch = `SELECT c.id::text,COALESCE(c.title,''),c.digest FROM conversations c
-    WHERE c.id::text>$2 AND (c.source_id=$1 OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=$1 AND m.conversation_id=c.id))
-    ORDER BY c.id::text LIMIT 64 FOR UPDATE NOWAIT`
+	staleVersions = `SELECT id::text FROM messages WHERE source_id=$1
+    AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id`
+	staleVersionsBatch = `SELECT id::text,text,enrichment FROM messages WHERE id=ANY($1::uuid[])
+    AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id FOR UPDATE NOWAIT`
+	// A source's conversations: those that name it and those holding any
+	// of its row versions.
+	sourceConversations = `SELECT id::text FROM (SELECT id FROM conversations WHERE source_id=$1
+    UNION SELECT conversation_id FROM messages WHERE source_id=$1) s ORDER BY s.id`
+	sourceConversationsBatch = `SELECT id::text,COALESCE(title,''),digest FROM conversations
+    WHERE id=ANY($1::uuid[]) ORDER BY conversations.id FOR UPDATE NOWAIT`
 )
 
 // maskStoredVersions applies new rules to historical row versions too. A
 // reparse can supersede an old row; it must not leave its secret searchable.
 // Batch commits are idempotent. Only derived data changes, never the archive.
+// The sink writes every row under the current rules, so a row stored after
+// the id list is taken needs no masking.
 func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
-	for {
-		n := 0
+	rows, err := q.Pool.Query(ctx, staleVersions, source, redact.RulesVersion)
+	if err != nil {
+		return err
+	}
+	stale, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for batch := range slices.Chunk(stale, 64) {
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, staleVersionsBatch, source, redact.RulesVersion)
+			rows, err := tx.Query(ctx, staleVersionsBatch, batch, redact.RulesVersion)
 			if err != nil {
 				return archiveLockError(err)
 			}
@@ -41,7 +61,6 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 			if err != nil {
 				return archiveLockError(err)
 			}
-			n = len(records)
 			for _, r := range records {
 				text, _ := redact.Redact([]byte(r.text))
 				enrichment, err := maskRuleJSON(r.enrichment)
@@ -58,16 +77,19 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			break
-		}
 	}
 	// Cached summaries can retain strings no longer present in a live row.
-	last := ""
-	for {
-		var ids []string
+	rows, err = q.Pool.Query(ctx, sourceConversations, source)
+	if err != nil {
+		return err
+	}
+	conversations, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for batch := range slices.Chunk(conversations, 64) {
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, sourceConversationsBatch, source, last)
+			rows, err := tx.Query(ctx, sourceConversationsBatch, batch)
 			if err != nil {
 				return archiveLockError(err)
 			}
@@ -84,7 +106,6 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 				return archiveLockError(err)
 			}
 			for _, r := range records {
-				ids = append(ids, r.id)
 				title, _ := redact.Redact([]byte(r.title))
 				digest, err := maskRuleJSON(r.digest)
 				if err != nil {
@@ -101,11 +122,8 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
-		}
-		last = ids[len(ids)-1]
 	}
+	return nil
 }
 
 // Decode strings before masking, including escaped PEM blocks in JSON.
