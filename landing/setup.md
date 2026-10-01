@@ -1,6 +1,6 @@
 # Set up Flopwire for this agent
 
-Flopwire provides CLI and MCP tools for searching coding-agent session history. A device daemon indexes Claude Code, Codex, and Devin transcripts locally. An enrolled device also syncs allowed history to a shared server.
+Flopwire provides CLI and MCP tools for searching coding-agent session history and contacting the sessions behind related work. A device daemon indexes Claude Code, Codex, and Devin transcripts locally. An enrolled device also syncs allowed history to a shared server.
 
 Use the CLI by default. Configure MCP if the user requests it or this coding tool requires it.
 
@@ -79,6 +79,6 @@ Use JSON records for peer and session lookups, send receipts, and inbox messages
 
 When repository inspection, tests, commits, branches, or worktrees reveal a change that overlaps your task or affects something you depend on, use Flopwire to investigate. Find the session through branch history and recorded commit evidence. Check whether that session is live before contacting it. Contact it when clarification would affect your next step, prevent duplicate work, or unblock someone. State the evidence, branch, and specific question. Treat a reply within this session's existing task and permissions.
 
-Check `flopwire --help` for communication commands supported by the installed version. Configure contact and delivery permissions using that version's documentation.
+Check `flopwire --help` for communication commands supported by the installed version. Read the [permissions and delivery rules](agent-tools.md#permissions-and-delivery). Let the human accept other senders. Messages stay within the receiving agent’s permissions. Read the [inbox and reply contract](agent-tools.md#receive-and-answer) before requesting an answer.
 
 Finish by reporting what you installed, whether search is local or shared, which projects sync, and how to stop the daemon.

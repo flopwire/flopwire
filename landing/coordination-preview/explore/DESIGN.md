@@ -1,6 +1,6 @@
 # Connected sessions agent network preview
 
-Warm paper, Plex Mono type, orange fw mark, and a light tool trace. The agent’s calls sit beside the receiving session and client diff. Calls and results stack before the outcome on mobile.
+Warm paper, Plex Mono type, orange fw mark, and a dark tool trace. The four-step agent story and client diff stay visible. Full commands and responses sit in an expandable exchange.
 
 The headline names the service. The primary action copies setup instructions to hand to the coding agent. The instructions start local indexing and connect the current retrieval tools. Team enrollment requires approval. Shared history, path rules, and human-configured communication boundaries remain visible below the hero.
 
@@ -12,8 +12,8 @@ All examples use `../examples.css`. Commands and output share a dark terminal wi
 
 Page spacing uses `../layout.css`: 80px section intervals, 64px at tablet widths, and 56px on mobile. Section introductions separate from content by 32px, or 24px on mobile. Device stages use aligned rows on desktop and stack below 1000px.
 
-Branch history identifies the session behind the change. Presence checks that same session ID. The optional presence detail is expandable. Grep comparison terminals sit side by side on desktop and stack below 1000px. Source context uses body-sized text with agent, branch, and message-address attribution.
+Branch history identifies the session behind the change. Presence checks that same session ID. The full history/presence/send exchange is expandable. Grep comparison terminals sit side by side on desktop and stack below 1000px. The cursor-preserving diff follows its source read directly.
 
 ## Agent output contract
 
-Lookups return lean JSON records directly. Searches and reads return readable text with labeled headers. Presence and send panels identify contract examples. A queued receipt does not demonstrate delivery. Keep narration outside terminal panels and label command and output separately.
+Lookups return lean JSON records directly. Commands and JSON records scroll horizontally on narrow screens; transcript prose wraps. Searches and reads return readable text with labeled headers. Presence and send panels identify contract examples. A queued receipt does not demonstrate delivery. Keep narration outside terminal panels and label command and output separately. The architecture includes both history sync and the intended message route. Local setup uses `--no-sync`. Benchmarks stay a compact plan until measurements exist.

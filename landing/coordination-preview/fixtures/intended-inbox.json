@@ -1,0 +1,26 @@
+{
+  "kind": "inbox",
+  "session": "4c19e0d2-0000-4000-8000-000000000001",
+  "messages": [
+    {
+      "id": "m8a7b6c5d4e3f2a1",
+      "thread_id": "m1a2b3c4d5e6f7a8",
+      "reply_to": "m1a2b3c4d5e6f7a8",
+      "from": "79b2d8ef-0000-4000-8000-000000000001",
+      "agent": "claude",
+      "direction": "received",
+      "is_reply": true,
+      "body": "Yes. Use full_name and test against api-users."
+    },
+    {
+      "id": "m1a2b3c4d5e6f7a8",
+      "thread_id": "m1a2b3c4d5e6f7a8",
+      "from": "4c19e0d2-0000-4000-8000-000000000001",
+      "agent": "codex",
+      "direction": "sent",
+      "is_reply": false,
+      "body": "My profile client reads name. Is full_name in api-users the final contract?"
+    }
+  ],
+  "more": false
+}

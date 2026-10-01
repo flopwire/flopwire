@@ -61,3 +61,5 @@ The homepage now displays these direct responses:
 - `intended-grep.txt` and `intended-read.txt`: readable transcript content with the intended labeled headers.
 
 These are intended contracts, not captured default CLI output. The `sessions` JSON default and labeled headers need a follow-up PR. Presence and send need captures from the messaging CLI. The recipient hook must land before capturing the reply exchange. Re-capture after those changes and compare against these fixtures. See [the output-format decision](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818).
+
+`intended-inbox.json` shows the complete lean thread contract: received answer first, sent request second, with matching `thread_id` and `reply_to`. It is not a captured CLI run. The send receipt now includes `thread_id` so the sender can read that thread directly.
