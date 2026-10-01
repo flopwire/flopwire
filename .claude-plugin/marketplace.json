@@ -1,0 +1,15 @@
+{
+  "name": "flopwire",
+  "description": "Flopwire: search past coding-agent transcripts and message live agent sessions",
+  "owner": {
+    "name": "Flopwire",
+    "url": "https://github.com/flopwire/flopwire"
+  },
+  "plugins": [
+    {
+      "name": "flopwire",
+      "source": "./plugins/claude-code/flopwire",
+      "description": "Flopwire's MCP tools, its message-delivery hooks and a messaging skill for Claude Code"
+    }
+  ]
+}
