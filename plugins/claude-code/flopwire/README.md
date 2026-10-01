@@ -56,7 +56,15 @@ pinned version, so Claude Code versions it by the repository's commit.
 
 `flopwire setup --remove` runs `claude plugin uninstall flopwire@flopwire`
 and `claude plugin marketplace remove flopwire`. Run
-`flopwire setup --check` to confirm.
+`flopwire setup --check` to confirm. It keeps the marketplace while
+Claude Code still has a plugin installed from it in another scope or
+project, since removing a marketplace uninstalls every plugin from it.
+
+setup trusts only a `flopwire` marketplace from its source (`--source`,
+default `flopwire/flopwire`). If a marketplace with that name comes from
+anywhere else, setup installs, updates and removes nothing through it,
+reports an error, and names the commands to switch. Pass the same
+`--source` to `--remove` that you passed to install.
 
 ## Older manual setup
 

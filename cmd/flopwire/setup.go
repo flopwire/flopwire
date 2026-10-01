@@ -400,6 +400,28 @@ func (c claudeCLI) plugin(ctx context.Context) (*claudePluginEntry, error) {
 	return nil, nil
 }
 
+// installsFrom lists the plugins Claude Code has installed from Flopwire's
+// marketplace, in any scope or project.
+func (c claudeCLI) installsFrom(ctx context.Context) ([]string, error) {
+	args := []string{"plugin", "list", "--json"}
+	out, errb, err := c.raw(ctx, args...)
+	var l []claudePluginEntry
+	if err != nil || json.Unmarshal(bytes.TrimSpace(out), &l) != nil {
+		return nil, commandError(c.path, args, out, errb, err)
+	}
+	var ids []string
+	for _, p := range l {
+		if strings.HasSuffix(p.ID, "@"+claudeMarketplace) {
+			id := p.ID + " (" + p.Scope + " scope"
+			if p.ProjectPath != "" {
+				id += ", " + p.ProjectPath
+			}
+			ids = append(ids, id+")")
+		}
+	}
+	return ids, nil
+}
+
 func commandError(path string, args []string, out, errb []byte, err error) error {
 	msg := strings.TrimSpace(string(errb))
 	if msg == "" {
@@ -479,6 +501,12 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 	if mkt != nil {
 		r.Marketplace = mkt.location()
 	}
+	// A marketplace named flopwire from another source is a fork or a
+	// name squatter: setup installs, updates and removes nothing through it.
+	foreign := mkt != nil && !sameSource(*mkt, env.source)
+	if foreign {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("the marketplace %s comes from %s, not %s; setup installs, updates and removes nothing through a marketplace it did not add. If you trust it, run flopwire setup --source %s. To switch, run claude plugin marketplace remove %s (it uninstalls every plugin from it), then flopwire setup", claudeMarketplace, mkt.location(), env.source, mkt.location(), claudeMarketplace))
+	}
 	installed, err := c.plugin(ctx)
 	if err != nil {
 		return fail(err)
@@ -502,9 +530,8 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 			}
 			r.Marketplace = env.source
 			r.Done = append(r.Done, "added the marketplace "+claudeMarketplace+" from "+env.source)
-		case !sameSource(*mkt, env.source):
-			r.Warnings = append(r.Warnings, fmt.Sprintf("the marketplace %s comes from %s, not %s; setup kept it. To switch, run flopwire setup --remove, then flopwire setup --source %s", claudeMarketplace, mkt.location(), env.source, env.source))
-			fallthrough
+		case foreign:
+			r.Error = fmt.Sprintf("did not install or update %s: the marketplace %s comes from %s, not %s (see warnings)", claudePlugin, claudeMarketplace, mkt.location(), env.source)
 		default:
 			// Refresh the catalog, so an update below sees new versions.
 			if res, err := c.result(ctx, "plugin", "marketplace", "update", claudeMarketplace, "--json"); err != nil {
@@ -513,7 +540,9 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 				r.Warnings = append(r.Warnings, "could not refresh the marketplace: "+res.Message)
 			}
 		}
-		if installed == nil {
+		if r.Error != "" {
+			// Nothing installed or updated.
+		} else if installed == nil {
 			res, err := c.result(ctx, append([]string{"plugin", "install", claudePlugin, "--json"}, scopeArgs...)...)
 			if err != nil {
 				return fail(err)
@@ -545,7 +574,17 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 			}
 			r.Done = append(r.Done, "uninstalled "+claudePlugin)
 		}
-		if mkt != nil {
+		if mkt != nil && !foreign {
+			// Removing a marketplace uninstalls every plugin installed from
+			// it, in every scope: keep it while anything else uses it.
+			others, err := c.installsFrom(ctx)
+			if err != nil {
+				return fail(err)
+			}
+			if len(others) > 0 {
+				r.Warnings = append(r.Warnings, fmt.Sprintf("kept the marketplace %s: Claude Code still has %s installed from it, and removing the marketplace would uninstall them", claudeMarketplace, strings.Join(others, ", ")))
+				break
+			}
 			res, err := c.result(ctx, append([]string{"plugin", "marketplace", "remove", claudeMarketplace, "--json"}, scopeArgs...)...)
 			switch {
 			case err != nil:
@@ -572,7 +611,7 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 		}
 	}
 	switch {
-	case env.mode == setupInstall && !r.Installed:
+	case env.mode == setupInstall && !r.Installed && r.Error == "":
 		return fail(fmt.Errorf("claude plugin list does not show %s at %s scope after the install", claudePlugin, env.scope))
 	case env.mode == setupRemove && r.Installed:
 		return fail(fmt.Errorf("claude plugin list still shows %s at %s scope", claudePlugin, env.scope))

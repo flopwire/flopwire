@@ -585,11 +585,11 @@ func TestSetupWarnsAboutManualEntries(t *testing.T) {
 	}
 }
 
-func TestSetupDisabledAndForeignMarketplace(t *testing.T) {
+func TestSetupDisabledPluginStaysDisabled(t *testing.T) {
 	f := newSetupFixture(t, true)
 	f.setState(fakeClaudeState{
 		Available:    "aaaaaaaaaaaa",
-		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "github", Repo: "someone/fork"}},
+		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
 		Plugins:      []claudePluginEntry{{ID: claudePlugin, Version: "aaaaaaaaaaaa", Scope: "user", Enabled: false}},
 	})
 	rep, _, err := f.run()
@@ -600,13 +600,93 @@ func TestSetupDisabledAndForeignMarketplace(t *testing.T) {
 	if h.Enabled || !slices.ContainsFunc(h.Todo, func(s string) bool { return strings.Contains(s, "claude plugin enable flopwire@flopwire --scope user") }) {
 		t.Fatalf("disabled plugin: %+v", h)
 	}
-	if h.Marketplace != "someone/fork" || !slices.ContainsFunc(h.Warnings, func(s string) bool { return strings.Contains(s, "comes from someone/fork") }) {
-		t.Fatalf("foreign marketplace: %+v", h)
-	}
 	for _, c := range f.calls() {
 		if strings.Contains(c, "enable") || strings.Contains(c, "marketplace add") || strings.Contains(c, "marketplace remove") {
 			t.Fatalf("setup overrode the user's choice: %q", c)
 		}
+	}
+}
+
+// TestSetupForeignMarketplaceNotTrusted: a marketplace named flopwire from
+// another source (a fork, or a name squatter) is not ours. setup installs,
+// updates and removes nothing through it, says so, and fails the install.
+func TestSetupForeignMarketplaceNotTrusted(t *testing.T) {
+	foreign := claudeMarketplaceEntry{Name: "flopwire", Source: "github", Repo: "someone/fork"}
+	for _, installed := range []bool{false, true} {
+		t.Run(fmt.Sprint("installed=", installed), func(t *testing.T) {
+			f := newSetupFixture(t, true)
+			st := fakeClaudeState{Available: "bbbbbbbbbbbb", Marketplaces: []claudeMarketplaceEntry{foreign}}
+			if installed {
+				st.Plugins = []claudePluginEntry{{ID: claudePlugin, Version: "aaaaaaaaaaaa", Scope: "user", Enabled: true}}
+			}
+			f.setState(st)
+			before := mustJSON(f.getState())
+			rep, _, err := f.run()
+			if !errors.Is(err, errReported) || rep.OK {
+				t.Fatalf("install through a foreign marketplace: want a failed report, got %v ok=%v", err, rep.OK)
+			}
+			h := f.claude(rep)
+			if !strings.Contains(h.Error, "someone/fork") || h.Installed != installed || len(h.Done) != 0 {
+				t.Fatalf("foreign marketplace: %+v", h)
+			}
+			if !slices.ContainsFunc(h.Warnings, func(s string) bool { return strings.Contains(s, "comes from someone/fork") }) {
+				t.Fatalf("no warning about the source: %q", h.Warnings)
+			}
+			if got := mutating(f.calls()); len(got) != 0 {
+				t.Fatalf("setup ran %q through a marketplace it did not add", got)
+			}
+			if !bytes.Equal(before, mustJSON(f.getState())) {
+				t.Fatal("setup changed the harness")
+			}
+			// --check says so too, and changes nothing.
+			rep, _, err = f.run("--check")
+			if err != nil || !slices.ContainsFunc(f.claude(rep).Warnings, func(s string) bool { return strings.Contains(s, "comes from someone/fork") }) {
+				t.Fatalf("--check: %v %+v", err, f.claude(rep))
+			}
+			if got := mutating(f.calls()); len(got) != 0 {
+				t.Fatalf("--check ran %q", got)
+			}
+			// --remove uninstalls flopwire but keeps the user's marketplace.
+			if _, _, err = f.run("--remove"); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range f.calls() {
+				if strings.HasPrefix(c, "plugin marketplace remove") {
+					t.Fatalf("--remove removed a marketplace setup did not add: %q", c)
+				}
+			}
+			if st := f.getState(); len(st.Marketplaces) != 1 {
+				t.Fatalf("--remove left %+v", st)
+			}
+		})
+	}
+}
+
+// TestSetupRemoveKeepsAMarketplaceInUse: removing a marketplace uninstalls
+// every plugin installed from it, so --remove keeps it while any other
+// install from it remains (another scope or project, or another plugin).
+func TestSetupRemoveKeepsAMarketplaceInUse(t *testing.T) {
+	f := newSetupFixture(t, true)
+	other := claudePluginEntry{ID: claudePlugin, Version: "aaaaaaaaaaaa", Scope: "project", Enabled: true, ProjectPath: "/elsewhere"}
+	f.setState(fakeClaudeState{
+		Available:    "aaaaaaaaaaaa",
+		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+		Plugins:      []claudePluginEntry{{ID: claudePlugin, Version: "aaaaaaaaaaaa", Scope: "user", Enabled: true}, other},
+	})
+	rep, _, err := f.run("--remove")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := f.claude(rep)
+	want := []string{"plugin uninstall flopwire@flopwire --json --scope user"}
+	if got := mutating(f.calls()); !slices.Equal(got, want) {
+		t.Fatalf("remove calls %q, want %q", got, want)
+	}
+	if h.Installed || h.Marketplace == "" || !slices.ContainsFunc(h.Warnings, func(s string) bool { return strings.Contains(s, "/elsewhere") }) {
+		t.Fatalf("remove: %+v", h)
+	}
+	if st := f.getState(); len(st.Plugins) != 1 || st.Plugins[0].ProjectPath != "/elsewhere" || len(st.Marketplaces) != 1 {
+		t.Fatalf("remove took the other install with it: %+v", st)
 	}
 }
 
