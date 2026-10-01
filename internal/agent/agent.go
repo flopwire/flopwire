@@ -170,12 +170,12 @@ type Agent struct {
 	pass      uint64           // discovery passes
 	stubbed   map[string]bool  // orphaned Claude sessions given a stub row
 	companion map[string]int64 // companion sizes recorded at startup
-	urgent    []*target        // hook flushes, fast-lane and directory-event hits
-	normal    []*target        // sweep hits
+	urgent    queue            // hook flushes, fast-lane and directory-event hits
+	normal    queue            // sweep hits
 	// background holds unchanged sources indexed by an older parser
 	// version, re-parsed only when nothing else is queued, and only once
 	// Run started (bgOn): a pass (Once) never waits for them (D16).
-	background []*target
+	background queue
 	bgOn       bool
 	bgWG       sync.WaitGroup  // background work outside the workers (Devin)
 	wake       chan struct{}   // a job was queued
@@ -547,24 +547,18 @@ func (a *Agent) enqueueLocked(t *target, urgent bool) {
 		case t.inBackground:
 			// A change beats a background re-parse: the change is indexed
 			// with a full re-parse anyway (indexTranscript).
-			a.background = removeTarget(a.background, t)
 		case !urgent:
 			return
-		default:
-			// Promote: drop it from the normal queue.
-			a.normal = removeTarget(a.normal, t)
-			for _, q := range a.urgent {
-				if q == t {
-					return
-				}
-			}
+		case a.urgent.has(t):
+			return
 		}
+		// Promote: push takes it out of the queue it is in.
 	}
 	t.queued, t.inBackground = true, false
 	if urgent {
-		a.urgent = append(a.urgent, t)
+		a.urgent.push(t)
 	} else {
-		a.normal = append(a.normal, t)
+		a.normal.push(t)
 	}
 	a.kick()
 }
@@ -575,19 +569,10 @@ func (a *Agent) enqueueBackgroundLocked(t *target) {
 		return
 	}
 	t.queued, t.inBackground = true, true
-	a.background = append(a.background, t)
+	a.background.push(t)
 	if a.bgOn {
 		a.kick()
 	}
-}
-
-func removeTarget(q []*target, t *target) []*target {
-	for i, x := range q {
-		if x == t {
-			return append(q[:i], q[i+1:]...)
-		}
-	}
-	return q
 }
 
 func (a *Agent) kick() {
@@ -612,18 +597,18 @@ func (a *Agent) worker(ctx context.Context) {
 		a.mu.Lock()
 		var t *target
 		switch {
-		case len(a.urgent) > 0:
-			t, a.urgent = a.urgent[0], a.urgent[1:]
-		case len(a.normal) > 0:
-			t, a.normal = a.normal[0], a.normal[1:]
-		case a.bgOn && len(a.background) > 0:
-			t, a.background = a.background[0], a.background[1:]
+		case a.urgent.len() > 0:
+			t = a.urgent.pop()
+		case a.normal.len() > 0:
+			t = a.normal.pop()
+		case a.bgOn && a.background.len() > 0:
+			t = a.background.pop()
 		}
 		if t != nil {
 			t.queued, t.inBackground = false, false
 			a.busy++
 		}
-		more := len(a.urgent)+len(a.normal) > 0 || a.bgOn && len(a.background) > 0
+		more := a.urgent.len()+a.normal.len() > 0 || a.bgOn && a.background.len() > 0
 		a.mu.Unlock()
 		if t == nil {
 			select {
@@ -642,7 +627,7 @@ func (a *Agent) worker(ctx context.Context) {
 		}
 		a.mu.Lock()
 		a.busy--
-		if a.busy == 0 && len(a.urgent)+len(a.normal) == 0 {
+		if a.busy == 0 && a.urgent.len()+a.normal.len() == 0 {
 			a.idle.Broadcast()
 		}
 		a.mu.Unlock()
@@ -652,7 +637,7 @@ func (a *Agent) worker(ctx context.Context) {
 // WaitIdle blocks until the queue is empty and no job runs.
 func (a *Agent) WaitIdle() {
 	a.mu.Lock()
-	for a.busy > 0 || len(a.urgent)+len(a.normal) > 0 {
+	for a.busy > 0 || a.urgent.len()+a.normal.len() > 0 {
 		a.idle.Wait()
 	}
 	a.mu.Unlock()
@@ -874,7 +859,7 @@ func (a *Agent) refreshAdmin(ctx context.Context) {
 // should hold little memory (spec §11.2: under 50MB).
 func (a *Agent) shrinkIfIdle(ctx context.Context) {
 	a.mu.Lock()
-	idle := a.busy == 0 && len(a.urgent)+len(a.normal)+len(a.background) == 0
+	idle := a.busy == 0 && a.urgent.len()+a.normal.len()+a.background.len() == 0
 	a.mu.Unlock()
 	if !idle {
 		return
