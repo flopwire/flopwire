@@ -133,6 +133,11 @@ sessions follow and gives the `--cursor` that reads them:
 The last page says `end of list`. There is no total: a page reads about as
 many sessions as it shows, however long the list is.
 
+The cursor is a position in the order, not a snapshot. A session whose
+last activity changes during a walk moves: newest first, it is skipped
+if it had not been shown yet; oldest first, it can show again on a later
+page. Start a new walk to see the list as it is now.
+
 Each session prints its short digest (the header line grep uses, with
 its message count and the parent of a subagent), then its last reply:
 

@@ -344,6 +344,12 @@ func TestGrepCandidatesPlanIndexed(t *testing.T) {
 // then read nearly every message (see grepCandidates). Plans and cost at
 // test sizes do not show this reliably, so the schema is checked.
 func TestNoMessagesTSIndex(t *testing.T) {
+	// allowed names indexes that lead with messages.ts for a reason grep
+	// cannot trip over, each with that reason: a partial index whose
+	// predicate grep never matches (WHERE superseded, say), or one for
+	// another job after grep's ORDER BY was made unindexable. Add one only
+	// with a grep plan and scaling check that shows it is not walked.
+	allowed := map[string]string{}
 	s, _ := perfCorpus(t, 1, 1)
 	var names []string
 	rows, err := s.Pool.Query(context.Background(), `SELECT i.indexrelid::regclass::text FROM pg_index i
@@ -357,10 +363,16 @@ func TestNoMessagesTSIndex(t *testing.T) {
 		if err := rows.Scan(&n); err != nil {
 			t.Fatal(err)
 		}
-		names = append(names, n)
+		if _, ok := allowed[n]; !ok {
+			names = append(names, n)
+		}
 	}
 	if len(names) > 0 {
-		t.Fatalf("indexes leading with messages.ts: %v; grep's cursor would walk them instead of its trigram candidates", names)
+		t.Fatalf("indexes leading with messages.ts: %v. Grep plans its candidate query as a cursor (for the first rows), so the "+
+			"planner may walk such an index newest first and filter every message by the pattern instead of reading the trigram "+
+			"candidates; a pattern whose matches are few and old then reads nearly the whole table (see grepCandidates). "+
+			"Drop the index, or, if it is needed for another job and grep cannot use it, add it to allowed in this test with the "+
+			"reason and a grep check that proves it", names)
 	}
 }
 

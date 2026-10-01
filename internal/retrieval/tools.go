@@ -420,7 +420,7 @@ func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filt
 // after (nil: from the start), in order of last activity, undated
 // sessions last, ties by id. The keyset walks
 // conversations_activity_idx: dated sessions after the key, then undated
-// ones, each branch stopping at limit, so a page reads about limit rows
+// ones, each branch stopping at limit, so a page reads at most 2·limit rows
 // however many sessions there are (unless a filter rejects most of
 // them). Devices and users join inside the page only when a filter needs
 // them (the planner drops an unused left join), and the output columns
@@ -479,7 +479,11 @@ func sessionsPage(glob string, f format.Filters, oldest bool, after *format.Sess
 		parts = append(parts, `(`+dated+` ORDER BY c.last_activity_at`+dir+`,c.id`+dir+lim+`)`)
 	}
 	parts = append(parts, `(`+undated+` ORDER BY c.id`+dir+lim+`)`)
-	return `SELECT ` + convCols + ` FROM (SELECT * FROM (` + strings.Join(parts, ` UNION ALL `) + `) p` + lim + `) c` + convJoins +
+	// The branches are ordered explicitly before the page's LIMIT: Append
+	// happens to emit them in order, but nothing promises that (a Parallel
+	// Append need not), and the LIMIT would then drop dated rows. The sort
+	// is over at most two branches of limit rows each.
+	return `SELECT ` + convCols + ` FROM (SELECT * FROM (` + strings.Join(parts, ` UNION ALL `) + `) p ORDER BY p.last_activity_at` + dir + ` NULLS LAST,p.id` + dir + lim + `) c` + convJoins +
 		` ORDER BY c.last_activity_at` + dir + ` NULLS LAST,c.id` + dir, q.args
 }
 
