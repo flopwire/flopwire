@@ -22,12 +22,15 @@ rationale.
 
 ## Read the security boundary first
 
-flopwire stores raw, unredacted agent transcripts indefinitely. They can
-contain credentials, source code, private prompts and personal
-information. flopwire does not redact secrets. Every member can search and
-read the whole organization corpus. Host administrators can read plaintext
-database rows and objects. Path rules keep chosen directories and
-repositories off the server; nothing else does.
+flopwire stores agent transcripts indefinitely. They can contain source
+code, private prompts and personal information. Secrets are redacted on the
+device before upload and again on the server: vendor tokens, private keys,
+JWTs, credentials in URLs and headers, and assignments whose key names a
+secret. Redaction is pattern-based. A secret it does not recognize, and
+personal information, is stored as written, and your own local index keeps
+the original text. Every member can search and read the whole organization
+corpus. Host administrators can read plaintext database rows and objects.
+Path rules keep chosen directories and repositories off the server.
 
 Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 
@@ -35,20 +38,20 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 
 | Part | What it does |
 |---|---|
-| Device agent (`flopwire agent run`) | Watches Claude Code, Codex and Devin transcripts. Indexes them into a local SQLite index within about a second. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
+| Device agent (`flopwire agent run`) | Watches transcripts from Claude Code, Codex, Devin and more. Indexes them into a local SQLite index within about a second. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
 | Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
 | Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
 | MCP server (`flopwire mcp`) | The same four tools for agents, over stdio, local or `--server`. |
+| Messaging | Agents see who is online (`list_peers`), message any session (`send`) and read replies (`inbox`), across harnesses, machines and teammates. A recipient approves each new sender once. A message to a session that is not running waits in its owner's inbox. |
+| Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
+| Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
 | Identity | One organization. Invited local accounts with `admin` and `member` roles. Revocable, rotatable device credentials. Upload-only service accounts. |
 | Path rules | User rules on the device. Admin rules for everyone, enforced on the device and again on the server. |
 | Deletion | By the owner or an admin, permanent across devices and later backups. The only automatic purge is of sessions an admin path-rule change hid, after 7 days. |
 | Admin console | Web console for health, people and devices, policy, the archive and deletions, and the audit log. |
 | Operations | Checksummed coordinated backup and restore, Prometheus metrics, structured logs, a full audit trail. |
 
-Not in this release: secret redaction, semantic search, the message bus
-(designed in [notes/message-bus](notes/message-bus/README.md)), corpus
-search in the web console, harnesses other than Claude Code, Codex and
-Devin.
+Not included: semantic search, and corpus search in the web console.
 
 ## Quick start: the server
 

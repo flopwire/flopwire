@@ -14,10 +14,11 @@ The exchange and search results are illustrative client-side examples. They do n
 
 ## Before public release
 
-- Make the repository publicly accessible or change the availability claim and GitHub destination. The repository is currently private.
+The page and the repository README describe live messaging, commit-to-session links and secret redaction as shipped. Before launch:
+
+- Verify messaging and commit-to-session links work end to end against the release, and that the tool names match (`list_peers`, `send`, `inbox`).
 - Replace development-branch setup instructions with a verified release installation path.
-- Confirm the final Flopwire command name and tool schemas. The page uses existing `flopwire` setup commands and labels proposed tool calls as illustrative.
-- Verify messaging, commit-to-session links, supported harnesses, and environment support against the release. Delivery probes are not a released messaging service.
+- Verify the harnesses and environments the page names.
 - Confirm the hosted offering announcement.
 
 ## Verification
