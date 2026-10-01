@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
@@ -98,8 +99,72 @@ func TestSnapshotRefusesBusyPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Release()
-	if _, err := TakeSnapshot(context.Background(), pool); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := TakeSnapshot(ctx, pool); err == nil {
 		t.Fatal("snapshot with an acquired connection succeeded")
+	}
+}
+
+// Work on a second pool to the same database cannot be flushed; a
+// snapshot that ignored it would read zero cost and pass any guard.
+func TestSnapshotRefusesForeignConnection(t *testing.T) {
+	pool, _ := itemsPool(t, 100, 0)
+	ctx := context.Background()
+	other, err := pgx.Connect(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close(ctx)
+	if _, err := other.Exec(ctx, `SELECT count(*) FROM items`); err != nil {
+		t.Fatal(err)
+	}
+	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	if _, err := TakeSnapshot(short, pool); err == nil || !strings.Contains(err.Error(), "not through the measured pool") {
+		t.Fatalf("snapshot with an unflushed foreign connection: err = %v", err)
+	}
+	// Passed explicitly, the connection is flushed and counted.
+	before, err := TakeSnapshot(ctx, pool, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Exec(ctx, `SELECT count(*) FROM items`); err != nil {
+		t.Fatal(err)
+	}
+	after, err := TakeSnapshot(ctx, pool, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Sub(before).Tables["public.items"].SeqTupRead; got != 100 {
+		t.Fatalf("seq_tup_read on the extra connection = %d, want 100", got)
+	}
+}
+
+// A pool connection destroyed during the work (closed, or released
+// mid-transaction) flushes only when its backend exits, after the client
+// returns. The snapshot must wait for that, not miss or refuse it.
+func TestSnapshotWaitsForDestroyedConnection(t *testing.T) {
+	pool, counter := itemsPool(t, 1000, 0)
+	ctx := context.Background()
+	cost := Measure(t, pool, counter, func() {
+		c, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, `SELECT count(*) FROM items`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, `BEGIN`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, `SELECT count(*) FROM items`); err != nil {
+			t.Fatal(err)
+		}
+		c.Release() // in a transaction: the pool destroys it
+	})
+	if got := cost.Tables["public.items"].SeqTupRead; got != 2000 {
+		t.Fatalf("seq_tup_read = %d, want 2000 (destroyed connection's stats missed)\n%s", got, cost)
 	}
 }
 

@@ -120,20 +120,58 @@ SELECT s.schemaname || '.' || s.relname,
          + coalesce(io.tidx_blks_hit, 0) + coalesce(io.tidx_blks_read, 0)
 FROM pg_stat_user_tables s JOIN pg_statio_user_tables io USING (relid)`
 
-// TakeSnapshot flushes the statistics of every pool connection and reads
-// the cumulative cost of every user table. The pool must be idle: an
-// acquired connection's counts cannot be flushed from outside.
-func TakeSnapshot(ctx context.Context, pool *pgxpool.Pool) (Snapshot, error) {
+// TakeSnapshot flushes the statistics of every pool connection (and of
+// conns, separate connections the work also used) and reads the cumulative
+// cost of every user table.
+//
+// It first waits, up to five seconds or half of ctx's remaining time, until every client
+// backend connected to the database has been flushed or has exited (a
+// backend flushes on exit before it leaves pg_stat_activity). That covers
+// a pool connection the health check holds for a moment and a connection
+// destroyed during the work, whose backend may still be exiting. It fails
+// when a pool connection stays acquired, or when another connection to the
+// database (a second pool, say) stays open: its counts cannot be flushed,
+// and a snapshot without them would silently under-count.
+func TakeSnapshot(ctx context.Context, pool *pgxpool.Pool, conns ...*pgx.Conn) (Snapshot, error) {
 	ctx = untraced(ctx)
-	if n := pool.Stat().AcquiredConns(); n > 0 {
-		return nil, fmt.Errorf("perfguard: %d pool connections are in use; their statistics cannot be flushed", n)
+	// The wait ends before ctx does, so the queries can still report why.
+	wait := snapshotWait
+	if d, ok := ctx.Deadline(); ok {
+		wait = min(wait, time.Until(d)/2)
 	}
-	for _, c := range pool.AcquireAllIdle(ctx) {
-		err := FlushConn(ctx, c.Conn())
-		c.Release()
+	deadline := time.Now().Add(wait)
+	flushed := map[int32]bool{}
+	for _, c := range conns {
+		if err := FlushConn(ctx, c); err != nil {
+			return nil, err
+		}
+		flushed[int32(c.PgConn().PID())] = true
+	}
+	for {
+		for _, c := range pool.AcquireAllIdle(ctx) {
+			err := FlushConn(ctx, c.Conn())
+			flushed[int32(c.Conn().PgConn().PID())] = true
+			c.Release()
+			if err != nil {
+				return nil, err
+			}
+		}
+		acquired := pool.Stat().AcquiredConns()
+		pids, err := unflushedBackends(ctx, pool, flushed)
 		if err != nil {
 			return nil, err
 		}
+		if acquired == 0 && len(pids) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			if acquired > 0 {
+				return nil, fmt.Errorf("perfguard: %d pool connections are in use; their statistics cannot be flushed", acquired)
+			}
+			return nil, fmt.Errorf("perfguard: client backends %v are connected to the database but not through the measured pool; "+
+				"their statistics cannot be flushed (pass their *pgx.Conn to TakeSnapshot, or do the work on the pool)", pids)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -159,6 +197,22 @@ func TakeSnapshot(ctx context.Context, pool *pgxpool.Pool) (Snapshot, error) {
 		snap[name] = tc
 	}
 	return snap, rows.Err()
+}
+
+// snapshotWait bounds how long TakeSnapshot waits for unflushed backends.
+const snapshotWait = 5 * time.Second
+
+// unflushedBackends lists the client backends of the pool's database,
+// other than the querying one, that are not in flushed.
+func unflushedBackends(ctx context.Context, pool *pgxpool.Pool, flushed map[int32]bool) ([]int32, error) {
+	rows, err := pool.Query(ctx, `
+SELECT pid FROM pg_stat_activity
+WHERE datname = current_database() AND backend_type = 'client backend'
+  AND pid <> pg_backend_pid() AND NOT pid = ANY ($1) ORDER BY pid`, slices.Collect(maps.Keys(flushed)))
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int32])
 }
 
 // DisableAutovacuum turns off autovacuum and autoanalyze on every user

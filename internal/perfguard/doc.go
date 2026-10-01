@@ -30,9 +30,12 @@
 // in-band flush needs no polling and keeps the pool usable, so one
 // fixture can be measured repeatedly.
 //
-// TakeSnapshot refuses to read while any pool connection is acquired,
-// because that backend cannot be flushed in-band. Work done on a separate
-// pgx.Conn must be flushed with FlushConn. Parallel query workers flush
+// Before reading, TakeSnapshot checks pg_stat_activity: every client
+// backend of the database must have been flushed, or must exit (a pool
+// connection destroyed during the work flushes on exit). It refuses to
+// read while a pool connection stays acquired or another connection stays
+// open, because those backends cannot be flushed in-band; a separate
+// pgx.Conn the work used is passed to TakeSnapshot to be flushed. Parallel query workers flush
 // when they exit, which can be after the leader returns, so NewPool turns
 // parallel query off.
 //
