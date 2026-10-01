@@ -138,6 +138,11 @@ func TestClaudePluginHooks(t *testing.T) {
 // nothing on stdout. Claude Code shows a "hook error" notice for any other
 // exit status, which on PostToolUse means one on every tool call.
 func TestClaudePluginHooksWithoutBinary(t *testing.T) {
+	testHooksWithoutBinary(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"))
+}
+
+func testHooksWithoutBinary(t *testing.T, hooksFile string) {
+	t.Helper()
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh")
@@ -149,7 +154,7 @@ func TestClaudePluginHooksWithoutBinary(t *testing.T) {
 			} `json:"hooks"`
 		} `json:"hooks"`
 	}
-	readJSONFile(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"), &hf)
+	readJSONFile(t, hooksFile, &hf)
 	// An "older binary": a flopwire that knows no hook command.
 	old := t.TempDir()
 	if err := os.WriteFile(filepath.Join(old, "flopwire"), []byte("#!/bin/sh\necho 'Usage: flopwire <command>' >&2\nexit 1\n"), 0o755); err != nil {
