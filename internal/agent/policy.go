@@ -1074,7 +1074,7 @@ func (a *Agent) uploadBound(spec devicesync.SourceSpec) (int64, bool) {
 	t := a.targets[spec.Path]
 	var scanned int64 = -1
 	if t != nil && t.kind == kindTranscript {
-		if t.parser != nil && t.indexedWith == indexingVersion(t.parser) {
+		if t.parser != nil && transcript.ReparseKey(t.indexedWith) == indexingVersion(t.parser) {
 			scanned = t.scanned
 		}
 	}

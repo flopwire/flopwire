@@ -30,6 +30,8 @@ type Queue struct {
 	Log     *slog.Logger
 	// Workers parse in parallel. Default 4.
 	Workers int
+	// RefreshInterval pauses the single idle-reparse worker between sources. Default 2s.
+	RefreshInterval time.Duration
 	// MaxBacklog pending sources before flushes are refused; 0: 20000.
 	MaxBacklog int64
 	// Sweep is the interval of the table sweep. Default 2s.
@@ -43,6 +45,7 @@ type Queue struct {
 
 	once        sync.Once
 	ch          chan string
+	refreshWake chan struct{}
 	mu          sync.Mutex
 	queued      map[string]bool
 	running     map[string]bool
@@ -57,6 +60,9 @@ func (q *Queue) init() {
 		if q.Workers <= 0 {
 			q.Workers = 4
 		}
+		if q.RefreshInterval <= 0 {
+			q.RefreshInterval = 2 * time.Second
+		}
 		if q.MaxBacklog <= 0 {
 			q.MaxBacklog = 20000
 		}
@@ -70,6 +76,7 @@ func (q *Queue) init() {
 			q.Log = slog.Default()
 		}
 		q.ch = make(chan string, 1024)
+		q.refreshWake = make(chan struct{}, 1)
 		q.queued, q.running = map[string]bool{}, map[string]bool{}
 	})
 }
@@ -152,23 +159,9 @@ func (q *Queue) Release(ctx context.Context, sourceID string, audit domain.Audit
 // Run parses until ctx ends.
 func (q *Queue) Run(ctx context.Context) {
 	q.init()
-	// The binary's extraction contract is fixed for this process. Assess old
-	// contracts once at startup, rather than scanning reports every sweep.
-	for {
-		if err := q.queueContractChanges(ctx); err == nil {
-			break
-		} else if ctx.Err() != nil {
-			return
-		} else {
-			q.Log.Warn("ingest: scheduling extraction assessment", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(q.Sweep):
-		}
-	}
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); q.refresh(ctx) }()
 	for range q.Workers {
 		wg.Add(1)
 		go func() {
@@ -197,6 +190,10 @@ func (q *Queue) Run(ctx context.Context) {
 }
 
 func (q *Queue) work(ctx context.Context, id string) {
+	q.runParse(ctx, id, q.ParseSource)
+}
+
+func (q *Queue) runParse(ctx context.Context, id string, parse func(context.Context, string) error) {
 	q.mu.Lock()
 	delete(q.queued, id)
 	if q.running[id] {
@@ -205,14 +202,14 @@ func (q *Queue) work(ctx context.Context, id string) {
 	}
 	q.running[id] = true
 	q.mu.Unlock()
-	err := q.ParseSource(ctx, id)
+	err := parse(ctx, id)
 	q.mu.Lock()
 	delete(q.running, id)
 	q.mu.Unlock()
 	if err == nil || ctx.Err() != nil {
 		return
 	}
-	if errors.Is(err, errPurgeBusy) || errors.Is(err, ErrArchiveChanged) {
+	if errors.Is(err, errPurgeBusy) || errors.Is(err, ErrArchiveChanged) || errors.Is(err, errParseBusy) {
 		q.later(ctx, id)
 		return
 	}
@@ -229,7 +226,7 @@ func (q *Queue) later(ctx context.Context, id string) {
 	defer cancel()
 	if _, err := q.Pool.Exec(bctx, `UPDATE source_parse_state SET next_attempt_at=now()+make_interval(secs => $2) WHERE source_id=$1`,
 		id, purgeRetry.Seconds()); err != nil {
-		q.Log.Warn("ingest: requeue after busy purge lock", "source", id, "error", err)
+		q.Log.Warn("ingest: requeue after busy ingest lock", "source", id, "error", err)
 	}
 }
 
@@ -297,17 +294,21 @@ func (q *Queue) sweep(ctx context.Context) {
 // reports the first error. For tests and one-shot rebuilds.
 func (q *Queue) Drain(ctx context.Context) error {
 	q.init()
-	if err := q.queueContractChanges(ctx); err != nil {
-		return err
-	}
 	for {
 		rows, err := q.Pool.Query(ctx, `SELECT source_id::text FROM source_parse_state WHERE requested_seq>parsed_seq AND quarantined_at IS NULL ORDER BY requested_at LIMIT 256`)
 		if err != nil {
 			return err
 		}
 		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil || len(ids) == 0 {
+		if err != nil {
 			return err
+		}
+		if len(ids) == 0 {
+			id, err := q.nextRefresh(ctx)
+			if err != nil || id == "" {
+				return err
+			}
+			ids = []string{id}
 		}
 		for _, id := range ids {
 			if err := q.ParseSource(ctx, id); err != nil {

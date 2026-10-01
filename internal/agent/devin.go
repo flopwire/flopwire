@@ -89,7 +89,7 @@ func (a *Agent) pollDevin(ctx context.Context, force, wait bool) {
 	a.mu.Lock()
 	bg := a.bgOn
 	a.mu.Unlock()
-	if bg && d.indexedWith != "" && d.indexedWith != name && d.reparseFailed != name {
+	if bg && d.indexedWith != "" && transcript.ReparseKey(d.indexedWith) != transcript.ReparseKey(name) && d.reparseFailed != name {
 		// D16: indexed by another parser version. Re-parse the whole store
 		// in the background; polls wait (TryLock) until it is done.
 		unlock = false

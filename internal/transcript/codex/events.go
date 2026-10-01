@@ -33,7 +33,7 @@ import (
 
 // EventsVersion names this sub-parser; it is recorded on the rows it
 // creates and on the call rows it enriches.
-const EventsVersion = "codex-events@1"
+const EventsVersion = "codex-events@1.0"
 
 // Command is one shell command a tool call ran, from a CommandExecution
 // event. It is the element type of Message.Enrichment["commands"].

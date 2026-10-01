@@ -92,7 +92,7 @@ func newServerWith(t *testing.T, chunks devicesync.ChunkParams, live func() []st
 		objects: objects, store: store.NewPostgres(pool, mc, bucket), userID: user}
 	h := httptest.NewServer(api.New(s.store, api.Config{Logger: log,
 		Sync:      &ingest.Server{Pool: pool, Objects: objects, Log: log, Queue: s.queue},
-		Retrieval: &retrieval.Store{Pool: pool, Objects: objects}}).Handler(nil))
+		Retrieval: &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: s.queue.RefreshSession}}).Handler(nil))
 	t.Cleanup(h.Close)
 	s.client = client.HTTP{Server: h.URL, Token: plain}
 	st, err := devicesync.OpenStore(filepath.Join(t.TempDir(), "sync.db"))

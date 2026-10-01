@@ -70,9 +70,8 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
-// ParserName is recorded on every row and source. Bump it whenever the rows
-// a file yields change: the indexer re-parses every source whose recorded
-// parser differs.
+// ParserName is recorded on every row and source. Bump the major when rows change and need re-derivation.
+// Minor bumps preserve existing rows.
 //
 // claude@2: ids always "<uuid>#<block>", part and ordinal slot = block
 // index; <system-reminder> and <task-notification> text in user turns is
@@ -80,7 +79,7 @@ import (
 // lines reserve their size from the LineBudget.
 // claude@3: the conversation lists every working directory the session
 // recorded (OtherCwds), for path rules.
-const ParserName = "claude@3"
+const ParserName = "claude@3.0"
 
 // stateVersion is the Cursor.State format. A state of any other version,
 // or one that does not decode, restarts the parse from the beginning of the

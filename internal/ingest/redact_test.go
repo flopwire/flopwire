@@ -101,8 +101,17 @@ func TestServerRedactsUnredactedUpload(t *testing.T) {
 	}
 	// A re-parse replaces the server count rather than adding to it.
 	before := st.Server["private-key"]
+	// Devin's saved export cursor must not suppress full replay after a
+	// major/rule change. Force obsolete identities to prove replacement.
+	e.exec(`UPDATE messages m SET native_id='obsolete-devin-'||m.native_id FROM sources s WHERE s.id=m.source_id AND s.agent='devin' AND m.native_id IS NOT NULL`)
+	if e.count(`SELECT count(*) FROM messages WHERE native_id LIKE 'obsolete-devin-%' AND NOT superseded`) == 0 {
+		t.Fatal("fixture has no Devin replay identities")
+	}
 	e.exec(`UPDATE source_parse_state SET requested_seq=requested_seq+1, reparse=true`)
 	e.drain()
+	if e.count(`SELECT count(*) FROM messages WHERE native_id LIKE 'obsolete-devin-%' AND NOT superseded`) != 0 {
+		t.Fatal("full Devin replay skipped saved export rows")
+	}
 	if st, _ = e.queue.Redactions(e.ctx); st.Server["private-key"] != before {
 		t.Fatalf("server count after re-parse: %d, was %d", st.Server["private-key"], before)
 	}

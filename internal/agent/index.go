@@ -63,7 +63,7 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	}
 	name := t.parser.Name()
 	version := indexingVersion(t.parser)
-	applied := sourceVersion(st)
+	applied := transcript.ReparseKey(sourceVersion(st))
 	a.mu.Lock()
 	failed := t.reparseFailed == version
 	a.mu.Unlock()

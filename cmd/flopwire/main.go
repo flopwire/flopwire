@@ -165,7 +165,7 @@ func serve(ctx context.Context, args []string) error {
 	bucket := env("S3_BUCKET", "flopwire")
 	secure := envBool("S3_SECURE", false)
 	workers := envInt("FLOPWIRE_PARSE_WORKERS", 4)
-	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers)
+	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+1)
 	if err != nil {
 		return err
 	}
@@ -196,11 +196,11 @@ func serve(ctx context.Context, args []string) error {
 	reg := prometheus.NewRegistry()
 	durableStore := store.NewPostgres(pool, mc, bucket)
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
-	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers}
+	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
 		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
-		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects},
+		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
 		TrustedProxyCIDRs: envList("FLOPWIRE_TRUSTED_PROXY_CIDRS"),
 		AuthRate:          api.Rate{Burst: envInt("FLOPWIRE_AUTH_RATE_BURST", 10), Refill: envDuration("FLOPWIRE_AUTH_RATE_REFILL", time.Minute)}})
 	go runDeletionWorker(ctx, durableStore, slog.Default())

@@ -55,7 +55,9 @@ var (
 type Store struct {
 	Pool    *pgxpool.Pool
 	Objects ingest.Objects
-	tx      pgx.Tx // the budgeted transaction, on the copy budgeted hands on
+	// RefreshSession prioritizes background re-derivation after an authorized read.
+	RefreshSession func(context.Context, string)
+	tx             pgx.Tx // the budgeted transaction, on the copy budgeted hands on
 }
 
 // db is where the Store's lookups run: its budgeted transaction, else the

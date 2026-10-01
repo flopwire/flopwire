@@ -62,7 +62,7 @@ func (t *target) stale() bool {
 		return false
 	}
 	name := indexingVersion(t.parser)
-	return t.indexedWith != name && t.reparseFailed != name
+	return transcript.ReparseKey(t.indexedWith) != name && t.reparseFailed != name
 }
 
 // racy reports whether an unchanged tuple cannot be trusted yet (git's racy
@@ -222,5 +222,5 @@ func indexingVersion(p transcript.Parser) string {
 	if contract := transcript.ParserContract(p); contract != "" {
 		return contract
 	}
-	return p.Name()
+	return transcript.ReparseKey(p.Name())
 }
