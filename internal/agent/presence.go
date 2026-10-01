@@ -285,9 +285,20 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 }
 
 // BusKnown lists the device's top-level sessions whose id starts with
-// prefix, live or not: what a send without a server may address.
+// prefix, live or not: what a send without a server may address, and what
+// the bus checks the path rules against for a session that is not live.
+// Withheld is set as BusPresence sets it.
 func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Session, error) {
-	return a.sessionRows(ctx, knownSQL, prefix, prefix+"\U0010FFFF")
+	out, err := a.sessionRows(ctx, knownSQL, prefix, prefix+"\U0010FFFF")
+	if err != nil || len(out) == 0 {
+		return out, err
+	}
+	paths := a.transcriptsBySession()
+	for i, s := range out {
+		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
+		out[i].Withheld = !a.reportable(ctx, key, paths[key])
+	}
+	return out, nil
 }
 
 // transcriptsBySession maps each session to its main transcript.

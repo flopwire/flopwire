@@ -187,11 +187,48 @@ Codex, in `~/.codex/config.toml`:
 [mcp_servers.flopwire]
 command = "flopwire"
 args = ["mcp"]
-default_tools_approval_mode = "approve"   # the tools only read
+default_tools_approval_mode = "approve"
 ```
 
-The tools are `flopwire_grep`, `flopwire_search`, `flopwire_sessions` and
-`flopwire_read`. Add `"--server"` to `args` to query the team server.
+The search tools are `flopwire_grep`, `flopwire_search`,
+`flopwire_sessions` and `flopwire_read`. They only read. Add `"--server"`
+to `args` to query the team server.
+
+The messaging tools are `flopwire_peers`, `flopwire_send` and
+`flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
+message. The approval line above approves it too. Remove the line to be
+asked before each call.
+
+## Messaging
+
+Agent sessions can send messages to each other. Three commands, in the
+CLI and in MCP. They go through the device agent, which must run. They
+print compact JSON by default. Add `--text` for a readable form.
+
+```sh
+flopwire sessions --repo . --branch feat/cursor --json   # who made the change (history)
+flopwire peers --session 4c19e0d2                        # is that session live now?
+flopwire send 4c19e0d2 -- "Heads-up: the list endpoint returns a cursor now."
+flopwire send @alex --intent request -- "Can you rebase api on main?"
+flopwire inbox --sent                                    # what you sent, and its state
+```
+
+- Find the recipient in history first, then check that the session is
+  live. Do not choose a session by its title or current branch alone.
+- Address a session by its id, or a unique prefix. Address a person as
+  `@user`.
+- `send` prints a receipt. The `arrives` field says when the message
+  arrives. A receipt is not a reply.
+- The sender is the agent session that runs the command. A command that
+  runs outside an agent session cannot send. Set `FLOPWIRE_SESSION_ID` to
+  send as a given session.
+- A message from another person is held until the recipient accepts that
+  person. The server has the accept route; the console and CLI commands
+  for it are not built yet.
+
+Delivery into the recipient's session needs the `flopwire hook` command.
+It is not built yet. Until then, messages wait in the recipient's local
+inbox. [docs/agent.md](docs/agent.md#messaging) has the details.
 
 ## Path rules
 

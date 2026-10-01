@@ -264,8 +264,10 @@ with its subagents: the call and its output are indexed within a second.
 MCP calls always check for a calling session. The CLI checks only when
 its standard input is not a terminal, so a person at a terminal sees
 everything. A session is left out only when exact evidence names it
-(`FLOPWIRE_SESSION_ID`, the parent Claude Code session file, a parent Codex
-process with exactly one rollout open, or `CLAUDE_CODE_SESSION_ID`). The
+(the thread id in a Codex MCP call, `FLOPWIRE_SESSION_ID`, the parent
+Claude Code session file, a parent Devin session lock, a parent Codex
+process with `CODEX_THREAD_ID` or exactly one rollout open, or
+`CLAUDE_CODE_SESSION_ID`). The
 output names the session it left out. `--include-self` (MCP:
 `include_self`) keeps it. Naming a session with `--session` turns the
 exclusion off.
@@ -291,8 +293,12 @@ Codex, in `~/.codex/config.toml`:
 [mcp_servers.flopwire]
 command = "flopwire"
 args = ["mcp"]
-default_tools_approval_mode = "approve"   # the tools only read
+default_tools_approval_mode = "approve"
 ```
+
+The approval line also approves `flopwire_send`, which sends messages (see
+[agent.md](agent.md#messaging)). Remove the line to be asked before each
+call.
 
 Add `--server` to the arguments to query the team server. The MCP output
 is the same compact text as the CLI. Pass `format: "json"` for JSON. The

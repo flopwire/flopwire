@@ -256,8 +256,10 @@ Run `flopwire agent flush --path <transcript>` or
 ## Messaging
 
 The agent carries messages between agent sessions
-([design](../notes/message-bus/plan.md)). The `flopwire hook` command and
-the `peers`, `send` and `inbox` commands use it. They are not built yet.
+([design](../notes/message-bus/plan.md)). The `peers`, `send` and `inbox`
+commands and MCP tools use it. The `flopwire hook` command, which prints
+messages into the recipient's session, is not built yet. Until it is, a
+message waits in the recipient's local inbox.
 
 With a server configuration, the agent does these things:
 
@@ -291,6 +293,80 @@ also reads these harness files. It never writes them or locks them:
 A message waits for 24 hours. Then it expires.
 
 To see the messaging state, run `flopwire agent status`.
+
+### Send and read messages
+
+Run these commands from an agent session's shell, or call the MCP tools
+`flopwire_peers`, `flopwire_send` and `flopwire_inbox`. They print compact
+JSON with named fields and full session ids. Add `--text` (MCP:
+`format: "text"`) for a readable form.
+
+1. Find the session behind a change in the history:
+
+   ```sh
+   flopwire sessions --repo . --branch feat/cursor --json
+   flopwire read SESSION --outline
+   ```
+
+   The digest lists the commits each session made. Do not choose a
+   session by its title or its current branch alone. A title is the
+   original task. A session can change branches after it commits.
+
+2. Check that the session is live:
+
+   ```sh
+   flopwire peers --session SESSION
+   ```
+
+   An empty `peers` list means that the session is not running now. A
+   message to it waits until it resumes or expires. Without `--session`,
+   the command lists every live session. Your own session is not in the
+   list.
+
+3. Send the message:
+
+   ```sh
+   flopwire send SESSION -- "Heads-up: the list endpoint returns a cursor now."
+   flopwire send @alex --intent request -- "Can you rebase api on main?"
+   ```
+
+   Put the main point in the first line. Use `-` as the text to read it
+   from standard input. The command prints a receipt. The `arrives` field
+   says when the message arrives: `next_tool_call`, `next_prompt`,
+   `when_accepted`, `next_session` or `only_if_resumed`. A receipt is not
+   a reply. With `--text`, the receipt is one line, for example:
+
+   ```text
+   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt
+   ```
+
+4. Check what you sent:
+
+   ```sh
+   flopwire inbox --sent
+   ```
+
+   Each entry has `direction` (`sent` or `received`) and `state`. The
+   state of a sent message is its delivery only. A reply is a received
+   entry whose `reply_to` names your message. To read one thread, use
+   `flopwire inbox --thread ID`. When `more` is true, pass `next` as
+   `--cursor`.
+
+A failure prints one JSON object on standard error, and the command exits
+with status 1. The object has a stable `code` (for example `thread_rate`,
+`duplicate` or `agent_not_running`), a `detail`, a `fix` and an `example`.
+
+The commands talk only to the device agent. If the agent does not run,
+they stop with an error that says how to start it.
+
+The sender is always the calling session. The commands find it as
+[search](search.md#your-own-session) does. If no session is found, `send`
+and `inbox` stop with an error. `peers` still lists the sessions. To name
+the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
+`codex` or `devin`).
+
+A session that a path rule keeps off the server cannot send. The agent
+refuses the request before anything leaves the device.
 
 ## How the agent finds changes
 

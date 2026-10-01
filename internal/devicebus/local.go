@@ -95,8 +95,13 @@ func (b *Bus) Inbox(ctx context.Context, q busproto.InboxQuery) (busproto.InboxR
 	return srv.Inbox(ctx, q)
 }
 
-// notWithheld refuses to name a session the path rules keep off the
-// server in a request to it: the request would tell the server its id.
+// notWithheld refuses to name a session in a request to the server unless
+// the device knows it and the path rules let it reach the server: the
+// request would tell the server its id (and a send, its body). A live
+// session is judged by presence; one that is not live (quiet past the
+// live window, or not in presence yet) by Known. A session the device does
+// not know at all is refused too: its path rules cannot be judged, and the
+// server would refuse it anyway, but only after the id and body left.
 func (b *Bus) notWithheld(ctx context.Context, session, agent string) error {
 	if session == "" {
 		return nil
@@ -105,10 +110,33 @@ func (b *Bus) notWithheld(ctx context.Context, session, agent string) error {
 	if err != nil {
 		return err
 	}
+	found, withheld := false, false
 	for _, s := range all {
-		if s.SessionID == session && (agent == "" || s.Agent == agent) && s.Withheld {
-			return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is kept off the server by a path rule; it cannot use messaging", session)
+		if s.SessionID == session && (agent == "" || s.Agent == agent) {
+			found, withheld = true, withheld || s.Withheld
 		}
+	}
+	if !found {
+		b.mu.Lock()
+		known := b.cfg.Known
+		b.mu.Unlock()
+		if known != nil {
+			stored, err := known(ctx, session)
+			if err != nil {
+				return err
+			}
+			for _, s := range stored {
+				if s.SessionID == session && (agent == "" || s.Agent == agent) {
+					found, withheld = true, withheld || s.Withheld
+				}
+			}
+		}
+	}
+	switch {
+	case withheld:
+		return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is kept off the server by a path rule; it cannot use messaging", session)
+	case !found:
+		return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is not indexed on this device yet; try again in a few seconds", session)
 	}
 	return nil
 }

@@ -45,21 +45,40 @@ future opt-in wake.
 CLI verbs and MCP tools mirror each other, as the retrieval verbs do.
 
 ```
-flopwire peers [--repo R] [--user U] [--agent A]
+flopwire peers [--session ID] [--repo R] [--user U] [--agent A] [--limit N]
 flopwire send <to> [--intent request|inform|done] [--reply-to ID]
               [--ref ADDRESS]... [--repo R] -- <text | ->
-flopwire inbox [--sent] [--thread ID]
+flopwire inbox [--sent] [--thread ID] [--limit N] [--cursor C]
 ```
 
-MCP: `flopwire_peers`, `flopwire_send {to, message, intent?, reply_to?,
-refs?, repo?}`, `flopwire_inbox {sent?, thread?}`. On opencode the same
+MCP: `flopwire_peers {session?, repo?, user?, agent?, limit?}`,
+`flopwire_send {to, message, intent?, reply_to?, refs?, repo?}`,
+`flopwire_inbox {sent?, thread?, cursor?, limit?}`. On opencode the same
 three are plugin tools, because an MCP server there cannot tell which
 session called it.
 
+**Output (issue #55, changed 2026-10-01).** All three print compact JSON
+by default, on the CLI and over MCP: busproto's field names, full session
+ids, a `kind` field (`peers`, `send_receipt`, `inbox`, `error`), and
+named fields that say whether more follows (`total`, `more`, `next`,
+`hint`). `--text` (MCP: `format: "text"`) prints the readable forms
+below. A failure is `{"kind":"error","error":{"code","detail","fix",
+"example",…}}`: on stderr with exit status 1 on the CLI, `isError` over
+MCP. The send result is a receipt (`kind: send_receipt`, `state`,
+`arrives`), never a reply; inbox entries carry `direction` (sent or
+received) and `is_reply`, so "delivered" never reads as "answered".
+
+**Finding the recipient.** History first, then presence: `sessions
+--repo R --branch B` and the session digest's commits name the session
+behind a change; `peers --session ID` says whether that exact session is
+live; then send to that id. A peer's title is its original task and its
+branch is where it is now, so neither alone identifies who made a change.
+
 ### peers
 
-One row per live session, in the `sessions` header shape, the caller's own
-user first, the calling session left out:
+One entry per live session, the caller's own user first, the calling
+session left out. With `--text`, one row each, in the `sessions` header
+shape:
 
 ```
 0b7e2c1a alex claude live busy api@main "refactor client pagination"
@@ -83,7 +102,9 @@ user first, the calling session left out:
 - The first line of the text is the preview a human sees. Body cap: 4,000
   bytes. Longer material goes by `--ref`.
 
-The result states the outcome in one line, so the sender never polls:
+The receipt states the outcome (`arrives`: `next_tool_call`,
+`next_prompt`, `when_accepted`, `next_session`, `only_if_resumed`), so the
+sender never polls. With `--text` it is one line:
 
 ```
 sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at its next tool call

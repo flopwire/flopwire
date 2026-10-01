@@ -290,10 +290,20 @@ Decision D4. An agent searching the index would find its own call within a
 second. `grep`, `search` and `sessions` leave out the calling session and
 its subagents when detection finds it by exact evidence, first match wins:
 
-1. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
-2. An ancestor process's Claude Code session file, `~/.claude/sessions/<pid>.json`.
-3. An ancestor `codex` process holding exactly one rollout file open.
-4. `CLAUDE_CODE_SESSION_ID`.
+1. Over MCP, the Codex thread id in the call's `_meta` (`threadId`, or
+   `thread_id` in `x-codex-turn-metadata`). Codex starts MCP servers with
+   an empty environment, so this is its only exact evidence.
+2. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
+3. An ancestor process's Claude Code session file, `~/.claude/sessions/<pid>.json`.
+4. An ancestor process whose pid exactly one Devin
+   `session_locks/<session>.lock` names.
+5. An ancestor `codex` process: `CODEX_THREAD_ID` (set for its shell
+   commands), else exactly one rollout file it holds open.
+6. `CLAUDE_CODE_SESSION_ID`, or `CODEX_THREAD_ID`, when the walk found no
+   harness; neither when both are set.
+
+The message bus commands use the same detection to name the sending
+session. `send` and `inbox` refuse to run without one.
 
 MCP calls always apply it. The CLI applies it only when stdin is not a
 terminal. The output names the excluded session. `--include-self` turns it
@@ -302,8 +312,10 @@ off. Code: `internal/retrieval/local/caller.go`.
 ## Message bus
 
 Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
-server and the device agent are built; the CLI, MCP tools and hooks are
-not. Routes and wire types are in `internal/busproto`.
+server, the device agent, and the `peers`, `send` and `inbox` commands and
+MCP tools are built; the hook that delivers messages into a session is
+not. The commands reach the server only through the device agent's control
+socket. Routes and wire types are in `internal/busproto`.
 
 - **Presence.** Each device holds one long poll (`POST /v1/bus/poll`, up to
   25 s). The request carries every live session on the device (id, agent,

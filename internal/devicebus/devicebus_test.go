@@ -659,6 +659,51 @@ func TestSendFromWithheldSessionRefused(t *testing.T) {
 	}
 }
 
+// A withheld session that is not live (idle past the live window, or not
+// in the last presence yet) is still refused: its id and body never reach
+// the server. So is a session the device does not know at all, whose path
+// rules it cannot judge.
+func TestSendFromWithheldSessionNotLiveRefused(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	secret := sess("secret-2", "claude", "/src/client", false)
+	secret.Withheld = true
+	stored := []Session{secret, sess("stored-1", "codex", "/src/api", false)}
+	b.SetSources(p.get, func(_ context.Context, prefix string) ([]Session, error) {
+		var out []Session
+		for _, s := range stored {
+			if strings.HasPrefix(s.SessionID, prefix) {
+				out = append(out, s)
+			}
+		}
+		return out, nil
+	})
+	for _, from := range []string{"secret-2", "nobody-9"} {
+		var be *busproto.Error
+		if _, err := b.Send(ctx, busproto.SendRequest{FromSession: from, To: "abcd", Body: "private text"}); !errors.As(err, &be) || be.Code != busproto.CodeSessionNotOnDevice {
+			t.Fatalf("send from %s: %v", from, err)
+		}
+		if _, err := b.Inbox(ctx, busproto.InboxQuery{Session: from}); !errors.As(err, &be) || be.Code != busproto.CodeSessionNotOnDevice {
+			t.Fatalf("inbox of %s: %v", from, err)
+		}
+		if _, err := b.Peers(ctx, busproto.PeersQuery{Session: from}); !errors.As(err, &be) || be.Code != busproto.CodeSessionNotOnDevice {
+			t.Fatalf("peers for %s: %v", from, err)
+		}
+	}
+	srv.mu.Lock()
+	n := len(srv.sends)
+	srv.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("server got %d sends from withheld or unknown sessions", n)
+	}
+	// A stored session the rules let through may still send.
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "stored-1", To: "abcd", Body: "x"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A send through the server passes the device redactor first: the secret
 // never leaves the machine, and the counts reach the sender.
 func TestSendRedactsBeforeTheServer(t *testing.T) {

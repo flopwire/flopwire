@@ -149,7 +149,7 @@ func TestLocalMCPRoundTrip(t *testing.T) {
 	if len(got) != 9 {
 		t.Fatalf("want 9 responses (none for the notification), got %d:\n%s", len(got), out.String())
 	}
-	if got[1].Result.ServerInfo["name"] != "flopwire" || !strings.Contains(got[1].Result.Instructions, "SESSION/ORDINAL") || len(got[2].Result.Tools) != 4 {
+	if got[1].Result.ServerInfo["name"] != "flopwire" || !strings.Contains(got[1].Result.Instructions, "SESSION/ORDINAL") || len(got[2].Result.Tools) != 7 {
 		t.Fatalf("initialize/list: %+v %+v", got[1], got[2])
 	}
 	text := func(id int) string { return got[id].Result.Content[0].Text }

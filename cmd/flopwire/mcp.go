@@ -42,6 +42,9 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	defer r.close()
 	r.caller = cachedCaller(r.caller, 10*time.Second)
+	if r.busSocket, err = defaultSocket(); err != nil {
+		return err
+	}
 	return serveMCP(ctx, r, os.Stdin, os.Stdout)
 }
 
@@ -109,7 +112,9 @@ Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its 
 
 Output is compact text (format="json" returns JSON). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note, never an error. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
 
-Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions; the footer prints it).`
+Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions; the footer prints it).
+
+` + mcpBusInstructions
 
 func prop(typ, desc string) map[string]any {
 	p := map[string]any{"type": typ}
@@ -198,9 +203,10 @@ func mcpTool(name, title, desc, verb string, own map[string]any, required ...str
 	return map[string]any{"name": name, "title": title, "description": desc, "inputSchema": schema, "annotations": ann}
 }
 
-// mcpTools describes the four tools.
+// mcpTools describes the four retrieval tools and the three message bus
+// tools (mcp_bus.go).
 func mcpTools() []any {
-	return []any{
+	return append([]any{
 		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header line per session (## SESSION who agent live|ended repo@branch \"intent\" N files PR commits ✗failed); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), lines cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For a fuzzy question use flopwire_search.", "grep",
 			map[string]any{
 				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; needs a run of 3 letters or digits every match contains"),
@@ -232,7 +238,7 @@ func mcpTools() []any {
 				"cursor":      prop("string", "outline: where the next page starts; the footer prints it"),
 				"limit":       prop("integer", "outline: entries per page (default 200, max 2000)"),
 			}, "address"),
-	}
+	}, mcpBusTools()...)
 }
 
 // mcpVerbs maps tool names to verbs.
@@ -250,12 +256,7 @@ var mcpArgNames = map[string]map[string]string{
 func mcpOpts(name string, args map[string]any) (*opts, bool, error) {
 	verb, ok := mcpVerbs[name]
 	if !ok {
-		names := make([]string, 0, len(mcpVerbs))
-		for n := range mcpVerbs {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		return nil, false, fmt.Errorf("unknown tool %q; tools: %s", name, strings.Join(names, ", "))
+		return nil, false, fmt.Errorf("unknown tool %q; tools: %s", name, strings.Join(mcpToolNames(), ", "))
 	}
 	o := newOpts(verb)
 	asJSON := false
@@ -364,6 +365,22 @@ func mcpArgs(name string) []string {
 
 // mcpCall runs one tool and returns its text answer.
 func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
+	text, _, err := mcpCallFull(ctx, r, name, args)
+	return text, err
+}
+
+// mcpCallFull runs one tool and returns its text answer and, for the
+// message bus tools, the structured result (structuredContent).
+func mcpCallFull(ctx context.Context, r *retriever, name string, args map[string]any) (string, any, error) {
+	if _, ok := busToolNames[name]; ok {
+		return busMCPCall(ctx, r, name, args)
+	}
+	text, err := mcpRetrievalCall(ctx, r, name, args)
+	return text, nil, err
+}
+
+// mcpRetrievalCall runs one retrieval tool and returns its text answer.
+func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
 	o, _, err := mcpOpts(name, args)
 	if err != nil {
 		return "", err
@@ -380,6 +397,10 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 
 // mcpError is the short isError text of a failed call, with a hint.
 func mcpError(name string, err error) string {
+	var be *mcpBusError
+	if errors.As(err, &be) {
+		return be.text
+	}
 	msg := shortError(err)
 	switch {
 	case errors.Is(err, format.ErrNotFound) && name == "flopwire_read":
@@ -516,12 +537,14 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 		var p struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
+			Meta      map[string]any `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			reply("error", map[string]any{"code": -32602, "message": "invalid params: " + err.Error()})
 			return
 		}
-		cctx, cancel := context.WithCancel(ctx)
+		// Codex names the calling thread in each call's _meta.
+		cctx, cancel := context.WithCancel(withMCPMeta(ctx, p.Meta))
 		key := string(id)
 		mu.Lock()
 		running[key] = cancel
@@ -541,7 +564,7 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			case <-cctx.Done():
 				return
 			}
-			text, err := mcpCall(cctx, r, p.Name, p.Arguments)
+			text, structured, err := mcpCallFull(cctx, r, p.Name, p.Arguments)
 			if cctx.Err() != nil && ctx.Err() == nil {
 				return // cancelled by the client: no response
 			}
@@ -549,7 +572,11 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 				reply("result", map[string]any{"isError": true, "content": []any{map[string]string{"type": "text", "text": mcpError(p.Name, err)}}})
 				return
 			}
-			reply("result", map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}})
+			res := map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}}
+			if structured != nil {
+				res["structuredContent"] = structured
+			}
+			reply("result", res)
 		}()
 	default:
 		reply("error", map[string]any{"code": -32601, "message": "method not found: " + req.Method})
