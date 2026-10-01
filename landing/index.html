@@ -75,29 +75,26 @@
       <div class="terminal grep-terminal">
         <div class="window-chrome"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>Team search · example output</span></div>
         <div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire grep -F 'next_cursor' --server --repo acme/app</code></div>
-        <div class="grep-output">
+        <div class="retrieval-panes"><div class="grep-output">
           <div class="grep-match"><pre><span class="output-meta">## 0b7e2c1a  alex@laptop  claude  live, 12m ago
    acme/app@api-cursors  "Update the pagination API"</span>
-28672:14 assistant: Send <mark>next_cursor</mark> back unchanged.</pre><button class="read-match" type="button" aria-expanded="false" aria-controls="grep-context"><code>read 0b7e2c1a/28672:14</code><span aria-hidden="true">↗</span></button></div>
+28672:14 assistant: Send <mark>next_cursor</mark> back unchanged.</pre><a class="read-match" href="#grep-context"><code>0b7e2c1a/28672:14</code><span aria-hidden="true">→</span></a></div>
           <div class="grep-match secondary-match"><pre><span class="output-meta">## 7b92d810  sam@cloud-vm  codex  live, 2m ago
    acme/app@client  "Update the pagination client"</span>
 18432:2 assistant: Client now preserves <mark>next_cursor</mark>.</pre></div>
           <p class="output-footer">[2 hits in 2 sessions]</p>
         </div>
-        <div id="grep-context" class="grep-context" hidden><div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire read 0b7e2c1a/28672:14 --server -B 1</code></div><div class="read-output"><p><span class="speaker">Alex</span>Why can’t the client use the last item’s ID?</p><p><span class="speaker">Claude Code</span>The cursor includes the sort position as well as the ID. Send it back unchanged so pagination stays consistent.</p></div></div>
+        <div id="grep-context" class="grep-context" tabindex="-1"><div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire read 0b7e2c1a/28672:14 --server -B 1</code></div><div class="read-output"><p><span class="speaker">Alex</span>Why can’t the client use the last item’s ID?</p><p><span class="speaker">Claude Code</span>The cursor includes the sort position as well as the ID. Send it back unchanged so pagination stays consistent.</p></div></div></div>
       </div>
       <p class="feature-footnote">Exact strings and regexes. Repo and time filters. Read more only when needed.</p>
-      <details class="inline-detail"><summary>Use the same tools over MCP</summary><pre><code>flopwire_grep({"pattern":"next_cursor", "fixed_strings":true,
-             "repo":"acme/app"})
-flopwire_read({"address":"0b7e2c1a/28672:14", "before":1})</code></pre><p>Configure the MCP server with <code>--server</code> for team retrieval.</p></details>
     </section>
 
     <section class="story-section provenance-section" id="history" aria-labelledby="history-heading">
       <div class="section-heading"><h2 id="history-heading">See why the code changed.</h2><p>A new session sees the diff. The linked discussion explains the constraint it needs to preserve.</p></div>
       <div class="provenance-demo">
         <div class="commit-preview"><div class="commit-heading"><svg class="icon" aria-hidden="true"><use href="#i-git"/></svg><code>a81f3c2</code><span>Preserve pagination cursor</span></div><pre class="code-change"><code><span class="removed">− cursor: lastItem.id</span>
-<span class="added">+ cursor: response.next_cursor</span></code></pre><button type="button" id="show-reason" aria-expanded="false" aria-controls="commit-reason">Read the discussion behind this commit <span aria-hidden="true">↗</span></button></div>
-        <div class="reason-preview" id="commit-reason" hidden><p class="result-meta">Alex · Claude Code · source conversation</p><blockquote>“The cursor includes the sort position as well as the ID.”</blockquote><p class="reason-outcome">The new agent keeps the cursor intact when refactoring the client.</p></div>
+<span class="added">+ cursor: response.next_cursor</span></code></pre></div>
+        <div class="reason-preview" id="commit-reason" tabindex="-1"><p class="result-meta">Alex · Claude Code · source conversation</p><blockquote>“The cursor includes the sort position as well as the ID.”</blockquote><p class="reason-outcome">The new agent keeps the cursor intact when refactoring the client.</p></div>
       </div>
       <p class="feature-footnote">Illustrative commit-to-session workflow.</p>
     </section>
@@ -106,7 +103,7 @@ flopwire_read({"address":"0b7e2c1a/28672:14", "before":1})</code></pre><p>Config
       <div class="section-heading"><h2 id="environment-heading">Start locally. Add your team.</h2><p>Search your own sessions without a server. Connect a team server to find work across teammates, harnesses, and machines.</p></div>
       <div class="environment-row"><div><svg class="environment-icon" aria-hidden="true"><use href="#i-laptop"/></svg><h3>Your laptop</h3><p>Index and search locally.</p></div><span class="environment-wire" aria-hidden="true"></span><div><svg class="environment-icon" aria-hidden="true"><use href="#i-cloud"/></svg><h3>Your team server</h3><p>Share across people and machines.</p></div></div>
       <p class="harness-line">Session history: <strong>Claude Code</strong><span>·</span><strong>Codex</strong><span>·</span><strong>Devin</strong></p>
-      <details class="inline-detail"><summary>Integration details</summary><p>Session indexing supports Claude Code, Codex, and Devin. The v0.1 messaging workflow shown here targets Claude Code and Codex CLIs, including CLIs running on your own cloud VMs. Vendor-hosted services need separate integrations.</p><a href="https://github.com/flopwire/flopwire/blob/main/notes/message-bus/README.md">Integration notes ↗</a></details>
+      <p class="integration-note">Live messaging in this v0.1 example connects Claude Code and Codex CLIs, including on your own cloud VMs. <a href="https://github.com/flopwire/flopwire/blob/main/notes/message-bus/README.md">Integration notes ↗</a></p>
     </section>
 
     <section class="story-section" id="sharing" aria-labelledby="sharing-heading">
@@ -121,11 +118,13 @@ flopwire_read({"address":"0b7e2c1a/28672:14", "before":1})</code></pre><p>Config
     </section>
 
     <section class="setup story-section" id="get-started" aria-labelledby="setup-heading">
-      <div class="section-heading"><h2 id="setup-heading">Connect your first agent.</h2><p>Install Flopwire, index your sessions, and add its tools to your harness. Open source and self-hosted.</p></div>
+      <div class="setup-copy"><div class="section-heading"><h2 id="setup-heading">Connect your first agent.</h2><p>Index your sessions and add Flopwire’s tools to your harness. Start locally, then connect your team.</p></div>
+      <p class="setup-facts">Open source · Self-hosted · CLI &amp; MCP</p>
       <a class="button button-primary" href="https://github.com/flopwire/flopwire/tree/main#quick-start-a-device">Get started <span aria-hidden="true">↗</span></a>
       <p class="hosted-note" id="hosted">Hosted version coming soon.</p>
-      <div class="more-details">
-        <details><summary>Installation &amp; self-hosting</summary><div class="detail-body"><div class="setup-grid"><div class="setup-guide"><div class="license-label">Apache-2.0 / self-hosted</div><h3>Build from source</h3><p>The commands below use <code>flopwire</code>, the current package name, in the current repository.</p><p>Requires Git, Go 1.26.6+, Node.js, and pnpm. Team sync also needs the server deployment.</p><a class="text-link" href="https://github.com/flopwire/flopwire/tree/main#quick-start-a-device">Full setup instructions <svg class="icon"><use href="#i-arrow"/></svg></a></div><div class="install-terminal"><div class="terminal-heading"><span>Local setup</span><button class="copy-button" type="button" data-copy="install-code"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div><pre><code id="install-code">git clone https://github.com/flopwire/flopwire.git
+      <p class="setup-requirements">Build from source with Go 1.26.6+, Node.js, and pnpm. Commands currently use the <code>flopwire</code> name.</p>
+      <a class="text-link" href="https://github.com/flopwire/flopwire/blob/main/docs/two-laptop.md">Connect a second machine or teammate ↗</a></div>
+      <div class="install-terminal"><div class="terminal-heading"><span>Local setup</span><button class="copy-button" type="button" data-copy="install-code"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div><pre><code id="install-code">git clone https://github.com/flopwire/flopwire.git
 cd flopwire
 pnpm --dir web install --frozen-lockfile
 make build
@@ -134,10 +133,7 @@ make build
 ./bin/flopwire agent run --no-sync
 
 # In another terminal: expose search over MCP
-./bin/flopwire mcp</code></pre><p class="terminal-note">Register the MCP command in your harness. Keep the device agent running.</p></div></div>
-      <details class="team-setup"><summary>Connect a second machine or teammate <span aria-hidden="true">+</span></summary><div><p>Deploy the team server, create an invitation, and enroll each device. Run the device agent with sync enabled, and use <code>flopwire mcp --server</code> for team retrieval.</p><a class="text-link" href="https://github.com/flopwire/flopwire/blob/main/docs/two-laptop.md">Two-machine setup guide <svg class="icon"><use href="#i-arrow"/></svg></a></div></details></div></details>
-        <details><summary>Performance &amp; benchmarks</summary><div class="detail-body"><p>Run the repository’s acceptance checks against your transcripts to measure indexing, freshness, and search performance.</p><a href="https://github.com/flopwire/flopwire/blob/main/docs/release-checklist.md">Benchmark method ↗</a></div></details>
-      </div>
+./bin/flopwire mcp</code></pre><p class="terminal-note">Register the MCP command in your harness. Keep the device agent running.</p></div>
     </section>
   </main>
   <footer><a class="brand" href="#"><svg viewBox="0 0 60 28" aria-hidden="true"><path d="M2 18C13 18 13 4 24 4s13 20 24 20c6 0 6-8 10-8"/></svg><span>flopwire</span></a><p>Connect the work between agents.</p><div><a href="https://github.com/flopwire/flopwire">GitHub ↗</a><a href="https://github.com/flopwire/flopwire/blob/main/LICENSE">Apache-2.0 ↗</a></div></footer>

@@ -26,24 +26,6 @@
   new ResizeObserver(drawWires).observe(stage);
   document.fonts.ready.then(drawWires);
 
-  const reason = $('#commit-reason');
-  const reasonButton = $('#show-reason');
-  function showReason(open) {
-    reason.hidden = !open;
-    reasonButton.setAttribute('aria-expanded', String(open));
-    reasonButton.innerHTML = `${open ? 'Hide the discussion' : 'Read the discussion behind this commit'} <span aria-hidden="true">${open ? '−' : '↗'}</span>`;
-  }
-  reasonButton.addEventListener('click', () => showReason(reason.hidden));
-  $('.source-link').addEventListener('click', (event) => {
-    event.preventDefault();showReason(true);
-    reason.setAttribute('tabindex','-1');reason.focus({preventScroll:true});
-    reason.scrollIntoView({behavior:reduceMotion.matches?'instant':'smooth',block:'center'});
-  });
-  const matchButton = $('.read-match');
-  matchButton.addEventListener('click', () => {
-    const context = $('#grep-context');context.hidden = !context.hidden;
-    matchButton.setAttribute('aria-expanded', String(!context.hidden));
-  });
   // Search highlighting plays once on entry; the hero is static.
   const demoObserver = new IntersectionObserver(entries => {
     entries.forEach(entry => {

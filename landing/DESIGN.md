@@ -31,3 +31,26 @@ Examples are synthetic. Retrieval commands follow the current `flopwire` CLI/MCP
 ## Full story revision
 
 All primary sections share the page container edges. Constrain prose line length inside the container rather than centering narrower section wrappers. Terminal examples and provenance share a consistent full section width. Session discovery now has a visible section rather than a hero disclosure. Local-first adoption and explicit allow/local/deny policy examples complete the setup story. Performance comparisons remain pending measurement; no numbers are invented.
+
+## Linear story and layout references
+
+No accordions, collapsed passages, or click-to-reveal explanations. Grep results and their read passage are visible together; commit discussion is visible alongside the diff. Links navigate, and the only button copies setup commands. The hero remains static.
+
+Maintain common outer page edges while varying the evidence inside them:
+
+- Discovery: narrow prose beside a session directory.
+- Retrieval: shared query above matches and the selected source passage.
+- Provenance: unframed source quotation alongside a compact diff.
+- Environments: a compact laptop-to-server diagram.
+- Sharing: visible policy rules and outcomes.
+- Setup: concise invitation beside the actual source-build commands.
+
+Reference study, 2026-09-30:
+
+- https://ledge.sh/ — focused feature demos, asymmetrical columns, visible explanations. Adopt the chapter composition; omit dense feature lists and autonomous typing loops.
+- https://linear.app/ — consistent introductions, different evidence formats per feature. Use directory, retrieval, diff, and topology instead of a repeated full-width terminal.
+- https://zed.dev/ — varied scale and feature grouping. Do not borrow feature accordions.
+- https://tailscale.com/ — labeled topology and concrete setup cues. Keep Flopwire’s own visual identity.
+- https://www.cloudflare.com/developer-platform/ — architectural explanation alongside concise text. Omit tabbed content and enterprise marketing filler.
+
+The study used three Sol subagents with live site inspection. Motion observations were limited to directly observed state changes, not inferred timings.
