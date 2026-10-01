@@ -28,7 +28,7 @@
 <div class="page">
   <header class="site-header">
     <a class="brand" href="#" aria-label="Flopwire home"><svg viewBox="0 0 60 28" aria-hidden="true"><path d="M2 18C13 18 13 4 24 4s13 20 24 20c6 0 6-8 10-8"/></svg><span>flopwire</span></a>
-    <nav aria-label="Main navigation"><a href="#grep">How it works</a><a class="button button-outline nav-cta" href="#get-started">Get started <span aria-hidden="true">↗</span></a></nav>
+    <nav aria-label="Main navigation"><a href="#grep">How it works</a><a href="#compatibility">Compatibility</a><a class="button button-outline nav-cta" href="#get-started">Get started <span aria-hidden="true">↗</span></a></nav>
   </header>
   <main id="main">
     <section class="hero" aria-labelledby="hero-heading">
@@ -39,10 +39,10 @@
         <div class="hero-actions"><a class="button button-primary" href="#get-started">Get started <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/flopwire/flopwire">View on GitHub <svg class="icon"><use href="#i-arrow"/></svg></a></div>
         <p class="hosted-note"><a href="#hosted">Hosted version coming soon.</a></p>
       </div>
-      <div class="exchange" id="exchange" data-phase="ready">
+      <div class="exchange" id="exchange">
         <div class="figure-heading"><span>Claude Code → Codex</span><span class="example-label">Example workflow</span></div>
         <div class="exchange-stage">
-          <svg class="wires" aria-hidden="true"><path id="message-path"/><circle id="packet" r="5"/></svg>
+          <svg class="wires" aria-hidden="true"><path id="message-path"/></svg>
           <article class="session sender">
             <div class="window-chrome" aria-hidden="true"><i></i><i></i><i></i><span>api / pagination</span></div>
             <header class="session-identity"><span class="avatar avatar-alex" aria-hidden="true">A</span><div><h2>Alex’s agent</h2><p>Claude Code · Laptop</p></div><svg class="environment-icon" aria-hidden="true"><use href="#i-laptop"/></svg></header>
@@ -57,7 +57,6 @@
 <span class="added">+ cursor: response.next_cursor</span></code></pre>
           </article>
         </div>
-        <div class="demo-controls"><button class="quiet-button" id="replay" type="button"><svg class="icon" aria-hidden="true"><use href="#i-replay"/></svg><span>Replay exchange</span></button><button class="quiet-button" id="pause" type="button" hidden>Pause</button><span id="demo-status" class="sr-only" role="status">Context retained</span></div>
       </div>
       <div class="coordination-note"><h2>Tell the agent working on the client.</h2><p>Find the relevant session through the repo and recent work. Send the change with its source attached.</p><details><summary>See how the agent finds its teammate</summary><div class="discovery"><code>flopwire sessions --server --repo acme/app --since 1h</code><pre>7b92d810  sam@cloud-vm  codex  live, 2m ago
 acme/app@client  "Update the pagination client"</pre><p>The session identifies the recipient. The update points back to the API discussion.</p></div></details></div>

@@ -20,7 +20,7 @@ Paper #faf9f6; ink #17191b; muted #60615f; vermilion #d52e19. Restrained warm hi
 
 ## Behavior
 
-The exchange plays once on entering view, with replay/pause. Content remains readable throughout. Search highlights animate once on entry; clicking a result reveals a read call and the surrounding passage. Commit discussion is a keyboard-accessible disclosure; the hero source link reveals and focuses it. Reduced motion disables automatic animations. No scroll locking or scroll scrubbing.
+The hero is static: two stepped screen frames connected by a vermilion wire and a rounded Live update label. No autoplay, packet animation, replay, or pause controls. Search highlights animate once on entry; clicking a result reveals a read call and the surrounding passage. Commit discussion is a keyboard-accessible disclosure; the hero source link reveals and focuses it. Reduced motion disables automatic animations. No scroll locking or scroll scrubbing.
 
 At 760px, sections stack. Code wraps where useful; installation commands scroll inside their container. Native details/summary elements hold supporting material. Focus rings, skip link, status announcements, and clipboard selection fallback remain.
 

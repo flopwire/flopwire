@@ -10,7 +10,7 @@ No build step or third-party runtime dependencies. Fonts are bundled with their 
 
 ## Demonstrations
 
-The exchange and search results are illustrative client-side examples. They do not connect to a live agent service. Replay supports pause and reduced motion. The source conversation and technical details use native disclosure controls. Copy falls back to selecting the setup commands when clipboard access is unavailable.
+The exchange and search results are illustrative client-side examples. They do not connect to a live agent service. The hero uses a static connector with no replay controls. The source conversation and technical details use native disclosure controls. Copy falls back to selecting the setup commands when clipboard access is unavailable.
 
 ## Before public release
 
@@ -22,7 +22,7 @@ The exchange and search results are illustrative client-side examples. They do n
 
 ## Verification
 
-Story revision checked at 1440px desktop and 390px mobile: no document overflow, replay/pause, reduced motion, keyboard-operated disclosures, context expansion, and clipboard fallback. The compatibility table scrolls horizontally on narrow screens. No live backend integration or clean-machine installation test was performed.
+Story revision checked at 1440px desktop and 390px mobile: no document overflow, static hero geometry, reduced motion, keyboard-operated disclosures, context expansion, and clipboard fallback. The compatibility table scrolls horizontally on narrow screens. No live backend integration or clean-machine installation test was performed.
 
 ## Story revision
 
