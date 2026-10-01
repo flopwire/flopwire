@@ -21,7 +21,7 @@ The agent uses these paths:
 | Item | Default | Override |
 |---|---|---|
 | Local index | `<user cache dir>/flopwire/index.db`, plus `index.db-tok`, `index.db-tri0`, `index.db-tri1` and the lock file `index.db.lock` | `--db` or `FLOPWIRE_INDEX` |
-| Local redactions | `index.db.redactions.jsonl` beside the index, and `index.db.redactions.jsonl.prev`, its copy before the last redaction | follows the index |
+| Local redactions | `index.db.redactions.jsonl` beside the index, `index.db.redactions.jsonl.prev` (its copy before the last redaction) and the key `index.db.redactions.key`; see [recover the local index](#recover-the-local-index) | follows the index |
 | Control socket | `<config dir>/flopwire/agent.sock` | `--socket` |
 | Sync spool | `<config dir>/flopwire/spool`, at most 1GiB | `--spool-cap` (bytes) |
 | Message inbox | `<config dir>/flopwire/bus.db` | none |
@@ -59,9 +59,22 @@ The search commands open the index read-only and never take the lock.
 ## Recover the local index
 
 The local index is derived data. The agent can build it again from the
-transcripts. The redaction file is not derived data. It is the only record
-of the messages that you hid with `flopwire redact`. It holds hashes, not
-text.
+transcripts. The redaction file and its key are not derived data. Together
+they are the only record of the messages that you hid with
+`flopwire redact`.
+
+The redaction file holds no message text. It holds these items:
+
+- Keyed hashes (HMAC-SHA256) of each redacted message, of each hidden line,
+  and of the title at the length where the parsers cut titles.
+- The session id and message id of each redacted message, and the line
+  range.
+- The byte length of each hidden line.
+- The masked title, which shows only title text that you did not hide.
+
+The key is in a separate file. Without the key, the hashes do not let a
+reader test guesses of the hidden text. Keep the key file as private as
+the transcripts.
 
 The files are in the index directory. On macOS that is
 `~/Library/Caches/flopwire/`. With `--db` or `FLOPWIRE_INDEX`, it is the
@@ -73,39 +86,71 @@ directory of that path.
 | `index.db-tok`, `index.db-tri0`, `index.db-tri1` | Search files | The agent rebuilds them. |
 | `index.db.redactions.jsonl` | Your local redactions, one per line | Never delete. |
 | `index.db.redactions.jsonl.prev` | The redaction file before the last redaction | Restore from it. |
+| `index.db.redactions.key` | The key of the hashes in both redaction files | Never delete. Back it up with the redaction file. |
 
-If you delete the redaction file, the next rebuild shows the text that you
-redacted.
+If you delete the redaction file or the key, the next rebuild shows the
+text that you redacted.
+
+### Stop the agent
+
+Stop the agent before each procedure below.
+
+- With the launchd agent from `deploy/launchd`, run
+  `launchctl bootout gui/$(id -u)/com.flopwire.agent`.
+- With a systemd user unit, run `systemctl --user stop <unit>`.
+- Otherwise, stop the process that runs `flopwire agent run`.
+
+To start the launchd agent again, run
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flopwire.agent.plist`.
 
 ### The agent stops: "index.db.redactions.jsonl is corrupt"
 
 The agent does not open an index while a redaction is unreadable.
 
-1. Make sure that no agent runs.
+1. Stop the agent.
 2. Copy the damaged file to a safe place:
    `cp index.db.redactions.jsonl ~/flopwire-redactions-damaged.jsonl`.
 3. If `index.db.redactions.jsonl.prev` exists, copy it over the damaged
    file: `cp index.db.redactions.jsonl.prev index.db.redactions.jsonl`.
 4. If no `.prev` file exists, open the file in a text editor. Remove only
    the line that the error names. Save the file.
-5. Start the agent: `flopwire agent run`.
+5. Start the agent.
 6. Run again each `flopwire redact` command that you ran after the copy
-   that you restored. The file holds hashes, so it cannot show which
-   message a removed line hid. If you are not sure, run all of them again.
-   A repeated redaction of hidden text reports `nothing to redact`.
+   that you restored. The file cannot show which message a removed line
+   hid. If you are not sure, run all of them again. A repeated redaction
+   of hidden text reports `nothing to redact`.
+
+### The agent stops: "its key ... is missing" or "redactions.key is corrupt"
+
+The agent cannot read the redactions without the key.
+
+1. Stop the agent.
+2. Restore `index.db.redactions.key` from a backup, if you have one. Then
+   start the agent. Stop here.
+3. Without a backup, move both redaction files to a safe place:
+   `mv index.db.redactions.jsonl index.db.redactions.jsonl.prev ~/`.
+4. Run `flopwire agent run --rebuild-index --once`.
+5. Start the agent.
+6. Run again every `flopwire redact` command that you ran on this device.
+   Until you do, search shows the text that you redacted.
 
 ### The agent stops: "apply redactions"
 
 The agent could not apply a redaction to the stored rows.
 
-1. Make sure that no agent runs.
-2. Run `flopwire agent run --rebuild-index`.
+1. Stop the agent.
+2. Run `flopwire agent run --rebuild-index --once`. It indexes every
+   transcript again, then exits.
+3. Start the agent.
 
 The rebuild removes the message rows, the conversations and the search
-files. It keeps the sync state, the placements and the redaction file.
-Then it indexes every transcript again and masks each redacted row as it
-writes it. Search is incomplete until the first pass ends. Use the same
-command if the index is damaged in another way.
+files. It keeps the sync state, the placements, the redaction files and
+the key. Then it indexes every transcript again and masks each redacted
+row as it writes it. Search is incomplete until the first pass ends. Use
+the same procedure if the index is damaged in another way.
+
+Do not add `--rebuild-index` to a login item or the launchd agent. The
+agent would rebuild the index at each restart.
 
 ## Check the agent
 
