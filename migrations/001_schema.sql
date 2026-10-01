@@ -267,6 +267,10 @@ CREATE INDEX conversations_parent_idx ON conversations (parent_conversation_id)
   WHERE parent_conversation_id IS NOT NULL;
 CREATE INDEX conversations_unresolved_parent_idx ON conversations (device_id, agent, parent_native_session_id)
   WHERE parent_native_session_id IS NOT NULL AND parent_conversation_id IS NULL;
+-- A conversation's subagents by native session, resolved or not: the
+-- digest's subagent count, refreshed on every parse batch.
+CREATE INDEX conversations_subagents_idx ON conversations (device_id, agent, parent_native_session_id)
+  WHERE parent_native_session_id IS NOT NULL;
 
 -- text is the message's extracted text, whole and plain (no cap): the one
 -- copy that rendering, `find` (pg_trgm over the full text) and ranked

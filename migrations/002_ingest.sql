@@ -35,6 +35,9 @@ ALTER TABLE sources
   ADD COLUMN tombstoned_at timestamptz,
   ADD COLUMN refused_rule text;
 CREATE INDEX sources_parent_idx ON sources (parent_source_id) WHERE parent_source_id IS NOT NULL;
+-- The sources that replaced one, which every parse checks (and the FK's
+-- ON DELETE SET NULL).
+CREATE INDEX sources_previous_idx ON sources (previous_source_id) WHERE previous_source_id IS NOT NULL;
 CREATE INDEX sources_unresolved_previous_idx ON sources (device_id, previous_path)
   WHERE previous_path IS NOT NULL AND previous_source_id IS NULL;
 CREATE INDEX sources_unresolved_parent_idx ON sources (device_id, parent_path)

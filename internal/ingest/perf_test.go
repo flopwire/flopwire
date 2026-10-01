@@ -126,3 +126,32 @@ func TestPerfUnchangedReparseKeepsRows(t *testing.T) {
 		t.Logf("unchanged reparse of %d messages: %s", n, cost)
 	}
 }
+
+// Draining a stale backlog is linear in the number of sources: picking the
+// next one does not rescan every source.
+func TestPerfRefreshPickLinear(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Linear, 8, 8, func(_ testing.TB, n int) perfguard.Cost {
+		e, counter := perfEnv(t)
+		claudeSources(t, e, n, 4)
+		majorBump(e)
+		cost := perfguard.Measure(t, e.pool, counter, func() {
+			for range 2*n + 2 {
+				id, err := e.queue.nextRefresh(e.ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if id == "" {
+					return
+				}
+				if err := e.queue.refreshSource(e.ctx, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Fatal("refresh did not finish")
+		})
+		if got := e.count(`SELECT count(*) FROM source_parse_state WHERE applied_parser='claude@2.0'`); got != 0 {
+			t.Fatalf("%d sources left stale", got)
+		}
+		return cost
+	})
+}
