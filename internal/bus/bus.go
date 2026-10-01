@@ -537,11 +537,15 @@ const (
 	// ThreadSendsSQL counts the thread $1's messages since $2.
 	ThreadSendsSQL = `SELECT count(*) FROM bus_messages WHERE thread_id=$1 AND created_at>$2 AND state<>'refused'`
 	// SessionPendingSQL counts the session $1's undelivered messages
-	// that expire after $2.
-	SessionPendingSQL = `SELECT count(*) FROM bus_messages WHERE to_session=$1 AND state IN ('queued','held','claimed') AND expires_at>$2`
+	// that expire after $2. Held messages count only for their own
+	// sender $3: a sender the recipient has not accepted cannot fill the
+	// recipient for everyone else.
+	SessionPendingSQL = `SELECT count(*) FROM bus_messages WHERE to_session=$1 AND state IN ('queued','held','claimed') AND expires_at>$2
+		AND (state<>'held' OR from_user=$3)`
 	// UserPendingSQL counts the person $1's unclaimed @user messages that
-	// expire after $2.
-	UserPendingSQL = `SELECT count(*) FROM bus_messages WHERE to_user=$1 AND state IN ('queued','held','claimed') AND to_session IS NULL AND expires_at>$2`
+	// expire after $2, held ones only from the sender $3.
+	UserPendingSQL = `SELECT count(*) FROM bus_messages WHERE to_user=$1 AND state IN ('queued','held','claimed') AND to_session IS NULL AND expires_at>$2
+		AND (state<>'held' OR from_user=$3)`
 )
 
 // check applies reply_to and the loop and volume limits (plan §3). A
@@ -589,11 +593,11 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 		}
 	}
 	if m.toSession != "" {
-		err := tx.QueryRow(ctx, SessionPendingSQL, m.toSession, now).Scan(&n)
+		err := tx.QueryRow(ctx, SessionPendingSQL, m.toSession, now, c.UserID).Scan(&n)
 		if err != nil {
 			return nil, err
 		}
-	} else if err := tx.QueryRow(ctx, UserPendingSQL, m.toUser, now).Scan(&n); err != nil {
+	} else if err := tx.QueryRow(ctx, UserPendingSQL, m.toUser, now, c.UserID).Scan(&n); err != nil {
 		return nil, err
 	}
 	if n >= busproto.MaxUndelivered {

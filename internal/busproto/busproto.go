@@ -87,7 +87,7 @@ const (
 	ThreadPerHour     = 8  // messages per thread per hour
 	SessionPerHour    = 30 // sends per sending session per hour
 	DuplicateWindow   = 10 * time.Minute
-	MaxUndelivered    = 50 // undelivered messages per recipient session (or per person for @user)
+	MaxUndelivered    = 50 // undelivered messages per recipient session (or per person for @user); held ones count only for their sender
 	InboxDefaultLimit = 50
 	InboxMaxLimit     = 200
 )

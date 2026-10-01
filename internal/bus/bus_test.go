@@ -818,3 +818,35 @@ func TestRevokeDuringSendHoldsTheMessage(t *testing.T) {
 		t.Fatalf("message sent during a revoke is %s after it, want held", got)
 	}
 }
+
+// Held messages from a sender the recipient has not accepted do not fill
+// the recipient: an accepted teammate can still reach it.
+func TestHeldMessagesDoNotFillTheRecipient(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	sam := tm.user("sam")
+	samMac := tm.device(sam)
+	var sessions []busproto.PresenceSession
+	for i := range 2 {
+		sessions = append(sessions, live(fmt.Sprintf("s-%d-0000", i), "claude", "/s/api", true))
+	}
+	tm.present(samMac, sessions...)
+	for i := range busproto.MaxUndelivered {
+		if out := tm.mustSend(samMac, sessions[i%2].SessionID, "a-api", fmt.Sprintf("spam %d", i)); out.State != busproto.StateHeld {
+			t.Fatalf("send %d: %+v", i, out)
+		}
+	}
+	if _, err := tm.s.Accept(ctx, busproto.Caller{UserID: tm.alex}, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := tm.send(tm.garyMac, "g-api-1111", "a-api", "from an accepted teammate"); err != nil || out.State != busproto.StateQueued {
+		t.Fatalf("accepted sender refused: %+v %v", out, err)
+	}
+	if out, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "to the person", func(r *busproto.SendRequest) { r.Repo = "*" }); err != nil || out.State != busproto.StateQueued {
+		t.Fatalf("accepted sender to @alex refused: %+v %v", out, err)
+	}
+	// The held sender is still capped.
+	if _, err := tm.send(samMac, "s-0-0000", "a-api", "one more"); code(err) != busproto.CodeRecipientFull {
+		t.Fatalf("held sender past the cap: %v", err)
+	}
+}
