@@ -42,8 +42,13 @@ const (
 )
 
 // maxShardQueue bounds the FTS text waiting for one shard; the main writer
-// blocks beyond it, which holds back the parse workers.
-const maxShardQueue = 2 << 20
+// blocks beyond it, which holds back the parse workers. A variable so tests
+// can reach it with small batches.
+var maxShardQueue = 2 << 20
+
+// shardBlocked, when set (tests), is called with the shard's lock held
+// each time submit is about to block on backpressure.
+var shardBlocked func(sh *ftsShard)
 
 // ftsOp is one fts_queue entry as a shard applies it. Each carries its own
 // sequence, so a shard skips exactly the entries it has applied, however
@@ -199,6 +204,9 @@ func (sh *ftsShard) submit(w *ftsWork) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	for sh.queued > maxShardQueue && !sh.closing && !sh.draining {
+		if shardBlocked != nil {
+			shardBlocked(sh)
+		}
 		sh.cond.Wait()
 	}
 	sh.queue = append(sh.queue, w)

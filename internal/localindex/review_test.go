@@ -14,29 +14,53 @@ import (
 // L2: a shard that keeps failing must not hang Close. Its backpressure
 // blocks the writer once the queue passes maxShardQueue; Close has to
 // release that writer, and the unapplied entries stay in fts_queue.
+//
+// The test closes only once the writer is blocked on the failing shard's
+// backpressure, and keeps the batches small: with 512KB messages a healthy
+// trigram shard needed seconds per batch under -race on a loaded machine,
+// and Close (which lets the writer's commit finish) outran a fixed timeout
+// before the queue was ever full.
 func TestCloseWithFailingShardQueueFull(t *testing.T) {
-	defer func(min time.Duration) { shardRetryMin = min }(shardRetryMin)
+	defer func(min time.Duration, max int) { shardRetryMin, maxShardQueue = min, max }(shardRetryMin, maxShardQueue)
 	shardRetryMin = time.Millisecond
-	path := filepath.Join(t.TempDir(), "index.db")
-	s, err := Open(path, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	maxShardQueue = 4 << 10
+	// Hooks are set before Open and cleared after the stores close, so the
+	// shard goroutines never race with the writes.
 	shardFault = func(sh *ftsShard) error {
 		if sh.table == "fts_tok" {
 			return errors.New("injected permanent shard failure")
 		}
 		return nil
 	}
-	defer func() { shardFault = nil }()
+	blocked := make(chan struct{}, 1)
+	shardBlocked = func(sh *ftsShard) {
+		if sh.table == "fts_tok" {
+			select {
+			case blocked <- struct{}{}:
+			default:
+			}
+		}
+	}
+	defer func() { shardFault, shardBlocked = nil, nil }()
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	src := source(t, s, transcript.AgentClaude, "/h/full.jsonl")
-	big := strings.Repeat("x", 512<<10)
+	big := strings.Repeat("x", 1<<10)
+	produced := make(chan struct{})
 	go func() {
-		for i := range 12 { // 6MB of text, well past maxShardQueue
+		defer close(produced)
+		for i := range 12 { // 12KB of text, well past maxShardQueue
 			s.ApplyBatch(ctx, Batch{SourceID: src.ID, Generation: 1, Messages: []*transcript.Message{msg("f", "f"+itoa(int64(i)), int64(i), transcript.KindUser, big+itoa(int64(i)))}})
 		}
 	}()
-	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-blocked:
+	case <-produced:
+		t.Fatal("the writer never blocked on the failing shard's backpressure")
+	}
 	closed := make(chan error, 1)
 	go func() { closed <- s.Close() }()
 	select {
@@ -44,6 +68,7 @@ func TestCloseWithFailingShardQueueFull(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close hung behind a failing shard's backpressure")
 	}
+	<-produced // the remaining writes fail with ErrClosed
 	// Open replays the unapplied entries; with the shard still failing it
 	// must fail, not hang behind the same backpressure.
 	opened := make(chan error, 1)
