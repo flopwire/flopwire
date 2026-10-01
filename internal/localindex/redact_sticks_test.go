@@ -262,3 +262,31 @@ func TestLocalRedactionSidecarShortWrite(t *testing.T) {
 		t.Fatalf("opened over a corrupt sidecar: %v", err)
 	}
 }
+
+// A line range that hides only whitespace lines, on a record with an
+// older version, records no tombstone that carries nothing: the sidecar
+// still loads, so the index opens again.
+func TestLocalRedactionBlankRangeKeepsSidecarLoadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	for _, text := range []string{"first\n   \nlast", "changed\n   \nlast"} {
+		sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+			msg("sess-1", "u1", 0, transcript.KindUser, text))
+	}
+	if r := rowsOf(t, s, "u1"); len(r) < 2 {
+		t.Fatalf("want two versions, got %+v", r)
+	}
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0), From: 2, To: 2}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s2, err := Open(path, Options{})
+	if err != nil {
+		t.Fatalf("reopen after a blank-line redaction: %v", err)
+	}
+	s2.Close()
+}

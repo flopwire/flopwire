@@ -527,6 +527,9 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 		if from > 0 {
 			ts.Lines, ts.Lens = lines, lens
 		}
+		if ts.SHA == "" && len(ts.Lines) == 0 {
+			continue // another version, and only blank lines hidden: nothing to key on
+		}
 		k := ts.SHA + "\x00" + recordKey(ts.Session, ts.Native)
 		if !keys[k] {
 			keys[k] = true
@@ -669,6 +672,11 @@ func (w *writeTx) recordTombstones(added []Tombstone) error {
 		b, err := json.Marshal(ts)
 		if err != nil {
 			return err
+		}
+		// Write only what loadTombstones accepts: an entry it rejects
+		// would keep the index from opening.
+		if _, err := parseTombstone(b); err != nil {
+			return fmt.Errorf("localindex: tombstone %s: %w", b, err)
 		}
 		buf = append(append(buf, b...), '\n')
 		ends[i] = int64(len(buf))
