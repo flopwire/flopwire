@@ -135,8 +135,15 @@ where you run admin commands.
 5. Keep the agent running. On macOS, install the launchd user agent in
    `deploy/launchd/com.flopwire.agent.plist`. See
    [docs/two-laptop.md](docs/two-laptop.md#install-the-agent-as-a-launchd-user-agent).
-6. Optional: connect the Claude Code, Codex and Devin hooks, so uploads are
-   immediate and messages reach your sessions. See
+6. Install Flopwire into Claude Code, so uploads are immediate, messages
+   reach your sessions and the MCP tools are available:
+
+   ```sh
+   flopwire setup
+   ```
+
+   It installs the Claude Code plugin with Claude Code's own commands and
+   reports what you must still do. Connect Codex and Devin by hand; see
    [docs/agent.md](docs/agent.md#connect-the-harness-hooks).
 7. Check the agent:
 
@@ -176,10 +183,11 @@ flopwire read 0b7e2c1a/28672:14 -B 2                                  # an addre
 
 ### MCP
 
-Claude Code:
+Claude Code: run `flopwire setup`. The plugin it installs serves the MCP
+tools. Without the plugin, add the server by hand:
 
 ```sh
-claude mcp add flopwire -- flopwire mcp
+claude mcp add --scope user flopwire -- flopwire mcp
 ```
 
 Codex, in `~/.codex/config.toml`:
@@ -229,7 +237,8 @@ flopwire inbox --sent                                    # what you sent, and it
 
 The `flopwire hook` command prints each message into the recipient's
 session: inside a running turn at its next tool call, or with its human's
-next prompt. A message never wakes an idle session. Connect the hooks as
+next prompt. A message never wakes an idle session. In Claude Code,
+`flopwire setup` installs the hooks. Connect Codex and Devin as
 [docs/agent.md](docs/agent.md#connect-the-harness-hooks) shows.
 
 ## Path rules
@@ -346,6 +355,7 @@ Merging that PR creates the version tag and GitHub source release. See
 | `internal/retrieval` | grep, search, sessions and read, local and server |
 | `internal/store`, `migrations` | Postgres persistence and the schema |
 | `internal/backup` | Backup and restore |
+| `plugins/claude-code/flopwire`, `.claude-plugin` | The Claude Code plugin and the marketplace manifest that `flopwire setup` installs from |
 | `web` | TypeScript admin console |
 | `deploy` | launchd plist, nginx example |
 | `scripts` | e2e, acceptance and release scripts |

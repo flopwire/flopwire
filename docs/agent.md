@@ -202,6 +202,74 @@ socket and prints these parts:
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
 
+## Install into the harnesses
+
+`flopwire setup` installs Flopwire into the coding-agent harnesses on this
+device. It installs Claude Code's Flopwire plugin: the MCP tools, the
+hooks and a messaging skill. It runs the harness's own plugin commands. It
+never edits the harness's settings files. It does not set up Codex or
+Devin yet: connect them by hand as
+[Connect the harness hooks](#connect-the-harness-hooks) shows.
+
+`flopwire setup` prints a JSON report. Add `--text` for a readable form.
+The report has these parts:
+
+| Field | Means |
+|---|---|
+| `ok` | `false` when a harness command failed. The exit status is then 1. |
+| `flopwire.path` | The `flopwire` binary that the plugin runs. Empty when `flopwire` is not on `PATH`. |
+| `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
+| `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
+| `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do) and `error`. |
+| `todo` | What you must still do for the device. |
+
+Use `--check` to report and change nothing. Use `--remove` to uninstall.
+Run `flopwire setup --help` for every flag.
+
+### Set up a device (for an agent)
+
+Follow these steps in order.
+
+1. Run `command -v flopwire`.
+2. If the command prints nothing, stop. Tell your user to put the
+   `flopwire` binary on `PATH`.
+3. Run `flopwire setup --check`.
+4. If `agent.running` is `false`, tell your user to start the device agent
+   with `flopwire agent run` and keep it running. Do not start it
+   yourself.
+5. Run `flopwire setup`.
+6. If `ok` is `false`, read `error` in each entry of `harnesses`. Report
+   each error to your user. Stop.
+7. Read `warnings` in each entry of `harnesses`. Each warning names an
+   older manual entry that now runs twice. Show each warning to your user.
+   Do not edit the settings file unless your user tells you to.
+8. Read `todo` in each entry of `harnesses`, and the top-level `todo`.
+   Tell your user each item.
+9. Tell your user to restart their Claude Code sessions. A running session
+   loads the plugin after a restart or after `/reload-plugins`.
+10. Run `flopwire setup --check`.
+11. Confirm that the Claude Code entry has `installed: true` and
+    `enabled: true`.
+
+Run `flopwire setup` again at any time. It updates the plugin when a
+new version exists. It changes nothing when the plugin is current.
+
+### Remove
+
+1. Run `flopwire setup --remove`.
+2. Run `flopwire setup --check`.
+3. Confirm that the Claude Code entry has `installed: false`.
+4. Restart your Claude Code sessions.
+
+### Where the plugin comes from
+
+The repository is a Claude Code plugin marketplace
+(`.claude-plugin/marketplace.json`). The plugin is in
+`plugins/claude-code/flopwire`. `flopwire setup` adds the marketplace from
+`flopwire/flopwire` on GitHub and installs `flopwire@flopwire` at user
+scope. Use `--source` or `FLOPWIRE_PLUGIN_SOURCE` to install from a local
+checkout. See the [plugin README](../plugins/claude-code/flopwire/README.md).
+
 ## Connect the harness hooks
 
 The harness hooks run `flopwire hook`. The command does two jobs:
@@ -246,6 +314,14 @@ is longer than the cap is cut, with a note that names the
 
 ### Claude Code
 
+Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
+The plugin it installs runs `flopwire hook` on `SessionStart`,
+`UserPromptSubmit`, `PostToolUse` and `Stop`, and serves the MCP tools.
+
+Use the manual configuration below only when you cannot install the
+plugin. Do not use both: each hook would then run twice.
+`flopwire setup` warns when it finds both.
+
 1. Open `~/.claude/settings.json`.
 2. Add these entries under `hooks`:
 
@@ -267,6 +343,8 @@ is longer than the cap is cut, with a note that names the
   }
 }
 ```
+
+3. Run `claude mcp add --scope user flopwire -- flopwire mcp`.
 
 ### Codex
 
