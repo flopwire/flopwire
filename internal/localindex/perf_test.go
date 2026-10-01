@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/perfguard"
@@ -130,5 +132,84 @@ func TestApplyQueryPlans(t *testing.T) {
 		{parentSubagentsSQL, []any{1}},
 	} {
 		perfguard.AssertSQLitePlan(t, db, nil, q.sql, q.args...)
+	}
+}
+
+// readPage is what the local backend's read does for one page: find the
+// focus (a session's first row, or a row by id), its neighbours, and the
+// header's conversation with its message count.
+func (p *perfIndex) readPage(t testing.TB, session string, id int64) int {
+	t.Helper()
+	ctx := context.Background()
+	var focus *Row
+	var err error
+	if session != "" {
+		focus, err = p.s.FirstMessage(ctx, session)
+	} else {
+		var rows []*Row
+		rows, err = p.s.Messages(ctx, []int64{id})
+		if len(rows) == 1 {
+			focus = rows[0]
+		}
+	}
+	if err != nil || focus == nil {
+		t.Fatalf("focus: %v %v", focus, err)
+	}
+	if _, err := p.s.Context(ctx, focus.ID, 1, 20, Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := p.s.ListConversations(ctx, ListOptions{Filter: Filter{Conversations: []int64{focus.ConversationID}}, IncludeDeleted: true, Limit: 1})
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("conversation: %v %v", cs, err)
+	}
+	return cs[0].Messages
+}
+
+// A read of one page costs the same whatever the session's length: the
+// focus (a row in the middle, or a bare session address's first row),
+// its neighbours and the header's message count. The sessions are 1000
+// and 8000 rows: an index-only count over messages_default reads few
+// pages per row and passed at 500.
+func TestReadPageIsConstant(t *testing.T) {
+	for _, at := range []string{"message", "session"} {
+		t.Run(at, func(t *testing.T) {
+			perfguard.AssertScaling(t, perfguard.Constant, 1000, 8, func(t testing.TB, n int) perfguard.Cost {
+				p := newPerfIndex(t)
+				p.index(t, perfguard.ClaudeTranscript(n), transcript.Cursor{}, 1)
+				var mid, live int64
+				var session string
+				if err := p.s.DB().QueryRow(`SELECT (SELECT id FROM messages ORDER BY ordinal LIMIT 1 OFFSET ?),
+					(SELECT count(*) FROM messages WHERE superseded = 0 AND on_active_path IS NOT 0),
+					(SELECT session_id FROM conversations)`, n/2).Scan(&mid, &live, &session); err != nil {
+					t.Fatal(err)
+				}
+				if at == "message" {
+					session = ""
+				}
+				p.readPage(t, session, mid) // open the read connection
+				var got int
+				cost := perfguard.MeasureSQLite(p.c, func() { got = p.readPage(t, session, mid) })
+				if int64(got) != live {
+					t.Fatalf("header count %d, want %d live rows", got, live)
+				}
+				return cost
+			})
+		})
+	}
+}
+
+// A bare session address's first row is found through indexes. The one
+// sort is over the session's conversations (one per device and agent,
+// and their first rows), not its messages.
+func TestFirstLivePlan(t *testing.T) {
+	p := newPerfIndex(t)
+	p.index(t, perfguard.ClaudeTranscript(50), transcript.Cursor{}, 1)
+	plan, err := perfguard.SQLitePlan(p.s.DB(), firstLiveSQL, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := slices.DeleteFunc(perfguard.SQLiteFullScans(plan, nil), func(s string) bool { return s == "USE TEMP B-TREE FOR ORDER BY" })
+	if len(bad) > 0 || !slices.ContainsFunc(plan, func(s string) bool { return strings.Contains(s, "USING INDEX messages_default") }) {
+		t.Fatalf("unbounded plan %v:\n%s", bad, strings.Join(plan, "\n"))
 	}
 }

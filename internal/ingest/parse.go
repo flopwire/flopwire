@@ -318,13 +318,43 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	// its previous before this one arrived): this one's rows are history.
 	// A source this one names as its own previous is older, not newer: a
 	// path whose file identity came back (inode reuse) links both ways.
-	tag, err := q.Pool.Exec(ctx, `UPDATE messages m SET superseded=true,superseded_in_generation=n.gen
-		FROM (SELECT COALESCE(max(g.generation),0) AS gen FROM sources s JOIN generations g ON g.source_id=s.id
+	var gen int64
+	err := q.Pool.QueryRow(ctx, `SELECT COALESCE(max(g.generation),0) FROM sources s JOIN generations g ON g.source_id=s.id
 			WHERE s.previous_source_id=$1 AND s.tombstoned_at IS NULL
-			  AND s.id IS DISTINCT FROM (SELECT previous_source_id FROM sources WHERE id=$1) HAVING count(*)>0) n
-		WHERE m.source_id=$1 AND NOT m.superseded`, j.src.id)
-	if err != nil {
+			  AND s.id IS DISTINCT FROM (SELECT previous_source_id FROM sources WHERE id=$1) HAVING count(*)>0`, j.src.id).Scan(&gen)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return err
+	default:
+		// The flushes counted the rows this retires: the recount runs in
+		// the same transaction, so a failure between the two cannot leave
+		// digests counting retired rows (a retry would retire nothing and
+		// not recount). The conversations are locked first, in the order
+		// a flush upserts them, before any message row.
+		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
+			rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id IN
+				(SELECT conversation_id FROM messages WHERE source_id=$1 AND NOT superseded)
+				ORDER BY session_id COLLATE "C",id FOR UPDATE`, j.src.id)
+			if err != nil {
+				return err
+			}
+			retired, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE messages SET superseded=true,superseded_in_generation=$2 WHERE source_id=$1 AND NOT superseded`, j.src.id, gen); err != nil {
+				return err
+			}
+			if afterLateSupersede != nil {
+				if err := afterLateSupersede(); err != nil {
+					return err
+				}
+			}
+			return recountDigests(ctx, tx, retired)
+		}); err != nil {
+			return err
+		}
 	}
 	var touched []string
 	for _, id := range sink.convIDs {
@@ -333,14 +363,12 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 		}
 	}
 	slices.Sort(touched)
-	// The flushes counted rows this supersession just retired: recount.
-	if tag.RowsAffected() > 0 {
-		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error { return recountDigests(ctx, tx, touched) }); err != nil {
-			return err
-		}
-	}
 	return resolveLinks(ctx, q.Pool, j.src.deviceID, touched)
 }
+
+// afterLateSupersede, when set (tests), runs in finish between retiring
+// a source a newer one replaced and recounting its digests.
+var afterLateSupersede func() error
 
 // recordRedactions stores what the server's pass masked in the source's
 // latest generation: replaced on a full parse, added to on an append.

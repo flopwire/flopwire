@@ -673,12 +673,27 @@ func (s *Store) locateAddress(ctx context.Context, deviceID, address, owner stri
 	if err != nil {
 		return "", 0, false, err
 	}
-	err = one(`SELECT m.id::text FROM messages m JOIN `+addressConversations+` c ON c.id=m.conversation_id WHERE c.session_id=$3
-		ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, sid)
+	err = one(firstLive(addressConversations+` c`, `c.session_id=$3`), sid)
+	if errors.Is(err, ErrNotFound) {
+		err = one(`SELECT m.id::text FROM messages m JOIN `+addressConversations+` c ON c.id=m.conversation_id WHERE c.session_id=$3
+			ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, sid)
+	}
 	if errors.Is(err, ErrNotFound) {
 		err = fmt.Errorf("%w: session %s has no messages", ErrNotFound, sid)
 	}
 	return id, 0, true, err
+}
+
+// firstLive selects the first live row on the active path of the
+// conversations convs (a FROM item aliased c) matching where: the
+// shallowest conversation's lowest ordinal. Each conversation's first
+// row comes from messages_default_filter_idx in ordinal order, so the
+// session's length does not matter. A session with no such row needs
+// the full order over all its rows (superseded, off the active path).
+func firstLive(convs, where string) string {
+	return `SELECT m.id::text FROM ` + convs + ` CROSS JOIN LATERAL (SELECT mm.id,mm.ordinal FROM messages mm
+		WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE ORDER BY mm.ordinal,mm.id LIMIT 1) m
+		WHERE ` + where + ` ORDER BY c.depth,m.ordinal,m.id LIMIT 1`
 }
 
 // locateSelf finds the first message of the caller's own session: the
@@ -688,8 +703,11 @@ func (s *Store) locateSelf(ctx context.Context, owner, session string) (string, 
 		return "", fmt.Errorf("%w: read self needs the calling user", ErrBadRequest)
 	}
 	var id string
-	err := s.db().QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN `+visible+` c ON c.id=m.conversation_id WHERE c.session_id=$1 AND c.user_id=$2
-		ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, session, owner).Scan(&id)
+	err := s.db().QueryRow(ctx, firstLive(visible+` c`, `c.session_id=$1 AND c.user_id=$2`), session, owner).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.db().QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN `+visible+` c ON c.id=m.conversation_id WHERE c.session_id=$1 AND c.user_id=$2
+			ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, session, owner).Scan(&id)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("%w: your session %s is not indexed yet", ErrNotFound, session)
 	}

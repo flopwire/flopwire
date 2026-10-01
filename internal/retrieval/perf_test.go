@@ -49,6 +49,10 @@ func perfCorpus(t testing.TB, sessions, msgs int) (*Store, *perfguard.Counter) {
 		        '2026-09-01'::timestamptz+i*interval '1 minute'+j*interval '1 millisecond','step '||j||' of session '||i,20,
 		        sha256(convert_to(i||'/'||j,'UTF8')),0,'test'
 		 FROM generate_series(1,$1) i, generate_series(0,$2-1) j`, []any{sessions, msgs}},
+		// Digests carry the per-kind counts ingest maintains; the read
+		// header's message count comes from them.
+		{`UPDATE conversations c SET digest=(SELECT jsonb_build_object('messages',jsonb_object_agg(kind,k))
+		 FROM (SELECT kind,count(*) k FROM messages m WHERE m.conversation_id=c.id GROUP BY kind) x)`, nil},
 		{`ANALYZE`, nil},
 	} {
 		if _, err := pool.Exec(ctx, q.sql, q.args...); err != nil {
@@ -124,8 +128,8 @@ func TestSessionsPageScalingConstant(t *testing.T) {
 }
 
 // One outline page costs the same whatever the session's size, deep in
-// the session as at its start. The read header's message count (convCols)
-// is a separate per-session count, outside the page.
+// the session as at its start. The read header is guarded by
+// TestReadPageScalingConstant.
 func TestOutlinePageScalingConstant(t *testing.T) {
 	for _, deep := range []bool{false, true} {
 		t.Run(map[bool]string{false: "first", true: "deep"}[deep], func(t *testing.T) {
@@ -402,4 +406,186 @@ func TestOutlinePastEnd(t *testing.T) {
 			t.Fatalf("empty outline page renders as\n%s", b.String())
 		}
 	}
+}
+
+// A read of one page costs the same whatever the session's length: the
+// header (its message count) and the page, for a message address in the
+// middle of the session and for a bare session address (its first
+// message).
+func TestReadPageScalingConstant(t *testing.T) {
+	for _, at := range []string{"message", "session"} {
+		t.Run(at, func(t *testing.T) {
+			perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+				s, counter := perfCorpus(t, 3, n)
+				var addr string
+				q := `SELECT CASE $1::text WHEN 'message' THEN md5('m'||2||'/'||$2::int)::uuid::text ELSE md5('s'||2) END`
+				if err := s.Pool.QueryRow(context.Background(), q, at, n/2).Scan(&addr); err != nil {
+					t.Fatal(err)
+				}
+				return perfguard.Measure(t, s.Pool, counter, func() {
+					cx, err := s.Read(context.Background(), "", format.ReadQuery{Address: addr}, format.Filters{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(cx.Messages) == 0 || cx.Conversation.Messages != n {
+						t.Fatalf("read at n=%d: %d messages, header count %d", n, len(cx.Messages), cx.Conversation.Messages)
+					}
+				})
+			})
+		})
+	}
+}
+
+// globCorpus is a perfCorpus whose first session alone has a rare word
+// in its title, and whose second alone has it in its repo's last path
+// element.
+func globCorpus(t testing.TB, sessions int) (*Store, *perfguard.Counter) {
+	t.Helper()
+	s, counter := perfCorpus(t, max(sessions, 2), 1)
+	for _, q := range []string{
+		`UPDATE conversations SET title='fix the zebracorn' WHERE id=md5('c'||1)::uuid`,
+		`UPDATE conversations SET repo_root='/src/zebracorn-app' WHERE id=md5('c'||2)::uuid`,
+		`VACUUM ANALYZE conversations`,
+	} {
+		if _, err := s.Pool.Exec(context.Background(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s, counter
+}
+
+// A sessions glob that matches a few sessions reads those, not the list:
+// its cost is the same whatever the corpus size.
+func TestSessionsRareGlobScalingConstant(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		s, counter := globCorpus(t, n)
+		return perfguard.Measure(t, s.Pool, counter, func() {
+			out, err := s.Sessions(context.Background(), "*zebracorn*", "", format.Filters{Limit: 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Sessions) != 2 {
+				t.Fatalf("glob matched %d sessions at n=%d, want 2", len(out.Sessions), n)
+			}
+		})
+	})
+}
+
+// The sessions glob selects through the trigram indexes, both ways and
+// from a cursor mid-list. The planner rightly walks the list and filters
+// when few rows are left to walk (a small table, a cursor near the end),
+// so the corpus is the scaling test's large size and the cursor leaves
+// about half the list either way.
+func TestSessionsGlobPlanIndexed(t *testing.T) {
+	s, _ := globCorpus(t, 4000)
+	dated, err := format.ParseSessionCursor(sessionsCursor(t, s.Pool, 1700))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, glob := range []string{"*zebracorn*", "zebracorn", "zebra*corn"} {
+		for _, oldest := range []bool{false, true} {
+			for _, after := range []*format.SessionKey{nil, &dated} {
+				sql, args := sessionsPage(glob, format.Filters{}, oldest, after, 21)
+				perfguard.AssertIndexedPlanExcept(t, s.Pool, []string{"users", "devices"}, sql, args...)
+				// An index walk in list order that filters by the glob
+				// has an Index Cond (the activity bound) yet reads the
+				// whole list for a rare glob: the glob must select rows
+				// (an index condition), never filter them.
+				plan, err := perfguard.Explain(s.Pool, sql, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if f := globFilters(t, plan); len(f) > 0 {
+					t.Errorf("glob %q oldest=%v after=%v: applied as a filter: %v\nplan:\n%s", glob, oldest, after != nil, f, plan)
+				}
+			}
+		}
+	}
+}
+
+// globFilters returns the plan nodes' Filters that apply an ILIKE (~~*).
+func globFilters(t testing.TB, plan string) []string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(plan), &v); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			if f, ok := x["Filter"].(string); ok && strings.Contains(f, "~~*") {
+				out = append(out, fmt.Sprintf("%v on %v: %s", x["Node Type"], x["Relation Name"], f))
+			}
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
+// The glob keeps its meaning: each of session id, title and repo (or
+// cwd, or its last path element) matches, case-insensitively, and a
+// near miss does not.
+func TestSessionsGlobSemantics(t *testing.T) {
+	s, _ := globCorpus(t, 20)
+	ctx := context.Background()
+	if _, err := s.Pool.Exec(ctx, `UPDATE conversations SET repo_root=NULL,cwd='/home/x/Zebracorn-Cwd' WHERE id=md5('c'||3)::uuid`); err != nil {
+		t.Fatal(err)
+	}
+	var sid string
+	if err := s.Pool.QueryRow(ctx, `SELECT session_id FROM conversations WHERE id=md5('c'||4)::uuid`).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		glob string
+		want []int
+	}{
+		{"zebracorn", []int{1, 2, 3}},
+		{"ZEBRACORN", []int{1, 2, 3}},
+		{"zebracorn-*", []int{2, 3}},     // the repo's (or cwd's) last element
+		{"/src/zebracorn-app", []int{2}}, // the whole repo
+		{"fix the zebra?orn", []int{1}},  // the whole title
+		{"*the*corn", []int{1}},
+		{sid[:12] + "*", []int{4}}, // a session id prefix
+		{"zebracornx", nil},
+		{"fix the zebracorn!", nil},
+	} {
+		out, err := s.Sessions(ctx, tc.glob, "", format.Filters{Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, c := range out.Sessions {
+			got = append(got, c.ID)
+		}
+		var want []string
+		for _, i := range tc.want {
+			want = append(want, sessionAt(t, s.Pool, i))
+		}
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("glob %q: got %v, want %v", tc.glob, got, want)
+		}
+	}
+}
+
+// A bare session address finds its first row through an index in
+// ordinal order, for any address and for the caller's own session.
+func TestFirstLivePlanIndexed(t *testing.T) {
+	s, _ := perfCorpus(t, 20, 200)
+	var sid, owner string
+	if err := s.Pool.QueryRow(context.Background(), `SELECT session_id,user_id::text FROM conversations WHERE id=md5('c'||2)::uuid`).Scan(&sid, &owner); err != nil {
+		t.Fatal(err)
+	}
+	perfguard.AssertIndexedPlan(t, s.Pool, firstLive(addressConversations+` c`, `c.session_id=$3`), "", false, sid)
+	perfguard.AssertIndexedPlan(t, s.Pool, firstLive(visible+` c`, `c.session_id=$1 AND c.user_id=$2`), sid, owner)
 }

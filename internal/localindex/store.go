@@ -201,7 +201,7 @@ func Open(path string, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// sqliteDriver is the database/sql driver of the write and shard
+// sqliteDriver is the database/sql driver of the write, shard and read
 // connections. Tests set it to perfguard.SQLiteDriver, which wraps
 // "sqlite" to count statements and pages on the connections a test claims.
 var sqliteDriver = "sqlite"

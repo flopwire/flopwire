@@ -746,8 +746,10 @@ func (s *Store) SetActivePath(ctx context.Context, agent transcript.Agent, sessi
 		if err != nil {
 			return err
 		}
-		n, err = r.RowsAffected()
-		return err
+		if n, err = r.RowsAffected(); err != nil || n == 0 {
+			return err
+		}
+		return w.recountSession(agent, sessionID)
 	})
 	return n, err
 }
@@ -769,17 +771,23 @@ func (s *Store) SupersedeSession(ctx context.Context, agent transcript.Agent, se
 		if n, err = r.RowsAffected(); err != nil || n == 0 {
 			return err
 		}
-		row, err := w.queryRow(`SELECT id FROM conversations WHERE device_id = ? AND agent = ? AND session_id = ?`, w.s.opts.DeviceID, string(agent), sessionID)
-		if err != nil {
-			return err
-		}
-		var conv int64
-		if err := row.Scan(&conv); err != nil {
-			return err
-		}
-		return w.recountDigests([]int64{conv})
+		return w.recountSession(agent, sessionID)
 	})
 	return n, err
+}
+
+// recountSession recounts the digest of this device's conversation of a
+// session.
+func (w *writeTx) recountSession(agent transcript.Agent, sessionID string) error {
+	row, err := w.queryRow(`SELECT id FROM conversations WHERE device_id = ? AND agent = ? AND session_id = ?`, w.s.opts.DeviceID, string(agent), sessionID)
+	if err != nil {
+		return err
+	}
+	var conv int64
+	if err := row.Scan(&conv); err != nil {
+		return err
+	}
+	return w.recountDigests([]int64{conv})
 }
 
 // TombstoneConversation records that a session vanished from its source
@@ -799,8 +807,10 @@ func (s *Store) TombstoneConversation(ctx context.Context, agent transcript.Agen
 			}
 			return err
 		}
-		_, err = w.exec(`UPDATE messages SET superseded = 1, superseded_in_generation = ? WHERE conversation_id = ? AND superseded = 0`, gen, id)
-		return err
+		if _, err = w.exec(`UPDATE messages SET superseded = 1, superseded_in_generation = ? WHERE conversation_id = ? AND superseded = 0`, gen, id); err != nil {
+			return err
+		}
+		return w.recountDigests([]int64{id})
 	})
 }
 

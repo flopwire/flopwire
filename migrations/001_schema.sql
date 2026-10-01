@@ -341,6 +341,13 @@ BEGIN
     FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
    WHERE e.extname = 'pg_trgm';
   EXECUTE format('CREATE INDEX messages_text_trgm_idx ON messages USING gin (text %I.gin_trgm_ops)', trgm_schema);
+  -- The sessions glob (retrieval sessionsPage) matches session id, title
+  -- and repo (or cwd) with ILIKE '%...%': each column's trigrams select a
+  -- rare glob's few sessions instead of the list being walked and
+  -- filtered. The expressions are the predicate's own.
+  EXECUTE format('CREATE INDEX conversations_session_trgm_idx ON conversations USING gin (session_id %I.gin_trgm_ops)', trgm_schema);
+  EXECUTE format('CREATE INDEX conversations_title_trgm_idx ON conversations USING gin ((COALESCE(title, '''')) %I.gin_trgm_ops)', trgm_schema);
+  EXECUTE format('CREATE INDEX conversations_place_trgm_idx ON conversations USING gin ((COALESCE(repo_root, cwd, '''')) %I.gin_trgm_ops)', trgm_schema);
 END
 $$;
 
