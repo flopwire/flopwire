@@ -78,7 +78,7 @@ func TestLocalRedaction(t *testing.T) {
 		t.Fatalf("sidecar: %v", err)
 	}
 	path2 := filepath.Join(t.TempDir(), "index.db")
-	os.WriteFile(path2+".redactions.jsonl", side, 0o600)
+	placeSidecar(t, path, path2, side)
 	s2, err := Open(path2, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestLocalRedactionMasksTitle(t *testing.T) {
 		t.Fatalf("sidecar: %v", err)
 	}
 	path2 := filepath.Join(t.TempDir(), "index.db")
-	os.WriteFile(path2+".redactions.jsonl", side, 0o600)
+	placeSidecar(t, path, path2, side)
 	s2, err := Open(path2, Options{})
 	if err != nil {
 		t.Fatal(err)

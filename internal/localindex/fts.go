@@ -65,6 +65,7 @@ type ftsWork struct {
 	seq   int64 // highest fts_queue sequence covered (the shard may own none of it)
 	ops   []ftsOp
 	bytes int
+	scrub bool // a local redaction masked rows: compact the shard after (scrub)
 }
 
 func (w *ftsWork) add(op ftsOp) {
@@ -92,6 +93,9 @@ type ftsShard struct {
 	applied int64
 	err     error // the last failed apply, cleared when a retry succeeds
 	closing bool
+	// scrubDue: a redaction's changes are applied but the old segments
+	// that held the hidden text are not merged away yet (scrub).
+	scrubDue bool
 	// draining: the store is closing; submit no longer blocks on
 	// backpressure (a failing shard would hold the writer forever).
 	draining bool
@@ -250,10 +254,28 @@ var shardFault func(sh *ftsShard) error
 func (sh *ftsShard) run() {
 	defer close(sh.done)
 	backoff := time.Duration(0)
+	var scrub *scrubState
+	stepTurn := false
 	for {
 		sh.mu.Lock()
-		for len(sh.queue) == 0 && !sh.closing {
+		for len(sh.queue) == 0 && !sh.closing && !sh.scrubDue && scrub == nil {
 			sh.cond.Wait()
+		}
+		// Scrub steps alternate with applies, so neither waits for the
+		// other to finish. A closing shard finishes its scrub (the CLI
+		// redacts with its own short-lived store).
+		if (sh.scrubDue || scrub != nil) && sh.err == nil && (len(sh.queue) == 0 || stepTurn) {
+			if sh.scrubDue {
+				// A new redaction: start over, covering it too.
+				sh.scrubDue = false
+				scrub = &scrubState{covers: sh.applied, start: time.Now(), restart: true}
+			}
+			sh.mu.Unlock()
+			stepTurn = false
+			if sh.scrubStep(scrub) {
+				scrub = nil
+			}
+			continue
 		}
 		if len(sh.queue) == 0 || (sh.closing && sh.err != nil) {
 			// Closing: what is left (or failing) is replayed from
@@ -290,6 +312,10 @@ func (sh *ftsShard) run() {
 		}
 		backoff = 0
 		sh.err = nil
+		stepTurn = true
+		for _, w := range batch {
+			sh.scrubDue = sh.scrubDue || w.scrub
+		}
 		sh.queue = sh.queue[n:]
 		sh.queued -= bytes
 		sh.applied = max(sh.applied, batch[len(batch)-1].seq)
@@ -351,6 +377,142 @@ func (sh *ftsShard) apply(batch []*ftsWork) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// scrubStepPages is the FTS5 merge work of one scrub step, in pages
+// (32KB). A step is one shard transaction: queued text waits at most one
+// step, not the whole rewrite of the shard (tens of seconds on a large
+// trigram shard). A variable so tests can make steps small.
+var scrubStepPages = 64
+
+// scrubCheckpointTries bounds the attempts to truncate the WAL after the
+// merge, each waiting at most scrubCheckpointWait for readers.
+const (
+	scrubCheckpointTries = 20
+	scrubCheckpointWait  = 100 // ms
+)
+
+// scrubStep does one step of the compaction that follows a redaction: the
+// shard's segments are merged into one with secure_delete on, so the
+// segments that still held a redacted row's old text are dropped and
+// their pages zeroed, then the WAL is truncated. The first step (restart)
+// starts a merge of every segment (FTS5 'merge' with a negative page
+// count); later steps continue it ('merge', positive), which leaves the
+// segments written since to the usual automerge. The merge is done when
+// a step changes nothing. Steps run on the shard's goroutine between its
+// applies, so queued text waits one step at most. fts_meta.scrubbed
+// records the applied sequence covered (Open schedules it again after a
+// crash; a restarted merge keeps the work already done). It reports
+// whether the scrub is over (done, or failed and logged).
+func (sh *ftsShard) scrubStep(st *scrubState) bool {
+	ctx := context.Background()
+	done, err := func() (bool, error) {
+		conn, err := sh.db.Conn(ctx)
+		if err != nil {
+			return false, err
+		}
+		defer conn.Close()
+		// Also covers the pages that the applies between steps free.
+		if _, err := conn.ExecContext(ctx, `PRAGMA secure_delete = ON`); err != nil {
+			return false, err
+		}
+		if !st.merged {
+			var before, after int64
+			if err := conn.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&before); err != nil {
+				return false, err
+			}
+			n := scrubStepPages
+			if st.restart {
+				n = -n
+				st.restart = false
+			}
+			if _, err := conn.ExecContext(ctx, `INSERT INTO `+sh.table+` (`+sh.table+`, rank) VALUES ('merge', ?)`, n); err != nil {
+				return false, err
+			}
+			if err := conn.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&after); err != nil {
+				return false, err
+			}
+			// The command itself counts one change; merge work writes
+			// segment rows.
+			if after-before > 1 {
+				return false, nil
+			}
+			st.merged = true
+		}
+		// Truncate the WAL, which holds the old pages: wait briefly for
+		// readers, and retry between applies rather than hold the shard.
+		st.tries++
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, scrubCheckpointWait)); err != nil {
+			return false, err
+		}
+		var busy, logPages, ckpt int64
+		err = conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logPages, &ckpt)
+		if _, rerr := conn.ExecContext(ctx, `PRAGMA busy_timeout = 10000`); rerr != nil && err == nil {
+			err = rerr
+		}
+		if err != nil || busy != 0 {
+			if st.tries >= scrubCheckpointTries {
+				return false, fmt.Errorf("the WAL stayed busy after %d checkpoints (retried at the next open): %v", st.tries, err)
+			}
+			return false, nil
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO fts_meta VALUES ('scrubbed', ?)`, st.covers); err != nil {
+			return false, err
+		}
+		_, err = conn.ExecContext(ctx, `PRAGMA secure_delete = OFF`)
+		return true, err
+	}()
+	if err != nil {
+		slog.Warn("localindex: compacting the FTS shard after a redaction failed", "shard", sh.path, "err", err)
+		return true
+	}
+	if !done {
+		return false
+	}
+	took := time.Since(st.start)
+	slog.Info("localindex: compacted the FTS shard after a redaction", "shard", sh.path, "took", took.Round(time.Millisecond))
+	if testHookScrubbed != nil {
+		testHookScrubbed(sh, took)
+	}
+	return true
+}
+
+// scrubState is a shard's compaction in progress.
+type scrubState struct {
+	covers  int64 // the applied sequence the compaction covers
+	start   time.Time
+	restart bool // the next step starts a merge of every segment
+	merged  bool // one segment left; the WAL is to be truncated
+	tries   int  // checkpoint attempts
+}
+
+// testHookScrubbed, when set, is called after each scrub (tests).
+var testHookScrubbed func(sh *ftsShard, took time.Duration)
+
+// scheduleScrubs marks for a scrub each shard that applied a redaction's
+// changes (meta.fts_scrub_seq) and has not compacted since: the agent
+// stopped between the two.
+func (s *Store) scheduleScrubs(ctx context.Context) error {
+	var due sql.NullInt64
+	if err := s.wdb.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fts_scrub_seq'`).Scan(&due); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if !due.Valid {
+		return nil
+	}
+	for _, sh := range s.shards {
+		var done int64
+		if err := sh.db.QueryRowContext(ctx, `SELECT value FROM fts_meta WHERE key = 'scrubbed'`).Scan(&done); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if done < due.Int64 {
+			sh.mu.Lock()
+			sh.scrubDue = true
+			sh.cond.Broadcast()
+			sh.mu.Unlock()
+		}
+	}
+	return nil
 }
 
 // drain stops submit from blocking, so a writer held by backpressure can

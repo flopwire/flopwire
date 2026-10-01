@@ -20,9 +20,10 @@ import (
 // and withhold. 9: conversations.branches and conversations.digest.
 // 10: sources.extraction_report.
 // 11: messages_tool_call and conversations_unspawned, for link resolution.
+// 12: messages_sha, for local redactions.
 // Placements are carried across a rebuild (carryPlacements): a session
 // whose worktree is gone cannot be placed again from its transcript.
-const schemaVersion = 11
+const schemaVersion = 12
 
 // Column types follow spec §4 with SQLite equivalents: integer row ids
 // (FTS5 keys on the integer rowid), times as unix milliseconds, booleans as
@@ -151,6 +152,9 @@ CREATE INDEX messages_tool_call ON messages (conversation_id, tool_call_id)
 -- neither reads message rows, which hold the text inline (about 1KB a row;
 -- 78k lookups there took 5s cold, against 0.06s in a covering index).
 -- Queries name them with INDEXED BY.
+-- Local redactions (redact.go): every copy of a redacted text, for
+-- --all-copies and for reconciling the sidecar, without a scan.
+CREATE INDEX messages_sha ON messages (content_sha);
 CREATE INDEX messages_meta ON messages (id, ts, conversation_id, superseded, on_active_path, kind);
 CREATE INDEX messages_ts ON messages (ts, id, superseded, on_active_path, kind, conversation_id);
 
@@ -226,8 +230,9 @@ var ErrSyncOnly = errors.New("this device is sync-only; use --server")
 // tables' detail levels. An index built in the other mode (mode) is
 // dropped and created again, as for an older layout, so a switch to full
 // builds the message rows from the transcripts and a switch to sync-only
-// drops them; rebuilt reports that.
-func migrate(db *sql.DB, want Details, mode string) (got Details, rebuilt bool, err error) {
+// drops them; rebuilt reports that. force rebuilds an index of the current
+// layout and mode the same way (Options.RebuildIndex).
+func migrate(db *sql.DB, want Details, mode string, force bool) (got Details, rebuilt bool, err error) {
 	for _, d := range []Detail{want.Tok, want.Tri} {
 		if d != DetailColumn && d != DetailFull {
 			return Details{}, false, fmt.Errorf("unknown detail %q", d)
@@ -242,10 +247,14 @@ func migrate(db *sql.DB, want Details, mode string) (got Details, rebuilt bool, 
 
 		err := db.QueryRow(`SELECT (SELECT value FROM meta WHERE key='tok_detail'), (SELECT value FROM meta WHERE key='tri_detail'),
 			(SELECT CAST(value AS INTEGER) FROM meta WHERE key='tri_parts'), ifnull((SELECT value FROM meta WHERE key='mode'), '')`).Scan(&got.Tok, &got.Tri, &got.TriParts, &have)
-		if err != nil || have == mode {
+		if err != nil || have == mode && !force {
 			return got, false, err
 		}
-		slog.Info("localindex: index mode changed; rebuilding", "from", have, "to", mode)
+		if have != mode {
+			slog.Info("localindex: index mode changed; rebuilding", "from", have, "to", mode)
+		} else {
+			slog.Info("localindex: rebuilding the index on request")
+		}
 	}
 	tx, err := db.Begin()
 	if err != nil {

@@ -147,6 +147,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	once := fs.Bool("once", false, "index everything that changed, upload it (with a configured server or FLOPWIRE_TOKEN), then exit")
 	syncWait := fs.Duration("sync-timeout", 5*time.Minute, "with --once: how long to wait for the upload to finish")
 	noSync := fs.Bool("no-sync", false, "never upload, even with a configured server")
+	rebuildIndex := fs.Bool("rebuild-index", false, "drop the local index's rows and search files and index every transcript again; keeps sync state, placements and local redactions (see docs/agent.md#recover-the-local-index)")
 	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from the client config's "mode"`)
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
@@ -243,6 +244,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 				a.ResetGates()
 			}
 		}}
+	// A re-executed agent (it holds the lock already) rebuilt before.
+	opts.RebuildIndex = *rebuildIndex && opts.LockFile == nil
 	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log)
 	if err != nil || store == nil {
 		return nil, err // store == nil: the running agent did the pass
@@ -359,7 +362,7 @@ func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options,
 		if !errors.As(err, &locked) {
 			return store, err
 		}
-		if !once {
+		if !once || opts.RebuildIndex {
 			return nil, fmt.Errorf("agent already running (pid %d)", locked.PID)
 		}
 		_, err = agent.Call(ctx, socket, agent.Request{Op: "pass", Index: dbPath})
