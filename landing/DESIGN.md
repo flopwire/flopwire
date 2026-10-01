@@ -54,3 +54,9 @@ Reference study, 2026-09-30:
 - https://www.cloudflare.com/developer-platform/ — architectural explanation alongside concise text. Omit tabbed content and enterprise marketing filler.
 
 The study used three Sol subagents with live site inspection. Motion observations were limited to directly observed state changes, not inferred timings.
+
+## Lower-page rhythm
+
+Environment uses a centered heading and laptop-to-server band. Sharing uses a heading row above three comparable policy columns. Setup retains the split CTA/terminal composition. This removes the repeated run of left-heading/right-evidence sections without changing the shared outer container or hiding content.
+
+Read-only Claude consultation (`20260930-172149-claude-bda5771a`, default model/effort) confirmed the repeated grid diagnosis and recommended topology band → policy ledger → setup split. Adopted that composition; used a centered environment heading and a soft policy surface rather than the suggested extra separator rules, respecting the user's earlier request. Mobile follows source order and stacks policies.
