@@ -117,9 +117,11 @@ func TestClaudePluginHooks(t *testing.T) {
 			t.Errorf("%s matcher %q: the event takes none", ev, g.Matcher)
 		}
 		h := g.Hooks[0]
-		f := strings.Fields(h.Command)
-		if h.Type != "command" || len(f) != 2 || f[0] != "flopwire" || len(h.Args) != 0 {
-			t.Errorf("%s: command %q %q, want the shell command `flopwire hook`", ev, h.Command, h.Args)
+		// `|| true`: a missing or older binary must not put a hook error
+		// on every tool call (TestClaudePluginHooksWithoutBinary).
+		f := strings.Fields(strings.TrimSuffix(h.Command, " || true"))
+		if h.Type != "command" || !strings.HasSuffix(h.Command, " || true") || len(f) != 2 || f[0] != "flopwire" || len(h.Args) != 0 {
+			t.Errorf("%s: command %q %q, want the shell command `flopwire hook || true`", ev, h.Command, h.Args)
 			continue
 		}
 		if f[1] != "hook" || !cmds[f[1]] {
@@ -127,6 +129,46 @@ func TestClaudePluginHooks(t *testing.T) {
 		}
 		if h.Timeout < 1 || h.Timeout > 10 {
 			t.Errorf("%s timeout %ds; the hook takes at most ~300ms, keep 1-10s", ev, h.Timeout)
+		}
+	}
+}
+
+// TestClaudePluginHooksWithoutBinary: with flopwire missing from PATH (or
+// an older binary without the hook command), every hook still exits 0 with
+// nothing on stdout. Claude Code shows a "hook error" notice for any other
+// exit status, which on PostToolUse means one on every tool call.
+func TestClaudePluginHooksWithoutBinary(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	var hf struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	readJSONFile(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"), &hf)
+	// An "older binary": a flopwire that knows no hook command.
+	old := t.TempDir()
+	if err := os.WriteFile(filepath.Join(old, "flopwire"), []byte("#!/bin/sh\necho 'Usage: flopwire <command>' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{t.TempDir(), old} {
+		for ev, groups := range hf.Hooks {
+			for _, g := range groups {
+				for _, h := range g.Hooks {
+					cmd := exec.Command(sh, "-c", h.Command)
+					cmd.Env = []string{"PATH=" + path}
+					cmd.Stdin = strings.NewReader(`{"hook_event_name":"` + ev + `","session_id":"s"}`)
+					var out bytes.Buffer
+					cmd.Stdout = &out
+					if err := cmd.Run(); err != nil || out.Len() != 0 {
+						t.Errorf("%s with PATH=%s: %q exits %v, stdout %q; want exit 0 and no output", ev, path, h.Command, err, out.String())
+					}
+				}
+			}
 		}
 	}
 }

@@ -5,7 +5,7 @@ The plugin connects Claude Code to Flopwire. It adds these parts:
 | Part | What it does |
 |---|---|
 | MCP server `flopwire` | Runs `flopwire mcp`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
-| Hooks | Run `flopwire hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop`, with a 5-second timeout. They print the standing instruction and pending messages into the session, and ask the device agent to index the transcript. |
+| Hooks | Run `flopwire hook \|\| true` on `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop`, with a 5-second timeout. They print the standing instruction and pending messages into the session, and ask the device agent to index the transcript. |
 | Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. |
 
 The plugin adds about 90 tokens to every session (the skill's name and
@@ -19,8 +19,9 @@ model uses it. `claude plugin details flopwire` shows the current numbers.
 - The device agent runs (`flopwire agent run`). Messages and capture go
   through it. See [docs/agent.md](../../../docs/agent.md).
 
-If `flopwire` is not on `PATH`, the hooks fail without stopping the
-session, and the MCP server shows as failed in `/mcp`. If the agent is not
+If `flopwire` is not on `PATH`, or is too old to know `flopwire hook`, the
+hooks do nothing (`|| true` keeps Claude Code from showing a hook error on
+every tool call), and the MCP server shows as failed in `/mcp`. If the agent is not
 running, the hooks print nothing and the messaging tools return
 `agent_not_running`.
 
