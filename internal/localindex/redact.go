@@ -658,6 +658,10 @@ var testHookSidecarWrite func(f *os.File, b []byte) (int, error)
 // failure).
 var testHookDirSync func(path string) error
 
+// testHookReconcile, when set, runs before each reconcile on the writer;
+// an error it returns fails the reconcile (tests inject a failure).
+var testHookReconcile func() error
+
 // recordTombstones adds tombstones to the sidecar, then applies them to
 // later writes, and advances the reconciled marker when nothing earlier
 // is pending. It runs on the writer. Tombstones stay in effect for later
@@ -709,8 +713,11 @@ func (w *writeTx) recordTombstones(added []Tombstone) error {
 	}
 	if err != nil {
 		// This request rolls back its row masks; with the entries
-		// loaded, the next transaction reconciles them.
-		s.reconcileDue.Store(renamed)
+		// loaded, the next transaction reconciles them. A file not
+		// renamed leaves a reconcile due from before as it is.
+		if renamed {
+			s.reconcileDue.Store(true)
+		}
 		return err
 	}
 	marker, err := w.reconciled()
@@ -794,6 +801,11 @@ func (w *writeTx) reconciled() (int64, error) {
 // entry is found through indexes: rows by text hash, records and titles
 // by session.
 func (w *writeTx) reconcile() error {
+	if testHookReconcile != nil {
+		if err := testHookReconcile(); err != nil {
+			return err
+		}
+	}
 	t := w.s.tombs
 	t.mu.RLock()
 	size, entries := t.size, t.entries

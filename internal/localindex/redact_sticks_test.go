@@ -403,3 +403,44 @@ func TestLocalRedactionOpenFailureRecovery(t *testing.T) {
 	index(s2)
 	noLeak(t, s2, "BLUEFALCON", "rebuilt")
 }
+
+// A reconcile is due (a lost commit held a redaction's row masks) and
+// fails; a later redaction then fails before its sidecar is renamed. That
+// failure must leave the reconcile due, so the first write after the
+// fault applies the earlier redaction.
+func TestLocalRedactionFailedWriteKeepsReconcileDue(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "index.db"), Options{DeferCommit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+		msg("sess-1", "u1", 0, transcript.KindUser, "codename BLUEFALCON-7731 alpha"),
+		msg("sess-1", "u2", 1, transcript.KindUser, "codename REDHERON-4410 bravo"))
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	failed := errors.New("disk I/O error")
+	testHookReconcile = func() error { return failed }
+	testHookCommit = func() error { testHookCommit = nil; return failed }
+	defer func() { testHookReconcile, testHookCommit, testHookSidecarWrite = nil, nil, nil }()
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0)}); !errors.Is(err, failed) {
+		t.Fatalf("redaction over a failed commit: %v", err)
+	}
+	testHookSidecarWrite = func(f *os.File, b []byte) (int, error) {
+		if strings.Contains(filepath.Base(f.Name()), ".prev.") {
+			return f.Write(b)
+		}
+		testHookSidecarWrite = nil
+		return 0, syscall.ENOSPC
+	}
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(1, 0)}); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("redaction on a full disk: %v", err)
+	}
+	testHookReconcile = nil
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	noLeak(t, s, "BLUEFALCON", "after the faults cleared")
+}
