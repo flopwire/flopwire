@@ -12,6 +12,8 @@ name: Perf nightly
 # must not reach the issue token.
 
 on:
+  push: # TEMPORARY: review verification run; removed in the next commit
+    branches: [perf/nightly-ab-bench]
   schedule:
     - cron: "23 6 * * *"
   workflow_dispatch:
