@@ -225,3 +225,50 @@ func TestBenchABBaselineFailed(t *testing.T) {
 		t.Fatal("--strict passed a BASELINE_FAILED run")
 	}
 }
+
+// TestABOrderBalanced: runs come in ABBA blocks, so A does not always run
+// first (onto a colder cache) and each side leads equally often.
+func TestABOrderBalanced(t *testing.T) {
+	name := func(o []int) string {
+		var b strings.Builder
+		for _, i := range o {
+			b.WriteByte("AB"[i])
+		}
+		return b.String()
+	}
+	for k, want := range map[int]string{1: "AB", 2: "ABBA", 3: "ABBAAB", 4: "ABBAABBA"} {
+		if got := name(abOrder(k)); got != want {
+			t.Errorf("abOrder(%d) = %s, want %s", k, got, want)
+		}
+	}
+	for k := 1; k <= 8; k++ {
+		o := abOrder(k)
+		a, aFirst := 0, 0
+		for i, s := range o {
+			if s == 0 {
+				a++
+			}
+			if i%2 == 0 && s == 0 {
+				aFirst++
+			}
+		}
+		if a != k || len(o) != 2*k || aFirst != (k+1)/2 {
+			t.Errorf("abOrder(%d) = %v: %d A runs, A leads %d pairs", k, o, a, aFirst)
+		}
+	}
+}
+
+func TestWarmTree(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for p, n := range map[string]int{"x": 10, "a/y": 2000, "a/b/z": 3 << 20} {
+		if err := os.WriteFile(filepath.Join(dir, p), make([]byte, n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := warmTree(dir); err != nil || n != 10+2000+3<<20 {
+		t.Fatalf("warmTree = %d, %v", n, err)
+	}
+}

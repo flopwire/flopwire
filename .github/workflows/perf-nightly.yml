@@ -3,7 +3,7 @@ name: Perf nightly
 # Nightly A/B benchmark on a synthetic corpus (docs/perf/README.md).
 # Binary A is the pinned baseline (scripts/perf-baseline.sh: the newer of
 # the latest v* tag and docs/perf/nightly-baseline), binary B is main.
-# Both run the acceptance parts alternately on one runner and one corpus;
+# Both run the acceptance parts in ABBA blocks on one runner and one corpus;
 # medians are compared. A regression opens or updates one issue labelled
 # perf-regression; a later clean run closes it. A baseline that cannot run
 # under B's harness opens one labelled perf-baseline-broken instead.
@@ -21,7 +21,7 @@ on:
         required: false
         default: ""
       runs:
-        description: "Runs per binary (alternating A,B)"
+        description: "Runs per binary (ABBA blocks: A,B,B,A,A,B for 3)"
         required: false
         default: "3"
       size:

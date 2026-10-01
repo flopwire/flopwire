@@ -30,9 +30,11 @@ requests.
 2. Binary B is the commit under test. The workflow builds both.
 3. `flopwire bench corpus` generates the synthetic corpus and checks that
    every file parses with no parse errors through the production parsers.
-4. `flopwire bench ab` runs the index, fresh and queries parts with A, then
-   B, then A, then B, three times each. Both binaries run on the same
-   runner and the same corpus. The harness is B's for both runs; only the
+4. `flopwire bench ab` first reads the whole corpus once, so no run meets
+   a cold file cache. Then it runs the index, fresh and queries parts three
+   times per binary in ABBA blocks: A, B, B, A, A, B. Each binary runs
+   first equally often, so drift during the job does not favour one side.
+   Both binaries run on the same runner and the same corpus. The harness is B's for both runs; only the
    binary under test changes.
 5. The step summary and the `perf-nightly` artifact hold every run's
    record, the median records `A.json` and `B.json`, and the comparison

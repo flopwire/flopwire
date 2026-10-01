@@ -2,7 +2,7 @@ package main
 
 // `flopwire bench corpus` writes the synthetic corpus of internal/synthcorpus;
 // `flopwire bench ab` runs the acceptance parts against two binaries,
-// alternating A,B,A,B on one machine and one corpus, and compares their
+// in ABBA blocks (A,B,B,A,A,B) on one machine and one corpus, and compares their
 // medians. The nightly workflow (.github/workflows/perf-nightly.yml) runs
 // both on a hosted runner; see docs/perf/README.md.
 
@@ -182,7 +182,8 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 	labelB := fs.String("b-commit", "", "commit of the candidate, for the records")
 	scratch := fs.String("scratch", "", "scratch directory (required)")
 	out := fs.String("out", "", "directory for the per-run records and the comparison (required)")
-	runs := fs.Int("runs", 3, "runs per binary; they alternate A,B,A,B")
+	runs := fs.Int("runs", 3, "runs per binary, in ABBA blocks: A,B,B,A,A,B for 3")
+	warm := fs.Bool("warm", true, "read the whole corpus once before the first run, so neither binary meets a cold file cache")
 	queries := fs.String("queries", "", "query set (default <home>/queries.yaml)")
 	parts := fs.String("only", "index,fresh,queries", "parts to run each time")
 	idleAfter := fs.Duration("idle-after", 60*time.Second, "how long the agent idles before its memory is read")
@@ -214,8 +215,20 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 	machine := machineInfo()
 	t0 := time.Now()
 	var all []abRun
-	for i := 1; i <= *runs; i++ {
-		for _, sd := range sides {
+	if *warm {
+		wt := time.Now()
+		n, err := warmTree(home)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "bench ab: read %.2fGB of the corpus into the file cache in %s\n", float64(n)/1e9, time.Since(wt).Round(time.Second))
+	}
+	count := map[string]int{}
+	for k, si := range abOrder(*runs) {
+		sd := sides[si]
+		count[sd.name]++
+		i := count[sd.name]
+		{
 			dir := filepath.Join(*scratch, fmt.Sprintf("%s-%d", sd.name, i))
 			if err := os.RemoveAll(dir); err != nil {
 				return err
@@ -223,7 +236,7 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 			b := &bench{exe: sd.bin, scratch: dir, claude: claudeDir, codex: codexHome, devin: devinDB, home: home}
 			res := &accResults{}
 			rt := time.Now()
-			fmt.Fprintf(os.Stderr, "bench ab: run %d/%d, %s (%s)\n", i, *runs, sd.name, sd.bin)
+			fmt.Fprintf(os.Stderr, "bench ab: run %d/%d, %s %d (%s)\n", k+1, 2**runs, sd.name, i, sd.bin)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
 			}
@@ -287,6 +300,44 @@ func writeAB(out string, stdout io.Writer, sum *abSummary, strict bool) error {
 
 func baselineFailed(a, b buildRecord, machine machineRecord, err error) *abSummary {
 	return &abSummary{Verdict: verdictBaselineFailed, Error: err.Error(), A: a, B: b, Machine: machine}
+}
+
+// abOrder is the run order of k runs per binary, as indexes into
+// {A, B}: ABBA blocks (A,B,B,A,A,B for k=3), so neither binary always runs
+// first after the other and drift over the job (cache warmth, thermal or
+// neighbour load) does not favour one side.
+func abOrder(k int) []int {
+	out := make([]int, 0, 2*k)
+	for i := range k {
+		if i%2 == 0 {
+			out = append(out, 0, 1)
+		} else {
+			out = append(out, 1, 0)
+		}
+	}
+	return out
+}
+
+// warmTree reads every file under root once, so the first measured run
+// does not pay for a cold page cache that later runs skip. It returns the
+// bytes read.
+func warmTree(root string) (int64, error) {
+	var n int64
+	buf := make([]byte, 1<<20)
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		c, err := io.CopyBuffer(io.Discard, f, buf)
+		n += c
+		return err
+	})
+	return n, err
 }
 
 func runsOf(all []abRun, side string) []*accRecord {
@@ -458,7 +509,7 @@ func (s *abSummary) markdown() string {
 		fmt.Fprintf(&b, "%s\n%s\n%s\n", fence, tail(s.Error, 3000), fence)
 		return b.String()
 	}
-	fmt.Fprintf(&b, "Baseline (A) `%s`, candidate (B) `%s`. %d runs each, alternating A,B on one runner (%s, %d cores, %.0fGB RAM). Corpus: %d files, %.2fGB. Took %s.\n\n",
+	fmt.Fprintf(&b, "Baseline (A) `%s`, candidate (B) `%s`. %d runs each, in ABBA blocks (A,B,B,A,...) after warming the file cache, on one runner (%s, %d cores, %.0fGB RAM). Corpus: %d files, %.2fGB. Took %s.\n\n",
 		short(s.A.Commit), short(s.B.Commit), s.Runs, s.Machine.CPUModel, s.Machine.Cores, float64(s.Machine.RAMBytes)/(1<<30),
 		s.Corpus.Files, float64(s.Corpus.Bytes)/1e9, (time.Duration(s.WallS) * time.Second).String())
 	fmt.Fprintf(&b, "A metric regresses when B's median grew by more than %.0f%% and by more than its minimum change (docs/perf/README.md), and every B run is above every A run. Spread is (max-min)/median of one binary's runs: the noise.\n\n", 100*s.Threshold)
