@@ -47,6 +47,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/redact"
@@ -725,7 +726,8 @@ func (k *keyer) titlePrefixes(text string, from, to int) string {
 		if from > 0 && (i+1 < from || i+1 > to) {
 			return ""
 		}
-		l = strings.TrimLeft(l, " \t\r\n\v\f")
+		// As the parsers' strings.TrimSpace: Unicode spaces too.
+		l = strings.TrimLeftFunc(l, unicode.IsSpace)
 		full := strings.TrimSpace(l)
 		var buf []byte
 		for _, n := range titleCuts {
@@ -1070,7 +1072,7 @@ func (w *writeTx) maskTitle(conv int64, orig, masked string, hidden []string) (T
 		return Tombstone{}, err
 	}
 	nt := title
-	start := len(orig) - len(strings.TrimLeft(orig, " \t\r\n"))
+	start := len(orig) - len(strings.TrimLeftFunc(orig, unicode.IsSpace)) // as the parsers' TrimSpace
 	if len(masked) == len(orig) && strings.HasPrefix(orig[start:], title) {
 		nt = masked[start : start+len(title)]
 	}

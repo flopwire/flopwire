@@ -559,3 +559,42 @@ func TestLocalRedactionSidecarHidesSecrets(t *testing.T) {
 		t.Fatalf("opened a sidecar without its key: %v", err)
 	}
 }
+
+// The parsers trim a title's source with strings.TrimSpace, which strips
+// Unicode spaces (U+00A0, U+3000, ...) too. A hidden first line that
+// starts with one still has its title cuts recorded and masked.
+func TestLocalRedactionTitleCutAfterUnicodeSpace(t *testing.T) {
+	for _, lead := range []string{" ", "　", "  "} {
+		s := openTest(t, DetailFull)
+		line := lead + strings.Repeat("rotate the staging key BLUEFALCON-7731 now ", 4)
+		text := line + "\nthanks"
+		// claude's firstLine and codex's titleOf.
+		src := strings.TrimSpace(text)
+		src = src[:strings.IndexByte(src, '\n')]
+		claudeCut := string([]rune(src)[:claude.TitleRunes])
+		codexCut := strings.TrimSpace(claudeCut)
+		titles := map[string]string{"sess-1": claudeCut, "sess-2": codexCut}
+		for sess, title := range titles {
+			f := source(t, s, transcript.AgentClaude, "/h/"+sess+".jsonl")
+			sinkMsgs(t, s, f.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: sess, Title: title},
+				msg(sess, "u-"+sess, 0, transcript.KindUser, text))
+		}
+		if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0), From: 1, To: 1, AllCopies: true}); err != nil {
+			t.Fatal(err)
+		}
+		// A title written after the redaction is masked too.
+		f := source(t, s, transcript.AgentClaude, "/h/sess-3.jsonl")
+		sinkMsgs(t, s, f.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-3", Title: claudeCut},
+			msg("sess-3", "u-sess-3", 0, transcript.KindUser, "hello"))
+		titles["sess-3"] = claudeCut
+		for sess, title := range titles {
+			var got string
+			if err := s.DB().QueryRow(`SELECT ifnull(title, '') FROM conversations WHERE session_id = ?`, sess).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(got, "BLUEFALCON") {
+				t.Errorf("lead %q, %s: title %q kept as %q", lead, sess, title, got)
+			}
+		}
+	}
+}
