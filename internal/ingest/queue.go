@@ -57,6 +57,8 @@ type Queue struct {
 	oldest         atomic.Int64 // unix ns of the oldest pending request; 0: none
 	failing        atomic.Int64
 	quarantined    atomic.Int64
+	// masks is the redacted-line catalog, kept between parses.
+	masks maskCache
 }
 
 func (q *Queue) init() {

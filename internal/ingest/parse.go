@@ -11,6 +11,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/domain"
@@ -125,7 +126,11 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		}
 		return q.done(ctx, j, j.cursorGen)
 	}
-	g, err := LoadGeneration(ctx, q.Pool, sourceID, -1)
+	// An append is read from its cursor: the manifest before it is loaded
+	// only if the parse reaches back (a new generation, a full parse). The
+	// byte before the cursor is in the window, since the redaction pass
+	// looks back for the start of the line.
+	g, err := LoadGenerationFrom(ctx, q.Pool, sourceID, -1, j.cursor.Offset-1)
 	if errors.Is(err, ErrNoGeneration) {
 		return q.done(ctx, j, j.cursorGen)
 	}
@@ -178,7 +183,7 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	// A Devin export is read whole every time, so its count is replaced.
 	rr := redact.NewReaderAt(r, redact.ModeFor(j.kind, j.path))
 	countAll := full || isDevin
-	masks, err := LineMasks(ctx, q.Pool)
+	masks, err := q.masks.lineMasks(ctx, q.Pool)
 	if err != nil {
 		return err
 	}
@@ -198,11 +203,11 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	var result transcript.ParseResult
 	switch transcript.Agent(j.src.agent) {
 	case transcript.AgentClaude:
-		p := &claude.Parser{FS: &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID}, Caps: uncapped}
+		p := &claude.Parser{FS: &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}, Caps: uncapped}
 		result, err = p.ParseWithReport(ctx, in, j.cursor, sink)
 		next = result.Cursor
 	case transcript.AgentCodex:
-		archive := &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID}
+		archive := &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}
 		result, err = (&codex.Parser{Caps: uncapped, OpenRollout: archive.openRollout}).ParseWithReport(ctx, in, j.cursor, sink)
 		next = result.Cursor
 	case transcript.AgentDevin:
@@ -627,6 +632,7 @@ type archiveFS struct {
 	pool     *pgxpool.Pool
 	objects  Objects
 	deviceID string
+	masks    *maskCache
 }
 
 func (a *archiveFS) Open(p string) (claude.File, error) {
@@ -689,7 +695,7 @@ func (a *archiveFS) openRollout(_, sessionID string) (codex.File, error) {
 		return nil, err
 	}
 	f := newRedactedFile(NewReader(a.ctx, a.objects, g), string(transcript.StorageJSONLAppend), "")
-	masks, err := LineMasks(a.ctx, a.pool)
+	masks, err := a.masks.lineMasks(a.ctx, a.pool)
 	if err != nil {
 		return nil, err
 	}
@@ -709,6 +715,60 @@ func serverExtractionContract(agent string) string {
 		return (&codex.Parser{Caps: uncapped}).ExtractionContract()
 	}
 	return ""
+}
+
+// maskCache keeps the redacted-line catalog between parses: every parse
+// needs it, and redacted_lines grows with every redaction while a parse
+// of an append reads a few lines. It reloads when
+// redacted_lines_revision moved, reading the revision and the lines in
+// one snapshot, so a cached catalog is the lines of its revision.
+type maskCache struct {
+	mu       sync.Mutex
+	loaded   bool
+	revision int64
+	catalog  *redact.LineCatalog
+}
+
+// get returns the current catalog, never nil.
+func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, error) {
+	var rev int64
+	if err := pool.QueryRow(ctx, `SELECT revision FROM redacted_lines_revision WHERE singleton`).Scan(&rev); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.loaded && c.revision == rev {
+		cat := c.catalog
+		c.mu.Unlock()
+		return cat, nil
+	}
+	c.mu.Unlock()
+	var cat *redact.LineCatalog
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT revision FROM redacted_lines_revision WHERE singleton`).Scan(&rev); err != nil {
+			return err
+		}
+		var err error
+		cat, err = loadLineMasks(ctx, tx)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if !c.loaded || rev > c.revision {
+		c.loaded, c.revision, c.catalog = true, rev, cat
+	}
+	c.mu.Unlock()
+	return cat, nil
+}
+
+// lineMasks is LineMasks from the cache: nil when there are none.
+func (c *maskCache) lineMasks(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, error) {
+	cat, err := c.get(ctx, pool)
+	if err != nil || cat.Empty() {
+		return nil, err
+	}
+	return cat, nil
 }
 
 // LineMasks loads the redacted message lines (notes/redaction.md) for the

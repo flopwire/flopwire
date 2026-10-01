@@ -418,3 +418,45 @@ func TestCheckpointAndConcurrentFlushDoNotDeadlock(t *testing.T) {
 		t.Fatalf("%d deadlocks in 30 rounds", deadlocks)
 	}
 }
+
+// A parse releases its fences before it returns. Closing the fence
+// connection alone releases them only when the server backend exits,
+// after Close returns: the next parse of the source, or the next idle
+// refresh (one global fence), could find them still held and give up
+// with errParseBusy (CI: TestPerfRefreshPickLinear, a few rounds in a
+// thousand). The probe runs while the fence connection is still open, so
+// only an explicit release passes.
+func TestParseFenceReleasedOnReturn(t *testing.T) {
+	e := newEnv(t)
+	id := uuid.NewString()
+	probe, err := pgx.ConnectConfig(e.ctx, e.pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close(e.ctx)
+	probed := 0
+	beforeFenceClose = func() {
+		probed++
+		var free bool
+		if err := probe.QueryRow(e.ctx, `SELECT pg_try_advisory_lock(hashtextextended('flopwire:idle-reparse',0))
+			AND pg_try_advisory_lock(hashtextextended($1,0))`, "flopwire:source-parse:"+id).Scan(&free); err != nil {
+			t.Error(err)
+		}
+		if _, err := probe.Exec(e.ctx, `SELECT pg_advisory_unlock_all()`); err != nil {
+			t.Error(err)
+		}
+		if !free {
+			t.Error("a parse returns with its fences held until its connection's backend exits")
+		}
+	}
+	defer func() { beforeFenceClose = nil }()
+	if err := e.queue.refreshSource(e.ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.queue.ParseSource(e.ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if probed != 2 {
+		t.Fatalf("probed %d fence closes, want 2", probed)
+	}
+}

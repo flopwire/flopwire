@@ -34,13 +34,13 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 	if err != nil || len(work) == 0 {
 		return err
 	}
-	masks, err := loadLineMasks(ctx, q.Pool)
+	masks, err := q.masks.get(ctx, q.Pool)
 	if err != nil {
 		return err
 	}
 	for _, w := range work {
 		for {
-			g, err := LoadGeneration(ctx, q.Pool, source, w.gen)
+			g, err := LoadGenerationFrom(ctx, q.Pool, source, w.gen, w.from-1)
 			if err != nil {
 				return err
 			}
