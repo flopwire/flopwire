@@ -1,0 +1,1 @@
+The fw paths are a manually reconstructed approximation of the supplied raster reference. They are not the original designer vectors. Orange #df3717 is a sampled visual approximation. Wordmarks use the existing self-hosted IBM Plex Mono; the reference wordmark font is not confirmed.
