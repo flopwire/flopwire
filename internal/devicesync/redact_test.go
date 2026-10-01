@@ -103,7 +103,7 @@ func TestPlantedSecretsNeverUploaded(t *testing.T) {
 
 // A line still being written is not uploaded until its newline arrives:
 // half a token must not reach the server unredacted. Once the file goes
-// idle, the partial line is sealed (redacted as it stands).
+// idle, only captured complete records are sealed. The partial line waits.
 func TestPartialLineWithheldUntilComplete(t *testing.T) {
 	now := time.Now()
 	e := newEnv(t, Config{Now: func() time.Time { return now }, SealAfter: time.Minute}, 1<<20)
@@ -127,7 +127,7 @@ func TestPartialLineWithheldUntilComplete(t *testing.T) {
 		t.Fatalf("completed line: %q", got)
 	}
 
-	// A partial line on a file that went idle is sealed.
+	// Idle seals the complete prefix while retaining the partial record locally.
 	appendFile(t, sp.Path, []byte(`{"type":"x","text":"tail`))
 	e.sync(sp)
 	if got, _ := e.srv.Reconstruct(sp.Path, id, 0); len(got) == len(raw)+len(`{"type":"x","text":"tail`) {
@@ -136,7 +136,10 @@ func TestPartialLineWithheldUntilComplete(t *testing.T) {
 	now = now.Add(time.Hour)
 	e.sync(sp)
 	raw, _ = os.ReadFile(sp.Path)
-	e.requireServerHas(sp.Path, id, 0, redactAll(t, raw, redact.Lines))
+	e.requireServerHas(sp.Path, id, 0, redactAll(t, raw[:len(raw)-len(`{"type":"x","text":"tail`)], redact.Lines))
+	if e.sy.provisional(context.Background(), sp.Path) {
+		t.Fatal("an unfinished record kept the idle seal timer armed")
+	}
 }
 
 func redactAll(t *testing.T, raw []byte, m redact.Mode) []byte {
