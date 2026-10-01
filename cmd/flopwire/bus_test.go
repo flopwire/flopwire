@@ -960,3 +960,25 @@ func TestBusTextDoesNotClaimDelivery(t *testing.T) {
 		}
 	}
 }
+
+// The inbox budget counts the fields it adds after cutting (more, hint):
+// whatever the page's size, the MCP answer stays within 24000 bytes.
+func TestMCPInboxBudgetCountsTheHint(t *testing.T) {
+	var body int
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		var items []busproto.InboxItem
+		for i := range 7 {
+			items = append(items, busproto.InboxItem{Envelope: busproto.Envelope{ID: fmt.Sprintf("m%03d", i), ThreadID: "t", From: peerID,
+				Body: strings.Repeat("a", body), Sent: t0}, Direction: "received", State: busproto.StateQueued})
+		}
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: items, Next: "2026-10-01T14:02:11Z|m006"}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	for body = 2900; body < 3200; body++ {
+		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_inbox","arguments":{}}}`)
+		text, isErr, structured := mcpContent(t, resp)
+		if isErr || len(text) > format.MaxOutput || structured["more"] != true {
+			t.Fatalf("body %d: %d bytes (budget %d), more %v", body, len(text), format.MaxOutput, structured["more"])
+		}
+	}
+}

@@ -731,18 +731,22 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 		out.Next = resp.Inbox.Next
 	}
 	// Within the budget, whole messages only: the cursor then starts
-	// after the last one shown.
+	// after the last one shown. The size counts more and hint.
+	paging := func() {
+		out.More = out.Next != ""
+		if out.More {
+			out.Hint = "pass next as " + st.cmd("--cursor", "cursor") + " for the next page"
+			if out.budgetCut {
+				out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s", st.Budget, out.Hint)
+			}
+		}
+	}
+	paging()
 	for len(out.Messages) > 1 && !st.fits(out) {
 		out.Messages = out.Messages[:len(out.Messages)*3/4]
 		last := out.Messages[len(out.Messages)-1]
 		out.Next, out.budgetCut = last.Sent.UTC().Format(time.RFC3339Nano)+"|"+last.ID, true
-	}
-	out.More = out.Next != ""
-	if out.More {
-		out.Hint = "pass next as " + st.cmd("--cursor", "cursor") + " for the next page"
-		if out.budgetCut {
-			out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s", st.Budget, out.Hint)
-		}
+		paging()
 	}
 	return st.emit(w, out, func() error { return writeInbox(w, out, a, st) })
 }
