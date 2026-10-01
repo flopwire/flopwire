@@ -9,6 +9,7 @@ import (
 	"net"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -979,6 +980,51 @@ func TestMCPInboxBudgetCountsTheHint(t *testing.T) {
 		text, isErr, structured := mcpContent(t, resp)
 		if isErr || len(text) > format.MaxOutput || structured["more"] != true {
 			t.Fatalf("body %d: %d bytes (budget %d), more %v", body, len(text), format.MaxOutput, structured["more"])
+		}
+	}
+}
+
+// When the agent will not name the caller (a path rule keeps its session
+// off the server), the retry without its id must not carry its repo
+// either: --repo . names the withheld repo. The repo filter then runs
+// here, with the server's matching (a path and what is under it, or a
+// repo name).
+func TestPeersWithheldCallerKeepsItsRepoLocal(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Peers.Session != "" {
+			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session x is kept off the server by a path rule; it cannot use messaging"})
+		}
+		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{
+			{Session: peerID, Agent: "codex", User: "g@x.test", Repo: "/work/oracle-alpha"},
+			{Session: "9d00e0d2-0000-4000-8000-000000000001", Agent: "claude", User: "g@x.test", Repo: "/work/api"},
+			{Session: "9d00e0d3-0000-4000-8000-000000000001", Agent: "claude", User: "g@x.test", Repo: "/other/oracle-alpha/sub"},
+		}}}
+	})
+	for _, c := range []struct {
+		repo string
+		want []string
+	}{
+		{"/work/oracle-alpha", []string{peerID}},
+		{"oracle-alpha", []string{peerID}},
+		{"/other/oracle-alpha", []string{"9d00e0d3-0000-4000-8000-000000000001"}},
+	} {
+		out, stderr, err := cliJSON(t, fa, "", "peers", "--repo", c.repo)
+		var pj peersJSON
+		if err != nil || json.Unmarshal([]byte(out), &pj) != nil {
+			t.Fatalf("%s: %q %q %v", c.repo, out, stderr, err)
+		}
+		var got []string
+		for _, p := range pj.Peers {
+			got = append(got, p.Session)
+		}
+		if !slices.Equal(got, c.want) || pj.Total != len(c.want) {
+			t.Errorf("--repo %s: %v, want %v", c.repo, got, c.want)
+		}
+	}
+	for _, r := range fa.requests() {
+		if r.Peers.Session == "" && r.Peers.Repo != "" {
+			t.Fatalf("the request without the caller's id still names a repo: %+v", r.Peers)
 		}
 	}
 }
