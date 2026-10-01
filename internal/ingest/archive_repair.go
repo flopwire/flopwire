@@ -34,7 +34,7 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 	if err != nil || len(work) == 0 {
 		return err
 	}
-	masks, err := q.masks.get(ctx, q.Pool)
+	masks, _, err := q.masks.get(ctx, q.Pool)
 	if err != nil {
 		return err
 	}
