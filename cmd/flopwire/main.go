@@ -106,6 +106,8 @@ func run(parent context.Context, args []string) error {
 		return agentCmd(ctx, args[1:])
 	case "hook":
 		return hookMain(ctx, args[1:])
+	case "setup":
+		return setupMain(ctx, args[1:])
 	case "bench":
 		return benchCmd(ctx, args[1:])
 	case "redact":
@@ -114,8 +116,10 @@ func run(parent context.Context, args []string) error {
 		return usage()
 	}
 }
-func usage() error {
-	fmt.Fprintln(os.Stderr, `Usage: flopwire <command>
+
+// usageText lists every command; the plugin test checks hook commands
+// against it.
+const usageText = `Usage: flopwire <command>
 
   serve       run the API and admin service
   healthcheck probe a server readiness endpoint
@@ -154,9 +158,14 @@ func usage() error {
   redact      hide a message (or some of its lines) on the server and in the local index
   hook        what harness hooks run: prints messages for this session into it,
               and asks the device agent to index the transcript now
+  setup       install Flopwire into Claude Code through its own plugin commands
+              (--check reports, --remove uninstalls)
   agent       run the device agent (agent run) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
-  version     print version`)
+  version     print version`
+
+func usage() error {
+	fmt.Fprintln(os.Stderr, usageText)
 	return errors.New("command required")
 }
 
