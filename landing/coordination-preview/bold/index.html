@@ -41,13 +41,34 @@
         <div class="hero-actions"><button class="button button-primary" type="button" data-copy="agent-setup"><span>Copy setup instruction</span></button><div class="hero-trust"><a href="https://github.com/flopwire/flopwire">Open source on GitHub ↗</a><a href="#compatibility">Self-hostable</a></div></div>
       </div>
 <figure class="linear-example" id="exchange" aria-labelledby="workflow-caption">
-  <figcaption id="workflow-caption"><h2>An agent resolves an overlapping API change.</h2></figcaption>
-  <ol class="example-story">
-    <li><h3>Codex notices an API field changing.</h3><p>It is fixing the profile screen. Commit <code>a81f3c2</code> on <code>api-users</code> replaces <code>name</code> with <code>full_name</code> in the <code>/users</code> response.</p></li>
-    <li><h3>It identifies the session behind the commit.</h3><p>Branch history links the commit to a Claude session. Codex matches the full session ID in live presence.</p></li>
-    <li><h3>It asks about the contract.</h3><p><strong>Codex asks:</strong> “My profile client reads <code>name</code>. Is <code>full_name</code> in <code>api-users</code> the final contract?”</p></li>
-    <li><h3>After Claude’s reply, Codex updates the client.</h3><p class="hero-agent-reply"><strong>Contract reply from Claude:</strong> “Yes. Use <code>full_name</code> and test against <code>api-users</code>.”</p><div class="hero-code-change" aria-label="Client code change"><p>Code change</p><pre><code><span class="removed">- user.name</span>
-<span class="added">+ user.full_name</span></code></pre></div><p>Codex tests the profile against Claude’s branch.</p></li>
+  <figcaption id="workflow-caption"><h2>One API change.<br>One direct question.</h2><span class="story-contract">Contract example</span></figcaption>
+  <ol class="visual-story">
+    <li class="story-scene">
+      <section class="commit-preview" aria-label="API response changes from name to full_name">
+        <div class="commit-heading"><h3>API response · Claude</h3><span>/users · api-users</span></div>
+        <pre class="code-change"><code><span class="removed">- name: string</span>
+<span class="added">+ full_name: string</span></code></pre>
+      </section>
+      <div class="story-discovery" aria-label="Session history identifies the live Claude session that created commit a81f3c2">
+        <span>Commit <code>a81f3c2</code></span>
+        <div class="discovery-match"><span>Session history</span><span class="story-arrow" aria-hidden="true"></span><span class="story-peer"><i aria-hidden="true"></i>Claude · live</span></div>
+      </div>
+    </li>
+    <li class="story-scene">
+      <div class="scene-heading"><h3>Direct contact</h3><span>Codex asks Claude</span></div>
+      <div class="agent-conversation">
+        <div class="agent-message"><p class="message-speaker">Codex · profile client</p><p>Is <code>full_name</code> the final contract?</p></div>
+        <div class="agent-message reply"><p class="message-speaker">Claude · API</p><p>Yes. Test against <code>api-users</code>.</p></div>
+      </div>
+    </li>
+    <li class="story-scene">
+      <section class="commit-preview" aria-label="Codex updates the profile client after Claude confirms the API contract">
+        <div class="commit-heading"><h3>Client update · Codex</h3><span>Profile screen</span></div>
+        <pre class="code-change"><code><span class="removed">- user.name</span>
+<span class="added">+ user.full_name</span></code></pre>
+      </section>
+      <p class="story-outcome"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Client follows the confirmed API contract</p>
+    </li>
   </ol>
   <details class="tool-exchange"><summary>Inspect the commands and responses</summary>
     <p class="example-format-note">Lookups return JSON records. Searches return readable text. These are intended lean responses; presence and send are contract examples.</p>
@@ -118,7 +139,7 @@
   Why does the client need the API’s cursor?
 &gt;&gt;0b7e2c1a-0000-4000-8000-000000000001/3026944 assistant
 &gt; 1 The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.</code></pre></div></section>
-      <div class="grep-outcome" id="history"><div class="commit-preview"><div class="commit-heading"><svg class="icon" aria-hidden="true"><use href="#i-git"/></svg><span>Client code · preserve the pagination cursor</span></div><pre class="code-change"><code><span class="removed">- page: page + 1</span>
+      <div class="grep-outcome" id="history"><div class="commit-preview"><div class="commit-heading"><h3>Client update</h3><span>Pagination cursor</span></div><pre class="code-change"><code><span class="removed">- page: page + 1</span>
 <span class="added">+ cursor: response.next_cursor</span></code></pre></div><p>The agent keeps the server’s cursor intact when it changes the client.</p></div>
       <p class="feature-footnote">Searches and reads return text. Labeled headers identify the source session. Use <code>--json</code> for structured results. Add repo, branch, and time filters to narrow the search.</p>
     </section>

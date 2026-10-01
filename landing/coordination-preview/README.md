@@ -4,7 +4,7 @@ Two homepage directions share the same examples and output contract. Open `index
 
 ## Agent workflow
 
-A client agent notices commit `a81f3c2` changing the `/users` response on `api-users`. It searches branch history, matches the recorded commit, checks the full session ID in live presence, and contacts that session. The four-step story and client diff stay visible. Complete history, presence, and send records sit in one expandable exchange. Narration stays outside terminal panels. Commands and output have separate labels.
+A client agent notices commit `a81f3c2` changing the `/users` response on `api-users`. It searches branch history, matches the recorded commit, checks the full session ID in live presence, and contacts that session. A static sequence shows the API diff, source-session discovery, agent question/reply, and client diff. Complete history, presence, and send records sit in one expandable exchange. The visual uses short message text; the full request remains in the send command. Agent messages have speaker labels. Commands and output have separate labels. Light code artifacts share a header, inset, and diff colors with setup and the grep outcome. Shared CSS tokens keep dark terminals and request messages consistent.
 
 The preview shows intended lean responses directly, without `jq` projections:
 

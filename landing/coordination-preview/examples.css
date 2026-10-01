@@ -1,69 +1,158 @@
-/* Chronological story; narration stays outside the terminal. */
-.linear-example{margin:0;max-width:1040px}.linear-example figcaption{padding:0 0 24px}.linear-example figcaption h2{font-size:26px;font-weight:600;line-height:1.4;letter-spacing:-.02em}.example-story{margin:0;padding:0 0 0 36px}.example-story>li{padding-left:12px;margin-bottom:32px}.example-story>li:last-child{margin-bottom:0}.example-story>li::marker{font:600 20px/1.4 var(--mono);color:var(--ink)}.example-story h3{font-size:20px;line-height:1.5;font-weight:600}.example-story li>p{font-size:16px;line-height:1.7;margin-top:8px;max-width:75ch}.example-story li>p code{font-size:.9em}.hero-terminal{background:#161616;color:#f4f0e6;margin-top:20px;padding-bottom:20px;min-width:0}.hero-terminal-title{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:14px 22px;border-bottom:1px solid #555148;font:400 12px/1.6 var(--mono)}.hero-terminal-title svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.3;flex-shrink:0}.hero-terminal-title>span:last-child{margin-left:auto;color:#d6d0c5}.transcript-entry{display:grid;grid-template-columns:76px minmax(0,1fr);gap:16px;padding:18px 22px 0}.transcript-entry .entry-label{font:400 11px/1.8 var(--mono);color:#d6d0c5;padding-top:2px;margin:0}.transcript-entry pre{font:400 13px/1.8 var(--mono);margin:0;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}.transcript-entry code{font:inherit}.terminal-prompt{color:#ff9776}.transcript-output{padding-top:8px;color:#d6d0c5}.transcript-send{margin-top:10px}.hero-code-change{margin-top:16px;max-width:680px;background:#e9e3d7;padding:16px 22px}.hero-code-change>p{font:400 11px/1.8 var(--mono);color:var(--muted);margin:0 0 8px}.hero-code-change pre{font:400 18px/1.8 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.hero-agent-reply strong{font-weight:600}.hero-agent-reply{max-width:75ch}
-@media(max-width:760px){.linear-example figcaption h2{font-size:22px;max-width:26ch}.example-story{padding-left:23px}.example-story>li{padding-left:6px;margin-bottom:28px}.example-story>li::marker{font-size:17px}.example-story h3{font-size:17px;line-height:1.5}.example-story li>p{font-size:14px}.hero-terminal{margin-top:16px;padding-bottom:18px}.hero-terminal-title{padding:12px 14px;gap:8px}.hero-terminal-title>span:last-child{flex-basis:100%;margin-left:0;font-size:11px}.transcript-entry{grid-template-columns:1fr;gap:5px;padding:16px 14px 0}.transcript-entry .entry-label{font-size:10px}.transcript-entry pre{font-size:11px}.transcript-output{padding-top:10px}.transcript-send{margin-top:10px}.hero-code-change{padding:14px}.hero-code-change pre{font-size:17px}}
+/* One vocabulary for terminal output, code, messages, and setup instructions. */
+:root {
+  --terminal-surface: #161616;
+  --terminal-text: #f4f0e6;
+  --terminal-muted: #d6d0c5;
+  --terminal-rule: #555148;
+  --terminal-accent: #ff9776;
+  --code-surface: #e9e3d7;
+  --code-rule: #c4beb2;
+  --diff-removed: #80554a;
+  --diff-added: #235b3c;
+  --artifact-inset: 22px;
+}
 
-.example-story{list-style:none;padding:0;counter-reset:example-step}.example-story>li{position:relative;counter-increment:example-step;padding-left:48px}.example-story>li:before{content:counter(example-step) ".";position:absolute;left:0;top:0;font:600 20px/1.5 var(--mono)}@media(max-width:760px){.example-story>li{padding-left:29px}.example-story>li:before{font-size:17px}}
+.linear-example { margin: 0; max-width: 1040px; }
+.linear-example > figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 24px;
+  max-width: 760px;
+  padding-bottom: 24px;
+}
+.linear-example figcaption h2 { font-size: 26px; font-weight: 600; line-height: 1.4; letter-spacing: -.02em; }
+.story-contract { font: 400 12px/1.8 var(--mono); color: var(--muted); white-space: nowrap; }
 
-/* Commands, output, source changes, and agent instructions have distinct surfaces. */
-.hero-terminal{margin-top:20px;border:1px solid #161616}
-.hero-terminal pre{tab-size:2}
-.transcript-entry+.transcript-entry:not(.transcript-output){margin-top:12px;border-top:1px solid #555148;padding-top:18px}
-.hero-terminal mark{background:transparent;color:#ff9776;padding:0}
-.growth-steps .hero-terminal{margin:18px 0 0}
-.growth-steps .hero-terminal-title{padding:12px 14px}
-.growth-steps .hero-terminal-title>span:last-child{margin-left:0}
-.growth-steps .transcript-entry{grid-template-columns:1fr;padding:14px 14px 0;gap:5px}
-.growth-steps .hero-terminal pre{padding:0;margin:0;font-size:12px}
-.growth-steps .hero-terminal .entry-label{font-size:10px;color:#d6d0c5}
-.commit-preview{background:#e9e3d7;padding:16px 22px}
-.commit-heading{font:400 11px/1.8 var(--mono);color:var(--muted);margin-bottom:8px}
-.commit-heading .icon{display:none}
-.commit-heading code{color:inherit;font:inherit}
-.commit-preview .code-change{background:transparent;padding:0;font:400 18px/1.8 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
-.hero-code-change .removed,.commit-preview .removed{color:#80554a}
-.hero-code-change .added,.commit-preview .added{color:#235b3c}
-.agent-instruction{min-width:0;background:#e9e3d7;color:#161616;align-self:start;border:1px solid #c4beb2}
-.agent-instruction .terminal-heading{border-color:#c4beb2;padding:14px 22px;gap:12px;font:400 12px/1.6 var(--mono)}
-.agent-instruction .copy-button{color:#161616;border-color:#80554a}
-.agent-instruction .copy-button:hover{background:#161616;color:#f4f0e6}
-.agent-instruction pre{padding:18px 22px;font:400 14px/1.8 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
-.policy-example:before{content:'Configuration · path rules';display:block;font:400 11px/1.8 var(--mono);color:var(--muted);padding:14px 0 0}
-.example-format-note{font-size:13px;line-height:1.7;color:var(--muted);margin:12px 0 0}
-@media(max-width:760px){.commit-preview{padding:14px}.commit-preview .code-change{font-size:17px}.agent-instruction .terminal-heading{padding:12px 14px}.agent-instruction pre{padding:16px 14px;font-size:13px}.example-format-note{font-size:12px}}
+/* Evidence, contact, and outcome share one reading direction. */
+.visual-story { list-style: none; max-width: 760px; margin: 0; padding: 0; }
+.story-scene { position: relative; margin-left: 6px; padding: 0 0 28px 28px; border-left: 1px solid var(--rule, var(--line)); min-width: 0; }
+.story-scene:last-child { border-left-color: transparent; padding-bottom: 0; }
+.story-scene:before { content: ''; position: absolute; top: 12px; left: -5px; width: 9px; height: 9px; border-radius: 50%; background: var(--ink); border: 2px solid var(--paper); }
+.story-scene:last-child:before { background: var(--diff-added); }
+.scene-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; margin-bottom: 12px; }
+.scene-heading h3 { font-size: 16px; font-weight: 600; line-height: 1.5; }
+.scene-heading > span { font: 400 12px/1.8 var(--mono); color: var(--muted); }
+.story-discovery { display: grid; gap: 6px; margin-top: 12px; font-size: 13px; line-height: 1.7; }
+.story-discovery code { font-size: 12px; }
+.discovery-match { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.story-peer { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+.story-peer i { width: 6px; height: 6px; border-radius: 50%; background: var(--diff-added); }
+.story-arrow { display: inline-block; width: 24px; height: 12px; position: relative; flex-shrink: 0; }
+.story-arrow:before { content: ''; position: absolute; top: 6px; left: 0; width: 22px; height: 1px; background: currentColor; }
+.story-arrow:after { content: ''; position: absolute; top: 3px; right: 0; width: 7px; height: 7px; border-top: 1px solid currentColor; border-right: 1px solid currentColor; transform: rotate(45deg); }
+.agent-conversation { display: grid; gap: 12px; }
+.agent-message { width: 85%; max-width: 85%; background: var(--terminal-surface); color: var(--terminal-text); }
+.agent-message.reply { width: fit-content; justify-self: end; background: var(--code-surface); color: var(--ink); }
+.agent-message .message-speaker { padding: 12px 18px; border-bottom: 1px solid var(--terminal-rule); font: 400 12px/1.6 var(--mono); color: var(--terminal-muted); }
+.agent-message.reply .message-speaker { border-color: var(--code-rule); color: var(--muted); }
+.agent-message > p:last-child { padding: 14px 18px; font-size: 17px; line-height: 1.6; }
+.agent-message code { font-size: .9em; }
+.story-outcome { display: flex; align-items: start; gap: 8px; margin-top: 12px; font-size: 13px; line-height: 1.7; color: var(--diff-added); }
+.story-outcome .icon { width: 16px; height: 16px; margin-top: 3px; flex-shrink: 0; }
 
-/* Shared syntax, different search targets. */
-.grep-comparison{align-items:start;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
-.grep-comparison .hero-terminal{margin:0}
-.grep-comparison .hero-terminal-title>span:last-child{flex-basis:100%;margin-left:0}
-.grep-comparison .transcript-entry{grid-template-columns:1fr;gap:6px}
-.comparison-followup{font-size:16px;line-height:1.7;max-width:80ch;margin:24px 0}
-.reason-preview .source-excerpt{font-size:17px;line-height:1.7;max-width:65ch;margin:0}
-.reason-preview .source-excerpt code{font-size:.9em}
-.reason-preview .result-meta{font-size:12px;line-height:1.8}
-.reason-preview .result-meta a{white-space:nowrap}
-@media(max-width:1000px){.grep-comparison{grid-template-columns:1fr}}
-@media(max-width:760px){.comparison-followup,.reason-preview .source-excerpt{font-size:15px}.grep-comparison{gap:16px}.grep-comparison .hero-terminal-title>span:last-child{font-size:12px}}
+/* Light artifacts always use the same header, inset, and diff colors. */
+.commit-preview { min-width: 0; background: var(--code-surface); padding: 0; }
+.commit-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; padding: 14px var(--artifact-inset); border-bottom: 1px solid var(--code-rule); font: 400 12px/1.6 var(--mono); color: var(--muted); margin: 0; }
+.commit-heading h3 { margin: 0; font: inherit; color: var(--ink); }
+.commit-preview .code-change { background: transparent; padding: 16px var(--artifact-inset); margin: 0; font: 400 18px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.commit-preview .removed { color: var(--diff-removed); }
+.commit-preview .added { color: var(--diff-added); }
+.agent-instruction { min-width: 0; background: var(--code-surface); color: var(--ink); align-self: start; border: 1px solid var(--code-rule); }
+.agent-instruction .terminal-heading { border-color: var(--code-rule); padding: 14px var(--artifact-inset); gap: 12px; font: 400 12px/1.6 var(--mono); }
+.agent-instruction .copy-button { color: var(--ink); border-color: var(--diff-removed); }
+.agent-instruction .copy-button:hover { background: var(--terminal-surface); color: var(--terminal-text); }
+.agent-instruction pre { padding: 18px var(--artifact-inset); margin: 0; font: 400 14px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* Commands and returned records keep their literal formatting. */
+.hero-terminal { min-width: 0; margin-top: 20px; padding-bottom: 20px; border: 1px solid var(--terminal-surface); background: var(--terminal-surface); color: var(--terminal-text); }
+.hero-terminal-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 14px var(--artifact-inset); border-bottom: 1px solid var(--terminal-rule); font: 400 12px/1.6 var(--mono); }
+.hero-terminal-title svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.3; flex-shrink: 0; }
+.hero-terminal-title > span:last-child { margin-left: auto; color: var(--terminal-muted); }
+.transcript-entry { display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 16px; padding: 18px var(--artifact-inset) 0; }
+.transcript-entry .entry-label { margin: 0; padding-top: 2px; font: 400 11px/1.8 var(--mono); color: var(--terminal-muted); }
+.transcript-entry pre { min-width: 0; margin: 0; font: 400 13px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+.transcript-entry code { font: inherit; }
+.terminal-prompt { color: var(--terminal-accent); }
+.transcript-output { padding-top: 8px; color: var(--terminal-muted); }
+.hero-terminal mark { background: transparent; color: var(--terminal-accent); padding: 0; }
+.hero-terminal .command-record,.hero-terminal .json-record { white-space: pre; overflow-wrap: normal; overflow-x: auto; max-width: 100%; padding-bottom: 6px; scrollbar-color: #8d867a var(--terminal-surface); scrollbar-width: thin; }
+.hero-terminal pre:focus-visible { outline: 2px solid var(--terminal-accent); outline-offset: 4px; }
+.growth-steps .hero-terminal { margin: 18px 0 0; }
+.growth-steps .hero-terminal-title { padding: 12px 14px; }
+.growth-steps .hero-terminal-title > span:last-child { margin-left: 0; }
+.growth-steps .transcript-entry { grid-template-columns: 1fr; padding: 14px 14px 0; gap: 5px; }
+.growth-steps .hero-terminal pre { padding: 0; margin: 0; font-size: 12px; }
+.growth-steps .entry-label { font-size: 11px; }
+.tool-exchange { margin-top: 24px; border-top: 1px solid var(--rule,var(--line)); padding-top: 16px; min-width: 0; }
+.tool-exchange summary { cursor: pointer; font-size: 15px; line-height: 1.7; text-decoration: underline; text-underline-offset: .2em; padding: 8px 0; }
+.tool-exchange summary:focus-visible { outline: 2px solid var(--orange); outline-offset: 4px; }
+.tool-exchange[open] > summary { margin-bottom: 16px; }
+.tool-exchange > .text-link { margin-top: 16px; }
+.example-format-note { font-size: 13px; line-height: 1.7; color: var(--muted); margin: 12px 0 0; }
 
-/* Full contracts are available without interrupting the opening story. */
-.tool-exchange{margin-top:24px;border-top:1px solid var(--rule,var(--line));padding-top:16px;min-width:0}
-.tool-exchange summary{cursor:pointer;font-size:15px;line-height:1.7;text-decoration:underline;text-underline-offset:.2em;padding:8px 0}
-.tool-exchange summary:focus-visible{outline:2px solid var(--orange);outline-offset:4px}
-.tool-exchange[open]>summary{margin-bottom:16px}
-.tool-exchange>.text-link{margin-top:16px}
-.hero-terminal .command-record,.hero-terminal .json-record{white-space:pre;overflow-wrap:normal;overflow-x:auto;max-width:100%;padding-bottom:6px;scrollbar-color:#8d867a #161616;scrollbar-width:thin}
-.hero-terminal pre:focus-visible{outline:2px solid #ff9776;outline-offset:4px}
-.grep-outcome{margin:24px 0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:center}
-.grep-outcome>p{font-size:16px;line-height:1.7;max-width:50ch}
-.message-route{margin:32px 0 0;padding-top:24px;border-top:1px solid currentColor}
-.message-route h3{font-size:20px;line-height:1.5;margin:0 0 20px}
-.message-route ol{list-style:none;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:24px}
-.message-route li{position:relative;min-width:0;font-size:13px;line-height:1.7}
-.message-route li+li:before{content:'';position:absolute;left:-20px;top:10px;width:12px;height:1px;background:currentColor}
-.message-route li+li:after{content:'';position:absolute;left:-13px;top:7px;width:6px;height:6px;border-top:1px solid currentColor;border-right:1px solid currentColor;transform:rotate(45deg)}
-.message-route strong,.message-route span{display:block}
-.message-route strong{font-weight:600;margin-bottom:6px}
-.message-route figcaption{font-size:13px;line-height:1.8;margin-top:20px;max-width:85ch}
-.communication-link{margin-top:20px}
-.benchmark-plan{font-size:16px;line-height:1.7;max-width:80ch}
-@media(max-width:760px){.tool-exchange summary{font-size:14px}.grep-outcome{grid-template-columns:1fr;gap:16px}.grep-outcome>p{font-size:15px}.message-route ol{grid-template-columns:1fr;gap:24px}.message-route li{padding-left:24px}.message-route li+li:before{left:8px;top:-20px;width:1px;height:12px}.message-route li+li:after{left:5px;top:-14px;transform:rotate(135deg)}.message-route h3{font-size:18px}.message-route figcaption{font-size:12px}.benchmark-plan{font-size:15px}}
+/* Shared query syntax, followed immediately by the resulting client change. */
+.grep-comparison { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; align-items: start; }
+.grep-comparison .hero-terminal { margin: 0; }
+.grep-comparison .hero-terminal-title > span:last-child { flex-basis: 100%; margin-left: 0; }
+.grep-comparison .transcript-entry { grid-template-columns: 1fr; gap: 6px; }
+.comparison-followup { font-size: 16px; line-height: 1.7; max-width: 80ch; margin: 24px 0; }
+.grep-outcome { margin: 24px 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 24px; align-items: center; }
+.grep-outcome > p { font-size: 16px; line-height: 1.7; max-width: 50ch; }
+.policy-example:before { content: 'Configuration · path rules'; display: block; font: 400 12px/1.6 var(--mono); color: var(--muted); padding: 14px 0 0; }
+
+/* Message routing is separate from archive synchronization. */
+.message-route { margin: 32px 0 0; padding-top: 24px; border-top: 1px solid currentColor; }
+.message-route h3 { font-size: 20px; line-height: 1.5; margin: 0 0 20px; }
+.message-route ol { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 24px; }
+.message-route li { position: relative; min-width: 0; font-size: 13px; line-height: 1.7; }
+.message-route li + li:before { content: ''; position: absolute; left: -20px; top: 10px; width: 12px; height: 1px; background: currentColor; }
+.message-route li + li:after { content: ''; position: absolute; left: -13px; top: 7px; width: 6px; height: 6px; border-top: 1px solid currentColor; border-right: 1px solid currentColor; transform: rotate(45deg); }
+.message-route strong,.message-route span { display: block; }
+.message-route strong { font-weight: 600; margin-bottom: 6px; }
+.message-route figcaption { font-size: 13px; line-height: 1.8; margin-top: 20px; max-width: 85ch; }
+.communication-link { margin-top: 20px; }
+.benchmark-plan { font-size: 16px; line-height: 1.7; max-width: 80ch; }
+
+@media (max-width: 1000px) {
+  .grep-comparison { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  :root { --artifact-inset: 14px; }
+  .linear-example > figcaption { display: block; }
+  .linear-example figcaption h2 { font-size: 22px; max-width: 26ch; }
+  .story-contract { display: block; margin-top: 8px; }
+  .story-scene { margin-left: 4px; padding-left: 18px; padding-bottom: 24px; }
+  .scene-heading h3 { font-size: 15px; }
+  .scene-heading > span { font-size: 12px; }
+  .story-discovery { font-size: 12px; }
+  .discovery-match { gap: 9px; }
+  .agent-message { max-width: 94%; }
+  .agent-message .message-speaker { padding: 10px 14px; font-size: 12px; }
+  .agent-message > p:last-child { padding: 12px 14px; font-size: 15px; }
+  .story-outcome { font-size: 12px; }
+  .commit-heading { padding-top: 12px; padding-bottom: 12px; font-size: 12px; }
+  .commit-preview .code-change { font-size: 16px; padding-top: 14px; padding-bottom: 14px; }
+  .agent-instruction .terminal-heading { padding-top: 12px; padding-bottom: 12px; }
+  .agent-instruction pre { padding-top: 16px; padding-bottom: 16px; font-size: 13px; }
+  .hero-terminal { margin-top: 16px; padding-bottom: 18px; }
+  .hero-terminal-title { padding-top: 12px; padding-bottom: 12px; gap: 8px; }
+  .hero-terminal-title > span:last-child { flex-basis: 100%; margin-left: 0; font-size: 12px; }
+  .transcript-entry { grid-template-columns: 1fr; gap: 5px; padding-top: 16px; }
+  .transcript-entry .entry-label { font-size: 11px; }
+  .transcript-entry pre { font-size: 12px; line-height: 1.75; }
+  .transcript-output { padding-top: 10px; }
+  .example-format-note { font-size: 12px; }
+  .tool-exchange summary { font-size: 14px; }
+  .grep-comparison { gap: 16px; }
+  .comparison-followup { font-size: 15px; }
+  .grep-outcome { grid-template-columns: 1fr; gap: 16px; }
+  .grep-outcome > p { font-size: 15px; }
+  .message-route ol { grid-template-columns: 1fr; gap: 24px; }
+  .message-route li { padding-left: 24px; }
+  .message-route li + li:before { left: 8px; top: -20px; width: 1px; height: 12px; }
+  .message-route li + li:after { left: 5px; top: -14px; transform: rotate(135deg); }
+  .message-route h3 { font-size: 18px; }
+  .message-route figcaption { font-size: 12px; }
+  .benchmark-plan { font-size: 15px; }
+}

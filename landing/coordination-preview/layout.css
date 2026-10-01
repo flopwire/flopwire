@@ -10,8 +10,6 @@
 .hero-trust { gap: 12px 24px; }
 .linear-example { margin-top: 0; }
 .linear-example figcaption { padding-bottom: 24px; }
-.example-story > li { margin-bottom: 32px; }
-.example-story > li:last-child { margin-bottom: 0; }
 .story-section { padding-top: var(--section-space); }
 .story-section > .section-heading { margin: 0 0 var(--content-space); }
 .section-heading p { margin-top: 20px; }
@@ -42,7 +40,7 @@
 .provenance-section > .section-heading { margin-bottom: 0; }
 .provenance-demo { margin-top: var(--provenance-space, var(--content-space)); gap: var(--column-space); }
 .commit-preview .code-change { margin: 0; }
-.commit-heading { margin-bottom: 12px; }
+.commit-heading { margin: 0; }
 .result-meta { margin: 0 0 12px; }
 .reason-preview blockquote { margin: 0; }
 .reason-outcome { margin-top: 16px; }
@@ -106,8 +104,6 @@ footer { padding-top: 24px; padding-bottom: 32px; }
   .hero-trust { font-size: 13px; gap: 12px 20px; }
   .hero-trust a { min-height: 32px; }
   .linear-example figcaption { padding-bottom: 20px; }
-  .example-story > li { margin-bottom: 28px; }
-  .example-story h3 { font-size: 17px; }
   .hero-terminal { margin-top: 16px; }
   .transcript-entry pre { font-size: 12px; line-height: 1.75; }
   .hero-terminal-title > span:last-child { font-size: 12px; }
