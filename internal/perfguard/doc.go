@@ -58,7 +58,7 @@
 // The device stores use modernc.org/sqlite (pure Go). SQLiteDriver wraps
 // it: CountSQLite claims connections by DSN, and MeasureSQLite reports a
 // Cost with statements, rows written per table (pre-update hook) and
-// b-tree pages fetched (Cost.Pages, from sqlite3_db_status cache hits and
+// b-tree pages fetched (Cost.SQLitePages, from sqlite3_db_status cache hits and
 // misses, read after every statement on the statement's own connection).
 // SQLite has no per-table read counters; pages fetched stands in for
 // rows read, and AssertScaling gates it. AssertSQLitePlan fails on a

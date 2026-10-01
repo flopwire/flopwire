@@ -65,8 +65,8 @@ func TestSQLiteCounterCountsStatementsAndWrites(t *testing.T) {
 	if w := cost.Tables["main.items"]; w.TupUpd != 5 || w.TupDel != 2 || w.TupIns != 0 {
 		t.Fatalf("writes %s, want upd=5 del=2", w)
 	}
-	if cost.Pages <= 0 {
-		t.Fatalf("pages %d, want > 0", cost.Pages)
+	if cost.SQLitePages <= 0 {
+		t.Fatalf("pages %d, want > 0", cost.SQLitePages)
 	}
 }
 
@@ -122,7 +122,7 @@ func TestSQLiteScalingLinearPasses(t *testing.T) {
 func TestSQLiteScalingCatchesQuadratic(t *testing.T) {
 	r := &recorder{TB: t}
 	AssertScaling(r, Linear, 300, 8, sqlitePerItem(true))
-	if !strings.Contains(r.failed(), "pages") {
+	if !strings.Contains(r.failed(), "sqlite pages") {
 		t.Fatalf("quadratic page fetches not caught: %q", r.failed())
 	}
 }

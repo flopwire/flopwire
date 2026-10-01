@@ -86,11 +86,12 @@ type Snapshot map[string]TableCost
 type Cost struct {
 	Tables     map[string]TableCost
 	Statements int64 // -1 when no Counter was attached
-	// Pages is the SQLite b-tree pages the work fetched (page cache hits
+	// SQLitePages is the SQLite b-tree pages the work fetched (page cache hits
 	// plus misses) on the measured connections. It is SQLite's read cost:
 	// a full scan fetches every page of the table, a keyed lookup a few.
 	// Postgres leaves it 0 and reports blocks per table instead.
-	Pages int64
+	// (Not TableCost.Pages, a Postgres table's size.)
+	SQLitePages int64
 }
 
 // Total sums the cost over every table.
@@ -106,8 +107,8 @@ func (c Cost) Total() TableCost {
 func (c Cost) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "total: %s statements=%d", c.Total(), c.Statements)
-	if c.Pages != 0 {
-		fmt.Fprintf(&b, " pages=%d", c.Pages)
+	if c.SQLitePages != 0 {
+		fmt.Fprintf(&b, " sqlite pages=%d", c.SQLitePages)
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.Tables)) {
 		if tc := c.Tables[name]; !tc.idle() {

@@ -114,7 +114,7 @@ func MeasureSQLite(c *SQLiteCounter, fn func()) Cost {
 	before := c.snapshot()
 	fn()
 	after := c.snapshot()
-	cost := Cost{Tables: map[string]TableCost{}, Statements: after.total - before.total, Pages: after.pages - before.pages}
+	cost := Cost{Tables: map[string]TableCost{}, Statements: after.total - before.total, SQLitePages: after.pages - before.pages}
 	for name, w := range after.writes {
 		if d := w.sub(before.writes[name]); d != (TableCost{}) {
 			cost.Tables[name] = d
