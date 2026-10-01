@@ -60,6 +60,10 @@ func newServerChunks(t *testing.T, chunks devicesync.ChunkParams) *server {
 // newServerWith is newServer whose device reports live sessions with
 // every flush.
 func newServerWith(t *testing.T, chunks devicesync.ChunkParams, live func() []string) *server {
+	return newServerMigrating(t, chunks, live, store.Migrate)
+}
+
+func newServerMigrating(t *testing.T, chunks devicesync.ChunkParams, live func() []string, migrate func(context.Context, *pgxpool.Pool) error) *server {
 	t.Helper()
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, pgtest.NewDatabase(t))
@@ -67,7 +71,7 @@ func newServerWith(t *testing.T, chunks devicesync.ChunkParams, live func() []st
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := store.Migrate(ctx, pool); err != nil {
+	if err := migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	mc, bucket := pgtest.NewBucket(t)
@@ -92,7 +96,7 @@ func newServerWith(t *testing.T, chunks devicesync.ChunkParams, live func() []st
 		objects: objects, store: store.NewPostgres(pool, mc, bucket), userID: user}
 	h := httptest.NewServer(api.New(s.store, api.Config{Logger: log,
 		Sync:      &ingest.Server{Pool: pool, Objects: objects, Log: log, Queue: s.queue},
-		Retrieval: &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: s.queue.RefreshSession}}).Handler(nil))
+		Retrieval: &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: func(ctx context.Context, conversation string) { s.queue.RefreshSession(ctx, conversation) }}}).Handler(nil))
 	t.Cleanup(h.Close)
 	s.client = client.HTTP{Server: h.URL, Token: plain}
 	st, err := devicesync.OpenStore(filepath.Join(t.TempDir(), "sync.db"))
