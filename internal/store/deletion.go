@@ -72,6 +72,17 @@ func ConversationLockKey(userID, agent, sessionID string) string {
 	return fmt.Sprintf("conversation:%d:%s:%d:%s:%s", len(userID), userID, len(agent), agent, sessionID)
 }
 
+// LockConversationsSQL locks the conversation rows $1 FOR UPDATE in the one
+// order every transaction that writes several conversations, or a
+// conversation and its message rows, takes them: session id bytewise, then
+// id. A parse flush upserts its conversations in session order (Go sorts
+// bytewise; the database default collation does not, hence COLLATE "C"),
+// and the digest recount and checkpoint lock them in the same order. A
+// writer locks its conversations this way before it touches any of their
+// message rows: a flush holds its conversation from the upsert and then
+// writes the messages, so the reverse order deadlocks with it.
+const LockConversationsSQL = `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`
+
 // InsertAudit writes an audit event inside the caller's transaction.
 func InsertAudit(ctx context.Context, tx pgx.Tx, a domain.AuditEvent) error {
 	return insertAudit(a)(ctx, tx)
@@ -246,6 +257,12 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 			return err
 		}
 		if err = tx.QueryRow(ctx, `SELECT COALESCE(array_agg(id),'{}') FROM sources WHERE id=ANY($1) OR parent_source_id=ANY($1)`, sources).Scan(&sources); err != nil {
+			return err
+		}
+		// The doomed set spans sessions. The DELETE below would lock its
+		// rows in plan order, while a checkpoint or recount of some of them
+		// (which takes no session lock) locks them in session order.
+		if _, err = tx.Exec(ctx, LockConversationsSQL, ids); err != nil {
 			return err
 		}
 		now := time.Now().UTC()
