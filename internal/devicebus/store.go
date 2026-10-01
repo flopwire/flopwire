@@ -103,28 +103,74 @@ func decodeEnvelopes(rows *sql.Rows) ([]busproto.Envelope, error) {
 }
 
 // take marks the session's undelivered, unexpired messages delivered and
-// returns them in delivery order. One statement does both, on the store's
-// single connection, so of several callers for one session each message
-// goes to exactly one. A message from the server owes an ack.
-func (s *store) take(ctx context.Context, session, agent string, now time.Time) ([]busproto.Envelope, error) {
-	rows, err := s.db.QueryContext(ctx, `UPDATE devbus_messages SET state='delivered', delivered_at=?,
-			ack=CASE WHEN origin='server' THEN 'owed' ELSE '' END
-		WHERE to_session=? AND (?='' OR to_agent=?) AND state='queued' AND expires_at>?
-		RETURNING envelope`, ms(now), session, agent, agent, ms(now))
-	if err != nil {
-		return nil, err
-	}
-	out, err := decodeEnvelopes(rows)
-	if err != nil {
-		return nil, err
-	}
-	slices.SortFunc(out, func(a, b busproto.Envelope) int {
-		if c := a.Sent.Compare(b.Sent); c != 0 {
-			return c
+// returns them in delivery order, as many as fit in lim (always at least
+// one when any is queued). The read and the update run in one transaction
+// on the store's single connection, so of several callers for one session
+// each message goes to exactly one. A message from the server owes an ack.
+func (s *store) take(ctx context.Context, session, agent string, now time.Time, lim Limit) ([]busproto.Envelope, error) {
+	var out []busproto.Envelope
+	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT envelope FROM devbus_messages
+			WHERE to_session=? AND (?='' OR to_agent=?) AND state='queued' AND expires_at>?`, session, agent, agent, ms(now))
+		if err != nil {
+			return err
 		}
-		return int(a.Seq - b.Seq)
+		all, err := decodeEnvelopes(rows)
+		if err != nil {
+			return err
+		}
+		slices.SortFunc(all, func(a, b busproto.Envelope) int {
+			if c := a.Sent.Compare(b.Sent); c != 0 {
+				return c
+			}
+			return int(a.Seq - b.Seq)
+		})
+		out = fit(all, lim)
+		for _, e := range out {
+			if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET state='delivered', delivered_at=?,
+					ack=CASE WHEN origin='server' THEN 'owed' ELSE '' END
+				WHERE id=? AND state='queued'`, ms(now), e.ID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// fit is the longest prefix of msgs within lim, and never empty when msgs
+// is not.
+func fit(msgs []busproto.Envelope, lim Limit) []busproto.Envelope {
+	size := lim.Size
+	if size == nil {
+		size = func(e busproto.Envelope) int {
+			n := len(e.Body)
+			for _, r := range e.Refs {
+				n += len(r)
+			}
+			return n
+		}
+	}
+	used := 0
+	for i, e := range msgs {
+		if lim.Count > 0 && i == lim.Count {
+			return msgs[:i]
+		}
+		if lim.Bytes > 0 {
+			n := size(e)
+			if i > 0 {
+				n += lim.Sep
+			}
+			if i > 0 && used+n > lim.Bytes {
+				return msgs[:i]
+			}
+			used += n
+		}
+	}
+	return msgs
 }
 
 // untake puts delivered messages back in the queue (Requeue). A receipt

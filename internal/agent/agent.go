@@ -198,6 +198,9 @@ type Agent struct {
 	discovered     chan struct{}
 	discoveredOnce sync.Once
 
+	// starts: SessionStart hooks given the standing instruction (hookbus.go).
+	starts starts
+
 	// Path rules (policy.go, placement.go). pol, devinModes, places and
 	// folders are guarded by mu; polMu serializes loading and applying
 	// rules.

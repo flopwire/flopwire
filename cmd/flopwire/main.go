@@ -104,6 +104,8 @@ func run(parent context.Context, args []string) error {
 		return mcp(ctx, args[1:])
 	case "agent":
 		return agentCmd(ctx, args[1:])
+	case "hook":
+		return hookMain(ctx, args[1:])
 	case "bench":
 		return benchCmd(ctx, args[1:])
 	case "redact":
@@ -150,6 +152,8 @@ func usage() error {
   diagnostics inspect extraction reports (--server, --source ID, --json)
   raw         plumbing: archived bytes of a source by provenance
   redact      hide a message (or some of its lines) on the server and in the local index
+  hook        what harness hooks run: prints messages for this session into it,
+              and asks the device agent to index the transcript now
   agent       run the device agent (agent run) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
   version     print version`)

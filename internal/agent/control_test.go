@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/busrender"
 	"github.com/flopwire/flopwire/internal/devicebus"
 )
 
@@ -235,5 +238,151 @@ func TestControlPendingRequeuedWhenTheHookIsGone(t *testing.T) {
 	got, err := b.Pending(ctx, "to-2222", "")
 	if err != nil || len(got) != 1 || got[0].Body != "hello" {
 		t.Fatalf("message after the hook gave up: %+v %v", got, err)
+	}
+}
+
+// busFixture is an agent with a local bus and two live sessions.
+func busFixture(t *testing.T) (*fixture, *devicebus.Bus) {
+	t.Helper()
+	f := newFixture(t, "-")
+	b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	f.cfg.Bus = b
+	f.a = New(f.store, f.cfg)
+	live := []devicebus.Session{
+		{PresenceSession: busproto.PresenceSession{SessionID: "from-1111", Agent: "claude", Repo: "/src/api"}, LastActive: time.Now()},
+		{PresenceSession: busproto.PresenceSession{SessionID: "to-2222", Agent: "claude", Repo: "/src/api"}, LastActive: time.Now()},
+	}
+	b.SetSources(func(context.Context) ([]devicebus.Session, error) { return live, nil }, nil)
+	return f, b
+}
+
+// ask sends one request over a pipe and returns the answer.
+func ask(t *testing.T, a *Agent, req Request) Response {
+	t.Helper()
+	hook, agentEnd := net.Pipe()
+	go a.serveConn(ctx, agentEnd)
+	defer hook.Close()
+	b, _ := json.Marshal(req)
+	if _, err := hook.Write(append(b, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(hook).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// Two SessionStart hooks for one session (two hook configs, as when Devin
+// also runs .claude/settings.json) get the standing instruction once; a
+// later start of another kind (a compaction) gets it again.
+func TestControlPendingInstructOnce(t *testing.T) {
+	f, _ := busFixture(t)
+	r1 := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"})
+	r2 := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"})
+	if !r1.OK || !r1.Instruct || r2.Instruct {
+		t.Fatalf("instruct: first %+v, second %+v", r1, r2)
+	}
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "compact"}); !r.Instruct {
+		t.Fatal("a compaction did not get the instruction again")
+	}
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); r.Instruct {
+		t.Fatal("a prompt hook got the instruction")
+	}
+	if r := ask(t, f.a, Request{Op: "pending", Session: "other-3333", Start: "startup"}); !r.Instruct {
+		t.Fatal("another session did not get the instruction")
+	}
+}
+
+// A SessionStart hook that left before the answer gives the instruction
+// back, so the next start for that session prints it.
+func TestControlInstructReleasedWhenTheHookIsGone(t *testing.T) {
+	f, _ := busFixture(t)
+	hook, agentEnd := net.Pipe()
+	done := make(chan struct{})
+	go func() { f.a.serveConn(ctx, agentEnd); close(done) }()
+	hook.Write([]byte(`{"op":"pending","session":"to-2222","start":"startup"}` + "\n"))
+	hook.Close()
+	<-done
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"}); !r.Instruct {
+		t.Fatal("instruction lost with the hook that gave up")
+	}
+}
+
+// pending's limit and byte bound leave the rest queued for the next call;
+// a start that takes the instruction leaves less room for messages.
+func TestControlPendingBounded(t *testing.T) {
+	f, b := busFixture(t)
+	for i := range 4 {
+		if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: fmt.Sprintf("hello %d %s", i, strings.Repeat("x", 300))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Limit: 3})
+	if len(r.Messages) != 3 {
+		t.Fatalf("limit 3 took %d", len(r.Messages))
+	}
+	one := busrender.Size(r.Messages[0])
+	for i := range 2 {
+		if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: fmt.Sprintf("again %d %s", i, strings.Repeat("y", 300))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Room for two messages without the instruction, one with it.
+	max := 2*one + busrender.SepLen + busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen - 1
+	r = ask(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max, Start: "startup"})
+	if !r.Instruct || len(r.Messages) != 1 || !strings.HasPrefix(r.Messages[0].Body, "hello 3") {
+		t.Fatalf("with the instruction: instruct %v, %d messages", r.Instruct, len(r.Messages))
+	}
+	r = ask(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max})
+	if len(r.Messages) != 2 {
+		t.Fatalf("without the instruction: %d messages", len(r.Messages))
+	}
+}
+
+// A message ref the local index holds comes back with an excerpt; one it
+// does not hold comes back without.
+func TestControlPendingRefExcerpts(t *testing.T) {
+	prev := ExcerptBudget
+	ExcerptBudget = 10 * time.Second // the race detector on a loaded machine
+	t.Cleanup(func() { ExcerptBudget = prev })
+	f, b := busFixture(t)
+	f.once()
+	ids, err := f.store.SessionsWithPrefix(ctx, "", 1)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("no indexed session: %v", err)
+	}
+	row, err := f.store.FirstMessage(ctx, ids[0])
+	if err != nil || row == nil {
+		t.Fatalf("first message: %v", err)
+	}
+	ref := fmt.Sprintf("%s/%d", ids[0], row.Ordinal)
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "see", Refs: []string{ref, "zzzz9999/1"}}); err != nil {
+		t.Fatal(err)
+	}
+	r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"})
+	want := strings.Join(strings.Fields(row.Text), " ")
+	if ex := r.Excerpts[ref]; ex == "" || !strings.Contains(ex, want[:min(len(want), 20)]) {
+		t.Fatalf("excerpt for %s: %q (text %q)", ref, ex, want)
+	}
+	if _, ok := r.Excerpts["zzzz9999/1"]; ok {
+		t.Fatal("excerpt for a session the index does not hold")
+	}
+	// Past the budget, refs come back without excerpts and pending still
+	// answers.
+	ExcerptBudget = 0
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "see again", Refs: []string{ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); !r.OK || len(r.Messages) != 1 || len(r.Excerpts) != 0 {
+		t.Fatalf("past the budget: ok %v, %d messages, excerpts %v", r.OK, len(r.Messages), r.Excerpts)
 	}
 }

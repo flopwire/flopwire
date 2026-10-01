@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/busrender"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -36,10 +37,19 @@ type Request struct {
 	// when two share an id; "" for any). send, peers, inbox: the request as
 	// the server takes it; the agent sends it to the server, or answers it
 	// on the device when no server is configured.
-	Agent string                `json:"agent,omitempty"`
-	Send  *busproto.SendRequest `json:"send,omitempty"`
-	Peers *busproto.PeersQuery  `json:"peers,omitempty"`
-	Inbox *busproto.InboxQuery  `json:"inbox,omitempty"`
+	Agent string `json:"agent,omitempty"`
+	// pending: Limit and MaxBytes bound the messages taken, measured with
+	// busrender.Size (JSON-encoded bytes); the rest stay queued for the
+	// next call. Start is set
+	// by a SessionStart hook (its source: startup, resume, clear,
+	// compact): the answer's Instruct then says whether to print the
+	// standing instruction.
+	Limit    int                   `json:"limit,omitempty"`
+	MaxBytes int                   `json:"max_bytes,omitempty"`
+	Start    string                `json:"start,omitempty"`
+	Send     *busproto.SendRequest `json:"send,omitempty"`
+	Peers    *busproto.PeersQuery  `json:"peers,omitempty"`
+	Inbox    *busproto.InboxQuery  `json:"inbox,omitempty"`
 }
 
 // Response answers a Request.
@@ -72,6 +82,14 @@ type Response struct {
 	Inbox    *busproto.InboxResponse `json:"inbox,omitempty"`
 	BusError *busproto.Error         `json:"bus_error,omitempty"`
 	Bus      *devicebus.Status       `json:"bus,omitempty"`
+	// Instruct (pending with Start): print the standing instruction. Only
+	// the first SessionStart hook for a session and source within
+	// startWindow gets it, so a session whose harness runs two hook
+	// configs (Devin runs .claude/settings.json hooks too) sees it once.
+	Instruct bool `json:"instruct,omitempty"`
+	// Excerpts (pending) maps a ref address in Messages to a short excerpt
+	// from the local index; an address it cannot find is left out.
+	Excerpts map[string]string `json:"excerpts,omitempty"`
 }
 
 // SocketPath is the control socket beside the client config: <dir of
@@ -189,7 +207,11 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	}
 	b, _ := json.Marshal(resp)
 	c.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if _, err := c.Write(append(b, '\n')); err != nil && req.Op == "pending" && len(resp.Messages) > 0 {
+	_, werr := c.Write(append(b, '\n'))
+	if werr != nil && req.Op == "pending" && resp.Instruct {
+		a.releaseStart(req.Session, req.Start)
+	}
+	if werr != nil && req.Op == "pending" && len(resp.Messages) > 0 {
 		// The hook gave up before the answer (its budget ran out) and
 		// will not print these messages: queue them again for its
 		// session's next hook rather than lose them.
@@ -217,8 +239,20 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 	var err error
 	switch req.Op {
 	case "pending":
-		resp.Messages, err = b.Pending(ctx, req.Session, req.Agent)
+		lim := devicebus.Limit{Count: req.Limit, Bytes: req.MaxBytes, Sep: busrender.SepLen, Size: busrender.Size}
+		if req.Start != "" && req.Session != "" {
+			resp.Instruct = a.claimStart(req.Session, req.Start)
+			if resp.Instruct && lim.Bytes > 0 {
+				lim.Bytes = max(1, lim.Bytes-busrender.EncodedLen(busrender.StandingInstruction)-busrender.SepLen)
+			}
+		}
+		resp.Messages, err = b.Take(ctx, req.Session, req.Agent, lim)
 		resp.Held = b.Held()
+		if err != nil && resp.Instruct {
+			a.releaseStart(req.Session, req.Start)
+			resp.Instruct = false
+		}
+		resp.Excerpts = a.refExcerpts(ctx, resp.Messages)
 	case "held":
 		resp.Held = b.Held()
 	default:
