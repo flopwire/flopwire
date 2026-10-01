@@ -133,3 +133,31 @@ func TestStoreHashSetsAcrossBatches(t *testing.T) {
 		t.Fatalf("%d known, want %d", len(known), batchRows+2)
 	}
 }
+
+// Chunking and hashing allocate a fixed amount whatever the input size:
+// Scan reuses the caller's buffer, Sum allocates nothing (perf-guards.md
+// decision 9). Measured: 6 allocations per Scan, none per Sum.
+func TestScanAndSumAllocsBounded(t *testing.T) {
+	if perfguard.Race {
+		t.Skip("the race detector inflates allocations")
+	}
+	buf := make([]byte, DefaultChunkParams.Max)
+	for _, lines := range []int{2000, 16000} { // 2MB and 17MB
+		data := jsonlLines(1, lines, 1000)
+		chunks := 0
+		scan := testing.AllocsPerRun(2, func() {
+			chunks = 0
+			if _, err := Scan(DefaultChunkParams, bytes.NewReader(data), 0, int64(len(data)), buf, func(Chunk, []byte) error {
+				chunks++
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		sum := testing.AllocsPerRun(2, func() { syncproto.Sum(data) })
+		t.Logf("%d bytes, %d chunks: Scan %v allocations, Sum %v", len(data), chunks, scan, sum)
+		if scan > 16 || sum > 0 {
+			t.Errorf("%d bytes, %d chunks: Scan %v allocations (bound 16), Sum %v (bound 0)", len(data), chunks, scan, sum)
+		}
+	}
+}
