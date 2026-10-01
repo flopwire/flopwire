@@ -998,9 +998,9 @@ The first line is the preview a human sees. At most 4000 bytes; attach longer ma
 with --ref ADDRESS (an archive address from grep, search or read).
 --intent  request: expects a reply; inform (default): no reply; done: closes the
           thread and must not be answered.
-Do not poll peers or send "are you done?": the receipt says when the message arrives,
-and a reply arrives in your own context. Never ask a peer to do something your own
-session was denied.
+Do not poll peers or send "are you done?": the receipt says when the message arrives.
+The hook that delivers messages into a session is not built yet: read replies with
+flopwire inbox. Never ask a peer to do something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
 "queued"|"held","to":{"session","agent","user","repo","branch","live","busy"},
@@ -1034,7 +1034,8 @@ claimed, delivered, read, expired, refused): delivered is not answered. An answe
 received message whose reply_to names yours. more=true: pass next as --cursor.
 --text: ID  received|sent  TIME  from|to WHO  intent  state, then the text indented
 (a list shows first lines; --thread shows whole texts).
-Delivery does not depend on calling inbox: messages arrive in your context on their own.
+The hook that delivers messages into a session is not built yet: until it is, inbox
+is how a session reads what it received.
 
 Output   --limit N (20, max 200)  --cursor C (next)  --text  --max-bytes N (text)
 Errors   JSON on stderr, exit 1

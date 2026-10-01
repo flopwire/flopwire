@@ -940,3 +940,23 @@ func TestMCPBusOutputSchemasValidate(t *testing.T) {
 		}
 	}
 }
+
+// Until the delivery hook exists, nothing an agent reads may say that
+// messages reach its context on their own: it would never read a reply.
+// Each text also says where received messages are read today.
+func TestBusTextDoesNotClaimDelivery(t *testing.T) {
+	raw, _ := json.Marshal(mcpTools())
+	texts := map[string]string{"help peers": toolHelp["peers"], "help send": toolHelp["send"], "help inbox": toolHelp["inbox"], "instructions": mcpInstructions, "tools": string(raw)}
+	for name, s := range texts {
+		for _, claim := range []string{"in your own context", "in your context", "on their own", "arrives inside"} {
+			if strings.Contains(s, claim) {
+				t.Errorf("%s claims delivery: %q", name, claim)
+			}
+		}
+	}
+	for _, name := range []string{"help send", "help inbox", "instructions"} {
+		if !strings.Contains(texts[name], "not built yet") {
+			t.Errorf("%s does not say the hook is not built", name)
+		}
+	}
+}
