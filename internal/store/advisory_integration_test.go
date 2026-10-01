@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -24,6 +25,9 @@ func lockedConn(t *testing.T, pool *pgxpool.Pool) *pgxpool.Conn {
 	ctx := context.Background()
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PinBackend(ctx, conn); err != nil {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{`SELECT pg_advisory_lock(hashtextextended('chunk:test',0))`, `SELECT pg_advisory_lock_shared(-42)`} {
@@ -113,5 +117,39 @@ func TestReleaseAdvisoryLocksDropsFailedConnection(t *testing.T) {
 	}
 	if !conn.Conn().IsClosed() {
 		t.Fatal("a connection that could not release its locks went back to the pool")
+	}
+}
+
+// The terminate fallback matches the backend by process id and start
+// time. A backend whose start time differs (the server reused the process
+// id) is not terminated, even while it holds one of the locks.
+func TestReleaseAdvisoryLocksSparesBackendWithOtherStartTime(t *testing.T) {
+	f := newSchemaFixture(t)
+	restore := SetReleaseFaults(ReleaseFaults{Unlock: true, UnlockAll: true, Abandon: true})
+	defer restore()
+	defer func(w time.Duration) { releaseWait = w }(releaseWait)
+	releaseWait = 500 * time.Millisecond
+	conn := lockedConn(t, f.pool)
+	defer conn.Release()
+	pid := conn.Conn().PgConn().PID()
+	cd := conn.Conn().PgConn().CustomData()
+	cd[backendStartKey] = cd[backendStartKey].(time.Time).Add(-time.Second)
+	if err := ReleaseAdvisoryLocks(conn, f.pool, testLocks...); err == nil {
+		t.Fatal("release reported success while the locks are still held")
+	}
+	var alive int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity WHERE pid=$1`, pid).Scan(&alive); err != nil {
+		t.Fatal(err)
+	}
+	if alive != 1 || advisoryHeld(t, f.pool) != 2 {
+		t.Fatalf("a backend with another start time was terminated: alive %d, locks %d", alive, advisoryHeld(t, f.pool))
+	}
+	restore() // closes the abandoned connection: its backend exits
+	deadline := time.Now().Add(5 * time.Second)
+	for advisoryHeld(t, f.pool) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("locks outlived the abandoned connection")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

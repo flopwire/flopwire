@@ -373,6 +373,9 @@ func (p *Postgres) ProcessDeletionJobs(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer conn.Release()
+	if err = PinBackend(ctx, conn); err != nil {
+		return 0, err
+	}
 	if _, err = conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, purgeLockID); err != nil {
 		return 0, err
 	}

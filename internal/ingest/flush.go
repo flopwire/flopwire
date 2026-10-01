@@ -203,6 +203,9 @@ func (s *Server) Flush(ctx context.Context, deviceID string, h *syncproto.FlushH
 		return nil, err
 	}
 	defer conn.Release()
+	if err := store.PinBackend(ctx, conn); err != nil {
+		return nil, err
+	}
 	f := &flush{s: s, deviceID: deviceID, h: h, conn: conn, reserved: map[syncproto.Hash]bool{}, sizes: map[syncproto.Hash]int64{}}
 	defer f.unlock()
 

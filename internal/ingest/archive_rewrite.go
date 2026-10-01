@@ -94,6 +94,10 @@ func PrepareArchiveRewrite(ctx context.Context, pool *pgxpool.Pool, objects Obje
 			return nil, err
 		}
 		plan.conn = conn
+		if err := store.PinBackend(ctx, conn); err != nil {
+			conn.Release()
+			return nil, err
+		}
 		var got bool
 		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock_shared($1)`, store.PurgeLockID).Scan(&got); err != nil {
 			conn.Release()

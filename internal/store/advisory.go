@@ -38,6 +38,32 @@ func (l AdvisoryLock) unlockSQL() (string, any) {
 const heldCond = `EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND objsubid=1
 	AND ((classid::bigint<<32)|objid::bigint) = ANY(ARRAY(SELECT hashtextextended(k,0) FROM unnest($2::text[]) k) || $3::bigint[]))`
 
+// backendStartKey keys a connection's backend start time in its
+// CustomData (PinBackend).
+const backendStartKey = "flopwire.backend_start"
+
+// releaseWait bounds how long ReleaseAdvisoryLocks waits for a failed
+// connection's locks to go (a variable for tests).
+var releaseWait = 15 * time.Second
+
+// PinBackend records, once per physical connection, its backend's start
+// time. A holder of session-level advisory locks calls it before it takes
+// them: ReleaseAdvisoryLocks terminates a backend only when its process id
+// and start time both match, so a process id the server reused for
+// another backend is never terminated.
+func PinBackend(ctx context.Context, conn *pgxpool.Conn) error {
+	cd := conn.Conn().PgConn().CustomData()
+	if _, ok := cd[backendStartKey]; ok {
+		return nil
+	}
+	var start time.Time
+	if err := conn.QueryRow(ctx, `SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid()`).Scan(&start); err != nil {
+		return err
+	}
+	cd[backendStartKey] = start
+	return nil
+}
+
 // ReleaseFaults injects failures into ReleaseAdvisoryLocks (tests only;
 // process-wide, so not for parallel tests).
 type ReleaseFaults struct {
@@ -92,9 +118,10 @@ var abandoned struct {
 //     which frees the locks before the backend exits; then the connection
 //     is closed (the caller's Release drops it from the pool) and pg_locks
 //     is polled until the locks are gone. The backend is terminated only
-//     while it holds one of these locks, and before this side closes the
-//     connection: a reused process id would have to belong to a backend
-//     that already holds one of these very locks.
+//     when its process id and start time (PinBackend) both match and it
+//     still holds one of these locks, so a reused process id is never hit.
+//     Without a pinned start time it is not terminated; the release then
+//     waits for the backend to exit and reports an error if it does not.
 func ReleaseAdvisoryLocks(conn *pgxpool.Conn, pool *pgxpool.Pool, locks ...AdvisoryLock) error {
 	if conn == nil || len(locks) == 0 {
 		return nil
@@ -115,7 +142,8 @@ func ReleaseAdvisoryLocks(conn *pgxpool.Conn, pool *pgxpool.Pool, locks ...Advis
 	}
 
 	pid := conn.Conn().PgConn().PID()
-	err := awaitReleased(pool, pid, locks, sync.OnceFunc(func() {
+	start, _ := conn.Conn().PgConn().CustomData()[backendStartKey].(time.Time)
+	err := awaitReleased(pool, pid, start, locks, sync.OnceFunc(func() {
 		if faults.Abandon {
 			abandoned.Lock()
 			abandoned.conns = append(abandoned.conns, conn.Hijack())
@@ -137,9 +165,9 @@ func ReleaseAdvisoryLocks(conn *pgxpool.Conn, pool *pgxpool.Pool, locks ...Advis
 // closeConn (once, also on every early return), and waits until pid holds
 // none of them. It works on a side connection of its own: the pool may
 // have no free slot while the caller still holds conn.
-func awaitReleased(pool *pgxpool.Pool, pid uint32, locks []AdvisoryLock, closeConn func()) error {
+func awaitReleased(pool *pgxpool.Pool, pid uint32, start time.Time, locks []AdvisoryLock, closeConn func()) error {
 	defer closeConn()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), releaseWait)
 	defer cancel()
 	if pool == nil {
 		return errors.New("no pool to reach the server through")
@@ -158,9 +186,13 @@ func awaitReleased(pool *pgxpool.Pool, pid uint32, locks []AdvisoryLock, closeCo
 	}
 	defer side.Close(context.Background())
 	termErr := func() error {
+		if start.IsZero() {
+			return errors.New("backend start unknown (PinBackend not called): not terminating it")
+		}
 		termCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 		defer cancel()
-		_, err := side.Exec(termCtx, `SELECT pg_terminate_backend($1::int,5000) WHERE `+heldCond, pid, keys, ids)
+		_, err := side.Exec(termCtx, `SELECT pg_terminate_backend($1::int,5000) FROM pg_stat_activity
+			WHERE pid=$1 AND backend_start=$4 AND `+heldCond, pid, keys, ids, start)
 		return err
 	}()
 	closeConn()
