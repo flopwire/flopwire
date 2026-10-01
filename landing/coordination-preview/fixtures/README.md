@@ -20,3 +20,18 @@ export FLOPWIRE_INDEX="$task_capture_dir/index.db"
 ```
 
 Run in a separate shell to keep the fixture configuration isolated. No server is used. The messaging example is documented separately in `landing/agent-tools.md`.
+
+## Grep comparison
+
+`src/pagination.ts` is the synthetic source file for the comparison. Captures: `grep -n -F next_cursor src/pagination.ts` → `file-grep.txt`; `flopwire grep -n -F next_cursor --include-self` → `transcript-grep.txt`. The latter uses the index built above. The shared flags are `-n -F`; `--include-self` is specific to Flopwire.
+
+## Branch-history capture
+
+`api-change.jsonl` is a synthetic Claude transcript with a successful git commit tool result. Index it separately, using the same isolated setup as above. The homepage uses this exact projection:
+
+```sh
+flopwire sessions --repo app --branch api-users --json |
+  jq '.sessions[] | {session: .session_id, title, commits: .digest.commits}'
+```
+
+Output is saved in `branch-session.json`. The underlying session has full ID `79b2d8ef-0000-4000-8000-000000000001`; retrieval also returns an `address` with a unique short form. The example uses the full native ID for the presence match. The presence check demonstrates the JSON CLI contract and uses the full ID returned by presence. It is not a captured messaging CLI run.

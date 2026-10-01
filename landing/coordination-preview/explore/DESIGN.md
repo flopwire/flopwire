@@ -11,3 +11,5 @@ The fw assets remain approximate reconstructions. This comparison does not selec
 All examples use `../examples.css`. Commands and output share a dark terminal with labeled rows. Code changes use a light diff panel. Agent setup uses a light instruction panel. Configuration rules have their own label. Narration and agent replies stay outside terminals.
 
 Page spacing uses `../layout.css`: 80px section intervals, 64px at tablet widths, and 56px on mobile. Section introductions separate from content by 32px, or 24px on mobile. Device stages use aligned rows on desktop and stack below 1000px.
+
+Branch history identifies the session behind the change. Presence checks that same session ID. The optional presence detail is expandable. Grep comparison terminals sit side by side on desktop and stack below 1000px. Source context uses body-sized text with agent, branch, and message-address attribution.

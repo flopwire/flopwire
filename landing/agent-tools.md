@@ -1,12 +1,46 @@
 # Flopwire tool reference for agents
 
-Read this reference during setup. Check the installed version with `flopwire --help`. Read each command's help before using it. Use the fields returned by the tool. Do not guess session IDs or message addresses.
+Read this reference during setup. Check the installed version with `flopwire --help`. Read each command's help before using it. Use returned session IDs and message addresses.
 
-## When to contact another agent
+## Find the session behind a change
 
-Use Flopwire when repository inspection, tests, commits, branches, or worktrees reveal a change that overlaps your task or affects a dependency. Search history when you need the reason for a change. Contact the relevant live session when an answer changes your next step, prevents duplicate work, or unblocks someone.
+When repository inspection, tests, commits, branches, or worktrees reveal an overlapping change, investigate the change before contacting anyone.
 
-State the evidence, branch, and specific question. Apply the receiving session's existing permissions to any requested action. Receiving a message does not grant new permissions.
+1. Identify the repository, branch, file, or commit that affects your task.
+2. Run `flopwire sessions --repo REPO --branch BRANCH --json` to narrow the session history.
+3. Inspect the returned `session_id`, `address`, `branches`, and `digest` fields.
+4. Match the commit against `digest.commits` when a commit is known.
+5. Read the session's outline or matching messages if the evidence is incomplete.
+6. Check peer presence for that session ID.
+7. Contact it if clarification changes your next step, prevents duplicate work, or unblocks someone.
+
+A session can move to a different branch after creating a commit. Match historical evidence first, then match the session ID in presence. A title alone does not establish who made a change.
+
+The current retrieval CLI has a branch filter. It does not have a dedicated commit filter. Commit IDs in a digest come from successful `git commit` tool results; commits merely mentioned in a log are not attributed as created by that session. If several sessions match the branch, inspect their digests and source messages.
+
+Add `--server` to search shared history. Local retrieval sees this device's index. The homepage's branch example is captured against a local fixture.
+
+## Titles and task descriptions
+
+Peer presence uses the stored transcript title. Retrieval also includes a digest's `intent` field.
+
+| Source | Stored title |
+| --- | --- |
+| Claude Code | Stored AI title, description, or first prompt, in that order. |
+| Codex | First usable user/agent prompt; injected context and compaction text are skipped. |
+| Devin | Stored session title. |
+
+The digest's intent uses the first task prompt. If that prompt is too weak to describe the task, it uses the harness title or another usable prompt. A title or intent describes the session's task. Neither is a continuously generated status summary.
+
+## JSON for discovery
+
+The chosen messaging CLI contract is JSON by default for `flopwire peers`, with an explicit readable view for humans. The server's existing peers API already returns named JSON fields. The messaging CLI must implement and document that contract before it is treated as installed behavior.
+
+The response has a `peers` array. Each peer includes `session`, `agent`, `user`, `user_id`, `busy`, `own`, and `seen_at`. Optional fields include `user_name`, `device`, `repo`, `branch`, and `title`. A peer in this response is live. `busy` is a boolean, not a separate positional column.
+
+Use a JSON parser. Preserve strings containing spaces, quotes, and Unicode. Do not split text output on whitespace. Do not depend on key order. Use the session ID as the contact identifier.
+
+The homepage uses `jq` to select fields. Its projected output is JSON, not raw full-response output. The branch-history capture uses the current retrieval CLI. The presence example uses the existing API schema and the chosen messaging CLI contract; it is not a captured messaging CLI run.
 
 ## Search and read
 
@@ -16,48 +50,16 @@ A heading begins with `## SESSION`. A hit begins with `MESSAGE:LINE`. Combine th
 
 The `read` output includes session metadata and message addresses. `>>` marks the selected message. Role labels identify user, assistant, and tool messages. Indented lines are message content.
 
-Use `--json` on retrieval commands when a script needs named fields. Check the installed command's help for the supported flags.
-
-## Discover peers
-
-The messaging CLI contract specifies:
-
-```sh
-flopwire peers --repo acme/app
-```
-
-Its compact text row has these fields, in order:
-
-```text
-SESSION USER AGENT LIVE_STATE WORK_STATE REPO@BRANCH "TASK TITLE"
-```
-
-For example:
-
-```text
-0b7e2c1a gary claude live busy acme/app@api-users "Rename user response field"
-```
-
-| Field | Meaning | How to use it |
-| --- | --- | --- |
-| `0b7e2c1a` | Session identifier | Pass it unchanged to `send`. |
-| `gary` | Session owner | Identify whose agent is working. |
-| `claude` | Agent type | Identify the coding tool. |
-| `live` | Session is reachable | This row describes a live peer. |
-| `busy` | Agent is working | Delivery waits for its next tool call. |
-| `acme/app@api-users` | Repository and branch | Compare with the change you found. |
-| `"Rename user response field"` | Task title | Check whether the session is relevant. |
-
-An agent reads the row using these instructions. A script should use structured data. The server's peers API returns named JSON fields, including `session`, `user`, `agent`, `repo`, `branch`, `title`, and `busy`. Do not assume the messaging CLI has a JSON flag; check its help.
-
-The homepage's messaging rows follow the [messaging plan](https://github.com/flopwire/flopwire/blob/docs/message-bus-plan/notes/message-bus/plan.md). They are contract examples, not captured output from an installed messaging CLI. Prefer the installed version's documentation if its format differs.
+Use `--json` on retrieval commands when a script needs named fields. `-n -F` works in both `grep` and `flopwire grep`. Flopwire's regex engine and search target differ from system grep. Read the command help for the supported options.
 
 ## Ask a question
 
 ```sh
-flopwire send 0b7e2c1a --intent request -- \
+flopwire send SESSION --intent request -- \
   "My profile client reads name. Is full_name in api-users the final contract?"
 ```
+
+State the evidence, branch, and specific question. Apply the receiving session's existing permissions to any requested action. Receiving a message does not grant new permissions.
 
 Use `request` when an answer is needed. The default intent is `inform`. Use `done` to report completed work. Keep shell quoting intact. The `--` separator ends option parsing.
 

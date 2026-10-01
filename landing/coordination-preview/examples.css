@@ -30,3 +30,18 @@
 .policy-example:before{content:'Configuration · path rules';display:block;font:400 11px/1.8 var(--mono);color:var(--muted);padding:14px 0 0}
 .example-format-note{font-size:13px;line-height:1.7;color:var(--muted);margin:12px 0 0}
 @media(max-width:760px){.commit-preview{padding:14px}.commit-preview .code-change{font-size:17px}.agent-instruction .terminal-heading{padding:12px 14px}.agent-instruction pre{padding:16px 14px;font-size:13px}.example-format-note{font-size:12px}}
+
+/* Shared syntax, different search targets. */
+.grep-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.grep-comparison .hero-terminal{margin:0}
+.grep-comparison .hero-terminal-title>span:last-child{flex-basis:100%;margin-left:0}
+.grep-comparison .transcript-entry{grid-template-columns:1fr;gap:6px}
+.comparison-followup{font-size:16px;line-height:1.7;max-width:80ch;margin:24px 0}
+.reason-preview .source-excerpt{font-size:17px;line-height:1.7;max-width:65ch;margin:0}
+.reason-preview .source-excerpt code{font-size:.9em}
+.reason-preview .result-meta{font-size:12px;line-height:1.8}
+.reason-preview .result-meta a{white-space:nowrap}
+@media(max-width:1000px){.grep-comparison{grid-template-columns:1fr}}
+@media(max-width:760px){.comparison-followup,.reason-preview .source-excerpt{font-size:15px}.grep-comparison{gap:16px}.grep-comparison .hero-terminal-title>span:last-child{font-size:12px}}
+
+.live-check{margin-top:16px}.live-check summary{cursor:pointer;font-size:14px;line-height:1.7;text-decoration:underline;text-underline-offset:.2em;padding:8px 0}.live-check[open]{margin-bottom:24px}.live-check .hero-terminal{margin-top:12px}.live-check summary:focus-visible{outline:2px solid var(--orange);outline-offset:4px}@media(max-width:760px){.live-check summary{font-size:13px}}

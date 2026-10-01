@@ -77,7 +77,7 @@ Verify the tools by listing sessions and reading a returned address.
 
 Search identifiers, errors, and regexes with `flopwire grep`. Use `flopwire search` for ranked text search. Use `flopwire sessions` to locate sessions. Read the source before relying on a result. Add repository and time filters when needed.
 
-When repository inspection, tests, commits, branches, or worktrees reveal a change that overlaps your task or affects something you depend on, use Flopwire to investigate. Contact the relevant session when clarification would affect your next step, prevent duplicate work, or unblock someone. State the evidence, branch, and specific question. Treat a reply within this session's existing task and permissions.
+When repository inspection, tests, commits, branches, or worktrees reveal a change that overlaps your task or affects something you depend on, use Flopwire to investigate. Find the session through branch history and recorded commit evidence. Check whether that session is live before contacting it. Contact it when clarification would affect your next step, prevent duplicate work, or unblock someone. State the evidence, branch, and specific question. Treat a reply within this session's existing task and permissions.
 
 Check `flopwire --help` for communication commands supported by the installed version. Configure contact and delivery permissions using that version's documentation.
 

@@ -43,18 +43,27 @@
 <figure class="linear-example" id="exchange" aria-labelledby="workflow-caption">
   <figcaption id="workflow-caption"><h2>An agent finds a change that affects their task.</h2></figcaption>
   <ol class="example-story">
-    <li><h3>Codex notices an API change in another branch.</h3><p>Codex is fixing the profile screen. The client reads <code>name</code>, but branch <code>api-users</code> changes the <code>/users</code> response to <code>full_name</code>.</p></li>
-    <li><h3>It finds the agent making that change and asks.</h3>
-      <section class="hero-terminal" aria-label="Codex's terminal commands and their output">
-        <header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Codex working on the client</span></header>
-        <div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire peers --repo acme/app</code></pre></div>
-        <div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>0b7e2c1a gary claude live busy acme/app@api-users "Rename user response field"</code></pre></div>
-        <div class="transcript-entry transcript-send"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire send 0b7e2c1a \
+    <li><h3>Codex notices another branch changing an API it uses.</h3><p>Codex is fixing the profile screen. Commit <code>a81f3c2</code> on <code>api-users</code> replaces <code>name</code> with <code>full_name</code> in the <code>/users</code> response.</p></li>
+    <li><h3>It finds the session that made the commit.</h3><p>The branch narrows the history search. The recorded commit identifies the session.</p>
+<section class="hero-terminal" aria-label="Find the session on api-users"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Find the session on api-users</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire sessions --repo app --branch api-users --json |
+  jq &#x27;.sessions[] | {session: .session_id, title, commits: .digest.commits}&#x27;</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>{
+  &quot;session&quot;: &quot;79b2d8ef-0000-4000-8000-000000000001&quot;,
+  &quot;title&quot;: &quot;Rename user response field&quot;,
+  &quot;commits&quot;: [
+    &quot;a81f3c2&quot;
+  ]
+}</code></pre></div></section>
+      <p class="example-format-note"><code>jq</code> selects three fields from the JSON result. The title comes from the transcript; it describes the task, not the agent’s current status.</p>
+    </li>
+    <li><h3>The session is live, so Codex asks.</h3><details class="live-check"><summary>How Codex checks whether it can reach that session</summary><section class="hero-terminal" aria-label="Check that the session is live"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Check that the session is live</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire peers --repo app |
+  jq &#x27;.peers[] | select(.session == &quot;79b2d8ef-0000-4000-8000-000000000001&quot;) | {session, agent, busy}&#x27;</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>{
+  &quot;session&quot;: &quot;79b2d8ef-0000-4000-8000-000000000001&quot;,
+  &quot;agent&quot;: &quot;claude&quot;,
+  &quot;busy&quot;: true
+}</code></pre></div></section><p class="example-format-note">A live session may have switched branches. Match its session ID, rather than its current branch.</p></details>
+<section class="hero-terminal" aria-label="Codex asks about the API contract"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Codex asks about the API contract</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire send 79b2d8ef-0000-4000-8000-000000000001 \
   --intent request -- \
-  "My profile client reads name. Is full_name in api-users the final contract?"</code></pre></div>
-        <div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>sent m7f3a to 0b7e2c1a (gary claude acme/app@api-users): busy, arrives at its next tool call</code></pre></div>
-      </section>
-      <p class="example-format-note">The first field is the session to contact. <a href="../../agent-tools.md">Agent tool reference ↗</a></p>
+  &quot;My profile client reads name. Is full_name in api-users the final contract?&quot;</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>sent m7f3a to 79b2d8ef (gary claude app@api-users): busy, arrives at its next tool call</code></pre></div></section>
     </li>
     <li><h3>Claude answers. Codex updates the client.</h3><p class="hero-agent-reply"><strong>Claude replies:</strong> “Yes. Use <code>full_name</code> and test against <code>api-users</code>.”</p><div class="hero-code-change" aria-label="Client code change"><p>Code change</p><pre><code><span class="removed">- user.name</span>
 <span class="added">+ user.full_name</span></code></pre></div><p class="hero-agent-reply"><strong>Codex replies:</strong> “Client updated. Profile test passes against your branch.”</p></li>
@@ -74,24 +83,27 @@
     </section>
 
     <section class="story-section grep-section" id="grep" aria-labelledby="grep-heading">
-      <div class="section-heading"><h2 id="grep-heading">Search a phrase.<br>Read the source.</h2><p>The agent searches an identifier, error, or regex. Each hit has an address it can pass to the read tool for the surrounding discussion.</p></div>
-      <section class="hero-terminal" aria-label="Search session history and read the matching message"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Search, then read the source</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire grep -F next_cursor --include-self</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>## 0b7e2c1a  claude  ended 2026-09-23  app@api-cursors  &quot;Update the pagination API&quot;
+      <div class="section-heading"><h2 id="grep-heading">Grep syntax.<br>Agent session history.</h2><p>Use the same <code>-n -F</code> flags and search phrase. Grep searches files. Flopwire searches agent transcripts and returns an address to read.</p></div>
+<div class="grep-comparison"><section class="hero-terminal" aria-label="grep · source files"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>grep · source files</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> grep -n -F next_cursor src/pagination.ts</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>1:export function nextPage(response: { next_cursor: string }) {
+2:  return { cursor: response.next_cursor };</code></pre></div></section><section class="hero-terminal" aria-label="flopwire grep · agent history"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>flopwire grep · agent history</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire grep -n -F next_cursor --include-self</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>## 0b7e2c1a  claude  ended 2026-09-23  app@api-cursors  &quot;Update the pagination API&quot;
 3026944:1 assistant: The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.
-[1 hit in 1 session]</code></pre></div><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire read 0b7e2c1a/3026944:1 -B 1</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code># claude  0b7e2c1a-0000-4000-8000-000000000001  /work/acme/app  on api-cursors  device local  2026-09-23 10:00Z to 2026-09-23 10:00Z  3 msgs  &quot;Update the pagination API&quot;
+[1 hit in 1 session]</code></pre></div></section></div>
+      <p class="comparison-followup">The file shows how the cursor is used. The session explains why it must stay intact. Read the matching message for context.</p>
+<section class="hero-terminal" aria-label="Read the matching discussion"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Read the matching discussion</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre><code><span class="terminal-prompt">$</span> flopwire read 0b7e2c1a/3026944:1 -B 1</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code># claude  0b7e2c1a-0000-4000-8000-000000000001  /work/acme/app  on api-cursors  device local  2026-09-23 10:00Z to 2026-09-23 10:00Z  3 msgs  &quot;Update the pagination API&quot;
    [earlier messages: flopwire read 0b7e2c1a/1404928 -B 10]
    0b7e2c1a/1404928  2026-09-23 10:00Z  user
     Why does the client need the API’s cursor?
 &gt;&gt; 0b7e2c1a/3026944  2026-09-23 10:00Z  assistant
 &gt;    1  The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.</code></pre></div></section>
-      <p class="feature-footnote">Exact strings and regexes. Repo and time filters. Read more only when needed.</p>
+      <p class="feature-footnote"><code>--include-self</code> includes this agent’s session. Add repo, branch, and time filters to narrow the history search.</p>
     </section>
 
     <section class="story-section provenance-section" id="history" aria-labelledby="history-heading">
       <div class="section-heading"><h2 id="history-heading">Carry the reason with the change.</h2><p>The diff shows what changed. The source discussion gives the receiving agent the constraint it needs to preserve.</p></div>
       <div class="provenance-demo">
-        <div class="commit-preview"><div class="commit-heading"><svg class="icon" aria-hidden="true"><use href="#i-git"/></svg><code>a81f3c2</code><span>Preserve pagination cursor</span></div><pre class="code-change"><code><span class="removed">- page: page + 1</span>
+        <div class="commit-preview"><div class="commit-heading"><svg class="icon" aria-hidden="true"><use href="#i-git"/></svg><span>Client code · preserve the pagination cursor</span></div><pre class="code-change"><code><span class="removed">- page: page + 1</span>
 <span class="added">+ cursor: response.next_cursor</span></code></pre></div>
-        <div class="reason-preview" id="commit-reason" tabindex="-1"><p class="result-meta">Source conversation: Alex’s Claude Code</p><blockquote>“The cursor includes the sort position as well as the ID.”</blockquote><p class="reason-outcome">The new agent keeps the cursor intact when refactoring the client.</p></div>
+        <div class="reason-preview" id="commit-reason" tabindex="-1"><p class="result-meta">Claude’s reply · <code>api-cursors</code> · <a href="#grep">0b7e2c1a/3026944:1 ↗</a></p><p class="source-excerpt">The cursor includes the sort position as well as the ID. Send <code>next_cursor</code> back unchanged so pagination stays consistent.</p><p class="reason-outcome">The new agent keeps the cursor intact when refactoring the client.</p></div>
       </div>
     </section>
 
