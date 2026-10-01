@@ -745,9 +745,15 @@ func requestParse(ctx context.Context, tx pgx.Tx, sourceID string, reparse bool)
 	return err
 }
 
+// manifestEnd is the number of a generation's manifest entries and the
+// byte where they end. Ordinals run from 0 without gaps (appendEntries
+// adds only the next ones), so the last entry tells both.
 func manifestEnd(ctx context.Context, tx pgx.Tx, sourceID string, gen int64) (n, end int64, err error) {
-	err = tx.QueryRow(ctx, `SELECT count(*), COALESCE(max(m.byte_offset+c.size),0) FROM manifest_entries m JOIN chunks c ON c.hash=m.chunk_hash
-		WHERE m.source_id=$1 AND m.generation=$2`, sourceID, gen).Scan(&n, &end)
+	err = tx.QueryRow(ctx, `SELECT m.ordinal+1,m.byte_offset+(SELECT size FROM chunks WHERE hash=m.chunk_hash) FROM manifest_entries m
+		WHERE m.source_id=$1 AND m.generation=$2 ORDER BY m.ordinal DESC LIMIT 1`, sourceID, gen).Scan(&n, &end)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, nil
+	}
 	return n, end, err
 }
 
@@ -831,7 +837,11 @@ func appendEntries(ctx context.Context, tx pgx.Tx, sourceID string, gen int64, a
 	for i := range committed {
 		cs[i] = committed[i][:]
 	}
-	_, err := tx.Exec(ctx, `UPDATE chunks SET state='committed',cleanup_after=NULL,last_error_class='',updated_at=now() WHERE hash=ANY($1) AND state='uploading'`, cs)
+	// committed lists the chunks lockChunks found 'uploading' and still
+	// holds locked. A state='uploading' filter would let the planner read
+	// chunks_orphan_idx, past the dead entries of every chunk committed
+	// since the last vacuum.
+	_, err := tx.Exec(ctx, `UPDATE chunks SET state='committed',cleanup_after=NULL,last_error_class='',updated_at=now() WHERE hash=ANY($1)`, cs)
 	return err
 }
 

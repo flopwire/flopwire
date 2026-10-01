@@ -40,7 +40,7 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 	}
 	for _, w := range work {
 		for {
-			g, err := LoadGeneration(ctx, q.Pool, source, w.gen)
+			g, err := LoadGenerationFrom(ctx, q.Pool, source, w.gen, w.from-1)
 			if err != nil {
 				return err
 			}

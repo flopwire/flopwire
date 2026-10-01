@@ -96,6 +96,19 @@ func (a *appendSession) toolCalls(from, k, failed int) []byte {
 	return b.Bytes()
 }
 
+// Appending to a session costs the same at n and 8n prior messages: the
+// flush and the parse read the new bytes and the rows they write, not the
+// whole manifest or conversation.
+func TestPerfAppendConstantInSessionLength(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(_ testing.TB, n int) perfguard.Cost {
+		e, counter := perfEnv(t)
+		a := newAppendSession(t, e, n)
+		a.records(t, appendBatch) // warm: the first append after a full parse
+		e.exec(`ANALYZE`)
+		return perfguard.Measure(t, e.pool, counter, func() { a.records(t, appendBatch) })
+	})
+}
+
 // One append sends a bounded number of statements, however many of its
 // tool calls failed: no statement per failed call id.
 func TestPerfAppendStatementBound(t *testing.T) {

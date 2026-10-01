@@ -125,7 +125,11 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		}
 		return q.done(ctx, j, j.cursorGen)
 	}
-	g, err := LoadGeneration(ctx, q.Pool, sourceID, -1)
+	// An append is read from its cursor: the manifest before it is loaded
+	// only if the parse reaches back (a new generation, a full parse). The
+	// byte before the cursor is in the window, since the redaction pass
+	// looks back for the start of the line.
+	g, err := LoadGenerationFrom(ctx, q.Pool, sourceID, -1, j.cursor.Offset-1)
 	if errors.Is(err, ErrNoGeneration) {
 		return q.done(ctx, j, j.cursorGen)
 	}
