@@ -81,12 +81,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
 	err = s.read(ctx, b, func(tx pgx.Tx) error {
-		order := ` ORDER BY m.ts DESC NULLS LAST, m.id LIMIT `
-		if gq.Sort == format.SortOldest {
-			order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
-		}
-		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR SELECT `+hitCols+`,m.content_sha,m.text FROM `+from+` WHERE `+q.sql()+
-			order+strconv.Itoa(maxCandidates), q.args...); err != nil {
+		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+grepCandidates(q, gq.Sort == format.SortOldest), q.args...); err != nil {
 			return err
 		}
 		for {
@@ -178,6 +173,26 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		page.Hits[i].Address = format.MessageAddress(short[page.Hits[i].SessionID], page.Hits[i].Ordinal)
 	}
 	return page, nil
+}
+
+// grepCandidates selects the messages q's trigram conditions and filters
+// admit, by time, at most maxCandidates.
+//
+// There is deliberately no messages(ts) index for this order. The
+// trigram bitmap scan reads only the candidates and sorts them; with a ts
+// index the planner (planning a cursor for its first rows) may instead
+// walk every message newest first, filtering each by the pattern. That
+// wins when matches are common and recent, but when they are few and old
+// it reads nearly the whole table: in a 100,000-message corpus whose 3%
+// matches sit in the oldest sessions it touched 97,000 rows against
+// 3,100 without the index. Grep's cost stays bounded by its candidates
+// instead (TestGrepOldMatchesScalingConstant).
+func grepCandidates(q *query, oldest bool) string {
+	order := ` ORDER BY m.ts DESC NULLS LAST, m.id LIMIT `
+	if oldest {
+		order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
+	}
+	return `SELECT ` + hitCols + `,m.content_sha,m.text FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
 }
 
 // Search ranks messages matching the query (websearch syntax: words,

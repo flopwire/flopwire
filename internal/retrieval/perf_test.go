@@ -287,3 +287,77 @@ func TestOutlineCursorWalk(t *testing.T) {
 		t.Fatalf("bad cursor: %v", err)
 	}
 }
+
+// oldMatches marks the messages of the five oldest sessions of a
+// perfCorpus with a rare word.
+func oldMatches(t testing.TB, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE messages SET text=text||' zebracorn'
+		WHERE conversation_id IN (SELECT md5('c'||i)::uuid FROM generate_series(1,5) i)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `VACUUM ANALYZE messages`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Grep reads its trigram candidates, not the messages table: a pattern
+// whose few matches are all old reads the same messages however many
+// newer ones there are. A messages(ts) index would break this (see
+// grepCandidates). Only messages are gated: joining the candidates to
+// conversations is the planner's choice of hashing them all or looking
+// each up, which flips with their count.
+func TestGrepOldMatchesScalingConstant(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		s, counter := perfCorpus(t, max(n, 5), 4)
+		oldMatches(t, s.Pool)
+		cost := perfguard.Measure(t, s.Pool, counter, func() {
+			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: "zebracorn", Fixed: true}, format.Filters{})
+			if err != nil || len(page.Hits) == 0 {
+				t.Fatalf("grep: %v", err)
+			}
+		})
+		cost.Tables = map[string]perfguard.TableCost{"public.messages": cost.Tables["public.messages"]}
+		return cost
+	})
+}
+
+// The grep candidate query selects through the trigram index.
+func TestGrepCandidatesPlanIndexed(t *testing.T) {
+	s, _ := perfCorpus(t, 200, 8)
+	oldMatches(t, s.Pool)
+	for _, oldest := range []bool{false, true} {
+		q := &query{}
+		q.where("m.text ILIKE " + q.arg("%zebracorn%"))
+		if err := hitFilters(q, format.Filters{}); err != nil {
+			t.Fatal(err)
+		}
+		perfguard.AssertIndexedPlanExcept(t, s.Pool, []string{"users", "devices"}, grepCandidates(q, oldest), q.args...)
+	}
+}
+
+// No index leads with messages.ts. The planner, planning grep's cursor for
+// its first rows, would walk it newest first instead of reading the
+// trigram candidates, and a pattern whose matches are few and old would
+// then read nearly every message (see grepCandidates). Plans and cost at
+// test sizes do not show this reliably, so the schema is checked.
+func TestNoMessagesTSIndex(t *testing.T) {
+	s, _ := perfCorpus(t, 1, 1)
+	var names []string
+	rows, err := s.Pool.Query(context.Background(), `SELECT i.indexrelid::regclass::text FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0]
+		WHERE i.indrelid='messages'::regclass AND a.attname='ts'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	if len(names) > 0 {
+		t.Fatalf("indexes leading with messages.ts: %v; grep's cursor would walk them instead of its trigram candidates", names)
+	}
+}
