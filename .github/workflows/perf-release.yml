@@ -48,6 +48,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'release-please--branches--main')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
     steps:
@@ -99,6 +100,7 @@ jobs:
     # (GitHub counts a skipped required check as passing).
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: {}
     steps:
       - name: Require a clean A/B verdict on the release PR

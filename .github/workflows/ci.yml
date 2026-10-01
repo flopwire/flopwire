@@ -14,6 +14,9 @@ jobs:
   go-test:
     name: go-test (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
+    # A shard takes about 5 min; a stuck step must not hold the run for the
+    # 6 h default.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -66,11 +69,20 @@ jobs:
           exit 1
       # The backup round trip needs pg_dump/pg_restore >= the server major (17);
       # the runner image ships 16.
+      # apt.postgresql.org can stall; bound each attempt and retry.
       - name: Install PostgreSQL 17 client
+        timeout-minutes: 10
         run: |
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
-          sudo apt-get install -y -q --no-install-recommends postgresql-client-17 >/dev/null
-          echo /usr/lib/postgresql/17/bin >>"$GITHUB_PATH"
+          for attempt in 1 2 3; do
+            if sudo timeout 150 /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null &&
+              sudo timeout 150 apt-get install -y -q --no-install-recommends postgresql-client-17 >/dev/null; then
+              echo /usr/lib/postgresql/17/bin >>"$GITHUB_PATH"
+              exit 0
+            fi
+            echo "::warning::PostgreSQL 17 client install attempt $attempt failed"
+            sleep 10
+          done
+          exit 1
       - name: Pick this shard's packages
         run: |
           go run ./tools/ci-shard -shards ${{ strategy.job-total }} -index ${{ matrix.shard }} >"$RUNNER_TEMP/packages"
@@ -92,6 +104,7 @@ jobs:
 
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -134,6 +147,7 @@ jobs:
   # other checks passed and the shards together ran each package once.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [go-test, checks]
     if: always()
     steps:
