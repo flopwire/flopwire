@@ -25,7 +25,10 @@ func redactCmd(ctx context.Context, args []string) error {
 
 Hide a message (or lines L1-L2 of its text, as flopwire read numbers them)
 everywhere Flopwire keeps it: server rows, the archive, raw reads, and this
-device's local index. Your own messages; with --admin, anyone's.
+device's local index. Your own messages; with --admin, anyone's. On the
+server, every byte-identical copy of the record (the same session archived
+from another device) is redacted too; --all-copies adds copies with the
+same text (subagents, forks, other agents).
 
   flopwire redact 3f2a9c1e/42          the whole message
   flopwire redact 3f2a9c1e/42:7-9      lines 7 to 9
