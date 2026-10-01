@@ -665,3 +665,27 @@ func TestSendRedactsBeforeTheServer(t *testing.T) {
 		t.Fatalf("redactions: %+v", out.Redactions)
 	}
 }
+
+// Requeue undoes a Pending whose caller never got the answer: the message
+// is pending again and its receipt is no longer owed.
+func TestRequeueWithdrawsTheReceipt(t *testing.T) {
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(newFakeServer(), nil), nil)
+	if err := b.st.reconcile(ctx, []busproto.Envelope{env("mq", "s1")}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Pending(ctx, "s1", ""); len(got) != 1 {
+		t.Fatalf("pending: %v", ids(got))
+	}
+	if err := b.Requeue(ctx, []string{"mq"}); err != nil {
+		t.Fatal(err)
+	}
+	if owed, _ := b.st.owed(ctx, 10); len(owed) != 0 {
+		t.Fatalf("receipt still owed: %v", owed)
+	}
+	if got, _ := b.Pending(ctx, "s1", ""); !slices.Equal(ids(got), []string{"mq"}) {
+		t.Fatalf("pending after requeue: %v", ids(got))
+	}
+	if owed, _ := b.st.owed(ctx, 10); !slices.Equal(owed, []string{"mq"}) {
+		t.Fatalf("receipt after the second take: %v", owed)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -197,5 +198,42 @@ func TestControlBusLocal(t *testing.T) {
 	}
 	if _, err := Call(ctx, sock, Request{Op: "send"}); err == nil {
 		t.Fatal("send without a request accepted")
+	}
+}
+
+// A hook that gave up (its 200 ms budget ran out) before the agent
+// answered pending never prints the messages. The agent finds the closed
+// connection when it answers and queues them again, so the session's next
+// hook gets them; they are not lost.
+func TestControlPendingRequeuedWhenTheHookIsGone(t *testing.T) {
+	f := newFixture(t, "-")
+	b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	f.cfg.Bus = b
+	f.a = New(f.store, f.cfg)
+	live := []devicebus.Session{
+		{PresenceSession: busproto.PresenceSession{SessionID: "from-1111", Agent: "claude", Repo: "/src/api"}, LastActive: time.Now()},
+		{PresenceSession: busproto.PresenceSession{SessionID: "to-2222", Agent: "claude", Repo: "/src/api"}, LastActive: time.Now()},
+	}
+	b.SetSources(func(context.Context) ([]devicebus.Session, error) { return live, nil }, nil)
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	hook, agentEnd := net.Pipe()
+	done := make(chan struct{})
+	go func() { f.a.serveConn(ctx, agentEnd); close(done) }()
+	if _, err := hook.Write([]byte(`{"op":"pending","session":"to-2222"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	hook.Close() // the hook's deadline passed: it exits without reading
+	<-done
+
+	got, err := b.Pending(ctx, "to-2222", "")
+	if err != nil || len(got) != 1 || got[0].Body != "hello" {
+		t.Fatalf("message after the hook gave up: %+v %v", got, err)
 	}
 }

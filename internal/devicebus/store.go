@@ -127,6 +127,24 @@ func (s *store) take(ctx context.Context, session, agent string, now time.Time) 
 	return out, nil
 }
 
+// untake puts delivered messages back in the queue (Requeue). A receipt
+// still owed is withdrawn. One the server already took (the receipt
+// batch went out first, after AckDelay) cannot be: the server stops
+// listing the message and the next poll drops it, so it is lost as
+// before.
+func (s *store) untake(ctx context.Context, ids []string) error {
+	return inTx(ctx, s.db, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET state='queued', delivered_at=NULL,
+					ack=CASE WHEN ack='owed' THEN '' ELSE ack END
+				WHERE id=? AND state='delivered'`, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // reconcile folds one poll's deliverable set into the inbox. A message in
 // the set is added (queued) or kept as it is. A queued message missing
 // from it is dropped: it was delivered elsewhere, expired, or held again.

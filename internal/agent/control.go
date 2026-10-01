@@ -189,7 +189,18 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	}
 	b, _ := json.Marshal(resp)
 	c.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	c.Write(append(b, '\n'))
+	if _, err := c.Write(append(b, '\n')); err != nil && req.Op == "pending" && len(resp.Messages) > 0 {
+		// The hook gave up before the answer (its budget ran out) and
+		// will not print these messages: queue them again for its
+		// session's next hook rather than lose them.
+		ids := make([]string, len(resp.Messages))
+		for i, m := range resp.Messages {
+			ids[i] = m.ID
+		}
+		if rerr := a.cfg.Bus.Requeue(ctx, ids); rerr != nil {
+			a.log.Warn("agent: messages taken by a hook that left are lost", "ids", ids, "err", rerr)
+		}
+	}
 }
 
 // busCallTimeout bounds a send, peers or inbox request to the server.

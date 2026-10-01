@@ -244,6 +244,13 @@ func (b *Bus) Pending(ctx context.Context, session, agent string) ([]busproto.En
 	return out, nil
 }
 
+// Requeue undoes Pending for messages its caller never received (the
+// hook left before the answer reached it): they are undelivered again
+// and owe no receipt, so the session's next Pending returns them.
+func (b *Bus) Requeue(ctx context.Context, ids []string) error {
+	return b.st.untake(ctx, ids)
+}
+
 // Held returns the senders whose messages wait for the user's acceptance
 // (B7), from the last poll: what the hook's user-visible notice needs.
 // Without a server nothing is held.
