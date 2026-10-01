@@ -1,20 +1,25 @@
 # Performance records
 
-Two benchmarks track performance:
+Three runs track performance:
 
 - **Nightly A/B** (primary drift signal). A GitHub Actions run on `main`
   compares a baseline binary with `main` on a synthetic corpus. It runs
   every night and opens an issue when `main` regressed.
-- **Local acceptance** (pre-release reality check). The release manager
-  runs it on the reference laptop over the real corpus before each
-  release. Each release commits its record here. The release checklist
-  ([§5](../release-checklist.md#5-local-acceptance)) says when to make one.
+- **Release gate** (required before a release). The same A/B bench runs
+  on the release-please PR and posts its verdict on the PR. A regression
+  fails the PR's `perf-gate` check.
+- **Local acceptance** (optional reality check). The release manager can
+  run it on the reference laptop over the real corpus. It is recommended
+  when a release changes the parsers, indexing or redaction. A run commits
+  its record here. The release checklist
+  ([§5](../release-checklist.md#5-performance)) says when to make one.
 
 ## Nightly A/B
 
 The workflow is `.github/workflows/perf-nightly.yml`. It runs at 06:23 UTC
 and on manual dispatch, only in `flopwire/flopwire`, never on pull
-requests.
+requests. The bench steps are in `.github/workflows/perf-ab.yml`, which
+the [release gate](#release-gate) also calls.
 
 1. `scripts/perf-baseline.sh` picks binary A, the baseline:
    1. the `baseline` input of a manual run (a commit SHA or a `v*` tag;
@@ -44,6 +49,34 @@ requests.
 6. When the verdict is `REGRESSED`, the run opens an issue labelled
    `perf-regression`, or comments on the open one. A later clean run
    comments on the issue and closes it.
+
+### Release gate
+
+The workflow is `.github/workflows/perf-release.yml`. It runs on every
+pull request, but it benches only the release-please PR: a PR from the
+branch `release-please--branches--main` of this repository. On every
+other PR its `perf-gate` job passes at once.
+
+On the release PR:
+
+1. `perf-ab.yml` runs the bench above. Binary A is the baseline that
+   `scripts/perf-baseline.sh` picks from the PR head: the latest release
+   tag `v*`, or the pin in `docs/perf/nightly-baseline` when the pin is
+   newer. Before the first release, that is the pin. Binary B is the PR
+   head.
+2. The `comment` job posts the comparison table and the verdict as one
+   PR comment. Each push to the release branch updates the same comment.
+3. `perf-gate` fails on `REGRESSED`, on `BASELINE_FAILED` and when the
+   bench did not finish. It passes only on `CLEAN`.
+
+A run takes about 17 minutes. A new push to the release branch cancels
+the run in progress.
+
+To release with a regression, accept it first: move the pin in a PR that
+explains the regression (see [Accept a regression](#accept-a-regression)).
+The pin is newer than the last release tag, so the gate then compares with
+it. Then push to the release branch again, or close and reopen the release
+PR, to rerun the gate.
 
 ### Verdict
 
@@ -137,6 +170,11 @@ first so the change does not hide a regression.
 
 ## Local acceptance records
 
+Local acceptance is optional. The release gate covers drift on the
+synthetic corpus. Make a record when a release changes the parsers,
+indexing or redaction, since the real corpus has shapes that the synthetic
+one does not.
+
 ### File name
 
 `<version>-<YYYY-MM-DD>.json`, for example `v0.4.0-2026-10-01.json`. The
@@ -161,7 +199,7 @@ the version, for example `main-9e4193d-2026-10-01.json`.
    cp /tmp/flopwire-acceptance/acceptance-record.json docs/perf/v0.4.0-2026-10-01.json
    ```
 
-4. Commit the record in the release PR.
+4. Commit the record in the release PR, or in a PR before it.
 5. Paste the comparison table into the release PR description.
 
 ### Compare two records

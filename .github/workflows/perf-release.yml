@@ -1,0 +1,124 @@
+name: Perf release gate
+
+# Runs the A/B bench (perf-ab.yml) on the release-please PR: binary A is
+# the baseline (the newer of the latest v* tag and docs/perf/nightly-baseline,
+# scripts/perf-baseline.sh), binary B is the PR head. It posts the table
+# and verdict as one PR comment, updated on each push. REGRESSED or
+# BASELINE_FAILED fails `perf-gate`.
+#
+# Every PR runs this workflow, but on any PR other than the release PR only
+# `perf-gate` runs, and it passes at once. That keeps `perf-gate` safe to
+# make a required check (docs/release-checklist.md section 5).
+#
+# pull_request, never pull_request_target: the bench builds and runs the
+# PR's code. Only a same-repo PR from the release-please branch is benched;
+# a fork's PR gets a read-only token and is never the release PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-release-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # The marker that finds this workflow's comment on the PR.
+  MARKER: "<!-- flopwire-perf-release-gate -->"
+
+jobs:
+  bench:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--branches--main')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/perf-ab.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+      artifact: perf-release
+
+  comment:
+    needs: bench
+    if: >-
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--branches--main')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        if: needs.bench.result == 'success'
+        with:
+          name: perf-release
+          path: perf-out
+      - name: Post or update the PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BENCH: ${{ needs.bench.result }}
+          VERDICT: ${{ needs.bench.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DOC_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/perf/README.md#release-gate
+        run: |
+          {
+            echo "$MARKER"
+            echo "## Perf release gate: ${VERDICT:-no verdict}"
+            echo
+            echo "A/B bench of the PR head \`$HEAD_SHA\` against the release baseline on the synthetic corpus ([docs/perf]($DOC_URL))."
+            echo
+            if [[ "$BENCH" == success ]]; then
+              cat perf-out/summary.md
+            else
+              echo "The bench job ended with \`$BENCH\`; nothing was compared. See the run."
+            fi
+            echo
+            echo "Run: $RUN_URL"
+          } >body.md
+          id="$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" | head -n1)"
+          if [[ -n "$id" ]]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F body=@body.md >/dev/null
+            echo "updated comment $id"
+          else
+            gh pr comment "$PR" --body-file body.md
+          fi
+
+  # The check to make required. It passes on every PR that is not the
+  # release PR. On the release PR it passes only on a CLEAN verdict.
+  # A cancelled run (a newer push superseded it) reports nothing here.
+  perf-gate:
+    needs: [bench, comment]
+    # always(): a cancelled run must report a failed gate, never a skipped one
+    # (GitHub counts a skipped required check as passing).
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require a clean A/B verdict on the release PR
+        env:
+          RELEASE_PR: ${{ github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release-please--branches--main') }}
+          BENCH: ${{ needs.bench.result }}
+          VERDICT: ${{ needs.bench.outputs.verdict }}
+        run: |
+          if [[ "$RELEASE_PR" != true ]]; then
+            echo "not the release PR; nothing to gate"
+            exit 0
+          fi
+          echo "bench: $BENCH, verdict: ${VERDICT:-none}"
+          if [[ "$BENCH" != success ]]; then
+            echo "::error::the perf bench did not finish ($BENCH)"
+            exit 1
+          fi
+          case "$VERDICT" in
+            CLEAN) echo "clean" ;;
+            REGRESSED) echo "::error::perf regressed against the release baseline; see the PR comment"; exit 1 ;;
+            BASELINE_FAILED) echo "::error::the baseline cannot run under this harness; nothing was compared"; exit 1 ;;
+            *) echo "::error::unknown verdict '$VERDICT'"; exit 1 ;;
+          esac
