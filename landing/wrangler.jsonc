@@ -1,0 +1,15 @@
+// Static homepage on Cloudflare Workers. Deploy: npx wrangler deploy -c landing/wrangler.jsonc
+// .github/workflows/landing.yml deploys on pushes to main that touch landing/.
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "flopwire-landing",
+  "account_id": "dfefc1d9720023344673dd03775353c1",
+  "compatibility_date": "2026-09-30",
+  "main": "worker.js",
+  // The Worker runs first so it can redirect www before assets are served.
+  "assets": { "directory": ".", "binding": "ASSETS", "run_worker_first": true },
+  "routes": [
+    { "pattern": "flopwire.com", "custom_domain": true },
+    { "pattern": "www.flopwire.com", "custom_domain": true }
+  ]
+}
