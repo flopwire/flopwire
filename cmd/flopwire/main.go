@@ -94,6 +94,8 @@ func run(parent context.Context, args []string) error {
 		return toolCmd(ctx, "grep", args[1:])
 	case "search", "sessions", "read":
 		return toolCmd(ctx, args[0], args[1:])
+	case "peers", "send", "inbox":
+		return busMain(ctx, args[0], args[1:])
 	case "raw":
 		return raw(ctx, args[1:])
 	case "mcp":
@@ -136,9 +138,13 @@ func usage() error {
   search      ranked search for fuzzy questions
   sessions    list sessions, newest first
   read        read a message or session at an address that grep, search or sessions print
-  mcp         serve grep, search, sessions and read over MCP stdio
-              (these read the local index; --server queries the team server;
-              flopwire <tool> --help shows examples)
+  peers       list live agent sessions you can message
+  send        message another agent session, or @user's next session
+  inbox       this session's messages, received and sent
+  mcp         serve grep, search, sessions, read, peers, send and inbox over
+              MCP stdio (the first four read the local index; --server
+              queries the team server; the last three go through the device
+              agent; flopwire <tool> --help shows examples)
   diagnostics inspect extraction reports (--server, --source ID, --json)
   raw         plumbing: archived bytes of a source by provenance
   redact      hide a message (or some of its lines) on the server and in the local index

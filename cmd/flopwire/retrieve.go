@@ -50,6 +50,21 @@ type retriever struct {
 	close func() error
 	// instructions replace mcpInstructions when set (a sync-only device).
 	instructions string
+	// busSocket is the device agent's control socket for the message bus
+	// tools; "" is the default beside the client config.
+	busSocket string
+}
+
+// whoCalls is the calling session: the one an MCP request's _meta names
+// (Codex), else what the detector finds.
+func (r *retriever) whoCalls(ctx context.Context) (local.Caller, bool) {
+	if c, ok := metaCaller(ctx); ok {
+		return c, true
+	}
+	if r.caller == nil {
+		return local.Caller{}, false
+	}
+	return r.caller(ctx)
 }
 
 // openRetriever opens the local index at indexPath, or the server client
@@ -100,7 +115,8 @@ const (
 )
 
 // flagDef is one option. Verbs is the set of tools that take it: g grep,
-// s search, l sessions (list), r read.
+// s search, l sessions (list), r read; the message bus verbs p peers, m
+// send (message), i inbox.
 type flagDef struct {
 	long  string
 	short byte
@@ -124,14 +140,14 @@ var flagDefs = []flagDef{
 	{"before-context", 'B', fInt, "gr"},
 	{"context", 'C', fInt, "gr"},
 	{"max-count", 'm', fInt, "g"},
-	{"limit", 0, fInt, "gslr"},
+	{"limit", 0, fInt, "gslri"},
 	{"offset", 0, fInt, "gs"},
-	{"cursor", 0, fString, "lr"},
+	{"cursor", 0, fString, "lri"},
 	{"sort", 0, fString, "gsl"},
 	{"no-heading", 0, fBool, "gs"},
 	{"timeout", 0, fString, "gs"},
-	{"agent", 0, fString, "gsl"},
-	{"repo", 0, fString, "gsl"},
+	{"agent", 0, fString, "gslp"},
+	{"repo", 0, fString, "gslpm"},
 	{"kind", 0, fString, "gs"},
 	{"exclude-kind", 0, fString, "gs"},
 	{"tool", 0, fString, "gs"},
@@ -140,7 +156,7 @@ var flagDefs = []flagDef{
 	{"since", 0, fString, "gsl"},
 	{"until", 0, fString, "gsl"},
 	{"device", 0, fString, "gsl"},
-	{"user", 0, fString, "gsl"},
+	{"user", 0, fString, "gslp"},
 	{"exclude-subagents", 0, fBool, "gsl"},
 	{"exclude-live", 0, fBool, "gsl"},
 	{"include-superseded", 0, fBool, "gsr"},
@@ -150,11 +166,17 @@ var flagDefs = []flagDef{
 	{"line-offset", 0, fInt, "r"},
 	{"raw", 0, fBool, "r"},
 	{"outline", 0, fBool, "r"},
-	{"json", 0, fBool, "gslr"},
-	{"max-bytes", 0, fInt, "gslr"},
+	{"json", 0, fBool, "gslrpmi"},
+	{"max-bytes", 0, fInt, "gslrpmi"},
 	{"server", 0, fBool, "gslr"},
 	{"index", 0, fString, "gslr"},
-	{"help", 'h', fBool, "gslr"},
+	{"help", 'h', fBool, "gslrpmi"},
+	{"intent", 0, fString, "m"},
+	{"reply-to", 0, fString, "m"},
+	{"ref", 0, fList, "m"},
+	{"sent", 0, fBool, "i"},
+	{"thread", 0, fString, "i"},
+	{"socket", 0, fString, "pmi"},
 }
 
 // filterKeys are the flags that become format.Filters.
@@ -195,6 +217,12 @@ func verbLetter(verb string) byte {
 		return 's'
 	case "sessions":
 		return 'l'
+	case "peers":
+		return 'p'
+	case "send":
+		return 'm'
+	case "inbox":
+		return 'i'
 	}
 	return 'r'
 }
@@ -387,13 +415,13 @@ const (
 // caller asked for its own rows, named a session already, or is a human
 // at a terminal, and returns the note naming what it left out.
 func (r *retriever) excludeSelf(ctx context.Context, f *format.Filters, includeSelf bool, p selfPolicy) string {
-	if includeSelf || f.ExcludeSession != "" || f.Session != "" || r.caller == nil {
+	if includeSelf || f.ExcludeSession != "" || f.Session != "" {
 		return ""
 	}
 	if p == selfCLI && term.IsTerminal(int(os.Stdin.Fd())) {
 		return ""
 	}
-	c, ok := r.caller(ctx)
+	c, ok := r.whoCalls(ctx)
 	if !ok {
 		return ""
 	}
@@ -408,10 +436,8 @@ func (r *retriever) excludeSelf(ctx context.Context, f *format.Filters, includeS
 // self resolves "self" (--session self, read self) to the calling
 // agent's session, found by exact evidence only (D4).
 func (r *retriever) self(ctx context.Context, p selfPolicy) (string, error) {
-	if r.caller != nil {
-		if c, ok := r.caller(ctx); ok {
-			return c.SessionID, nil
-		}
+	if c, ok := r.whoCalls(ctx); ok {
+		return c.SessionID, nil
 	}
 	how := "set FLOPWIRE_SESSION_ID to your session id"
 	if p == selfMCP {
