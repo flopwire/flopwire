@@ -174,7 +174,14 @@ func (a *Agent) placementCounts() map[string]int {
 // (and Devin's store), then waits until the queue drains and the index has
 // committed. `flopwire agent run --once` asks for it over the control socket
 // when this agent holds the index lock (decision D12).
+//
+// A pass asked while the agent starts waits for the first discovery pass,
+// like a flush: run before load, its full merge would make load skip the
+// stored gates.
 func (a *Agent) Pass(ctx context.Context) error {
+	if err := a.waitDiscovered(ctx); err != nil {
+		return err
+	}
 	if err := a.sweep(ctx); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -479,6 +480,42 @@ func TestHookFlushIndexesAtOnce(t *testing.T) {
 	}
 }
 
+// A hook flush that arrives while the agent starts, before its first
+// discovery pass, waits for that pass rather than failing (a Codex notify
+// carries only the thread id) or merging a partial pass that makes load
+// skip the stored gates.
+func TestHookFlushBeforeFirstDiscoveryWaits(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sweep, f.cfg.FastLane = time.Hour, time.Hour
+	f.a = New(f.store, f.cfg)
+	const codexThread = "019a0000-0000-7000-8000-0000000000a2"
+
+	early, stop := context.WithCancel(ctx)
+	stop()
+	for _, req := range []Request{{Session: codexThread}, {Path: f.path(alphaRel)}} {
+		if _, err := f.a.FlushPath(early, req.Path, req.Session); !errors.Is(err, context.Canceled) {
+			t.Errorf("flush %+v before discovery: %v, want it to wait", req, err)
+		}
+	}
+	f.a.mu.Lock()
+	n := len(f.a.targets)
+	f.a.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("flush before discovery tracked %d files; load would skip the stored gates", n)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.a.Run(runCtx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	if p, err := f.a.FlushPath(ctx, "", codexThread); err != nil || p != f.path(codexActive) {
+		t.Errorf("flush by session at start: %q %v", p, err)
+	}
+}
+
 // shortTemp is a temp dir with a short path: unix socket paths are
 // limited to about 104 bytes on macOS.
 func shortTemp(t *testing.T) string {
@@ -600,5 +637,59 @@ func TestNewProjectDirListedAfterWatch(t *testing.T) {
 	f.a.mu.Unlock()
 	if !tracked {
 		t.Fatal("a transcript created before its new project directory was watched waits for the next sweep")
+	}
+}
+
+// A pass asked over the control socket while the agent starts (the
+// post-bulk-load re-exec serves before Run's load) waits for the first
+// discovery pass too: run before load, its full merge would make load skip
+// the stored gates, and it would release waiting flushes before load.
+func TestPassBeforeFirstDiscoveryWaits(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	waitRacy()
+	f.once() // re-verifies the racy entries once
+	f.restart()
+	f.cfg.Sweep, f.cfg.FastLane = time.Hour, time.Hour
+	f.a = New(f.store, f.cfg)
+
+	early, stop := context.WithCancel(ctx)
+	stop()
+	done := make(chan error, 1)
+	go func() { done <- f.a.Pass(early) }()
+	deadline := time.After(2 * time.Second)
+wait:
+	for {
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("pass before discovery: %v, want it to wait", err)
+			}
+			break wait
+		case <-deadline:
+			t.Fatal("pass before discovery neither waited nor returned")
+		case <-time.After(10 * time.Millisecond):
+			f.a.mu.Lock()
+			n := len(f.a.targets)
+			f.a.mu.Unlock()
+			if n != 0 {
+				t.Errorf("pass before discovery tracked %d files; load would skip the stored gates", n)
+				break wait
+			}
+		}
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	ran := make(chan error, 1)
+	go func() { ran <- f.a.Run(runCtx) }()
+	defer func() {
+		cancel()
+		<-ran
+	}()
+	if err := f.a.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.a.stats.Indexed.Load() + f.a.stats.Unchanged.Load(); n != 0 {
+		t.Errorf("start with nothing changed opened %d transcripts", n)
 	}
 }
