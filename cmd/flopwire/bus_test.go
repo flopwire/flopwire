@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -101,12 +103,56 @@ func asCaller(t *testing.T, c *local.Caller) {
 
 var claudeSelf = &local.Caller{Agent: transcript.AgentClaude, SessionID: selfID, Rule: "test"}
 
-// cli runs a bus verb against the fake agent and returns stdout.
+// cli runs a bus verb with --text against the fake agent and returns
+// stdout; a failure is the readable error.
 func cli(t *testing.T, fa *fakeAgent, stdin string, args ...string) (string, error) {
 	t.Helper()
-	var out strings.Builder
-	err := busCmd(t.Context(), args[0], append([]string{"--socket", fa.sock}, args[1:]...), strings.NewReader(stdin), &out)
+	var out, errOut strings.Builder
+	err := busCmd(t.Context(), args[0], append([]string{"--socket", fa.sock, "--text"}, args[1:]...), strings.NewReader(stdin), &out, &errOut)
+	if errOut.Len() > 0 {
+		t.Fatalf("--text wrote to stderr: %s", errOut.String())
+	}
 	return out.String(), err
+}
+
+// cliJSON runs a bus verb in the default (JSON) mode and returns stdout
+// and stderr.
+func cliJSON(t *testing.T, fa *fakeAgent, stdin string, args ...string) (string, string, error) {
+	t.Helper()
+	var out, errOut strings.Builder
+	err := busCmd(t.Context(), args[0], append([]string{"--socket", fa.sock}, args[1:]...), strings.NewReader(stdin), &out, &errOut)
+	return out.String(), errOut.String(), err
+}
+
+// jsonErr decodes the JSON error a failed command wrote to stderr.
+func jsonErr(t *testing.T, stderr string, err error) busErr {
+	t.Helper()
+	var e struct {
+		Kind  string `json:"kind"`
+		Error busErr `json:"error"`
+	}
+	if !errors.Is(err, errReported) || strings.Count(stderr, "\n") != 1 || json.Unmarshal([]byte(stderr), &e) != nil || e.Kind != "error" || e.Error.Code == "" {
+		t.Fatalf("want one JSON error on stderr and errReported; got %q %v", stderr, err)
+	}
+	return e.Error
+}
+
+// mcpContent is the text content of a JSON-RPC tools/call response, and
+// whether it is an error.
+func mcpContent(t *testing.T, resp string) (string, bool, map[string]any) {
+	t.Helper()
+	var r struct {
+		Result struct {
+			IsError    bool             `json:"isError"`
+			Content    []map[string]any `json:"content"`
+			Structured map[string]any   `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(resp), &r); err != nil || len(r.Result.Content) != 1 {
+		t.Fatalf("response %s: %v", resp, err)
+	}
+	text, _ := r.Result.Content[0]["text"].(string)
+	return text, r.Result.IsError, r.Result.Structured
 }
 
 // The outcome line of every kind of send, as plan §3 prints them, plus
@@ -165,10 +211,16 @@ func TestSendCLI(t *testing.T) {
 	if _, err := cli(t, fa, "", "send", "@alex", "two", "words"); err != nil || fa.requests()[1].Send.Body != "two words" {
 		t.Fatalf("argument text: %v %+v", err, fa.requests()[1].Send)
 	}
-	out, err = cli(t, fa, "", "send", "@alex", "--json", "--", "hi")
-	var resp busproto.SendResponse
-	if err != nil || json.Unmarshal([]byte(out), &resp) != nil || resp.ID != "m01" {
-		t.Fatalf("json: %q %v", out, err)
+	// The default is the JSON receipt; --json is accepted and changes
+	// nothing.
+	for _, extra := range [][]string{nil, {"--json"}} {
+		out, stderr, err := cliJSON(t, fa, "", append(append([]string{"send", "@alex"}, extra...), "--", "hi")...)
+		var rc sendJSON
+		if err != nil || stderr != "" || strings.Count(out, "\n") != 1 || json.Unmarshal([]byte(out), &rc) != nil || rc.Kind != "send_receipt" || rc.ID != "m01" ||
+			rc.State != busproto.StateQueued || rc.To.Session != peerID || rc.Arrives != arriveNextToolCall || rc.From.Session != selfID || rc.From.Agent != "claude" ||
+			rc.Outcome != "sent m01 to 4c19e0d2 (gary codex api@main): busy, arrives at its next tool call" {
+			t.Fatalf("json %v: %q %q %v", extra, out, stderr, err)
+		}
 	}
 	// Caught before the agent: empty text, an oversized body, a bad intent.
 	for _, c := range []struct {
@@ -215,7 +267,7 @@ func TestSendRefusals(t *testing.T) {
 		{busproto.Error{Status: 409, Code: busproto.CodeReplyToDone, Detail: "m5 closed its thread (intent done); it must not be answered"},
 			[]string{"refused (reply_to_done)", "Fix: do not answer it", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 404, Code: busproto.CodeUnknownRecipient, Detail: "no session id starts with 0b7e2c1a; flopwire peers lists live sessions"},
-			[]string{"refused (unknown_recipient)", "Fix: address a live session by an id prefix from flopwire peers", "Example: flopwire send @alex"}},
+			[]string{"refused (unknown_recipient)", "Fix: find the session from history (flopwire sessions --repo R --branch B --json), check it is live with flopwire peers --session ID", "Example: flopwire send @alex"}},
 		{busproto.Error{Status: 409, Code: busproto.CodeAmbiguousRecipient, Detail: "0b7e2c1a matches 2 sessions; use a longer prefix", Candidates: []busproto.Candidate{
 			{Session: selfID, Agent: "claude", User: "gary@example.test", Repo: "/src/api", Branch: "main", Title: "refactor client pagination", Live: true},
 			{Session: alexID, Agent: "codex", User: "alex@example.test", Repo: "/src/web", Title: "old"}}},
@@ -226,7 +278,7 @@ func TestSendRefusals(t *testing.T) {
 		{busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session x is kept off the server by a path rule; it cannot use messaging"},
 			[]string{"refused (session_not_on_device)", "its transcripts stay on this device"}},
 		{busproto.Error{Status: 400, Code: busproto.CodeBadRequest, Detail: "a ref is an archive address of at most 512 bytes"},
-			[]string{"refused (bad_request): a ref is", "Example: Usage: flopwire send"}},
+			[]string{"refused (bad_request): a ref is", "Fix: check the arguments", `Example: flopwire send 0b7e2c1a -- "Heads-up`}},
 	} {
 		be = c.be
 		_, err := cli(t, fa, "", "send", "0b7e2c1a", "--", "hi")
@@ -238,8 +290,24 @@ func TestSendRefusals(t *testing.T) {
 		// The same over MCP: isError, and MCP-form hints.
 		r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
 		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"0b7e2c1a","message":"hi"}}}`)
-		if !strings.Contains(resp, `"isError":true`) || !strings.Contains(resp, "refused ("+c.be.Code+")") || strings.Contains(resp, "flopwire inbox --sent") {
-			t.Errorf("%s over MCP: %s", c.be.Code, resp)
+		text, isErr, _ := mcpContent(t, resp)
+		var je struct {
+			Kind  string `json:"kind"`
+			Error busErr `json:"error"`
+		}
+		if !isErr || json.Unmarshal([]byte(text), &je) != nil || je.Kind != "error" || je.Error.Code != c.be.Code || !je.Error.Refused || je.Error.Detail != c.be.Detail ||
+			je.Error.Fix == "" || je.Error.Example == "" || je.Error.MessageID != c.be.MessageID || len(je.Error.Candidates) != len(c.be.Candidates) || strings.Contains(text, "flopwire inbox --sent") {
+			t.Errorf("%s over MCP: %s", c.be.Code, text)
+		}
+		// format=text: the readable error.
+		resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"0b7e2c1a","message":"hi","format":"text"}}}`)
+		if text, isErr, _ := mcpContent(t, resp); !isErr || !strings.HasPrefix(text, "refused ("+c.be.Code+")") {
+			t.Errorf("%s over MCP as text: %s", c.be.Code, text)
+		}
+		// The CLI default: the same JSON error on stderr, exit 1.
+		_, stderr, err := cliJSON(t, fa, "", "send", "0b7e2c1a", "--", "hi")
+		if e := jsonErr(t, stderr, err); e.Code != c.be.Code || e.Detail != c.be.Detail || !e.Refused {
+			t.Errorf("%s JSON: %+v", c.be.Code, e)
 		}
 	}
 }
@@ -297,10 +365,18 @@ func TestBusAgentNotRunning(t *testing.T) {
 	sock := filepath.Join(shortSockDir(t), "none.sock")
 	for _, args := range [][]string{{"peers"}, {"send", "@a", "--", "hi"}, {"inbox"}} {
 		var out strings.Builder
-		err := busCmd(t.Context(), args[0], append([]string{"--socket", sock}, args[1:]...), strings.NewReader(""), &out)
+		var errOut strings.Builder
+		err := busCmd(t.Context(), args[0], append([]string{"--socket", sock, "--text"}, args[1:]...), strings.NewReader(""), &out, &errOut)
 		if err == nil || !strings.Contains(err.Error(), "device agent is not running") || !strings.Contains(err.Error(), "flopwire agent run") {
 			t.Fatalf("%v: %v", args, err)
 		}
+		// The default: a JSON error with a stable code.
+		out.Reset()
+		err = busCmd(t.Context(), args[0], append([]string{"--socket", sock}, args[1:]...), strings.NewReader(""), &out, &errOut)
+		if e := jsonErr(t, errOut.String(), err); e.Code != codeAgentNotRunning || e.Fix == "" || e.Example == "" || out.Len() != 0 {
+			t.Fatalf("%v JSON: %+v %q", args, e, out.String())
+		}
+		errOut.Reset()
 	}
 	// An agent with messaging off says so.
 	fa := startFakeAgent(t, func(agent.Request) agent.Response { return agent.Response{Error: "messaging is off in this agent"} })
@@ -341,10 +417,10 @@ func TestPeersOutput(t *testing.T) {
 	peers = many
 	var b strings.Builder
 	c := &busClient{socket: fa.sock, caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }}
-	if err := runPeers(t.Context(), c, peersArgs{}, &b, busStyle{MCP: true, Budget: format.MaxOutput}); err != nil {
+	if err := runPeers(t.Context(), c, peersArgs{Limit: 500}, &b, busStyle{MCP: true, Budget: format.MaxOutput}); err != nil {
 		t.Fatal(err)
 	}
-	if b.Len() > format.MaxOutput || !strings.Contains(b.String(), "of 400 live sessions shown; output budget of 24000 bytes reached; narrow with repo, user or agent") {
+	if b.Len() > format.MaxOutput || !strings.Contains(b.String(), " of 400 shown (output budget of 24000 bytes); narrow with repo, user, agent or session]") {
 		t.Fatalf("budget: %d bytes, tail %q", b.Len(), b.String()[max(0, b.Len()-200):])
 	}
 	// No one live.
@@ -383,7 +459,7 @@ m2  sent  2026-10-01 14:03Z  to 4c19e0d2 (alex codex)  inform  refused (duplicat
 m1  sent  2026-10-01 14:02Z  to @alex → 4c19e0d2  request  read
     Please rebase api on main.
 [3 messages, newest first, end of list]
-[bodies show their first line; flopwire inbox --thread THREAD shows a thread's whole text]
+[bodies show their first line; flopwire inbox --text --thread THREAD shows a thread's whole text]
 `
 	if err != nil || out != want {
 		t.Fatalf("inbox:\n%s\nwant:\n%s%v", out, want, err)
@@ -455,7 +531,9 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 		`{"x-codex-turn-metadata":"{\"thread_id\":\"` + thread + `\"}"}`,
 	} {
 		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"@a","message":"hi"},"_meta":`+meta+`}}`)
-		if strings.Contains(resp, "isError") || !strings.Contains(resp, "sent m03") {
+		text, isErr, structured := mcpContent(t, resp)
+		var rc sendJSON
+		if isErr || json.Unmarshal([]byte(text), &rc) != nil || rc.Kind != "send_receipt" || rc.ID != "m03" || rc.From.Session != thread || structured["id"] != "m03" {
 			t.Fatalf("meta %d: %s", i, resp)
 		}
 		if s := fa.requests()[i].Send; s.FromSession != thread || s.FromAgent != "codex" {
@@ -470,12 +548,12 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	// An unknown argument names the ones the tool takes; a wrong type says
 	// what it wants.
 	resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"@a","body":"hi"}}}`)
-	if !strings.Contains(resp, `"isError":true`) || !strings.Contains(resp, `unknown argument \"body\"; it takes to, message`) {
-		t.Fatalf("unknown argument: %s", resp)
+	if text, isErr, _ := mcpContent(t, resp); !isErr || !strings.Contains(text, `unknown argument \"body\"; it takes to, message`) || !strings.Contains(text, `"code":"bad_request"`) {
+		t.Fatalf("unknown argument: %s", text)
 	}
 	resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"flopwire_inbox","arguments":{"limit":"5"}}}`)
-	if !strings.Contains(resp, `"isError":true`) || !strings.Contains(resp, "limit wants an integer") {
-		t.Fatalf("bad type: %s", resp)
+	if text, isErr, _ := mcpContent(t, resp); !isErr || !strings.Contains(text, "limit wants an integer") {
+		t.Fatalf("bad type: %s", text)
 	}
 	// The instructions carry the messaging guidance.
 	resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`)
@@ -494,12 +572,17 @@ func TestMCPPeersAndInbox(t *testing.T) {
 		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{}, Next: ""}}
 	})
 	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
-	text, err := mcpCall(t.Context(), r, "flopwire_peers", map[string]any{"repo": "api"})
+	text, err := mcpCall(t.Context(), r, "flopwire_peers", map[string]any{"repo": "api", "format": "text"})
 	if err != nil || !strings.HasPrefix(text, "4c19e0d2  gary  codex  live idle") {
 		t.Fatalf("peers: %q %v", text, err)
 	}
-	text, err = mcpCall(t.Context(), r, "flopwire_inbox", map[string]any{"sent": true, "format": "json"})
-	if err != nil || !strings.Contains(text, `"messages": []`) {
+	text, structured, err := mcpCallFull(t.Context(), r, "flopwire_peers", map[string]any{"repo": "api"})
+	var pj peersJSON
+	if err != nil || json.Unmarshal([]byte(text), &pj) != nil || pj.Kind != "peers" || len(pj.Peers) != 1 || pj.Peers[0].Session != peerID || structured == nil {
+		t.Fatalf("peers json: %q %v", text, err)
+	}
+	text, _, err = mcpCallFull(t.Context(), r, "flopwire_inbox", map[string]any{"sent": true})
+	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false}` {
 		t.Fatalf("inbox json: %q %v", text, err)
 	}
 	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_peers, flopwire_read") {
@@ -521,5 +604,163 @@ func TestPeersWithoutNamingAWithheldCaller(t *testing.T) {
 	out, err := cli(t, fa, "", "peers")
 	if err != nil || strings.Contains(out, "0b7e2c1a") || !strings.HasPrefix(out, "4c19e0d2  g  codex") {
 		t.Fatalf("peers: %q %v", out, err)
+	}
+}
+
+// awkward is text with spaces, quotes, backslashes, Unicode and a newline.
+const awkward = "say \"hi\" to O'Brien — naïve café 🚀\\path\twith tab\nsecond line"
+
+// Every verb prints one compact JSON object by default, in busproto's
+// field names with full session ids; strings with spaces, quotes and
+// Unicode round-trip exactly; the fields say whether more follows.
+func TestBusJSONDefaultRoundTrips(t *testing.T) {
+	asCaller(t, claudeSelf)
+	seen := t0.Add(-time.Second).UTC()
+	peer := busproto.Peer{Session: peerID, Agent: "codex", User: "gary@example.test", UserID: "u-1", UserName: "Gary \"G\" Ü", Device: "mac mini",
+		Repo: "/src/my repo \"x\"/ünï", Branch: "feat/naïve space", Title: awkward, Busy: true, Own: true, SeenAt: seen}
+	other := busproto.Peer{Session: "9d00e0d2-0000-4000-8000-000000000001", Agent: "claude", User: "alex@example.test", SeenAt: seen}
+	item := busproto.InboxItem{Envelope: busproto.Envelope{ID: "m3", ThreadID: "m1", ReplyTo: "m1", From: peerID, FromAgent: "codex", User: "gary@example.test",
+		UserID: "u-1", Repo: peer.Repo, Branch: peer.Branch, Sender: busproto.SenderOwn, Intent: busproto.IntentRequest, Body: awkward, Refs: []string{"4c19e0d2/4096:2"},
+		Sent: t0, ExpiresAt: t0.Add(24 * time.Hour), ToSession: selfID, ToAgent: "claude", ToUser: "gary@example.test", ToUserID: "u-1", Addressed: "session", Seq: 7},
+		Direction: "received", State: busproto.StateDelivered}
+	sent := busproto.SendResponse{ID: "m9", ThreadID: "m1", State: busproto.StateQueued, Sender: busproto.SenderOwn, Intent: busproto.IntentInform, Sent: t0, ExpiresAt: t0.Add(24 * time.Hour),
+		To: busproto.Recipient{Session: peerID, Agent: "codex", User: "gary@example.test", UserID: "u-1", Repo: peer.Repo, Branch: peer.Branch, Live: true}}
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		switch r.Op {
+		case "peers":
+			return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{other, peer}}}
+		case "send":
+			return agent.Response{OK: true, Sent: &sent}
+		}
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{item}, Next: t0Stamp + "|m3"}}
+	})
+
+	out, stderr, err := cliJSON(t, fa, "", "peers", "--limit", "1")
+	var pj peersJSON
+	if err != nil || stderr != "" || strings.Count(out, "\n") != 1 || json.Unmarshal([]byte(out), &pj) != nil {
+		t.Fatalf("peers: %q %q %v", out, stderr, err)
+	}
+	if pj.Kind != "peers" || len(pj.Peers) != 1 || pj.Total != 2 || !pj.More || pj.Limit != 1 || pj.Caller == nil || pj.Caller.Session != selfID || !strings.Contains(pj.Hint, "--limit") {
+		t.Fatalf("peers fields: %s", out)
+	}
+	if got := pj.Peers[0]; got != peer {
+		t.Fatalf("peer did not round-trip:\n got %+v\nwant %+v", got, peer)
+	}
+	// --session narrows to one exact session, by its full id or a prefix.
+	out, _, _ = cliJSON(t, fa, "", "peers", "--session", peerID)
+	if json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 || pj.Peers[0].Session != peerID || pj.More {
+		t.Fatalf("peers --session: %s", out)
+	}
+	out, _, _ = cliJSON(t, fa, "", "peers", "--session", "ffff")
+	if out != `{"kind":"peers","peers":[],"total":0,"more":false,"limit":50,"caller":{"session":"`+selfID+`","agent":"claude"}}`+"\n" {
+		t.Fatalf("peers --session not live: %s", out)
+	}
+
+	out, stderr, err = cliJSON(t, fa, "", "send", peerID, "--", awkward)
+	var rc sendJSON
+	if err != nil || stderr != "" || json.Unmarshal([]byte(out), &rc) != nil || rc.Kind != "send_receipt" || rc.Arrives != arriveNextPrompt || rc.To != sent.To || !rc.ExpiresAt.Equal(sent.ExpiresAt) {
+		t.Fatalf("send: %q %q %v", out, stderr, err)
+	}
+	if body := fa.requests()[len(fa.requests())-1].Send.Body; body != awkward {
+		t.Fatalf("body changed on the way: %q", body)
+	}
+
+	out, stderr, err = cliJSON(t, fa, "", "inbox", "--limit", "1")
+	var ij struct {
+		Kind     string `json:"kind"`
+		Session  string `json:"session"`
+		Messages []struct {
+			busproto.InboxItem
+			IsReply bool `json:"is_reply"`
+		} `json:"messages"`
+		More bool   `json:"more"`
+		Next string `json:"next"`
+	}
+	if err != nil || stderr != "" || json.Unmarshal([]byte(out), &ij) != nil || ij.Kind != "inbox" || ij.Session != selfID || len(ij.Messages) != 1 || !ij.More || ij.Next != t0Stamp+"|m3" {
+		t.Fatalf("inbox: %q %q %v", out, stderr, err)
+	}
+	got := ij.Messages[0]
+	if !got.IsReply || got.Body != awkward || got.Repo != item.Repo || got.Branch != item.Branch || got.Direction != "received" || got.State != busproto.StateDelivered ||
+		got.ID != item.ID || got.From != peerID || !got.Sent.Equal(item.Sent) || strings.Join(got.Refs, ",") != "4c19e0d2/4096:2" {
+		t.Fatalf("inbox entry did not round-trip: %+v", got)
+	}
+	if q := fa.requests()[len(fa.requests())-1].Inbox; q.Limit != 1 {
+		t.Fatalf("inbox query %+v", q)
+	}
+	// The default page is bounded below the wire's 50.
+	cliJSON(t, fa, "", "inbox")
+	if q := fa.requests()[len(fa.requests())-1].Inbox; q.Limit != inboxDefaultLimit {
+		t.Fatalf("default inbox limit %d", q.Limit)
+	}
+	// No caller: a JSON error with its code, nothing on stdout.
+	asCaller(t, nil)
+	out, stderr, err = cliJSON(t, fa, "", "inbox")
+	if e := jsonErr(t, stderr, err); e.Code != codeNoCaller || out != "" || e.Refused {
+		t.Fatalf("no caller: %+v %q", e, out)
+	}
+	// A usage error too.
+	_, stderr, err = cliJSON(t, fa, "", "inbox", "--limit", "999")
+	if e := jsonErr(t, stderr, err); e.Code != busproto.CodeBadRequest || e.Example == "" {
+		t.Fatalf("usage: %+v", e)
+	}
+}
+
+// The MCP bus tools answer the CLI's JSON by default, with the same object
+// as structuredContent, which carries every field its declared
+// outputSchema requires; a large inbox stays within the 24000-byte budget
+// in whole messages, and its fields say how to read on.
+func TestMCPBusStructuredAndBudget(t *testing.T) {
+	var items []busproto.InboxItem
+	for i := range 200 {
+		items = append(items, busproto.InboxItem{Envelope: busproto.Envelope{ID: fmt.Sprintf("m%03d", i), ThreadID: "t", From: peerID, User: "a@x.test",
+			Body: strings.Repeat("é", 1900), Sent: t0.Add(-time.Duration(i) * time.Minute)}, Direction: "received", State: busproto.StateQueued})
+	}
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		switch r.Op {
+		case "peers":
+			return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: peerID, Agent: "codex", User: "g@x.test", Own: true}}}}
+		case "send":
+			return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m5", ThreadID: "m5", State: busproto.StateHeld, To: busproto.Recipient{User: "s@x.test"}}}
+		}
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: items[:r.Inbox.Limit], Next: "x|y"}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	schemas := map[string]map[string]any{}
+	for _, tl := range mcpTools() {
+		tm := tl.(map[string]any)
+		if s, ok := tm["outputSchema"].(map[string]any); ok {
+			schemas[tm["name"].(string)] = s
+		}
+	}
+	if len(schemas) != 3 {
+		t.Fatalf("output schemas: %v", schemas)
+	}
+	for name, args := range map[string]string{
+		"flopwire_peers": `{}`,
+		"flopwire_send":  `{"to":"@s","message":"hi"}`,
+		"flopwire_inbox": `{"limit":200}`,
+	} {
+		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+name+`","arguments":`+args+`}}`)
+		text, isErr, structured := mcpContent(t, resp)
+		var fromText map[string]any
+		if isErr || json.Unmarshal([]byte(text), &fromText) != nil || structured == nil || !reflect.DeepEqual(fromText, structured) {
+			t.Fatalf("%s: text and structuredContent differ or missing: %s", name, resp)
+		}
+		for _, k := range schemas[name]["required"].([]string) {
+			if _, ok := structured[k]; !ok {
+				t.Errorf("%s: structuredContent lacks required %q", name, k)
+			}
+		}
+		if len(text) > format.MaxOutput {
+			t.Errorf("%s: %d bytes, over the budget", name, len(text))
+		}
+		if name == "flopwire_inbox" {
+			msgs := structured["messages"].([]any)
+			last := msgs[len(msgs)-1].(map[string]any)
+			if structured["more"] != true || len(msgs) == 0 || len(msgs) >= 200 || !strings.HasSuffix(structured["next"].(string), "|"+last["id"].(string)) ||
+				!strings.Contains(structured["hint"].(string), "output budget of 24000 bytes reached") {
+				t.Errorf("inbox budget: %d messages, more %v, next %v, hint %v", len(msgs), structured["more"], structured["next"], structured["hint"])
+			}
+		}
 	}
 }

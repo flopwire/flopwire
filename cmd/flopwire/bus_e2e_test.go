@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/pgtest"
+	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -79,8 +83,8 @@ func startAgent(t *testing.T, home, sock string, extra ...string) {
 func busCLI(t *testing.T, sock, session, stdin string, args ...string) (string, error) {
 	t.Helper()
 	asCaller(t, &local.Caller{Agent: transcript.AgentClaude, SessionID: session, Rule: "test"})
-	var out strings.Builder
-	err := busCmd(t.Context(), args[0], append([]string{"--socket", sock}, args[1:]...), strings.NewReader(stdin), &out)
+	var out, errOut strings.Builder
+	err := busCmd(t.Context(), args[0], append([]string{"--socket", sock, "--text"}, args[1:]...), strings.NewReader(stdin), &out, &errOut)
 	return out.String(), err
 }
 
@@ -167,7 +171,7 @@ func TestBusEndToEndLocal(t *testing.T) {
 	if err != nil || !strings.Contains(text, " to e2e0aaaa (") {
 		t.Fatalf("mcp send: %q %v", text, err)
 	}
-	text, err = mcpCall(t.Context(), r, "flopwire_inbox", map[string]any{"thread": id})
+	text, err = mcpCall(t.Context(), r, "flopwire_inbox", map[string]any{"thread": id, "format": "text"})
 	if err != nil || !strings.Contains(text, "    Thanks, switching now.") || !strings.Contains(text, "    Use it for page 2.") || !strings.Contains(text, "[2 messages in thread "+id) {
 		t.Fatalf("mcp thread:\n%s %v", text, err)
 	}
@@ -287,4 +291,140 @@ func TestBusEndToEndServer(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM bus_messages WHERE from_session=$1 OR body LIKE '%client''s key%'`, secret).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("the withheld session's send reached the server: %d %v", n, err)
 	}
+}
+
+// writeCommitSession writes a synthetic Claude Code session that commits
+// on branchA (a successful git commit tool call), then switches to
+// branchB; its last record is at last.
+func writeCommitSession(t *testing.T, projects, id, cwd, branchA, branchB, sha string, last time.Time) {
+	t.Helper()
+	dir := filepath.Join(projects, strings.ReplaceAll(cwd, "/", "-"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ts := func(back time.Duration) string { return last.Add(-back).UTC().Format("2006-01-02T15:04:05.000Z") }
+	p := id[:8]
+	rec := func(uuid, parent, branch, typ, message, extra string, back time.Duration) string {
+		par := "null"
+		if parent != "" {
+			par = fmt.Sprintf("%q", p+parent)
+		}
+		return fmt.Sprintf(`{"parentUuid":%s,"isSidechain":false,"userType":"external","cwd":%q,"sessionId":%q,"version":"2.1.0","gitBranch":%q,"type":%q,"message":%s,%s"uuid":%q,"timestamp":%q}`,
+			par, cwd, id, branch, typ, message, extra, p+uuid, ts(back))
+	}
+	lines := []string{
+		rec("-u1", "", branchA, "user", `{"role":"user","content":"add a cursor to the list endpoint"}`, "", 4*time.Minute),
+		rec("-a1", "-u1", branchA, "assistant", `{"id":"msg_`+p+`1","type":"message","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu_`+p+`","name":"Bash","input":{"command":"git commit -am \"add cursor\""}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`, `"requestId":"req_`+p+`1",`, 3*time.Minute),
+		rec("-u2", "-a1", branchA, "user", `{"role":"user","content":[{"tool_use_id":"toolu_`+p+`","type":"tool_result","content":"[`+branchA+` `+sha+`] add cursor\n 1 file changed, 4 insertions(+)","is_error":false}]}`, `"toolUseResult":{"stdout":"[`+branchA+` `+sha+`] add cursor","stderr":"","interrupted":false},`, 3*time.Minute-time.Second),
+		rec("-u3", "-u2", branchB, "user", `{"role":"user","content":"now start the docs on `+branchB+`"}`, "", time.Minute),
+		rec("-a2", "-u3", branchB, "assistant", `{"id":"msg_`+p+`2","type":"message","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"Switched."}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`, `"requestId":"req_`+p+`2",`, 0),
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// History, then presence (issue #55): a session that committed on
+// feat-a and then switched to feat-b is found by its history on feat-a,
+// and its presence row carries the same full session id (on feat-b). A
+// session that ended is still in history but is not reported live, and a
+// message to it waits: nothing wakes it.
+func TestBusHistoryToPresence(t *testing.T) {
+	home := t.TempDir()
+	projects := filepath.Join(home, ".claude", "projects")
+	const (
+		repo    = "/tmp/e2e-hist"
+		moved   = "e2e1dddd-0000-4000-8000-000000000004"
+		ended   = "e2e1eeee-0000-4000-8000-000000000005"
+		movedSH = "1a2b3c4"
+		endedSH = "5d6e7f8"
+	)
+	writeClaudeSession(t, projects, e2eA, repo, "review the list endpoint")
+	writeCommitSession(t, projects, moved, repo, "feat-a", "feat-b", movedSH, time.Now().Add(-30*time.Second))
+	writeCommitSession(t, projects, ended, repo, "feat-a", "feat-a", endedSH, time.Now().Add(-3*time.Hour))
+	index := filepath.Join(t.TempDir(), "index.db")
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "flopwire", "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", index)
+	t.Setenv(client.EnvToken, "")
+	t.Setenv(client.EnvServer, "")
+	sock := filepath.Join(shortSockDir(t), "a.sock")
+	startAgent(t, home, sock, "--no-sync")
+	waitPeer(t, sock, e2eA, moved)
+
+	// 1. History: who committed on feat-a in this repo?
+	r, err := openRetriever(false, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.close()
+	o, err := parseArgs("sessions", []string{"--repo", repo, "--branch", "feat-a", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hist bytes.Buffer
+	if err := runTool(t.Context(), r, o, &hist, format.Style{}, selfCLI); err != nil {
+		t.Fatal(err)
+	}
+	var ss format.Sessions
+	if err := json.Unmarshal(hist.Bytes(), &ss); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]format.ConversationInfo{}
+	for _, c := range ss.Sessions {
+		byID[c.SessionID] = c
+	}
+	m, e := byID[moved], byID[ended]
+	if m.SessionID == "" || e.SessionID == "" || len(byID) != 2 {
+		t.Fatalf("history on feat-a: %s", hist.String())
+	}
+	if m.Digest == nil || !slices.Contains(m.Digest.Commits, movedSH) || !slices.Equal(m.Branches, []string{"feat-a", "feat-b"}) || !m.Live {
+		t.Fatalf("moved session in history: %+v", m)
+	}
+	if e.Digest == nil || !slices.Contains(e.Digest.Commits, endedSH) || e.Live {
+		t.Fatalf("ended session in history: %+v", e)
+	}
+
+	// 2. Presence: the same full id is live, on its current branch.
+	out, stderr, err := busJSON(t, sock, e2eA, "peers", "--session", m.SessionID)
+	var pj peersJSON
+	if err != nil || json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 {
+		t.Fatalf("peers --session %s: %q %q %v", moved, out, stderr, err)
+	}
+	if p := pj.Peers[0]; p.Session != moved || p.Branch != "feat-b" || p.Repo != repo {
+		t.Fatalf("presence row: %+v", p)
+	}
+	// A peer filter by its branch from history would miss it: the
+	// session is no longer on feat-a.
+	if out, _, _ := busJSON(t, sock, e2eA, "peers", "--repo", repo); strings.Contains(out, `"branch":"feat-a"`) {
+		t.Fatalf("a live session reported on feat-a: %s", out)
+	}
+	// The ended session is not live.
+	out, _, err = busJSON(t, sock, e2eA, "peers", "--session", e.SessionID)
+	if err != nil || !strings.HasPrefix(out, `{"kind":"peers","peers":[],"total":0,"more":false,`) {
+		t.Fatalf("ended session in presence: %s %v", out, err)
+	}
+
+	// 3. Send to the full id from history.
+	out, _, err = busJSON(t, sock, e2eA, "send", m.SessionID, "--intent", "request", "--", "You committed "+movedSH+" on feat-a: does the cursor survive a page reload?")
+	var rc sendJSON
+	if err != nil || json.Unmarshal([]byte(out), &rc) != nil || rc.To.Session != moved || !rc.To.Live || rc.Arrives != arriveNextPrompt {
+		t.Fatalf("send to the moved session: %s %v", out, err)
+	}
+	// To the ended one it waits; nothing wakes it, and it stays not live.
+	out, _, err = busJSON(t, sock, e2eA, "send", e.SessionID, "--", "Your commit "+endedSH+" needs a follow-up.")
+	if err != nil || json.Unmarshal([]byte(out), &rc) != nil || rc.To.Session != ended || rc.To.Live || rc.Arrives != arriveIfResumed || rc.State != busproto.StateQueued {
+		t.Fatalf("send to the ended session: %s %v", out, err)
+	}
+	if out, _, _ := busJSON(t, sock, e2eA, "peers", "--session", ended); !strings.Contains(out, `"peers":[]`) {
+		t.Fatalf("a message woke the ended session: %s", out)
+	}
+}
+
+// busJSON runs a bus verb in the default JSON mode as session.
+func busJSON(t *testing.T, sock, session string, args ...string) (string, string, error) {
+	t.Helper()
+	asCaller(t, &local.Caller{Agent: transcript.AgentClaude, SessionID: session, Rule: "test"})
+	var out, errOut strings.Builder
+	err := busCmd(t.Context(), args[0], append([]string{"--socket", sock}, args[1:]...), strings.NewReader(""), &out, &errOut)
+	return out.String(), errOut.String(), err
 }
