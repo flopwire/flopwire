@@ -52,12 +52,14 @@ func ratio(small, large, floor int64) float64 {
 	return float64(max(large, 0)) / float64(max(small, floor))
 }
 
-// AssertScaling fails t when the operation's rows touched or statements
-// sent grow faster than class allows between sizes n and k·n. Blocks are
-// reported but not gated (see TableCost.Blocks).
+// AssertScaling fails t when the operation's rows touched, statements
+// sent or SQLite pages fetched (Cost.Pages) grow faster than class allows
+// between sizes n and k·n. Postgres blocks are reported but not gated (see
+// TableCost.Blocks).
 //
 // run builds a fixture of the given size, normally in a fresh pgtest
-// database, and returns the Measure of only the operation under test.
+// database (or SQLite file), and returns the Measure (or MeasureSQLite)
+// of only the operation under test.
 //
 // run also runs at size 1 and that baseline is subtracted from both
 // sizes before the ratio: a fixed per-operation cost (setup lookups, a
@@ -87,6 +89,9 @@ func AssertScaling(t testing.TB, class Class, n, k int, run func(t testing.TB, n
 	check("rows", bt.Rows(), st.Rows(), lt.Rows(), minBase)
 	if small.Statements >= 0 && large.Statements >= 0 {
 		check("statements", max(base.Statements, 0), small.Statements, large.Statements, minBaseStatements)
+	}
+	if small.Pages > 0 || large.Pages > 0 {
+		check("pages", base.Pages, small.Pages, large.Pages, minBase)
 	}
 	if len(over) == 0 {
 		t.Logf("perfguard: %s scaling ok at n=%d k=%d (bound ×%.1f): %s; blocks %d → %d",

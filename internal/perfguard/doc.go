@@ -50,6 +50,17 @@
 // parallel packages on one cluster do not mix counts. Rows touched is the
 // gated metric; blocks are reported for diagnosis.
 //
+// # SQLite
+//
+// The device stores use modernc.org/sqlite (pure Go). SQLiteDriver wraps
+// it: CountSQLite claims connections by DSN, and MeasureSQLite reports a
+// Cost with statements, rows written per table (pre-update hook) and
+// b-tree pages fetched (Cost.Pages, from sqlite3_db_status cache hits and
+// misses, read after every statement on the statement's own connection).
+// SQLite has no per-table read counters; pages fetched stands in for
+// rows read, and AssertScaling gates it. AssertSQLitePlan fails on a
+// table SCAN, a TEMP B-TREE or an AUTOMATIC index in EXPLAIN QUERY PLAN.
+//
 // Allocation bounds: the race detector adds allocations, so a bound on
 // testing.AllocsPerRun should skip or use its own limit when Race is true.
 package perfguard
