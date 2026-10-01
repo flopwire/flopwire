@@ -230,9 +230,11 @@ func repoBranch(repo, branch string) string {
 // oneLine joins s's whitespace-separated fields with single spaces.
 func oneLine(s string) string { return strings.Join(strings.Fields(format.Clean(s)), " ") }
 
-// EscapeText escapes s for an XML text node: & < > and the look-alike
+// EscapeText escapes s for an XML text node: & < >, the look-alike
 // less-than and greater-than signs that a model could read as tag
-// delimiters.
+// delimiters, and the invisible Unicode tag characters, which spell ASCII
+// (a hidden "</flopwire-message>") that a model reads and a human does not
+// see.
 func EscapeText(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -250,9 +252,18 @@ func writeEscaped(b *strings.Builder, r rune) {
 		b.WriteString("&lt;")
 	case '>':
 		b.WriteString("&gt;")
-	case '＜', '﹤', '‹', '〈', '⟨', '＞', '﹥', '›', '〉', '⟩':
+	case '＜', '﹤', '‹', '〈', '⟨', '＞', '﹥', '›', '〉', '⟩',
+		// Unicode confusables of < and > (confusables.txt).
+		'\u02C2', '\u02C3', '\u1438', '\u1433', '\u2329', '\u232A', '\u276C', '\u276D',
+		'\u276E', '\u276F', '\u2770', '\u2771', '\u29FC', '\u29FD', '\u16B2':
 		fmt.Fprintf(b, "&#x%X;", r)
 	default:
+		if r >= 0xE0000 && r <= 0xE007F {
+			// Tag characters: invisible, yet they spell ASCII a model
+			// reads (U+E003C is a tag less-than sign).
+			fmt.Fprintf(b, "&#x%X;", r)
+			return
+		}
 		b.WriteRune(r)
 	}
 }

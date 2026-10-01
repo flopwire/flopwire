@@ -409,7 +409,8 @@ Reply with the flopwire_send tool: to="0b7e2c1a-…" reply_to="m7f3a…" message
   message. Otherwise it shows the address alone. `flopwire read ADDRESS`
   shows the whole message.
 - The text is escaped: `&`, `<` and `>` become `&amp;`, `&lt;` and `&gt;`,
-  and look-alike angle brackets become character references. Control and
+  and look-alike angle brackets and the invisible Unicode tag characters
+  become character references. Control and
   bidirectional characters are shown or replaced. A message therefore cannot
   close its wrapper, open another one, or imitate the standing
   instruction. Attribute values are escaped the same way, plus `"`.
