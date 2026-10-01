@@ -45,8 +45,12 @@ const setupHelp = `flopwire setup — install Flopwire into the coding-agent har
   flopwire setup --text     a readable report instead of JSON
 
 For each harness it finds, setup runs that harness's own plugin commands. It
-never edits the harness's settings files. Harnesses: Claude Code (claude).
-Codex and Devin are not set up by this command yet; see docs/agent.md.
+never edits the harness's settings files. Harnesses: Claude Code (claude) and
+Codex (codex). Devin is not set up by this command yet; see docs/agent.md.
+
+Codex runs a plugin's hooks only after you trust them once: start codex and
+answer its "Hooks need review" prompt, or use /hooks. setup reports whether
+that is still needed and never approves hooks for you.
 
 The plugin runs "flopwire hook" and "flopwire mcp", so flopwire must be on
 PATH, and messaging needs the device agent (flopwire agent run). setup
@@ -59,14 +63,16 @@ Flags
   --source SRC       plugin marketplace: owner/repo, a git URL or a local
                      directory such as a checkout of this repository
                      (default $FLOPWIRE_PLUGIN_SOURCE, else flopwire/flopwire)
-  --scope SCOPE      install scope: user (default), project or local; project
-                     and local apply to the current directory
+  --scope SCOPE      Claude Code install scope: user (default), project or
+                     local; project and local apply to the current directory.
+                     Codex installs for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","note"},"agent":{"running",
 "socket"},"server":{"configured","url"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
-"done":[…],"todo":[…],"warnings":[…],"error"}],"todo":[…]}. Exit 1 when a harness
-command failed.
+"done":[…],"todo":[…],"warnings":[…],"error","hook_trust":{"hooks","trusted",
+"need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only.
+Exit 1 when a harness command failed.
 `
 
 // setupReport is what setup prints.
@@ -112,6 +118,8 @@ type harnessReport struct {
 	Todo           []string `json:"todo"`
 	Warnings       []string `json:"warnings"`
 	Error          string   `json:"error,omitempty"`
+	// HookTrust is Codex's trust state for the plugin's hooks.
+	HookTrust *hookTrustReport `json:"hook_trust,omitempty"`
 }
 
 // Setup modes.
@@ -145,6 +153,7 @@ type setupHarness struct {
 // setupHarnesses is every harness setup handles, in report order.
 var setupHarnesses = []setupHarness{
 	{name: "claude", apply: setupClaude},
+	{name: "codex", apply: setupCodex},
 }
 
 func setupMain(ctx context.Context, args []string) error {
@@ -778,6 +787,16 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		}
 		if h.Marketplace != "" {
 			fmt.Fprintf(&b, "  marketplace: %s\n", h.Marketplace)
+		}
+		if t := h.HookTrust; t != nil {
+			fmt.Fprintf(&b, "  hooks: %d of %d trusted", t.Trusted, t.Hooks)
+			if len(t.NeedReview) > 0 {
+				fmt.Fprintf(&b, "; need your approval: %s", strings.Join(t.NeedReview, ", "))
+			}
+			if len(t.Disabled) > 0 {
+				fmt.Fprintf(&b, "; disabled: %s", strings.Join(t.Disabled, ", "))
+			}
+			b.WriteString("\n")
 		}
 		for _, d := range h.Done {
 			fmt.Fprintf(&b, "  done: %s\n", d)

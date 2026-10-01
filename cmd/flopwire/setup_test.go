@@ -14,11 +14,14 @@ import (
 	"time"
 )
 
-// TestMain lets the test binary stand in for the Claude Code CLI: run
-// through a symlink named "claude", it is fakeClaude.
+// TestMain lets the test binary stand in for the harness CLIs: run through
+// a symlink named "claude" it is fakeClaude, named "codex" fakeCodex.
 func TestMain(m *testing.M) {
-	if filepath.Base(os.Args[0]) == "claude" {
+	switch filepath.Base(os.Args[0]) {
+	case "claude":
 		os.Exit(fakeClaude(os.Args[1:]))
+	case "codex":
+		os.Exit(fakeCodex(os.Args[1:]))
 	}
 	os.Exit(m.Run())
 }
@@ -288,7 +291,7 @@ func (f *setupFixture) claude(rep setupReport) harnessReport {
 func mutating(calls []string) []string {
 	var m []string
 	for _, c := range calls {
-		if c == "" || c == "--version" || strings.HasPrefix(c, "plugin list") || strings.HasPrefix(c, "plugin marketplace list") {
+		if c == "" || c == "--version" || strings.HasPrefix(c, "plugin list") || strings.HasPrefix(c, "plugin marketplace list") || strings.HasPrefix(c, "app-server") {
 			continue
 		}
 		m = append(m, c)
