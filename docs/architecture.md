@@ -20,7 +20,8 @@ spec and this page differ, this page describes the code.
 | S3 (MinIO in Compose) | server | `internal/ingest/objects.go` | Content-addressed chunk objects, each a zstd frame of the chunk (addressed by the BLAKE3 of the uncompressed bytes). The raw evidence. |
 | Retrieval | device and server | `internal/retrieval` (`local`, `regexq`, `grep`, `format`) | grep, search, sessions and read over the local index or Postgres. |
 | CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | The four tools. Local by default; `--server` for team search. |
-| Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. Device agent, CLI and hooks are not built yet. |
+| Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. CLI and hooks are not built yet. |
+| Message bus (device) | each developer machine | `internal/devicebus`, `internal/agent/presence.go`, `internal/client/bus.go` | Local inbox (`bus.db`), presence, the long poll, claims and receipts; routing between the device's own sessions with no server. |
 | Web console | browser | `web/`, served at `/` by `internal/webapp` | Admin only: health, people and devices, policy, archive (deletion), audit. No corpus search. |
 | Backup | server host | `internal/backup` | Coordinated Postgres dump plus chunk copy, verify, restore. |
 
@@ -300,8 +301,9 @@ off. Code: `internal/retrieval/local/caller.go`.
 
 ## Message bus
 
-Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). Only
-the server side is built. Routes and wire types are in `internal/busproto`.
+Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
+server and the device agent are built; the CLI, MCP tools and hooks are
+not. Routes and wire types are in `internal/busproto`.
 
 - **Presence.** Each device holds one long poll (`POST /v1/bus/poll`, up to
   25 s). The request carries every live session on the device (id, agent,
@@ -329,6 +331,18 @@ the server side is built. Routes and wire types are in `internal/busproto`.
   expiry `expired` and drops presence a day old. The recipient's inbox
   lists an expired message from another person only while the recipient
   accepts that person, so a held message never reaches it.
+- **Device agent** (`internal/devicebus`). Presence is what `sessions`
+  prints as live, cross-checked with the harness registries (Claude session
+  files, Codex writer locks, Devin session locks; read, never locked), with
+  busy from the Claude session file or the Codex rollout's last task
+  event. Sessions the path rules keep off the server are not reported. The
+  agent re-polls when presence changes. Each answer reconciles a local
+  inbox (`bus.db` beside the client config, its own SQLite file so a hook
+  never waits on the index writer); offered `@user` messages are claimed
+  for one session; receipts go in batches. A hook's `pending` request on
+  the control socket reads only that inbox. With no server, sends between
+  the device's own sessions go straight into it, with the same envelope
+  and limits.
 
 ## Trust boundaries
 

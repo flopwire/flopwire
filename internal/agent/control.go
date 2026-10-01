@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -19,14 +21,25 @@ import (
 
 // Request is one control-socket request: a JSON object on one line.
 type Request struct {
-	Op      string `json:"op"`                // "flush", "pass", "status", "repin", "redact" or "ping"
+	// "flush", "pass", "status", "repin", "redact" or "ping"; for the
+	// message bus "pending", "held", "send", "peers" or "inbox".
+	Op      string `json:"op"`
 	Path    string `json:"path,omitempty"`    // flush: the transcript path
-	Session string `json:"session,omitempty"` // flush: or its session id
+	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
 	Index   string `json:"index,omitempty"`   // pass: the index the caller means; refused if it is not this agent's
 	// redact: the message address (ADDRESS[:L1-L2]) and whether every
 	// identical copy goes too (notes/redaction.md).
 	Address   string `json:"address,omitempty"`
 	AllCopies bool   `json:"all_copies,omitempty"`
+
+	// Message bus (devicebus). pending: Session and Agent (the harness,
+	// when two share an id; "" for any). send, peers, inbox: the request as
+	// the server takes it; the agent sends it to the server, or answers it
+	// on the device when no server is configured.
+	Agent string                `json:"agent,omitempty"`
+	Send  *busproto.SendRequest `json:"send,omitempty"`
+	Peers *busproto.PeersQuery  `json:"peers,omitempty"`
+	Inbox *busproto.InboxQuery  `json:"inbox,omitempty"`
 }
 
 // Response answers a Request.
@@ -45,6 +58,20 @@ type Response struct {
 	Placements map[string]int `json:"placements,omitempty"`
 	// Redacted (redact): rows masked in the local index.
 	Redacted int `json:"redacted,omitempty"`
+
+	// Message bus. Messages (pending): the session's undelivered messages,
+	// oldest first, now marked delivered. Held (pending, held): senders
+	// waiting for the user's acceptance, for the user-visible notice.
+	// Sent, Peers, Inbox: the answers to send, peers and inbox. BusError: a
+	// refusal with its code (and candidates or the refused message id);
+	// Call returns it as the error. Bus (status): the bus state.
+	Messages []busproto.Envelope     `json:"messages,omitempty"`
+	Held     []busproto.HeldSender   `json:"held,omitempty"`
+	Sent     *busproto.SendResponse  `json:"sent,omitempty"`
+	Peers    *busproto.PeersResponse `json:"peers,omitempty"`
+	Inbox    *busproto.InboxResponse `json:"inbox,omitempty"`
+	BusError *busproto.Error         `json:"bus_error,omitempty"`
+	Bus      *devicebus.Status       `json:"bus,omitempty"`
 }
 
 // SocketPath is the control socket beside the client config: <dir of
@@ -123,6 +150,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		}
 		resp.ServerCopies = a.serverCopiesNotice()
 		resp.Placements = a.placementCounts()
+		if a.cfg.Bus != nil {
+			st := a.cfg.Bus.Status(ctx)
+			resp.Bus = &st
+		}
 		var err error
 		resp.Extraction, err = a.store.ExtractionSummary(ctx)
 		if err != nil {
@@ -136,6 +167,9 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if rc, ok := a.cfg.Sync.(interface{ Recheck() }); ok {
 			rc.Recheck()
 		}
+		if a.cfg.Bus != nil {
+			a.cfg.Bus.Recheck()
+		}
 	case req.Op == "redact":
 		resp.Redacted, err = RedactLocal(ctx, a.store, req.Address, req.AllCopies)
 		resp.OK = err == nil
@@ -148,12 +182,76 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "pending", req.Op == "held", req.Op == "send", req.Op == "peers", req.Op == "inbox":
+		a.serveBus(ctx, req, &resp)
 	default:
 		resp.Error = "unknown op " + req.Op
 	}
 	b, _ := json.Marshal(resp)
 	c.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	c.Write(append(b, '\n'))
+	if _, err := c.Write(append(b, '\n')); err != nil && req.Op == "pending" && len(resp.Messages) > 0 {
+		// The hook gave up before the answer (its budget ran out) and
+		// will not print these messages: queue them again for its
+		// session's next hook rather than lose them.
+		ids := make([]string, len(resp.Messages))
+		for i, m := range resp.Messages {
+			ids[i] = m.ID
+		}
+		if rerr := a.cfg.Bus.Requeue(ctx, ids); rerr != nil {
+			a.log.Warn("agent: messages taken by a hook that left are lost", "ids", ids, "err", rerr)
+		}
+	}
+}
+
+// busCallTimeout bounds a send, peers or inbox request to the server.
+const busCallTimeout = 20 * time.Second
+
+// serveBus answers the message bus requests. pending and held read only
+// local state, so a hook never waits on the network.
+func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
+	b := a.cfg.Bus
+	if b == nil {
+		resp.Error = "messaging is off in this agent"
+		return
+	}
+	var err error
+	switch req.Op {
+	case "pending":
+		resp.Messages, err = b.Pending(ctx, req.Session, req.Agent)
+		resp.Held = b.Held()
+	case "held":
+		resp.Held = b.Held()
+	default:
+		cctx, cancel := context.WithTimeout(ctx, busCallTimeout)
+		defer cancel()
+		switch {
+		case req.Op == "send" && req.Send != nil:
+			var out busproto.SendResponse
+			if out, err = b.Send(cctx, *req.Send); err == nil {
+				resp.Sent = &out
+			}
+		case req.Op == "peers" && req.Peers != nil:
+			var out busproto.PeersResponse
+			if out, err = b.Peers(cctx, *req.Peers); err == nil {
+				resp.Peers = &out
+			}
+		case req.Op == "inbox" && req.Inbox != nil:
+			var out busproto.InboxResponse
+			if out, err = b.Inbox(cctx, *req.Inbox); err == nil {
+				resp.Inbox = &out
+			}
+		default:
+			err = fmt.Errorf("%s: the request is missing", req.Op)
+		}
+	}
+	resp.OK = err == nil
+	if err != nil {
+		resp.Error = err.Error()
+		var be *busproto.Error
+		if errors.As(err, &be) {
+			resp.BusError = be
+		}
+	}
 }
 
 // placementCounts counts the stored placements by what placed them.
@@ -223,6 +321,9 @@ func Call(ctx context.Context, path string, req Request) (Response, error) {
 		return resp, err
 	}
 	if !resp.OK {
+		if resp.BusError != nil {
+			return resp, resp.BusError
+		}
 		return resp, errors.New(resp.Error)
 	}
 	return resp, nil
