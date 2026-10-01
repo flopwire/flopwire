@@ -896,3 +896,17 @@ func TestExpiredHeldMessageStaysHidden(t *testing.T) {
 		t.Fatalf("accept after expiry %+v %v", acc, err)
 	}
 }
+
+// Refs pass the server redactor as the body does.
+func TestRefsAreRedacted(t *testing.T) {
+	tm := newTeam(t)
+	tok := "gh" + "p_" + strings.Repeat("aB3dE5", 6)
+	out := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "see ref", func(r *busproto.SendRequest) { r.Refs = []string{"fw://s/1 token=" + tok} })
+	var refs []string
+	if err := tm.pool.QueryRow(context.Background(), `SELECT refs FROM bus_messages WHERE id=$1`, out.ID).Scan(&refs); err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || strings.Contains(refs[0], tok) || out.Redactions["github-token"] != 1 {
+		t.Fatalf("refs %q, redactions %v", refs, out.Redactions)
+	}
+}

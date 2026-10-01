@@ -337,16 +337,21 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 	case len(req.ReplyTo) > 64 || len(req.Repo) > 4096:
 		return out, badRequest("reply_to or repo is too long")
 	}
+	redactions := map[string]int{}
+	// Refs reach the recipient verbatim, so they pass the redactor too.
 	refs := make([]string, 0, len(req.Refs))
 	for _, r := range req.Refs {
 		r = strings.TrimSpace(r)
 		if r == "" || len(r) > busproto.MaxRefBytes || !utf8.ValidString(r) {
 			return out, badRequest("a ref is an archive address of at most %d bytes", busproto.MaxRefBytes)
 		}
-		refs = append(refs, r)
+		masked, matches := redact.Redact([]byte(r))
+		for _, m := range matches {
+			redactions[m.Rule]++
+		}
+		refs = append(refs, string(masked))
 	}
 	masked, matches := redact.Redact([]byte(req.Body))
-	redactions := map[string]int{}
 	for _, m := range matches {
 		redactions[m.Rule]++
 	}
