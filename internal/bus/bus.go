@@ -212,12 +212,14 @@ func resolvePerson(ctx context.Context, q querier, name string) (person, error) 
 }
 
 // SessionPrefixSQL finds the sessions whose id starts with the LIKE
-// pattern $1: live in presence (seen since $2), or uploaded and visible.
+// pattern $1: live in presence (seen since $2), or uploaded, and not
+// hidden by the path rules (peers leaves those out too).
 // Subagent transcripts and service identities' uploads are left out: no
 // hook delivers to them.
 const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true
 	FROM bus_presence p JOIN users u ON u.id=p.user_id LEFT JOIN devices d ON d.id=p.device_id
 	WHERE p.session_id COLLATE "C" LIKE $1 AND p.seen_at>$2 AND (p.device_id IS NULL OR d.revoked_at IS NULL) AND NOT u.disabled AND u.identity_type='human'
+		AND NOT COALESCE((SELECT c.hidden_at IS NOT NULL FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),false)
 	UNION ALL
 	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false
 	FROM conversations c JOIN users u ON u.id=c.user_id

@@ -910,3 +910,19 @@ func TestRefsAreRedacted(t *testing.T) {
 		t.Fatalf("refs %q, redactions %v", refs, out.Redactions)
 	}
 }
+
+// A live session whose transcript the path rules hid is left out of
+// recipient resolution, as peers leaves it out.
+func TestHiddenLiveSessionIsNotAddressable(t *testing.T) {
+	tm := newTeam(t)
+	tm.uploaded(tm.alexMac, "claude", "a-api-4444", "/Users/alex/code/api")
+	tm.exec(`UPDATE conversations SET hidden_at=now() WHERE session_id='a-api-4444'`)
+	tm.present(tm.alexMac, live("a-api-4444", "claude", "/Users/alex/code/api", false), live("a-apx-8888", "claude", "/Users/alex/code/api", false))
+	if _, err := tm.send(tm.garyMac, "g-api-1111", "a-api-4444", "hi"); code(err) != busproto.CodeUnknownRecipient {
+		t.Fatalf("hidden session by full id: %v", err)
+	}
+	// The hidden session is not a candidate: a-ap resolves to the other one.
+	if out, err := tm.send(tm.garyMac, "g-api-1111", "a-ap", "hi"); err != nil || out.To.Session != "a-apx-8888" {
+		t.Fatalf("prefix with a hidden candidate: %+v %v", out, err)
+	}
+}
