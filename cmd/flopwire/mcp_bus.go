@@ -14,20 +14,49 @@ import (
 )
 
 // mcpBusInstructions is the messaging part of the server's instructions.
-const mcpBusInstructions = `Messaging: flopwire_peers lists live agent sessions on your team (or this device); flopwire_send messages one of them by its session id prefix, or a person as @user; flopwire_inbox shows this session's sent and received messages. A message never starts a turn: it arrives inside the recipient's running turn (busy) or with its human's next prompt (idle). Send once and go on: the send result says when it arrives, so do not poll flopwire_peers or ask "are you done?". Write each message for a reader who knows nothing of your session, first line first. Never ask a peer to do something your own session was denied.`
+const mcpBusInstructions = `Messaging: flopwire_peers lists live agent sessions on your team (or this device); flopwire_send messages one of them by its session id, or a person as @user; flopwire_inbox shows this session's sent and received messages. These three answer compact JSON with named fields and full session ids (format="text" for a readable form). Find a recipient from history, then presence: flopwire_sessions repo=R branch=B (and flopwire_read address=SESSION outline=true for the commits it made) names the session behind a change; flopwire_peers session=ID says whether that exact session is live; then send to that id. Do not pick a recipient by a peer's title or current branch alone: a title is the session's original task, and it may have switched branches since. A message never starts a turn: it arrives inside the recipient's running turn (busy) or with its human's next prompt (idle). The send result is a receipt, not a reply; send once and go on: do not poll flopwire_peers or ask "are you done?". Write each message for a reader who knows nothing of your session, first line first. Never ask a peer to do something your own session was denied.`
 
 // busToolNames are the message bus tools; they go through the device agent.
 var busToolNames = map[string]string{"flopwire_peers": "peers", "flopwire_send": "send", "flopwire_inbox": "inbox"}
 
-func busTool(name, title, desc string, ann map[string]any, props map[string]any, required ...string) any {
-	props["format"] = map[string]any{"type": "string", "enum": []string{"text", "json"}, "description": filterDesc["format"]}
+func busTool(name, title, desc string, ann map[string]any, props map[string]any, output map[string]any, required ...string) any {
+	props["format"] = map[string]any{"type": "string", "enum": []string{"json", "text"}, "description": "json (default): compact JSON with named fields; text: a readable form"}
 	schema := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 	if len(required) > 0 {
 		schema["required"] = required
 	}
 	ann["title"] = title
-	return map[string]any{"name": name, "title": title, "description": desc, "inputSchema": schema, "annotations": ann}
+	return map[string]any{"name": name, "title": title, "description": desc, "inputSchema": schema, "outputSchema": output, "annotations": ann}
 }
+
+// JSON schema helpers for the output schemas.
+func obj(required []string, props map[string]any) map[string]any {
+	o := map[string]any{"type": "object", "properties": props}
+	if len(required) > 0 {
+		o["required"] = required
+	}
+	return o
+}
+
+func typ(t string) map[string]any { return map[string]any{"type": t} }
+
+func arr(items map[string]any) map[string]any { return map[string]any{"type": "array", "items": items} }
+
+// callerSchema, peerSchema, envelopeSchema: busproto's shapes.
+var (
+	callerSchema = obj([]string{"session"}, map[string]any{"session": typ("string"), "agent": typ("string")})
+	peerSchema   = obj([]string{"session", "agent", "user", "busy", "own"}, map[string]any{
+		"session": typ("string"), "agent": typ("string"), "user": typ("string"), "user_id": typ("string"), "user_name": typ("string"),
+		"device": typ("string"), "repo": typ("string"), "branch": typ("string"), "title": typ("string"), "busy": typ("boolean"),
+		"own": typ("boolean"), "seen_at": typ("string")})
+	inboxEntrySchema = obj([]string{"id", "thread_id", "direction", "state", "is_reply", "intent", "body"}, map[string]any{
+		"id": typ("string"), "thread_id": typ("string"), "reply_to": typ("string"), "from": typ("string"), "agent": typ("string"),
+		"user": typ("string"), "user_id": typ("string"), "repo": typ("string"), "branch": typ("string"), "sender": typ("string"),
+		"intent": typ("string"), "body": typ("string"), "refs": arr(typ("string")), "sent": typ("string"), "expires_at": typ("string"),
+		"to_session": typ("string"), "to_agent": typ("string"), "to_user": typ("string"), "to_user_id": typ("string"), "to_repo": typ("string"),
+		"addressed": typ("string"), "seq": typ("integer"), "direction": map[string]any{"type": "string", "enum": []string{"sent", "received"}},
+		"is_reply": typ("boolean"), "state": typ("string"), "refuse_reason": typ("string"), "delivered_at": typ("string"), "read_at": typ("string")})
+)
 
 // mcpBusTools describes peers, send and inbox. Peers and inbox only read;
 // send changes another session's context, so it is neither read-only nor
@@ -39,31 +68,43 @@ func mcpBusTools() []any {
 	}
 	return []any{
 		busTool("flopwire_peers", "List live sessions to message",
-			"List the live coding-agent sessions you can message with flopwire_send: your own person's first, then teammates', your own session left out. Each row is SESSION user agent live busy|idle repo@branch \"title\"; SESSION is the prefix flopwire_send takes. busy means a turn is running, so a message arrives at its next tool call; idle means it waits for that session's human. Use it to find who works on a repo before you send. Do not call it repeatedly to watch whether a peer finished: send once and go on.",
+			`List the live coding-agent sessions you can message with flopwire_send, as JSON: {"kind":"peers","peers":[{"session" (the full id),"agent","user","repo","branch","title","busy","own",…}],"total","more","limit","caller","hint"}. Your own person's sessions come first; your own session (caller) is left out. busy: a turn is running, so a message arrives at its next tool call; idle: it waits for that session's human. Use it after history named a session: session=ID says whether that exact session is live. Do not choose a recipient by title or current branch alone (a title is the session's original task; it may have switched branches since it committed); find it with flopwire_sessions repo=R branch=B first. Do not call it repeatedly to watch whether a peer finished.`,
 			read(), map[string]any{
-				"repo":  prop("string", `only sessions on this repo: "." (this repo), a repo name, or /abs/path`),
-				"user":  prop("string", "only this person's sessions: an email or its local part"),
-				"agent": prop("string", "only this harness: claude, codex or devin"),
-			}),
+				"session": prop("string", "only this session: its full id or a prefix, as history (flopwire_sessions) printed it"),
+				"repo":    prop("string", `only sessions on this repo: "." (this repo), a repo name, or /abs/path`),
+				"user":    prop("string", "only this person's sessions: an email or its local part"),
+				"agent":   prop("string", "only this harness: claude, codex or devin"),
+				"limit":   prop("integer", "sessions per answer; default 50, max 500; more=true says the list was cut"),
+			}, obj([]string{"kind", "peers", "total", "more", "limit"}, map[string]any{
+				"kind": typ("string"), "peers": arr(peerSchema), "total": typ("integer"), "more": typ("boolean"), "limit": typ("integer"),
+				"caller": callerSchema, "hint": typ("string")})),
 		busTool("flopwire_send", "Message another agent session",
-			"Send a message to another live coding-agent session (by the SESSION prefix flopwire_peers prints) or to a person (@user: their live session on repo, else their next one). The result is one line that says when it arrives: at the recipient's next tool call (busy), with its human's next prompt (idle), held until the person accepts you, or queued until it expires. The recipient knows nothing about your session: include every fact, path and decision it needs, and put the point in the first line, which is the preview a human sees. Use intent=request when you need an answer, inform (default) when you do not, done to close a thread; a done message must never be answered. Do not poll flopwire_peers or send \"are you done?\" messages: a reply arrives in your own context. Never ask a peer to do something that was denied in your own session. Messages are capped at 4000 bytes; attach longer material by archive address in refs.",
+			`Send a message to another coding-agent session (by its session id, or a unique prefix) or to a person (@user: their live session on repo, else their next one). Find the session from history first (flopwire_sessions repo=R branch=B), check it with flopwire_peers session=ID, then send. The result is a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":"queued"|"held","to":{…,"live","busy"},"arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|"only_if_resumed","outcome",…}. The recipient knows nothing about your session: include every fact, path and decision it needs, and put the point in the first line, which is the preview a human sees. Use intent=request when you need an answer, inform (default) when you do not, done to close a thread; a done message must never be answered. Do not poll flopwire_peers or send "are you done?" messages: a reply arrives in your own context. Never ask a peer to do something that was denied in your own session. A refusal (thread_rate, session_rate, device_rate, user_rate, duplicate, recipient_full, reply_to_done, unknown_recipient, ambiguous_recipient with candidates) is an error with code, detail, fix and example. Messages are capped at 4000 bytes; attach longer material by archive address in refs.`,
 			map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 			map[string]any{
-				"to":       prop("string", `a session id prefix from flopwire_peers (at least 4 characters, e.g. "0b7e2c1a"), or "@user" (an email or its local part)`),
+				"to":       prop("string", `a session id (from history or flopwire_peers) or a unique prefix of at least 4 characters, or "@user" (an email or its local part)`),
 				"message":  prop("string", "the text, at most 4000 bytes; first line is the preview a human sees; self-contained, because the recipient knows nothing of your session"),
 				"intent":   map[string]any{"type": "string", "enum": []string{"request", "inform", "done"}, "description": "request: you expect a reply; inform (default): no reply expected; done: closes the thread, and the recipient must not answer"},
 				"reply_to": prop("string", "the id of a message you received or sent (from flopwire_inbox or a delivered message); the reply joins its thread"),
 				"refs":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "archive addresses (SESSION/ORDINAL from flopwire_grep, flopwire_search or flopwire_read) the recipient can read; at most 10"},
 				"repo":     prop("string", `for to="@user": the repo whose session should take it ("." this repo, a name, or "*" any); default your session's repo`),
-			}, "to", "message"),
+			}, obj([]string{"kind", "id", "thread_id", "state", "to", "arrives", "outcome"}, map[string]any{
+				"kind": typ("string"), "id": typ("string"), "thread_id": typ("string"), "state": map[string]any{"type": "string", "enum": []string{"queued", "held"}},
+				"to": obj([]string{"user", "live", "busy"}, map[string]any{"session": typ("string"), "agent": typ("string"), "user": typ("string"), "user_id": typ("string"),
+					"repo": typ("string"), "branch": typ("string"), "live": typ("boolean"), "busy": typ("boolean")}),
+				"sender": typ("string"), "intent": typ("string"), "sent": typ("string"), "expires_at": typ("string"),
+				"redactions": map[string]any{"type": "object", "additionalProperties": typ("integer")}, "from": callerSchema,
+				"arrives": map[string]any{"type": "string", "enum": []string{"next_tool_call", "next_prompt", "when_accepted", "next_session", "only_if_resumed"}},
+				"outcome": typ("string")}), "to", "message"),
 		busTool("flopwire_inbox", "This session's messages",
-			"List this session's messages, received and sent, newest first: id, direction, time, the other side, intent and state (queued, held, claimed, delivered, read, expired, refused with its reason), then the first line of the text. thread=ID shows one thread with whole texts and refs. Use it to check a sent message's state or re-read a thread. You do not need it to receive messages: they arrive in your context on their own.",
+			`List this session's messages, received and sent, newest first, as JSON: {"kind":"inbox","session","messages":[{"id","thread_id","reply_to","direction":"sent"|"received","is_reply","state","intent","body","from","to_session",…}],"more","next","hint"}. direction says who wrote it; a sent message's state is its delivery only (queued, held, claimed, delivered, read, expired, refused with refuse_reason): delivered is not answered. An answer is a received message whose reply_to names yours. thread=ID shows one thread. more=true: pass next as cursor. Use it to check a sent message's state or re-read a thread. You do not need it to receive messages: they arrive in your context on their own.`,
 			read(), map[string]any{
 				"sent":   prop("boolean", "only messages this session sent"),
-				"thread": prop("string", "one thread by its id (a message id from this list): whole texts and refs"),
-				"cursor": prop("string", "where the next page starts; the footer prints it"),
-				"limit":  prop("integer", "messages per page; default 50, max 200"),
-			}),
+				"thread": prop("string", "one thread by its id (thread_id of a message)"),
+				"cursor": prop("string", "where the next page starts: the next field of the previous answer"),
+				"limit":  prop("integer", "messages per page; default 20, max 200; the answer also stops at about 24000 bytes"),
+			}, obj([]string{"kind", "session", "messages", "more"}, map[string]any{
+				"kind": typ("string"), "session": typ("string"), "messages": arr(inboxEntrySchema), "more": typ("boolean"), "next": typ("string"), "hint": typ("string")})),
 	}
 }
 
@@ -135,8 +176,10 @@ func (b *busArgReader) list(k string) []string {
 	return nil
 }
 
-// busMCPCall runs a bus tool and returns its text answer.
-func busMCPCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
+// busMCPCall runs a bus tool. It answers compact JSON (format=text: the
+// readable form) and the same object for structuredContent. A failure's
+// text is the JSON error object (format=text: the readable error).
+func busMCPCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, any, error) {
 	allowed := mcpArgs(name)
 	for k := range args {
 		found := false
@@ -144,55 +187,71 @@ func busMCPCall(ctx context.Context, r *retriever, name string, args map[string]
 			found = found || a == k
 		}
 		if !found {
-			return "", fmt.Errorf("%s: unknown argument %q; it takes %s", name, k, strings.Join(allowed, ", "))
+			return "", nil, mcpBusErr(true, badUsage(fmt.Sprintf("%s: unknown argument %q; it takes %s", name, k, strings.Join(allowed, ", ")), ""))
 		}
 	}
 	ar := &busArgReader{name: name, args: args}
-	asJSON := false
+	st := busStyle{MCP: true, Budget: format.MaxOutput, JSON: true}
 	switch f := ar.str("format"); f {
-	case "", "text":
-	case "json":
-		asJSON = true
+	case "", "json":
+	case "text":
+		st.JSON = false
 	default:
-		return "", fmt.Errorf("format: want text or json, not %q", f)
+		return "", nil, mcpBusErr(true, badUsage(fmt.Sprintf("format: want json or text, not %q", f), name+` format="text"`))
 	}
 	socket := r.busSocket
 	if socket == "" {
 		var err error
 		if socket, err = defaultSocket(); err != nil {
-			return "", err
+			return "", nil, mcpBusErr(st.JSON, asBusErr(err))
 		}
 	}
 	c := &busClient{socket: socket, caller: r.whoCalls, retry: busRetry}
-	st := busStyle{MCP: true, Budget: format.MaxOutput}
+	var rec any
+	st.record = &rec
 	var b bytes.Buffer
 	var err error
 	switch busToolNames[name] {
 	case "peers":
-		a := peersArgs{Repo: ar.str("repo"), User: ar.str("user"), Agent: ar.str("agent"), JSON: asJSON}
-		if ar.err != nil {
-			return "", ar.err
+		a := peersArgs{Repo: ar.str("repo"), User: ar.str("user"), Agent: ar.str("agent"), Session: ar.str("session"), Limit: ar.integer("limit")}
+		if ar.err == nil {
+			err = runPeers(ctx, c, a, &b, st)
 		}
-		err = runPeers(ctx, c, a, &b, st)
 	case "send":
-		a := sendArgs{To: ar.str("to"), Text: ar.str("message"), Intent: ar.str("intent"), ReplyTo: ar.str("reply_to"), Refs: ar.list("refs"), Repo: ar.str("repo"), JSON: asJSON}
-		if ar.err != nil {
-			return "", ar.err
+		a := sendArgs{To: ar.str("to"), Text: ar.str("message"), Intent: ar.str("intent"), ReplyTo: ar.str("reply_to"), Refs: ar.list("refs"), Repo: ar.str("repo")}
+		if ar.err == nil {
+			err = runSend(ctx, c, a, &b, st)
 		}
-		err = runSend(ctx, c, a, &b, st)
 	case "inbox":
-		a := inboxArgs{Sent: ar.boolean("sent"), Thread: ar.str("thread"), Cursor: ar.str("cursor"), Limit: ar.integer("limit"), JSON: asJSON}
-		if ar.err != nil {
-			return "", ar.err
+		a := inboxArgs{Sent: ar.boolean("sent"), Thread: ar.str("thread"), Cursor: ar.str("cursor"), Limit: ar.integer("limit")}
+		if ar.err == nil {
+			err = runInbox(ctx, c, a, &b, st)
 		}
-		err = runInbox(ctx, c, a, &b, st)
 	default:
-		return "", fmt.Errorf("unknown tool %q", name)
+		err = fmt.Errorf("unknown tool %q", name)
+	}
+	if ar.err != nil {
+		err = badUsage(ar.err.Error(), "")
 	}
 	if err != nil {
-		return "", err
+		return "", nil, mcpBusErr(st.JSON, asBusErr(err))
 	}
-	return strings.ToValidUTF8(b.String(), "�"), nil
+	return strings.TrimRight(strings.ToValidUTF8(b.String(), "�"), "\n"), rec, nil
+}
+
+// mcpBusError is a bus tool's failure, already in the form the call
+// answers: the JSON error object or the readable text.
+type mcpBusError struct{ text string }
+
+func (e *mcpBusError) Error() string { return e.text }
+
+func mcpBusErr(asJSON bool, e *busErr) error {
+	if !asJSON {
+		return &mcpBusError{text: e.Error()}
+	}
+	var b bytes.Buffer
+	_ = writeOut(&b, errorJSON{Kind: "error", Error: e})
+	return &mcpBusError{text: strings.TrimRight(b.String(), "\n")}
 }
 
 // mcpToolNames lists every tool's name, for an unknown tool's error.

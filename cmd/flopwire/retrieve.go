@@ -140,7 +140,7 @@ var flagDefs = []flagDef{
 	{"before-context", 'B', fInt, "gr"},
 	{"context", 'C', fInt, "gr"},
 	{"max-count", 'm', fInt, "g"},
-	{"limit", 0, fInt, "gslri"},
+	{"limit", 0, fInt, "gslrpi"},
 	{"offset", 0, fInt, "gs"},
 	{"cursor", 0, fString, "lri"},
 	{"sort", 0, fString, "gsl"},
@@ -151,7 +151,7 @@ var flagDefs = []flagDef{
 	{"kind", 0, fString, "gs"},
 	{"exclude-kind", 0, fString, "gs"},
 	{"tool", 0, fString, "gs"},
-	{"session", 0, fString, "gs"},
+	{"session", 0, fString, "gsp"},
 	{"branch", 0, fString, "gsl"},
 	{"since", 0, fString, "gsl"},
 	{"until", 0, fString, "gsl"},
@@ -177,6 +177,7 @@ var flagDefs = []flagDef{
 	{"sent", 0, fBool, "i"},
 	{"thread", 0, fString, "i"},
 	{"socket", 0, fString, "pmi"},
+	{"text", 0, fBool, "pmi"},
 }
 
 // filterKeys are the flags that become format.Filters.

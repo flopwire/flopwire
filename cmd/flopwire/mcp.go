@@ -365,9 +365,22 @@ func mcpArgs(name string) []string {
 
 // mcpCall runs one tool and returns its text answer.
 func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
+	text, _, err := mcpCallFull(ctx, r, name, args)
+	return text, err
+}
+
+// mcpCallFull runs one tool and returns its text answer and, for the
+// message bus tools, the structured result (structuredContent).
+func mcpCallFull(ctx context.Context, r *retriever, name string, args map[string]any) (string, any, error) {
 	if _, ok := busToolNames[name]; ok {
 		return busMCPCall(ctx, r, name, args)
 	}
+	text, err := mcpRetrievalCall(ctx, r, name, args)
+	return text, nil, err
+}
+
+// mcpRetrievalCall runs one retrieval tool and returns its text answer.
+func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
 	o, _, err := mcpOpts(name, args)
 	if err != nil {
 		return "", err
@@ -384,6 +397,10 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 
 // mcpError is the short isError text of a failed call, with a hint.
 func mcpError(name string, err error) string {
+	var be *mcpBusError
+	if errors.As(err, &be) {
+		return be.text
+	}
 	msg := shortError(err)
 	switch {
 	case errors.Is(err, format.ErrNotFound) && name == "flopwire_read":
@@ -547,7 +564,7 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			case <-cctx.Done():
 				return
 			}
-			text, err := mcpCall(cctx, r, p.Name, p.Arguments)
+			text, structured, err := mcpCallFull(cctx, r, p.Name, p.Arguments)
 			if cctx.Err() != nil && ctx.Err() == nil {
 				return // cancelled by the client: no response
 			}
@@ -555,7 +572,11 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 				reply("result", map[string]any{"isError": true, "content": []any{map[string]string{"type": "text", "text": mcpError(p.Name, err)}}})
 				return
 			}
-			reply("result", map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}})
+			res := map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}}
+			if structured != nil {
+				res["structuredContent"] = structured
+			}
+			reply("result", res)
 		}()
 	default:
 		reply("error", map[string]any{"code": -32601, "message": "method not found: " + req.Method})

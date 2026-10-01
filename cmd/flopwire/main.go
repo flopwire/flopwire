@@ -42,7 +42,9 @@ var version = "dev"
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "flopwire:", err)
+		if !errors.Is(err, errReported) { // already written (JSON on stderr)
+			fmt.Fprintln(os.Stderr, "flopwire:", err)
+		}
 		os.Exit(1)
 	}
 }
