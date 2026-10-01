@@ -326,7 +326,9 @@ the server side is built. Routes and wire types are in `internal/busproto`.
   `bus.revoke`). Peers, inbox and polls that return messages are audited
   like other reads. Bodies are never in the audit log.
 - **Expiry.** A sweep each minute marks undelivered messages past their
-  expiry `expired` and drops presence a day old.
+  expiry `expired` and drops presence a day old. The recipient's inbox
+  lists an expired message from another person only while the recipient
+  accepts that person, so a held message never reaches it.
 
 ## Trust boundaries
 

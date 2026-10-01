@@ -870,3 +870,29 @@ func TestPresenceIgnoresAnotherPersonsLiveSession(t *testing.T) {
 		t.Fatalf("owner's own session ignored: %v", got.Ignored)
 	}
 }
+
+// A held message that expires stays out of the recipient's inbox: the
+// recipient's human never accepted its sender (B7). Its sender sees it
+// expired.
+func TestExpiredHeldMessageStaysHidden(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	out := tm.mustSend(tm.garyMac, "g-api-1111", "a-api", "never accepted")
+	tm.advance(busproto.DefaultTTL)
+	if _, err := tm.s.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tm.presence()
+	in, err := tm.s.Inbox(ctx, tm.alexMac, busproto.InboxQuery{Session: "a-api-4444"})
+	if err != nil || len(in.Messages) != 0 {
+		t.Fatalf("expired held message in the recipient's inbox: %+v %v", in.Messages, err)
+	}
+	sent, err := tm.s.Inbox(ctx, tm.garyMac, busproto.InboxQuery{Session: "g-api-1111", SentOnly: true})
+	if err != nil || len(sent.Messages) != 1 || sent.Messages[0].ID != out.ID || sent.Messages[0].State != busproto.StateExpired {
+		t.Fatalf("sender inbox %+v %v", sent.Messages, err)
+	}
+	// Accepting later does not release it.
+	if acc, err := tm.s.Accept(ctx, busproto.Caller{UserID: tm.alex}, "gary"); err != nil || acc.Released != 0 {
+		t.Fatalf("accept after expiry %+v %v", acc, err)
+	}
+}

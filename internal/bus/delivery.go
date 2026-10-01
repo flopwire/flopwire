@@ -450,12 +450,15 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 }
 
 // InboxSQL is the session $1's messages: received by it ($2 is its person;
-// held and refused ones are not shown to the recipient) and sent by it,
+// held and refused ones are not shown to the recipient, nor expired ones
+// from another person it does not accept: the sweep expires held messages
+// too, B7) and sent by it,
 // optionally only sent ($3), in thread $4 (”), before the keyset
 // ($5 time, $6 id), newest first, $7 rows.
 const InboxSQL = `SELECT * FROM (
 	SELECT ` + envCols + `,'received' AS direction,m.state,m.refuse_reason,m.delivered_at,m.read_at FROM ` + envFrom + `
 	WHERE m.to_session=$1 AND m.to_user=$2 AND m.state NOT IN ('held','refused') AND NOT $3
+		AND (m.state<>'expired' OR m.sender='own' OR EXISTS(SELECT 1 FROM bus_accepts a WHERE a.recipient_user=$2 AND a.sender_user=m.from_user))
 	UNION ALL
 	SELECT ` + envCols + `,'sent',m.state,m.refuse_reason,m.delivered_at,m.read_at FROM ` + envFrom + `
 	WHERE m.from_session=$1 AND m.from_user=$2) x
