@@ -21,6 +21,7 @@ The agent uses these paths:
 | Item | Default | Override |
 |---|---|---|
 | Local index | `<user cache dir>/flopwire/index.db`, plus `index.db-tok`, `index.db-tri0`, `index.db-tri1` and the lock file `index.db.lock` | `--db` or `FLOPWIRE_INDEX` |
+| Local redactions | `index.db.redactions.jsonl` beside the index, and `index.db.redactions.jsonl.prev`, its copy before the last redaction | follows the index |
 | Control socket | `<config dir>/flopwire/agent.sock` | `--socket` |
 | Sync spool | `<config dir>/flopwire/spool`, at most 1GiB | `--spool-cap` (bytes) |
 | Message inbox | `<config dir>/flopwire/bus.db` | none |
@@ -54,6 +55,57 @@ index exits with `agent already running (pid N)`. `flopwire agent run --once`
 asks the running agent for a pass over the control socket and waits for it
 to finish. If the index is locked and no agent answers yet, `--once` waits.
 The search commands open the index read-only and never take the lock.
+
+## Recover the local index
+
+The local index is derived data. The agent can build it again from the
+transcripts. The redaction file is not derived data. It is the only record
+of the messages that you hid with `flopwire redact`. It holds hashes, not
+text.
+
+The files are in the index directory. On macOS that is
+`~/Library/Caches/flopwire/`. With `--db` or `FLOPWIRE_INDEX`, it is the
+directory of that path.
+
+| File | Contents | Action |
+|---|---|---|
+| `index.db`, `index.db-wal`, `index.db-shm` | Index rows, sync state, placements | Do not delete. Use `--rebuild-index`. |
+| `index.db-tok`, `index.db-tri0`, `index.db-tri1` | Search files | The agent rebuilds them. |
+| `index.db.redactions.jsonl` | Your local redactions, one per line | Never delete. |
+| `index.db.redactions.jsonl.prev` | The redaction file before the last redaction | Restore from it. |
+
+If you delete the redaction file, the next rebuild shows the text that you
+redacted.
+
+### The agent stops: "index.db.redactions.jsonl is corrupt"
+
+The agent does not open an index while a redaction is unreadable.
+
+1. Make sure that no agent runs.
+2. Copy the damaged file to a safe place:
+   `cp index.db.redactions.jsonl ~/flopwire-redactions-damaged.jsonl`.
+3. If `index.db.redactions.jsonl.prev` exists, copy it over the damaged
+   file: `cp index.db.redactions.jsonl.prev index.db.redactions.jsonl`.
+4. If no `.prev` file exists, open the file in a text editor. Remove only
+   the line that the error names. Save the file.
+5. Start the agent: `flopwire agent run`.
+6. Run again each `flopwire redact` command that you ran after the copy
+   that you restored. The file holds hashes, so it cannot show which
+   message a removed line hid. If you are not sure, run all of them again.
+   A repeated redaction of hidden text reports `nothing to redact`.
+
+### The agent stops: "apply redactions"
+
+The agent could not apply a redaction to the stored rows.
+
+1. Make sure that no agent runs.
+2. Run `flopwire agent run --rebuild-index`.
+
+The rebuild removes the message rows, the conversations and the search
+files. It keeps the sync state, the placements and the redaction file.
+Then it indexes every transcript again and masks each redacted row as it
+writes it. Search is incomplete until the first pass ends. Use the same
+command if the index is damaged in another way.
 
 ## Check the agent
 
