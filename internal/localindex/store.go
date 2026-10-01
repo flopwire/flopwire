@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver (pure Go)
@@ -114,14 +115,18 @@ type Store struct {
 
 	readOnly bool
 	tombs    *tombstones // local message redactions (writing stores)
-	lock     *os.File    // the index lock (writing stores)
-	keepLock bool        // LockFile handed the lock to the caller
+	// reconcileDue: a transaction that may have held redaction masks was
+	// lost; the writer applies the sidecar again first thing (redact.go).
+	reconcileDue atomic.Bool
+	lock         *os.File // the index lock (writing stores)
+	keepLock     bool     // LockFile handed the lock to the caller
 }
 
 type writeReq struct {
 	ctx  context.Context
 	fn   func(*writeTx) error
 	done chan error
+	wait bool // answer at commit, with its error, even with DeferCommit
 }
 
 // ErrClosed is returned by writes after Close.
@@ -281,6 +286,12 @@ func openWriter(path string, opts Options) (*Store, error) {
 	s.rdb.SetMaxIdleConns(opts.ReadConns)
 	s.wg.Add(1)
 	go s.writer()
+	// Redactions the sidecar holds and the rows may not reflect (a lost
+	// transaction, a sidecar beside a new database).
+	if err := s.writeWait(context.Background(), func(w *writeTx) error { return w.reconcile() }); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("localindex: apply redactions: %w", err)
+	}
 	return s, nil
 }
 
@@ -420,6 +431,9 @@ func (s *Store) writer() {
 		}
 		w := &writeTx{s: s, tx: tx, ctx: context.Background()}
 		t := &txRun{w: w, started: time.Now()}
+		if s.reconcileDue.Swap(false) {
+			t.run(s.reconcileRequest())
+		}
 		t.run(r)
 		for !t.full() {
 			if !s.opts.DeferCommit || t.barrier {
@@ -496,10 +510,11 @@ func (t *txRun) run(r writeReq) {
 		r.done <- err
 		return
 	}
-	if t.w.s.opts.DeferCommit {
+	if t.w.s.opts.DeferCommit && !r.wait {
 		r.done <- nil
 	} else {
 		t.waiting = append(t.waiting, r)
+		t.barrier = t.barrier || r.wait
 	}
 }
 
@@ -508,6 +523,9 @@ func (t *txRun) commit() {
 	defer w.closeStmts()
 	w.ctx = context.Background()
 	works, err := w.queueFTS()
+	if err == nil && testHookCommit != nil {
+		err = testHookCommit()
+	}
 	if err == nil {
 		err = w.tx.Commit()
 	} else {
@@ -518,6 +536,11 @@ func (t *txRun) commit() {
 			sh.submit(works[i])
 		}
 		s.lastSeq = works[0].seq
+	}
+	if err != nil {
+		// The lost transaction may have held a redaction's row masks
+		// whose tombstones are in the sidecar already.
+		s.reconcileDue.Store(true)
 	}
 	if err != nil && s.opts.DeferCommit {
 		s.commitFailed(err)
@@ -535,6 +558,9 @@ func (t *txRun) commit() {
 		r.done <- err
 	}
 }
+
+// testHookCommit, when set, fails a commit with its error (tests).
+var testHookCommit func() error
 
 // commitFailed reports a lost deferred transaction: requests already
 // answered were rolled back, rows and watermarks together, so the index is
@@ -571,13 +597,24 @@ func (s *Store) Sync(ctx context.Context) error {
 
 // write runs fn in one transaction on the writer goroutine.
 func (s *Store) write(ctx context.Context, fn func(*writeTx) error) error {
+	return s.send(ctx, writeReq{ctx: ctx, fn: fn, done: make(chan error, 1)})
+}
+
+// writeWait is write answered once fn's own transaction commits, with the
+// commit's error, also with DeferCommit; the transaction commits as soon
+// as fn ran.
+func (s *Store) writeWait(ctx context.Context, fn func(*writeTx) error) error {
+	return s.send(ctx, writeReq{ctx: ctx, fn: fn, done: make(chan error, 1), wait: true})
+}
+
+func (s *Store) send(ctx context.Context, r writeReq) error {
+	fn := r.fn
 	if s.readOnly {
 		if fn == nil {
 			return nil // Sync: nothing of ours to wait for
 		}
 		return ErrReadOnly
 	}
-	r := writeReq{ctx: ctx, fn: fn, done: make(chan error, 1)}
 	select {
 	case s.reqs <- r:
 	case <-s.quit:

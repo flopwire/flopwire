@@ -213,3 +213,63 @@ func TestFirstLivePlan(t *testing.T) {
 		t.Fatalf("unbounded plan %v:\n%s", bad, strings.Join(plan, "\n"))
 	}
 }
+
+// The redaction and reconcile lookups use indexes: copies by text hash
+// (messages_sha), records within a conversation, sessions, the marker.
+func TestRedactionQueryPlans(t *testing.T) {
+	p := newPerfIndex(t)
+	p.index(t, perfguard.ClaudeTranscript(50), transcript.Cursor{}, 1)
+	db := p.s.DB()
+	sha := make([]byte, 32)
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{targetByIDSQL, []any{1}},
+		{targetBySHASQL, []any{sha}},
+		{targetByNativeSQL, []any{1, "x"}},
+		{targetNoNativeSQL, []any{1}},
+		{sessionConvsSQL, []any{"s"}},
+		{reconciledSQL, nil},
+	} {
+		perfguard.AssertSQLitePlan(t, db, nil, q.sql, q.args...)
+	}
+}
+
+// Opening an index whose sidecar the rows already reflect costs the same
+// however many rows it holds: the reconcile reads its marker and stops,
+// without looking up a single row.
+func TestOpenWithReconciledRedactionsIsConstant(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		p := newPerfIndex(t)
+		p.index(t, perfguard.ClaudeTranscript(n), transcript.Cursor{}, 1)
+		var session string
+		var ordinal int64
+		if err := p.s.DB().QueryRow(`SELECT c.session_id, m.ordinal FROM messages m JOIN conversations c ON c.id = m.conversation_id
+			WHERE m.kind = 'user' ORDER BY m.ordinal LIMIT 1`).Scan(&session, &ordinal); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.s.RedactMessage(context.Background(), LocalRedaction{Session: session, Ordinal: ordinal, AllCopies: true}); err != nil {
+			t.Fatal(err)
+		}
+		path := p.s.Path()
+		if err := p.s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var s *Store
+		p.c.Reset()
+		cost := perfguard.MeasureSQLite(p.c, func() {
+			var err error
+			if s, err = Open(path, Options{}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		p.s = s // closed by newPerfIndex's cleanup
+		for q := range p.c.BySQL() {
+			if strings.Contains(q, "FROM messages") {
+				t.Fatalf("open with nothing pending queried messages: %s", q)
+			}
+		}
+		return cost
+	})
+}
