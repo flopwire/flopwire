@@ -33,7 +33,12 @@ type appendSession struct {
 
 func newAppendSession(t testing.TB, e *env, records int) *appendSession {
 	t.Helper()
-	a := &appendSession{e: e, sy: e.syncer(devicesync.Config{SealAfter: -1}), session: perfguard.ClaudeSession{SessionID: "a99e0000-0000-4000-8000-000000000001"}}
+	return newAppendSessionWith(t, e, records, devicesync.Config{SealAfter: -1})
+}
+
+func newAppendSessionWith(t testing.TB, e *env, records int, cfg devicesync.Config) *appendSession {
+	t.Helper()
+	a := &appendSession{e: e, sy: e.syncer(cfg), session: perfguard.ClaudeSession{SessionID: "a99e0000-0000-4000-8000-000000000001"}}
 	path := filepath.Join(t.TempDir(), a.session.SessionID+".jsonl")
 	if err := os.WriteFile(path, a.session.Lines(0, records), 0o644); err != nil {
 		t.Fatal(err)
@@ -165,6 +170,39 @@ func TestPerfAppendStatementBound(t *testing.T) {
 		t.Errorf("an append of %d calls sent %d statements with all of them failed, %d with 2: a statement per failed call", calls, many.Statements, few.Statements)
 	}
 	t.Logf("append of %d tool calls: %d statements", calls, many.Statements)
+}
+
+// An append's statements grow by at most one per added record: the
+// insert of its row. Everything else (auth, the flush, the parse, the
+// checkpoint, the digest) is per append, not per record or per failed
+// call. Every record here is half of a failed tool call. Chunks are large
+// enough that both appends travel as one tail, so chunk reservations do
+// not vary with the append's size.
+func TestPerfAppendStatementsPerRecord(t *testing.T) {
+	const small, large = 8, 64
+	cost := func(records int) int64 {
+		e, counter := perfEnv(t)
+		a := newAppendSessionWith(t, e, 64, devicesync.Config{SealAfter: -1,
+			Chunk: devicesync.ChunkParams{Min: 256 << 10, Avg: 512 << 10, Max: 1 << 20}})
+		a.records(t, appendBatch)
+		lines := a.toolCalls(a.next, records/2, records/2)
+		a.next += records
+		counter.Reset() // a failure lists only the append's statements
+		c := perfguard.Measure(t, e.pool, counter, func() { a.add(t, lines) })
+		if t.Failed() {
+			t.Logf("append of %d records:\n%s", records, counter)
+		}
+		return c.Statements
+	}
+	few, many := cost(small), cost(large)
+	// One insert per added record, plus a small allowance for statements
+	// that a larger append legitimately repeats (none today).
+	const slack = 4
+	if limit := few + (large - small) + slack; many > limit {
+		t.Errorf("an append of %d records sent %d statements, one of %d sent %d: more than one more statement per record (limit %d)",
+			large, many, small, few, limit)
+	}
+	t.Logf("statements: %d records → %d, %d records → %d", small, few, large, many)
 }
 
 // After many appends, the incrementally kept digest equals a full
