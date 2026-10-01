@@ -7,10 +7,11 @@ Use the CLI by default. Configure MCP if the user requests it or this coding too
 ## Check the existing setup
 
 1. Read the current [README](https://github.com/flopwire/flopwire/blob/main/README.md), [device guide](https://github.com/flopwire/flopwire/blob/main/docs/agent.md), and [access model](https://github.com/flopwire/flopwire/blob/main/SECURITY.md).
-2. Check whether `flopwire` is installed.
-3. Run `flopwire agent status` if it is installed.
-4. Preserve existing server settings, path rules, and coding-tool configuration.
-5. Use an existing server connection or a supplied invite. If neither exists, use local setup.
+2. Read the [agent tool reference](agent-tools.md).
+3. Check whether `flopwire` is installed.
+4. Run `flopwire agent status` if it is installed.
+5. Preserve existing server settings, path rules, and coding-tool configuration.
+6. Use an existing server connection or a supplied invite. If neither exists, use local setup.
 
 ## Install
 

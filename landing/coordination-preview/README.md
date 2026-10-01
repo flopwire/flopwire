@@ -4,9 +4,13 @@ Open `/coordination-preview/` to compare Editorial and Connected sessions at des
 
 The page shows the setup progression once: start locally, add devices under the same account, then invite teammates to the same server. The architecture diagram shows a daemon and SQLite index on each device, plus the shared server's Postgres and object storage. Local queries and --server queries are distinguished.
 
+All command examples share `examples.css`, including the hero, device progression, and search/read flow. Code changes use one diff treatment. Agent setup and configuration rules have explicit labels.
+
 The first example is triggered by evidence of parallel work: Codex is fixing the profile client and notices another branch renaming an API field it uses. It discovers the session on that branch, asks whether the rename is intended, receives the answer, and updates its client. Narration is outside the terminal; Command/Output rows are labeled. The setup document supplies the conditional outreach instruction.
 
 Peer rows and send acknowledgements follow the documented shapes in `notes/message-bus/plan.md` on `docs/message-bus-plan`, including user, live/busy state, branch, request intent, and next-tool-call delivery. They are fixture values in the specified format, not a captured CLI run. The current CLI implementation must provide a capture before these can serve as a runtime demonstration. The server is merged in #41 and the device implementation is under review in #49. The homepage does not claim to monitor Git events automatically.
+
+The search/read example is captured from the built retrieval CLI against `fixtures/pagination.jsonl`. The exact output is committed in `fixtures/grep.txt` and `fixtures/read.txt`. It uses local retrieval, includes the current session in search, and reads the returned address with one preceding message. The setup document links to `agent-tools.md`, which explains retrieval addresses and the messaging contract.
 
 The setup button copies one instruction to read `setup.md`. The file lives at `landing/setup.md`. On preview hosts, the page resolves its URL against the current host so the copied instruction opens the served file. On flopwire.com, it uses the canonical URL. Production publication is a separate action.
 

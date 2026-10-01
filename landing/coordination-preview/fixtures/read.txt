@@ -1,0 +1,6 @@
+# claude  0b7e2c1a-0000-4000-8000-000000000001  /work/acme/app  on api-cursors  device local  2026-09-23 10:00Z to 2026-09-23 10:00Z  3 msgs  "Update the pagination API"
+   [earlier messages: flopwire read 0b7e2c1a/1404928 -B 10]
+   0b7e2c1a/1404928  2026-09-23 10:00Z  user
+    Why does the client need the API’s cursor?
+>> 0b7e2c1a/3026944  2026-09-23 10:00Z  assistant
+>    1  The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.
