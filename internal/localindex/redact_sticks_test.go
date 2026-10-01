@@ -2,6 +2,7 @@ package localindex
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -255,7 +256,7 @@ func TestLocalRedactionSidecarShortWrite(t *testing.T) {
 	// A torn last line (written by something else) refuses to open.
 	path3 := filepath.Join(t.TempDir(), "index.db")
 	os.WriteFile(path3+".redactions.jsonl", append(side, side[:len(side)/2]...), 0o600)
-	if s3, err := Open(path3, Options{}); err == nil || !strings.Contains(err.Error(), "redactions.jsonl") {
+	if s3, err := Open(path3, Options{}); err == nil || !strings.Contains(err.Error(), "redactions.jsonl") || !strings.Contains(err.Error(), RecoveryDoc) {
 		if s3 != nil {
 			s3.Close()
 		}
@@ -289,4 +290,116 @@ func TestLocalRedactionBlankRangeKeepsSidecarLoadable(t *testing.T) {
 		t.Fatalf("reopen after a blank-line redaction: %v", err)
 	}
 	s2.Close()
+}
+
+// The directory sync fails after the new sidecar was renamed into place:
+// the redaction reports the error, but the renamed file is what the index
+// now holds. Its tombstones apply at once (the writer reconciles after the
+// failure), and the next redaction does not see a changed sidecar.
+func TestLocalRedactionDirSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{DeferCommit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+		msg("sess-1", "u1", 0, transcript.KindUser, "codename BLUEFALCON-7731 alpha"),
+		msg("sess-1", "u2", 1, transcript.KindUser, "codename REDHERON-4410 bravo"))
+	failed := errors.New("fsync: input/output error")
+	testHookDirSync = func(p string) error {
+		if p != path+".redactions.jsonl" {
+			return nil
+		}
+		testHookDirSync = nil
+		return failed
+	}
+	defer func() { testHookDirSync = nil }()
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0)}); !errors.Is(err, failed) {
+		t.Fatalf("redaction over a failed directory sync: %v", err)
+	}
+	noLeak(t, s, "BLUEFALCON", "after the failed directory sync")
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(1, 0)}); err != nil {
+		t.Fatalf("next redaction: %v", err)
+	}
+	noLeak(t, s, "REDHERON", "next redaction")
+	s.Close()
+	s2, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	noLeak(t, s2, "BLUEFALCON", "reopened")
+}
+
+// Each atomic sidecar write keeps the sidecar it replaces as .prev, the
+// last good copy the recovery procedure restores.
+func TestLocalRedactionKeepsPreviousSidecar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+		msg("sess-1", "u1", 0, transcript.KindUser, "codename BLUEFALCON-7731 alpha"),
+		msg("sess-1", "u2", 1, transcript.KindUser, "codename REDHERON-4410 bravo"))
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path + ".redactions.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(1, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := os.ReadFile(path + ".redactions.jsonl.prev")
+	if err != nil || string(prev) != string(first) {
+		t.Fatalf(".prev %q (%v), want %q", prev, err, first)
+	}
+}
+
+// A reconcile that fails when the index opens (here a row whose stored
+// text does not decompress) stops Open with an error that points to the
+// recovery procedure, and RebuildIndex, which drops the message rows and
+// keeps the sidecar, opens it again; re-indexing masks the rows.
+func TestLocalRedactionOpenFailureRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "codename BLUEFALCON-7731 alpha"
+	index := func(s *Store) {
+		src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+		sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+			msg("sess-1", "u1", 0, transcript.KindUser, text))
+	}
+	index(s)
+	s.Close()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE messages SET text = x'00' WHERE native_id = 'u1'`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	sum := sha256.Sum256([]byte(text))
+	os.WriteFile(path+".redactions.jsonl", []byte(`{"sha":"`+hex.EncodeToString(sum[:])+`","session":"sess-1","native":"u1"}`+"\n"), 0o600)
+	if s, err := Open(path, Options{}); err == nil || !strings.Contains(err.Error(), RecoveryDoc) {
+		if s != nil {
+			s.Close()
+		}
+		t.Fatalf("open over a failing reconcile: %v", err)
+	}
+	s2, err := Open(path, Options{RebuildIndex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	index(s2)
+	noLeak(t, s2, "BLUEFALCON", "rebuilt")
 }

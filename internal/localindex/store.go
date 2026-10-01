@@ -86,6 +86,11 @@ type Options struct {
 	// watermarks of the lost transaction are gone together.
 	DeferCommit   bool
 	OnCommitError func(error)
+	// RebuildIndex drops the index's own tables and FTS shards, as for a
+	// schema change, and starts empty (the indexer then parses every
+	// transcript again). Placements, devicesync's tables and the
+	// redaction sidecar are kept.
+	RebuildIndex bool
 	// SyncOnly keeps only the agent's bookkeeping (sources, watermarks,
 	// conversations, companions, placements): no message rows and no FTS
 	// shards (ModeSyncOnly). The mode is stored in the index; opening it in
@@ -223,7 +228,7 @@ func openWriter(path string, opts Options) (*Store, error) {
 	if opts.SyncOnly {
 		mode = ModeSyncOnly
 	}
-	details, rebuilt, err := migrate(wdb, Details{Tok: opts.TokDetail, Tri: opts.TriDetail, TriParts: opts.TriParts}, mode)
+	details, rebuilt, err := migrate(wdb, Details{Tok: opts.TokDetail, Tri: opts.TriDetail, TriParts: opts.TriParts}, mode, opts.RebuildIndex)
 	if err != nil {
 		wdb.Close()
 		return nil, fmt.Errorf("localindex: migrate: %w", err)
@@ -290,7 +295,7 @@ func openWriter(path string, opts Options) (*Store, error) {
 	// transaction, a sidecar beside a new database).
 	if err := s.writeWait(context.Background(), func(w *writeTx) error { return w.reconcile() }); err != nil {
 		s.Close()
-		return nil, fmt.Errorf("localindex: apply redactions: %w", err)
+		return nil, fmt.Errorf("localindex: apply redactions: %w; see %s", err, RecoveryDoc)
 	}
 	return s, nil
 }
@@ -431,9 +436,6 @@ func (s *Store) writer() {
 		}
 		w := &writeTx{s: s, tx: tx, ctx: context.Background()}
 		t := &txRun{w: w, started: time.Now()}
-		if s.reconcileDue.Swap(false) {
-			t.run(s.reconcileRequest())
-		}
 		t.run(r)
 		for !t.full() {
 			if !s.opts.DeferCommit || t.barrier {
@@ -471,7 +473,16 @@ func (t *txRun) full() bool {
 	return t.barrier || time.Since(t.started) >= commitMaxAge || t.w.fts.bytes >= 2*commitFTSSize
 }
 
+// run runs r, after a reconcile when one is due (a lost transaction or a
+// failed request may have held a redaction's row masks).
 func (t *txRun) run(r writeReq) {
+	if t.w.s.reconcileDue.Swap(false) {
+		t.runOne(t.w.s.reconcileRequest())
+	}
+	t.runOne(r)
+}
+
+func (t *txRun) runOne(r writeReq) {
 	if r.fn == nil { // Sync barrier
 		t.barrier = true
 		t.waiting = append(t.waiting, r)

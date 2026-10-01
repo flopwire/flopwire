@@ -128,7 +128,7 @@ func (s *Store) loadTombstones() error {
 		return err
 	}
 	if err := t.load(data); err != nil {
-		return fmt.Errorf("%s is corrupt (%w); the index will not open without every redaction it records: restore the file, or remove only the damaged line", s.tombstonePath(), err)
+		return fmt.Errorf("%s is corrupt (%w); the index will not open without every redaction it records: see %s", s.tombstonePath(), err, RecoveryDoc)
 	}
 	return nil
 }
@@ -370,6 +370,10 @@ func (s *Store) RedactMessage(ctx context.Context, r LocalRedaction) (int, error
 		return err
 	})
 	if err != nil {
+		if s.reconcileDue.Load() {
+			// Apply what reached the sidecar now, not at the next write.
+			err = errors.Join(err, s.Sync(ctx))
+		}
 		return 0, err
 	}
 	return n, nil
@@ -649,6 +653,11 @@ func (w *writeTx) maskRow(t redactTarget, masked string) (Tombstone, error) {
 // temporary file in place of f.Write (tests inject a short write).
 var testHookSidecarWrite func(f *os.File, b []byte) (int, error)
 
+// testHookDirSync, when set, replaces the directory sync after a file
+// replaced by writeFileAtomic is renamed into place (tests inject a
+// failure).
+var testHookDirSync func(path string) error
+
 // recordTombstones adds tombstones to the sidecar, then applies them to
 // later writes, and advances the reconciled marker when nothing earlier
 // is pending. It runs on the writer. Tombstones stay in effect for later
@@ -681,14 +690,29 @@ func (w *writeTx) recordTombstones(added []Tombstone) error {
 		buf = append(append(buf, b...), '\n')
 		ends[i] = int64(len(buf))
 	}
-	if err := writeFileAtomic(s.tombstonePath(), buf); err != nil {
+	// The sidecar being replaced is kept as .prev, the last good copy for
+	// recovery (RecoveryDoc).
+	if len(old) > 0 {
+		if _, err := writeFileAtomic(s.tombstonePath()+".prev", old); err != nil {
+			return err
+		}
+	}
+	renamed, err := writeFileAtomic(s.tombstonePath(), buf)
+	if renamed {
+		// The new file is in place (even if syncing its directory
+		// failed): it is what the index holds now.
+		t.mu.Lock()
+		for i, ts := range added {
+			t.addLocked(ts, ends[i])
+		}
+		t.mu.Unlock()
+	}
+	if err != nil {
+		// This request rolls back its row masks; with the entries
+		// loaded, the next transaction reconciles them.
+		s.reconcileDue.Store(renamed)
 		return err
 	}
-	t.mu.Lock()
-	for i, ts := range added {
-		t.addLocked(ts, ends[i])
-	}
-	t.mu.Unlock()
 	marker, err := w.reconciled()
 	if err == nil && marker == known {
 		_, err = w.exec(setReconciledSQL, strconv.FormatInt(int64(len(buf)), 10))
@@ -703,12 +727,14 @@ func (w *writeTx) recordTombstones(added []Tombstone) error {
 
 // writeFileAtomic replaces path with data: a temporary file beside it,
 // synced, renamed over it, and the directory synced, so a crash or a full
-// disk leaves the old file or the new one, never a torn one.
-func writeFileAtomic(path string, data []byte) error {
+// disk leaves the old file or the new one, never a torn one. renamed
+// reports that the new file is in place, which holds when only the
+// directory sync failed.
+func writeFileAtomic(path string, data []byte) (renamed bool, err error) {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tmp := f.Name()
 	var n int
@@ -731,17 +757,21 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	if err != nil {
 		os.Remove(tmp)
-		return err
+		return false, err
 	}
 	d, err := os.Open(dir)
 	if err != nil {
-		return err
+		return true, err
 	}
-	err = d.Sync()
+	if testHookDirSync != nil {
+		err = testHookDirSync(path)
+	} else {
+		err = d.Sync()
+	}
 	if cerr := d.Close(); err == nil {
 		err = cerr
 	}
-	return err
+	return true, err
 }
 
 // reconciled returns the sidecar length the rows reflect.
@@ -938,3 +968,7 @@ func (w *writeTx) maskDigest(conv int64, lines []string) error {
 	}
 	return err
 }
+
+// RecoveryDoc is the user documentation of what to do when the index will
+// not open because of its redactions.
+const RecoveryDoc = "docs/agent.md#recover-the-local-index"
