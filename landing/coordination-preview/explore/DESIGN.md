@@ -1,7 +1,9 @@
-# Connected sessions preview
+# Connected sessions agent network preview
 
-Plex Mono type, warm paper, orange fw mark, and a sender-to-recipient diagram. The route names people, tools, repositories, the API constraint, and the source passage. It stacks in source order on mobile.
+Warm paper, Plex Mono type, orange fw mark, and a light tool trace. The agent’s calls sit beside the receiving session and client diff. Calls and results stack before the outcome on mobile.
 
-This is a comparison prototype. Live coordination, automatic discovery, and communication controls are planned. The permission section describes intended behavior. It does not configure the product.
+The headline names the service. The primary action copies setup instructions to hand to the coding agent. The instructions start local indexing and connect the current retrieval tools. Team enrollment requires approval. Shared history, path rules, and human-configured communication boundaries remain visible below the hero.
 
-Brand assets were reused from the earlier exploration. They remain approximate reconstructions. Copy uses concrete actions and avoids claims about automatic learning or company memory.
+The send call and communication controls describe planned behavior. Examples use synthetic sessions. The source-build instructions were checked against the README, Makefile, agent flags, and MCP tool definitions; they were not run on a clean machine.
+
+The fw assets remain approximate reconstructions. This comparison does not select a production homepage.
