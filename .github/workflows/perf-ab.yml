@@ -1,0 +1,122 @@
+name: Perf A/B
+
+# The A/B benchmark on a synthetic corpus (docs/perf/README.md), shared by
+# perf-nightly.yml (main, every night) and perf-release.yml (the
+# release-please PR). Binary A is the baseline (scripts/perf-baseline.sh:
+# the newer of the latest v* tag and docs/perf/nightly-baseline), binary B
+# is the commit `ref`. Both run the acceptance parts in ABBA blocks on one
+# runner and one corpus; medians are compared. The job succeeds whatever
+# the verdict; callers act on the `verdict` output and the artifact
+# (summary.md, ab.json, ab.md and the run records).
+#
+# It only reads: the callers hold the issue and PR-comment tokens in jobs
+# that do not run the built binaries.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to test (binary B); the baseline is picked from its history"
+        required: true
+        type: string
+      baseline:
+        description: "One-off baseline: commit SHA or v* tag (empty: the default)"
+        required: false
+        type: string
+        default: ""
+      runs:
+        description: "Runs per binary (ABBA blocks)"
+        required: false
+        type: string
+        default: "3"
+      size:
+        description: "Synthetic corpus size"
+        required: false
+        type: string
+        default: "1.5GB"
+      artifact:
+        description: "Name of the uploaded artifact"
+        required: true
+        type: string
+    outputs:
+      verdict:
+        description: "CLEAN, REGRESSED or BASELINE_FAILED"
+        value: ${{ jobs.bench.outputs.verdict }}
+
+permissions:
+  contents: read
+
+env:
+  CORPUS_SEED: "1"
+  CORPUS_SIZE: ${{ inputs.size }}
+  RUNS: ${{ inputs.runs }}
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.ab.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - name: Pick the baseline
+        id: base
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+        run: |
+          scripts/perf-baseline.sh | tee -a "$GITHUB_OUTPUT"
+      - name: Build A (baseline) and B (the commit under test)
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
+          (cd "$RUNNER_TEMP/base" && go build -trimpath -o "$RUNNER_TEMP/flopwire-a" ./cmd/flopwire)
+          go build -trimpath -o "$RUNNER_TEMP/flopwire-b" ./cmd/flopwire
+          command -v sqlite3 >/dev/null || sudo apt-get install -y -q sqlite3 >/dev/null
+      # The corpus is regenerated each run rather than cached: generation
+      # is deterministic per generator version and seed, and takes less
+      # time than restoring a 1.5GB cache (docs/perf/README.md).
+      - name: Generate and verify the synthetic corpus
+        env:
+          GOMEMLIMIT: 2GiB
+        run: |
+          start=$(date +%s)
+          "$RUNNER_TEMP/flopwire-b" bench corpus --out "$RUNNER_TEMP/corpus" \
+            --seed "$CORPUS_SEED" --size "$CORPUS_SIZE" --verify
+          echo "corpus step: $(( $(date +%s) - start ))s"
+      - name: A/B bench
+        id: ab
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          BASE_SOURCE: ${{ steps.base.outputs.source }}
+        run: |
+          start=$(date +%s)
+          head="$(git rev-parse HEAD)"
+          mkdir -p perf-out
+          "$RUNNER_TEMP/flopwire-b" bench ab \
+            --a "$RUNNER_TEMP/flopwire-a" --a-commit "$BASE" \
+            --b "$RUNNER_TEMP/flopwire-b" --b-commit "$head" \
+            --home "$RUNNER_TEMP/corpus" --scratch "$RUNNER_TEMP/ab" \
+            --out perf-out --runs "$RUNS"
+          {
+            cat perf-out/ab.md
+            echo
+            echo "Baseline source: $BASE_SOURCE. A/B step: $(( $(date +%s) - start ))s."
+          } | tee perf-out/summary.md >>"$GITHUB_STEP_SUMMARY"
+          verdict="$(jq -r .verdict perf-out/ab.json)"
+          echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: perf-out/
+          retention-days: 90
