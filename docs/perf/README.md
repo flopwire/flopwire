@@ -37,8 +37,9 @@ flopwire bench compare docs/perf /tmp/flopwire-acceptance/acceptance-record.json
 ```
 
 When the first argument is a directory, the command uses the record in it
-with the newest `recorded_at`. A metric that grew by more than 20% is
-flagged `REGRESSED`. `--threshold` changes the 20%. The command exits 0
+with the newest `recorded_at`. A metric is flagged `REGRESSED` when it
+grew by more than 20% and by more than its minimum change (below).
+`--threshold` changes the 20%. The command exits 0
 unless `--strict` is set; with `--strict` it exits 1 on any regression or
 any `FAIL`.
 
@@ -69,18 +70,29 @@ Every metric is lower-is-better and passes when `value < limit`.
 A query whose command fails on its first run has no
 `query.<name>.warm` metric; its `query.<name>` check fails.
 
-| Metric | Unit | Limit | What it measures |
-|---|---|---|---|
-| `index.wall` | s | 300 | Wall time of the full local index of the corpus |
-| `index.peak_rss` | MB | 600 | Peak RSS of that index run |
-| `idle.rss` | MB | 120 | RSS of the agent after 60 s idle on the built index |
-| `sweep.cpu_max` | ms | 1000 | Slowest no-change sweep CPU time |
-| `fresh.p95` | ms | 2000 | p95 time until an appended line is findable |
-| `query.<name>.warm` | ms | 200 | Warm CLI latency of each query in `testdata/acceptance/queries.yaml` |
+| Metric | Unit | Limit | Min change | What it measures |
+|---|---|---|---|---|
+| `index.wall` | s | 300 | 10 | Wall time of the full local index of the corpus |
+| `index.peak_rss` | MB | 600 | 16 | Peak RSS of that index run |
+| `idle.rss` | MB | 120 | 16 | RSS of the agent after 60 s idle on the built index |
+| `sweep.cpu_max` | ms | 1000 | 100 | Slowest no-change sweep CPU time |
+| `fresh.p95` | ms | 2000 | 20 | p95 time until an appended line is findable |
+| `query.<name>.warm` | ms | 200 | 20 | Warm CLI latency of each query in `testdata/acceptance/queries.yaml` |
+
+The minimum change is the absolute growth a metric needs before it can
+count as a regression. Small numbers vary from run to run; without the
+floor, 0 to 5 ms of sweep CPU or 40 to 49 ms for a query would be
+flagged.
 
 Checks have no number to compare: `query.<name>` (expected hits and
 address round-trips) and `oracle.<agent>` (parser parity sample, 0 parse
 errors).
+
+The record is committed to a public repository, so it holds no host
+name, user name, path or transcript text. A failed check records a short
+fixed reason, such as `query command: exit status 1` or `missing session
+<id>`. The full error output goes to the terminal and to
+`<scratch>/acceptance.json` only.
 
 `corpus` counts the transcripts the index part reads: every `.jsonl` under
 the Claude projects root, every Codex rollout, and the Devin store.

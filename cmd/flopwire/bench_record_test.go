@@ -138,7 +138,7 @@ func TestCompareRecords(t *testing.T) {
 		newMetric("index.wall", 121, "s", 300),   // +21%: regressed
 		newMetric("idle.rss", 119, "MB", 120),    // +19%: within threshold
 		newMetric("fresh.p95", 2100, "ms", 2000), // regressed and over the limit
-		newMetric("sweep.cpu_max", 5, "ms", 1000),
+		newMetric("sweep.cpu_max", 150, "ms", 1000),
 		newMetric("query.new.warm", 10, "ms", 200))
 	cur.Checks = []accCheck{{Name: "query.x", Detail: "missing", Result: "FAIL"}, {Name: "query.y", Result: "PASS"}}
 	c := compareRecords(old, cur, 0.2)
@@ -156,7 +156,7 @@ func TestCompareRecords(t *testing.T) {
 		t.Errorf("index.wall diff = %+v", d)
 	}
 	if !math.IsInf(by["sweep.cpu_max"].Change, 1) {
-		t.Errorf("0 -> 5 change = %v, want +Inf", by["sweep.cpu_max"].Change)
+		t.Errorf("0 -> 150 change = %v, want +Inf", by["sweep.cpu_max"].Change)
 	}
 	if d := by["query.new.warm"]; d.HasOld || !d.HasNew {
 		t.Errorf("new metric = %+v", d)
@@ -328,5 +328,74 @@ func TestAccRecordSkipsUnmeasuredWarmLatency(t *testing.T) {
 	}
 	if len(rec.Checks) != 2 || rec.Checks[0].Result != "FAIL" {
 		t.Errorf("checks = %+v", rec.Checks)
+	}
+}
+
+// The committed record must not carry subprocess stderr: it can hold
+// absolute paths with the user name and project names.
+func TestAccRecordKeepsStderrOutOfChecks(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := "localindex: " + filepath.Join(home, ".claude", "projects", "-Users-someone-Code-secret", "s.jsonl") + ": permission denied"
+	var qr queryResult
+	qr.Name = "q"
+	qr.problem("query command: exit status 1", stderr)
+	qr.problem("read: exit status 2", "open /var/folders/x/index.db: no such file")
+	qr.problem("missing session abc", "")
+	if !strings.Contains(strings.Join(qr.Problems, "\n"), stderr) {
+		t.Errorf("terminal problems lost the stderr: %v", qr.Problems)
+	}
+	rec := newAccRecord(&accResults{Queries: &queriesResult{Results: []queryResult{qr}}}, nil, buildRecord{}, testMachine, time.Now())
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{home, "secret", "/var/folders", "permission denied", "no such file"} {
+		if bytes.Contains(data, []byte(leak)) {
+			t.Errorf("record contains %q: %s", leak, data)
+		}
+	}
+	if d := rec.Checks[0].Detail; d != "0 hits, reads 0/0; query command: exit status 1; read: exit status 2; missing session abc" {
+		t.Errorf("detail = %q", d)
+	}
+
+	// A record built from problems alone (no reasons) still leaks nothing.
+	old := queryResult{Name: "old", Problems: []string{"exit status 1: " + stderr}}
+	rec = newAccRecord(&accResults{Queries: &queriesResult{Results: []queryResult{old}}}, nil, buildRecord{}, testMachine, time.Now())
+	if strings.Contains(rec.Checks[0].Detail, home) {
+		t.Errorf("detail from problems only = %q", rec.Checks[0].Detail)
+	}
+}
+
+// Small absolute changes are noise, whatever their relative size.
+func TestCompareRecordsMinimumChange(t *testing.T) {
+	t0 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	old := mkRec(t0, testMachine, 1e9,
+		newMetric("sweep.cpu_max", 0, "ms", 1000),
+		newMetric("query.a.warm", 40, "ms", 200),
+		newMetric("query.b.warm", 40, "ms", 200),
+		newMetric("fresh.p95", 100, "ms", 2000),
+		newMetric("idle.rss", 40, "MB", 120),
+		newMetric("index.peak_rss", 40, "MB", 600),
+		newMetric("index.wall", 20, "s", 300))
+	cur := mkRec(t0.Add(time.Hour), testMachine, 1e9,
+		newMetric("sweep.cpu_max", 5, "ms", 1000),  // 0 -> 5ms CPU: noise
+		newMetric("query.a.warm", 49, "ms", 200),   // +9ms: noise
+		newMetric("query.b.warm", 70, "ms", 200),   // +30ms: regressed
+		newMetric("fresh.p95", 115, "ms", 2000),    // +15ms: noise
+		newMetric("idle.rss", 50, "MB", 120),       // +10MB: noise
+		newMetric("index.peak_rss", 60, "MB", 600), // +20MB: regressed
+		newMetric("index.wall", 28, "s", 300))      // +8s: noise
+	c := compareRecords(old, cur, 0.2)
+	want := map[string]bool{"sweep.cpu_max": false, "query.a.warm": false, "query.b.warm": true, "fresh.p95": false, "idle.rss": false, "index.peak_rss": true, "index.wall": false}
+	for _, d := range c.Metrics {
+		if d.Regress != want[d.Name] {
+			t.Errorf("%s: regress = %v, want %v (%+v)", d.Name, d.Regress, want[d.Name], d)
+		}
+	}
+	if c.Regressions != 2 {
+		t.Errorf("regressions = %d, want 2", c.Regressions)
 	}
 }

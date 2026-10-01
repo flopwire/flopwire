@@ -469,7 +469,8 @@ type queryResult struct {
 	Ms       []float64 `json:"ms"` // cold, then warm runs
 	WarmMs   float64   `json:"warm_ms"`
 	OK       bool      `json:"ok"`
-	Problems []string  `json:"problems,omitempty"`
+	Problems []string  `json:"problems,omitempty"` // with stderr; terminal and scratch only
+	Reasons  []string  `json:"reasons,omitempty"`  // path-free, for the record
 	// Reads round-trips the printed addresses: read ADDRESS[:LINE] of up to
 	// readsPerQuery hits must focus that message; ReadMs are their times.
 	Reads   int       `json:"reads"`
@@ -528,7 +529,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			o, err := exec.CommandContext(ctx, b.exe, args...).Output()
 			qr.Ms = append(qr.Ms, float64(time.Since(t0).Microseconds())/1000)
 			if err != nil {
-				qr.Problems = append(qr.Problems, fmt.Sprintf("%v: %s", err, errText(err)))
+				qr.problem("query command: "+exitReason(err), fmt.Sprintf("%v: %s", err, errText(err)))
 				break
 			}
 			out = o
@@ -547,7 +548,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 		}
 		if out != nil {
 			if err := json.Unmarshal(out, &parsed); err != nil {
-				qr.Problems = append(qr.Problems, "bad JSON: "+err.Error())
+				qr.problem("query output is not JSON", err.Error())
 			}
 		}
 		qr.Hits = len(parsed.Hits)
@@ -555,7 +556,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			qr.WarmMs = median(qr.Ms[1:])
 		}
 		if qr.Hits < q.Expect.MinHits {
-			qr.Problems = append(qr.Problems, fmt.Sprintf("%d hits, want >= %d", qr.Hits, q.Expect.MinHits))
+			qr.problem(fmt.Sprintf("%d hits, want >= %d", qr.Hits, q.Expect.MinHits), "")
 		}
 		for _, want := range q.Expect.Sessions {
 			found := false
@@ -563,7 +564,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 				found = found || strings.HasPrefix(h.SessionID, want)
 			}
 			if !found {
-				qr.Problems = append(qr.Problems, "missing session "+want)
+				qr.problem("missing session "+want, "")
 			}
 		}
 		for i, h := range parsed.Hits {
@@ -590,9 +591,9 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			}
 			switch {
 			case err != nil:
-				qr.Problems = append(qr.Problems, fmt.Sprintf("read %s: %v: %s", addr, err, errText(err)))
+				qr.problem("read: "+exitReason(err), fmt.Sprintf("%s: %v: %s", addr, err, errText(err)))
 			case json.Unmarshal(o, &cx) != nil || cx.Focus != h.MessageID || cx.Line != line:
-				qr.Problems = append(qr.Problems, fmt.Sprintf("read %s: focus %s line %d, want %s line %d", addr, cx.Focus, cx.Line, h.MessageID, line))
+				qr.problem("read: wrong focus", fmt.Sprintf("%s: focus %s line %d, want %s line %d", addr, cx.Focus, cx.Line, h.MessageID, line))
 			default:
 				qr.ReadsOK++
 			}
@@ -807,4 +808,24 @@ func loadAverage() string {
 		return ""
 	}
 	return strings.Trim(strings.TrimSpace(string(out)), "{} ")
+}
+
+// problem records why a query failed. reason is short and path-free; it
+// goes into the committed acceptance record (docs/perf/). detail (stderr,
+// addresses) is printed to the terminal and kept in the scratch results only.
+func (q *queryResult) problem(reason, detail string) {
+	q.Reasons = append(q.Reasons, reason)
+	if detail != "" {
+		reason += ": " + detail
+	}
+	q.Problems = append(q.Problems, reason)
+}
+
+// exitReason names how a subprocess failed without its stderr or paths.
+func exitReason(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ProcessState.String() // "exit status 1", "signal: killed"
+	}
+	return "failed to start"
 }

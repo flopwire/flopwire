@@ -150,8 +150,13 @@ func newAccRecord(r *accResults, oracles []oracleReport, build buildRecord, mach
 				rec.Metrics = append(rec.Metrics, newMetric("query."+q.Name+".warm", q.WarmMs, "ms", queryWarmLimitMs))
 			}
 			detail := fmt.Sprintf("%d hits, reads %d/%d", q.Hits, q.ReadsOK, q.Reads)
-			if len(q.Problems) > 0 {
-				detail += "; " + strings.Join(q.Problems, "; ")
+			// Reasons, not Problems: Problems carry stderr, which can name
+			// home paths and projects, and the record is committed.
+			switch {
+			case len(q.Reasons) > 0:
+				detail += "; " + strings.Join(q.Reasons, "; ")
+			case len(q.Problems) > 0:
+				detail += fmt.Sprintf("; %d problems (see the terminal output)", len(q.Problems))
 			}
 			rec.Checks = append(rec.Checks, accCheck{Name: "query." + q.Name, Detail: detail, Result: passFail(q.OK)})
 		}
@@ -249,7 +254,8 @@ type accComparison struct {
 }
 
 // compareRecords diffs cur against old. A metric regresses when it grew
-// by more than threshold (0.2 = 20%). Every metric is lower-is-better.
+// by more than threshold (0.2 = 20%) and by more than minRegression.
+// Every metric is lower-is-better.
 func compareRecords(old, cur *accRecord, threshold float64) *accComparison {
 	c := &accComparison{}
 	oldBy := map[string]accMetric{}
@@ -268,7 +274,7 @@ func compareRecords(old, cur *accRecord, threshold float64) *accComparison {
 			case m.Value > 0:
 				d.Change = math.Inf(1)
 			}
-			d.Regress = d.Change > threshold
+			d.Regress = d.Change > threshold && m.Value-o.Value > minRegression(m)
 		}
 		if d.Regress {
 			c.Regressions++
@@ -307,6 +313,23 @@ func compareRecords(old, cur *accRecord, threshold float64) *accComparison {
 		}
 	}
 	return c
+}
+
+// minRegression is the absolute growth below which a metric never counts
+// as regressed, whatever its relative change: run-to-run noise of small
+// numbers (0 -> 5ms sweep CPU, 40 -> 49ms query) is not a regression.
+func minRegression(m accMetric) float64 {
+	switch {
+	case m.Name == "sweep.cpu_max":
+		return 100 // ms of CPU time
+	case m.Unit == "ms":
+		return 20
+	case m.Unit == "s":
+		return 10
+	case m.Unit == "MB":
+		return 16
+	}
+	return 0
 }
 
 func fmtGB(b int64) string { return fmt.Sprintf("%.1fGB", float64(b)/1e9) }
