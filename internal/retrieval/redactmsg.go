@@ -224,11 +224,24 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		if err := ingest.LockRedactedLines(ctx, tx); err != nil {
 			return err
 		}
+		// A parse flush holds its conversations from their upsert and then
+		// writes their message rows; so does a checkpoint. Lock the targets'
+		// conversations first, in the order every multi-conversation writer
+		// takes them (store.LockConversationsSQL), before the re-read locks
+		// any message row. A target that moved to another conversation
+		// meanwhile changes the set, and the redaction starts again.
+		convs := make([]string, 0, len(targets))
+		for _, t := range targets {
+			convs = append(convs, t.conv)
+		}
+		if _, err := tx.Exec(ctx, store.LockConversationsSQL, convs); err != nil {
+			return err
+		}
 		current, err := redactTargets(ctx, tx, true, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
 		if err != nil {
 			return err
 		}
-		if !slices.EqualFunc(current, targets, func(a, b redactTarget) bool { return a.id == b.id && a.text == b.text }) {
+		if !slices.EqualFunc(current, targets, func(a, b redactTarget) bool { return a.id == b.id && a.text == b.text && a.conv == b.conv }) {
 			return errTargetsMoved
 		}
 		lr := ""
@@ -245,19 +258,6 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 			return err
 		}
 		res.JobID = applied.JobID
-		// A parse flush holds its conversations from their upsert and then
-		// writes their message rows: lock the conversations first, in the
-		// order every multi-conversation writer takes them, before any
-		// message row (store.LockConversationsSQL).
-		var convs []string
-		for _, t := range targets {
-			if _, ok := newText[t.id]; ok {
-				convs = append(convs, t.conv)
-			}
-		}
-		if _, err := tx.Exec(ctx, store.LockConversationsSQL, convs); err != nil {
-			return err
-		}
 		for _, t := range targets {
 			txt, ok := newText[t.id]
 			if !ok {
