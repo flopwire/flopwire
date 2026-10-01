@@ -32,7 +32,7 @@
 @media(max-width:760px){.commit-preview{padding:14px}.commit-preview .code-change{font-size:17px}.agent-instruction .terminal-heading{padding:12px 14px}.agent-instruction pre{padding:16px 14px;font-size:13px}.example-format-note{font-size:12px}}
 
 /* Shared syntax, different search targets. */
-.grep-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.grep-comparison{align-items:start;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
 .grep-comparison .hero-terminal{margin:0}
 .grep-comparison .hero-terminal-title>span:last-child{flex-basis:100%;margin-left:0}
 .grep-comparison .transcript-entry{grid-template-columns:1fr;gap:6px}

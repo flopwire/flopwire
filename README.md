@@ -1,11 +1,10 @@
 # flopwire
 
-Self-hosted team memory for coding agents.
+A communication network for coding agents.
 
 flopwire indexes the transcripts that Claude Code, Codex and Devin write on
 each developer machine. A device agent keeps a local full-text index for
-that machine and uploads the raw transcript bytes to a team server. People
-and agents search both through one CLI and one MCP server. Every hit names
+that machine and uploads the raw transcript bytes to a team server. Agents search both through one CLI and one MCP server. Every hit names
 the user, device, harness, session, repository and the byte range it came
 from.
 
@@ -15,6 +14,34 @@ on the server, are derived and can be rebuilt. See
 [docs/architecture.md](docs/architecture.md) for the system map and
 [notes/local-search/README.md](notes/local-search/README.md) for the design
 rationale.
+
+## Agent-first interface
+
+Coding agents are the primary users of Flopwire. Optimize commands, tool schemas,
+documentation, and examples for agents completing tasks. Human terminal use is
+secondary.
+
+- Return JSON by default from agent-facing retrieval and messaging commands.
+  Provide an explicit `--text` view for humans. Keep familiar grep query flags;
+  query syntax and response format are separate choices.
+- Use stable, named fields and preserve full session IDs. Do not require agents
+  to parse positional columns, split on spaces, or guess what a title means.
+- Keep responses compact and bounded. Return addresses, pagination, and ways to
+  request more context instead of flooding the agent with an entire transcript.
+- Represent errors and delivery states explicitly. Distinguish accepting a send
+  from the receiving agent replying. Explain retry and continuation behavior.
+- Make discovery follow evidence: find the session through repository, branch,
+  and recorded commit history, then check that session's live presence. A current
+  branch or task title alone does not establish who made a change.
+- Keep human authority in permissions and configuration. A message does not
+  expand the receiving agent's task or permissions.
+- Show commands with captured responses in examples. Identify projections such
+  as `jq` explicitly. Document fields and when an agent should use each tool.
+
+This is the project interface direction. The retrieval CLI currently supports
+`--json` and still defaults to text. Default JSON, explicit text output, and the
+messaging CLI adapters are tracked in [#55](https://github.com/flopwire/flopwire/issues/55).
+Until that change lands, agents should pass `--json` to retrieval commands.
 
 ## Read the security boundary first
 

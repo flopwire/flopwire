@@ -35,3 +35,16 @@ flopwire sessions --repo app --branch api-users --json |
 ```
 
 Output is saved in `branch-session.json`. The underlying session has full ID `79b2d8ef-0000-4000-8000-000000000001`; retrieval also returns an `address` with a unique short form. The example uses the full native ID for the presence match. The presence check demonstrates the JSON CLI contract and uses the full ID returned by presence. It is not a captured messaging CLI run.
+
+## JSON retrieval captures
+
+The preview projects these working CLI responses with `jq`:
+
+```sh
+flopwire grep -n -F next_cursor --include-self --json |
+  jq '.hits[] | {session_id, address, lines}'
+flopwire read 0b7e2c1a/3026944:1 -B 1 --json |
+  jq '.messages[] | {address, role, text}'
+```
+
+The captures are `transcript-grep.json` and `read.json`. They use the pagination index above. Messaging examples project the existing Peer and SendResponse schemas; their CLI capture is tracked in #55.

@@ -1,0 +1,11 @@
+{
+  "session_id": "0b7e2c1a-0000-4000-8000-000000000001",
+  "address": "0b7e2c1a/3026944",
+  "lines": [
+    {
+      "n": 1,
+      "text": "The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.",
+      "match": true
+    }
+  ]
+}

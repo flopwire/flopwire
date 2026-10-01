@@ -1,0 +1,10 @@
+{
+  "address": "0b7e2c1a/1404928",
+  "role": "user",
+  "text": "Why does the client need the API’s cursor?"
+}
+{
+  "address": "0b7e2c1a/3026944",
+  "role": "assistant",
+  "text": "The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent."
+}

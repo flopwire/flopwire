@@ -32,9 +32,9 @@ Peer presence uses the stored transcript title. Retrieval also includes a digest
 
 The digest's intent uses the first task prompt. If that prompt is too weak to describe the task, it uses the harness title or another usable prompt. A title or intent describes the session's task. Neither is a continuously generated status summary.
 
-## JSON for discovery
+## JSON-first commands
 
-The chosen messaging CLI contract is JSON by default for `flopwire peers`, with an explicit readable view for humans. The server's existing peers API already returns named JSON fields. The messaging CLI must implement and document that contract before it is treated as installed behavior.
+The chosen CLI contract is JSON by default across retrieval and messaging, with an explicit `--text` view for humans. The server's existing peers API already returns named JSON fields. Retrieval currently needs `--json` to select JSON. The messaging CLI adapters and the default-format change are tracked in [#55](https://github.com/flopwire/flopwire/issues/55).
 
 The response has a `peers` array. Each peer includes `session`, `agent`, `user`, `user_id`, `busy`, `own`, and `seen_at`. Optional fields include `user_name`, `device`, `repo`, `branch`, and `title`. A peer in this response is live. `busy` is a boolean, not a separate positional column.
 
@@ -50,7 +50,7 @@ A heading begins with `## SESSION`. A hit begins with `MESSAGE:LINE`. Combine th
 
 The `read` output includes session metadata and message addresses. `>>` marks the selected message. Role labels identify user, assistant, and tool messages. Indented lines are message content.
 
-Use `--json` on retrieval commands when a script needs named fields. `-n -F` works in both `grep` and `flopwire grep`. Flopwire's regex engine and search target differ from system grep. Read the command help for the supported options.
+Use `--json` on retrieval commands until JSON becomes the default. `-n -F` works in both `grep` and `flopwire grep`. Flopwire's regex engine and search target differ from system grep. Read the command help for the supported options.
 
 ## Ask a question
 
