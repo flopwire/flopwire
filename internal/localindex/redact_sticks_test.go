@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
@@ -71,7 +72,7 @@ func TestLocalRedactionReconcilesSidecarOnOpen(t *testing.T) {
 	k := testKey(t, path)
 	sum := sha256.Sum256([]byte(text))
 	sha, line := k.sum(domSHA, sum[:]), k.sum(domLine, []byte("codename BLUEFALCON-7731"))
-	side := `{"sha":"` + hex.EncodeToString(sha[:]) + `","session":"sess-1","native":"u1","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n" +
+	side := `{"key_check":"` + k.check() + `"}` + "\n" + `{"sha":"` + hex.EncodeToString(sha[:]) + `","session":"sess-1","native":"u1","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n" +
 		`{"sha":"` + hex.EncodeToString(sha[:]) + `","session":"sess-2","native":"u9","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n"
 	if err := os.WriteFile(path+".redactions.jsonl", []byte(side), 0o600); err != nil {
 		t.Fatal(err)
@@ -398,8 +399,9 @@ func TestLocalRedactionOpenFailureRecovery(t *testing.T) {
 	}
 	db.Close()
 	sum := sha256.Sum256([]byte(text))
-	sha := testKey(t, path).sum(domSHA, sum[:])
-	os.WriteFile(path+".redactions.jsonl", []byte(`{"sha":"`+hex.EncodeToString(sha[:])+`","session":"sess-1","native":"u1"}`+"\n"), 0o600)
+	k := testKey(t, path)
+	sha := k.sum(domSHA, sum[:])
+	os.WriteFile(path+".redactions.jsonl", []byte(`{"key_check":"`+k.check()+`"}`+"\n"+`{"sha":"`+hex.EncodeToString(sha[:])+`","session":"sess-1","native":"u1"}`+"\n"), 0o600)
 	if s, err := Open(path, Options{}); err == nil || !strings.Contains(err.Error(), RecoveryDoc) {
 		if s != nil {
 			s.Close()
@@ -596,5 +598,91 @@ func TestLocalRedactionTitleCutAfterUnicodeSpace(t *testing.T) {
 				t.Errorf("lead %q, %s: title %q kept as %q", lead, sess, title, got)
 			}
 		}
+	}
+}
+
+// After a redaction, the FTS shard files no longer hold the hidden token:
+// the shards are compacted, so the old segments that indexed it are gone
+// and their pages zeroed (the reviewer found "4417" in index.db-tok).
+func TestLocalRedactionScrubsFTSShards(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{DeferCommit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	var msgs []*transcript.Message
+	for i := range 300 {
+		msgs = append(msgs, msg("sess-1", fmt.Sprintf("m%d", i), int64(i+1), transcript.KindAssistant, fmt.Sprintf("filler reply %d about the build and the tests", i)))
+	}
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+		append([]*transcript.Message{msg("sess-1", "u1", 0, transcript.KindUser, "hello\nmy pin is 4417 zebracorn\nbye")}, msgs...)...)
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var scrubbed int
+	testHookScrubbed = func(*ftsShard, time.Duration) { scrubbed++ }
+	defer func() { testHookScrubbed = nil }()
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0), From: 2, To: 2}); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "find", findIDs(t, s, "zebracorn", FindOptions{}), nil)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if scrubbed != len(s.shards) {
+		t.Fatalf("%d of %d shards compacted", scrubbed, len(s.shards))
+	}
+	ents, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), "index.db") || strings.Contains(e.Name(), "redactions") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(filepath.Dir(path), e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tok := range []string{"zebracorn", "4417"} {
+			if bytes.Contains(bytes.ToLower(b), []byte(tok)) {
+				t.Errorf("%s still holds %q", e.Name(), tok)
+			}
+		}
+	}
+	// Still searchable after reopening; the neighbours still match.
+	s2, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if got := findIDs(t, s2, "filler reply 7 about", FindOptions{}); len(got) != 1 {
+		t.Fatalf("neighbour after compaction: %v", got)
+	}
+}
+
+// A key file that does not belong to the sidecar (restored from another
+// index's backup) refuses to open the index: with it every hash would
+// miss and the redactions would silently stop applying.
+func TestLocalRedactionKeyMismatchRefusesOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
+		msg("sess-1", "u1", 0, transcript.KindUser, "codename BLUEFALCON-7731 alpha"))
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	testKey(t, path) // another key
+	if s2, err := Open(path, Options{}); err == nil || !strings.Contains(err.Error(), "does not match") || !strings.Contains(err.Error(), RecoveryDoc) {
+		if s2 != nil {
+			s2.Close()
+		}
+		t.Fatalf("opened with the wrong key: %v", err)
 	}
 }

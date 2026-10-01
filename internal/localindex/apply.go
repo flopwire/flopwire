@@ -671,7 +671,13 @@ func (w *writeTx) queueFTS() ([]*ftsWork, error) {
 		}
 	}
 	for _, wk := range works {
-		wk.seq = seq
+		wk.seq, wk.scrub = seq, w.scrub
+	}
+	if w.scrub {
+		// Durable, so Open compacts a shard that stopped before it did.
+		if _, err := w.exec(`INSERT INTO meta (key, value) VALUES ('fts_scrub_seq', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, strconv.FormatInt(seq, 10)); err != nil {
+			return nil, err
+		}
 	}
 	return works, nil
 }

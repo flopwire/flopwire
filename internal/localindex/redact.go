@@ -98,6 +98,10 @@ type Tombstone struct {
 	// parser emits it.
 	TitleSHA string `json:"title_sha,omitempty"`
 	Title    string `json:"title,omitempty"`
+	// KeyCheck, alone on the sidecar's first line, is the keyed hash of a
+	// constant: a key that does not match it refuses to open the index
+	// rather than miss every hash.
+	KeyCheck string `json:"key_check,omitempty"`
 }
 
 type tombEntry struct {
@@ -140,7 +144,17 @@ const (
 	domLine   = 'l' // a hidden line, trimmed (also title windows)
 	domTitle  = 't' // an exact title
 	domPrefix = 'p' // a cut of a hidden first line, trimmed
+	domCheck  = 'c' // the sidecar header's key check
 )
+
+// check is the sidecar header's KeyCheck under this key.
+func (k *keyer) check() string {
+	sum := k.sum(domCheck, []byte("flopwire-redactions-v1"))
+	return hex.EncodeToString(sum[:])
+}
+
+// errKeyMismatch: the key file does not belong to the sidecar.
+var errKeyMismatch = errors.New("the key does not match the redactions")
 
 func newKeyer(key []byte) *keyer {
 	k := &keyer{}
@@ -232,7 +246,9 @@ func (s *Store) loadTombstones() error {
 	if len(data) > 0 && key == nil {
 		return fmt.Errorf("%s has redactions but its key %s is missing: the index will not open without them; see %s", s.tombstonePath(), s.keyPath(), RecoveryDoc)
 	}
-	if err := t.load(data); err != nil {
+	if err := t.load(data); errors.Is(err, errKeyMismatch) {
+		return fmt.Errorf("%s: %w in %s (a key from another index or backup?); the index will not open without every redaction it records: see %s", s.keyPath(), err, s.tombstonePath(), RecoveryDoc)
+	} else if err != nil {
 		return fmt.Errorf("%s is corrupt (%w); the index will not open without every redaction it records: see %s", s.tombstonePath(), err, RecoveryDoc)
 	}
 	return nil
@@ -252,7 +268,19 @@ func (t *tombstones) load(data []byte) error {
 			return fmt.Errorf("line %d: %w", i, err)
 		}
 		off += int64(j + 1)
-		t.addLocked(ts, off)
+		switch {
+		case i == 1 && ts.KeyCheck == "":
+			return errors.New("line 1 is not the key check header")
+		case i == 1:
+			if !hmac.Equal([]byte(ts.KeyCheck), []byte(t.k.check())) {
+				return errKeyMismatch
+			}
+			t.size = off
+		case ts.KeyCheck != "":
+			return fmt.Errorf("line %d: a second key check header", i)
+		default:
+			t.addLocked(ts, off)
+		}
 		data = data[j+1:]
 	}
 	return nil
@@ -271,6 +299,13 @@ func parseTombstone(b []byte) (Tombstone, error) {
 	isSum := func(h string) bool {
 		sum, err := hex.DecodeString(h)
 		return err == nil && len(sum) == 32
+	}
+	if ts.KeyCheck != "" {
+		if !isSum(ts.KeyCheck) || ts.SHA != "" || ts.Session != "" || ts.Native != "" || ts.From != 0 || ts.To != 0 ||
+			len(ts.Lines) != 0 || len(ts.Lens) != 0 || ts.Prefixes != "" || ts.TitleSHA != "" || ts.Title != "" {
+			return ts, errors.New("bad key check header")
+		}
+		return ts, nil
 	}
 	switch {
 	case ts.SHA == "" && len(ts.Lines) == 0 && ts.TitleSHA == "":
@@ -770,6 +805,7 @@ func (w *writeTx) maskRow(t redactTarget, masked string) (Tombstone, error) {
 		return Tombstone{}, err
 	}
 	p := &prepared{z: compress(masked), text: masked}
+	w.scrub = true
 	if err := w.ftsDelete(t.id); err != nil {
 		return Tombstone{}, err
 	}
@@ -811,6 +847,15 @@ func (w *writeTx) recordTombstones(added []Tombstone) error {
 		return fmt.Errorf("localindex: %s changed since the index opened (%d bytes, %d expected); reopen the index", s.tombstonePath(), len(old), known)
 	}
 	buf := old
+	if len(buf) == 0 {
+		t.mu.RLock()
+		hdr, err := json.Marshal(Tombstone{KeyCheck: t.k.check()})
+		t.mu.RUnlock()
+		if err != nil {
+			return err
+		}
+		buf = append(hdr, '\n')
+	}
 	ends := make([]int64, len(added))
 	for i, ts := range added {
 		b, err := json.Marshal(ts)

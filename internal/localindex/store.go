@@ -282,6 +282,11 @@ func openWriter(path string, opts Options) (*Store, error) {
 		wdb.Close()
 		return nil, fmt.Errorf("localindex: replay FTS queue: %w", err)
 	}
+	if err := s.scheduleScrubs(context.Background()); err != nil {
+		s.closeShards()
+		wdb.Close()
+		return nil, fmt.Errorf("localindex: FTS compaction: %w", err)
+	}
 	if err := s.loadTombstones(); err != nil {
 		s.closeShards()
 		wdb.Close()
@@ -644,6 +649,7 @@ type writeTx struct {
 	ctx   context.Context
 	stmts map[string]*sql.Stmt
 	fts   ftsPending
+	scrub bool // a redaction masked rows: compact the FTS shards after commit
 }
 
 func (w *writeTx) stmt(q string) (*sql.Stmt, error) {

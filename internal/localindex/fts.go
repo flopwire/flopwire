@@ -65,6 +65,7 @@ type ftsWork struct {
 	seq   int64 // highest fts_queue sequence covered (the shard may own none of it)
 	ops   []ftsOp
 	bytes int
+	scrub bool // a local redaction masked rows: compact the shard after (scrub)
 }
 
 func (w *ftsWork) add(op ftsOp) {
@@ -92,6 +93,9 @@ type ftsShard struct {
 	applied int64
 	err     error // the last failed apply, cleared when a retry succeeds
 	closing bool
+	// scrubDue: a redaction's changes are applied but the old segments
+	// that held the hidden text are not merged away yet (scrub).
+	scrubDue bool
 	// draining: the store is closing; submit no longer blocks on
 	// backpressure (a failing shard would hold the writer forever).
 	draining bool
@@ -252,8 +256,14 @@ func (sh *ftsShard) run() {
 	backoff := time.Duration(0)
 	for {
 		sh.mu.Lock()
-		for len(sh.queue) == 0 && !sh.closing {
+		for len(sh.queue) == 0 && !sh.closing && !sh.scrubDue {
 			sh.cond.Wait()
+		}
+		if sh.scrubDue && sh.err == nil {
+			sh.scrubDue = false
+			sh.mu.Unlock()
+			sh.scrub()
+			continue
 		}
 		if len(sh.queue) == 0 || (sh.closing && sh.err != nil) {
 			// Closing: what is left (or failing) is replayed from
@@ -290,6 +300,9 @@ func (sh *ftsShard) run() {
 		}
 		backoff = 0
 		sh.err = nil
+		for _, w := range batch {
+			sh.scrubDue = sh.scrubDue || w.scrub
+		}
 		sh.queue = sh.queue[n:]
 		sh.queued -= bytes
 		sh.applied = max(sh.applied, batch[len(batch)-1].seq)
@@ -351,6 +364,80 @@ func (sh *ftsShard) apply(batch []*ftsWork) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// scrub merges the shard's segments into one (FTS5 'optimize') with
+// secure_delete on, so the segments that still held a redacted row's old
+// text are dropped and their pages zeroed, then truncates the WAL. It
+// runs on the shard's goroutine after the redaction's changes are
+// applied, so it holds no writer and answers no waiter; the main writer
+// blocks only if more than maxShardQueue of text queues meanwhile. It
+// costs a rewrite of the shard. fts_meta.scrubbed records the applied
+// sequence it covers (Open schedules it again after a crash).
+func (sh *ftsShard) scrub() {
+	start := time.Now()
+	ctx := context.Background()
+	err := func() error {
+		conn, err := sh.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, `PRAGMA secure_delete = ON`); err != nil {
+			return err
+		}
+		defer conn.ExecContext(ctx, `PRAGMA secure_delete = OFF`) //nolint:errcheck // best effort; a later scrub sets it again
+		applied := sh.appliedSeq()
+		for _, q := range []string{
+			`INSERT INTO ` + sh.table + ` (` + sh.table + `) VALUES ('optimize')`,
+			fmt.Sprintf(`INSERT OR REPLACE INTO fts_meta VALUES ('scrubbed', %d)`, applied),
+		} {
+			if _, err := conn.ExecContext(ctx, q); err != nil {
+				return err
+			}
+		}
+		// Readers may hold the WAL; a busy checkpoint is retried by
+		// SQLite's own checkpoints and on close.
+		_, err = conn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+		return err
+	}()
+	if err != nil {
+		slog.Warn("localindex: compacting the FTS shard after a redaction failed", "shard", sh.path, "err", err)
+		return
+	}
+	slog.Info("localindex: compacted the FTS shard after a redaction", "shard", sh.path, "took", time.Since(start).Round(time.Millisecond))
+	if testHookScrubbed != nil {
+		testHookScrubbed(sh, time.Since(start))
+	}
+}
+
+// testHookScrubbed, when set, is called after each scrub (tests).
+var testHookScrubbed func(sh *ftsShard, took time.Duration)
+
+// scheduleScrubs marks for a scrub each shard that applied a redaction's
+// changes (meta.fts_scrub_seq) and has not compacted since: the agent
+// stopped between the two.
+func (s *Store) scheduleScrubs(ctx context.Context) error {
+	var due sql.NullInt64
+	if err := s.wdb.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fts_scrub_seq'`).Scan(&due); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if !due.Valid {
+		return nil
+	}
+	for _, sh := range s.shards {
+		var done int64
+		if err := sh.db.QueryRowContext(ctx, `SELECT value FROM fts_meta WHERE key = 'scrubbed'`).Scan(&done); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if done < due.Int64 {
+			sh.mu.Lock()
+			sh.scrubDue = true
+			sh.cond.Broadcast()
+			sh.mu.Unlock()
+		}
+	}
+	return nil
 }
 
 // drain stops submit from blocking, so a writer held by backpressure can
