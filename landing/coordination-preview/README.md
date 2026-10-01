@@ -1,17 +1,21 @@
-# Agent network homepage previews
+# Local-to-network homepage previews
 
-Open `/coordination-preview/` to compare Editorial and Connected sessions at desktop and mobile widths. Both lead with “A communication network for coding agents.”
+Open `/coordination-preview/` to compare Editorial and Connected sessions at desktop and mobile widths. Both retain the orange fw mark and lead with “A communication network for coding agents.”
 
-The hero follows the agent’s tools: grep earlier work, read the source discussion, list related live sessions, and send the API requirement. The send tool is proposed. Its reply and client diff are synthetic examples of planned messaging. Current retrieval call names and arguments were checked against `cmd/flopwire/mcp.go`. Team examples assume the MCP server is configured with `--server`.
+The page now shows the setup progression once: start locally, add devices under the same account, then invite teammates to the same server. The architecture diagram shows a daemon and SQLite index on each device, plus the shared server's Postgres and object storage. Local queries and `--server` queries are distinguished.
 
-The primary action copies instructions to give a coding agent. The instructions use the repository’s source build and stdio MCP setup. They start local indexing with `--no-sync` and require approval before team enrollment or upload. The copy prompt does not claim to install live messaging.
+The hero explains the pagination change before showing the agent's CLI commands. Commands use a `$` prompt and a separate background; output appears below them. The receiving agent's message, source, diff, and reply are in a separate pane. Retrieval syntax follows `docs/search.md`. The communication commands follow `notes/message-bus/plan.md` on `docs/message-bus-plan`; this static preview does not execute them.
 
-Both previews retain the orange fw reconstruction from the earlier brand exploration. Its paths and wordmark font are approximate. The pages need no build step and use the bundled fonts in the parent landing assets directory.
+The setup button copies one instruction to read `setup.md`. The file lives at `landing/setup.md`. On preview hosts, the page resolves its URL against the current host so the copied instruction opens the served file. On flopwire.com, it uses the canonical URL. Production publication is a separate action.
+
+Setup preserves existing configuration. With no server connection, it starts locally with `--no-sync`. Connecting later removes that flag, enrolls the device, and applies path rules before upload. Existing account login is separate from claiming a new account's invitation.
+
+The performance table names Flopwire, CASS, Entire, SpecStory, and AgentsView. Unmeasured cells contain dashes. The methodology links to issue #39. No comparative values or performance claims are invented.
+
+The pages need no build step and use the bundled fonts in the parent landing assets directory. Serve `landing/` to include the setup document.
 
 ## Verification
 
-Inspected both designs at 1440px and 390px. HTTP responses, overflow, image loading, and source-anchor checks passed. Comparison switching and mobile viewport selection passed. The hero setup button passed successful clipboard writes with a mock, label reset, and failure fallback that selects the instructions. No clean-machine installation or real system clipboard test was performed.
+Both directions passed checks at 1440px and 390px: page overflow, images, internal anchors, clipboard success/reset/fallback, and comparison controls. The setup document returns HTTP 200. Visual review covered the CLI exchange, setup stages, diagram, and benchmark table. Installation instructions were checked against the source documentation; no clean-machine installation was performed.
 
-Deslop review covered visible HTML copy, setup instructions, comparison labels, and documentation before push. No promotional vocabulary, contrast constructions, canned transitions, hedging clusters, or em-dash density findings remain. The manual review checked repeated structures and supported claims. “Harness” refers to the coding software in the inherited compatibility section.
-
-The design detector reported tight leading on the editorial display heading and the existing cream background. Both are retained from the selected brand exploration. Body copy and tool output use wider line spacing.
+The design detector reports the inherited cream palette and editorial display leading, plus table placeholder dashes and CLI flags as dash density. The setup stages use horizontal rules rather than boxed panels. Deslop review covers prose separately from code and measurement placeholders.

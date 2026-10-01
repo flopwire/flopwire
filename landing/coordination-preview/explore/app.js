@@ -1,5 +1,9 @@
 (() => {
   'use strict';
+  const setup = document.getElementById('agent-setup');
+  if (!['flopwire.com', 'www.flopwire.com'].includes(location.hostname)) {
+    setup.textContent = `Read ${new URL('../../setup.md', location.href).href} and set up Flopwire for this agent.`;
+  }
   document.querySelectorAll('[data-copy]').forEach(button => {
     const initialLabel = button.querySelector('span').textContent;
     let resetTimer;
