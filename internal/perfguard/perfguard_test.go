@@ -294,6 +294,8 @@ func TestAssertIndexedPlan(t *testing.T) {
 	AssertIndexedPlan(t, pool, `SELECT * FROM items WHERE id = $1`, 5)
 	AssertIndexedPlan(t, pool, `SELECT * FROM items ORDER BY id LIMIT 10`)
 	AssertIndexedPlan(t, pool, `SELECT * FROM items WHERE id > $1 ORDER BY id LIMIT 10`, 5)
+	AssertIndexedPlan(t, pool, `SELECT max(id) FROM items`)
+	AssertIndexedPlan(t, pool, `SELECT * FROM items i LEFT JOIN filler f ON f.id = i.grp ORDER BY i.id LIMIT 10`)
 
 	for _, tc := range []struct {
 		name, query string
@@ -305,6 +307,15 @@ func TestAssertIndexedPlan(t *testing.T) {
 		// instead; the scan has a Filter but no Index Cond.
 		{"full index scan fallback", `SELECT * FROM items WHERE note LIKE $1 ORDER BY v`, []any{"%7"}},
 		{"sort above full scan", `SELECT * FROM items ORDER BY note LIMIT 10`, nil},
+		// A Limit does not bound a scan that filters: it reads until it
+		// finds enough matching rows, the whole index when few match.
+		{"limit over filtered full index scan", `SELECT * FROM items WHERE grp = $1 ORDER BY id LIMIT 10`, []any{5}},
+		{"max() of unindexed group per row", `SELECT id, (SELECT max(i2.id) FROM items i2 WHERE i2.grp = items.v) FROM items ORDER BY id LIMIT 10`, nil},
+		// An inner join can drop outer rows, so the Limit does not
+		// bound the outer scan either.
+		{"limit over inner join", `SELECT i.* FROM items i JOIN filler f ON f.id = i.grp ORDER BY i.id LIMIT 10`, nil},
+		// An init plan runs to completion, whatever the Limit above it.
+		{"init plan under limit", `SELECT id, ARRAY(SELECT id FROM items ORDER BY id) FROM items ORDER BY id LIMIT 10`, nil},
 	} {
 		r := &recorder{TB: t}
 		AssertIndexedPlan(r, pool, tc.query, tc.args...)
@@ -320,12 +331,23 @@ func TestAssertIndexedPlan(t *testing.T) {
 func TestFullScansNestedLoopInner(t *testing.T) {
 	// A Limit stops the outer side of a nested loop early, not the inner
 	// side, which is rescanned per outer row.
-	plan := `[{"Plan": {"Node Type": "Limit", "Plans": [{"Node Type": "Nested Loop", "Plans": [
+	plan := `[{"Plan": {"Node Type": "Limit", "Plans": [{"Node Type": "Nested Loop", "Join Type": "Left", "Plans": [
 	  {"Node Type": "Index Scan", "Parent Relationship": "Outer", "Relation Name": "a", "Index Name": "a_pkey"},
 	  {"Node Type": "Index Scan", "Parent Relationship": "Inner", "Relation Name": "b", "Index Name": "b_pkey"}]}]}}]`
 	got := FullScans(plan)
 	if len(got) != 1 || got[0].Relation != "b" {
 		t.Fatalf("FullScans = %v, want only the inner scan of b", got)
+	}
+}
+
+func TestFullScansLimitedOuterOnlyThroughLeftJoin(t *testing.T) {
+	for join, want := range map[string]int{"Left": 0, "Inner": 1, "Semi": 1, "Anti": 1} {
+		plan := `[{"Plan": {"Node Type": "Limit", "Plans": [{"Node Type": "Nested Loop", "Parent Relationship": "Outer", "Join Type": "` + join + `", "Plans": [
+		  {"Node Type": "Index Scan", "Parent Relationship": "Outer", "Relation Name": "a", "Index Name": "a_pkey"},
+		  {"Node Type": "Index Scan", "Parent Relationship": "Inner", "Relation Name": "b", "Index Name": "b_pkey", "Index Cond": "(id = a.b_id)"}]}]}}]`
+		if got := FullScans(plan); len(got) != want {
+			t.Errorf("%s join: FullScans = %v, want %d", join, got, want)
+		}
 	}
 }
 

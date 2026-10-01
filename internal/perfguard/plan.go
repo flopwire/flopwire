@@ -20,7 +20,9 @@ type Beginner interface {
 // AssertIndexedPlan fails t when the plan for query, made with sequential
 // scans disabled, still reads a whole table: a Seq Scan, or an Index Scan
 // or Index Only Scan with no Index Cond (the planner's fallback when no
-// index matches the predicate) that no Limit stops early. Either means no
+// index matches the predicate) that no Limit stops early. A Limit stops a
+// scan early only through nodes that pass every row up unfiltered (not a
+// Sort, a Filter, an inner join, or an init plan or subplan). Either means no
 // index serves the query: a missing index, or a predicate that defeats
 // one such as `id::text > $1`. The query is planned with args bound but
 // not executed. The plan is printed on failure.
@@ -123,7 +125,12 @@ func FullScans(plan string) []FullScan {
 			case "Seq Scan":
 				out = append(out, FullScan{Node: node, Relation: rel})
 			case "Index Scan", "Index Only Scan":
-				if _, cond := x["Index Cond"]; !cond && !limited {
+				// A Limit stops a scan early only when every row it
+				// emits counts toward the Limit: with a Filter it reads
+				// on until enough rows match, the whole index if few do.
+				_, cond := x["Index Cond"]
+				_, filter := x["Filter"]
+				if !cond && (!limited || filter) {
 					idx, _ := x["Index Name"].(string)
 					out = append(out, FullScan{Node: node, Relation: rel, Index: idx})
 				}
@@ -131,10 +138,21 @@ func FullScans(plan string) []FullScan {
 			childLimited := node == "Limit" || (limited && limitTransparent[node])
 			if kids, ok := x["Plans"].([]any); ok {
 				for _, k := range kids {
-					// Only the outer side of a nested loop is stopped by a
-					// Limit; the inner side is rescanned per outer row.
 					km, _ := k.(map[string]any)
-					walk(k, childLimited || (limited && node == "Nested Loop" && km["Parent Relationship"] == "Outer"))
+					switch rel := km["Parent Relationship"]; {
+					case rel == "InitPlan" || rel == "SubPlan":
+						// Runs to completion (per outer row, for a
+						// correlated subplan), whatever Limit is above.
+						walk(k, false)
+					case childLimited:
+						walk(k, true)
+					default:
+						// Only the outer side of a left nested loop is
+						// stopped by a Limit: an inner join can drop
+						// outer rows, and the inner side is rescanned
+						// per outer row.
+						walk(k, limited && node == "Nested Loop" && rel == "Outer" && x["Join Type"] == "Left")
+					}
 				}
 			}
 		}
