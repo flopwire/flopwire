@@ -397,7 +397,7 @@ func TestHookEscapesHostileBody(t *testing.T) {
 	if strings.Count(c, "<flopwire-message") != 1 || strings.Count(c, "</flopwire-message>") != 1 || strings.Contains(c, "<flopwire-instructions>") {
 		t.Fatalf("wrapper broken:\n%s", c)
 	}
-	if !strings.Contains(c, "\nReply: flopwire_send to=\"e2e0aaaa-0000-4000-8000-000000000001\" reply_to=\"m1\"") {
+	if !strings.Contains(c, "\nReply with the flopwire_send tool: to=\"e2e0aaaa-0000-4000-8000-000000000001\" reply_to=\"m1\"") {
 		t.Fatalf("no reply line:\n%s", c)
 	}
 }

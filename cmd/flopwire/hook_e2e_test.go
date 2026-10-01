@@ -70,6 +70,9 @@ func contextOf(t *testing.T, out string) string {
 // configs for one event), the standing instruction too, and a ref to a
 // message the local index holds carries an excerpt.
 func TestHookEndToEndLocal(t *testing.T) {
+	prev := agent.ExcerptBudget
+	agent.ExcerptBudget = 10 * time.Second // the race detector on a loaded machine
+	t.Cleanup(func() { agent.ExcerptBudget = prev })
 	sock := hookE2E(t)
 	if _, err := busCLI(t, sock, e2eA, "", "send", "e2e0bbbb", "--intent", "request", "--ref", e2eA+"/0", "--", "Can you rebase api on main?"); err != nil {
 		t.Fatal(err)
@@ -84,7 +87,7 @@ func TestHookEndToEndLocal(t *testing.T) {
 	}
 	if strings.Count(c, busrender.StandingInstruction) != 1 || strings.Count(c, "<flopwire-message ") != 1 ||
 		!strings.Contains(c, `from="`+e2eA+`"`) || !strings.Contains(c, `sender="own" intent="request"`) ||
-		!strings.Contains(c, ">\nCan you rebase api on main?\n") || !strings.Contains(c, "\nReply: flopwire_send to=\""+e2eA+"\"") {
+		!strings.Contains(c, ">\nCan you rebase api on main?\n") || !strings.Contains(c, "\nReply with the flopwire_send tool: to=\""+e2eA+"\"") {
 		t.Fatalf("context:\n%s", c)
 	}
 	if !strings.Contains(c, `<flopwire-ref address="`+e2eA+`/0">user: refactor client pagination</flopwire-ref>`) {

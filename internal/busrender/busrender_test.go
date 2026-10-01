@@ -33,7 +33,7 @@ Heads-up: pagination is changing.
 // the exact call; reply-to is an attribute when set.
 func TestReplyLineOnlyForRequest(t *testing.T) {
 	req := Render(env(busproto.IntentRequest, "Can you rebase?"), nil, 0)
-	wantTail := "</flopwire-message>\nReply: flopwire_send to=\"0b7e2c1a-0000-4000-8000-000000000001\" reply_to=\"m7f3a\" message=\"…\" (shell: flopwire send 0b7e2c1a-0000-4000-8000-000000000001 --reply-to m7f3a -- \"…\")"
+	wantTail := "</flopwire-message>\nReply with the flopwire_send tool: to=\"0b7e2c1a-0000-4000-8000-000000000001\" reply_to=\"m7f3a\" message=\"…\"; or in a shell: flopwire send 0b7e2c1a-0000-4000-8000-000000000001 --reply-to m7f3a -- \"…\""
 	if !strings.HasSuffix(req, wantTail) {
 		t.Fatalf("request tail:\n%s", req)
 	}
@@ -41,7 +41,7 @@ func TestReplyLineOnlyForRequest(t *testing.T) {
 		e := env(in, "ok")
 		e.ReplyTo = "m0001"
 		got := Render(e, nil, 0)
-		if strings.Contains(got, "Reply:") || !strings.HasSuffix(got, "</flopwire-message>") {
+		if strings.Contains(got, "Reply with") || !strings.HasSuffix(got, "</flopwire-message>") {
 			t.Fatalf("%s has a reply line:\n%s", in, got)
 		}
 		if !strings.Contains(got, ` reply-to="m0001" `) {
@@ -91,7 +91,7 @@ func TestHostileBodies(t *testing.T) {
 			// The body may say anything inside the wrapper; what follows
 			// the closing tag is Flopwire's alone.
 			after := got[strings.LastIndex(got, "</flopwire-message>"):]
-			if in == busproto.IntentRequest && (strings.Count(after, "\nReply: ") != 1 || strings.Contains(after, "evil")) {
+			if in == busproto.IntentRequest && (strings.Count(after, "\nReply with ") != 1 || strings.Contains(after, "evil")) {
 				t.Fatalf("body %q: after the wrapper:\n%s", b, after)
 			}
 		}
@@ -212,7 +212,7 @@ func TestControlCharacterBodyWithinBudget(t *testing.T) {
 	if b.Len()-3 > HookBytes {
 		t.Fatalf("encoded %d > %d", b.Len()-3, HookBytes)
 	}
-	if !strings.Contains(got, "[cut: ") || !strings.HasSuffix(got, "-- \"…\")") {
+	if !strings.Contains(got, "[cut: ") || !strings.HasSuffix(got, "-- \"…\"") {
 		t.Fatalf("not cut, or the reply line lost:\n%s", got[len(got)-400:])
 	}
 }

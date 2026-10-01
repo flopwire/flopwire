@@ -56,20 +56,20 @@ func (a *Agent) releaseStart(session, source string) {
 	delete(s.at, session+"\x00"+source)
 }
 
-// excerptBudget bounds the local index lookups for ref excerpts: they
+// ExcerptBudget bounds the local index lookups for ref excerpts: they
 // share the hook's 200 ms budget, and a ref without an excerpt still
-// prints its address.
-const excerptBudget = 50 * time.Millisecond
+// prints its address. Tests under the race detector widen it.
+var ExcerptBudget = 50 * time.Millisecond
 
 // refExcerpts looks up the message refs (SESSION/ORDINAL[:LINE]) of msgs
 // in the local index and returns a short excerpt for each one it finds.
 // Other address kinds, sessions the index does not hold or holds more
-// than one match for, and lookups past excerptBudget get none.
+// than one match for, and lookups past ExcerptBudget get none.
 func (a *Agent) refExcerpts(ctx context.Context, msgs []busproto.Envelope) map[string]string {
 	if a.store == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, excerptBudget)
+	ctx, cancel := context.WithTimeout(ctx, ExcerptBudget)
 	defer cancel()
 	var out map[string]string
 	for _, m := range msgs {

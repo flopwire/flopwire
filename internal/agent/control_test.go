@@ -351,6 +351,9 @@ func TestControlPendingBounded(t *testing.T) {
 // A message ref the local index holds comes back with an excerpt; one it
 // does not hold comes back without.
 func TestControlPendingRefExcerpts(t *testing.T) {
+	prev := ExcerptBudget
+	ExcerptBudget = 10 * time.Second // the race detector on a loaded machine
+	t.Cleanup(func() { ExcerptBudget = prev })
 	f, b := busFixture(t)
 	f.once()
 	ids, err := f.store.SessionsWithPrefix(ctx, "", 1)
@@ -372,5 +375,14 @@ func TestControlPendingRefExcerpts(t *testing.T) {
 	}
 	if _, ok := r.Excerpts["zzzz9999/1"]; ok {
 		t.Fatal("excerpt for a session the index does not hold")
+	}
+	// Past the budget, refs come back without excerpts and pending still
+	// answers.
+	ExcerptBudget = 0
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "see again", Refs: []string{ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); !r.OK || len(r.Messages) != 1 || len(r.Excerpts) != 0 {
+		t.Fatalf("past the budget: ok %v, %d messages, excerpts %v", r.OK, len(r.Messages), r.Excerpts)
 	}
 }
