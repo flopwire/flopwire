@@ -100,6 +100,14 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 		}
 		return err
 	}
+	// The owner's redactions, read on the writer: a redaction records its
+	// tombstones in its own write request, so every batch the writer runs
+	// after it is masked, and every batch before it is masked by it.
+	w.s.tombs.maskTitles(b.Conversations)
+	if len(b.prep) != len(b.Messages) {
+		b.prep = prepareAll(b.Messages)
+	}
+	w.s.tombs.mask(b.Messages, b.prep)
 	convs := map[string]int64{}
 	for _, c := range b.Conversations {
 		if c.Agent == "" {
@@ -120,9 +128,6 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 	byConv := map[int64][]*transcript.Message{}  // every row written: folded into the digest
 	counted := map[int64][]*transcript.Message{} // new rows: added to the digest's counts
 	replaced := map[int64]bool{}                 // a counted attribute of an existing row changed
-	if len(b.prep) != len(b.Messages) {
-		b.prep = prepareAll(b.Messages)
-	}
 	for i, m := range b.Messages {
 		convID, ok := convs[m.SessionID]
 		if !ok {
