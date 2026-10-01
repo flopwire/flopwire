@@ -1,10 +1,13 @@
 package localindex
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/claude"
 )
 
 // noLeak fails t when any stored message text, title, digest or FTS entry
@@ -64,10 +68,11 @@ func TestLocalRedactionReconcilesSidecarOnOpen(t *testing.T) {
 
 	// What the redaction of line 1 with --all-copies records, written
 	// without the row masks its lost transaction held.
+	k := testKey(t, path)
 	sum := sha256.Sum256([]byte(text))
-	line := sha256.Sum256([]byte("codename BLUEFALCON-7731"))
-	side := `{"sha":"` + hex.EncodeToString(sum[:]) + `","session":"sess-1","native":"u1","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n" +
-		`{"sha":"` + hex.EncodeToString(sum[:]) + `","session":"sess-2","native":"u9","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n"
+	sha, line := k.sum(domSHA, sum[:]), k.sum(domLine, []byte("codename BLUEFALCON-7731"))
+	side := `{"sha":"` + hex.EncodeToString(sha[:]) + `","session":"sess-1","native":"u1","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n" +
+		`{"sha":"` + hex.EncodeToString(sha[:]) + `","session":"sess-2","native":"u9","from":1,"to":1,"lines":["` + hex.EncodeToString(line[:]) + `"],"lens":[24]}` + "\n"
 	if err := os.WriteFile(path+".redactions.jsonl", []byte(side), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +160,7 @@ func TestLocalRedactionPartialSurvivesGrowthAndRewrite(t *testing.T) {
 				t.Fatalf("sidecar: %v", err)
 			}
 			path2 := filepath.Join(t.TempDir(), "index.db")
-			os.WriteFile(path2+".redactions.jsonl", side, 0o600)
+			placeSidecar(t, path, path2, side)
 			s2, err := Open(path2, Options{})
 			if err != nil {
 				t.Fatal(err)
@@ -169,24 +174,29 @@ func TestLocalRedactionPartialSurvivesGrowthAndRewrite(t *testing.T) {
 }
 
 // A title is masked by content, not only by an exact match of the title
-// the redaction saw: a later session whose title is the redacted line
-// truncated elsewhere, or a title that contains the line, is masked. A
-// title that shares only its start with the line is not.
+// the redaction saw: a later session whose title is the redacted line cut
+// where a parser cuts titles, or a title that contains the line, is
+// masked. A title that shares only its start with the line is not.
 func TestLocalRedactionMasksTitleByContent(t *testing.T) {
 	s := openTest(t, DetailFull)
-	line := "please rotate the staging key BLUEFALCON-7731 before the demo tomorrow morning"
+	// Rune 100 is a space, so claude's cut and codex's (trimmed) differ.
+	line := fmt.Sprintf("%-99s tell the whole team in the channel", "please rotate the staging key BLUEFALCON-7731 before the demo tomorrow morning, then")
+	cut := string([]rune(line)[:claude.TitleRunes]) // claude's cut; codex trims it
+	if cut == strings.TrimSpace(cut) {
+		t.Fatal("want a cut that ends in a space")
+	}
 	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
-	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1", Title: line},
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1", Title: cut},
 		msg("sess-1", "u1", 0, transcript.KindUser, line+"\nthanks"))
 	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0), From: 1, To: 1}); err != nil {
 		t.Fatal(err)
 	}
 	titles := map[string]string{
-		"sess-2": line[:40],                        // truncated at another length
-		"sess-3": line[:45] + " ",                  // truncated, then a trailing space
-		"sess-4": "Re: " + line,                    // holds the whole line
-		"sess-5": "  " + line + "  ",               // the line, padded
-		"sess-6": "please rotate the logs nightly", // shares a start, then differs: kept
+		"sess-2": cut,                               // claude's cut
+		"sess-3": strings.TrimSpace(cut),            // codex's cut, trimmed
+		"sess-4": "Re: " + line,                     // holds the whole line
+		"sess-5": "  " + line + "  ",                // the line, padded
+		"sess-6": line[:40] + " but something else", // shares a start, then differs: kept
 		"sess-7": "unrelated title",
 	}
 	for sess, title := range titles {
@@ -244,7 +254,7 @@ func TestLocalRedactionSidecarShortWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	path2 := filepath.Join(t.TempDir(), "index.db")
-	os.WriteFile(path2+".redactions.jsonl", side, 0o600)
+	placeSidecar(t, path, path2, side)
 	s2, err := Open(path2, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +265,7 @@ func TestLocalRedactionSidecarShortWrite(t *testing.T) {
 
 	// A torn last line (written by something else) refuses to open.
 	path3 := filepath.Join(t.TempDir(), "index.db")
-	os.WriteFile(path3+".redactions.jsonl", append(side, side[:len(side)/2]...), 0o600)
+	placeSidecar(t, path, path3, append(side, side[:len(side)/2]...))
 	if s3, err := Open(path3, Options{}); err == nil || !strings.Contains(err.Error(), "redactions.jsonl") || !strings.Contains(err.Error(), RecoveryDoc) {
 		if s3 != nil {
 			s3.Close()
@@ -388,7 +398,8 @@ func TestLocalRedactionOpenFailureRecovery(t *testing.T) {
 	}
 	db.Close()
 	sum := sha256.Sum256([]byte(text))
-	os.WriteFile(path+".redactions.jsonl", []byte(`{"sha":"`+hex.EncodeToString(sum[:])+`","session":"sess-1","native":"u1"}`+"\n"), 0o600)
+	sha := testKey(t, path).sum(domSHA, sum[:])
+	os.WriteFile(path+".redactions.jsonl", []byte(`{"sha":"`+hex.EncodeToString(sha[:])+`","session":"sess-1","native":"u1"}`+"\n"), 0o600)
 	if s, err := Open(path, Options{}); err == nil || !strings.Contains(err.Error(), RecoveryDoc) {
 		if s != nil {
 			s.Close()
@@ -443,4 +454,108 @@ func TestLocalRedactionFailedWriteKeepsReconcileDue(t *testing.T) {
 		t.Fatal(err)
 	}
 	noLeak(t, s, "BLUEFALCON", "after the faults cleared")
+}
+
+// placeSidecar puts a sidecar beside the index at to, with the key of the
+// index at from (a rebuilt index keeps both).
+func placeSidecar(t *testing.T, from, to string, side []byte) {
+	t.Helper()
+	key, err := os.ReadFile(from + ".redactions.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to+".redactions.key", key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to+".redactions.jsonl", side, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// testKey writes a fixed redaction key beside the index at path and
+// returns its keyer, for sidecars a test writes by hand.
+func testKey(t *testing.T, path string) *keyer {
+	t.Helper()
+	key := bytes.Repeat([]byte{7}, 32)
+	if err := os.WriteFile(path+".redactions.key", []byte(hex.EncodeToString(key)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return newKeyer(key)
+}
+
+// The sidecar and its .prev hold no unkeyed hash of a hidden line, of any
+// prefix of it, or of the message, and at most len(titleCuts) title cuts
+// per entry; without the key file the index refuses to open.
+func TestLocalRedactionSidecarHidesSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "please deploy with my token ghp_0123456789abcdefghijklmnopqrstuvwxyzAB and then run the full integration suite against staging before the demo"
+	texts := []string{secret + "\nsecond line of the prompt", "short secret line HUNTER2-9911\nreply"}
+	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1", Title: secret[:100]},
+		msg("sess-1", "u1", 0, transcript.KindUser, texts[0]), msg("sess-1", "u2", 1, transcript.KindUser, texts[1]))
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0), From: 1, To: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(1, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	var files []byte
+	for _, f := range []string{".redactions.jsonl", ".redactions.jsonl.prev"} {
+		b, err := os.ReadFile(path + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, b...)
+	}
+	var plain [][]byte
+	add := func(s string) {
+		sum := sha256.Sum256([]byte(s))
+		plain = append(plain, sum[:])
+	}
+	for _, text := range texts {
+		add(text)
+		for _, line := range strings.Split(text, "\n") {
+			for k := 1; k <= len(line); k++ {
+				add(line[:k])
+				add(strings.TrimSpace(line[:k]))
+			}
+		}
+	}
+	for _, line := range strings.Split(string(files), "\n") {
+		if line == "" {
+			continue
+		}
+		ts, err := parseTombstone([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := base64.StdEncoding.DecodeString(ts.Prefixes)
+		if len(p)/8 > len(titleCuts) {
+			t.Errorf("entry holds %d title cuts, want at most %d", len(p)/8, len(titleCuts))
+		}
+		for _, h := range plain {
+			if strings.Contains(line, hex.EncodeToString(h)) || bytes.Contains(p, h[:8]) {
+				t.Fatalf("sidecar holds an unkeyed hash of redacted text: %s", line)
+			}
+		}
+	}
+	if strings.Contains(string(files), "ghp_") || strings.Contains(string(files), "HUNTER2") {
+		t.Fatal("sidecar holds redacted text")
+	}
+
+	// The sidecar alone does not open.
+	path2 := filepath.Join(t.TempDir(), "index.db")
+	side, _ := os.ReadFile(path + ".redactions.jsonl")
+	os.WriteFile(path2+".redactions.jsonl", side, 0o600)
+	if s2, err := Open(path2, Options{}); err == nil || !strings.Contains(err.Error(), RecoveryDoc) {
+		if s2 != nil {
+			s2.Close()
+		}
+		t.Fatalf("opened a sidecar without its key: %v", err)
+	}
 }

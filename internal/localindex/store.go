@@ -122,9 +122,10 @@ type Store struct {
 	tombs    *tombstones // local message redactions (writing stores)
 	// reconcileDue: a transaction that may have held redaction masks was
 	// lost; the writer applies the sidecar again first thing (redact.go).
-	reconcileDue atomic.Bool
-	lock         *os.File // the index lock (writing stores)
-	keepLock     bool     // LockFile handed the lock to the caller
+	reconcileDue     atomic.Bool
+	reconcileFailing atomic.Bool // the last reconcile failed (logged once)
+	lock             *os.File    // the index lock (writing stores)
+	keepLock         bool        // LockFile handed the lock to the caller
 }
 
 type writeReq struct {

@@ -19,11 +19,18 @@ package localindex
 //   - A line range keys on the hidden lines' content too, so a later
 //     version of the record (grown, rewritten) is masked.
 //   - Titles are masked by content: a title that holds a hidden line, or
-//     is a truncation of a hidden first line, is masked whole.
+//     is a hidden first line cut where a parser cuts titles, is masked
+//     whole.
+//   - Every hash in the sidecar is keyed (HMAC-SHA256) with a random key
+//     in its own file beside it, so the sidecar alone allows no guessing.
+//     Title cuts are recorded at the parsers' cut lengths only: hashes of
+//     every prefix would give a line away a byte at a time.
 
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -31,6 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"os"
@@ -43,6 +51,8 @@ import (
 	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/claude"
+	"github.com/flopwire/flopwire/internal/transcript/codex"
 )
 
 const (
@@ -51,37 +61,38 @@ const (
 	// is masked as a truncation of a hidden first line. Shorter titles
 	// are masked only when they equal a hidden line.
 	titleMinMatch = 16
-	// titlePrefixMax bounds the truncations recorded per hidden first
-	// line; the parsers cut titles at 100 runes.
-	titlePrefixMax = 512
 	// reconciledKey is the meta key holding the sidecar length the rows
 	// reflect.
 	reconciledKey = "redactions_reconciled"
 )
 
-// Tombstone is one sidecar entry. None holds text: only hashes.
+// Tombstone is one sidecar entry. It holds no message text. Every hash in
+// it is HMAC-SHA256 under the index's redaction key (keyer), which is in
+// a separate file. In the clear it holds the session and native ids, the
+// line range, the byte length of each hidden line, and Title, a masked
+// title (marker bytes plus any title text that was not hidden).
 //
-// A row whose original text hashes to SHA is masked (lines From..To, or
-// all of it when From is 0). A whole-message tombstone also masks every
-// version of the record (Session, Native). A line-range tombstone masks,
-// in every version of the record (rows of Session without a native id
-// when Native is empty), each line whose trimmed text hashes to one of
-// Lines.
+// A row whose original content_sha keys to SHA is masked (lines From..To,
+// or all of it when From is 0). A whole-message tombstone also masks
+// every version of the record (Session, Native). A line-range tombstone
+// masks, in every version of the record (rows of Session without a
+// native id when Native is empty), each line whose trimmed text keys to
+// one of Lines.
 type Tombstone struct {
 	SHA     string   `json:"sha,omitempty"`
 	Session string   `json:"session,omitempty"`
 	Native  string   `json:"native,omitempty"`
 	From    int      `json:"from,omitempty"`
 	To      int      `json:"to,omitempty"`
-	Lines   []string `json:"lines,omitempty"` // sha256 of each hidden line, trimmed
+	Lines   []string `json:"lines,omitempty"` // each hidden line, trimmed, keyed
 	Lens    []int    `json:"lens,omitempty"`  // and its length in bytes
-	// Prefixes: the first 8 bytes of sha256 of each prefix, titleMinMatch
-	// to titlePrefixMax bytes long, of the message's first line (trimmed)
-	// when the redaction hid it, base64: a title that is a truncation of
-	// that line is masked.
+	// Prefixes: base64 of the first 8 bytes of the keyed hash of each
+	// titleCuts cut of the message's first line, when the redaction hid
+	// it and the line is longer than the cut: a title cut there is masked.
+	// At most len(titleCuts) per entry.
 	Prefixes string `json:"prefixes,omitempty"`
 	// TitleSHA and Title: a conversation title of Session that held the
-	// redacted text (a title is the first prompt's start) hashes to
+	// redacted text (a title is the first prompt's start) keys to
 	// TitleSHA and is written as Title, its masked form, wherever the
 	// parser emits it.
 	TitleSHA string `json:"title_sha,omitempty"`
@@ -98,12 +109,95 @@ type tombstones struct {
 	bySHA    map[[32]byte][]Tombstone
 	byNative map[string]bool              // whole-message records
 	byRecord map[string]map[[32]byte]bool // line-range records: hidden line hashes
+	k        *keyer                       // nil until the index has a redaction key
 	byTitle  map[[32]byte]string          // exact titles seen by a redaction
 	needles  map[[32]byte]bool            // every hidden line, trimmed
 	lens     []int                        // needle lengths >= titleMinMatch, ascending
 	prefixes map[[8]byte]bool             // truncations of hidden first lines
 	entries  []tombEntry
 	size     int64 // sidecar bytes loaded or written
+}
+
+// titleCuts are the rune counts the parsers cut a first-line title to
+// (claude, codex). A hidden first line longer than a cut records the hash
+// of that cut only: never a run of prefixes, which would give the line
+// away a byte at a time.
+var titleCuts = uniqueInts(claude.TitleRunes, codex.TitleRunes)
+
+func uniqueInts(v ...int) []int {
+	slices.Sort(v)
+	return slices.Compact(v)
+}
+
+// keyer computes the sidecar's hashes: HMAC-SHA256 under the index's
+// redaction key, with a domain byte per kind, so the sidecar (or its
+// .prev) without the key file allows no offline guessing.
+type keyer struct{ pool sync.Pool }
+
+const (
+	domSHA    = 's' // a row's content_sha
+	domLine   = 'l' // a hidden line, trimmed (also title windows)
+	domTitle  = 't' // an exact title
+	domPrefix = 'p' // a cut of a hidden first line, trimmed
+)
+
+func newKeyer(key []byte) *keyer {
+	k := &keyer{}
+	k.pool.New = func() any { return hmac.New(sha256.New, key) }
+	return k
+}
+
+func (k *keyer) sum(dom byte, b []byte) [32]byte {
+	h := k.pool.Get().(hash.Hash)
+	h.Reset()
+	h.Write([]byte{dom})
+	h.Write(b)
+	var out [32]byte
+	h.Sum(out[:0])
+	k.pool.Put(h)
+	return out
+}
+
+func (s *Store) keyPath() string { return s.path + ".redactions.key" }
+
+// ensureKey creates the index's redaction key on its first redaction: 32
+// random bytes, hex, in a 0600 file beside the sidecar. It lives as long
+// as the sidecar: a rebuild of the index keeps it.
+func (s *Store) ensureKey() error {
+	t := s.tombs
+	t.mu.RLock()
+	have := t.k != nil
+	t.mu.RUnlock()
+	if have {
+		return nil
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return err
+	}
+	if _, err := writeFileAtomic(s.keyPath(), []byte(hex.EncodeToString(key)+"\n")); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	t.k = newKeyer(key)
+	t.mu.Unlock()
+	return nil
+}
+
+// loadKey reads the redaction key; a missing file means none yet.
+func loadKey(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	key, err := hex.DecodeString(strings.TrimSpace(string(b)))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("%s is corrupt: want 64 hex digits; see %s", path, RecoveryDoc)
+	}
+	return key, nil
 }
 
 func newTombstones() *tombstones {
@@ -120,12 +214,22 @@ func (s *Store) tombstonePath() string { return s.path + ".redactions.jsonl" }
 func (s *Store) loadTombstones() error {
 	t := newTombstones()
 	s.tombs = t
+	key, err := loadKey(s.keyPath())
+	if err != nil {
+		return err
+	}
+	if key != nil {
+		t.k = newKeyer(key)
+	}
 	data, err := os.ReadFile(s.tombstonePath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if len(data) > 0 && key == nil {
+		return fmt.Errorf("%s has redactions but its key %s is missing: the index will not open without them; see %s", s.tombstonePath(), s.keyPath(), RecoveryDoc)
 	}
 	if err := t.load(data); err != nil {
 		return fmt.Errorf("%s is corrupt (%w); the index will not open without every redaction it records: see %s", s.tombstonePath(), err, RecoveryDoc)
@@ -183,7 +287,7 @@ func parseTombstone(b []byte) (Tombstone, error) {
 			return ts, errors.New("bad line hash")
 		}
 	}
-	if p, err := base64.StdEncoding.DecodeString(ts.Prefixes); err != nil || len(p)%8 != 0 {
+	if p, err := base64.StdEncoding.DecodeString(ts.Prefixes); err != nil || len(p)%8 != 0 || len(p) > 8*len(titleCuts) {
 		return ts, errors.New("bad title prefixes")
 	}
 	return ts, nil
@@ -227,12 +331,12 @@ func (t *tombstones) addLocked(ts Tombstone, end int64) {
 
 // lineHash is the hash a tombstone records for a hidden line: of its
 // trimmed text; blank lines have none.
-func lineHash(line string) ([32]byte, bool) {
+func (k *keyer) lineHash(line string) ([32]byte, bool) {
 	l := strings.TrimSpace(line)
 	if l == "" {
 		return [32]byte{}, false
 	}
-	return sha256.Sum256([]byte(l)), true
+	return k.sum(domLine, []byte(l)), true
 }
 
 func maskWhole(s string) string {
@@ -242,11 +346,11 @@ func maskWhole(s string) string {
 }
 
 // maskLines masks every line of text whose hash is in set.
-func maskLines(text string, set map[[32]byte]bool) string {
+func (k *keyer) maskLines(text string, set map[[32]byte]bool) string {
 	lines := strings.Split(text, "\n")
 	changed := false
 	for i, l := range lines {
-		if h, ok := lineHash(l); ok && set[h] {
+		if h, ok := k.lineHash(l); ok && set[h] {
 			lines[i], changed = maskWhole(l), true
 		}
 	}
@@ -259,8 +363,13 @@ func maskLines(text string, set map[[32]byte]bool) string {
 // maskText applies the message tombstones to a row's text. t.mu is held
 // (read).
 func (t *tombstones) maskText(text string, sha [32]byte, session, native string) string {
-	for _, ts := range t.bySHA[sha] {
-		text, _ = redact.MaskText(text, ts.From, ts.To)
+	if t.k == nil {
+		return text
+	}
+	if len(t.bySHA) > 0 {
+		for _, ts := range t.bySHA[t.k.sum(domSHA, sha[:])] {
+			text, _ = redact.MaskText(text, ts.From, ts.To)
+		}
 	}
 	if len(t.byNative) == 0 && len(t.byRecord) == 0 {
 		return text
@@ -271,7 +380,7 @@ func (t *tombstones) maskText(text string, sha [32]byte, session, native string)
 		return text
 	}
 	if set := t.byRecord[key]; set != nil {
-		text = maskLines(text, set)
+		text = t.k.maskLines(text, set)
 	}
 	return text
 }
@@ -282,10 +391,10 @@ func (t *tombstones) maskText(text string, sha [32]byte, session, native string)
 // or more, or is a truncation (titleMinMatch bytes or more) of a hidden
 // first line. t.mu is held (read).
 func (t *tombstones) maskTitle(title string) string {
-	if title == "" {
+	if title == "" || t.k == nil {
 		return title
 	}
-	if nt, ok := t.byTitle[sha256.Sum256([]byte(title))]; ok {
+	if nt, ok := t.byTitle[t.k.sum(domTitle, []byte(title))]; ok {
 		return nt
 	}
 	if len(t.needles) == 0 && len(t.prefixes) == 0 {
@@ -295,14 +404,14 @@ func (t *tombstones) maskTitle(title string) string {
 	if len(tt) == 0 {
 		return title
 	}
-	h := sha256.Sum256(tt)
-	hit := t.needles[h] || len(tt) >= titleMinMatch && t.prefixes[[8]byte(h[:8])]
+	p := t.k.sum(domPrefix, tt)
+	hit := t.needles[t.k.sum(domLine, tt)] || len(tt) >= titleMinMatch && t.prefixes[[8]byte(p[:8])]
 	for _, n := range t.lens {
 		if hit || n > len(tt) {
 			break
 		}
 		for i := 0; i+n <= len(tt) && !hit; i++ {
-			hit = t.needles[sha256.Sum256(tt[i:i+n])]
+			hit = t.needles[t.k.sum(domLine, tt[i:i+n])]
 		}
 	}
 	if !hit {
@@ -512,12 +621,18 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 		}
 	}
 
+	if err := w.s.ensureKey(); err != nil {
+		return 0, err
+	}
+	w.s.tombs.mu.RLock()
+	k := w.s.tombs.k
+	w.s.tombs.mu.RUnlock()
 	from, to := r.From, r.To
 	_, hidden := redact.MaskText(addr.text, from, to)
 	if from == 0 {
 		hidden = strings.Split(addr.text, "\n")
 	}
-	lines, lens := lineHashes(hidden)
+	lines, lens := k.lineHashes(hidden)
 	// The tombstones: one per row text and record. A line range applies
 	// by line number only to the addressed text (another version's lines
 	// may differ), and by line content to every version.
@@ -526,7 +641,8 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 	for _, t := range targets {
 		ts := Tombstone{Session: t.session, Native: t.native, From: from, To: to}
 		if from == 0 || t.sha == addr.sha {
-			ts.SHA = hex.EncodeToString(t.sha[:])
+			sum := k.sum(domSHA, t.sha[:])
+			ts.SHA = hex.EncodeToString(sum[:])
 		}
 		if from > 0 {
 			ts.Lines, ts.Lens = lines, lens
@@ -544,8 +660,9 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 		// Title needles only: a whole message masks its versions by record.
 		added[0].Lines, added[0].Lens = lines, lens
 	}
-	added[0].Prefixes = titlePrefixes(addr.text, from, to)
+	added[0].Prefixes = k.titlePrefixes(addr.text, from, to)
 	tmp := newTombstones()
+	tmp.k = k
 	for _, ts := range added {
 		tmp.addLocked(ts, 0)
 	}
@@ -578,12 +695,12 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 
 // lineHashes returns the tombstone hashes and lengths of the non-blank
 // hidden lines, without repeats.
-func lineHashes(hidden []string) ([]string, []int) {
+func (k *keyer) lineHashes(hidden []string) ([]string, []int) {
 	var hashes []string
 	var lens []int
 	seen := map[[32]byte]bool{}
 	for _, l := range hidden {
-		h, ok := lineHash(l)
+		h, ok := k.lineHash(l)
 		if !ok || seen[h] {
 			continue
 		}
@@ -595,20 +712,32 @@ func lineHashes(hidden []string) ([]string, []int) {
 }
 
 // titlePrefixes returns the Prefixes of a redaction of lines from..to of
-// text: the truncations of its first non-blank line (the parsers' title
-// source) when that line is hidden, else "".
-func titlePrefixes(text string, from, to int) string {
+// text: when its first non-blank line (the parsers' title source) is
+// hidden, the hash of each titleCuts cut of that line that is shorter
+// than the line and at least titleMinMatch bytes (trimmed, as the title
+// is matched); else "". A line within every cut needs none: its title
+// is the line itself, a needle.
+func (k *keyer) titlePrefixes(text string, from, to int) string {
 	for i, l := range strings.Split(text, "\n") {
-		l = strings.TrimSpace(l)
-		if l == "" {
+		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		if from > 0 && (i+1 < from || i+1 > to) || len(l) < titleMinMatch {
+		if from > 0 && (i+1 < from || i+1 > to) {
 			return ""
 		}
+		l = strings.TrimLeft(l, " \t\r\n\v\f")
+		full := strings.TrimSpace(l)
 		var buf []byte
-		for k := titleMinMatch; k <= min(len(l), titlePrefixMax); k++ {
-			h := sha256.Sum256([]byte(l[:k]))
+		for _, n := range titleCuts {
+			r := []rune(l)
+			if len(r) <= n {
+				continue
+			}
+			cut := strings.TrimSpace(string(r[:n]))
+			if len(cut) < titleMinMatch || cut == full {
+				continue
+			}
+			h := k.sum(domPrefix, []byte(cut))
 			buf = append(buf, h[:8]...)
 		}
 		return base64.StdEncoding.EncodeToString(buf)
@@ -835,11 +964,9 @@ func (w *writeTx) applyTombstone(ts Tombstone) error {
 	seen := map[int64]bool{}
 	var targets []redactTarget
 	var err error
-	if sum, derr := hex.DecodeString(ts.SHA); derr == nil && len(sum) == 32 {
-		if targets, err = w.targets(targets, seen, targetBySHASQL, sum); err != nil {
-			return err
-		}
-	}
+	// Every message tombstone names its record (a redaction records one
+	// per target, copies included); its SHA is keyed, so rows are found by
+	// record, not by content_sha.
 	if ts.Session != "" && (ts.SHA != "" || len(ts.Lines) > 0) {
 		if targets, err = w.recordTargets(targets, seen, ts.Session, ts.Native); err != nil {
 			return err
@@ -890,7 +1017,12 @@ func (s *Store) reconcileRequest() writeReq {
 		err := w.reconcile()
 		if err != nil {
 			s.reconcileDue.Store(true)
-			slog.Warn("localindex: applying redactions failed; retrying with the next write", "err", err)
+			// Log once per run of failures: it retries before every write.
+			if !s.reconcileFailing.Swap(true) {
+				slog.Warn("localindex: applying redactions failed; retrying before each write", "err", err, "help", RecoveryDoc)
+			}
+		} else if s.reconcileFailing.Swap(false) {
+			slog.Info("localindex: applying redactions succeeded")
 		}
 		return err
 	}}
@@ -955,7 +1087,10 @@ func (w *writeTx) maskTitle(conv int64, orig, masked string, hidden []string) (T
 	if _, err := w.exec(`UPDATE conversations SET title = ? WHERE id = ?`, nt, conv); err != nil {
 		return Tombstone{}, err
 	}
-	sum := sha256.Sum256([]byte(title))
+	w.s.tombs.mu.RLock()
+	k := w.s.tombs.k
+	w.s.tombs.mu.RUnlock()
+	sum := k.sum(domTitle, []byte(title))
 	return Tombstone{TitleSHA: hex.EncodeToString(sum[:]), Title: nt}, nil
 }
 

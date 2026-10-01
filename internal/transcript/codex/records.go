@@ -478,14 +478,18 @@ func isInjectedContext(s string) bool {
 }
 
 // titleOf is FAD's title rule: the first line, at most 100 characters.
+// TitleRunes is where a title taken from the first prompt's first line is
+// cut (local redactions mask titles cut there).
+const TitleRunes = 100
+
 func titleOf(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
 	r := []rune(s)
-	if len(r) > 100 {
-		r = r[:100]
+	if len(r) > TitleRunes {
+		r = r[:TitleRunes]
 	}
 	return strings.TrimSpace(string(r))
 }
