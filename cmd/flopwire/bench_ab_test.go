@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
@@ -178,5 +179,49 @@ func TestHarnessFlagsHome(t *testing.T) {
 	home, cl, cx, dv := h.resolve()
 	if home != "/synth" || cl != "/synth/.claude/projects" || cx != "/elsewhere" || dv != "/synth/.local/share/devin/cli/sessions.db" {
 		t.Fatalf("resolve = %s %s %s %s", home, cl, cx, dv)
+	}
+}
+
+// A baseline binary that cannot run under the harness (here: it rejects a
+// flag, as an old pinned baseline would) yields BASELINE_FAILED with the
+// error, not a failed command and not a regression of B.
+func TestBenchABBaselineFailed(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "flopwire-old")
+	script := "#!/bin/sh\necho 'flag provided but not defined: -no-sync' >&2\nexit 2\n"
+	if err := os.WriteFile(old, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(dir, "home")
+	for _, d := range []string{".claude/projects", ".codex"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := filepath.Join(dir, "out")
+	var buf bytes.Buffer
+	err := benchAB(context.Background(), []string{"--a", old, "--a-commit", "aaaa", "--b", old, "--b-commit", "bbbb",
+		"--home", home, "--scratch", filepath.Join(dir, "scratch"), "--out", out, "--only", "index", "--idle-after", "1ms"}, &buf)
+	if err != nil {
+		t.Fatalf("bench ab: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "ab.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s abSummary
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Verdict != verdictBaselineFailed || !strings.Contains(s.Error, "-no-sync") {
+		t.Fatalf("verdict %s, error %q; want BASELINE_FAILED naming the flag", s.Verdict, s.Error)
+	}
+	if md := buf.String(); !strings.Contains(md, "not a regression") || !strings.Contains(md, "-no-sync") {
+		t.Fatalf("markdown does not explain the failure:\n%s", md)
+	}
+	err = benchAB(context.Background(), []string{"--a", old, "--b", old, "--home", home, "--scratch", filepath.Join(dir, "scratch"),
+		"--out", out, "--only", "index", "--idle-after", "1ms", "--strict"}, &buf)
+	if err == nil {
+		t.Fatal("--strict passed a BASELINE_FAILED run")
 	}
 }

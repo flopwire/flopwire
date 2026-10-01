@@ -146,8 +146,18 @@ type abCheck struct {
 	Changed bool   `json:"changed"`   // hit counts differ
 }
 
+// Verdicts of `bench ab`. BASELINE_FAILED means binary A could not run
+// under B's harness (an old baseline lacking a flag the harness now
+// passes): no comparison was made, and it is not a regression of B.
+const (
+	verdictClean          = "CLEAN"
+	verdictRegressed      = "REGRESSED"
+	verdictBaselineFailed = "BASELINE_FAILED"
+)
+
 type abSummary struct {
-	Verdict     string        `json:"verdict"` // CLEAN or REGRESSED
+	Verdict     string        `json:"verdict"`         // CLEAN, REGRESSED or BASELINE_FAILED
+	Error       string        `json:"error,omitempty"` // why A failed, with BASELINE_FAILED
 	Threshold   float64       `json:"threshold"`
 	Runs        int           `json:"runs"`
 	A           buildRecord   `json:"a"`
@@ -219,7 +229,14 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 			}
 			for _, part := range strings.Split(*parts, ",") {
 				if err := b.runPart(ctx, res, part, *queries, "", *idleAfter); err != nil {
-					return fmt.Errorf("%s run %d: %w", sd.name, i, err)
+					err = fmt.Errorf("%s run %d: %w", sd.name, i, err)
+					if sd.name != "A" || ctx.Err() != nil {
+						return err
+					}
+					// The baseline cannot run under this harness. Report
+					// that, distinctly from a regression of B.
+					_ = os.RemoveAll(dir)
+					return writeAB(*out, stdout, baselineFailed(sides[0].build, sides[1].build, machine, err), *strict)
 				}
 			}
 			run := abRun{Side: sd.name, N: i, Record: newAccRecord(res, nil, sd.build, machine, time.Now()), WallS: time.Since(rt).Seconds()}
@@ -245,22 +262,31 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
+	return writeAB(*out, stdout, sum, *strict)
+}
+
+// writeAB writes ab.json and ab.md and prints the markdown.
+func writeAB(out string, stdout io.Writer, sum *abSummary, strict bool) error {
 	data, err := json.MarshalIndent(sum, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(*out, "ab.json"), append(data, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(out, "ab.json"), append(data, '\n'), 0o644); err != nil {
 		return err
 	}
 	md := sum.markdown()
-	if err := os.WriteFile(filepath.Join(*out, "ab.md"), []byte(md), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(out, "ab.md"), []byte(md), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprint(stdout, md)
-	if *strict && sum.Verdict != "CLEAN" {
+	if strict && sum.Verdict != verdictClean {
 		return fmt.Errorf("strict: verdict %s", sum.Verdict)
 	}
 	return nil
+}
+
+func baselineFailed(a, b buildRecord, machine machineRecord, err error) *abSummary {
+	return &abSummary{Verdict: verdictBaselineFailed, Error: err.Error(), A: a, B: b, Machine: machine}
 }
 
 func runsOf(all []abRun, side string) []*accRecord {
@@ -400,9 +426,9 @@ func summarizeAB(all []abRun, threshold float64) *abSummary {
 			s.BIndexMB = r.IndexM
 		}
 	}
-	s.Verdict = "CLEAN"
+	s.Verdict = verdictClean
 	if s.Regressions > 0 {
-		s.Verdict = "REGRESSED"
+		s.Verdict = verdictRegressed
 	}
 	return s
 }
@@ -421,6 +447,17 @@ func short(sha string) string {
 func (s *abSummary) markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Perf A/B: %s\n\n", s.Verdict)
+	if s.Verdict == verdictBaselineFailed {
+		fmt.Fprintf(&b, "The baseline (A) `%s` failed under the harness of the candidate (B) `%s`, so nothing was compared. This is not a regression of B. "+
+			"Most often the baseline lacks a command or flag the harness now passes; move the pinned baseline (docs/perf/README.md#nightly-a-b) to a commit that has it.\n\n",
+			short(s.A.Commit), short(s.B.Commit))
+		fence := "```"
+		for strings.Contains(s.Error, fence) {
+			fence += "`"
+		}
+		fmt.Fprintf(&b, "%s\n%s\n%s\n", fence, tail(s.Error, 3000), fence)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "Baseline (A) `%s`, candidate (B) `%s`. %d runs each, alternating A,B on one runner (%s, %d cores, %.0fGB RAM). Corpus: %d files, %.2fGB. Took %s.\n\n",
 		short(s.A.Commit), short(s.B.Commit), s.Runs, s.Machine.CPUModel, s.Machine.Cores, float64(s.Machine.RAMBytes)/(1<<30),
 		s.Corpus.Files, float64(s.Corpus.Bytes)/1e9, (time.Duration(s.WallS) * time.Second).String())
