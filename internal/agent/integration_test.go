@@ -181,6 +181,37 @@ func TestNewSessionDirWithoutSweep(t *testing.T) {
 	t.Logf("picked up in %s", time.Since(start))
 }
 
+// TestSessionCreatedDuringStartup: a session file created after Run's
+// first pass listed its project, but before the watcher was set up, is
+// picked up through events, not left for the next sweep. Found as a flake
+// of TestNewSessionDirWithoutSweep under load: the test wrote its session
+// while Run was still between the pass and the first rewatch.
+func TestSessionCreatedDuringStartup(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sweep = time.Hour
+	f.a = New(f.store, f.cfg)
+	const sid = "0b7e2c1a-0000-4000-8000-0000000000ab"
+	main := filepath.Join(filepath.Dir(f.path(alphaRel)), sid+".jsonl")
+	testHookAfterFirstPass = func() {
+		line := fmt.Sprintf(`{"parentUuid":null,"isSidechain":false,"type":"user","cwd":"/tmp/oracle-alpha","sessionId":"%s","version":"2.1.0","message":{"role":"user","content":"session born during startup"},"uuid":"d7000000-0000-4000-8000-000000000011","timestamp":"2026-09-23T11:00:00.000Z"}`+"\n", sid)
+		if err := os.WriteFile(main, []byte(line), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { testHookAfterFirstPass = nil }()
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.a.Run(runCtx) }()
+	defer func() { cancel(); <-done }()
+	start := time.Now()
+	for len(f.find("session born during startup", false)) != 1 {
+		if time.Since(start) > eventLimit {
+			t.Fatalf("session created during startup not indexed within %s", eventLimit)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestFastLaneIgnoresCompanions: many companion files written at once
 // (hundreds of tool-results after a bulk copy, or a busy workflow) must not
 // crowd a live transcript out of the fast lane's MaxHot budget. Found by the
@@ -209,6 +240,56 @@ func TestFastLaneIgnoresCompanions(t *testing.T) {
 	for len(f.find("fast lane not crowded out", false)) != 1 {
 		if time.Since(start) > eventLimit {
 			t.Fatalf("append not indexed within %s with many hot companions", eventLimit)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSessionFoundByPassWatchesItsDir: a live session the first pass finds
+// (new to the index, so not yet indexed when the pass's watchNew runs) has
+// its session directory watched right away, so a subagent written into an
+// existing subagents/ directory arrives through events, not the next sweep.
+// Before the fix the pass left the new transcript cold until a worker
+// indexed it, and nothing rewatched after that.
+func TestSessionFoundByPassWatchesItsDir(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sweep = time.Hour
+	f.a = New(f.store, f.cfg)
+	const sid = "0b7e2c1a-0000-4000-8000-0000000000ac"
+	proj := filepath.Dir(f.path(alphaRel))
+	main := filepath.Join(proj, sid+".jsonl")
+	line := func(uuid, text, extra string) string {
+		return fmt.Sprintf(`{"parentUuid":null,"isSidechain":false,"type":"user","cwd":"/tmp/oracle-alpha","sessionId":"%s","version":"2.1.0",%s"message":{"role":"user","content":%q},"uuid":"%s","timestamp":"2026-09-23T11:00:00.000Z"}`+"\n", sid, extra, text, uuid)
+	}
+	if err := os.WriteFile(main, []byte(line("d7000000-0000-4000-8000-000000000021", "session live at agent start", "")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subs := filepath.Join(proj, sid, "subagents")
+	if err := os.MkdirAll(subs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Hold every parse's markSeen until well after the first watchNew, so
+	// the new transcript is still unindexed when Run picks what to watch.
+	release := make(chan struct{})
+	testHookAfterFirstPass = func() {
+		go func() { time.Sleep(time.Second); close(release) }()
+	}
+	testHookAfterFlush = func() error { <-release; return nil }
+	defer func() { testHookAfterFirstPass, testHookAfterFlush = nil, nil }()
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.a.Run(runCtx) }()
+	defer func() { cancel(); <-done }()
+	waitFor(t, func() bool { return len(f.find("session live at agent start", false)) == 1 })
+
+	sub := filepath.Join(subs, "agent-pass01.jsonl")
+	if err := os.WriteFile(sub, []byte(line("d7000000-0000-4000-8000-000000000022", "subagent of a session found by the pass", `"agentId":"pass01",`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for len(f.find("subagent of a session found by the pass", false)) != 1 {
+		if time.Since(start) > eventLimit {
+			t.Fatalf("subagent of a session found by the pass not indexed within %s", eventLimit)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

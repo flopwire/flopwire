@@ -318,11 +318,19 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	w := newWatcher(a.log)
 	defer w.close()
+	// Watch before the first pass lists anything: a file created after the
+	// listing but before its directory was watched would wait for the next
+	// sweep. The pass then makes more directories worth watching (session
+	// directories of hot transcripts); watchNew lists those as it adds them.
+	a.rewatch(w)
 	if err := a.sweep(ctx); err != nil {
 		a.log.Error("agent: sweep", "err", err)
 	}
 	a.markDiscovered() // also when the pass failed: flushes fall back to discoverDir
-	a.rewatch(w)
+	if testHookAfterFirstPass != nil {
+		testHookAfterFirstPass()
+	}
+	a.watchNew(ctx, w, "")
 	recovered := make(chan struct{}, 1)
 	a.maybeRecover(ctx, recovered, false)
 
@@ -345,7 +353,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sweep(ctx); err != nil {
 				a.log.Error("agent: sweep", "err", err)
 			}
-			a.rewatch(w)
+			a.watchNew(ctx, w, "")
 			a.maybeRecover(ctx, recovered, false)
 			a.shrinkIfIdle(ctx)
 		case <-recovered:
@@ -562,6 +570,13 @@ func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urg
 	}
 	if t.seen != (transcript.Identity{}) && id != t.seen {
 		t.hotUntil = now.Add(a.cfg.HotWindow) // changed after we knew it
+	} else if t.seen == (transcript.Identity{}) {
+		// Not indexed yet: hot as it will be once indexed (seen.CTime), so
+		// the rewatch right after this pass watches its session directory
+		// instead of the one after the next pass.
+		if until := time.Unix(0, id.CTime).Add(a.cfg.HotWindow); until.After(t.hotUntil) {
+			t.hotUntil = until
+		}
 	}
 	a.enqueueLocked(t, urgent)
 	return true
@@ -770,20 +785,41 @@ func (a *Agent) scanDir(ctx context.Context, dir string, w *watcher) {
 	}
 	// New directories may need watching: a new session file, or a hot
 	// session's subagents/ or tool-results/ directory, which usually appears
-	// empty and gets its first file a moment later. Watch first, then list
-	// what was created in them before the watch existed; otherwise those
-	// files wait for the next sweep.
-	for _, d := range a.rewatch(w) {
-		if d != dir {
-			if f, ok := a.discoverDir(d); ok && f != nil {
-				a.mergeUrgent(ctx, f)
-			}
+	// empty and gets its first file a moment later.
+	a.watchNew(ctx, w, dir)
+}
+
+// watchNew rewatches, then lists each newly watched directory other than
+// skip (just listed by the caller): a file created there after the last
+// listing but before the watch existed raised no event, and would
+// otherwise wait for the next sweep. Watch first, then list.
+func (a *Agent) watchNew(ctx context.Context, w *watcher, skip string) {
+	added := a.rewatch(w)
+	listed := map[string]bool{}
+	for _, d := range added {
+		if d == skip {
+			continue
+		}
+		// A Claude directory lists its whole project: once per project.
+		key := d
+		if rel, ok := under(a.cfg.ClaudeProjects, d); ok {
+			key = filepath.Join(a.cfg.ClaudeProjects, firstElem(rel))
+		}
+		if listed[key] {
+			continue
+		}
+		listed[key] = true
+		if f, ok := a.discoverDir(d); ok && f != nil {
+			a.mergeUrgent(ctx, f)
 		}
 	}
 }
 
 // testHookAfterRootSweep runs between scanDir's full pass and its rewatch.
 var testHookAfterRootSweep func()
+
+// testHookAfterFirstPass runs between Run's first pass and its watchNew.
+var testHookAfterFirstPass func()
 
 // mergeUrgent is merge for a partial pass: no retirement, urgent queue.
 func (a *Agent) mergeUrgent(ctx context.Context, f *found) {
