@@ -286,7 +286,9 @@ func TestDigestAppendCost(t *testing.T) {
 // conversation per batch when nothing counted changed: the stored counts
 // must still equal a recount after every batch, including batches that
 // change a counted attribute (a result no longer failed, a renamed tool,
-// a row leaving the active path, new usage) or mix in new rows.
+// a row leaving the active path, new usage, a failed result's call id,
+// a row's kind, rows revived after their session was superseded) or mix
+// in new rows.
 func TestDigestReparseMatchesRecount(t *testing.T) {
 	s := openTest(t, DetailColumn)
 	src := source(t, s, transcript.AgentClaude, "/p/s1.jsonl")
@@ -320,6 +322,12 @@ func TestDigestReparseMatchesRecount(t *testing.T) {
 			case variant == 3 && b == 1:
 				// A new row in a re-parsed batch.
 				ms = append(ms, msg("s1", "extra", 50, transcript.KindUser, "and one more thing"))
+			case variant == 4 && b == 0:
+				// The failed result now answers call1: the failed calls
+				// are counted by distinct call id.
+				r.ToolCallID = "call1"
+			case variant == 4 && b == 2:
+				a.Kind = transcript.KindUser
 			}
 			ms = append(ms, c, r, a)
 			batches = append(batches, ms)
@@ -353,7 +361,15 @@ func TestDigestReparseMatchesRecount(t *testing.T) {
 				what, got.Messages, got.Tools, got.Failed, tok, want.Messages, want.Tools, want.Failed, want.Tokens)
 		}
 	}
-	for variant := range 4 {
+	for variant := range 6 {
+		if variant == 5 {
+			// A multi-session source resets the session (recounted), then
+			// re-emits its rows unchanged: the upsert revives them.
+			if _, err := s.SupersedeSession(ctx, transcript.AgentClaude, "s1", 2); err != nil {
+				t.Fatal(err)
+			}
+			check("superseded session")
+		}
 		for i, ms := range build(variant) {
 			bt := Batch{SourceID: src.ID, Generation: 1, Messages: ms}
 			if i == 0 {
