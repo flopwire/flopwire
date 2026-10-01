@@ -19,8 +19,8 @@ func sampleResults() *accResults {
 		Index: &indexResult{WallS: 450, PeakRSSMB: 410, IdleRSSMB: 80, SweepCPUMs: []float64{120, 340, 90}, CorpusFiles: 1200, CorpusBytes: 9e9},
 		Fresh: &freshResult{P95: 1500},
 		Queries: &queriesResult{Results: []queryResult{
-			{Name: "error", WarmMs: 294, Hits: 20, OK: true, Reads: 5, ReadsOK: 5},
-			{Name: "backoff", WarmMs: 40, Hits: 3, OK: false, Problems: []string{"missing session abc"}},
+			{Name: "error", Ms: []float64{400, 294, 290, 300}, WarmMs: 294, Hits: 20, OK: true, Reads: 5, ReadsOK: 5},
+			{Name: "backoff", Ms: []float64{60, 40, 41, 39}, WarmMs: 40, Hits: 3, OK: false, Problems: []string{"missing session abc"}},
 		}},
 	}
 }
@@ -307,5 +307,26 @@ func TestMachineInfo(t *testing.T) {
 	m := machineInfo()
 	if m.OS == "" || m.Arch == "" || m.Cores < 1 {
 		t.Errorf("machine = %+v", m)
+	}
+}
+
+// A query whose command failed before any warm run has no warm latency.
+// Recording its zero as a PASS metric would show a -100% "improvement"
+// now and a +inf REGRESSED once the query works again.
+func TestAccRecordSkipsUnmeasuredWarmLatency(t *testing.T) {
+	r := &accResults{Queries: &queriesResult{Results: []queryResult{
+		{Name: "broken", Ms: []float64{12}, Problems: []string{"exit status 1"}},
+		{Name: "fine", Ms: []float64{30, 20, 21, 22}, WarmMs: 21, OK: true},
+	}}}
+	rec := newAccRecord(r, nil, buildRecord{}, testMachine, time.Now())
+	var names []string
+	for _, m := range rec.Metrics {
+		names = append(names, m.Name)
+	}
+	if !slices.Equal(names, []string{"query.fine.warm"}) {
+		t.Errorf("metrics = %v, want only query.fine.warm", names)
+	}
+	if len(rec.Checks) != 2 || rec.Checks[0].Result != "FAIL" {
+		t.Errorf("checks = %+v", rec.Checks)
 	}
 }

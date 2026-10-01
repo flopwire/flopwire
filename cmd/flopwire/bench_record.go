@@ -146,7 +146,9 @@ func newAccRecord(r *accResults, oracles []oracleReport, build buildRecord, mach
 	}
 	if x := r.Queries; x != nil {
 		for _, q := range x.Results {
-			rec.Metrics = append(rec.Metrics, newMetric("query."+q.Name+".warm", q.WarmMs, "ms", queryWarmLimitMs))
+			if len(q.Ms) > 1 { // a command that failed on its first run has no warm time
+				rec.Metrics = append(rec.Metrics, newMetric("query."+q.Name+".warm", q.WarmMs, "ms", queryWarmLimitMs))
+			}
 			detail := fmt.Sprintf("%d hits, reads %d/%d", q.Hits, q.ReadsOK, q.Reads)
 			if len(q.Problems) > 0 {
 				detail += "; " + strings.Join(q.Problems, "; ")

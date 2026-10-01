@@ -66,6 +66,8 @@ confirm it.
 ```
 
 Every metric is lower-is-better and passes when `value < limit`.
+A query whose command fails on its first run has no
+`query.<name>.warm` metric; its `query.<name>` check fails.
 
 | Metric | Unit | Limit | What it measures |
 |---|---|---|---|
