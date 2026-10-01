@@ -942,23 +942,33 @@ func TestMCPBusOutputSchemasValidate(t *testing.T) {
 	}
 }
 
-// Until the delivery hook exists, nothing an agent reads may say that
-// messages reach its context on their own: it would never read a reply.
-// Each text also says where received messages are read today.
-func TestBusTextDoesNotClaimDelivery(t *testing.T) {
+// What an agent reads about delivery is what flopwire hook does: a
+// message arrives through the hook inside a running turn or with the
+// human's next prompt, never by waking a session; inbox is for checking a
+// sent message and re-reading, and the fallback where the hook is not set
+// up. Nothing says the hook is missing.
+func TestBusTextDescribesDelivery(t *testing.T) {
 	raw, _ := json.Marshal(mcpTools())
 	texts := map[string]string{"help peers": toolHelp["peers"], "help send": toolHelp["send"], "help inbox": toolHelp["inbox"], "instructions": mcpInstructions, "tools": string(raw)}
 	for name, s := range texts {
-		for _, claim := range []string{"in your own context", "in your context", "on their own", "arrives inside"} {
-			if strings.Contains(s, claim) {
-				t.Errorf("%s claims delivery: %q", name, claim)
-			}
+		if strings.Contains(s, "not built") {
+			t.Errorf("%s says the hook is not built", name)
 		}
 	}
-	for _, name := range []string{"help send", "help inbox", "instructions"} {
-		if !strings.Contains(texts[name], "not built yet") {
-			t.Errorf("%s does not say the hook is not built", name)
+	for _, name := range []string{"help send", "help inbox", "instructions", "tools"} {
+		s := strings.Join(strings.Fields(texts[name]), " ")
+		if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
+			t.Errorf("%s does not say how a message arrives: %s", name, s)
 		}
+	}
+	for _, name := range []string{"help inbox", "tools"} {
+		s := strings.Join(strings.Fields(texts[name]), " ")
+		if !strings.Contains(s, "check a sent message's state or re-read a thread") || !strings.Contains(s, "where the hook is not set up") {
+			t.Errorf("%s does not say what inbox is for", name)
+		}
+	}
+	if !strings.Contains(mcpInstructions, "A message never starts a turn") {
+		t.Error("instructions do not say a message never starts a turn")
 	}
 }
 
