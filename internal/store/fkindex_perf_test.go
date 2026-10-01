@@ -66,24 +66,12 @@ func deleteCost(t testing.TB, size, others int) perfguard.Cost {
 // Deleting a conversation of n messages is linear in n. Without an index
 // on messages.superseded_by, each deleted row's ON DELETE SET NULL check
 // scans every message. Those checks run after the cascade, so the
-// conversation's own rows are dead tuples to them: seq_tup_read does not
-// count them, and the rows metric grows only linearly. The heap blocks of
-// messages show the n² scan, so this test bounds them too.
+// conversation's own rows are dead tuples to them: rows touched grow only
+// linearly, and the seq pages metric shows the n² scan.
 func TestPerfDeleteConversationLinearInSize(t *testing.T) {
-	const n, k = 500, 8
-	costs := map[int]perfguard.Cost{}
-	perfguard.AssertScaling(t, perfguard.Linear, n, k, func(t testing.TB, n int) perfguard.Cost {
-		costs[n] = deleteCost(t, n, 4)
-		return costs[n]
+	perfguard.AssertScaling(t, perfguard.Linear, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		return deleteCost(t, n, 4)
 	})
-	blocks := func(size int) int64 {
-		return costs[size].Tables["public.messages"].HeapBlks - costs[1].Tables["public.messages"].HeapBlks
-	}
-	small, large := blocks(n), blocks(k*n)
-	if bound := perfguard.Linear.Bound(k); float64(large) > bound*float64(max(small, 16)) {
-		t.Errorf("messages heap blocks %d → %d less baseline (×%.1f), bound ×%.1f",
-			small, large, float64(large)/float64(max(small, 16)), bound)
-	}
 }
 
 // Deleting one conversation costs the same however many other

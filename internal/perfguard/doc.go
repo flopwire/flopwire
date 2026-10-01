@@ -47,8 +47,11 @@
 // blocks; Measure disables them on every table in the database first (per
 // table, because autovacuum is a server-wide setting). Each pgtest
 // database is private to one test, and the views are per database, so
-// parallel packages on one cluster do not mix counts. Rows touched is the
-// gated metric; blocks are reported for diagnosis.
+// parallel packages on one cluster do not mix counts. Rows touched and
+// seq pages (sequential scans times the table's pages, which also counts
+// tuples a scan cannot see, such as rows deleted earlier in the
+// transaction) are gated: both come from exact counters and file sizes.
+// Blocks are reported for diagnosis.
 //
 // Allocation bounds: the race detector adds allocations, so a bound on
 // testing.AllocsPerRun should skip or use its own limit when Race is true.

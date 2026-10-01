@@ -25,6 +25,17 @@ type TableCost struct {
 	HeapBlks    int64 // heap_blks_hit + heap_blks_read
 	IdxBlks     int64 // idx_blks_hit + idx_blks_read
 	ToastBlks   int64 // toast_blks_hit + toast_blks_read + tidx_blks_hit + tidx_blks_read
+	SeqScans    int64 // sequential scans started
+	// Pages is the table's size in pages. In a Snapshot and in a Cost it
+	// is the size at the (later) snapshot, not a difference.
+	Pages int64
+	// SeqPages is the heap pages the work's sequential scans passed over,
+	// taken as SeqScans times Pages (zero in a Snapshot). Unlike
+	// SeqTupRead it counts the pages of tuples a scan cannot see, such as
+	// rows deleted earlier in the same transaction: the foreign-key
+	// actions after a cascade scan those. A scan a Limit stops early
+	// counts in full.
+	SeqPages int64
 }
 
 // Rows is the number of tuples the work touched: read by sequential scans,
@@ -41,17 +52,29 @@ func (c TableCost) Blocks() int64 { return c.HeapBlks + c.IdxBlks + c.ToastBlks 
 
 func (c TableCost) add(o TableCost) TableCost {
 	return TableCost{c.SeqTupRead + o.SeqTupRead, c.IdxTupRead + o.IdxTupRead, c.IdxTupFetch + o.IdxTupFetch, c.TupIns + o.TupIns, c.TupUpd + o.TupUpd,
-		c.TupDel + o.TupDel, c.HeapBlks + o.HeapBlks, c.IdxBlks + o.IdxBlks, c.ToastBlks + o.ToastBlks}
+		c.TupDel + o.TupDel, c.HeapBlks + o.HeapBlks, c.IdxBlks + o.IdxBlks, c.ToastBlks + o.ToastBlks,
+		c.SeqScans + o.SeqScans, c.Pages + o.Pages, c.SeqPages + o.SeqPages}
 }
 
+// sub is the work from o to c; Pages is c's.
 func (c TableCost) sub(o TableCost) TableCost {
-	return TableCost{c.SeqTupRead - o.SeqTupRead, c.IdxTupRead - o.IdxTupRead, c.IdxTupFetch - o.IdxTupFetch, c.TupIns - o.TupIns, c.TupUpd - o.TupUpd,
-		c.TupDel - o.TupDel, c.HeapBlks - o.HeapBlks, c.IdxBlks - o.IdxBlks, c.ToastBlks - o.ToastBlks}
+	d := TableCost{c.SeqTupRead - o.SeqTupRead, c.IdxTupRead - o.IdxTupRead, c.IdxTupFetch - o.IdxTupFetch, c.TupIns - o.TupIns, c.TupUpd - o.TupUpd,
+		c.TupDel - o.TupDel, c.HeapBlks - o.HeapBlks, c.IdxBlks - o.IdxBlks, c.ToastBlks - o.ToastBlks,
+		c.SeqScans - o.SeqScans, c.Pages, 0}
+	d.SeqPages = d.SeqScans * d.Pages
+	return d
+}
+
+// idle reports whether no work was done (the table's size aside).
+func (c TableCost) idle() bool {
+	c.Pages = 0
+	return c == TableCost{}
 }
 
 func (c TableCost) String() string {
-	return fmt.Sprintf("rows=%d (seq=%d idx=%d fetch=%d ins=%d upd=%d del=%d) blocks=%d (heap=%d idx=%d toast=%d)",
-		c.Rows(), c.SeqTupRead, c.IdxTupRead, c.IdxTupFetch, c.TupIns, c.TupUpd, c.TupDel, c.Blocks(), c.HeapBlks, c.IdxBlks, c.ToastBlks)
+	return fmt.Sprintf("rows=%d (seq=%d idx=%d fetch=%d ins=%d upd=%d del=%d) seq pages=%d (scans=%d pages=%d) blocks=%d (heap=%d idx=%d toast=%d)",
+		c.Rows(), c.SeqTupRead, c.IdxTupRead, c.IdxTupFetch, c.TupIns, c.TupUpd, c.TupDel, c.SeqPages, c.SeqScans, c.Pages,
+		c.Blocks(), c.HeapBlks, c.IdxBlks, c.ToastBlks)
 }
 
 // Snapshot is the cumulative cost per table ("schema.table") of one
@@ -79,7 +102,7 @@ func (c Cost) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "total: %s statements=%d", c.Total(), c.Statements)
 	for _, name := range slices.Sorted(maps.Keys(c.Tables)) {
-		if tc := c.Tables[name]; tc != (TableCost{}) {
+		if tc := c.Tables[name]; !tc.idle() {
 			fmt.Fprintf(&b, "\n  %s: %s", name, tc)
 		}
 	}
@@ -117,7 +140,9 @@ SELECT s.schemaname || '.' || s.relname,
        coalesce(io.heap_blks_hit, 0) + coalesce(io.heap_blks_read, 0),
        coalesce(io.idx_blks_hit, 0) + coalesce(io.idx_blks_read, 0),
        coalesce(io.toast_blks_hit, 0) + coalesce(io.toast_blks_read, 0)
-         + coalesce(io.tidx_blks_hit, 0) + coalesce(io.tidx_blks_read, 0)
+         + coalesce(io.tidx_blks_hit, 0) + coalesce(io.tidx_blks_read, 0),
+       coalesce(s.seq_scan, 0),
+       coalesce(pg_relation_size(s.relid), 0) / current_setting('block_size')::bigint
 FROM pg_stat_user_tables s JOIN pg_statio_user_tables io USING (relid)`
 
 // TakeSnapshot flushes the statistics of every pool connection (and of
@@ -190,7 +215,7 @@ func TakeSnapshot(ctx context.Context, pool *pgxpool.Pool, conns ...*pgx.Conn) (
 		var name string
 		var tc TableCost
 		if err := rows.Scan(&name, &tc.SeqTupRead, &tc.IdxTupRead, &tc.IdxTupFetch, &tc.TupIns, &tc.TupUpd, &tc.TupDel,
-			&tc.HeapBlks, &tc.IdxBlks, &tc.ToastBlks); err != nil {
+			&tc.HeapBlks, &tc.IdxBlks, &tc.ToastBlks, &tc.SeqScans, &tc.Pages); err != nil {
 			rows.Close()
 			return nil, err
 		}
