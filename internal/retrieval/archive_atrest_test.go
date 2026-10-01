@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/backup"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/ingest"
 	"github.com/flopwire/flopwire/internal/retrieval"
@@ -35,6 +36,12 @@ var zdec, _ = zstd.NewReader(nil)
 // the given cuts, with the device credential. It does not parse.
 func (s *server) rawUpload(source syncproto.Source, gen int64, data []byte, cuts ...int) {
 	s.t.Helper()
+	s.rawUploadAs(s.client, source, gen, data, cuts...)
+}
+
+// rawUploadAs is rawUpload with another device credential.
+func (s *server) rawUploadAs(dev client.HTTP, source syncproto.Source, gen int64, data []byte, cuts ...int) {
+	s.t.Helper()
 	h := syncproto.FlushHeader{Version: syncproto.Version, Generation: gen, CapturedAt: time.Now().UTC(), Source: source,
 		Chunker: syncproto.ChunkerParams{Algorithm: devicesync.Algorithm, Min: 1024, Avg: 4096, Max: 16 << 10}}
 	var wire bytes.Buffer
@@ -48,7 +55,7 @@ func (s *server) rawUpload(source syncproto.Source, gen int64, data []byte, cuts
 		wire.Write(z)
 		prev = cut
 	}
-	c := &syncproto.Client{Server: s.client.Server, Token: s.client.Token, HTTP: http.DefaultClient}
+	c := &syncproto.Client{Server: dev.Server, Token: dev.Token, HTTP: http.DefaultClient}
 	res, err := c.Flush(context.Background(), &syncproto.FlushRequest{Header: h, Payload: bytes.NewReader(wire.Bytes())})
 	if err != nil || res.Status != syncproto.StatusOK {
 		s.t.Fatalf("upload: %+v %v", res, err)

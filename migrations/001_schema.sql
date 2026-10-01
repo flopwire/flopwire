@@ -315,6 +315,11 @@ CREATE TABLE messages (
   byte_len bigint,
   locator text,
   parser text NOT NULL,
+  -- When the server stored this row's current text (server clock: set on
+  -- insert and on every text change, never from the device). A message
+  -- redaction compares it to decide who uploaded a byte-identical record
+  -- first.
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
   tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, left(text, 200000))) STORED
 ) WITH (toast_tuple_target = 512);
 ALTER TABLE messages ALTER COLUMN text SET COMPRESSION lz4;
@@ -322,6 +327,10 @@ ALTER TABLE messages ALTER COLUMN text SET COMPRESSION lz4;
 CREATE INDEX messages_tsv_idx ON messages USING gin (tsv);
 CREATE INDEX messages_conversation_ordinal_idx ON messages (conversation_id, ordinal);
 CREATE INDEX messages_native_idx ON messages (native_id) WHERE native_id IS NOT NULL;
+-- Rows with the same text: a message redaction's copies (all_copies, and
+-- byte-identical records in other sources), probed while it holds the
+-- redacted-lines lock that every flush and parse write waits for.
+CREATE INDEX messages_content_sha_idx ON messages (content_sha);
 CREATE INDEX messages_default_filter_idx ON messages (conversation_id, ordinal)
   WHERE NOT superseded AND on_active_path IS NOT FALSE;
 -- Failed tool calls, for the digest's count on append.
