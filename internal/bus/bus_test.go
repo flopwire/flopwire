@@ -957,6 +957,52 @@ func TestExpiredHeldMessageStaysHidden(t *testing.T) {
 	}
 }
 
+// The cap is checked on the body as sent, before the redactor runs. That
+// is safe because masks keep the original length (internal/redact): the
+// stored body and refs are exactly as long as the ones measured, even
+// where a secret is shorter than its marker, and a body over the cap is
+// refused before anything is stored or audited.
+func TestRedactedBodyStaysWithinTheCap(t *testing.T) {
+	tm := newTeam(t)
+	short := "Xk9#mQ2z" // shorter than any marker: masked with '*'
+	tok := "gh" + "p_" + strings.Repeat("aB3dE5", 6)
+	body := "é日 password=" + short + " use " + tok + " 😀 "
+	body += strings.Repeat("ü", (busproto.MaxBodyBytes-len(body))/2)
+	body += strings.Repeat("x", busproto.MaxBodyBytes-len(body))
+	ref := "fw://s/1 token=" + tok + " "
+	ref += strings.Repeat("r", busproto.MaxRefBytes-len(ref))
+	if len(body) != busproto.MaxBodyBytes || len(ref) != busproto.MaxRefBytes {
+		t.Fatalf("fixture: body %d ref %d", len(body), len(ref))
+	}
+	out := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", body, func(r *busproto.SendRequest) { r.Refs = []string{ref} })
+	if out.Redactions["assignment"] != 1 || out.Redactions["github-token"] != 2 {
+		t.Fatalf("redactions %v", out.Redactions)
+	}
+	var stored string
+	var refs []string
+	var n, refN int
+	if err := tm.pool.QueryRow(context.Background(), `SELECT body,octet_length(body),refs,octet_length(refs[1]) FROM bus_messages WHERE id=$1`, out.ID).Scan(&stored, &n, &refs, &refN); err != nil {
+		t.Fatal(err)
+	}
+	if n != busproto.MaxBodyBytes || strings.Contains(stored, short) || strings.Contains(stored, tok) {
+		t.Fatalf("stored body: %d bytes, cap %d, %q", n, busproto.MaxBodyBytes, stored[:80])
+	}
+	if refN != busproto.MaxRefBytes || strings.Contains(refs[0], tok) {
+		t.Fatalf("stored ref: %d bytes, cap %d", refN, busproto.MaxRefBytes)
+	}
+	before, audits := 0, tm.auditCount("bus.send")
+	if err := tm.pool.QueryRow(context.Background(), `SELECT count(*) FROM bus_messages`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", body+tok); code(err) != busproto.CodeBadRequest {
+		t.Fatalf("over cap: %v", err)
+	}
+	var after int
+	if err := tm.pool.QueryRow(context.Background(), `SELECT count(*) FROM bus_messages`).Scan(&after); err != nil || after != before || tm.auditCount("bus.send") != audits {
+		t.Fatalf("over-cap send stored or audited: messages %d -> %d, audits %d -> %d", before, after, audits, tm.auditCount("bus.send"))
+	}
+}
+
 // Refs pass the server redactor as the body does.
 func TestRefsAreRedacted(t *testing.T) {
 	tm := newTeam(t)
