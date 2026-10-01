@@ -30,6 +30,9 @@ import (
 // for any kind.
 var uncapped = map[transcript.Kind]transcript.CapConfig{}
 
+// hadStoredSQL reports whether any conversation names source $1.
+const hadStoredSQL = `SELECT EXISTS(SELECT 1 FROM conversations WHERE source_id=$1)`
+
 // job is one source's parse: its identity, stored cursor, and request.
 type job struct {
 	src                         source
@@ -127,7 +130,7 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) error {
 	// A source with stored conversations has its covered sessions hidden,
 	// not refused: they may be restored.
 	var hadStored bool
-	if err := q.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations WHERE source_id=$1)`, j.src.id).Scan(&hadStored); err != nil {
+	if err := q.Pool.QueryRow(ctx, hadStoredSQL, j.src.id).Scan(&hadStored); err != nil {
 		return err
 	}
 	sink := newSink(ctx, q.Pool, j.src)
