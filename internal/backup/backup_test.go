@@ -144,7 +144,7 @@ func TestValidateOutputRejectsBroadPaths(t *testing.T) {
 }
 
 func TestCreateRequiresEncryptedDestinationAcknowledgement(t *testing.T) {
-	if _, err := Create(t.Context(), "unused", nil, "unused", filepath.Join(t.TempDir(), "backup"), false); err == nil {
+	if _, err := Create(t.Context(), "unused", nil, "unused", filepath.Join(t.TempDir(), "backup"), Options{}); err == nil {
 		t.Fatal("expected encrypted destination acknowledgement error")
 	}
 }

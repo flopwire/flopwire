@@ -237,6 +237,7 @@ func backupCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	output := fs.String("output", "", "new or empty backup directory")
 	encrypted := fs.Bool("encrypted-destination", false, "acknowledge the backup destination is encrypted")
+	allowRepair := fs.Bool("allow-pending-redaction-repair", false, "take the backup even while message redactions still repair archived bytes (the backup may hold redacted text)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -247,7 +248,7 @@ func backupCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	manifest, createErr := backupsvc.Create(ctx, mustEnv("DATABASE_URL"), objects, env("S3_BUCKET", "flopwire"), *output, *encrypted)
+	manifest, createErr := backupsvc.Create(ctx, mustEnv("DATABASE_URL"), objects, env("S3_BUCKET", "flopwire"), *output, backupsvc.Options{EncryptedDestination: *encrypted, AllowPendingRedactionRepair: *allowRepair})
 	pool, err := pgxpool.New(ctx, mustEnv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("record backup status: %w", err)

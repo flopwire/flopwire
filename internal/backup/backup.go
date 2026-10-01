@@ -108,8 +108,31 @@ type State struct {
 	Error     string    `json:"error,omitempty"`
 }
 
-func Create(ctx context.Context, databaseURL string, objects *minio.Client, bucket, output string, encryptedDestination bool) (manifest Manifest, err error) {
-	if !encryptedDestination {
+// Options are the operator's acknowledgements for Create.
+type Options struct {
+	// EncryptedDestination acknowledges that the output is encrypted.
+	EncryptedDestination bool
+	// AllowPendingRedactionRepair takes the backup even while archived
+	// bytes still wait for a message redaction's at-rest repair. The
+	// backup's objects may then hold redacted text. A restored server
+	// masks it on read and repairs it again from the restored work rows,
+	// but the backup itself keeps it.
+	AllowPendingRedactionRepair bool
+}
+
+// ErrRedactionRepairPending refuses a backup while archive_redaction_work
+// holds a live source: the snapshot would copy chunks that may still hold
+// a redacted line.
+var ErrRedactionRepairPending = errors.New("backup refused: archived bytes are waiting for a message redaction's at-rest repair")
+
+// pendingRepairSQL counts the generations of live sources whose archived
+// bytes a redaction repair has not rescanned yet. Tombstoned sources are
+// left out like their chunks (inventorySQL).
+const pendingRepairSQL = `SELECT count(*), count(*) FILTER (WHERE p.quarantined_at IS NOT NULL) FROM archive_redaction_work w
+	JOIN sources s ON s.id=w.source_id LEFT JOIN source_parse_state p ON p.source_id=w.source_id WHERE s.tombstoned_at IS NULL`
+
+func Create(ctx context.Context, databaseURL string, objects *minio.Client, bucket, output string, opts Options) (manifest Manifest, err error) {
+	if !opts.EncryptedDestination {
 		return manifest, errors.New("production backup requires --encrypted-destination acknowledgement")
 	}
 	info, statErr := os.Stat(output)
@@ -158,6 +181,19 @@ func Create(ctx context.Context, databaseURL string, objects *minio.Client, buck
 	var snapshot string
 	if err = tx.QueryRow(ctx, `SELECT pg_export_snapshot()`).Scan(&snapshot); err != nil {
 		return manifest, err
+	}
+	// In the snapshot: no pending repair means every chunk it references
+	// was rescanned with every redaction it holds.
+	var pending, quarantined int64
+	if err = tx.QueryRow(ctx, pendingRepairSQL).Scan(&pending, &quarantined); err != nil {
+		return manifest, err
+	}
+	if pending > 0 && !opts.AllowPendingRedactionRepair {
+		hint := "wait for the parse queue to finish them and retry"
+		if quarantined > 0 {
+			hint = fmt.Sprintf("%d belong to quarantined sources, which repair only after release; release them, or retry once the queue finishes", quarantined)
+		}
+		return manifest, fmt.Errorf("%w: %d generations pending (%s); --allow-pending-redaction-repair takes the backup anyway", ErrRedactionRepairPending, pending, hint)
 	}
 	if manifest.Objects, err = readInventory(ctx, tx); err != nil {
 		return manifest, err
@@ -580,6 +616,9 @@ func canonicalInventory(entries []Entry) ([]Entry, error) {
 func errorClass(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
+	}
+	if errors.Is(err, ErrRedactionRepairPending) {
+		return "redaction_repair_pending"
 	}
 	text := err.Error()
 	if strings.Contains(text, "pg_dump") {
