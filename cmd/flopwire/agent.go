@@ -287,12 +287,10 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		if ccErr == nil && cc.Server != "" && cc.Token != "" && !*noSync {
 			connect = busConnect(cc, client.Load)
 		}
-		b, err := devicebus.Open(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log})
-		if err != nil {
-			return nil, err
+		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log}); b != nil {
+			defer b.Close()
+			cfg.Bus = b
 		}
-		defer b.Close()
-		cfg.Bus = b
 	}
 	a = agent.New(store, cfg) // installs the path rules filter on sched
 	if startSyncRun != nil {
@@ -445,6 +443,20 @@ func withholdSession(cc client.Config, load func() (client.Config, error)) func(
 		mu.Unlock()
 		return send(ctx, w)
 	}
+}
+
+// openBus opens the local message inbox. One that cannot be opened (a
+// damaged file, a full disk) turns messaging off with an error in the
+// log; it never stops indexing and upload.
+func openBus(path string, cfg devicebus.Config) *devicebus.Bus {
+	b, err := devicebus.Open(path, cfg)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("agent: messaging off: the local inbox cannot be opened", "path", path, "err", err)
+		}
+		return nil
+	}
+	return b
 }
 
 // busConnect is devicebus's Connect for the configured server: the saved

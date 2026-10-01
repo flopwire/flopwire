@@ -310,3 +310,54 @@ func TestWriteHidden(t *testing.T) {
 		}
 	}
 }
+
+// A local inbox that cannot be opened turns messaging off; the agent
+// still runs (indexing and upload never wait on messaging).
+func TestAgentRunsWithDamagedInbox(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
+	if err := os.WriteFile(filepath.Join(dir, "bus.db"), []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	sock := filepath.Join(shortSockDir(t), "a.sock")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--no-sync"})
+		done <- err
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("agent stopped: %v", err)
+		default:
+		}
+		if r, err := agent.Call(ctx, sock, agent.Request{Op: "status"}); err == nil {
+			if r.Bus != nil {
+				t.Fatalf("messaging on with a damaged inbox: %+v", r.Bus)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("agent never answered")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
+// shortSockDir is a directory short enough for a unix socket path.
+func shortSockDir(t *testing.T) string {
+	d, err := os.MkdirTemp("/tmp", "fws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
+}
