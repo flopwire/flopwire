@@ -433,15 +433,12 @@ func redirectChanged() *Error {
 }
 
 func (f *flush) unlock() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	locks := make([]store.AdvisoryLock, 0, len(f.locked))
 	for _, key := range f.locked {
-		var ok bool
-		if err := f.conn.QueryRow(ctx, `SELECT pg_advisory_unlock(hashtextextended($1,0))`, key).Scan(&ok); err != nil || !ok {
-			_ = f.conn.Conn().Close(ctx) // never return a connection holding a lock to the pool
-			return
-		}
+		locks = append(locks, store.AdvisoryLock{Key: key})
 	}
+	// Never return a connection holding a lock to the pool.
+	_ = store.ReleaseAdvisoryLocks(f.conn, f.s.Pool, locks...)
 }
 
 // commit applies steps 2 to 5 in the manifest transaction and returns the

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/store"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -60,5 +62,34 @@ func TestRefuseSourceAndConcurrentRecountDoNotDeadlock(t *testing.T) {
 	}
 	if n := e.count(`SELECT count(*) FROM conversations WHERE id=$1 OR id=$2`, main, sub); n != 0 {
 		t.Fatalf("%d refused conversations left", n)
+	}
+}
+
+func advisoryHeld(e *env) int {
+	return e.count(`SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`)
+}
+
+// A flush holds its chunks' advisory locks on a pooled connection until
+// the request ends, and an archive rewrite holds the shared purge lock and
+// its replacement chunks' locks until Close. When unlocking fails and the
+// connection cannot reach the server, both still return with every lock
+// gone.
+func TestFlushAndArchiveRewriteFreeLocksWhenUnlockFails(t *testing.T) {
+	e := newEnv(t)
+	defer store.SetReleaseFaults(store.ReleaseFaults{Unlock: true, UnlockAll: true, Abandon: true})()
+	sync1(t, e.syncer(devicesync.Config{SealAfter: -1}), bulkSpec(t, 40))
+	if n := advisoryHeld(e); n != 0 {
+		t.Fatalf("a flush returned with %d advisory locks held", n)
+	}
+	plan, err := PrepareArchiveRewrite(e.ctx, e.pool, e.objects, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := advisoryHeld(e); n != 1 {
+		t.Fatalf("%d advisory locks held by a prepared rewrite, want the purge lock", n)
+	}
+	plan.Close()
+	if n := advisoryHeld(e); n != 0 {
+		t.Fatalf("an archive rewrite closed with %d advisory locks held", n)
 	}
 }

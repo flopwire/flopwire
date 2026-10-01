@@ -39,6 +39,7 @@ type ArchiveRewrite struct {
 	chunks []rewriteChunk
 	tails  []rewriteTail
 	conn   *pgxpool.Conn
+	pool   *pgxpool.Pool
 	locked []string
 }
 
@@ -61,7 +62,7 @@ func PrepareArchiveRewrite(ctx context.Context, pool *pgxpool.Pool, objects Obje
 		spans []redact.Span
 	}
 	fixes := map[syncproto.Hash]*fix{}
-	plan := &ArchiveRewrite{}
+	plan := &ArchiveRewrite{pool: pool}
 	for _, m := range masks {
 		g := m.Generation
 		for _, c := range g.Entries {
@@ -248,17 +249,11 @@ func (p *ArchiveRewrite) Close() {
 	if p.conn == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	locks := []store.AdvisoryLock{{ID: store.PurgeLockID, Shared: true}}
 	for _, key := range p.locked {
-		if _, err := p.conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended($1,0))`, key); err != nil {
-			_ = p.conn.Conn().Close(ctx)
-			break
-		}
+		locks = append(locks, store.AdvisoryLock{Key: key})
 	}
-	if _, err := p.conn.Exec(ctx, `SELECT pg_advisory_unlock_shared($1)`, store.PurgeLockID); err != nil {
-		_ = p.conn.Conn().Close(ctx)
-	}
+	_ = store.ReleaseAdvisoryLocks(p.conn, p.pool, locks...)
 	p.conn.Release()
 	p.conn = nil
 }

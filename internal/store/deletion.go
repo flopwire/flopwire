@@ -343,7 +343,7 @@ func (p *Postgres) ProcessDeletionJobs(ctx context.Context) (int, error) {
 	if _, err = conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, purgeLockID); err != nil {
 		return 0, err
 	}
-	defer unlockSession(conn, `SELECT pg_advisory_unlock($1)`, purgeLockID)
+	defer func() { _ = ReleaseAdvisoryLocks(conn, p.pool, AdvisoryLock{ID: purgeLockID}) }()
 
 	var job domain.DeletionJob
 	var sources, removed int
@@ -477,17 +477,6 @@ func inConnTx(ctx context.Context, conn *pgxpool.Conn, fn func(pgx.Tx) error) er
 		return err
 	}
 	return tx.Commit(ctx)
-}
-
-// unlockSession releases a session-level advisory lock; if that fails the
-// connection is closed so the lock cannot leak back into the pool.
-func unlockSession(conn *pgxpool.Conn, sql string, args ...any) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var unlocked bool
-	if err := conn.QueryRow(ctx, sql, args...).Scan(&unlocked); err != nil || !unlocked {
-		_ = conn.Conn().Close(ctx)
-	}
 }
 
 // WithholdSession: when the server holds a conversation of the session
