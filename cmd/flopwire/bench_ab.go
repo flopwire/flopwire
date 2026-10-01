@@ -217,7 +217,8 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 	var all []abRun
 	if *warm {
 		wt := time.Now()
-		n, err := warmTree(home)
+		// The harness roots, not home: home is $HOME when --home is unset.
+		n, err := warmTree(claudeDir, codexHome, devinDB)
 		if err != nil {
 			return err
 		}
@@ -318,26 +319,35 @@ func abOrder(k int) []int {
 	return out
 }
 
-// warmTree reads every file under root once, so the first measured run
-// does not pay for a cold page cache that later runs skip. It returns the
-// bytes read.
-func warmTree(root string) (int64, error) {
+// warmTree reads every regular file under the roots once, so the first
+// measured run does not pay for a cold page cache that later runs skip. A
+// missing root is skipped (a corpus need not hold every harness); symlinks
+// and other non-regular files are not followed. It returns the bytes read.
+func warmTree(roots ...string) (int64, error) {
 	var n int64
 	buf := make([]byte, 1<<20)
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
+	for _, root := range roots {
+		if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+			continue
 		}
-		f, err := os.Open(p)
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil || !d.Type().IsRegular() {
+				return err
+			}
+			f, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			c, err := io.CopyBuffer(io.Discard, f, buf)
+			n += c
+			return err
+		})
 		if err != nil {
-			return err
+			return n, err
 		}
-		defer f.Close()
-		c, err := io.CopyBuffer(io.Discard, f, buf)
-		n += c
-		return err
-	})
-	return n, err
+	}
+	return n, nil
 }
 
 func runsOf(all []abRun, side string) []*accRecord {

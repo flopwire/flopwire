@@ -258,7 +258,7 @@ func TestABOrderBalanced(t *testing.T) {
 	}
 }
 
-func TestWarmTree(t *testing.T) {
+func TestWarmTreeReadsAll(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "a", "b"), 0o755); err != nil {
 		t.Fatal(err)
@@ -270,5 +270,31 @@ func TestWarmTree(t *testing.T) {
 	}
 	if n, err := warmTree(dir); err != nil || n != 10+2000+3<<20 {
 		t.Fatalf("warmTree = %d, %v", n, err)
+	}
+}
+
+// TestWarmRootsHarnessOnly: the warm-up reads the harness roots the runs
+// read, not the whole home (which is $HOME when --home is unset), skips a
+// missing root and anything that is not a regular file.
+func TestWarmRootsHarnessOnly(t *testing.T) {
+	home := t.TempDir()
+	claude := filepath.Join(home, ".claude", "projects")
+	if err := os.MkdirAll(claude, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claude, "s.jsonl"), make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Outside the harness roots: must not be read.
+	if err := os.WriteFile(filepath.Join(home, "big"), make([]byte, 5000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink to a directory is not a regular file to read.
+	if err := os.Symlink(home, filepath.Join(claude, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	n, err := warmTree(claude, filepath.Join(home, ".codex"), filepath.Join(home, "missing.db"))
+	if err != nil || n != 100 {
+		t.Fatalf("warmTree = %d, %v; want 100, nil", n, err)
 	}
 }
