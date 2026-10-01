@@ -592,30 +592,13 @@ func (s *Store) heldLines(ctx context.Context, c redactTarget, lines map[[32]byt
 
 // describeSkipped fills res.Skipped with the skipped copies' owners and
 // devices per source, ordered by source: names only, never text. A copy
-// in a conversation an admin path rule hid is only counted
-// (res.SkippedHidden): the caller may not learn whose or where it is.
+// in a source whose raw evidence is hidden (sourceHidden, the rule raw
+// reads apply: any conversation it feeds is hidden by an admin path rule)
+// is only counted (res.SkippedHidden): the caller may not learn whose or
+// where it is.
 func (s *Store) describeSkipped(ctx context.Context, skipped []redactTarget, res *format.RedactResult) error {
-	if len(skipped) == 0 {
-		return nil
-	}
-	convs := make([]string, 0, len(skipped))
-	for _, c := range skipped {
-		convs = append(convs, c.conv)
-	}
-	rows, err := s.Pool.Query(ctx, `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) AND hidden_at IS NOT NULL`, convs)
-	if err != nil {
-		return err
-	}
-	hiddenConvs, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return err
-	}
 	bySource := map[string]*format.SkippedCopies{}
 	for _, c := range skipped {
-		if slices.Contains(hiddenConvs, c.conv) {
-			res.SkippedHidden++
-			continue
-		}
 		sk := bySource[c.sourceID]
 		if sk == nil {
 			sk = &format.SkippedCopies{SourceID: c.sourceID}
@@ -625,6 +608,14 @@ func (s *Store) describeSkipped(ctx context.Context, skipped []redactTarget, res
 	}
 	for _, id := range slices.Sorted(maps.Keys(bySource)) {
 		sk := bySource[id]
+		hidden, err := s.sourceHidden(ctx, id)
+		if err != nil {
+			return err
+		}
+		if hidden {
+			res.SkippedHidden += sk.Messages
+			continue
+		}
 		if err := s.Pool.QueryRow(ctx, `SELECT u.email,d.name FROM sources src JOIN devices d ON d.id=src.device_id JOIN users u ON u.id=d.user_id
 			WHERE src.id=$1`, id).Scan(&sk.User, &sk.Device); err != nil {
 			return err

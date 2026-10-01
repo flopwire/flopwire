@@ -139,7 +139,7 @@ func printSkipped(skipped []format.SkippedCopies, hidden int) {
 		fmt.Printf("  %s on %s: %d messages (source %s)\n", sk.User, sk.Device, sk.Messages, sk.SourceID)
 	}
 	if hidden > 0 {
-		fmt.Printf("  %d messages in conversations hidden by an admin path rule\n", hidden)
+		fmt.Printf("  %d messages in sources hidden by an admin path rule\n", hidden)
 	}
 	fmt.Println("  An admin can redact them with flopwire redact --admin.")
 }

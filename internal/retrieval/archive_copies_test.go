@@ -655,3 +655,56 @@ func TestRedactSkippedHiddenCopyIsAnonymous(t *testing.T) {
 		t.Error("Gary's hidden row was redacted")
 	}
 }
+
+// Raw reads hide a whole source when any conversation it feeds is hidden.
+// The skipped list follows the same rule: a copy whose own conversation
+// is visible, in a source that also feeds a hidden conversation, is only
+// counted.
+func TestRedactSkippedCopyInHiddenSourceIsAnonymous(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, _, _ := s.writeRedactFixtures()
+	if err := s.sy.Sync(ctx, specs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := s.member("bob@example.test")
+	const forged = "/w/bob/forged.jsonl"
+	s.rawUploadAs(bob, syncproto.Source{Path: forged, FileID: "copy:forged", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: specs[0].Parser, SessionKey: specs[0].SessionKey}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Another conversation fed by Gary's source is hidden; the copy's own
+	// conversation is not.
+	var src string
+	if err := s.pool.QueryRow(ctx, `SELECT id::text FROM sources WHERE path=$1`, specs[0].Path).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,hidden_at,hidden_rule,hidden_root)
+		SELECT gen_random_uuid(),s.id,'claude','hidden-side',s.device_id,d.user_id,now(),'secret/**',NULL FROM sources s JOIN devices d ON d.id=s.device_id WHERE s.id=$1`, src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.client.Raw(ctx, src, 0, 0, 10); err == nil {
+		t.Fatal("fixture: raw reads of the source are not hidden")
+	}
+	res, err := s.redact(bob, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessageAt(forged) + ":2-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(res)
+	if len(res.Skipped) != 0 || res.SkippedHidden != 1 {
+		t.Errorf("result %s, want one anonymous skipped copy", raw)
+	}
+	for _, leak := range []string{"gary@example.test", "laptop-a", src} {
+		if bytes.Contains(raw, []byte(leak)) {
+			t.Errorf("result names %q", leak)
+		}
+	}
+}

@@ -595,14 +595,21 @@ func (s *Store) attribution(ctx context.Context, sourceID string, generation, of
 		return a, err
 	}
 	// The evidence of a hidden conversation is hidden with it.
-	var hidden bool
-	err = s.db().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations c JOIN sources s ON s.id=$1 WHERE c.hidden_at IS NOT NULL
-		AND (c.source_id IN (s.id,s.parent_source_id)
-			OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.source_id IN (s.id,s.parent_source_id))))`, sourceID).Scan(&hidden)
+	hidden, err := s.sourceHidden(ctx, sourceID)
 	if hidden {
 		return a, ErrNotFound
 	}
 	return a, err
+}
+
+// sourceHidden reports whether a source's raw evidence is hidden: some
+// conversation it (or its parent) feeds is hidden by an admin path rule.
+func (s *Store) sourceHidden(ctx context.Context, sourceID string) (bool, error) {
+	var hidden bool
+	err := s.db().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations c JOIN sources s ON s.id=$1 WHERE c.hidden_at IS NOT NULL
+		AND (c.source_id IN (s.id,s.parent_source_id)
+			OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.source_id IN (s.id,s.parent_source_id))))`, sourceID).Scan(&hidden)
+	return hidden, err
 }
 
 // fetch reads the range of a's source generation from the archive, under
