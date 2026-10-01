@@ -64,8 +64,12 @@ These need section 1.
 `scripts/acceptance.sh` builds the binary and runs `flopwire bench acceptance`
 in four parts, plus the FAD parity sample. It writes a JSON record of the
 run and compares it with the previous release's record. It takes 10 to 15
-minutes. Stop
-other heavy work on the machine first; load changes the index time.
+minutes. Stop other heavy work on the machine first; load changes the index time.
+
+The reference laptop is the machine that made the most recent record in
+[docs/perf](perf/README.md). Its `machine` fields name it. Run the set on
+that machine. Timings from two machines are not comparable. If
+docs/perf has no record yet, the first run sets the reference laptop.
 
 1. Run the whole set on the reference laptop. Set the release version:
 
@@ -82,7 +86,8 @@ other heavy work on the machine first; load changes the index time.
 3. Read the pass/fail table.
 4. Read the comparison table after it. It compares this run with the most
    recent record in [docs/perf](perf/README.md). It flags each metric that
-   grew by more than 20% as `REGRESSED`.
+   grew by more than 20% and by more than its minimum change as
+   `REGRESSED`.
 5. If the comparison warns that the machine or the corpus differs, do not
    treat its regressions as real. Rerun the previous release on this
    machine to confirm a regression.

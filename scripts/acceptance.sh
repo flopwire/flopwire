@@ -35,6 +35,7 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="${1:?usage: acceptance.sh [--strict] <scratch dir>}"
 mkdir -p "$scratch"
+scratch="$(cd "$scratch" && pwd)" # absolute: the steps below run from $root
 cd "$root"
 version="${FLOPWIRE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 commit="$(git rev-parse HEAD)"
