@@ -764,3 +764,25 @@ func TestMCPBusStructuredAndBudget(t *testing.T) {
 		}
 	}
 }
+
+// Every time printed is UTC, whatever zone the agent stamped it in.
+func TestBusTimesAreUTC(t *testing.T) {
+	asCaller(t, claudeSelf)
+	ny := time.FixedZone("EDT", -4*3600)
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		switch r.Op {
+		case "peers":
+			return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: peerID, SeenAt: t0.In(ny)}}}}
+		case "send":
+			return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m1", Sent: t0.In(ny), ExpiresAt: t0.In(ny), To: busproto.Recipient{User: "a@x.test"}}}
+		}
+		d := t0.In(ny)
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{{Envelope: busproto.Envelope{ID: "m1", Sent: d, ExpiresAt: d}, DeliveredAt: &d}}}}
+	})
+	for _, args := range [][]string{{"peers"}, {"send", "@a", "--", "hi"}, {"inbox"}} {
+		out, _, err := cliJSON(t, fa, "", args...)
+		if err != nil || strings.Contains(out, "-04:00") || !strings.Contains(out, "T14:02:11Z") {
+			t.Fatalf("%v: %s %v", args, out, err)
+		}
+	}
+}

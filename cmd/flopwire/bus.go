@@ -324,6 +324,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) {
 				continue
 			}
+			p.SeenAt = p.SeenAt.UTC() // every time printed is UTC
 			peers = append(peers, p)
 		}
 	}
@@ -501,6 +502,7 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 	if resp.Sent == nil {
 		return &busErr{Code: codeAgentError, Detail: "the device agent answered the send without an outcome", Fix: "check the agent", Example: "flopwire agent status"}
 	}
+	resp.Sent.Sent, resp.Sent.ExpiresAt = resp.Sent.Sent.UTC(), resp.Sent.ExpiresAt.UTC()
 	r := sendJSON{Kind: "send_receipt", SendResponse: *resp.Sent, From: callerJSON{Session: self.SessionID, Agent: string(self.Agent)}, Arrives: arrival(*resp.Sent), Outcome: sendOutcome(*resp.Sent)}
 	return st.emit(w, r, func() error {
 		_, err := io.WriteString(w, r.Outcome+"\n")
@@ -717,6 +719,13 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 	out := inboxJSON{Kind: "inbox", Session: self.SessionID, Messages: []inboxEntry{}}
 	if resp.Inbox != nil {
 		for _, m := range resp.Inbox.Messages {
+			m.Sent, m.ExpiresAt = m.Sent.UTC(), m.ExpiresAt.UTC()
+			for _, t := range []**time.Time{&m.DeliveredAt, &m.ReadAt} {
+				if *t != nil {
+					u := (*t).UTC()
+					*t = &u
+				}
+			}
 			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != ""})
 		}
 		out.Next = resp.Inbox.Next
