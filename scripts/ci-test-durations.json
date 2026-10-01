@@ -1,0 +1,13 @@
+{
+  "cmd/flopwire": 42.8,
+  "internal/agent": 148.4,
+  "internal/api": 30,
+  "internal/devicesync": 261.7,
+  "internal/ingest": 188.3,
+  "internal/localindex": 271,
+  "internal/perfguard": 61.4,
+  "internal/retrieval": 96.4,
+  "internal/retrieval/local": 45.5,
+  "internal/retrieval/regexq": 37.3,
+  "internal/transcript": 31.6
+}
