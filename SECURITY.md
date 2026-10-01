@@ -2,8 +2,10 @@
 
 ## Security boundary
 
-flopwire archives raw, unredacted coding-agent traces. Those traces can contain
-source code, credentials, personal information, tool output, and prompts.
+flopwire archives agent traces. Those traces can contain source code,
+personal information, tool output, and prompts. Secrets are redacted on the
+device before upload and again on the server, but redaction is pattern-
+based: a credential it does not recognize is stored as written.
 
 - Deployment administrators and anyone with host-level access are trusted to
   read the complete corpus.
@@ -82,7 +84,8 @@ source code, credentials, personal information, tool output, and prompts.
   [docs/runbook.md](docs/runbook.md#delete-a-conversation).
 - The organization administrator, not each member, authorizes collection.
   There is no per-member consent gate. Administrators must tell members that
-  eligible traces become team-visible, unredacted, and indefinitely retained.
+  eligible traces become team-visible and indefinitely retained, with only
+  recognized secrets redacted.
 
 Audit events are retained indefinitely. User, device, member-policy, status,
 and audit-log reads are audited. Failed authentication and authorization are
