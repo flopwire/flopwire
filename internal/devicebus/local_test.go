@@ -358,3 +358,80 @@ func TestLocalInboxPaging(t *testing.T) {
 		t.Fatalf("pages: %v", bodies)
 	}
 }
+
+// Take with a bound returns the oldest messages that fit and leaves the
+// rest queued, in order, for the next call; a message larger than the
+// bound alone is still taken, so it never blocks the queue.
+func TestTakeBounded(t *testing.T) {
+	lb := newLocalBus(t)
+	for i := range 7 {
+		if _, err := lb.send(t, fmt.Sprintf("aaaa%d", 1111+1111*(i%2)), "bbbb", fmt.Sprintf("m%d %s", i, strings.Repeat("x", 10*i))); err != nil {
+			t.Fatal(err)
+		}
+		lb.advance(time.Second)
+	}
+	bodies := func(es []busproto.Envelope) []string {
+		var out []string
+		for _, e := range es {
+			out = append(out, e.Body[:2])
+		}
+		return out
+	}
+	got, err := lb.Take(ctx, "bbbb3333", "", Limit{Count: 3})
+	if err != nil || !slices.Equal(bodies(got), []string{"m0", "m1", "m2"}) {
+		t.Fatalf("count bound: %v %v", bodies(got), err)
+	}
+	// m3 is 33 bytes, m4 43: with a separator of 2, both need 78.
+	got, _ = lb.Take(ctx, "bbbb3333", "", Limit{Bytes: 77, Sep: 2})
+	if !slices.Equal(bodies(got), []string{"m3"}) {
+		t.Fatalf("byte bound: %v", bodies(got))
+	}
+	got, _ = lb.Take(ctx, "bbbb3333", "", Limit{Bytes: 1, Size: func(e busproto.Envelope) int { return 1000 }})
+	if !slices.Equal(bodies(got), []string{"m4"}) {
+		t.Fatalf("oversized first message: %v", bodies(got))
+	}
+	if st := lb.Status(ctx); st.Pending != 2 {
+		t.Fatalf("pending after bounded takes: %d", st.Pending)
+	}
+	got, _ = lb.Pending(ctx, "bbbb3333", "")
+	if !slices.Equal(bodies(got), []string{"m5", "m6"}) {
+		t.Fatalf("the rest: %v", bodies(got))
+	}
+}
+
+// Concurrent bounded takes for one session hand out each message once.
+func TestTakeBoundedConcurrent(t *testing.T) {
+	lb := newLocalBus(t)
+	for i := range 12 {
+		if _, err := lb.send(t, fmt.Sprintf("aaaa%d", 1111+1111*(i%2)), "bbbb", fmt.Sprintf("c%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	seen := map[string]int{}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 4 {
+				got, err := lb.Take(ctx, "bbbb3333", "", Limit{Count: 2})
+				if err != nil {
+					t.Error(err)
+				}
+				mu.Lock()
+				for _, e := range got {
+					seen[e.Body]++
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if len(seen) != 12 {
+		t.Fatalf("delivered %d of 12: %v", len(seen), seen)
+	}
+	for b, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s delivered %d times", b, n)
+		}
+	}
+}

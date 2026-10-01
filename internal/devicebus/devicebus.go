@@ -228,10 +228,32 @@ func (b *Bus) Recheck() {
 // for one session, each message goes to exactly one. agent narrows the
 // session when two harnesses share an id ("" matches any).
 func (b *Bus) Pending(ctx context.Context, session, agent string) ([]busproto.Envelope, error) {
+	return b.Take(ctx, session, agent, Limit{})
+}
+
+// Limit bounds what one Take returns. Zero fields mean no bound.
+type Limit struct {
+	// Count is the most messages taken.
+	Count int
+	// Bytes bounds the sum of Size over the messages taken, plus Sep
+	// between each two. The oldest message is taken even when it alone is
+	// larger, so an oversized message never blocks the queue; the caller
+	// cuts it.
+	Bytes int
+	Sep   int
+	// Size is a message's cost against Bytes; default: the body and refs'
+	// length.
+	Size func(busproto.Envelope) int
+}
+
+// Take is Pending with a bound: it marks delivered and returns the
+// session's oldest undelivered messages that fit in lim. The rest stay
+// queued for the next call, in order.
+func (b *Bus) Take(ctx context.Context, session, agent string, lim Limit) ([]busproto.Envelope, error) {
 	if session == "" {
 		return nil, errors.New("pending: a session id is required")
 	}
-	out, err := b.st.take(ctx, session, agent, b.cfg.Now())
+	out, err := b.st.take(ctx, session, agent, b.cfg.Now(), lim)
 	if err != nil {
 		return nil, err
 	}
