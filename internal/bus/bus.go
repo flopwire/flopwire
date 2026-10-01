@@ -502,15 +502,16 @@ func (m *message) insert(ctx context.Context, tx pgx.Tx, c busproto.Caller) erro
 	return err
 }
 
-// lockSend serializes sends from one session and sends to one recipient,
-// so two concurrent sends cannot both pass a limit with one slot left.
-// The two locks are taken in one order.
+// lockSend serializes sends from one session, from one person (which
+// covers the per-device and per-person ceilings) and to one recipient, so
+// two concurrent sends cannot both pass a limit with one slot left. The
+// locks are taken in one order.
 func lockSend(ctx context.Context, tx pgx.Tx, m message) error {
 	to := "bus:to-user:" + m.toUser
 	if m.toSession != "" {
 		to = "bus:to-session:" + m.toAgent + ":" + m.toSession
 	}
-	keys := []string{"bus:from:" + m.from.agent + ":" + m.from.id, to}
+	keys := []string{"bus:from:" + m.from.agent + ":" + m.from.id, "bus:from-user:" + m.from.userID, to}
 	slices.Sort(keys)
 	for _, k := range keys {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, k); err != nil {
@@ -541,6 +542,10 @@ const (
 		AND body_sha=$2 AND to_user=$3 AND addressed=$4 AND ($4='user' OR to_session=$5))`
 	// SessionSendsSQL counts the session $1's sends since $2.
 	SessionSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_session=$1 AND created_at>$2 AND state<>'refused'`
+	// DeviceSendsSQL counts the device $1's sends since $2.
+	DeviceSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_device=$1 AND created_at>$2 AND state<>'refused'`
+	// UserSendsSQL counts the person $1's sends since $2.
+	UserSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_user=$1 AND created_at>$2 AND state<>'refused'`
 	// ThreadSendsSQL counts the thread $1's messages since $2.
 	ThreadSendsSQL = `SELECT count(*) FROM bus_messages WHERE thread_id=$1 AND created_at>$2 AND state<>'refused'`
 	// SessionPendingSQL counts the session $1's undelivered messages
@@ -590,6 +595,20 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 	}
 	if n >= busproto.SessionPerHour {
 		return fail(http.StatusTooManyRequests, busproto.CodeSessionRate, "this session sent %d messages in the last hour; the limit is %d", n, busproto.SessionPerHour), nil
+	}
+	// The session id is the device's own report, so a device that invents
+	// ids passes the session limit; these two do not depend on it.
+	if err := tx.QueryRow(ctx, DeviceSendsSQL, c.DeviceID, now.Add(-time.Hour)).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n >= busproto.DevicePerHour {
+		return fail(http.StatusTooManyRequests, busproto.CodeDeviceRate, "this device sent %d messages in the last hour; the limit is %d", n, busproto.DevicePerHour), nil
+	}
+	if err := tx.QueryRow(ctx, UserSendsSQL, c.UserID, now.Add(-time.Hour)).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n >= busproto.UserPerHour {
+		return fail(http.StatusTooManyRequests, busproto.CodeUserRate, "you sent %d messages in the last hour; the limit is %d", n, busproto.UserPerHour), nil
 	}
 	if m.replyTo != "" {
 		if err := tx.QueryRow(ctx, ThreadSendsSQL, m.thread, now.Add(-time.Hour)).Scan(&n); err != nil {

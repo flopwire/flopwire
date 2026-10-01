@@ -315,9 +315,9 @@ the server side is built. Routes and wire types are in `internal/busproto`.
   sets a 24-hour expiry. A message from another person is held until the
   recipient accepts the sender (`/v1/bus/accepts`, login session only).
 - **Limits.** A reply to a `done` message, more than 8 messages per thread
-  per hour, 30 sends per session per hour, the same body to the same
-  recipient within 10 minutes, and 50 undelivered messages per recipient
-  are refused. A refused message is stored as `refused`.
+  per hour, 30 sends per session per hour (120 per device and 300 per
+  person), the same body to the same recipient within 10 minutes, and 50
+  undelivered messages per recipient are refused. A refused message is stored as `refused`.
 - **Delivery.** The poll answers the device's whole deliverable set:
   messages to its sessions, and `@user` messages it may claim. A claim is
   atomic. An ack sets `delivered_at`. `read_at` is not set yet.

@@ -84,8 +84,15 @@ const (
 
 // Loop and volume limits (plan §3). A send past one is refused.
 const (
-	ThreadPerHour     = 8  // messages per thread per hour
-	SessionPerHour    = 30 // sends per sending session per hour
+	ThreadPerHour  = 8  // messages per thread per hour
+	SessionPerHour = 30 // sends per sending session per hour
+	// DevicePerHour and UserPerHour bound sends per device and per person.
+	// The session limit is keyed on a session id the device reports
+	// itself, so these hold a device that invents session ids. Honest use
+	// stays far below them: the device ceiling is four sessions each at
+	// its loop limit, the person ceiling two and a half such devices.
+	DevicePerHour     = 120
+	UserPerHour       = 300
 	DuplicateWindow   = 10 * time.Minute
 	MaxUndelivered    = 50 // undelivered messages per recipient session (or per person for @user); held ones count only for their sender
 	InboxDefaultLimit = 50
@@ -148,6 +155,8 @@ const (
 	CodeReplyToDone        = "reply_to_done"
 	CodeThreadRate         = "thread_rate"
 	CodeSessionRate        = "session_rate"
+	CodeDeviceRate         = "device_rate"
+	CodeUserRate           = "user_rate"
 	CodeDuplicate          = "duplicate"
 	CodeRecipientFull      = "recipient_full"
 )

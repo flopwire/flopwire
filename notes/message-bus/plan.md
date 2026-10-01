@@ -126,6 +126,7 @@ Enforced by the server, reported to the sender as a refusal:
 - A reply to a `done` message is refused.
 - At most 8 messages per thread per hour between agent sessions.
 - At most 30 sends per session per hour.
+- At most 120 sends per device and 300 per person per hour. The session id is the device's own report, so these ceilings hold a device that invents session ids.
 - The same body to the same recipient within 10 minutes is dropped.
 - At most 50 undelivered messages per recipient session.
 

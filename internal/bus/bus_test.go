@@ -525,6 +525,66 @@ func TestLimits(t *testing.T) {
 		tm.presence()
 		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
 	})
+	// The session limit is keyed on an id the device reports itself, so a
+	// device that invents session ids is held by ceilings per device and
+	// per person.
+	t.Run("device and person per hour", func(t *testing.T) {
+		tm := newTeam(t)
+		var to []busproto.PresenceSession
+		for i := range 20 {
+			to = append(to, live(fmt.Sprintf("a-r%02d-0000", i), "claude", "/Users/alex/code/api", false))
+		}
+		tm.present(tm.alexMac, to...)
+		garyThird := tm.device(tm.gary)
+		sessions := func(c busproto.Caller, tag string, n int) []string {
+			var ps []busproto.PresenceSession
+			var ids []string
+			for i := range n {
+				id := fmt.Sprintf("g-%s%d-%04d", tag, i, i)
+				ps = append(ps, live(id, "claude", "/x/api", true))
+				ids = append(ids, id)
+			}
+			tm.present(c, ps...)
+			return ids
+		}
+		sent := 0
+		// Rotate the sending session every SessionPerHour sends, so the
+		// session limit never refuses.
+		burst := func(c busproto.Caller, ids []string, n int) {
+			t.Helper()
+			for i := range n {
+				tm.mustSend(c, ids[i/busproto.SessionPerHour], to[sent%len(to)].SessionID, fmt.Sprintf("b%d", sent))
+				sent++
+			}
+		}
+		refused := func(c busproto.Caller, from, want string) {
+			t.Helper()
+			_, err := tm.send(c, from, to[0].SessionID, fmt.Sprintf("b%d", sent))
+			var be *busproto.Error
+			if code(err) != want || !errors.As(err, &be) || be.MessageID == "" || tm.state(be.MessageID) != "refused" {
+				t.Fatalf("want %s: %v", want, err)
+			}
+			var reason string
+			if err := tm.pool.QueryRow(context.Background(), `SELECT metadata->>'refuse_reason' FROM audit_events WHERE action='bus.send' AND target_id=$1`, be.MessageID).Scan(&reason); err != nil || reason != want {
+				t.Fatalf("audit refuse_reason %q %v", reason, err)
+			}
+		}
+		mac := sessions(tm.garyMac, "m", busproto.DevicePerHour/busproto.SessionPerHour+1)
+		burst(tm.garyMac, mac, busproto.DevicePerHour)
+		refused(tm.garyMac, mac[len(mac)-1], busproto.CodeDeviceRate)
+		// Another device of the same person is not limited by the first.
+		lin := sessions(tm.garyLinux, "l", busproto.DevicePerHour/busproto.SessionPerHour)
+		third := sessions(garyThird, "t", busproto.DevicePerHour/busproto.SessionPerHour)
+		burst(tm.garyLinux, lin, busproto.DevicePerHour)
+		burst(garyThird, third, busproto.UserPerHour-2*busproto.DevicePerHour)
+		refused(garyThird, third[len(third)-1], busproto.CodeUserRate)
+		// Another person is not limited.
+		tm.mustSend(tm.alexMac, to[0].SessionID, "g-l0-0000", "alex is free")
+		tm.advance(time.Hour + time.Second)
+		sessions(tm.garyMac, "m", 1)
+		tm.present(tm.alexMac, to...)
+		tm.mustSend(tm.garyMac, "g-m0-0000", to[0].SessionID, "next hour")
+	})
 	t.Run("duplicate", func(t *testing.T) {
 		tm := newTeam(t)
 		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "same")
