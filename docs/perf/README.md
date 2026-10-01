@@ -8,7 +8,9 @@ when to make one.
 
 `<version>-<YYYY-MM-DD>.json`, for example `v0.4.0-2026-10-01.json`. The
 version is the release tag. The date is the UTC date of the run. `flopwire
-bench acceptance --json` prints the name when it writes a record.
+bench acceptance --json` prints the name when it writes a record. A
+baseline recorded before a release tag exists uses `main-<short sha>` as
+the version, for example `main-9e4193d-2026-10-01.json`.
 
 ## Make a record
 
