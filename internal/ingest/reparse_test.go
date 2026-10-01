@@ -216,3 +216,25 @@ func TestIdleWorkerWakesForReadPriority(t *testing.T) {
 		}
 	}
 }
+
+// A full reparse recounts the digests of the conversations whose rows it
+// replaced once, at the end, not per batch. When it fails after writing
+// them, the digest must still be recounted to match the rows left live.
+func TestFailedReparseRecountsDigest(t *testing.T) {
+	e := newEnv(t)
+	id := refreshedSource(t, e)
+	e.exec(`UPDATE messages SET kind='tool_call',parser='claude@2.0' WHERE source_id=$1`, id)
+	e.exec(`UPDATE conversations SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
+	e.exec(`UPDATE source_parse_state SET applied_parser='claude@2.99' WHERE source_id=$1`, id)
+	e.exec(`CREATE FUNCTION reject_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked version checkpoint'; END $$`)
+	e.exec(`CREATE TRIGGER reject_version BEFORE UPDATE ON source_parse_state FOR EACH ROW WHEN (NEW.applied_parser IS DISTINCT FROM OLD.applied_parser) EXECUTE FUNCTION reject_version()`)
+	if err := e.queue.ParseSource(e.ctx, id); err == nil || !strings.Contains(err.Error(), "blocked version checkpoint") {
+		t.Fatalf("checkpoint failure: %v", err)
+	}
+	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded AND kind='user'`, id) != 1 {
+		t.Fatal("test did not replace the stored row")
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
+		t.Fatal("failed reparse left a digest that does not match its live rows")
+	}
+}

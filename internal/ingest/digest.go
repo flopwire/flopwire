@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/digest"
@@ -63,6 +64,17 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 		FROM conversations c WHERE c.id=$1 AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id
 			AND p.id<>c.id AND p.digest IS NOT NULL`, conv)
 	return err
+}
+
+// recountDigests recounts the digests of conversations ids (sorted) from
+// their live rows. A conversation deleted meanwhile is skipped.
+func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
+	for _, id := range ids {
+		if err := refreshDigest(ctx, tx, id, nil, true); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
 }
 
 // digestCounts counts a conversation's live rows for its digest.

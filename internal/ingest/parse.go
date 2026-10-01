@@ -33,13 +33,16 @@ var uncapped = map[transcript.Kind]transcript.CapConfig{}
 // hadStoredSQL reports whether any conversation names source $1.
 const hadStoredSQL = `SELECT EXISTS(SELECT 1 FROM conversations WHERE source_id=$1)`
 
-// retireStaleSQL supersedes, at generation $2, the live rows of source $1
-// that the new generation did not write (an older generation, or parse
-// attempt below $3), and returns their conversations. retirePreviousSQL
-// supersedes every live row of a previous source $1.
+// retireCandidatesSQL lists the live rows of source $1 that a full parse
+// at generation $2 with attempt $3 did not write: an older generation, or
+// an older attempt. Those the parse found unchanged (job.kept) stay; the
+// rest are absent from the replacement and retireIDsSQL supersedes them,
+// returning their conversations. retirePreviousSQL supersedes every live
+// row of a previous source $1.
 const (
-	retireStaleSQL = `WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
-		WHERE source_id=$1 AND NOT superseded AND (source_generation<$2 OR parse_attempt<$3) RETURNING conversation_id)
+	retireCandidatesSQL = `SELECT id FROM messages WHERE source_id=$1 AND NOT superseded AND (source_generation<$2 OR parse_attempt<$3)`
+	retireIDsSQL        = `WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
+		WHERE id=ANY($1::uuid[]) AND NOT superseded RETURNING conversation_id)
 		SELECT DISTINCT conversation_id::text FROM retired`
 	retirePreviousSQL = `WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
 		WHERE source_id=$1 AND NOT superseded RETURNING conversation_id)
@@ -61,15 +64,20 @@ type job struct {
 	extraction                  *transcript.ExtractionCheckpoint
 	appliedParser, appliedRules *string
 	derivedParser               string
+	// kept is the stored rows this parse found unchanged and left with an
+	// older parse_attempt; recount is the conversations whose digests wait
+	// for a recount (sink.kept, sink.dirty).
+	kept    map[uuid.UUID]struct{}
+	recount []string
 }
 
 // ParseSource brings one source's message rows up to date with its latest
 // generation. Evidence is already durable; a failure leaves the request
 // pending for a retry, never a re-upload.
-func (q *Queue) parseSource(ctx context.Context, sourceID string) error {
+func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	j := &job{}
 	var st, report []byte
-	err := q.Pool.QueryRow(ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,s.path,s.file_id,s.storage_kind,s.parser,
+	err = q.Pool.QueryRow(ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,s.path,s.file_id,s.storage_kind,s.parser,
 			s.previous_source_id::text,s.parent_source_id::text,s.tombstoned_at IS NOT NULL,
 			p.generation,p.cursor_offset,p.cursor_line,p.cursor_state,p.requested_seq,p.reparse,COALESCE(d.home,''),COALESCE(d.claude_projects,''),p.extraction_report,p.applied_parser,p.applied_redaction_rules
 		FROM sources s JOIN devices d ON d.id=s.device_id JOIN source_parse_state p ON p.source_id=s.id WHERE s.id=$1`, sourceID).
@@ -147,6 +155,17 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) error {
 		return err
 	}
 	sink := newSink(ctx, q.Pool, j.src)
+	// A parse that fails after replacing rows recounts their digests here:
+	// the rows it committed stay visible until the retry.
+	defer func() {
+		if err != nil && len(sink.dirty) > 0 {
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			if rerr := pgx.BeginFunc(rctx, q.Pool, func(tx pgx.Tx) error { return recountDigests(rctx, tx, sink.dirtyConversations()) }); rerr != nil {
+				q.Log.Warn("ingest: recounting digests after a failed parse", "source", sourceID, "error", rerr)
+			}
+		}
+	}()
 	if !rules.empty() {
 		sink.gate = newGate(rules, j.src, j.path, j.dev, q.Pool, hadStored)
 	}
@@ -192,6 +211,7 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) error {
 	if err == nil {
 		err = sink.flush()
 	}
+	j.kept, j.recount = sink.kept, sink.dirtyConversations()
 	if ref := (*refusal)(nil); errors.As(err, &ref) {
 		if err := refuseSource(ctx, q.Pool, j.src, j.path, sink.gate.sessions(), ruleName(ref.d), ref.detail()); err != nil {
 			return err
@@ -341,8 +361,11 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 		}
 	}
 	return pgx.BeginTxFunc(ctx, q.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		changed := map[string]bool{}
+		for _, id := range j.recount {
+			changed[id] = true
+		}
 		if full {
-			changed := map[string]bool{}
 			retire := func(sql string, args ...any) error {
 				rows, err := tx.Query(ctx, sql, args...)
 				if err != nil {
@@ -358,26 +381,38 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 				}
 				return rows.Err()
 			}
-			if err := retire(retireStaleSQL, j.src.id, gen, j.src.parseAttempt); err != nil {
+			// Rows this parse neither wrote (parse_attempt) nor found
+			// unchanged (kept) are absent from the replacement.
+			rows, err := tx.Query(ctx, retireCandidatesSQL, j.src.id, gen, j.src.parseAttempt)
+			if err != nil {
 				return err
+			}
+			candidates, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+			if err != nil {
+				return err
+			}
+			absent := slices.DeleteFunc(candidates, func(id uuid.UUID) bool { _, ok := j.kept[id]; return ok })
+			if len(absent) > 0 {
+				if err := retire(retireIDsSQL, absent, gen); err != nil {
+					return err
+				}
 			}
 			if j.previous != nil {
 				if err := retire(retirePreviousSQL, *j.previous, gen); err != nil {
 					return err
 				}
 			}
-			// Recount after retirement, including conversations wholly absent
-			// from the replacement. Checkpoint failure rolls this back too.
-			ids := make([]string, 0, len(changed))
-			for id := range changed {
-				ids = append(ids, id)
-			}
-			slices.Sort(ids)
-			for _, id := range ids {
-				if err := refreshDigest(ctx, tx, id, nil, true); err != nil {
-					return err
-				}
-			}
+		}
+		// Recount after retirement, including conversations wholly absent
+		// from the replacement, and those whose rows the parse replaced.
+		// Checkpoint failure rolls this back too.
+		ids := make([]string, 0, len(changed))
+		for id := range changed {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		if err := recountDigests(ctx, tx, ids); err != nil {
+			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
 			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7,
