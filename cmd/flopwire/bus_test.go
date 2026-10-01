@@ -807,3 +807,136 @@ func TestBusParseErrorsAreJSON(t *testing.T) {
 		t.Fatalf("requests: %+v", fa.requests())
 	}
 }
+
+// validateSchema checks v (decoded JSON) against the JSON Schema subset the
+// bus tools' outputSchemas use: type, properties, required, items, enum
+// and additionalProperties (a schema).
+func validateSchema(path string, schema map[string]any, v any) []string {
+	var errs []string
+	switch schema["type"] {
+	case "object":
+		m, ok := v.(map[string]any)
+		if !ok {
+			return []string{path + ": not an object"}
+		}
+		for _, k := range anyList(schema["required"]) {
+			if _, ok := m[k.(string)]; !ok {
+				errs = append(errs, fmt.Sprintf("%s: missing required %q", path, k))
+			}
+		}
+		props, _ := schema["properties"].(map[string]any)
+		for k, x := range m {
+			if ps, ok := props[k].(map[string]any); ok {
+				errs = append(errs, validateSchema(path+"."+k, ps, x)...)
+			} else if as, ok := schema["additionalProperties"].(map[string]any); ok {
+				errs = append(errs, validateSchema(path+"."+k, as, x)...)
+			} else if schema["additionalProperties"] == false {
+				errs = append(errs, path+": unexpected "+k)
+			}
+		}
+	case "array":
+		a, ok := v.([]any)
+		if !ok {
+			return []string{path + ": not an array"}
+		}
+		items, _ := schema["items"].(map[string]any)
+		for i, x := range a {
+			errs = append(errs, validateSchema(fmt.Sprintf("%s[%d]", path, i), items, x)...)
+		}
+	case "string":
+		if _, ok := v.(string); !ok {
+			errs = append(errs, path+": not a string")
+		}
+	case "boolean":
+		if _, ok := v.(bool); !ok {
+			errs = append(errs, path+": not a boolean")
+		}
+	case "integer":
+		if n, ok := v.(float64); !ok || n != float64(int64(n)) {
+			errs = append(errs, path+": not an integer")
+		}
+	default:
+		errs = append(errs, fmt.Sprintf("%s: schema type %v", path, schema["type"]))
+	}
+	if enum := anyList(schema["enum"]); len(enum) > 0 {
+		found := false
+		for _, e := range enum {
+			found = found || e == v
+		}
+		if !found {
+			errs = append(errs, fmt.Sprintf("%s: %v not in %v", path, v, enum))
+		}
+	}
+	return errs
+}
+
+func anyList(v any) []any { l, _ := v.([]any); return l }
+
+// Every bus tool's structuredContent validates against the outputSchema
+// the tool declares, for answers with every optional field set: a held
+// and a queued receipt with redactions, peers with a caller and a hint,
+// and inbox entries sent and received with refs, delivery times and a
+// refusal.
+func TestMCPBusOutputSchemasValidate(t *testing.T) {
+	var tools []map[string]any
+	raw, _ := json.Marshal(mcpTools())
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		t.Fatal(err)
+	}
+	schemas := map[string]map[string]any{}
+	for _, tl := range tools {
+		if s, ok := tl["outputSchema"].(map[string]any); ok {
+			schemas[tl["name"].(string)] = s
+		}
+	}
+	// The validator itself rejects a wrong type, a missing field and a
+	// value outside an enum.
+	if errs := validateSchema("x", schemas["flopwire_send"], map[string]any{"kind": 1, "state": "sent", "to": map[string]any{}}); len(errs) < 3 {
+		t.Fatalf("validator accepts a bad receipt: %v", errs)
+	}
+	d := t0.Add(time.Minute)
+	var peers []busproto.Peer
+	for i := range 60 {
+		peers = append(peers, busproto.Peer{Session: fmt.Sprintf("%08x-0000-4000-8000-000000000000", i), Agent: "claude", User: "a@x.test", UserID: "u1", UserName: "A \"q\"",
+			Device: "mac", Repo: "/src/api", Branch: "main", Title: "t\nx", Busy: i%2 == 0, Own: i%3 == 0, SeenAt: t0})
+	}
+	held := false
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		switch r.Op {
+		case "peers":
+			return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: peers}}
+		case "send":
+			held = !held
+			st := busproto.StateQueued
+			if held {
+				st = busproto.StateHeld
+			}
+			return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m5", ThreadID: "m4", State: st, Sender: busproto.SenderOwn, Intent: "request", Sent: t0, ExpiresAt: t0,
+				Redactions: map[string]int{"aws-key": 2},
+				To:         busproto.Recipient{Session: peerID, Agent: "codex", User: "s@x.test", UserID: "u2", Repo: "/src/api", Branch: "main", Live: true, Busy: true}}}
+		}
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Next: "x|y", Messages: []busproto.InboxItem{
+			{Envelope: busproto.Envelope{ID: "m2", ThreadID: "m1", ReplyTo: "m1", From: peerID, FromAgent: "codex", User: "a@x.test", UserID: "u1", Repo: "/r", Branch: "b",
+				Sender: busproto.SenderTeammate, Intent: "inform", Body: "é\n\"x\"", Refs: []string{"s/1"}, Sent: t0, ExpiresAt: t0, ToSession: selfID, ToAgent: "claude",
+				ToUser: "g@x.test", ToUserID: "u3", ToRepo: "/r", Addressed: "session", Seq: 7}, Direction: "received", State: busproto.StateRead, DeliveredAt: &d, ReadAt: &d},
+			{Envelope: busproto.Envelope{ID: "m1", ThreadID: "m1", From: selfID, Intent: "request", Body: "b", Sent: t0, ExpiresAt: t0, ToUser: "a@x.test", Addressed: "user"},
+				Direction: "sent", State: busproto.StateRefused, RefuseReason: "recipient_full"},
+		}}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	for _, c := range []struct{ name, args string }{
+		{"flopwire_peers", `{"limit":10}`},
+		{"flopwire_send", `{"to":"@s","message":"hi"}`},
+		{"flopwire_send", `{"to":"4c19","message":"hi","intent":"request"}`},
+		{"flopwire_inbox", `{}`},
+	} {
+		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+c.name+`","arguments":`+c.args+`}}`)
+		_, isErr, structured := mcpContent(t, resp)
+		if isErr || structured == nil {
+			t.Fatalf("%s: %s", c.name, resp)
+		}
+		if errs := validateSchema(c.name, schemas[c.name], structured); len(errs) > 0 {
+			t.Errorf("%s does not validate:\n%s", c.name, strings.Join(errs, "\n"))
+		}
+	}
+}
