@@ -38,12 +38,18 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, pgtest.NewDatabase(t))
+	pool, err := pgxpool.New(context.Background(), pgtest.NewDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
+	return newEnvOn(t, pool)
+}
+
+// newEnvOn is newEnv on a pool the caller made (a perfguard pool, say).
+func newEnvOn(t *testing.T, pool *pgxpool.Pool) *env {
+	t.Helper()
+	ctx := context.Background()
 	if err := store.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}

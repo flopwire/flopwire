@@ -46,13 +46,17 @@ type Queue struct {
 	once        sync.Once
 	ch          chan string
 	refreshWake chan struct{}
-	mu          sync.Mutex
-	queued      map[string]bool
-	running     map[string]bool
-	backlog     atomic.Int64
-	oldest      atomic.Int64 // unix ns of the oldest pending request; 0: none
-	failing     atomic.Int64
-	quarantined atomic.Int64
+	// refreshMu guards refreshBacklog, the stale sources nextRefresh has
+	// listed and not yet handed out.
+	refreshMu      sync.Mutex
+	refreshBacklog []string
+	mu             sync.Mutex
+	queued         map[string]bool
+	running        map[string]bool
+	backlog        atomic.Int64
+	oldest         atomic.Int64 // unix ns of the oldest pending request; 0: none
+	failing        atomic.Int64
+	quarantined    atomic.Int64
 }
 
 func (q *Queue) init() {

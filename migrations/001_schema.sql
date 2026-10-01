@@ -257,6 +257,9 @@ CREATE TABLE conversations (
   branches text[] NOT NULL DEFAULT '{}',
   -- The conversation's digest (internal/digest), refreshed on every append.
   digest jsonb,
+  -- The digest's counts wait for a recount: a parse replaced rows and
+  -- has not completed (ingest refreshDigest, digestFold).
+  digest_stale boolean NOT NULL DEFAULT false,
   UNIQUE (device_id, agent, session_id)
 );
 CREATE INDEX conversations_user_idx ON conversations (user_id, last_activity_at DESC);
@@ -267,6 +270,10 @@ CREATE INDEX conversations_parent_idx ON conversations (parent_conversation_id)
   WHERE parent_conversation_id IS NOT NULL;
 CREATE INDEX conversations_unresolved_parent_idx ON conversations (device_id, agent, parent_native_session_id)
   WHERE parent_native_session_id IS NOT NULL AND parent_conversation_id IS NULL;
+-- A conversation's subagents by native session, resolved or not: the
+-- digest's subagent count, refreshed on every parse batch.
+CREATE INDEX conversations_subagents_idx ON conversations (device_id, agent, parent_native_session_id)
+  WHERE parent_native_session_id IS NOT NULL;
 
 -- text is the message's extracted text, whole and plain (no cap): the one
 -- copy that rendering, `find` (pg_trgm over the full text) and ranked

@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/digest"
@@ -9,12 +10,26 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// digestMode is how refreshDigest treats the stored counts.
+type digestMode int
+
+const (
+	// digestAppend adds the counts of msgs, rows a flush only added.
+	digestAppend digestMode = iota
+	// digestRecount recounts over the live rows (rows replaced or
+	// superseded) and clears digest_stale.
+	digestRecount
+	// digestFold folds msgs and leaves the counts to the recount when the
+	// parse completes. It sets digest_stale: a parse that dies before
+	// then leaves the recount to the next parse that touches the
+	// conversation (complete).
+	digestFold
+)
+
 // refreshDigest folds msgs, the rows a flush wrote for conversation conv,
 // into its stored digest and updates its parent's subagent count, in the
-// flush's transaction. When the flush only added rows, their counts are
-// added to the stored ones; otherwise (full: rows replaced or superseded,
-// no digest yet) the aggregates are recounted over the live rows.
-func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, full bool) error {
+// flush's transaction. A conversation without a digest yet is recounted.
+func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, mode digestMode) error {
 	var (
 		prev          []byte
 		cwd, root     *string
@@ -39,22 +54,29 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 		WHERE k.device_id=c.device_id AND k.agent=c.agent AND k.parent_native_session_id=c.session_id AND k.id<>c.id`, conv).Scan(&subagents); err != nil {
 		return err
 	}
+	if prev == nil {
+		mode = digestRecount
+	}
 	var out []byte
-	if full || prev == nil {
+	switch mode {
+	case digestFold:
+		out = digest.Fold(prev, c, msgs)
+	case digestRecount:
 		n, err := digestCounts(ctx, tx, conv)
 		if err != nil {
 			return err
 		}
 		n.Subagents = subagents
 		out = digest.Update(prev, c, msgs, n)
-	} else {
+	default:
 		failed, err := newFailed(ctx, tx, conv, msgs)
 		if err != nil {
 			return err
 		}
 		out = digest.Append(prev, c, msgs, failed, subagents)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2 WHERE id=$1`, conv, out); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2,digest_stale=CASE $3::int WHEN 1 THEN false WHEN 2 THEN true ELSE digest_stale END WHERE id=$1`,
+		conv, out, int(mode)); err != nil {
 		return err
 	}
 	// A subagent changes its parent's count.
@@ -63,6 +85,37 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 		FROM conversations c WHERE c.id=$1 AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id
 			AND p.id<>c.id AND p.digest IS NOT NULL`, conv)
 	return err
+}
+
+// recountDigests recounts the digests of conversations ids from their live
+// rows. A conversation deleted meanwhile is skipped.
+//
+// Two sources can write one conversation at once (a file replaced at the
+// same path keeps its session, and the old source's refresh runs beside
+// the new one's live parse under a different source fence), so the
+// recount first locks the rows: a flush holds its conversation's row from
+// its upsert to its commit, and a count taken without the lock could
+// overwrite a digest that flush commits meanwhile. The rows are locked in
+// the order a flush upserts them (session id, bytewise), to avoid
+// deadlocks between the two.
+func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`, ids)
+	if err != nil {
+		return err
+	}
+	locked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, id := range locked {
+		if err := refreshDigest(ctx, tx, id, nil, digestRecount); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
 }
 
 // digestCounts counts a conversation's live rows for its digest.

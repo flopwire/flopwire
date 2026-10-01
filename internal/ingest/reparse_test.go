@@ -4,15 +4,21 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/redact"
+	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func refreshedSource(t *testing.T, e *env) string {
@@ -214,5 +220,201 @@ func TestIdleWorkerWakesForReadPriority(t *testing.T) {
 			t.Fatal("read did not wake idle refresh")
 		case <-time.After(20 * time.Millisecond):
 		}
+	}
+}
+
+// A full reparse recounts the digests of the conversations whose rows it
+// replaced once, at the end, not per batch. When it fails after writing
+// them, the digest must still be recounted to match the rows left live.
+func TestFailedReparseRecountsDigest(t *testing.T) {
+	e := newEnv(t)
+	id := refreshedSource(t, e)
+	e.exec(`UPDATE messages SET kind='tool_call',parser='claude@2.0' WHERE source_id=$1`, id)
+	e.exec(`UPDATE conversations SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
+	e.exec(`UPDATE source_parse_state SET applied_parser='claude@2.99' WHERE source_id=$1`, id)
+	e.exec(`CREATE FUNCTION reject_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked version checkpoint'; END $$`)
+	e.exec(`CREATE TRIGGER reject_version BEFORE UPDATE ON source_parse_state FOR EACH ROW WHEN (NEW.applied_parser IS DISTINCT FROM OLD.applied_parser) EXECUTE FUNCTION reject_version()`)
+	if err := e.queue.ParseSource(e.ctx, id); err == nil || !strings.Contains(err.Error(), "blocked version checkpoint") {
+		t.Fatalf("checkpoint failure: %v", err)
+	}
+	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded AND kind='user'`, id) != 1 {
+		t.Fatal("test did not replace the stored row")
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
+		t.Fatal("failed reparse left a digest that does not match its live rows")
+	}
+}
+
+// A parse that replaces a conversation's rows still folds the messages it
+// writes into the digest (intent, last reply, files): only the counts wait
+// for the recount at the end.
+func TestReplacingParseFoldsDigest(t *testing.T) {
+	e := newEnv(t)
+	const session = "0b7e2c1a-0000-4000-8000-0000000000f0"
+	path := filepath.Join(t.TempDir(), session+".jsonl")
+	line := func(kind, uuid, parent, text string, sec int) string {
+		content := `"` + text + `"`
+		if kind == "assistant" {
+			content = `[{"type":"text","text":"` + text + `"}]`
+		}
+		return fmt.Sprintf(`{"type":%q,"uuid":%q,"parentUuid":%q,"sessionId":%q,"timestamp":"2026-09-20T00:00:%02dZ","message":{"id":"msg_%s","role":%q,"content":%s}}`+"\n",
+			kind, uuid, parent, session, sec, uuid, kind, content)
+	}
+	appendFile(t, path, line("user", "u1", "", "fix the flux capacitor", 1)+line("assistant", "a1", "u1", "first answer", 2))
+	sp := devicesync.SourceSpec{Path: path, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"}
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	sync1(t, sy, sp)
+	e.drain()
+	// A rewrite: the first prompt is grows (its row is replaced in place) and
+	// a reply follows.
+	if err := os.WriteFile(path, []byte(line("user", "u1", "", "fix the flux capacitor now", 1)+line("assistant", "a1", "u1", "first answer", 2)+
+		line("user", "u2", "a1", "and the warp core", 3)+line("assistant", "a2", "u2", "second answer", 4)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sync1(t, sy, sp)
+	e.drain()
+	if e.count(`SELECT count(*) FROM messages WHERE native_id LIKE 'u1%' AND NOT superseded AND text LIKE '%now'`) != 1 {
+		t.Fatal("test did not replace a stored row")
+	}
+	var last string
+	if err := e.pool.QueryRow(e.ctx, `SELECT COALESCE(digest->>'last','') FROM conversations WHERE session_id=$1`, session).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last != "second answer" {
+		t.Fatalf("digest last reply %q, want the replacing parse's %q", last, "second answer")
+	}
+	sameCounts(t, e, session)
+}
+
+// A parse that dies after a flush replaced rows, without its failure-path
+// recount (a crash, or the database gone), leaves the deferred recount to
+// the retry, even though the retry finds those rows unchanged.
+func TestCrashedReparseDigestRecountedOnRetry(t *testing.T) {
+	e := newEnv(t)
+	id := refreshedSource(t, e)
+	e.exec(`UPDATE messages SET kind='tool_call',parser='claude@2.0' WHERE source_id=$1`, id)
+	e.exec(`UPDATE conversations SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
+	e.exec(`UPDATE source_parse_state SET applied_parser='claude@2.99' WHERE source_id=$1`, id)
+	e.exec(`CREATE FUNCTION reject_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked version checkpoint'; END $$`)
+	e.exec(`CREATE TRIGGER reject_version BEFORE UPDATE ON source_parse_state FOR EACH ROW WHEN (NEW.applied_parser IS DISTINCT FROM OLD.applied_parser) EXECUTE FUNCTION reject_version()`)
+	e.exec(`CREATE TRIGGER reject_recount BEFORE UPDATE ON conversations FOR EACH ROW WHEN (NEW.digest->'messages'='{"user":1}') EXECUTE FUNCTION reject_version()`)
+	if err := e.queue.ParseSource(e.ctx, id); err == nil || !strings.Contains(err.Error(), "blocked version checkpoint") {
+		t.Fatalf("checkpoint failure: %v", err)
+	}
+	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded AND kind='user'`, id) != 1 {
+		t.Fatal("test did not replace the stored row")
+	}
+	e.exec(`DROP TRIGGER reject_version ON source_parse_state`)
+	e.exec(`DROP TRIGGER reject_recount ON conversations`)
+	if err := e.queue.ParseSource(e.ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
+		t.Fatal("the retry left the failed parse's digest wrong")
+	}
+}
+
+// Two sources can write one conversation at once: a file replaced at the
+// same path (previous_source_id) keeps its session id, and the idle
+// refresh of the old source runs beside the live parse of the new one
+// under different source fences. A recount must not overwrite the digest
+// of a flush that committed while it counted.
+func TestRecountWaitsForConcurrentFlush(t *testing.T) {
+	e := newEnv(t)
+	id := refreshedSource(t, e)
+	var conv string
+	if err := e.pool.QueryRow(e.ctx, `SELECT conversation_id::text FROM messages WHERE source_id=$1 AND NOT superseded`, id).Scan(&conv); err != nil {
+		t.Fatal(err)
+	}
+	// The other source's flush: it holds the conversation (its upsert locks
+	// the row), adds a live row and adds it to the digest.
+	flush, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flush.Rollback(e.ctx)
+	for _, sql := range []string{
+		`UPDATE conversations SET last_activity_at=last_activity_at WHERE id=$1`,
+		`INSERT INTO messages(id,conversation_id,source_id,native_id,part,ordinal,kind,role,text,text_len,content_sha,source_generation,parser)
+		 SELECT gen_random_uuid(),conversation_id,source_id,'other-source-row',part,ordinal+1,kind,role,text,text_len,content_sha,source_generation,parser
+		 FROM messages WHERE conversation_id=$1 AND NOT superseded`,
+		`UPDATE conversations SET digest=jsonb_set(digest,'{messages,user}','2') WHERE id=$1`,
+	} {
+		if _, err := flush.Exec(e.ctx, sql, conv); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- pgx.BeginFunc(e.ctx, e.pool, func(tx pgx.Tx) error { return recountDigests(e.ctx, tx, []string{conv}) })
+	}()
+	// Commit once the recount waits on the conversation.
+	for e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := flush.Commit(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND digest->'messages'->>'user'='2'`, conv) != 1 {
+		t.Fatal("recount overwrote a concurrent flush's digest")
+	}
+}
+
+// A file replaced at the same path keeps its session: the old source's
+// refresh flushes into the conversation while the new source's checkpoint
+// retires the old source's rows and recounts the conversation. The two
+// must lock the conversation and its rows in one order, or they deadlock.
+func TestCheckpointAndConcurrentFlushDoNotDeadlock(t *testing.T) {
+	e := newEnv(t)
+	sp := bulkSpec(t, 40)
+	sync1(t, e.syncer(devicesync.Config{SealAfter: -1}), sp)
+	e.drain()
+	var src source
+	var session, conv string
+	if err := e.pool.QueryRow(e.ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,c.session_id,c.id::text
+		FROM sources s JOIN devices d ON d.id=s.device_id JOIN conversations c ON c.source_id=s.id WHERE s.path=$1`, sp.Path).
+		Scan(&src.id, &src.deviceID, &src.userID, &src.agent, &session, &conv); err != nil {
+		t.Fatal(err)
+	}
+	src.generation = 1
+	deadlocks := 0
+	for iter := range 30 {
+		src.parseAttempt = int64(1000 + iter)
+		var wg sync.WaitGroup
+		var flushErr, ckErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			s := newSink(e.ctx, e.pool, src)
+			s.convs[session] = &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: session}
+			for i := range 40 {
+				m := &transcript.Message{SessionID: session, NativeID: fmt.Sprintf("bulk-%04d", i), Kind: transcript.KindUser, Role: "user", Ordinal: int64(i), Parser: "claude@1"}
+				m.Text = fmt.Sprintf("iteration %d line %d", iter, i)
+				m.FullLen, m.ContentSHA = len(m.Text), sha256.Sum256([]byte(m.Text))
+				s.msgs = append(s.msgs, m)
+			}
+			flushErr = s.flush()
+		}()
+		go func() {
+			defer wg.Done()
+			ckErr = pgx.BeginTxFunc(e.ctx, e.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+				return checkpointDigests(e.ctx, tx, &job{src: source{id: uuid.NewString()}, previous: &src.id}, 2, true)
+			})
+		}()
+		wg.Wait()
+		for _, err := range []error{flushErr, ckErr} {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "40P01" {
+				deadlocks++
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if deadlocks > 0 {
+		t.Fatalf("%d deadlocks in 30 rounds", deadlocks)
 	}
 }

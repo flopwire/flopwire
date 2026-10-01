@@ -28,8 +28,10 @@ func TestPerfSourceLookupPlansUseIndexes(t *testing.T) {
 		{"refuse: messages", refuseMessagesSQL, []any{ids}},
 		{"parse: had stored", hadStoredSQL, []any{id}},
 		{"rules: one source's conversations", convRowsSQL + ` WHERE ($1='' OR c.source_id=$1::uuid) ORDER BY c.depth,c.id`, []any{id}},
-		{"parse: retire stale live rows", retireStaleSQL, []any{id, int64(2), int64(1)}},
+		{"parse: list retire candidates", retireCandidatesSQL, []any{id, int64(2), int64(1)}},
+		{"parse: retire absent rows", retireIDsSQL, []any{[]string{id}, int64(2)}},
 		{"parse: retire previous source's live rows", retirePreviousSQL, []any{id, int64(2)}},
+		{"parse: lock checkpoint conversations", lockCheckpointSQL, []any{ids, ids, id}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			perfguard.AssertIndexedPlan(t, pool, c.sql, c.args...)

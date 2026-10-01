@@ -3,6 +3,8 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"reflect"
 	"slices"
@@ -45,7 +47,13 @@ type sink struct {
 	replaced map[string]bool
 	// repeated marks the messages a flush found stored already, unchanged
 	// (a parse run again from an older cursor): the digest has them.
-	repeated   map[*transcript.Message]bool
+	repeated map[*transcript.Message]bool
+	// kept is every stored row a flush left as it was, which keeps its
+	// older parse_attempt: a full parse's checkpoint must not retire it.
+	kept map[uuid.UUID]struct{}
+	// dirty marks the conversations whose rows a flush replaced. Their
+	// digests are recounted once, when the parse completes, not per batch.
+	dirty      map[string]bool
 	msgs       []*transcript.Message
 	tombstoned bool // some session of this source is deleted
 	written    int
@@ -127,10 +135,22 @@ func (s *sink) flush() error {
 			}
 		}
 		for _, id := range ids {
-			if conv := s.convIDs[id]; conv != "" {
-				if err := refreshDigest(s.ctx, tx, conv, byConv[id], s.replaced[conv]); err != nil {
-					return err
+			conv := s.convIDs[id]
+			if conv == "" {
+				continue
+			}
+			if s.replaced[conv] {
+				if s.dirty == nil {
+					s.dirty = map[string]bool{}
 				}
+				s.dirty[conv] = true
+			}
+			mode := digestAppend
+			if s.dirty[conv] {
+				mode = digestFold // counted once at the end (dirtyConversations)
+			}
+			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -144,6 +164,17 @@ func (s *sink) flush() error {
 	clear(s.replaced)
 	clear(s.repeated)
 	return nil
+}
+
+// dirtyConversations lists, sorted, the conversations whose digests wait
+// for a full recount (see sink.dirty).
+func (s *sink) dirtyConversations() []string {
+	ids := make([]string, 0, len(s.dirty))
+	for id := range s.dirty {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // placeTagged records the directory an older Codex rollout names only in
@@ -319,23 +350,66 @@ func hiddenVersion(at *time.Time, v int64) any {
 
 // row is the stored state of a message the batch may replace.
 type row struct {
-	id           string
-	version      int
-	superseded   bool
-	sha          []byte
-	text         string
-	onPath       *bool
-	sourceID     *string
-	generation   int64
-	parseAttempt int64
-	offset       *int64
-	isError      *bool
-	enrichment   []byte
+	id         string
+	version    int
+	superseded bool
+	sha        []byte
+	textMD5    string  // md5 of the stored text, hex
+	text       *string // the stored text, loaded only for a growth check
+	meta       rowMeta
 }
 
-func (r *row) sameMeta(m *transcript.Message, src source, enrichment []byte) bool {
-	return r.sourceID != nil && *r.sourceID == src.id && r.generation == src.generation && r.parseAttempt == src.parseAttempt &&
-		eqPtr(r.onPath, m.OnActivePath) && eqPtr(r.isError, errPtr(m)) && eqPtr(r.offset, offPtr(m)) && sameJSON(r.enrichment, enrichment)
+// rowMeta is everything an in-place update writes besides the text and
+// parse_attempt. A live row whose rowMeta and text match the message is
+// left as it is.
+type rowMeta struct {
+	sourceID                                          *string
+	generation, ordinal                               int64
+	onPath, isError                                   *bool
+	offset, lineNo, byteLen                           *int64
+	parentNative, toolName, role, toolCallID, locator *string
+	kind, parser                                      string
+	rules                                             *string
+	ts                                                *time.Time
+	enrichment                                        []byte
+	detached                                          bool // superseded_by or superseded_in_generation is set
+}
+
+func metaOf(m *transcript.Message, src source, enrichment []byte) rowMeta {
+	rules := redact.RulesVersion
+	var ts *time.Time
+	if !m.TS.IsZero() {
+		t := m.TS.Truncate(time.Microsecond) // timestamptz precision
+		ts = &t
+	}
+	return rowMeta{sourceID: &src.id, generation: src.generation, ordinal: m.Ordinal, onPath: m.OnActivePath, isError: errPtr(m),
+		offset: offPtr(m), lineNo: intPtr(m.LineNo), byteLen: intPtr(m.ByteLen), parentNative: strPtr(clean(m.ParentNativeID)),
+		toolName: strPtr(clean(m.ToolName)), role: strPtr(clean(m.Role)), toolCallID: strPtr(clean(m.ToolCallID)), locator: strPtr(locator(m)),
+		kind: m.Kind.String(), parser: m.Parser, rules: &rules, ts: ts, enrichment: enrichment}
+}
+
+// same reports whether an update to want would leave the row unchanged.
+// A message without a timestamp keeps the stored one.
+func (r rowMeta) same(want rowMeta) bool {
+	return !r.detached && eqPtr(r.sourceID, want.sourceID) && r.generation == want.generation && r.ordinal == want.ordinal &&
+		eqPtr(r.onPath, want.onPath) && eqPtr(r.isError, want.isError) && eqPtr(r.offset, want.offset) && eqPtr(r.lineNo, want.lineNo) &&
+		eqPtr(r.byteLen, want.byteLen) && eqPtr(r.parentNative, want.parentNative) && eqPtr(r.toolName, want.toolName) &&
+		eqPtr(r.role, want.role) && eqPtr(r.toolCallID, want.toolCallID) && eqPtr(r.locator, want.locator) && r.kind == want.kind &&
+		r.parser == want.parser && eqPtr(r.rules, want.rules) && (want.ts == nil || r.ts != nil && r.ts.Equal(*want.ts)) &&
+		sameJSON(r.enrichment, want.enrichment)
+}
+
+// updated is the stored meta after an update to want.
+func (r rowMeta) updated(want rowMeta) rowMeta {
+	if want.ts == nil {
+		want.ts = r.ts
+	}
+	return want
+}
+
+func textMD5(s string) string {
+	sum := md5.Sum([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 // messageKey is a row's identity: native id and part within the
@@ -370,16 +444,24 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 		}
 	}
 	have := map[string]*row{}
-	const cols = `id::text,version,superseded,content_sha,text,on_active_path,source_id::text,source_generation,byte_offset,is_error,enrichment,parse_attempt`
+	// The stored text is compared by hash: reading it back would move every
+	// row's text, most of it unchanged, to the client.
+	const cols = `id::text,version,superseded,content_sha,md5(text),on_active_path,source_id::text,source_generation,byte_offset,is_error,enrichment,
+		ordinal,line_no,byte_len,parent_native_id,tool_name,role,tool_call_id,kind,parser,redaction_rules,ts,
+		superseded_by IS NOT NULL OR superseded_in_generation IS NOT NULL`
 	scan := func(rows pgx.Rows, key func(conv, native, loc string, part int) string) error {
 		defer rows.Close()
 		for rows.Next() {
 			r := &row{}
+			mt := &r.meta
 			var conv, native, loc *string
 			var part int
-			if err := rows.Scan(&r.id, &r.version, &r.superseded, &r.sha, &r.text, &r.onPath, &r.sourceID, &r.generation, &r.offset, &r.isError, &r.enrichment, &r.parseAttempt, &conv, &native, &loc, &part); err != nil {
+			if err := rows.Scan(&r.id, &r.version, &r.superseded, &r.sha, &r.textMD5, &mt.onPath, &mt.sourceID, &mt.generation, &mt.offset, &mt.isError, &mt.enrichment,
+				&mt.ordinal, &mt.lineNo, &mt.byteLen, &mt.parentNative, &mt.toolName, &mt.role, &mt.toolCallID, &mt.kind, &mt.parser, &mt.rules, &mt.ts, &mt.detached,
+				&conv, &native, &loc, &part); err != nil {
 				return err
 			}
+			mt.locator = loc
 			have[key(deref(conv), deref(native), deref(loc), part)] = r
 		}
 		return rows.Err()
@@ -409,6 +491,41 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 		}
 	}
 
+	// A growth check needs the stored text of the live rows whose content
+	// changed; only those are read.
+	var grown []string
+	for _, m := range s.msgs {
+		if conv := s.convIDs[m.SessionID]; conv != "" {
+			if old := have[messageKey(conv, m)]; old != nil && !old.superseded && old.text == nil && !bytes.Equal(old.sha, m.ContentSHA[:]) {
+				grown = append(grown, old.id)
+			}
+		}
+	}
+	if len(grown) > 0 {
+		rows, err := tx.Query(ctx, `SELECT id::text,text FROM messages WHERE id=ANY($1::uuid[])`, grown)
+		if err != nil {
+			return err
+		}
+		texts := map[string]*string{}
+		for rows.Next() {
+			var id, text string
+			if err := rows.Scan(&id, &text); err != nil {
+				rows.Close()
+				return err
+			}
+			texts[id] = &text
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, r := range have {
+			if t := texts[r.id]; t != nil {
+				r.text = t
+			}
+		}
+	}
+
 	b := &pgx.Batch{}
 	for _, m := range s.msgs {
 		conv := s.convIDs[m.SessionID]
@@ -418,33 +535,38 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 		key := messageKey(conv, m)
 		search := clean(m.Text)
 		enrichment := enrichmentJSON(m.Enrichment)
+		want := metaOf(m, s.src, enrichment)
 		old := have[key]
 		switch {
 		case old == nil:
-			have[key] = s.insert(b, conv, m, search, enrichment, 1)
+			have[key] = s.insert(b, conv, m, search, want, 1)
 		case bytes.Equal(old.sha, m.ContentSHA[:]):
-			if !old.superseded && old.sameMeta(m, s.src, enrichment) {
+			sum := textMD5(search)
+			if !old.superseded && old.textMD5 == sum && old.meta.same(want) {
+				// Unchanged: not rewritten, so it keeps its parse_attempt.
 				if s.repeated == nil {
 					s.repeated = map[*transcript.Message]bool{}
 				}
 				s.repeated[m] = true
+				if s.kept == nil {
+					s.kept = map[uuid.UUID]struct{}{}
+				}
+				s.kept[uuid.MustParse(old.id)] = struct{}{}
 			} else {
 				s.markReplaced(conv)
-				s.update(b, old.id, m, search, enrichment, search != old.text)
-				old.superseded, old.onPath, old.sourceID, old.generation = false, m.OnActivePath, &s.src.id, s.src.generation
-				old.parseAttempt = s.src.parseAttempt
-				old.isError, old.offset, old.enrichment = errPtr(m), offPtr(m), enrichment
+				s.update(b, old.id, m, search, enrichment, old.textMD5 != sum)
+				old.superseded, old.textMD5, old.text, old.meta = false, sum, &search, old.meta.updated(want)
 			}
-		case !old.superseded && len(search) > len(old.text) && strings.HasPrefix(search, old.text):
+		case !old.superseded && old.text != nil && len(search) > len(*old.text) && strings.HasPrefix(search, *old.text):
 			// Growth of the same record (streaming, a result filled in):
 			// replace in place.
 			s.markReplaced(conv)
 			s.update(b, old.id, m, search, enrichment, true)
-			old.sha, old.text = m.ContentSHA[:], search
+			old.sha, old.textMD5, old.text, old.meta = m.ContentSHA[:], textMD5(search), &search, old.meta.updated(want)
 		default:
 			// A different version: the old row stays, superseded.
 			s.markReplaced(conv)
-			have[key] = s.insert(b, conv, m, search, enrichment, old.version+1)
+			have[key] = s.insert(b, conv, m, search, want, old.version+1)
 		}
 	}
 	if b.Len() == 0 {
@@ -464,14 +586,14 @@ func (s *sink) markReplaced(conv string) {
 // superseded first (the unique live index allows one), linked to the new
 // row in the same update: one row version, not two. superseded_by is a
 // deferred foreign key, so it may name the row inserted after it.
-func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search string, enrichment []byte, version int) *row {
+func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search string, meta rowMeta, version int) *row {
+	enrichment := meta.enrichment
 	id := uuid.NewString()
 	if version > 1 {
 		b.Queue(`UPDATE messages SET superseded=true,superseded_in_generation=$3,superseded_by=$7 WHERE conversation_id=$1 AND native_id IS NOT DISTINCT FROM $2 AND NOT superseded AND part=$4 AND ($2::text IS NOT NULL OR (source_id=$5 AND locator=$6))`,
 			conv, nullStr(clean(m.NativeID)), s.src.generation, m.Part, s.src.id, locator(m), id)
 	}
-	r := &row{id: id, version: version, sha: m.ContentSHA[:], text: search, onPath: m.OnActivePath, sourceID: &s.src.id,
-		generation: s.src.generation, parseAttempt: s.src.parseAttempt, offset: offPtr(m), isError: errPtr(m), enrichment: enrichment}
+	r := &row{id: id, version: version, sha: m.ContentSHA[:], textMD5: textMD5(search), text: &search, meta: meta}
 	b.Queue(`INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
 			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
@@ -541,6 +663,20 @@ func nullInt(v int64) any {
 		return nil
 	}
 	return v
+}
+
+func intPtr(v int64) *int64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func nullStr(s string) any {
