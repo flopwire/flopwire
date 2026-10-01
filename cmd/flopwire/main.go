@@ -23,6 +23,7 @@ import (
 	"github.com/flopwire/flopwire/internal/api"
 	"github.com/flopwire/flopwire/internal/auth"
 	backupsvc "github.com/flopwire/flopwire/internal/backup"
+	"github.com/flopwire/flopwire/internal/bus"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/ingest"
@@ -198,14 +199,17 @@ func serve(ctx context.Context, args []string) error {
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
 	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
+	messageBus := &bus.Store{Pool: pool}
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
 		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
 		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
+		Bus:               messageBus,
 		TrustedProxyCIDRs: envList("FLOPWIRE_TRUSTED_PROXY_CIDRS"),
 		AuthRate:          api.Rate{Burst: envInt("FLOPWIRE_AUTH_RATE_BURST", 10), Refill: envDuration("FLOPWIRE_AUTH_RATE_REFILL", time.Minute)}})
 	go runDeletionWorker(ctx, durableStore, slog.Default())
 	go runCredentialSweeper(ctx, durableStore, slog.Default())
 	go runChunkReconciler(ctx, durableStore, slog.Default())
+	go runBusSweeper(ctx, messageBus, slog.Default())
 	apiHandler := app.Handler(reg)
 	root := http.NewServeMux()
 	root.Handle("/v1/", apiHandler)
@@ -315,6 +319,26 @@ func runCredentialSweeper(ctx context.Context, s interface {
 			log.Error("credential sweep", "err", err)
 		case out != (domain.CredentialSweep{}):
 			log.Info("credential sweep", "expired", out.Expired, "idle", out.Idle, "ephemeral_devices_swept", out.Swept)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// runBusSweeper expires undelivered messages and drops stale presence.
+func runBusSweeper(ctx context.Context, s *bus.Store, log *slog.Logger) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		n, err := s.Sweep(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.Error("message bus sweep", "err", err)
+		case n > 0:
+			log.Info("message bus sweep", "expired", n)
 		}
 		select {
 		case <-ctx.Done():

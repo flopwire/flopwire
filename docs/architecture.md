@@ -20,6 +20,7 @@ spec and this page differ, this page describes the code.
 | S3 (MinIO in Compose) | server | `internal/ingest/objects.go` | Content-addressed chunk objects, each a zstd frame of the chunk (addressed by the BLAKE3 of the uncompressed bytes). The raw evidence. |
 | Retrieval | device and server | `internal/retrieval` (`local`, `regexq`, `grep`, `format`) | grep, search, sessions and read over the local index or Postgres. |
 | CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | The four tools. Local by default; `--server` for team search. |
+| Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. Device agent, CLI and hooks are not built yet. |
 | Web console | browser | `web/`, served at `/` by `internal/webapp` | Admin only: health, people and devices, policy, archive (deletion), audit. No corpus search. |
 | Backup | server host | `internal/backup` | Coordinated Postgres dump plus chunk copy, verify, restore. |
 
@@ -296,6 +297,36 @@ its subagents when detection finds it by exact evidence, first match wins:
 MCP calls always apply it. The CLI applies it only when stdin is not a
 terminal. The output names the excluded session. `--include-self` turns it
 off. Code: `internal/retrieval/local/caller.go`.
+
+## Message bus
+
+Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). Only
+the server side is built. Routes and wire types are in `internal/busproto`.
+
+- **Presence.** Each device holds one long poll (`POST /v1/bus/poll`, up to
+  25 s). The request carries every live session on the device (id, agent,
+  repo, branch, busy) and replaces what the server held. A session is live
+  for 75 s after the poll that reported it. A session id that is another
+  person's uploaded session is not recorded.
+- **Send.** The sending session must be live on the calling device or
+  uploaded from it. `to` is a session id prefix (4+ characters, unique) or
+  `@user`. The server sets the envelope (session, person, agent, repo,
+  `own` or `teammate`, thread, time), redacts the body (4,000-byte cap) and
+  sets a 24-hour expiry. A message from another person is held until the
+  recipient accepts the sender (`/v1/bus/accepts`, login session only).
+- **Limits.** A reply to a `done` message, more than 8 messages per thread
+  per hour, 30 sends per session per hour, the same body to the same
+  recipient within 10 minutes, and 50 undelivered messages per recipient
+  are refused. A refused message is stored as `refused`.
+- **Delivery.** The poll answers the device's whole deliverable set:
+  messages to its sessions, and `@user` messages it may claim. A claim is
+  atomic. An ack sets `delivered_at`. `read_at` is not set yet.
+- **Audit.** Send, claim, ack, accept and revoke commit with their audit
+  event (`bus.send`, `bus.claim`, `bus.deliver`, `bus.accept`,
+  `bus.revoke`). Peers, inbox and polls that return messages are audited
+  like other reads. Bodies are never in the audit log.
+- **Expiry.** A sweep each minute marks undelivered messages past their
+  expiry `expired` and drops presence a day old.
 
 ## Trust boundaries
 
