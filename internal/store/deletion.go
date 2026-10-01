@@ -27,9 +27,11 @@ package store
 // administrator's retry.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,6 +73,17 @@ const orphanSourcesSQL = `SELECT COALESCE(array_agg(s.id),'{}') FROM sources s W
 func ConversationLockKey(userID, agent, sessionID string) string {
 	return fmt.Sprintf("conversation:%d:%s:%d:%s:%s", len(userID), userID, len(agent), agent, sessionID)
 }
+
+// LockConversationsSQL locks the conversation rows $1 FOR UPDATE in the one
+// order every transaction that writes several conversations, or a
+// conversation and its message rows, takes them: session id bytewise, then
+// id. A parse flush upserts its conversations in session order (Go sorts
+// bytewise; the database default collation does not, hence COLLATE "C"),
+// and the digest recount and checkpoint lock them in the same order. A
+// writer locks its conversations this way before it touches any of their
+// message rows: a flush holds its conversation from the upsert and then
+// writes the messages, so the reverse order deadlocks with it.
+const LockConversationsSQL = `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`
 
 // InsertAudit writes an audit event inside the caller's transaction.
 func InsertAudit(ctx context.Context, tx pgx.Tx, a domain.AuditEvent) error {
@@ -205,22 +218,22 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 		}
 		// The doomed set: the session on every device of its user, and every
 		// subagent conversation below, linked or still waiting for its
-		// parent's id.
-		type doomed struct{ id, device, agent, session string }
+		// parent's id. parent is the session it was reached from.
+		type doomed struct{ id, device, agent, session, parent string }
 		var set []doomed
 		rows, err := tx.Query(ctx, `WITH RECURSIVE d AS (
-				SELECT id,device_id,agent,session_id FROM conversations WHERE user_id=$1 AND agent=$2 AND session_id=$3 AND ($4<>'device' OR device_id=$5)
+				SELECT id,device_id,agent,session_id,''::text AS parent FROM conversations WHERE user_id=$1 AND agent=$2 AND session_id=$3 AND ($4<>'device' OR device_id=$5)
 				UNION
-				SELECT c.id,c.device_id,c.agent,c.session_id FROM conversations c JOIN d ON c.parent_conversation_id=d.id
+				SELECT c.id,c.device_id,c.agent,c.session_id,d.session_id FROM conversations c JOIN d ON c.parent_conversation_id=d.id
 					OR (c.parent_conversation_id IS NULL AND c.user_id=$1 AND c.agent=d.agent AND c.parent_native_session_id=d.session_id)
 				WHERE c.user_id=$1 AND ($4<>'device' OR c.device_id=$5))
-			SELECT id::text,device_id::text,agent,session_id FROM d ORDER BY agent,session_id,id`, owner, agent, session, scope, scopedDevice)
+			SELECT id::text,device_id::text,agent,session_id,parent FROM d`, owner, agent, session, scope, scopedDevice)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var d doomed
-			if err := rows.Scan(&d.id, &d.device, &d.agent, &d.session); err != nil {
+			if err := rows.Scan(&d.id, &d.device, &d.agent, &d.session, &d.parent); err != nil {
 				rows.Close()
 				return err
 			}
@@ -230,10 +243,41 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 		if err = rows.Err(); err != nil {
 			return err
 		}
+		// A parse flush of a subagent takes its parent's session lock and
+		// then its own, so the session locks go parent first at every
+		// depth, then in (agent, session) order.
+		type sessKey struct{ agent, session string }
+		parentOf := map[sessKey]string{}
+		for _, d := range set {
+			if d.parent != "" {
+				parentOf[sessKey{d.agent, d.session}] = d.parent
+			}
+		}
+		depth := func(d doomed) int {
+			n, k := 0, sessKey{d.agent, d.session}
+			for k.agent != agent || k.session != session {
+				p, ok := parentOf[k]
+				if !ok || n > len(set) { // not reached from a parent, or a cycle
+					break
+				}
+				k, n = sessKey{k.agent, p}, n+1
+			}
+			return n
+		}
+		depths := make(map[string]int, len(set))
+		for _, d := range set {
+			depths[d.id] = depth(d)
+		}
+		slices.SortFunc(set, func(a, b doomed) int {
+			return cmp.Or(cmp.Compare(depths[a.id], depths[b.id]), cmp.Compare(a.agent, b.agent), cmp.Compare(a.session, b.session), cmp.Compare(a.id, b.id))
+		})
+		set = slices.CompactFunc(set, func(a, b doomed) bool { return a.id == b.id })
 		ids := make([]string, 0, len(set))
-		for i, d := range set {
+		locked := map[sessKey]bool{{agent, session}: true}
+		for _, d := range set {
 			ids = append(ids, d.id)
-			if (d.agent != agent || d.session != session) && (i == 0 || set[i-1].agent != d.agent || set[i-1].session != d.session) {
+			if k := (sessKey{d.agent, d.session}); !locked[k] {
+				locked[k] = true
 				if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, ConversationLockKey(owner, d.agent, d.session)); err != nil {
 					return err
 				}
@@ -246,6 +290,12 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 			return err
 		}
 		if err = tx.QueryRow(ctx, `SELECT COALESCE(array_agg(id),'{}') FROM sources WHERE id=ANY($1) OR parent_source_id=ANY($1)`, sources).Scan(&sources); err != nil {
+			return err
+		}
+		// The doomed set spans sessions. The DELETE below would lock its
+		// rows in plan order, while a checkpoint or recount of some of them
+		// (which takes no session lock) locks them in session order.
+		if _, err = tx.Exec(ctx, LockConversationsSQL, ids); err != nil {
 			return err
 		}
 		now := time.Now().UTC()
@@ -323,10 +373,13 @@ func (p *Postgres) ProcessDeletionJobs(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer conn.Release()
+	if err = PinBackend(ctx, conn); err != nil {
+		return 0, err
+	}
 	if _, err = conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, purgeLockID); err != nil {
 		return 0, err
 	}
-	defer unlockSession(conn, `SELECT pg_advisory_unlock($1)`, purgeLockID)
+	defer func() { _ = ReleaseAdvisoryLocks(conn, p.pool, AdvisoryLock{ID: purgeLockID}) }()
 
 	var job domain.DeletionJob
 	var sources, removed int
@@ -460,17 +513,6 @@ func inConnTx(ctx context.Context, conn *pgxpool.Conn, fn func(pgx.Tx) error) er
 		return err
 	}
 	return tx.Commit(ctx)
-}
-
-// unlockSession releases a session-level advisory lock; if that fails the
-// connection is closed so the lock cannot leak back into the pool.
-func unlockSession(conn *pgxpool.Conn, sql string, args ...any) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var unlocked bool
-	if err := conn.QueryRow(ctx, sql, args...).Scan(&unlocked); err != nil || !unlocked {
-		_ = conn.Conn().Close(ctx)
-	}
 }
 
 // WithholdSession: when the server holds a conversation of the session

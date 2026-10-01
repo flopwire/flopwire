@@ -424,7 +424,12 @@ func (h *placeHint) addOther(d string) {
 // refuseSource's deletes: the conversations of the refused sources ($1)
 // or of their sessions on the device, then any message rows still naming
 // the sources (superseded ones included).
+//
+// refuseLockSQL first locks those conversations in the order a parse flush
+// and a checkpoint take them (store.LockConversationsSQL): the DELETE alone
+// would lock them in plan order and could deadlock with a checkpoint.
 const (
+	refuseLockSQL          = `SELECT 1 FROM conversations WHERE source_id=ANY($1::uuid[]) OR (device_id=$2 AND agent=$3 AND session_id=ANY($4)) ORDER BY session_id COLLATE "C",id FOR UPDATE`
 	refuseConversationsSQL = `DELETE FROM conversations WHERE source_id=ANY($1::uuid[]) OR (device_id=$2 AND agent=$3 AND session_id=ANY($4))`
 	refuseMessagesSQL      = `DELETE FROM messages WHERE source_id=ANY($1::uuid[])`
 )
@@ -454,6 +459,9 @@ func refuseSource(ctx context.Context, pool *pgxpool.Pool, src source, path stri
 		}
 		ids, released, err := purgeSourceTx(ctx, tx, src.id)
 		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, refuseLockSQL, ids, src.deviceID, src.agent, sessions); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, refuseConversationsSQL,

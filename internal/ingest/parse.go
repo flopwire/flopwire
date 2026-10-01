@@ -331,7 +331,8 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 		// the same transaction, so a failure between the two cannot leave
 		// digests counting retired rows (a retry would retire nothing and
 		// not recount). The conversations are locked first, in the order
-		// a flush upserts them, before any message row.
+		// a flush upserts them (store.LockConversationsSQL's order, taken
+		// here over a subquery), before any message row.
 		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
 			rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id IN
 				(SELECT conversation_id FROM messages WHERE source_id=$1 AND NOT superseded)

@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"github.com/flopwire/flopwire/internal/store"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/digest"
@@ -102,7 +103,7 @@ func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`, ids)
+	rows, err := tx.Query(ctx, store.LockConversationsSQL, ids)
 	if err != nil {
 		return err
 	}

@@ -141,7 +141,7 @@ func (q *Queue) applyRules(ctx context.Context, r serverRules, sourceID string) 
 			restored++
 		case c.isRoot() && ruleName(d) != c.rule:
 			// Still covered, now by another rule: the window runs on.
-			if _, err := q.Pool.Exec(ctx, `UPDATE conversations SET hidden_rule=$2,hidden_rules_version=$3 WHERE hidden_root=$1 AND hidden_at IS NOT NULL`,
+			if _, err := q.Pool.Exec(ctx, lockHideRoot+`UPDATE conversations SET hidden_rule=$2,hidden_rules_version=$3 WHERE id IN (SELECT id FROM l)`,
 				c.id, ruleName(d), r.version); err != nil {
 				return hidden, restored, err
 			}
@@ -154,14 +154,24 @@ func (q *Queue) applyRules(ctx context.Context, r serverRules, sourceID string) 
 // and session (the user's other devices), and every subagent conversation
 // below them, linked or still waiting for its parent's id: the set a
 // deletion of it takes. Conversations already hidden keep their hide.
+//
+// The tree spans sessions, so CTE l locks it first in the order of
+// store.LockConversationsSQL: the UPDATE alone would lock it in plan order
+// and could deadlock with a deletion, recount or checkpoint of it.
 const hideTreeSQL = `WITH RECURSIVE t AS (
 		SELECT id,user_id,agent,session_id FROM conversations WHERE id=$1
 		UNION
 		SELECT c.id,c.user_id,c.agent,c.session_id FROM conversations c JOIN t
 			ON (c.user_id=t.user_id AND c.agent=t.agent AND c.session_id=t.session_id) OR c.parent_conversation_id=t.id
-			OR (c.parent_conversation_id IS NULL AND c.user_id=t.user_id AND c.agent=t.agent AND c.parent_native_session_id=t.session_id))
+			OR (c.parent_conversation_id IS NULL AND c.user_id=t.user_id AND c.agent=t.agent AND c.parent_native_session_id=t.session_id)),
+	l AS MATERIALIZED (SELECT id FROM conversations WHERE id IN (SELECT id FROM t) AND hidden_at IS NULL ORDER BY session_id COLLATE "C",id FOR UPDATE)
 	UPDATE conversations SET hidden_at=$2,hidden_rule=$3,hidden_rules_version=$4,hidden_root=$1,hidden_by=NULLIF($5,'')::uuid
-	WHERE id IN (SELECT id FROM t) AND hidden_at IS NULL`
+	WHERE id IN (SELECT id FROM l)`
+
+// lockHideRoot (CTE l) locks the conversations hidden under root $1 in
+// the order of store.LockConversationsSQL, for the UPDATE that follows.
+const lockHideRoot = `WITH l AS MATERIALIZED (SELECT id FROM conversations WHERE hidden_root=$1 AND hidden_at IS NOT NULL
+	ORDER BY session_id COLLATE "C",id FOR UPDATE) `
 
 // hide hides c's tree under decision d, audited, and returns how many
 // conversations it hid.
@@ -193,8 +203,8 @@ func (q *Queue) hide(ctx context.Context, r serverRules, c convRow, d pathpolicy
 // restore unhides the tree c's hide covers, audited.
 func (q *Queue) restore(ctx context.Context, r serverRules, c convRow, reason string) error {
 	return pgx.BeginTxFunc(ctx, q.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=NULL,hidden_rule=NULL,hidden_rules_version=NULL,hidden_root=NULL,hidden_by=NULL
-			WHERE hidden_root=$1 AND hidden_at IS NOT NULL`, c.id)
+		tag, err := tx.Exec(ctx, lockHideRoot+`UPDATE conversations SET hidden_at=NULL,hidden_rule=NULL,hidden_rules_version=NULL,hidden_root=NULL,hidden_by=NULL
+			WHERE id IN (SELECT id FROM l)`, c.id)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
