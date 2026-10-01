@@ -850,3 +850,23 @@ func TestHeldMessagesDoNotFillTheRecipient(t *testing.T) {
 		t.Fatalf("held sender past the cap: %v", err)
 	}
 }
+
+// A device cannot report another person's live session (not uploaded yet)
+// as its own: it would send as that session id, count against its limits,
+// and make it ambiguous to address.
+func TestPresenceIgnoresAnotherPersonsLiveSession(t *testing.T) {
+	tm := newTeam(t)
+	got := tm.present(tm.garyMac, live("g-api-1111", "claude", "/x/api", true), live("a-api-4444", "claude", "/x/api", true))
+	if len(got.Ignored) != 1 || got.Ignored[0] != "a-api-4444" {
+		t.Fatalf("ignored %v", got.Ignored)
+	}
+	if _, err := tm.send(tm.garyMac, "a-api-4444", "g-lin", "posing"); code(err) != busproto.CodeSessionNotOnDevice {
+		t.Fatalf("posed as another person's live session: %v", err)
+	}
+	if out, err := tm.send(tm.garyLinux, "g-lin-3333", "a-api-4444", "to alex"); err != nil || out.To.UserID != tm.alex {
+		t.Fatalf("alex's session by its full id: %+v %v", out, err)
+	}
+	if got := tm.present(tm.alexMac, live("a-api-4444", "claude", "/Users/alex/code/api", false)); len(got.Ignored) != 0 {
+		t.Fatalf("owner's own session ignored: %v", got.Ignored)
+	}
+}

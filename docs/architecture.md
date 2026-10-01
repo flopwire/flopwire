@@ -307,7 +307,7 @@ the server side is built. Routes and wire types are in `internal/busproto`.
   25 s). The request carries every live session on the device (id, agent,
   repo, branch, busy) and replaces what the server held. A session is live
   for 75 s after the poll that reported it. A session id that is another
-  person's uploaded session is not recorded.
+  person's, uploaded or in their presence, is not recorded.
 - **Send.** The sending session must be live on the calling device or
   uploaded from it. `to` is a session id prefix (4+ characters, unique) or
   `@user`. The server sets the envelope (session, person, agent, repo,

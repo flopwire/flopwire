@@ -59,19 +59,23 @@ func validPresence(in []busproto.PresenceSession) ([]busproto.PresenceSession, e
 
 // Presence statements.
 const (
-	// ForeignSessionsSQL lists which of the ids $1 are uploaded sessions of
-	// a person other than $2: a device cannot claim them as its own.
-	ForeignSessionsSQL = `SELECT DISTINCT session_id FROM conversations WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2`
-	clearPresenceSQL   = `DELETE FROM bus_presence WHERE device_id=$1 AND (agent,session_id) NOT IN (SELECT * FROM unnest($2::text[],$3::text[]))`
-	upsertPresenceSQL  = `INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,branch,title,busy,seen_at)
+	// ForeignSessionsSQL lists which of the ids $1 are sessions of a person
+	// other than $2, uploaded or in that person's presence (kept a day): a
+	// device cannot claim them as its own. A new session is in presence
+	// before it is uploaded, and peers lists its id.
+	ForeignSessionsSQL = `SELECT session_id FROM conversations WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2
+		UNION SELECT session_id FROM bus_presence WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2`
+	clearPresenceSQL  = `DELETE FROM bus_presence WHERE device_id=$1 AND (agent,session_id) NOT IN (SELECT * FROM unnest($2::text[],$3::text[]))`
+	upsertPresenceSQL = `INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,branch,title,busy,seen_at)
 		SELECT $1,$2,a,s,r,b,t,busy,$9 FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::bool[]) AS x(a,s,r,b,t,busy)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET user_id=EXCLUDED.user_id,repo=EXCLUDED.repo,branch=EXCLUDED.branch,
 			title=EXCLUDED.title,busy=EXCLUDED.busy,seen_at=EXCLUDED.seen_at`
 )
 
 // heartbeat replaces the device's presence with sessions. An id that is
-// another person's uploaded session is not recorded (returned): a device
-// could otherwise pose as that session to send or to receive.
+// another person's session (uploaded or in their presence) is not recorded
+// (returned): a device could otherwise pose as that session to send, spend
+// its limits, or make it ambiguous to address.
 func (s *Store) heartbeat(ctx context.Context, c busproto.Caller, sessions []busproto.PresenceSession, now time.Time) ([]string, error) {
 	var ignored []string
 	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
