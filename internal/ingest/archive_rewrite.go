@@ -41,6 +41,8 @@ type ArchiveRewrite struct {
 	conn   *pgxpool.Conn
 	pool   *pgxpool.Pool
 	locked []string
+	// reserved is the replacements this plan put as 'uploading'.
+	reserved [][]byte
 }
 
 type ArchiveRewriteResult struct {
@@ -249,9 +251,21 @@ func (p *ArchiveRewrite) WithTx(ctx context.Context, fn func(pgx.Tx) error) erro
 
 // Close releases the object-write fences even after an abandoned plan.
 // Reserved objects then remain in the existing orphan ledger for cleanup.
+// A replacement that was never installed may hold a line a newer catalog
+// redacts (the plan was derived from an older one), so it is due for
+// cleanup at once rather than after the upload grace; the chunk lock held
+// here means no upload owns the reservation meanwhile. Installed ones are
+// 'committed' and stay.
 func (p *ArchiveRewrite) Close() {
 	if p.conn == nil {
 		return
+	}
+	if len(p.reserved) > 0 {
+		// Best effort: on failure the reconciler still finds them after
+		// the upload grace.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _ = p.conn.Exec(ctx, `UPDATE chunks SET cleanup_after=now(),updated_at=now() WHERE hash=ANY($1) AND state='uploading'`, p.reserved)
+		cancel()
 	}
 	locks := []store.AdvisoryLock{{ID: store.PurgeLockID, Shared: true}}
 	for _, key := range p.locked {
@@ -314,6 +328,7 @@ func (p *ArchiveRewrite) reserveReplacement(ctx context.Context, objects Objects
 	if tag.RowsAffected() != 1 {
 		return nu, 0, ErrArchiveChanged
 	}
+	p.reserved = append(p.reserved, bytes.Clone(nu[:]))
 	if err := objects.Put(ctx, ChunkKey(nu), z); err != nil {
 		return nu, 0, err
 	}
