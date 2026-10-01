@@ -321,16 +321,21 @@ type claudeMarketplaceEntry struct {
 	Repo   string `json:"repo"`
 	URL    string `json:"url"`
 	Path   string `json:"path"`
+	Ref    string `json:"ref"`
 }
 
 func (m claudeMarketplaceEntry) location() string {
+	loc := m.URL
 	switch {
 	case m.Repo != "":
-		return m.Repo
+		loc = m.Repo
 	case m.Path != "":
 		return m.Path
 	}
-	return m.URL
+	if m.Ref != "" {
+		loc += "#" + m.Ref
+	}
+	return loc
 }
 
 type claudePluginEntry struct {
@@ -427,6 +432,8 @@ func lastJSONLine(out []byte) []byte {
 }
 
 // sameSource reports whether a configured marketplace comes from source.
+// A source may pin a branch or tag as owner/repo#ref; Claude Code lists
+// the ref apart.
 func sameSource(m claudeMarketplaceEntry, source string) bool {
 	if isLocalSource(source) {
 		return m.Path != "" && samePath(m.Path, source)
@@ -435,7 +442,12 @@ func sameSource(m claudeMarketplaceEntry, source string) bool {
 		s = strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(s), "/"), ".git")
 		return strings.TrimPrefix(strings.TrimPrefix(s, "https://"), "github.com/")
 	}
-	return norm(m.location()) == norm(source)
+	loc, ref, _ := strings.Cut(source, "#")
+	have := m.URL
+	if m.Repo != "" {
+		have = m.Repo
+	}
+	return norm(have) == norm(loc) && m.Ref == ref
 }
 
 func setupClaude(ctx context.Context, env *setupEnv) harnessReport {

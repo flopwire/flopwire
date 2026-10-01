@@ -637,3 +637,27 @@ func TestSetupScopeAndFlags(t *testing.T) {
 		t.Fatalf("env source: %v %+v", err, env)
 	}
 }
+
+func TestSetupSameSource(t *testing.T) {
+	cases := []struct {
+		m    claudeMarketplaceEntry
+		src  string
+		want bool
+	}{
+		{claudeMarketplaceEntry{Repo: "flopwire/flopwire"}, "flopwire/flopwire", true},
+		{claudeMarketplaceEntry{Repo: "Flopwire/Flopwire"}, "https://github.com/flopwire/flopwire.git", true},
+		{claudeMarketplaceEntry{Repo: "flopwire/flopwire", Ref: "feat/x"}, "flopwire/flopwire#feat/x", true},
+		{claudeMarketplaceEntry{Repo: "flopwire/flopwire", Ref: "feat/x"}, "flopwire/flopwire", false},
+		{claudeMarketplaceEntry{Repo: "flopwire/flopwire"}, "flopwire/flopwire#main", false},
+		{claudeMarketplaceEntry{URL: "https://git.example.com/fw.git", Ref: "v1"}, "https://git.example.com/fw.git#v1", true},
+		{claudeMarketplaceEntry{Repo: "someone/fork"}, "flopwire/flopwire", false},
+		{claudeMarketplaceEntry{Path: "/a/b"}, "/a/b", true},
+		{claudeMarketplaceEntry{Path: "/a/b"}, "/a/c", false},
+		{claudeMarketplaceEntry{Repo: "a/b"}, "/a/b", false},
+	}
+	for _, c := range cases {
+		if got := sameSource(c.m, c.src); got != c.want {
+			t.Errorf("sameSource(%+v, %q) = %v, want %v", c.m, c.src, got, c.want)
+		}
+	}
+}
