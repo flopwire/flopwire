@@ -570,6 +570,13 @@ func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urg
 	}
 	if t.seen != (transcript.Identity{}) && id != t.seen {
 		t.hotUntil = now.Add(a.cfg.HotWindow) // changed after we knew it
+	} else if t.seen == (transcript.Identity{}) {
+		// Not indexed yet: hot as it will be once indexed (seen.CTime), so
+		// the rewatch right after this pass watches its session directory
+		// instead of the one after the next pass.
+		if until := time.Unix(0, id.CTime).Add(a.cfg.HotWindow); until.After(t.hotUntil) {
+			t.hotUntil = until
+		}
 	}
 	a.enqueueLocked(t, urgent)
 	return true
