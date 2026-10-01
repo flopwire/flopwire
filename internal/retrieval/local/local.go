@@ -592,7 +592,7 @@ func (b *Backend) outline(ctx context.Context, convID int64, q format.ReadQuery)
 	if err != nil {
 		return nil, err
 	}
-	cx := &format.Context{Conversation: infos[convID], Messages: []format.Message{}, OutlineMore: more}
+	cx := &format.Context{Conversation: infos[convID], Messages: []format.Message{}, Outline: []format.OutlineEntry{}, OutlineMore: more}
 	var sids []string
 	for _, r := range o.Rows {
 		sids = append(sids, r.SessionID)

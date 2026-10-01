@@ -2,9 +2,11 @@ package retrieval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/perfguard"
@@ -359,5 +361,33 @@ func TestNoMessagesTSIndex(t *testing.T) {
 	}
 	if len(names) > 0 {
 		t.Fatalf("indexes leading with messages.ts: %v; grep's cursor would walk them instead of its trigram candidates", names)
+	}
+}
+
+// An outline page past the last entry is an empty outline, not a read
+// with no messages, here and after the JSON the API sends.
+func TestOutlinePastEnd(t *testing.T) {
+	s, _ := perfCorpus(t, 2, 8)
+	conv := sessionAt(t, s.Pool, 1)
+	cx, err := s.outline(context.Background(), conv, format.ReadQuery{Outline: true, Cursor: outlineCursor(t, s.Pool, conv, 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire format.Context
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*format.Context{cx, &wire} {
+		var b strings.Builder
+		if err := format.WriteRead(&b, c, format.Style{}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "[no prompts or tool calls]") {
+			t.Fatalf("empty outline page renders as\n%s", b.String())
+		}
 	}
 }

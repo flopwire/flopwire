@@ -393,8 +393,10 @@ type Context struct {
 	MoreAfter  bool `json:"more_after,omitempty"`
 	// Outline is read --outline's answer (Messages is then empty): one
 	// page of entries. OutlineMore says entries follow; OutlineNext is the
-	// cursor that reads them (ReadQuery.Cursor).
-	Outline     []OutlineEntry `json:"outline,omitempty"`
+	// cursor that reads them (ReadQuery.Cursor). An outline answer's
+	// Outline is never nil, so an empty page (omitzero keeps it on the
+	// wire) still renders as an outline.
+	Outline     []OutlineEntry `json:"outline,omitzero"`
 	OutlineMore bool           `json:"outline_more,omitempty"`
 	OutlineNext string         `json:"outline_next,omitempty"`
 }

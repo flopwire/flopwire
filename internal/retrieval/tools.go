@@ -899,7 +899,7 @@ func (s *Store) outlinePage(ctx context.Context, conv, root string, rq format.Re
 	if err != nil {
 		return nil, "", err
 	}
-	var out []format.OutlineEntry
+	out := []format.OutlineEntry{}
 	for _, x := range list {
 		e := format.NewOutlineEntry(format.MessageAddress(short[x.sid], x.ord), x.id, x.ord, x.ts, x.kind, x.tool, x.text, root)
 		e.Error = x.isErr || x.callID != "" && slices.Contains(failedList, x.callID)

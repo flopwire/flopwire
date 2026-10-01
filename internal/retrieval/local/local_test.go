@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -517,6 +518,49 @@ func TestCursorPaging(t *testing.T) {
 		}
 		if _, err := b.Read(ctx, format.ReadQuery{Address: q.Address, Outline: true, Cursor: bad}, format.Filters{}); !errors.Is(err, format.ErrBadRequest) {
 			t.Errorf("outline cursor %q: %v", bad, err)
+		}
+	}
+}
+
+// An outline page with no entries (a cursor past the last one, say after
+// rows were superseded between pages) still reads as an outline: its
+// digest and an end-of-outline footer, not a bare message header. The
+// empty page survives the JSON a server sends.
+func TestOutlinePastEnd(t *testing.T) {
+	b, _ := oracle(t)
+	q := format.ReadQuery{Address: "0b7e2c1a-0000-4000-8000-000000000001", Outline: true}
+	whole, err := b.Read(ctx, q, format.Filters{})
+	if err != nil || len(whole.Outline) == 0 {
+		t.Fatalf("outline: %v %+v", err, whole)
+	}
+	q.Cursor = format.OutlineCursor(whole.Outline[len(whole.Outline)-1])
+	cx, err := b.Read(ctx, q, format.Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cx.Outline == nil || len(cx.Outline) != 0 || cx.OutlineMore {
+		t.Fatalf("page past the end: %+v", cx)
+	}
+	assertEmptyOutline(t, cx)
+}
+
+func assertEmptyOutline(t *testing.T, cx *format.Context) {
+	t.Helper()
+	data, err := json.Marshal(cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire format.Context
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*format.Context{cx, &wire} {
+		var b strings.Builder
+		if err := format.WriteRead(&b, c, format.Style{}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "[no prompts or tool calls]") {
+			t.Fatalf("empty outline page renders as\n%s", b.String())
 		}
 	}
 }
