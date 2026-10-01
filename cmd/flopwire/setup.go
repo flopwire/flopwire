@@ -347,12 +347,15 @@ func (m claudeMarketplaceEntry) location() string {
 }
 
 type claudePluginEntry struct {
-	ID          string   `json:"id"`
-	Version     string   `json:"version"`
-	Scope       string   `json:"scope"`
-	Enabled     bool     `json:"enabled"`
-	ProjectPath string   `json:"projectPath"`
-	Errors      []string `json:"errors"`
+	ID          string `json:"id"`
+	Version     string `json:"version"`
+	Scope       string `json:"scope"`
+	Enabled     bool   `json:"enabled"`
+	ProjectPath string `json:"projectPath"`
+	// Errors are load errors and Notes are warnings. Claude Code 2.1.287
+	// prints each only when it has some, so an empty list is no field.
+	Errors []string `json:"errors,omitempty"`
+	Notes  []string `json:"notes,omitempty"`
 }
 
 // claudeCLI runs `claude plugin` commands for one setup.
@@ -615,7 +618,10 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 	if installed != nil {
 		r.Installed, r.Enabled, r.Version = true, installed.Enabled, installed.Version
 		for _, e := range installed.Errors {
-			r.Warnings = append(r.Warnings, "Claude Code reports: "+e)
+			r.Warnings = append(r.Warnings, "Claude Code reports a load error: "+e)
+		}
+		for _, n := range installed.Notes {
+			r.Warnings = append(r.Warnings, "Claude Code notes: "+n)
 		}
 	}
 	switch {

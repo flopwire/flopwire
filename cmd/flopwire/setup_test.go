@@ -768,3 +768,26 @@ func TestSetupHarnessCommandTimeoutHolds(t *testing.T) {
 		t.Fatalf("want a timed-out error; got %v %+v", err, f.claude(rep))
 	}
 }
+
+// TestSetupReportsClaudeLoadErrorsAndNotes: `claude plugin list --json`
+// (2.1.287) carries "errors" (load errors) and "notes" (warnings) only when
+// a plugin has some; setup passes both on as warnings.
+func TestSetupReportsClaudeLoadErrorsAndNotes(t *testing.T) {
+	f := newSetupFixture(t, true)
+	f.setState(fakeClaudeState{
+		Available:    "aaaaaaaaaaaa",
+		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+		Plugins: []claudePluginEntry{{ID: claudePlugin, Version: "aaaaaaaaaaaa", Scope: "user", Enabled: true,
+			Errors: []string{"Path not found: hooks/hooks.json (hooks)"}, Notes: []string{"The packages it lists were not installed"}}},
+	})
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(f.claude(rep).Warnings, "\n")
+	for _, want := range []string{"Claude Code reports a load error: Path not found: hooks/hooks.json (hooks)", "Claude Code notes: The packages it lists were not installed"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warnings lack %q:\n%s", want, w)
+		}
+	}
+}
