@@ -52,9 +52,11 @@ func ratio(small, large, floor int64) float64 {
 	return float64(max(large, 0)) / float64(max(small, floor))
 }
 
-// AssertScaling fails t when the operation's rows touched or statements
-// sent grow faster than class allows between sizes n and k·n. Blocks are
-// reported but not gated (see TableCost.Blocks).
+// AssertScaling fails t when the operation's rows touched, heap pages
+// passed over by sequential scans (TableCost.SeqPages, which sees scans
+// over dead tuples that rows miss) or statements sent grow faster than
+// class allows between sizes n and k·n. Blocks are reported but not gated
+// (see TableCost.Blocks).
 //
 // run builds a fixture of the given size, normally in a fresh pgtest
 // database, and returns the Measure of only the operation under test.
@@ -85,6 +87,7 @@ func AssertScaling(t testing.TB, class Class, n, k int, run func(t testing.TB, n
 		}
 	}
 	check("rows", bt.Rows(), st.Rows(), lt.Rows(), minBase)
+	check("seq pages", bt.SeqPages, st.SeqPages, lt.SeqPages, minBase)
 	if small.Statements >= 0 && large.Statements >= 0 {
 		check("statements", max(base.Statements, 0), small.Statements, large.Statements, minBaseStatements)
 	}
@@ -107,17 +110,18 @@ func breakdown(base, small, large Cost, bound float64) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-40s %23s %23s\n", "table", "rows small→large", "blocks small→large")
+	fmt.Fprintf(&b, "%-40s %23s %23s %23s\n", "table", "rows small→large", "seq pages small→large", "blocks small→large")
 	for _, name := range slices.Sorted(maps.Keys(names)) {
 		z, s, l := base.Tables[name], small.Tables[name], large.Tables[name]
-		if s == (TableCost{}) && l == (TableCost{}) {
+		if s.idle() && l.idle() {
 			continue
 		}
 		flag := ""
-		if ratio(s.Rows()-z.Rows(), l.Rows()-z.Rows(), minBase) > bound {
+		if ratio(s.Rows()-z.Rows(), l.Rows()-z.Rows(), minBase) > bound ||
+			ratio(s.SeqPages-z.SeqPages, l.SeqPages-z.SeqPages, minBase) > bound {
 			flag = "  <-- grows past bound"
 		}
-		fmt.Fprintf(&b, "%-40s %11d→%-11d %11d→%-11d%s\n", name, s.Rows(), l.Rows(), s.Blocks(), l.Blocks(), flag)
+		fmt.Fprintf(&b, "%-40s %11d→%-11d %11d→%-11d %11d→%-11d%s\n", name, s.Rows(), l.Rows(), s.SeqPages, l.SeqPages, s.Blocks(), l.Blocks(), flag)
 	}
 	fmt.Fprintf(&b, "baseline (n=1): %s\n", base)
 	fmt.Fprintf(&b, "small: %s\nlarge: %s", small, large)

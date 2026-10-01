@@ -246,6 +246,39 @@ func TestAssertScalingBaselineExposesQuadraticUnderFixedCost(t *testing.T) {
 	}
 }
 
+// Tuples deleted earlier in the transaction are invisible to later scans,
+// so seq_tup_read does not count them, yet each scan still passes over
+// their pages. This is how a foreign-key action after a cascade scans: a
+// scan per deleted row over the rows already deleted. The rows metric
+// alone sees it as linear.
+func TestAssertScalingCatchesQuadraticOverDeadTuples(t *testing.T) {
+	deadScan := func(t testing.TB, n int) Cost {
+		pool, counter := itemsPool(t, n, 0)
+		ctx := context.Background()
+		return Measure(t, pool, counter, func() {
+			err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, `DELETE FROM items`); err != nil {
+					return err
+				}
+				for i := 1; i <= n; i++ {
+					if _, err := tx.Exec(ctx, `SELECT count(*) FROM items WHERE grp = $1`, i); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	r := &recorder{TB: t}
+	AssertScaling(r, Linear, 60, 8, deadScan)
+	if msg := r.failed(); !strings.Contains(msg, "seq pages") {
+		t.Fatalf("quadratic scans over dead tuples passed the linear class: %q", msg)
+	}
+}
+
 func TestAssertScalingConstant(t *testing.T) {
 	lookup := func(t testing.TB, n int) Cost {
 		pool, counter := itemsPool(t, n, 0)
