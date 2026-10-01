@@ -66,8 +66,15 @@ CREATE INDEX source_parse_pending_idx ON source_parse_state (next_attempt_at NUL
 -- Row identity for records without a native id: (source, locator, part).
 CREATE INDEX messages_source_locator_idx ON messages (source_id, locator, part)
   WHERE native_id IS NULL AND NOT superseded;
--- Live rows per source, for supersession when a generation drops them.
-CREATE INDEX messages_source_live_idx ON messages (source_id, source_generation) WHERE NOT superseded;
+-- Every row per source, superseded ones included: deletion and refusal
+-- lookups, and ON DELETE SET NULL from sources. superseded second also
+-- serves live rows per source, for supersession when a generation drops
+-- them.
+CREATE INDEX messages_source_idx ON messages (source_id, superseded);
+-- ON DELETE SET NULL from a deleted message to the versions it superseded.
+CREATE INDEX messages_superseded_by_idx ON messages (superseded_by) WHERE superseded_by IS NOT NULL;
+-- Conversations per source: deletion lookups and ON DELETE SET NULL from sources.
+CREATE INDEX conversations_source_idx ON conversations (source_id);
 
 -- Stored bytes per user (a chunk's compressed object, stored_size; a
 -- tail's bytes), for quotas and admin status (V5): kept by
