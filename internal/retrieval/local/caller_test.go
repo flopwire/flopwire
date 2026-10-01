@@ -67,6 +67,57 @@ func TestDetectorRules(t *testing.T) {
 	check(100, transcript.AgentDevin, "explicit", "env")
 }
 
+// Codex shell children carry CODEX_THREAD_ID; Devin's children are found
+// by the lock file naming their ancestor's pid. All fixtures synthetic.
+func TestDetectorCodexEnvAndDevinLock(t *testing.T) {
+	home := t.TempDir()
+	locks := filepath.Join(home, ".local", "share", "devin", "cli", "session_locks")
+	os.MkdirAll(locks, 0o755)
+	os.WriteFile(filepath.Join(locks, "devin-sess-1.lock"), []byte("700\n"), 0o644)
+	// A stale lock and a live one naming the same pid: unknown.
+	os.WriteFile(filepath.Join(locks, "devin-old-a.lock"), []byte("900"), 0o644)
+	os.WriteFile(filepath.Join(locks, "devin-old-b.lock"), []byte("900"), 0o644)
+	// 100 (sh) -> 200 (codex); 600 (sh) -> 650 (node) -> 700 (devin acp);
+	// 800 (sh) -> 900 (devin acp, two locks); 1000 (sh) -> 1100 (claude, no session file)
+	procs := map[int]struct {
+		ppid int
+		name string
+	}{100: {200, "sh"}, 200: {1, "codex"}, 600: {650, "sh"}, 650: {700, "node"}, 700: {1, "devin"}, 800: {900, "sh"}, 900: {1, "devin"},
+		1000: {1100, "sh"}, 1100: {1, "claude"}}
+	proc := func(pid int) (int, string, bool) { p, ok := procs[pid]; return p.ppid, p.name, ok }
+	env := map[string]string{}
+	d := &Detector{Getenv: func(k string) string { return env[k] }, Home: home, Proc: proc, OpenFiles: func(int) []string { return nil }}
+	check := func(pid int, agent transcript.Agent, session, rule string) {
+		t.Helper()
+		d.Pid = pid
+		c, ok := d.Detect(context.Background())
+		if session == "" {
+			if ok {
+				t.Fatalf("pid %d: detected %+v", pid, c)
+			}
+			return
+		}
+		if !ok || c.Agent != agent || c.SessionID != session || c.Rule != rule {
+			t.Fatalf("pid %d: got %+v %v, want %s %s %s", pid, c, ok, agent, session, rule)
+		}
+	}
+	// A Codex process without a rollout and no variable: none.
+	check(100, "", "", "")
+	env["CODEX_THREAD_ID"] = "019a0000-0000-7000-8000-0000000000cd"
+	check(100, transcript.AgentCodex, "019a0000-0000-7000-8000-0000000000cd", "codex-env")
+	check(600, transcript.AgentDevin, "devin-sess-1", "devin-lock")
+	check(800, "", "", "")
+	// No harness in the walk: the variable alone identifies Codex, but not
+	// when Claude's is set as well.
+	d.Proc = nil
+	check(1000, transcript.AgentCodex, "019a0000-0000-7000-8000-0000000000cd", "codex-env")
+	env["CLAUDE_CODE_SESSION_ID"] = "claude-env"
+	check(1000, "", "", "")
+	// The explicit override still wins.
+	env["FLOPWIRE_SESSION_ID"] = "explicit"
+	check(1000, "", "explicit", "env")
+}
+
 // TestDetectLive prints what the detector finds for the process running
 // the test (run it from an agent's shell tool).
 func TestDetectLive(t *testing.T) {
