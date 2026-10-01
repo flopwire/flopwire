@@ -181,6 +181,37 @@ func TestNewSessionDirWithoutSweep(t *testing.T) {
 	t.Logf("picked up in %s", time.Since(start))
 }
 
+// TestSessionCreatedDuringStartup: a session file created after Run's
+// first pass listed its project, but before the watcher was set up, is
+// picked up through events, not left for the next sweep. Found as a flake
+// of TestNewSessionDirWithoutSweep under load: the test wrote its session
+// while Run was still between the pass and the first rewatch.
+func TestSessionCreatedDuringStartup(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sweep = time.Hour
+	f.a = New(f.store, f.cfg)
+	const sid = "0b7e2c1a-0000-4000-8000-0000000000ab"
+	main := filepath.Join(filepath.Dir(f.path(alphaRel)), sid+".jsonl")
+	testHookAfterFirstPass = func() {
+		line := fmt.Sprintf(`{"parentUuid":null,"isSidechain":false,"type":"user","cwd":"/tmp/oracle-alpha","sessionId":"%s","version":"2.1.0","message":{"role":"user","content":"session born during startup"},"uuid":"d7000000-0000-4000-8000-000000000011","timestamp":"2026-09-23T11:00:00.000Z"}`+"\n", sid)
+		if err := os.WriteFile(main, []byte(line), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { testHookAfterFirstPass = nil }()
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.a.Run(runCtx) }()
+	defer func() { cancel(); <-done }()
+	start := time.Now()
+	for len(f.find("session born during startup", false)) != 1 {
+		if time.Since(start) > eventLimit {
+			t.Fatalf("session created during startup not indexed within %s", eventLimit)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestFastLaneIgnoresCompanions: many companion files written at once
 // (hundreds of tool-results after a bulk copy, or a busy workflow) must not
 // crowd a live transcript out of the fast lane's MaxHot budget. Found by the
