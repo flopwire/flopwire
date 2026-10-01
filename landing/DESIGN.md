@@ -27,3 +27,7 @@ At 760px, sections stack. Code wraps where useful; installation commands scroll 
 ## Truth boundaries
 
 Examples are synthetic. Retrieval commands follow the current `flopwire` CLI/MCP schema. Messaging and commit-to-discussion are v0.1 release requirements; the page is a launch preview. Compatibility does not claim every harness has the same messaging support. Do not show performance numbers until measured.
+
+## Full story revision
+
+All primary sections share the page container edges. Constrain prose line length inside the container rather than centering narrower section wrappers. Terminal examples and provenance share a consistent full section width. Session discovery now has a visible section rather than a hero disclosure. Local-first adoption and explicit allow/local/deny policy examples complete the setup story. Performance comparisons remain pending measurement; no numbers are invented.

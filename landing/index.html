@@ -58,8 +58,16 @@
           </article>
         </div>
       </div>
-      <div class="coordination-note"><h2>Tell the agent working on the client.</h2><p>Find the relevant session through the repo and recent work. Send the change with its source attached.</p><details><summary>See how the agent finds its teammate</summary><div class="discovery"><code>flopwire sessions --server --repo acme/app --since 1h</code><pre>7b92d810  sam@cloud-vm  codex  live, 2m ago
-acme/app@client  "Update the pagination client"</pre><p>The session identifies the recipient. The update points back to the API discussion.</p></div></details></div>
+    </section>
+
+    <section class="story-section" id="discovery" aria-labelledby="discovery-heading">
+      <div class="section-heading"><h2 id="discovery-heading">Find the agent working on the client.</h2><p>Start with the repo and recent activity. See who’s working on the other side of the API before sending an update.</p></div>
+      <div class="terminal">
+        <div class="window-chrome"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i><span>Session discovery · example output</span></div>
+        <div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire sessions --server --repo acme/app --since 1h</code></div>
+        <div class="session-list"><div><p class="session-meta"><code>7b92d810</code><span>sam@cloud-vm · codex · live, 2m ago</span></p><h3>Update the pagination client</h3><p><code>acme/app@client</code> · 3 files edited</p><p class="session-last">last: “Updating the next-page request.”</p></div><div class="session-list-secondary"><p class="session-meta"><code>c128f4ab</code><span>lee@laptop · claude · live, 8m ago</span></p><h3>Add billing export</h3><p><code>acme/app@billing</code> · 2 files edited</p><p class="session-last">last: “Checking the CSV columns.”</p></div></div>
+      </div>
+      <p class="feature-footnote">The update goes to Sam’s session, with a reference to the API discussion.</p>
     </section>
 
     <section class="story-section grep-section" id="grep" aria-labelledby="grep-heading">
@@ -95,14 +103,25 @@ flopwire_read({"address":"0b7e2c1a/28672:14", "before":1})</code></pre><p>Config
     </section>
 
     <section class="story-section environment-section" id="compatibility" aria-labelledby="environment-heading">
-      <div class="section-heading"><h2 id="environment-heading">Keep the tools your team uses.</h2><p>Different harnesses, different machines. Search shared work and return to the task in your existing session.</p></div>
+      <div class="section-heading"><h2 id="environment-heading">Start locally. Add your team.</h2><p>Search your own sessions without a server. Connect a team server to find work across teammates, harnesses, and machines.</p></div>
       <div class="environment-row"><div><svg class="environment-icon" aria-hidden="true"><use href="#i-laptop"/></svg><h3>Your laptop</h3><p>Index and search locally.</p></div><span class="environment-wire" aria-hidden="true"></span><div><svg class="environment-icon" aria-hidden="true"><use href="#i-cloud"/></svg><h3>Your team server</h3><p>Share across people and machines.</p></div></div>
       <p class="harness-line">Session history: <strong>Claude Code</strong><span>·</span><strong>Codex</strong><span>·</span><strong>Devin</strong></p>
       <details class="inline-detail"><summary>Integration details</summary><p>Session indexing supports Claude Code, Codex, and Devin. The v0.1 messaging workflow shown here targets Claude Code and Codex CLIs, including CLIs running on your own cloud VMs. Vendor-hosted services need separate integrations.</p><a href="https://github.com/flopwire/flopwire/blob/main/notes/message-bus/README.md">Integration notes ↗</a></details>
     </section>
 
+    <section class="story-section" id="sharing" aria-labelledby="sharing-heading">
+      <div class="section-heading"><h2 id="sharing-heading">Choose what gets shared.</h2><p>Keep personal work off the server. Share the repositories your team works on together.</p></div>
+      <div class="policy-example">
+        <div class="policy-row"><code>allow repo:github.com/acme/*</code><p>Index locally and sync to the team.</p></div>
+        <div class="policy-row"><code>local ~/clients/**</code><p>Search on this machine only.</p></div>
+        <div class="policy-row"><code>deny ~/personal/**</code><p>Do not index or upload.</p></div>
+      </div>
+      <p class="sharing-note">Shared history includes the original transcripts. Organization members can search them; server administrators can access them.</p>
+      <a class="text-link" href="https://github.com/flopwire/flopwire/blob/main/SECURITY.md">Data and access model ↗</a>
+    </section>
+
     <section class="setup story-section" id="get-started" aria-labelledby="setup-heading">
-      <div class="section-heading"><h2 id="setup-heading">Run it with your team.</h2><p>Start with your own sessions. Connect a teammate when you’re ready. Choose which sessions stay local and which are shared.</p></div>
+      <div class="section-heading"><h2 id="setup-heading">Connect your first agent.</h2><p>Install Flopwire, index your sessions, and add its tools to your harness. Open source and self-hosted.</p></div>
       <a class="button button-primary" href="https://github.com/flopwire/flopwire/tree/main#quick-start-a-device">Get started <span aria-hidden="true">↗</span></a>
       <p class="hosted-note" id="hosted">Hosted version coming soon.</p>
       <div class="more-details">
@@ -116,7 +135,7 @@ make build
 
 # In another terminal: expose search over MCP
 ./bin/flopwire mcp</code></pre><p class="terminal-note">Register the MCP command in your harness. Keep the device agent running.</p></div></div>
-      <details class="team-setup"><summary>Connect a second machine or teammate <span aria-hidden="true">+</span></summary><div><p>Deploy the team server, create an invitation, and enroll each device. Run the device agent with sync enabled, and use <code>flopwire mcp --server</code> for team retrieval.</p><a class="text-link" href="https://github.com/flopwire/flopwire/blob/main/docs/two-laptop.md">Two-machine setup guide <svg class="icon"><use href="#i-arrow"/></svg></a></div></details><p class="data-note">Choose which sessions stay local or sync to your team. Shared history includes raw transcripts and is searchable by organization members. <a href="https://github.com/flopwire/flopwire/blob/main/SECURITY.md">Data and access model ↗</a></p></div></details>
+      <details class="team-setup"><summary>Connect a second machine or teammate <span aria-hidden="true">+</span></summary><div><p>Deploy the team server, create an invitation, and enroll each device. Run the device agent with sync enabled, and use <code>flopwire mcp --server</code> for team retrieval.</p><a class="text-link" href="https://github.com/flopwire/flopwire/blob/main/docs/two-laptop.md">Two-machine setup guide <svg class="icon"><use href="#i-arrow"/></svg></a></div></details></div></details>
         <details><summary>Performance &amp; benchmarks</summary><div class="detail-body"><p>Run the repository’s acceptance checks against your transcripts to measure indexing, freshness, and search performance.</p><a href="https://github.com/flopwire/flopwire/blob/main/docs/release-checklist.md">Benchmark method ↗</a></div></details>
       </div>
     </section>
