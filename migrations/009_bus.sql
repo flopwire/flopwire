@@ -92,6 +92,9 @@ CREATE INDEX bus_messages_to_session_idx ON bus_messages (to_session, created_at
   WHERE to_session IS NOT NULL;
 -- A session's sent messages, its hourly send limit and the duplicate check.
 CREATE INDEX bus_messages_from_session_idx ON bus_messages (from_session, created_at);
+-- The per-device and per-person hourly send ceilings.
+CREATE INDEX bus_messages_from_device_idx ON bus_messages (from_device, created_at);
+CREATE INDEX bus_messages_from_user_idx ON bus_messages (from_user, created_at);
 -- The per-thread hourly limit and a thread's messages.
 CREATE INDEX bus_messages_thread_idx ON bus_messages (thread_id, created_at);
 CREATE INDEX bus_messages_reply_to_idx ON bus_messages (reply_to) WHERE reply_to IS NOT NULL;

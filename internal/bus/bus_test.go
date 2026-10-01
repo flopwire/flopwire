@@ -525,6 +525,66 @@ func TestLimits(t *testing.T) {
 		tm.presence()
 		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
 	})
+	// The session limit is keyed on an id the device reports itself, so a
+	// device that invents session ids is held by ceilings per device and
+	// per person.
+	t.Run("device and person per hour", func(t *testing.T) {
+		tm := newTeam(t)
+		var to []busproto.PresenceSession
+		for i := range 20 {
+			to = append(to, live(fmt.Sprintf("a-r%02d-0000", i), "claude", "/Users/alex/code/api", false))
+		}
+		tm.present(tm.alexMac, to...)
+		garyThird := tm.device(tm.gary)
+		sessions := func(c busproto.Caller, tag string, n int) []string {
+			var ps []busproto.PresenceSession
+			var ids []string
+			for i := range n {
+				id := fmt.Sprintf("g-%s%d-%04d", tag, i, i)
+				ps = append(ps, live(id, "claude", "/x/api", true))
+				ids = append(ids, id)
+			}
+			tm.present(c, ps...)
+			return ids
+		}
+		sent := 0
+		// Rotate the sending session every SessionPerHour sends, so the
+		// session limit never refuses.
+		burst := func(c busproto.Caller, ids []string, n int) {
+			t.Helper()
+			for i := range n {
+				tm.mustSend(c, ids[i/busproto.SessionPerHour], to[sent%len(to)].SessionID, fmt.Sprintf("b%d", sent))
+				sent++
+			}
+		}
+		refused := func(c busproto.Caller, from, want string) {
+			t.Helper()
+			_, err := tm.send(c, from, to[0].SessionID, fmt.Sprintf("b%d", sent))
+			var be *busproto.Error
+			if code(err) != want || !errors.As(err, &be) || be.MessageID == "" || tm.state(be.MessageID) != "refused" {
+				t.Fatalf("want %s: %v", want, err)
+			}
+			var reason string
+			if err := tm.pool.QueryRow(context.Background(), `SELECT metadata->>'refuse_reason' FROM audit_events WHERE action='bus.send' AND target_id=$1`, be.MessageID).Scan(&reason); err != nil || reason != want {
+				t.Fatalf("audit refuse_reason %q %v", reason, err)
+			}
+		}
+		mac := sessions(tm.garyMac, "m", busproto.DevicePerHour/busproto.SessionPerHour+1)
+		burst(tm.garyMac, mac, busproto.DevicePerHour)
+		refused(tm.garyMac, mac[len(mac)-1], busproto.CodeDeviceRate)
+		// Another device of the same person is not limited by the first.
+		lin := sessions(tm.garyLinux, "l", busproto.DevicePerHour/busproto.SessionPerHour)
+		third := sessions(garyThird, "t", busproto.DevicePerHour/busproto.SessionPerHour)
+		burst(tm.garyLinux, lin, busproto.DevicePerHour)
+		burst(garyThird, third, busproto.UserPerHour-2*busproto.DevicePerHour)
+		refused(garyThird, third[len(third)-1], busproto.CodeUserRate)
+		// Another person is not limited.
+		tm.mustSend(tm.alexMac, to[0].SessionID, "g-l0-0000", "alex is free")
+		tm.advance(time.Hour + time.Second)
+		sessions(tm.garyMac, "m", 1)
+		tm.present(tm.alexMac, to...)
+		tm.mustSend(tm.garyMac, "g-m0-0000", to[0].SessionID, "next hour")
+	})
 	t.Run("duplicate", func(t *testing.T) {
 		tm := newTeam(t)
 		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "same")
@@ -897,6 +957,52 @@ func TestExpiredHeldMessageStaysHidden(t *testing.T) {
 	}
 }
 
+// The cap is checked on the body as sent, before the redactor runs. That
+// is safe because masks keep the original length (internal/redact): the
+// stored body and refs are exactly as long as the ones measured, even
+// where a secret is shorter than its marker, and a body over the cap is
+// refused before anything is stored or audited.
+func TestRedactedBodyStaysWithinTheCap(t *testing.T) {
+	tm := newTeam(t)
+	short := "Xk9#mQ2z" // shorter than any marker: masked with '*'
+	tok := "gh" + "p_" + strings.Repeat("aB3dE5", 6)
+	body := "é日 password=" + short + " use " + tok + " 😀 "
+	body += strings.Repeat("ü", (busproto.MaxBodyBytes-len(body))/2)
+	body += strings.Repeat("x", busproto.MaxBodyBytes-len(body))
+	ref := "fw://s/1 token=" + tok + " "
+	ref += strings.Repeat("r", busproto.MaxRefBytes-len(ref))
+	if len(body) != busproto.MaxBodyBytes || len(ref) != busproto.MaxRefBytes {
+		t.Fatalf("fixture: body %d ref %d", len(body), len(ref))
+	}
+	out := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", body, func(r *busproto.SendRequest) { r.Refs = []string{ref} })
+	if out.Redactions["assignment"] != 1 || out.Redactions["github-token"] != 2 {
+		t.Fatalf("redactions %v", out.Redactions)
+	}
+	var stored string
+	var refs []string
+	var n, refN int
+	if err := tm.pool.QueryRow(context.Background(), `SELECT body,octet_length(body),refs,octet_length(refs[1]) FROM bus_messages WHERE id=$1`, out.ID).Scan(&stored, &n, &refs, &refN); err != nil {
+		t.Fatal(err)
+	}
+	if n != busproto.MaxBodyBytes || strings.Contains(stored, short) || strings.Contains(stored, tok) {
+		t.Fatalf("stored body: %d bytes, cap %d, %q", n, busproto.MaxBodyBytes, stored[:80])
+	}
+	if refN != busproto.MaxRefBytes || strings.Contains(refs[0], tok) {
+		t.Fatalf("stored ref: %d bytes, cap %d", refN, busproto.MaxRefBytes)
+	}
+	before, audits := 0, tm.auditCount("bus.send")
+	if err := tm.pool.QueryRow(context.Background(), `SELECT count(*) FROM bus_messages`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", body+tok); code(err) != busproto.CodeBadRequest {
+		t.Fatalf("over cap: %v", err)
+	}
+	var after int
+	if err := tm.pool.QueryRow(context.Background(), `SELECT count(*) FROM bus_messages`).Scan(&after); err != nil || after != before || tm.auditCount("bus.send") != audits {
+		t.Fatalf("over-cap send stored or audited: messages %d -> %d, audits %d -> %d", before, after, audits, tm.auditCount("bus.send"))
+	}
+}
+
 // Refs pass the server redactor as the body does.
 func TestRefsAreRedacted(t *testing.T) {
 	tm := newTeam(t)
@@ -924,5 +1030,19 @@ func TestHiddenLiveSessionIsNotAddressable(t *testing.T) {
 	// The hidden session is not a candidate: a-ap resolves to the other one.
 	if out, err := tm.send(tm.garyMac, "g-api-1111", "a-ap", "hi"); err != nil || out.To.Session != "a-apx-8888" {
 		t.Fatalf("prefix with a hidden candidate: %+v %v", out, err)
+	}
+}
+
+// A body the redactor masks next to multibyte text is stored: the mask
+// leaves valid UTF-8, so the insert does not fail.
+func TestRedactedMultibyteBodyIsStored(t *testing.T) {
+	tm := newTeam(t)
+	out := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", `try password="Xk9#mQ2z\u"é日 now`)
+	var stored string
+	if err := tm.pool.QueryRow(context.Background(), `SELECT body FROM bus_messages WHERE id=$1`, out.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, "Xk9#mQ2z") || !strings.HasSuffix(stored, " now") {
+		t.Fatalf("stored %q", stored)
 	}
 }
