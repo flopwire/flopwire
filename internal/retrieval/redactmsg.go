@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -41,6 +42,10 @@ type redactTarget struct {
 	persisted, native            string
 	enrichment                   map[string]any
 	sha                          []byte
+	// user owns the row's conversation; firstSeen is when the server
+	// first stored the record (messages.first_seen_at).
+	user      string
+	firstSeen time.Time
 }
 
 // RedactMessage masks the message an address names (lines from..to of
@@ -122,6 +127,9 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 	}
 	spans := map[srcGen][]redact.Span{}
 	lines := map[[32]byte]lineFix{}
+	// ownFirst is, per redacted line, the earliest time the caller's own
+	// rows stored it (first uploader wins, below).
+	ownFirst := map[[32]byte]time.Time{}
 	newText := map[string]string{}
 	process := func(t redactTarget) error {
 		masked := t.text
@@ -145,6 +153,11 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 				sp = append(sp, priorMasks.MatchBytes(rec)...)
 			}
 			sum := redact.LineSum(rec)
+			if t.user == who.UserID {
+				if first, ok := ownFirst[sum]; !ok || t.firstSeen.Before(first) {
+					ownFirst[sum] = t.firstSeen
+				}
+			}
 			line := lines[sum]
 			if line.raw == nil {
 				line.raw = bytes.Clone(rec)
@@ -210,16 +223,33 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 	for _, t := range targets {
 		isTarget[t.id] = true
 	}
+	//
+	// First uploader wins: on the owner route, another user's byte copy is
+	// a target only when the caller's own rows stored every line it holds
+	// strictly before it did (messages.first_seen_at, the server's clock
+	// when the row was first inserted). Otherwise a member could upload a
+	// copy of a teammate's record and redact it, rewriting the teammate's
+	// rows and archive. Such copies are skipped and reported; --admin
+	// redacts them. The caller's own copies (other devices) always count.
 	var copyIDs []string
+	type match struct {
+		c    redactTarget
+		sums [][32]byte
+	}
+	var others []match
 	for _, c := range candidates {
 		if isTarget[c.id] {
 			continue
 		}
-		same, err := s.holdsLine(ctx, c, lines)
+		sums, err := s.heldLines(ctx, c, lines)
 		if err != nil {
 			return res, err
 		}
-		if !same {
+		if len(sums) == 0 {
+			continue
+		}
+		if !who.Admin && c.user != who.UserID {
+			others = append(others, match{c, sums})
 			continue
 		}
 		if err := process(c); err != nil {
@@ -227,6 +257,32 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		}
 		copyIDs = append(copyIDs, c.id)
 		targets = append(targets, c)
+	}
+	skipped := map[string]*format.SkippedCopies{}
+	for _, m := range others {
+		first := true
+		for _, sum := range m.sums {
+			if own, ok := ownFirst[sum]; !ok || !own.Before(m.c.firstSeen) {
+				first = false
+			}
+		}
+		if !first {
+			sk := skipped[m.c.sourceID]
+			if sk == nil {
+				sk = &format.SkippedCopies{SourceID: m.c.sourceID}
+				skipped[m.c.sourceID] = sk
+			}
+			sk.Messages++
+			continue
+		}
+		if err := process(m.c); err != nil {
+			return res, err
+		}
+		copyIDs = append(copyIDs, m.c.id)
+		targets = append(targets, m.c)
+	}
+	if err := s.describeSkipped(ctx, skipped, &res); err != nil {
+		return res, err
 	}
 	slices.SortFunc(targets, func(a, b redactTarget) int { return strings.Compare(a.id, b.id) })
 	if len(newText) == 0 {
@@ -419,7 +475,8 @@ type querier interface {
 }
 
 const targetCols = `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
-			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text,m.content_sha
+			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text,m.content_sha,
+			c.user_id::text,m.first_seen_at
 		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id`
 
 // redactTargetsSQL selects a redaction's targets: the row ($1), its other
@@ -493,28 +550,47 @@ func byteCopyCandidates(ctx context.Context, q querier, k byteCopyKeys) ([]redac
 	return scanTargets(rows)
 }
 
-// holdsLine reports whether row c was parsed from one of lines: its
-// record (or, without a byte range, any line of its generation) has one
-// of their hashes.
-func (s *Store) holdsLine(ctx context.Context, c redactTarget, lines map[[32]byte]lineFix) (bool, error) {
+// heldLines returns the hashes among lines that row c was parsed from:
+// its record's, or without a byte range, those of any line of its
+// generation.
+func (s *Store) heldLines(ctx context.Context, c redactTarget, lines map[[32]byte]lineFix) ([][32]byte, error) {
 	if c.sourceID == "" {
-		return false, nil
+		return nil, nil
 	}
 	if c.off == nil || c.n == nil || *c.n <= 0 {
-		found := false
+		var found [][32]byte
 		err := s.eachLine(ctx, c.sourceID, *c.gen, func(_ int64, line []byte) {
-			if _, ok := lines[redact.LineSum(line)]; ok {
-				found = true
+			if sum := redact.LineSum(line); !slices.Contains(found, sum) {
+				if _, ok := lines[sum]; ok {
+					found = append(found, sum)
+				}
 			}
 		})
 		return found, err
 	}
 	rec, err := s.archived(ctx, c.sourceID, *c.gen, *c.off, *c.n)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	_, ok := lines[redact.LineSum(rec)]
-	return ok, nil
+	if sum := redact.LineSum(rec); lines[sum].raw != nil {
+		return [][32]byte{sum}, nil
+	}
+	return nil, nil
+}
+
+// describeSkipped fills res.Skipped with the skipped copies' owners and
+// devices, ordered by source: names only, never text.
+func (s *Store) describeSkipped(ctx context.Context, skipped map[string]*format.SkippedCopies, res *format.RedactResult) error {
+	ids := slices.Sorted(maps.Keys(skipped))
+	for _, id := range ids {
+		sk := skipped[id]
+		if err := s.Pool.QueryRow(ctx, `SELECT u.email,d.name FROM sources src JOIN devices d ON d.id=src.device_id JOIN users u ON u.id=d.user_id
+			WHERE src.id=$1`, id).Scan(&sk.User, &sk.Device); err != nil {
+			return err
+		}
+		res.Skipped = append(res.Skipped, *sk)
+	}
+	return nil
 }
 
 func scanTargets(rows pgx.Rows) ([]redactTarget, error) {
@@ -523,7 +599,7 @@ func scanTargets(rows pgx.Rows) ([]redactTarget, error) {
 	for rows.Next() {
 		var t redactTarget
 		var gen int64
-		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv, &t.sha); err != nil {
+		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv, &t.sha, &t.user, &t.firstSeen); err != nil {
 			return nil, err
 		}
 		t.gen = &gen

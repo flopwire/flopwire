@@ -647,7 +647,9 @@ func (s *sink) update(b *pgx.Batch, id string, m *transcript.Message, search str
 		WHERE id=$1`, id, s.src.id, s.src.generation, m.OnActivePath, errPtr(m), enrichment, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen),
 		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt, m.Parser, redact.RulesVersion, m.Kind.String(), nullStr(clean(m.Role)), m.Ordinal, nullStr(clean(m.ToolCallID)), nullStr(locator(m)))
 	if withText {
-		b.Queue(`UPDATE messages SET text=$2,text_len=$3,content_sha=$4 WHERE id=$1`, id, search, m.FullLen, m.ContentSHA[:])
+		// New text is a new record for first_seen_at (a redaction's first
+		// uploader rule): the row stores it from now.
+		b.Queue(`UPDATE messages SET text=$2,text_len=$3,content_sha=$4,first_seen_at=now() WHERE id=$1`, id, search, m.FullLen, m.ContentSHA[:])
 	}
 }
 

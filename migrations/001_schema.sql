@@ -315,6 +315,11 @@ CREATE TABLE messages (
   byte_len bigint,
   locator text,
   parser text NOT NULL,
+  -- When the server stored this row's current text (server clock: set on
+  -- insert and on every text change, never from the device). A message
+  -- redaction compares it to decide who uploaded a byte-identical record
+  -- first.
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
   tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, left(text, 200000))) STORED
 ) WITH (toast_tuple_target = 512);
 ALTER TABLE messages ALTER COLUMN text SET COMPRESSION lz4;

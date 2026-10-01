@@ -696,4 +696,15 @@ type RedactResult struct {
 	Tails     int    `json:"tails"`
 	Fallbacks int    `json:"fallbacks,omitempty"`
 	JobID     string `json:"job_id,omitempty"`
+	// Skipped lists other users' byte-identical copies left unredacted:
+	// they stored the record first, so only an admin may redact them.
+	Skipped []SkippedCopies `json:"skipped,omitempty"`
+}
+
+// SkippedCopies are the rows of one source a redaction left out.
+type SkippedCopies struct {
+	SourceID string `json:"source_id"`
+	User     string `json:"user"`
+	Device   string `json:"device"`
+	Messages int    `json:"messages"`
 }

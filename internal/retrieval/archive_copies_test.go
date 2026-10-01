@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/flopwire/flopwire/internal/auth"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/ingest"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -284,4 +286,183 @@ func TestAllCopiesByteCopyOfOtherCopy(t *testing.T) {
 	}
 	s.drainRepairs(s.queue)
 	s.requireNoSecretAtRest("BLUEFALCON")
+}
+
+// sourceHas reports whether any stored generation of the source at path
+// holds needle.
+func (s *server) sourceHas(path, needle string) bool {
+	s.t.Helper()
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx, `SELECT g.source_id::text,g.generation FROM generations g JOIN sources src ON src.id=g.source_id WHERE src.path=$1`, path)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	type sg struct {
+		id  string
+		gen int64
+	}
+	var all []sg
+	for rows.Next() {
+		var x sg
+		if err := rows.Scan(&x.id, &x.gen); err != nil {
+			s.t.Fatal(err)
+		}
+		all = append(all, x)
+	}
+	rows.Close()
+	if len(all) == 0 {
+		s.t.Fatalf("no generation for %s", path)
+	}
+	for _, x := range all {
+		g, err := ingest.LoadGeneration(ctx, s.pool, x.id, x.gen)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		r := ingest.NewReader(ctx, s.objects, g)
+		b, err := io.ReadAll(io.NewSectionReader(r, 0, r.Size()))
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		if bytes.Contains(b, []byte(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+// rowsAt counts the rows of the source at path that hold needle.
+func (s *server) rowsAt(path, needle string) int {
+	return s.count(`SELECT count(*) FROM messages m JOIN sources src ON src.id=m.source_id WHERE src.path=$1 AND strpos(m.text,$2)>0`, path, needle)
+}
+
+// First uploader wins. Bob obtains the bytes of Gary's session (a raw read
+// would do), uploads them after Gary did, and redacts his own row. The catalog masks raw reads of Gary's identical record as before,
+// but Gary's rows and archive are not rewritten: Gary stored the record
+// first. The result names Gary's source, and --admin can redact it.
+func TestRedactForgedCopyLeavesFirstUploader(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, _, _ := s.writeRedactFixtures()
+	if err := s.sy.Sync(ctx, specs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := s.member("bob@example.test")
+	const forged = "/w/bob/forged.jsonl"
+	s.rawUploadAs(bob, syncproto.Source{Path: forged, FileID: "copy:forged", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: specs[0].Parser, SessionKey: specs[0].SessionKey}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var bobRow string
+	if err := s.pool.QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN sources src ON src.id=m.source_id
+		WHERE src.path=$1 AND strpos(m.text,'BLUEFALCON')>0 AND NOT m.superseded`, forged).Scan(&bobRow); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.redact(bob, "/v1/redactions", format.RedactRequest{Address: bobRow + ":2-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.drainRepairs(s.queue)
+	s.purge()
+	if n := s.rowsAt(specs[0].Path, "BLUEFALCON"); n != 1 {
+		t.Errorf("Gary's rows holding the line: %d, want 1 (untouched)", n)
+	}
+	if !s.sourceHas(specs[0].Path, "BLUEFALCON") {
+		t.Error("Gary's archive was rewritten by Bob's redaction")
+	}
+	if s.rowsAt(forged, "BLUEFALCON") != 0 || s.sourceHas(forged, "BLUEFALCON") {
+		t.Error("Bob's own copy still holds the line")
+	}
+	if res.Messages != 1 || len(res.Skipped) != 1 || res.Skipped[0].User != "gary@example.test" || res.Skipped[0].Messages != 1 || res.Skipped[0].Device != "laptop-a" {
+		t.Errorf("result %+v, want Bob's row redacted and Gary's source listed", res)
+	}
+
+	// An admin may still redact Gary's copy.
+	if _, err := s.redact(s.admin("root@example.test"), "/v1/admin/redactions", format.RedactRequest{Address: s.hiddenMessageAt(specs[0].Path) + ":2-2"}); err != nil {
+		t.Fatal(err)
+	}
+	s.drainRepairs(s.queue)
+	s.requireNoSecretAtRest("BLUEFALCON")
+}
+
+// A teammate who archived a copy of Gary's session after Gary did does not
+// keep the line when Gary redacts: Gary uploaded it first.
+func TestRedactTeammateLaterCopy(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, _, _ := s.writeRedactFixtures()
+	if err := s.sy.Sync(ctx, specs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.rawUploadAs(s.member("bob@example.test"), syncproto.Source{Path: "/w/bob/copy.jsonl", FileID: "copy:bob", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: specs[0].Parser, SessionKey: specs[0].SessionKey}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessageAt(specs[0].Path) + ":2-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Messages != 2 || len(res.Skipped) != 0 {
+		t.Fatalf("result %+v, want Gary's row and Bob's later copy", res)
+	}
+	s.drainRepairs(s.queue)
+	s.requireNoSecretAtRest("BLUEFALCON")
+}
+
+// The caller's own copies always count, even one their other device
+// uploaded first.
+func TestRedactOwnEarlierDeviceCopy(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, _, _ := s.writeRedactFixtures()
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.rawUploadAs(s.device("laptop-b"), syncproto.Source{Path: "/w/laptop-b.jsonl", FileID: "copy:b", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: specs[0].Parser, SessionKey: specs[0].SessionKey}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sy.Sync(ctx, specs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessageAt(specs[0].Path) + ":2-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Messages != 2 || len(res.Skipped) != 0 {
+		t.Fatalf("result %+v, want both of Gary's devices", res)
+	}
+	s.drainRepairs(s.queue)
+	s.requireNoSecretAtRest("BLUEFALCON")
+}
+
+// hiddenMessageAt is the live row of the source at path holding the codename.
+func (s *server) hiddenMessageAt(path string) string {
+	s.t.Helper()
+	var id string
+	if err := s.pool.QueryRow(context.Background(), `SELECT m.id::text FROM messages m JOIN sources src ON src.id=m.source_id
+		WHERE src.path=$1 AND strpos(m.text,'BLUEFALCON')>0 AND NOT m.superseded`, path).Scan(&id); err != nil {
+		s.t.Fatal(err)
+	}
+	return id
 }

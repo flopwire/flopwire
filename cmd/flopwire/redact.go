@@ -26,9 +26,11 @@ func redactCmd(ctx context.Context, args []string) error {
 Hide a message (or lines L1-L2 of its text, as flopwire read numbers them)
 everywhere Flopwire keeps it: server rows, the archive, raw reads, and this
 device's local index. Your own messages; with --admin, anyone's. On the
-server, every byte-identical copy of the record (the same session archived
-from another device) is redacted too; --all-copies adds copies with the
-same text (subagents, forks, other agents).
+server, byte-identical copies of the record are redacted too: yours (the
+same session archived from another device) always, another user's when
+you uploaded the record first (others are listed; --admin redacts them).
+--all-copies adds copies with the same text (subagents, forks, other
+agents).
 
   flopwire redact 3f2a9c1e/42          the whole message
   flopwire redact 3f2a9c1e/42:7-9      lines 7 to 9
@@ -74,6 +76,7 @@ Flags:`)
 				fmt.Printf("; old chunks purge in job %s", res.JobID)
 			}
 			fmt.Println()
+			printSkipped(res.Skipped)
 		case *admin:
 			return errors.New("--admin needs a server: run flopwire login")
 		default:
@@ -119,4 +122,21 @@ func redactLocal(ctx context.Context, address string, all bool) (int, error) {
 	}
 	defer s.Close()
 	return agent.RedactLocal(ctx, s, address, all)
+}
+
+// printSkipped lists other users' byte-identical copies a redaction left
+// alone because they uploaded the record first: who and where, no text.
+func printSkipped(skipped []format.SkippedCopies) {
+	if len(skipped) == 0 {
+		return
+	}
+	n := 0
+	for _, sk := range skipped {
+		n += sk.Messages
+	}
+	fmt.Printf("server: %d copies in %d sources of other users not redacted (they uploaded the record first):\n", n, len(skipped))
+	for _, sk := range skipped {
+		fmt.Printf("  %s on %s: %d messages (source %s)\n", sk.User, sk.Device, sk.Messages, sk.SourceID)
+	}
+	fmt.Println("  An admin can redact them with flopwire redact --admin.")
 }
