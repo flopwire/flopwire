@@ -103,8 +103,9 @@ func (t *tombstones) maskTitles(convs []*transcript.Conversation) {
 	}
 }
 
-// mask applies the tombstones to messages about to be written.
-func (t *tombstones) mask(msgs []*transcript.Message) {
+// mask applies the tombstones to messages about to be written, preparing
+// again (prep[i]) each one it changes.
+func (t *tombstones) mask(msgs []*transcript.Message, prep []prepared) {
 	if t == nil {
 		return
 	}
@@ -113,11 +114,16 @@ func (t *tombstones) mask(msgs []*transcript.Message) {
 	if len(t.bySHA) == 0 {
 		return
 	}
-	for _, m := range msgs {
+	for i, m := range msgs {
+		text := m.Text
 		if ts, ok := t.bySHA[m.ContentSHA]; ok {
-			m.Text, _ = redact.MaskText(m.Text, ts.From, ts.To)
+			text, _ = redact.MaskText(m.Text, ts.From, ts.To)
 		} else if _, ok := t.byNative[m.SessionID+"\x00"+m.NativeID]; ok && m.NativeID != "" {
-			m.Text, _ = redact.MaskText(m.Text, 0, 0)
+			text, _ = redact.MaskText(m.Text, 0, 0)
+		}
+		if text != m.Text {
+			m.Text = text
+			prep[i] = prepared{z: compress(text), text: text}
 		}
 	}
 }
@@ -233,7 +239,12 @@ func (s *Store) RedactMessage(ctx context.Context, r LocalRedaction) (int, error
 				added = append(added, Tombstone{SHA: k, Session: session, Native: native, From: from, To: to})
 			}
 		}
-		return nil
+		// Record the tombstones in this request, on the writer: a batch
+		// the writer runs next masks its rows with them (ApplyBatch), and
+		// a batch it ran before wrote rows this request just masked. A
+		// tombstone whose transaction is lost after this (a failed deferred
+		// commit) still masks later writes, which errs toward hiding.
+		return s.recordTombstones(added)
 	})
 	if err != nil {
 		return 0, err
@@ -241,23 +252,38 @@ func (s *Store) RedactMessage(ctx context.Context, r LocalRedaction) (int, error
 	if n == 0 {
 		return 0, fmt.Errorf("localindex: nothing to redact")
 	}
-	// Commit before recording (a DeferCommit store batches transactions).
-	if err := s.Sync(ctx); err != nil {
-		return 0, err
+	return n, s.Sync(ctx)
+}
+
+// recordTombstones appends tombstones to the sidecar, then applies them to
+// later writes. It runs on the writer.
+func (s *Store) recordTombstones(added []Tombstone) error {
+	if len(added) == 0 {
+		return nil
 	}
 	f, err := os.OpenFile(s.tombstonePath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return n, err
+		return err
 	}
-	defer f.Close()
+	var buf []byte
 	for _, ts := range added {
 		b, _ := json.Marshal(ts)
-		if _, err := f.Write(append(b, '\n')); err != nil {
-			return n, err
-		}
+		buf = append(append(buf, b...), '\n')
+	}
+	_, err = f.Write(buf)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	for _, ts := range added {
 		s.tombs.add(ts)
 	}
-	return n, f.Sync()
+	return nil
 }
 
 // uniqueSession resolves a session id or unique prefix.

@@ -38,6 +38,10 @@ type Sink struct {
 
 var _ transcript.SessionSuperseder = (*Sink)(nil)
 
+// testHookSinkPrepared runs in Flush after the Sink prepared its rows and
+// before it queues them (tests interleave a redaction there).
+var testHookSinkPrepared func()
+
 // NewSink returns a Sink writing rows of source sourceID stamped with
 // generation gen.
 func (s *Store) NewSink(ctx context.Context, sourceID, gen int64) *Sink {
@@ -81,11 +85,15 @@ func (k *Sink) Flush(wm *transcript.Watermark, cursorState []byte) error {
 	if len(k.convs) == 0 && len(k.msgs) == 0 && wm == nil {
 		return nil
 	}
-	k.Store.tombs.mask(k.msgs) // messages the owner redacted (notes/redaction.md)
-	k.Store.tombs.maskTitles(k.convs)
+	// The owner's redactions (notes/redaction.md) are applied by
+	// ApplyBatch on the writer, not here: a redaction that commits between
+	// this point and the write would otherwise miss these rows.
 	b := Batch{SourceID: k.SourceID, Generation: k.Generation,
 		Conversations: k.convs, Messages: k.msgs, Watermark: wm, CursorState: cursorState,
 		prep: prepareAll(k.msgs)}
+	if testHookSinkPrepared != nil {
+		testHookSinkPrepared()
+	}
 	if wm != nil {
 		b.SupersedeAbsent, b.RetireSources = k.SupersedeAbsent, k.RetireSources
 		b.Extraction, b.AppliedParser = k.Extraction, k.AppliedParser
