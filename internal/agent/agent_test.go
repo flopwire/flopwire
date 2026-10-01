@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -476,6 +477,42 @@ func TestHookFlushIndexesAtOnce(t *testing.T) {
 	}
 	if _, err := Call(ctx, sock, Request{Op: "flush", Path: "/nonexistent.jsonl"}); err == nil {
 		t.Error("flush of an unknown path should fail")
+	}
+}
+
+// A hook flush that arrives while the agent starts, before its first
+// discovery pass, waits for that pass rather than failing (a Codex notify
+// carries only the thread id) or merging a partial pass that makes load
+// skip the stored gates.
+func TestHookFlushBeforeFirstDiscoveryWaits(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sweep, f.cfg.FastLane = time.Hour, time.Hour
+	f.a = New(f.store, f.cfg)
+	const codexThread = "019a0000-0000-7000-8000-0000000000a2"
+
+	early, stop := context.WithCancel(ctx)
+	stop()
+	for _, req := range []Request{{Session: codexThread}, {Path: f.path(alphaRel)}} {
+		if _, err := f.a.FlushPath(early, req.Path, req.Session); !errors.Is(err, context.Canceled) {
+			t.Errorf("flush %+v before discovery: %v, want it to wait", req, err)
+		}
+	}
+	f.a.mu.Lock()
+	n := len(f.a.targets)
+	f.a.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("flush before discovery tracked %d files; load would skip the stored gates", n)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.a.Run(runCtx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	if p, err := f.a.FlushPath(ctx, "", codexThread); err != nil || p != f.path(codexActive) {
+		t.Errorf("flush by session at start: %q %v", p, err)
 	}
 }
 

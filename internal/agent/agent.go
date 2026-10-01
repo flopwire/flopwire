@@ -185,6 +185,11 @@ type Agent struct {
 	notified   map[string]bool // sources handed to sync since start
 	devin      devinState
 	ticks      int // fast-lane ticks
+	// discovered is closed once the first full discovery pass merged (or
+	// Run gave up before one): a hook flush waits for it, since before it
+	// the tracked set holds only placeholders and lookups by session fail.
+	discovered     chan struct{}
+	discoveredOnce sync.Once
 
 	// Path rules (policy.go, placement.go). pol, devinModes, places and
 	// folders are guarded by mu; polMu serializes loading and applying
@@ -229,7 +234,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		claude:  &claude.Parser{Lines: transcript.LineReaderOptions{Budget: budget}},
 		codex:   &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
 		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
-		wake: make(chan struct{}, 1), pol: &policyView{},
+		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{}}
 	a.idle = sync.NewCond(&a.mu)
 	if cfg.DevinDB != "-" {
@@ -294,6 +299,7 @@ func (a *Agent) Once(ctx context.Context) error {
 // Run indexes until ctx ends: an initial pass, then sweeps, the fast lane
 // and directory events. It returns ctx.Err() on shutdown.
 func (a *Agent) Run(ctx context.Context) error {
+	defer a.markDiscovered() // a flush never waits on a Run that ended
 	if err := a.load(ctx); err != nil {
 		return err
 	}
@@ -315,6 +321,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.sweep(ctx); err != nil {
 		a.log.Error("agent: sweep", "err", err)
 	}
+	a.markDiscovered() // also when the pass failed: flushes fall back to discoverDir
 	a.rewatch(w)
 	recovered := make(chan struct{}, 1)
 	a.maybeRecover(ctx, recovered, false)
@@ -484,7 +491,15 @@ func (a *Agent) merge(ctx context.Context, f *found, full bool) int {
 			n++
 		}
 	}
+	if full {
+		a.markDiscovered()
+	}
 	return n
+}
+
+// markDiscovered releases flushes waiting for the first discovery pass.
+func (a *Agent) markDiscovered() {
+	a.discoveredOnce.Do(func() { close(a.discovered) })
 }
 
 // gate stats t and queues it when its tuple moved or is racy. urgent puts
@@ -782,7 +797,16 @@ func (a *Agent) mergeUrgent(ctx context.Context, f *found) {
 // FlushPath indexes the source at path (or the transcript whose session
 // key is session) now, then asks sync to upload it without the debounce.
 // Hooks reach it through the control socket.
+//
+// A flush that arrives before the first discovery pass (a hook firing
+// while the agent starts) waits for it: until then a session id resolves
+// to nothing, and a partial merge would make load skip the stored gates.
 func (a *Agent) FlushPath(ctx context.Context, path, session string) (string, error) {
+	select {
+	case <-a.discovered:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 	t := a.lookup(path, session)
 	if t == nil && path != "" {
 		// Unknown yet: a file created since the last pass.
