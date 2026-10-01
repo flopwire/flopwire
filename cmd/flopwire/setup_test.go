@@ -701,7 +701,7 @@ func TestSetupScopeAndFlags(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	for _, args := range [][]string{{"--check", "--remove"}, {"--scope", "global"}, {"extra"}, {"--source", t.TempDir()}} {
+	for _, args := range [][]string{{"--check", "--remove"}, {"--scope", "global"}, {"extra"}, {"--source", t.TempDir()}, {"--source", "--claudeai"}, {"--source=-x"}} {
 		if err := setupCmd(context.Background(), args, &out, &out); err == nil || errors.Is(err, errReported) {
 			t.Errorf("setup %q: want a usage error, got %v", args, err)
 		}

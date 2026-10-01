@@ -210,6 +210,11 @@ func newSetupEnv(source, scope string) (*setupEnv, error) {
 	if err != nil {
 		return nil, err
 	}
+	if strings.HasPrefix(source, "-") {
+		// The source is one argument of `claude plugin marketplace add`;
+		// a leading dash would turn it into an option.
+		return nil, fmt.Errorf("setup: plugin source %q starts with -: give owner/repo, a git URL or a directory", source)
+	}
 	home, _ := os.UserHomeDir()
 	if isLocalSource(source) {
 		p := source
