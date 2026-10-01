@@ -160,9 +160,11 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	self, known := c.caller(ctx)
 	q.Session = self.SessionID
 	resp, err := c.call(ctx, agent.Request{Op: "peers", Peers: &q})
-	if err != nil && known && retryable(err) {
-		// The agent has not seen this session yet: ask without naming it
-		// (nothing about it leaves the device) and leave it out here.
+	var be *busproto.Error
+	if err != nil && known && errors.As(err, &be) && be.Code == busproto.CodeSessionNotOnDevice {
+		// The agent has not seen this session yet, or a path rule keeps it
+		// off the server: ask without naming it (nothing about it leaves
+		// the device) and leave it out here.
 		q.Session = ""
 		resp, err = c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	}

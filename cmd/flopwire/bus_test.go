@@ -506,3 +506,20 @@ func TestMCPPeersAndInbox(t *testing.T) {
 		t.Fatalf("unknown tool: %v", err)
 	}
 }
+
+// A caller the agent will not name to the server (a path rule, or not
+// seen yet) still gets peers: the agent is asked without the session, and
+// the caller is left out here.
+func TestPeersWithoutNamingAWithheldCaller(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Peers.Session != "" {
+			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session x is kept off the server by a path rule; it cannot use messaging"})
+		}
+		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: selfID, Agent: "claude", User: "g@x.test", Own: true}, {Session: peerID, Agent: "codex", User: "g@x.test", Own: true}}}}
+	})
+	out, err := cli(t, fa, "", "peers")
+	if err != nil || strings.Contains(out, "0b7e2c1a") || !strings.HasPrefix(out, "4c19e0d2  g  codex") {
+		t.Fatalf("peers: %q %v", out, err)
+	}
+}
