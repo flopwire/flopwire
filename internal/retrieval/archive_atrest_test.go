@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -332,4 +333,110 @@ func TestAtRestTargetMovedToNewGeneration(t *testing.T) {
 	}
 	s.drainRepairs(s.queue)
 	s.requireNoSecretAtRest("BLUEFALCON")
+}
+
+// A chunk is content-addressed, so another source can reference the very
+// object that holds the redacted line. Here a second device's copy, parsed
+// before the redaction and not a target (no --all-copies), shares the
+// target's chunks. Rewriting the target's references must not leave the
+// shared object (or the copy's reference to it) holding the line.
+func TestAtRestSharedChunkWithNonTarget(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, dv, export := s.writeRedactFixtures()
+	s.syncRedact(s.sy, specs, dv, export)
+	data, err := os.ReadFile(specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cuts []int
+	rows, err := s.pool.Query(ctx, `SELECT m.byte_offset FROM manifest_entries m JOIN sources src ON src.id=m.source_id
+		WHERE src.path=$1 AND m.generation=(SELECT max(generation) FROM generations WHERE source_id=src.id) AND m.ordinal>0 ORDER BY m.ordinal`, specs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var off int64
+		if err := rows.Scan(&off); err != nil {
+			t.Fatal(err)
+		}
+		cuts = append(cuts, int(off))
+	}
+	rows.Close()
+	var chunked int64
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(c.size),0) FROM manifest_entries m JOIN chunks c ON c.hash=m.chunk_hash JOIN sources src ON src.id=m.source_id WHERE src.path=$1`, specs[0].Path).Scan(&chunked); err != nil {
+		t.Fatal(err)
+	}
+	if int(chunked) < bytes.Index(data, []byte("BLUEFALCON"))+10 {
+		t.Skip("the secret is in a provisional tail, not a shared chunk")
+	}
+	s.rawUpload(syncproto.Source{Path: "/w/other-laptop.jsonl", FileID: "copy:1", Agent: "claude", StorageKind: "jsonl_append", Parser: specs[0].Parser}, 0, data[:chunked], cuts...)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.count(`SELECT count(DISTINCT m.chunk_hash) FROM manifest_entries m JOIN sources a ON a.id=m.source_id
+		WHERE a.path='/w/other-laptop.jsonl' AND EXISTS(SELECT 1 FROM manifest_entries o JOIN sources b ON b.id=o.source_id WHERE b.path=$1 AND o.chunk_hash=m.chunk_hash)`, specs[0].Path); n == 0 {
+		t.Fatal("the copy shares no chunk with the target")
+	}
+	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessage() + ":2-2"}); err != nil {
+		t.Fatal(err)
+	}
+	s.drainRepairs(s.queue)
+	s.purge()
+	// Other fixture sources hold their own non-target copies (history):
+	// check the two sources that share chunks, and every object they or
+	// any redirect could name.
+	gens, err := s.pool.Query(ctx, `SELECT g.source_id::text,g.generation FROM generations g JOIN sources src ON src.id=g.source_id WHERE src.path=ANY($1)`, []string{specs[0].Path, "/w/other-laptop.jsonl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type sg struct {
+		id  string
+		gen int64
+	}
+	var all []sg
+	for gens.Next() {
+		var x sg
+		if err := gens.Scan(&x.id, &x.gen); err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, x)
+	}
+	gens.Close()
+	for _, x := range all {
+		g, err := ingest.LoadGeneration(ctx, s.pool, x.id, x.gen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := ingest.NewReader(ctx, s.objects, g)
+		b, err := io.ReadAll(io.NewSectionReader(r, 0, r.Size()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(b, []byte("BLUEFALCON")) {
+			t.Errorf("source %s generation %d still holds the line", x.id, x.gen)
+		}
+	}
+	keys, err := s.pool.Query(ctx, `SELECT DISTINCT c.object_key FROM chunks c WHERE c.hash IN (SELECT old_hash FROM chunk_redirects UNION SELECT new_hash FROM chunk_redirects)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objs []string
+	for keys.Next() {
+		var k string
+		if err := keys.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		objs = append(objs, k)
+	}
+	keys.Close()
+	for _, k := range objs {
+		z, err := s.objects.Get(ctx, k)
+		if err != nil {
+			continue // purged
+		}
+		if b, err := zdec.DecodeAll(z, nil); err == nil && bytes.Contains(b, []byte("BLUEFALCON")) {
+			t.Errorf("rewritten chunk object %s still holds the line", k)
+		}
+	}
 }
