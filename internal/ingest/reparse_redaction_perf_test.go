@@ -73,7 +73,7 @@ func TestRuleUpgradeBatchPlans(t *testing.T) {
 		t.Helper()
 		args := []any{source}
 		if query == staleVersions {
-			args = append(args, redact.RulesVersion)
+			args = append(args, redact.RulesVersion, staleVersionsPage)
 		}
 		perfguard.AssertIndexedPlan(t, pool, query, args...)
 		rows, err := pool.Query(ctx, query, args...)
@@ -114,4 +114,34 @@ func TestRuleUpgradeScalesLinearly(t *testing.T) {
 		}
 		return cost
 	})
+}
+
+// A source with more stale rows than one listing page is masked in full,
+// through a pool of one connection: each page is read to the end before
+// its batches run. 250 rows over pages of 100 lists 100, 100, 50; 200 rows
+// ends on an empty page.
+func TestRuleUpgradePagesStaleVersions(t *testing.T) {
+	defer func(page int) { staleVersionsPage = page }(staleVersionsPage)
+	staleVersionsPage = 100
+	for _, n := range []int{250, 200} {
+		pool, _, sources := rulesFixture(t, n)
+		cfg := pool.Config()
+		cfg.MaxConns = 1
+		one, err := pgxpool.NewWithConfig(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Queue{Pool: one}).maskStoredVersions(context.Background(), sources[0]); err != nil {
+			t.Fatal(err)
+		}
+		var stale, masked int
+		if err := one.QueryRow(context.Background(), `SELECT count(*) FILTER (WHERE redaction_rules IS DISTINCT FROM $2),
+ count(*) FILTER (WHERE redaction_rules = $2 AND strpos(text,'ghp_')=0) FROM messages WHERE source_id=$1`, sources[0], redact.RulesVersion).Scan(&stale, &masked); err != nil {
+			t.Fatal(err)
+		}
+		one.Close()
+		if stale != 0 || masked != n {
+			t.Fatalf("n=%d: %d stale, %d masked", n, stale, masked)
+		}
+	}
 }

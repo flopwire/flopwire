@@ -12,13 +12,14 @@ import (
 )
 
 // The rules upgrade reads every stored version of a source, superseded ones
-// included, through messages_source_idx (source_id, superseded). Each query
-// below reads the source's rows once: the ids to rewrite are listed first,
-// then locked and rewritten 64 at a time by primary key. Rows a batch finds
-// already stamped (a concurrent upgrade got there first) are skipped.
+// included, through messages_source_idx (source_id, superseded). The ids to
+// rewrite are listed a page at a time, then locked and rewritten 64 at a
+// time by primary key. Rows a batch finds already stamped (a concurrent
+// upgrade got there first) are skipped. Rewritten rows drop out of the
+// listing, so the next page is the same query again, until a short page.
 const (
 	staleVersions = `SELECT id::text FROM messages WHERE source_id=$1
-    AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id`
+    AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id LIMIT $3`
 	staleVersionsBatch = `SELECT id::text,text,enrichment FROM messages WHERE id=ANY($1::uuid[])
     AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id FOR UPDATE NOWAIT`
 	// A source's conversations: those that name it and those holding any
@@ -29,20 +30,43 @@ const (
     WHERE id=ANY($1::uuid[]) ORDER BY conversations.id FOR UPDATE NOWAIT`
 )
 
+// staleVersionsPage bounds the ids held in memory at once. A page re-reads
+// the source's index entries, so a source of N rows costs about
+// N·(N/staleVersionsPage) index reads; one page covers all but the largest
+// sources.
+var staleVersionsPage = 16384
+
 // maskStoredVersions applies new rules to historical row versions too. A
 // reparse can supersede an old row; it must not leave its secret searchable.
 // Batch commits are idempotent. Only derived data changes, never the archive.
-// The sink writes every row under the current rules, so a row stored after
-// the id list is taken needs no masking.
+//
+// A row stored after a page is listed needs no masking: the caller holds the
+// source's parse fence (the "flopwire:source-parse:<source>" advisory lock
+// taken in parseFenced, parse_fence.go), so no other extraction writes this
+// source's rows meanwhile, and the sink stamps every row it writes with the
+// current redact.RulesVersion (sink.insert and sink.update).
 func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
-	rows, err := q.Pool.Query(ctx, staleVersions, source, redact.RulesVersion)
-	if err != nil {
-		return err
+	for {
+		rows, err := q.Pool.Query(ctx, staleVersions, source, redact.RulesVersion, staleVersionsPage)
+		if err != nil {
+			return err
+		}
+		stale, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		if err := q.maskVersions(ctx, stale); err != nil {
+			return err
+		}
+		if len(stale) < staleVersionsPage {
+			break
+		}
 	}
-	stale, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return err
-	}
+	return q.maskSourceSummaries(ctx, source)
+}
+
+// maskVersions locks and rewrites the listed row versions 64 at a time.
+func (q *Queue) maskVersions(ctx context.Context, stale []string) error {
 	for batch := range slices.Chunk(stale, 64) {
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
 			rows, err := tx.Query(ctx, staleVersionsBatch, batch, redact.RulesVersion)
@@ -78,8 +102,13 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 			return err
 		}
 	}
-	// Cached summaries can retain strings no longer present in a live row.
-	rows, err = q.Pool.Query(ctx, sourceConversations, source)
+	return nil
+}
+
+// maskSourceSummaries rewrites the source's conversation titles and digests:
+// cached summaries can retain strings no longer present in a live row.
+func (q *Queue) maskSourceSummaries(ctx context.Context, source string) error {
+	rows, err := q.Pool.Query(ctx, sourceConversations, source)
 	if err != nil {
 		return err
 	}
