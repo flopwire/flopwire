@@ -862,15 +862,19 @@ var errReported = errors.New("error reported")
 // print.
 func busCmd(ctx context.Context, verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	o, err := parseArgs(verb, args)
-	if err != nil {
-		return err
+	st := busStyle{JSON: true}
+	if err == nil {
+		if o.on["help"] {
+			_, err := io.WriteString(stdout, toolHelp[verb])
+			return err
+		}
+		st.JSON = !o.on["text"]
+		err = runBusVerb(ctx, verb, o, stdin, stdout, &st)
+	} else {
+		// The parser stopped early: --text may not have been read yet.
+		st.JSON = !slices.Contains(textFlags(args), "--text")
+		err = badUsage(err.Error(), "flopwire "+verb+" --help")
 	}
-	if o.on["help"] {
-		_, err := io.WriteString(stdout, toolHelp[verb])
-		return err
-	}
-	st := busStyle{JSON: !o.on["text"]}
-	err = runBusVerb(ctx, verb, o, stdin, stdout, &st)
 	if err == nil || !st.JSON {
 		return err
 	}
@@ -878,6 +882,14 @@ func busCmd(ctx context.Context, verb string, args []string, stdin io.Reader, st
 		return err
 	}
 	return errReported
+}
+
+// textFlags is args up to "--": the flags and positionals, not the text.
+func textFlags(args []string) []string {
+	if i := slices.Index(args, "--"); i >= 0 {
+		return args[:i]
+	}
+	return args
 }
 
 func runBusVerb(ctx context.Context, verb string, o *opts, stdin io.Reader, stdout io.Writer, st *busStyle) error {

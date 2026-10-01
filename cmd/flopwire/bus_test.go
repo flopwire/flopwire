@@ -786,3 +786,24 @@ func TestBusTimesAreUTC(t *testing.T) {
 		}
 	}
 }
+
+// A flag the parser rejects is an error like any other: in JSON mode (the
+// default) one JSON object on stderr with a stable code, nothing on
+// stdout; with --text, readable text.
+func TestBusParseErrorsAreJSON(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(agent.Request) agent.Response { return agent.Response{OK: true} })
+	for _, args := range [][]string{{"peers", "--bogus"}, {"send", "@a", "--intent"}, {"inbox", "--sent=maybe"}, {"inbox", "-Z"}} {
+		out, stderr, err := cliJSON(t, fa, "", args...)
+		if e := jsonErr(t, stderr, err); e.Code != busproto.CodeBadRequest || e.Detail == "" || out != "" {
+			t.Fatalf("%v: %+v %q", args, e, out)
+		}
+	}
+	_, stderr, err := cliJSON(t, fa, "", "peers", "--text", "--bogus")
+	if err == nil || errors.Is(err, errReported) || stderr != "" {
+		t.Fatalf("--text parse error: %q %v", stderr, err)
+	}
+	if len(fa.requests()) != 0 {
+		t.Fatalf("requests: %+v", fa.requests())
+	}
+}
