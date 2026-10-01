@@ -28,9 +28,8 @@ func TestPerfSourceLookupPlansUseIndexes(t *testing.T) {
 		{"refuse: messages", refuseMessagesSQL, []any{ids}},
 		{"parse: had stored", hadStoredSQL, []any{id}},
 		{"rules: one source's conversations", convRowsSQL + ` WHERE ($1='' OR c.source_id=$1::uuid) ORDER BY c.depth,c.id`, []any{id}},
-		// parse.go complete: retire the rows a new generation dropped.
-		{"parse: retire live rows", `UPDATE messages SET superseded=true,superseded_in_generation=$2
-			WHERE source_id=$1 AND NOT superseded AND (source_generation<$2 OR parse_attempt<$3) RETURNING conversation_id`, []any{id, int64(2), int64(1)}},
+		{"parse: retire stale live rows", retireStaleSQL, []any{id, int64(2), int64(1)}},
+		{"parse: retire previous source's live rows", retirePreviousSQL, []any{id, int64(2)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			perfguard.AssertIndexedPlan(t, pool, c.sql, c.args...)

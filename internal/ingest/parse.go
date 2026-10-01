@@ -33,6 +33,19 @@ var uncapped = map[transcript.Kind]transcript.CapConfig{}
 // hadStoredSQL reports whether any conversation names source $1.
 const hadStoredSQL = `SELECT EXISTS(SELECT 1 FROM conversations WHERE source_id=$1)`
 
+// retireStaleSQL supersedes, at generation $2, the live rows of source $1
+// that the new generation did not write (an older generation, or parse
+// attempt below $3), and returns their conversations. retirePreviousSQL
+// supersedes every live row of a previous source $1.
+const (
+	retireStaleSQL = `WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
+		WHERE source_id=$1 AND NOT superseded AND (source_generation<$2 OR parse_attempt<$3) RETURNING conversation_id)
+		SELECT DISTINCT conversation_id::text FROM retired`
+	retirePreviousSQL = `WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
+		WHERE source_id=$1 AND NOT superseded RETURNING conversation_id)
+		SELECT DISTINCT conversation_id::text FROM retired`
+)
+
 // job is one source's parse: its identity, stored cursor, and request.
 type job struct {
 	src                         source
@@ -345,15 +358,11 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 				}
 				return rows.Err()
 			}
-			if err := retire(`WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
-				WHERE source_id=$1 AND NOT superseded AND (source_generation<$2 OR parse_attempt<$3) RETURNING conversation_id)
-				SELECT DISTINCT conversation_id::text FROM retired`, j.src.id, gen, j.src.parseAttempt); err != nil {
+			if err := retire(retireStaleSQL, j.src.id, gen, j.src.parseAttempt); err != nil {
 				return err
 			}
 			if j.previous != nil {
-				if err := retire(`WITH retired AS (UPDATE messages SET superseded=true,superseded_in_generation=$2
-					WHERE source_id=$1 AND NOT superseded RETURNING conversation_id)
-					SELECT DISTINCT conversation_id::text FROM retired`, *j.previous, gen); err != nil {
+				if err := retire(retirePreviousSQL, *j.previous, gen); err != nil {
 					return err
 				}
 			}
