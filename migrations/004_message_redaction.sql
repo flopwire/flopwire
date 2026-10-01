@@ -36,6 +36,26 @@ CREATE TABLE redacted_lines (
   redaction_id uuid NOT NULL REFERENCES message_redactions (id)
 );
 
+-- Counts the changes to redacted_lines. Each writing transaction bumps it
+-- once per row at commit (a deferred trigger, so a writer that holds line
+-- locks never waits for it mid-transaction), and a reader that sees a
+-- revision sees the lines of that revision. The parse queue keeps the
+-- catalog in memory and reloads it only when the revision moved.
+CREATE TABLE redacted_lines_revision (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  revision bigint NOT NULL
+);
+INSERT INTO redacted_lines_revision (singleton, revision) VALUES (true, 0);
+CREATE FUNCTION flopwire_redacted_lines_bump() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE redacted_lines_revision SET revision = revision + 1;
+  RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER redacted_lines_revision AFTER INSERT OR UPDATE OR DELETE ON redacted_lines
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION flopwire_redacted_lines_bump();
+CREATE TRIGGER redacted_lines_truncate AFTER TRUNCATE ON redacted_lines
+  FOR EACH STATEMENT EXECUTE FUNCTION flopwire_redacted_lines_bump();
+
 -- The old chunks go through the existing purge worker under a job that
 -- belongs to a redaction instead of a conversation tombstone.
 ALTER TABLE deletion_jobs

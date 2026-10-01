@@ -96,6 +96,30 @@ func (a *appendSession) toolCalls(from, k, failed int) []byte {
 	return b.Bytes()
 }
 
+// unrelatedCorpus adds n other sessions on the same device (4 messages
+// each) and 8n redacted lines, none of which the append touches.
+func unrelatedCorpus(t testing.TB, e *env, n int) {
+	t.Helper()
+	dir := t.TempDir()
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	for i := range n {
+		s := perfguard.ClaudeSession{SessionID: fmt.Sprintf("0be70000-0000-4000-8000-%012d", i+1)}
+		p := filepath.Join(dir, s.SessionID+".jsonl")
+		lines := bytes.ReplaceAll(s.Lines(0, 4), []byte("5e550000-0000-4000-9000-"), fmt.Appendf(nil, "0be7%04x-0000-4000-9000-", i+1))
+		if err := os.WriteFile(p, lines, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := sy.Sync(e.ctx, devicesync.SourceSpec{Path: p, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.drain()
+	e.exec(`INSERT INTO message_redactions(id,requested_by,message_id,all_copies,by_admin,messages,chunks,tails,created_at)
+		VALUES('0be70000-0000-4000-a000-000000000001',$1,gen_random_uuid(),false,false,0,0,0,now())`, e.userID)
+	e.exec(`INSERT INTO redacted_lines(line_sha,spans,redaction_id)
+		SELECT sha256(convert_to('unrelated line '||i,'UTF8')),'[{"start":1,"end":4}]','0be70000-0000-4000-a000-000000000001' FROM generate_series(1,$1::int) i`, 8*n)
+}
+
 // Appending to a session costs the same at n and 8n prior messages: the
 // flush and the parse read the new bytes and the rows they write, not the
 // whole manifest or conversation.
@@ -104,6 +128,19 @@ func TestPerfAppendConstantInSessionLength(t *testing.T) {
 		e, counter := perfEnv(t)
 		a := newAppendSession(t, e, n)
 		a.records(t, appendBatch) // warm: the first append after a full parse
+		e.exec(`ANALYZE`)
+		return perfguard.Measure(t, e.pool, counter, func() { a.records(t, appendBatch) })
+	})
+}
+
+// Appending to a session costs the same however many other sessions,
+// sources and redacted lines the server holds.
+func TestPerfAppendConstantInCorpus(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 8, 8, func(_ testing.TB, n int) perfguard.Cost {
+		e, counter := perfEnv(t)
+		a := newAppendSession(t, e, 64)
+		unrelatedCorpus(t, e, n)
+		a.records(t, appendBatch)
 		e.exec(`ANALYZE`)
 		return perfguard.Measure(t, e.pool, counter, func() { a.records(t, appendBatch) })
 	})
