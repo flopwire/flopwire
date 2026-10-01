@@ -445,7 +445,9 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 	}
 	have := map[string]*row{}
 	// The stored text is compared by hash: reading it back would move every
-	// row's text, most of it unchanged, to the client.
+	// row's text, most of it unchanged, to the client. Each key is looked up
+	// on its own (LATERAL ... LIMIT 1, the live row or else the latest
+	// version): a semi-join lets the planner walk a whole index instead.
 	const cols = `id::text,version,superseded,content_sha,md5(text),on_active_path,source_id::text,source_generation,byte_offset,is_error,enrichment,
 		ordinal,line_no,byte_len,parent_native_id,tool_name,role,tool_call_id,kind,parser,redaction_rules,ts,
 		superseded_by IS NOT NULL OR superseded_in_generation IS NOT NULL`
@@ -467,9 +469,9 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 		return rows.Err()
 	}
 	if len(natives) > 0 {
-		rows, err := tx.Query(ctx, `SELECT DISTINCT ON (conversation_id,native_id,part) `+cols+`,conversation_id::text,native_id,locator,part FROM messages
-			WHERE (conversation_id,native_id,part) IN (SELECT * FROM unnest($1::uuid[],$2::text[],$3::int[]))
-			ORDER BY conversation_id,native_id,part,superseded,version DESC`, convs, natives, nparts)
+		rows, err := tx.Query(ctx, `SELECT r.* FROM unnest($1::uuid[],$2::text[],$3::int[]) k(c,n,p)
+			CROSS JOIN LATERAL (SELECT `+cols+`,conversation_id::text,native_id,locator,part FROM messages
+				WHERE conversation_id=k.c AND native_id=k.n AND part=k.p ORDER BY superseded,version DESC LIMIT 1) r`, convs, natives, nparts)
 		if err != nil {
 			return err
 		}
@@ -480,9 +482,9 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 		}
 	}
 	if len(locs) > 0 {
-		rows, err := tx.Query(ctx, `SELECT DISTINCT ON (locator,part) `+cols+`,conversation_id::text,native_id,locator,part FROM messages
-			WHERE source_id=$1 AND native_id IS NULL AND (locator,part) IN (SELECT * FROM unnest($2::text[],$3::int[]))
-			ORDER BY locator,part,superseded,version DESC`, s.src.id, locs, lparts)
+		rows, err := tx.Query(ctx, `SELECT r.* FROM unnest($2::text[],$3::int[]) k(l,p)
+			CROSS JOIN LATERAL (SELECT `+cols+`,conversation_id::text,native_id,locator,part FROM messages
+				WHERE source_id=$1 AND native_id IS NULL AND locator=k.l AND part=k.p ORDER BY superseded,version DESC LIMIT 1) r`, s.src.id, locs, lparts)
 		if err != nil {
 			return err
 		}
