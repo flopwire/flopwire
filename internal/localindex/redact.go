@@ -797,6 +797,14 @@ func (w *writeTx) maskRow(t redactTarget, masked string) (Tombstone, error) {
 			}
 		}
 	}
+	if !w.scrub {
+		// Zero the old text, title and digest as their cells are freed;
+		// commit turns it off and truncates the WAL (scrubMain).
+		if _, err := w.exec(`PRAGMA secure_delete = ON`); err != nil {
+			return Tombstone{}, err
+		}
+		w.scrub = true
+	}
 	if err := w.maskDigest(t.conv, hidden); err != nil {
 		return Tombstone{}, err
 	}
@@ -805,7 +813,6 @@ func (w *writeTx) maskRow(t redactTarget, masked string) (Tombstone, error) {
 		return Tombstone{}, err
 	}
 	p := &prepared{z: compress(masked), text: masked}
-	w.scrub = true
 	if err := w.ftsDelete(t.id); err != nil {
 		return Tombstone{}, err
 	}

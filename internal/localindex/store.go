@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"runtime"
@@ -117,6 +118,9 @@ type Store struct {
 	shards  []*ftsShard // fts_tok, then the fts_tri parts
 	tri     []*ftsShard // the fts_tri parts
 	lastSeq int64       // highest fts_queue sequence handed to the shards (writer only)
+	// mainScrubTries: checkpoints left to truncate the main WAL after a
+	// redaction (writer only).
+	mainScrubTries int
 
 	readOnly bool
 	tombs    *tombstones // local message redactions (writing stores)
@@ -571,8 +575,46 @@ func (t *txRun) commit() {
 			}
 		}
 	}
+	if w.scrub || s.mainScrubTries > 0 {
+		s.scrubMain(w.scrub)
+	}
 	for _, r := range t.waiting {
 		r.done <- err
+	}
+}
+
+// scrubMain ends a redaction's transaction on the main database: it turns
+// secure_delete off again and truncates the WAL, whose frames hold the
+// pages from before the redaction. Readers can hold the WAL; the
+// checkpoint then waits briefly and is tried again after the next
+// commits, at most scrubCheckpointTries times (Close checkpoints too).
+func (s *Store) scrubMain(redacted bool) {
+	ctx := context.Background()
+	if redacted {
+		s.mainScrubTries = scrubCheckpointTries
+		if _, err := s.wdb.ExecContext(ctx, `PRAGMA secure_delete = OFF`); err != nil {
+			slog.Warn("localindex: secure_delete off", "err", err)
+		}
+	}
+	s.mainScrubTries--
+	err := func() error {
+		if _, err := s.wdb.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, scrubCheckpointWait)); err != nil {
+			return err
+		}
+		defer s.wdb.ExecContext(ctx, `PRAGMA busy_timeout = 10000`) //nolint:errcheck // the next statement fails the same way
+		var busy, logPages, ckpt int64
+		if err := s.wdb.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logPages, &ckpt); err != nil {
+			return err
+		}
+		if busy != 0 {
+			return errors.New("readers hold the WAL")
+		}
+		return nil
+	}()
+	if err == nil {
+		s.mainScrubTries = 0
+	} else if s.mainScrubTries == 0 {
+		slog.Warn("localindex: truncating the WAL after a redaction failed", "err", err)
 	}
 }
 

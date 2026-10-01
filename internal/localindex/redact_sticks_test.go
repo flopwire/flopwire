@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -620,37 +621,46 @@ func TestLocalRedactionScrubsFTSShards(t *testing.T) {
 	if err := s.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var scrubbed int
-	testHookScrubbed = func(*ftsShard, time.Duration) { scrubbed++ }
+	var scrubbed atomic.Int32
+	testHookScrubbed = func(*ftsShard, time.Duration) { scrubbed.Add(1) }
 	defer func() { testHookScrubbed = nil }()
 	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "sess-1", Ordinal: transcript.OrdinalAt(0, 0), From: 2, To: 2}); err != nil {
 		t.Fatal(err)
 	}
 	eq(t, "find", findIDs(t, s, "zebracorn", FindOptions{}), nil)
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if scrubbed != len(s.shards) {
-		t.Fatalf("%d of %d shards compacted", scrubbed, len(s.shards))
-	}
-	ents, err := os.ReadDir(filepath.Dir(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range ents {
-		if !strings.HasPrefix(e.Name(), "index.db") || strings.Contains(e.Name(), "redactions") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(filepath.Dir(path), e.Name()))
+	grep := func(when string) {
+		t.Helper()
+		ents, err := os.ReadDir(filepath.Dir(path))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, tok := range []string{"zebracorn", "4417"} {
-			if bytes.Contains(bytes.ToLower(b), []byte(tok)) {
-				t.Errorf("%s still holds %q", e.Name(), tok)
+		for _, e := range ents {
+			if !strings.HasPrefix(e.Name(), "index.db") || strings.Contains(e.Name(), "redactions") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(filepath.Dir(path), e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tok := range []string{"zebracorn", "4417"} {
+				if bytes.Contains(bytes.ToLower(b), []byte(tok)) {
+					t.Errorf("%s: %s still holds %q", when, e.Name(), tok)
+				}
 			}
 		}
 	}
+	// While open: the shards' WAL files are still there (Close deletes
+	// them), so the compaction must have truncated them.
+	for deadline := time.Now().Add(30 * time.Second); scrubbed.Load() < int32(len(s.shards)); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d shards compacted", scrubbed.Load(), len(s.shards))
+		}
+	}
+	grep("open")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	grep("closed")
 	// Still searchable after reopening; the neighbours still match.
 	s2, err := Open(path, Options{})
 	if err != nil {
