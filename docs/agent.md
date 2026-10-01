@@ -23,6 +23,7 @@ The agent uses these paths:
 | Local index | `<user cache dir>/flopwire/index.db`, plus `index.db-tok`, `index.db-tri0`, `index.db-tri1` and the lock file `index.db.lock` | `--db` or `FLOPWIRE_INDEX` |
 | Control socket | `<config dir>/flopwire/agent.sock` | `--socket` |
 | Sync spool | `<config dir>/flopwire/spool`, at most 1GiB | `--spool-cap` (bytes) |
+| Message inbox | `<config dir>/flopwire/bus.db` | none |
 | User path rules | `<config dir>/flopwire/path-rules` | none |
 | Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json` | none |
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
@@ -71,6 +72,12 @@ socket and prints these parts:
 | `queued: N sources; spool: N bytes` | Sources waiting to upload, and the spool size. `(full: …)` means the spool reached `--spool-cap` and captures of rewritten sources pause. |
 | `failing sources (N)` | Each source that fails, its error and its attempts. A failing source retries on its own and does not delay the others. |
 | `server refused N sources by admin path rule` | The server did not store these sources. Each shows its path and the rule. The device learns of a refusal on its next upload of that source. |
+| `messaging: connected` | The agent holds its poll to the server. See [Messaging](#messaging). |
+| `messaging: local` | No server is configured. Messages go between the sessions on this device. |
+| `messaging: server unreachable, retry at T: ERR` | The poll failed. The agent retries by itself, at most 30 seconds apart. |
+| `messaging: stopped: ERR` | The server refused the credential or the certificate. Run `flopwire login`. Messaging resumes when the agent sees the new credential. |
+| `messaging: disabled: ERR` | The server has no message bus, or the credential is not an enrolled device. The agent asks again every 10 minutes. |
+| `messages: N pending delivery, N receipts unsent, N held for your acceptance` | Messages in the local inbox that no hook took yet, deliveries the server has not confirmed, and messages from people you have not accepted. |
 
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
@@ -125,6 +132,45 @@ finds the rollout by that session id.
 
 Run `flopwire agent flush --path <transcript>` or
 `flopwire agent flush --session <session id>`.
+
+## Messaging
+
+The agent carries messages between agent sessions
+([design](../notes/message-bus/plan.md)). The `flopwire hook` command and
+the `peers`, `send` and `inbox` commands use it. They are not built yet.
+
+With a server configuration, the agent does these things:
+
+- It holds one long poll to the server. The poll reports the live sessions
+  on this device: session id, harness, repo, branch, and busy or idle.
+- It checks the sessions every 2 seconds. When one starts, ends, or turns
+  busy or idle, it sends a new poll at once.
+- It leaves out each session that a path rule keeps off the server. Such a
+  session cannot send or receive messages.
+- It keeps the messages for this device in the local inbox. A message that
+  the server no longer lists is removed, unless a hook already took it.
+- It claims each message to `@you` for one live session on this device.
+  It prefers a session on the message's repo, then a busy session.
+- It confirms each delivery to the server, in batches.
+
+Without a server configuration, or with `--no-sync`, the agent routes
+messages between the sessions on this device. To address yourself, use
+`@` and your account name. The server's limits apply: duplicates within 10 minutes,
+8 messages per thread per hour, 30 sends per session per hour, and 50
+undelivered messages per recipient.
+
+A session is live when `flopwire sessions` shows it as live. The agent
+also reads these harness files. It never writes them or locks them:
+
+| Harness | File | Gives |
+|---|---|---|
+| Claude Code | `~/.claude/sessions/<pid>.json` | Open while the process runs. Busy when `status` is `busy`. |
+| Codex | `~/.codex/thread-writer-locks/<thread>.lock` | Open while the file exists. Busy from the last task event in the rollout. |
+| Devin | `session_locks/<session>.lock` beside `sessions.db` | Open while the named process runs. Always idle. |
+
+A message waits for 24 hours. Then it expires.
+
+To see the messaging state, run `flopwire agent status`.
 
 ## How the agent finds changes
 
