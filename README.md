@@ -135,8 +135,9 @@ where you run admin commands.
 5. Keep the agent running. On macOS, install the launchd user agent in
    `deploy/launchd/com.flopwire.agent.plist`. See
    [docs/two-laptop.md](docs/two-laptop.md#install-the-agent-as-a-launchd-user-agent).
-6. Optional: connect the Claude Code and Codex hooks, so uploads are
-   immediate. See [docs/agent.md](docs/agent.md#connect-the-harness-hooks).
+6. Optional: connect the Claude Code, Codex and Devin hooks, so uploads are
+   immediate and messages reach your sessions. See
+   [docs/agent.md](docs/agent.md#connect-the-harness-hooks).
 7. Check the agent:
 
    ```sh
@@ -226,9 +227,10 @@ flopwire inbox --sent                                    # what you sent, and it
   person. The server has the accept route; the console and CLI commands
   for it are not built yet.
 
-Delivery into the recipient's session needs the `flopwire hook` command.
-It is not built yet. Until then, messages wait in the recipient's local
-inbox. [docs/agent.md](docs/agent.md#messaging) has the details.
+The `flopwire hook` command prints each message into the recipient's
+session: inside a running turn at its next tool call, or with its human's
+next prompt. A message never wakes an idle session. Connect the hooks as
+[docs/agent.md](docs/agent.md#connect-the-harness-hooks) shows.
 
 ## Path rules
 

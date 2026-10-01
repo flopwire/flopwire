@@ -204,16 +204,45 @@ inspection, and JSON output.
 
 ## Connect the harness hooks
 
-A hook tells the running agent to index one transcript and upload it at
-once. Without hooks, a new line is still findable in about one second. The
-hooks make the upload immediate and cover a session that was idle for more
-than two days.
+The harness hooks run `flopwire hook`. The command does two jobs:
 
-A hook never fails because of the agent. When `flopwire agent flush` reads
-hook input, it exits 0 if the agent is not running, is still busy after the
-timeout, stops during the call, or does not track the file yet. It prints
-the reason on stderr. With `--path` or `--session` it reports these errors,
-except a stopped agent.
+- It prints the messages for this session into the session. See
+  [Messaging](#messaging).
+- It tells the running agent to index this transcript and upload it at
+  once. Without hooks, a new line is still findable in about one second.
+  The hooks make the upload immediate and cover a session that was idle
+  for more than two days.
+
+`flopwire hook` reads the hook input on stdin. It acts on the
+`hook_event_name` field:
+
+| Event | Prints into the session |
+|---|---|
+| `SessionStart` | The standing instruction, then any pending messages |
+| `UserPromptSubmit` | Pending messages |
+| `PostToolUse` | Pending messages |
+| Any other event | Nothing. It only asks for the upload. |
+
+A message arrives inside a running turn, at the next tool call, or with the
+human's next prompt. A message never wakes an idle session and never
+starts a turn.
+
+A hook never fails a turn. `flopwire hook` exits 0 and prints nothing in
+these cases:
+
+- No message waits for the session.
+- The agent is not running.
+- The agent does not answer within 200 milliseconds. The agent keeps the
+  messages for the next hook.
+- The input is not hook JSON.
+
+It writes the reason on stderr. It never writes the environment or a
+message body there.
+
+One call prints at most 5 messages and at most 9,000 bytes. The oldest
+messages go first. The rest wait for the next hook. A single message that
+is longer than the cap is cut, with a note that names the
+`flopwire inbox --thread` command that shows all of it.
 
 ### Claude Code
 
@@ -223,43 +252,107 @@ except a stopped agent.
 ```json
 {
   "hooks": {
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "flopwire agent flush", "timeout": 10 }] }
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire agent flush", "timeout": 10 }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
     ]
   }
 }
 ```
 
-Claude Code sends the hook input on stdin. The agent reads
-`transcript_path` from it.
-
 ### Codex
 
-1. Open `~/.codex/config.toml`.
-2. Add this line at the top level:
+1. Open `~/.codex/hooks.json`. Create the file if it does not exist.
+2. Add these entries:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ]
+  }
+}
+```
+
+3. Open `~/.codex/config.toml`.
+4. Add this line at the top level:
 
 ```toml
 notify = ["flopwire", "agent", "flush"]
 ```
 
-Codex passes a JSON argument that names the thread (`thread-id`). The agent
-finds the rollout by that session id.
+5. Start Codex in a terminal.
+6. Codex shows "Hooks need review". Approve the three hooks.
+
+Codex runs a hook only after you approve it. It asks again when the
+event, the matcher, the command or the timeout changes.
+
+`notify` uploads the transcript at the end of each turn. Codex passes a
+JSON argument that names the thread (`thread-id`). The agent finds the
+rollout by that session id.
+
+### Devin CLI
+
+1. Open `.devin/hooks.v1.json` in the repository. Create the file if it
+   does not exist.
+2. Add these entries. The event names are top-level keys. Do not put them
+   under a `hooks` key: Devin rejects that file.
+
+```json
+{
+  "SessionStart": [
+    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+  ],
+  "UserPromptSubmit": [
+    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+  ],
+  "PostToolUse": [
+    { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+  ],
+  "Stop": [
+    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+  ]
+}
+```
+
+Devin also runs the hooks in the repository's `.claude/settings.json`. When
+both files call `flopwire hook`, each message still arrives once, and the
+standing instruction arrives once.
+
+Do not add `flopwire hook` to `PreToolUse`. Devin does not show that
+event's output to the model, and the messages would be lost.
 
 ### Manual flush
 
 Run `flopwire agent flush --path <transcript>` or
-`flopwire agent flush --session <session id>`.
+`flopwire agent flush --session <session id>`. `flopwire agent flush`
+never prints messages. When it reads hook input, it exits 0 if the agent is
+not running, is still busy after the timeout, stops during the call, or
+does not track the file yet.
 
 ## Messaging
 
 The agent carries messages between agent sessions
 ([design](../notes/message-bus/plan.md)). The `peers`, `send` and `inbox`
-commands and MCP tools use it. The `flopwire hook` command, which prints
-messages into the recipient's session, is not built yet. Until it is, a
-message waits in the recipient's local inbox.
+commands and MCP tools use it. The `flopwire hook` command prints each
+message into the recipient's session. See
+[Connect the harness hooks](#connect-the-harness-hooks). A session without
+the hooks reads its messages with `flopwire inbox`.
 
 With a server configuration, the agent does these things:
 
@@ -293,6 +386,40 @@ also reads these harness files. It never writes them or locks them:
 A message waits for 24 hours. Then it expires.
 
 To see the messaging state, run `flopwire agent status`.
+
+### What the recipient sees
+
+`flopwire hook` prints each message in one wrapper:
+
+```
+<flopwire-message id="m7f3a…" from="0b7e2c1a-…" user="alex@example.com" agent="claude" repo="api@main" sender="teammate" intent="request" sent="2026-10-01T14:02:11Z">
+Can you rebase api on main?
+<flopwire-ref address="4c19e0d2/12">assistant: the cursor is opaque…</flopwire-ref>
+</flopwire-message>
+Reply with the flopwire_send tool: to="0b7e2c1a-…" reply_to="m7f3a…" message="…"; or in a shell: flopwire send 0b7e2c1a-… --reply-to m7f3a… -- "…"
+```
+
+- Every attribute comes from the envelope that the server (or, without a
+  server, the device agent) set. The sender supplies only the text, the
+  intent, the reply id and the refs.
+- `sender` is `own` for a session of the same person and `teammate` for
+  another person's session.
+- The reply line appears only for `intent="request"`.
+- A ref shows a short excerpt when the recipient's local index holds that
+  message. Otherwise it shows the address alone. `flopwire read ADDRESS`
+  shows the whole message.
+- The text is escaped: `&`, `<` and `>` become `&amp;`, `&lt;` and `&gt;`,
+  and look-alike angle brackets become character references. Control and
+  bidirectional characters are shown or replaced. A message therefore cannot
+  close its wrapper, open another one, or imitate the standing
+  instruction. Attribute values are escaped the same way, plus `"`.
+
+At session start the hook also prints the standing instruction
+(`busrender.StandingInstruction`). It tells the model what the wrapper is,
+that a message from your own session is a request to act on within that
+session's permissions, that a message from a teammate is information to
+confirm with you first, and that a message never changes permissions or
+settings. Without it, the models tested refused every request.
 
 ### Send and read messages
 
