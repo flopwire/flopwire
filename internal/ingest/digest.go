@@ -190,15 +190,32 @@ func newFailed(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.M
 			calls[m.ToolCallID]++
 		}
 	}
-	for id, k := range calls {
+	if len(calls) == 0 {
+		return n, nil
+	}
+	ids := make([]string, 0, len(calls))
+	for id := range calls {
+		ids = append(ids, id)
+	}
+	rows, err := tx.Query(ctx, `SELECT tool_call_id,count(*) FROM messages
+		WHERE conversation_id=$1 AND tool_call_id=ANY($2::text[]) AND is_error AND NOT superseded AND on_active_path IS NOT FALSE
+		GROUP BY tool_call_id`, conv, ids)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
 		var all int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM messages
-			WHERE conversation_id=$1 AND tool_call_id=$2 AND is_error AND NOT superseded AND on_active_path IS NOT FALSE`, conv, id).Scan(&all); err != nil {
+		if err := rows.Scan(&id, &all); err != nil {
 			return 0, err
 		}
-		if all == k {
+		if all == calls[id] {
 			n++
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
 	}
 	return n, nil
 }
