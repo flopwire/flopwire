@@ -326,11 +326,10 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	g := cur
 	switch change.Decision {
 	case transcript.Unchanged:
-		if cur.Tail.Size == 0 && cur.Size >= id.Size || !s.idle(id, now) {
+		if cur.Tail.Size == 0 || !s.idle(id, now) {
 			return nil
 		}
-		// Idle with a provisional tail, or a withheld partial last line:
-		// fall through to seal it.
+		// Idle with a captured complete-record tail: fall through to seal it.
 	case transcript.Rewrite:
 		if cur != nil && !cur.done() {
 			s.salvage(ctx, src, cur, change.Reason)
@@ -359,11 +358,11 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	from := g.boundary()
 	// Everything uploaded is read through the redactor (notes/redaction.md);
 	// r itself stays raw for change detection. An append-only transcript
-	// is captured up to its last newline until it goes idle, so a line is
+	// is always captured up to its last newline, even when idle, so a line is
 	// never redacted (and uploaded) half-written.
 	rr := src.Spec.redacted(r)
 	end := id.Size
-	if src.Spec.StorageKind == transcript.StorageJSONLAppend && export == nil && !s.idle(id, now) {
+	if src.Spec.StorageKind == transcript.StorageJSONLAppend && export == nil {
 		if end, err = lastLineEnd(r, from, id.Size); err != nil {
 			return err
 		}
@@ -404,7 +403,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 			return fmt.Errorf("devicesync: read tail %s: %w", src.Spec.Path, err)
 		}
 		newTail.Hash = syncproto.Sum(data)
-		if end == id.Size && s.idle(id, now) {
+		if s.idle(id, now) {
 			// Seal: the source went quiet, so its tail becomes a final chunk
 			// (shorter than a CDC cut) instead of living in provisional_tails
 			// forever. If the file grows again, chunking resumes after it.
@@ -587,12 +586,7 @@ func (s *Syncer) provisional(ctx context.Context, path string) bool {
 	if err != nil || g != nil && g.Tail.Size > 0 {
 		return true
 	}
-	// A withheld partial last line also waits for the seal.
-	if g != nil && !src.Spec.Export {
-		if fi, err := os.Stat(path); err == nil && fi.Size() > g.Size {
-			return true
-		}
-	}
+	// An unfinished JSONL record waits for a file change, not an idle timer.
 	return false
 }
 

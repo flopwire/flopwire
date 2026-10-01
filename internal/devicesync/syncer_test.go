@@ -67,7 +67,7 @@ func TestAppendStreamTailTransitions(t *testing.T) {
 		pos = next
 		e.sync(sp)
 		id := fileIDOf(t, sp.Path)
-		// A partial last line waits for its newline (or the seal).
+		// A partial last line waits for its newline.
 		e.requireServerHas(sp.Path, id, 0, completeLines(data[:pos]))
 		entries, tail := e.srv.Manifest(sp.Path, id, 0)
 		if len(entries) < len(committed) {
@@ -458,7 +458,7 @@ func TestIdleTailSealed(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	e.sync(sp)
 	entries, tail := e.srv.Manifest(sp.Path, id, 0)
-	if tail != nil || entries[len(entries)-1].End() != 30000 {
+	if tail != nil || entries[len(entries)-1].End() != int64(len(completeLines(data[:30000]))) {
 		t.Fatalf("tail not sealed: tail %+v, end %d", tail, entries[len(entries)-1].End())
 	}
 	appendFile(t, sp.Path, data[30000:])

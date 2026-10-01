@@ -386,3 +386,36 @@ func TestProvisionalUnknownKeepsSealCheck(t *testing.T) {
 		t.Fatal("a failed store read reported no tail; the seal timer would be dropped")
 	}
 }
+
+func TestSchedulerStopsSealTimerWithUnfinishedRecord(t *testing.T) {
+	e := newEnv(t, Config{SealAfter: 300 * time.Millisecond}, 4<<20)
+	sc := NewScheduler(e.sy, SchedulerConfig{Append: Cadence{Debounce: 10 * time.Millisecond, MaxWait: 50 * time.Millisecond}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); sc.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	sp := e.spec("unfinished.jsonl", transcript.StorageJSONLAppend)
+	complete := jsonlLines(37, 8, 150)
+	partial := []byte(`{"text":"unfinished`)
+	appendFile(t, sp.Path, append(append([]byte{}, complete...), partial...))
+	sc.Notify(sp)
+	id := fileIDOf(t, sp.Path)
+	waitFor(t, "complete prefix flushed", func() bool { _, tail := e.srv.Manifest(sp.Path, id, 0); return tail != nil })
+	waitFor(t, "complete prefix sealed", func() bool {
+		entries, tail := e.srv.Manifest(sp.Path, id, 0)
+		return tail == nil && len(entries) > 0 && entries[len(entries)-1].End() == int64(len(complete))
+	})
+	waitFor(t, "idle", func() bool { return sc.Status().Queued == 0 })
+	sc.mu.Lock()
+	armed := len(sc.seal)
+	sc.mu.Unlock()
+	if armed != 0 {
+		t.Fatalf("unfinished record kept %d seal timers armed", armed)
+	}
+	e.requireServerHas(sp.Path, id, 0, complete)
+	appendFile(t, sp.Path, []byte(` record"}`+"\n"))
+	sc.Notify(sp)
+	all := append(append(append([]byte{}, complete...), partial...), []byte(` record"}`+"\n")...)
+	waitFor(t, "completed record captured", func() bool { got, err := e.srv.Reconstruct(sp.Path, id, 0); return err == nil && bytes.Equal(got, all) })
+}
