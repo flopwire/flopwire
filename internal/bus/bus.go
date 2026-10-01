@@ -399,6 +399,11 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 		if refusal != nil {
 			m.state, m.refused = busproto.StateRefused, refusal.Code
 		} else if m.sender == busproto.SenderTeammate {
+			// Held until commit: an accept or revoke of this sender waits
+			// for this message, so it releases or re-holds it.
+			if err := lockAccept(ctx, tx, m.toUser, c.UserID); err != nil {
+				return err
+			}
 			var ok bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM bus_accepts WHERE recipient_user=$1 AND sender_user=$2)`, m.toUser, c.UserID).Scan(&ok); err != nil {
 				return err
@@ -506,6 +511,17 @@ func lockSend(ctx context.Context, tx pgx.Tx, m message) error {
 		}
 	}
 	return nil
+}
+
+// lockAccept serializes a send from sender to recipient with an accept or
+// revoke between them. Without it a send that read the acceptance could
+// commit its message queued after a revoke re-held the sender's messages,
+// or one that read none could commit it held after an accept released
+// them. A send takes it last, after lockSend and the thread lock; an
+// accept or revoke takes no other advisory lock.
+func lockAccept(ctx context.Context, tx pgx.Tx, recipient, sender string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "bus:accept:"+recipient+":"+sender)
+	return err
 }
 
 // Queries the send limits run; each is served by an index (bus_test.go).

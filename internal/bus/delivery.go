@@ -567,6 +567,9 @@ func (s *Store) Accept(ctx context.Context, c busproto.Caller, sender string) (b
 		if p.id == c.UserID {
 			return badRequest("your own sessions need no acceptance")
 		}
+		if err := lockAccept(ctx, tx, c.UserID, p.id); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO bus_accepts(recipient_user,sender_user,created_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, c.UserID, p.id, now); err != nil {
 			return err
 		}
@@ -592,6 +595,9 @@ func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (b
 	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
 		p, err := resolvePerson(ctx, tx, sender)
 		if err != nil {
+			return err
+		}
+		if err := lockAccept(ctx, tx, c.UserID, p.id); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `DELETE FROM bus_accepts WHERE recipient_user=$1 AND sender_user=$2`, c.UserID, p.id)

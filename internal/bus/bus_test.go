@@ -751,3 +751,70 @@ func TestWritesFailClosedWithoutAudit(t *testing.T) {
 		t.Fatalf("unaudited writes landed: %d messages, %d accepts, %s, %s", messages, accepts, tm.state(toMe.ID), tm.state(toLin.ID))
 	}
 }
+
+// lockWaiters waits until n backends of the test database wait on a lock.
+func (f *fixture) lockWaiters(n int) {
+	f.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var got int
+		if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&got); err != nil {
+			f.t.Fatal(err)
+		}
+		if got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatalf("%d lock waiters, want %d", got, n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A revoke that commits while a send from the revoked sender is in flight
+// still holds that message: the send cannot commit it queued after the
+// revoke (B7).
+func TestRevokeDuringSendHoldsTheMessage(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	alexLogin := busproto.Caller{UserID: tm.alex}
+	if _, err := tm.s.Accept(ctx, alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	// Stall every audit insert, so the send stops after its acceptance
+	// check and before its commit.
+	tx, err := tm.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `LOCK TABLE audit_events IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		out busproto.SendResponse
+		err error
+	}
+	sent := make(chan result, 1)
+	go func() {
+		out, err := tm.send(tm.garyMac, "g-api-1111", "a-api", "in flight")
+		sent <- result{out, err}
+	}()
+	tm.lockWaiters(1)
+	revoked := make(chan error, 1)
+	go func() {
+		_, err := tm.s.Revoke(ctx, alexLogin, "gary")
+		revoked <- err
+	}()
+	tm.lockWaiters(2)
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-sent
+	if err := <-revoked; err != nil || r.err != nil {
+		t.Fatalf("send %v, revoke %v", r.err, err)
+	}
+	if got := tm.state(r.out.ID); got != "held" {
+		t.Fatalf("message sent during a revoke is %s after it, want held", got)
+	}
+}
