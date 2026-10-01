@@ -10,12 +10,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// digestMode is how refreshDigest treats the stored counts.
+type digestMode int
+
+const (
+	// digestAppend adds the counts of msgs, rows a flush only added.
+	digestAppend digestMode = iota
+	// digestRecount recounts over the live rows (rows replaced or
+	// superseded).
+	digestRecount
+	// digestFold folds msgs and leaves the counts to the recount when the
+	// parse completes.
+	digestFold
+)
+
 // refreshDigest folds msgs, the rows a flush wrote for conversation conv,
 // into its stored digest and updates its parent's subagent count, in the
-// flush's transaction. When the flush only added rows, their counts are
-// added to the stored ones; otherwise (full: rows replaced or superseded,
-// no digest yet) the aggregates are recounted over the live rows.
-func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, full bool) error {
+// flush's transaction. A conversation without a digest yet is recounted.
+func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, mode digestMode) error {
 	var (
 		prev          []byte
 		cwd, root     *string
@@ -40,15 +52,21 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 		WHERE k.device_id=c.device_id AND k.agent=c.agent AND k.parent_native_session_id=c.session_id AND k.id<>c.id`, conv).Scan(&subagents); err != nil {
 		return err
 	}
+	if prev == nil {
+		mode = digestRecount
+	}
 	var out []byte
-	if full || prev == nil {
+	switch mode {
+	case digestFold:
+		out = digest.Fold(prev, c, msgs)
+	case digestRecount:
 		n, err := digestCounts(ctx, tx, conv)
 		if err != nil {
 			return err
 		}
 		n.Subagents = subagents
 		out = digest.Update(prev, c, msgs, n)
-	} else {
+	default:
 		failed, err := newFailed(ctx, tx, conv, msgs)
 		if err != nil {
 			return err
@@ -70,7 +88,7 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 // their live rows. A conversation deleted meanwhile is skipped.
 func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
 	for _, id := range ids {
-		if err := refreshDigest(ctx, tx, id, nil, true); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if err := refreshDigest(ctx, tx, id, nil, digestRecount); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 	}

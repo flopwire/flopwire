@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/redact"
+	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/jackc/pgx/v5"
 )
@@ -237,4 +240,45 @@ func TestFailedReparseRecountsDigest(t *testing.T) {
 	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
 		t.Fatal("failed reparse left a digest that does not match its live rows")
 	}
+}
+
+// A parse that replaces a conversation's rows still folds the messages it
+// writes into the digest (intent, last reply, files): only the counts wait
+// for the recount at the end.
+func TestReplacingParseFoldsDigest(t *testing.T) {
+	e := newEnv(t)
+	const session = "0b7e2c1a-0000-4000-8000-0000000000f0"
+	path := filepath.Join(t.TempDir(), session+".jsonl")
+	line := func(kind, uuid, parent, text string, sec int) string {
+		content := `"` + text + `"`
+		if kind == "assistant" {
+			content = `[{"type":"text","text":"` + text + `"}]`
+		}
+		return fmt.Sprintf(`{"type":%q,"uuid":%q,"parentUuid":%q,"sessionId":%q,"timestamp":"2026-09-20T00:00:%02dZ","message":{"id":"msg_%s","role":%q,"content":%s}}`+"\n",
+			kind, uuid, parent, session, sec, uuid, kind, content)
+	}
+	appendFile(t, path, line("user", "u1", "", "fix the flux capacitor", 1)+line("assistant", "a1", "u1", "first answer", 2))
+	sp := devicesync.SourceSpec{Path: path, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"}
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	sync1(t, sy, sp)
+	e.drain()
+	// A rewrite: the first prompt is grows (its row is replaced in place) and
+	// a reply follows.
+	if err := os.WriteFile(path, []byte(line("user", "u1", "", "fix the flux capacitor now", 1)+line("assistant", "a1", "u1", "first answer", 2)+
+		line("user", "u2", "a1", "and the warp core", 3)+line("assistant", "a2", "u2", "second answer", 4)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sync1(t, sy, sp)
+	e.drain()
+	if e.count(`SELECT count(*) FROM messages WHERE native_id LIKE 'u1%' AND NOT superseded AND text LIKE '%now'`) != 1 {
+		t.Fatal("test did not replace a stored row")
+	}
+	var last string
+	if err := e.pool.QueryRow(e.ctx, `SELECT COALESCE(digest->>'last','') FROM conversations WHERE session_id=$1`, session).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last != "second answer" {
+		t.Fatalf("digest last reply %q, want the replacing parse's %q", last, "second answer")
+	}
+	sameCounts(t, e, session)
 }

@@ -316,7 +316,7 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	if tag.RowsAffected() > 0 {
 		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
 			for _, id := range touched {
-				if err := refreshDigest(ctx, tx, id, nil, true); err != nil {
+				if err := refreshDigest(ctx, tx, id, nil, digestRecount); err != nil {
 					return err
 				}
 			}

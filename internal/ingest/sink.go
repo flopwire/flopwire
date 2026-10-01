@@ -145,10 +145,11 @@ func (s *sink) flush() error {
 				}
 				s.dirty[conv] = true
 			}
+			mode := digestAppend
 			if s.dirty[conv] {
-				continue // recounted once at the end (dirtyConversations)
+				mode = digestFold // counted once at the end (dirtyConversations)
 			}
-			if err := refreshDigest(s.ctx, tx, conv, byConv[id], false); err != nil {
+			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode); err != nil {
 				return err
 			}
 		}

@@ -163,6 +163,19 @@ func Update(prev []byte, c Conv, msgs []*transcript.Message, n Counts) []byte {
 	return d.Marshal()
 }
 
+// Fold is Update for a batch whose counts a later recount sets: it folds
+// msgs into prev and leaves the counted fields as they are.
+func Fold(prev []byte, c Conv, msgs []*transcript.Message) []byte {
+	d := Parse(prev)
+	d.setConv(c)
+	for _, m := range msgs {
+		d.Fold(m)
+	}
+	d.Intent = d.intent(c.Title)
+	d.compact()
+	return d.Marshal()
+}
+
 // Append is Update for a batch that only added rows (none replaced, none
 // superseded, no path changed): instead of a recount over the whole
 // conversation, it adds msgs to the stored counts. failed is the number
