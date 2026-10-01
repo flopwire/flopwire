@@ -1,9 +1,11 @@
 package redact
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"io"
+	"math"
 	"slices"
 )
 
@@ -121,6 +123,56 @@ func (c *LineCatalog) Match(r io.ReaderAt, start, size int64, sum [32]byte, pref
 			}
 			fillLineSpans(prefix, 0, applied)
 		}
+	}
+}
+
+// MatchLine identifies the complete line starting at start without retaining
+// its bytes. The caller can apply the returned spans to any segment of that
+// line. Read failures propagate so an incomplete identity cannot expose bytes.
+func (c *LineCatalog) MatchLine(r io.ReaderAt, start int64) ([]Span, error) {
+	if c.Empty() {
+		return nil, nil
+	}
+	br := bufio.NewReaderSize(io.NewSectionReader(r, start, math.MaxInt64-start), 64<<10)
+	h := sha256.New()
+	var size, pendingCR int64
+	var prefix []byte
+	crs := bytes.Repeat([]byte{'\r'}, 1024)
+	for {
+		part, err := br.ReadSlice('\n')
+		if err != nil && err != bufio.ErrBufferFull && err != io.EOF {
+			return nil, err
+		}
+		data := bytes.TrimSuffix(part, []byte{'\n'})
+		if len(prefix) < 64 {
+			prefix = append(prefix, data[:min(len(data), 64-len(prefix))]...)
+		}
+		size += int64(len(data))
+		trim := bytes.TrimRight(data, "\r")
+		if len(trim) > 0 {
+			for pendingCR > 0 {
+				n := min(pendingCR, int64(len(crs)))
+				h.Write(crs[:n])
+				pendingCR -= n
+			}
+			h.Write(trim)
+		}
+		pendingCR += int64(len(data) - len(trim))
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		size -= pendingCR
+		var sum [32]byte
+		copy(sum[:], h.Sum(nil))
+		records, err := c.Match(r, start, size, sum, prefix[:min(int64(len(prefix)), size)])
+		if err != nil {
+			return nil, err
+		}
+		var spans []Span
+		for _, m := range records {
+			spans = append(spans, lineSpans(m.Spans, size)...)
+		}
+		return spans, nil
 	}
 }
 
