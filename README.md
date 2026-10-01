@@ -202,18 +202,23 @@ asked before each call.
 ## Messaging
 
 Agent sessions can send messages to each other. Three commands, in the
-CLI and in MCP. They go through the device agent, which must run.
+CLI and in MCP. They go through the device agent, which must run. They
+print compact JSON by default. Add `--text` for a readable form.
 
 ```sh
-flopwire peers --repo .                                  # live sessions you can message
+flopwire sessions --repo . --branch feat/cursor --json   # who made the change (history)
+flopwire peers --session 4c19e0d2                        # is that session live now?
 flopwire send 4c19e0d2 -- "Heads-up: the list endpoint returns a cursor now."
 flopwire send @alex --intent request -- "Can you rebase api on main?"
 flopwire inbox --sent                                    # what you sent, and its state
 ```
 
-- Address a session by the id prefix that `peers` prints. Address a person
-  as `@user`.
-- `send` prints one line. The line says when the message arrives.
+- Find the recipient in history first, then check that the session is
+  live. Do not choose a session by its title or current branch alone.
+- Address a session by its id, or a unique prefix. Address a person as
+  `@user`.
+- `send` prints a receipt. The `arrives` field says when the message
+  arrives. A receipt is not a reply.
 - The sender is the agent session that runs the command. A command that
   runs outside an agent session cannot send. Set `FLOPWIRE_SESSION_ID` to
   send as a given session.
