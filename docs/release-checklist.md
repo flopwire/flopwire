@@ -101,12 +101,12 @@ docs/perf has no record yet, the first run sets the reference laptop.
 |---|---|---|
 | a. full index wall | < 5 min | About 7.5 min on the reference laptop (10.2GB index, baseline `main-9e4193d`). Whole tool output is indexed (D3). Record the number; a large regression blocks. |
 | a. full index peak RSS | < 600MB | Must pass. |
-| a. idle agent after 60s | < 120MB RSS | About 176MB RSS (129MB footprint) on the reference laptop, baseline `main-9e4193d`. Accepted. More is a regression. |
+| a. idle agent after 60s | < 120MB RSS | About 176MB RSS (129MB footprint) on the reference laptop, baseline `main-9e4193d`. Accepted. A `REGRESSED` flag from `bench compare` blocks. |
 | a. no-change sweep CPU | < 1s | Must pass. |
 | b. live line findable | p95 < 2s | Must pass. |
 | c. FAD 0.3.1 parity sample | 0 parse errors; mismatches documented | Must pass. Needs `cargo` for `tools/fad-dump`. Set `AGENTSVIEW_SRC` for the second oracle. |
 | d. query set expected hits | all | Must pass. |
-| d. query set latency (warm) | < 200ms each | 8 of 28 run over, max about 351ms (`error-common-term`), baseline `main-9e4193d`. Accepted. A query over the baseline by the `compare` minimum is a regression. |
+| d. query set latency (warm) | < 200ms each | 8 of 28 run over, max about 351ms (`error-common-term`), baseline `main-9e4193d`. Accepted. A query flagged `REGRESSED` by `bench compare` blocks. |
 | d. hit addresses round-trip through `read` | all | Must pass. |
 
 ## 6. Two real agent sessions
