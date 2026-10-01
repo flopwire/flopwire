@@ -1,0 +1,171 @@
+name: Perf nightly
+
+# Nightly A/B benchmark on a synthetic corpus (docs/perf/README.md).
+# Binary A is the pinned baseline (scripts/perf-baseline.sh: the newer of
+# the latest v* tag and docs/perf/nightly-baseline), binary B is main.
+# Both run the acceptance parts in ABBA blocks on one runner and one corpus;
+# medians are compared. A regression opens or updates one issue labelled
+# perf-regression; a later clean run closes it. A baseline that cannot run
+# under B's harness opens one labelled perf-baseline-broken instead.
+#
+# Never runs on pull requests: it builds and runs code, and a fork's PR
+# must not reach the issue token.
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "One-off baseline: commit SHA or v* tag (default: the newer of the latest v* tag and docs/perf/nightly-baseline)"
+        required: false
+        default: ""
+      runs:
+        description: "Runs per binary (ABBA blocks: A,B,B,A,A,B for 3)"
+        required: false
+        default: "3"
+      size:
+        description: "Synthetic corpus size"
+        required: false
+        default: "1.5GB"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-nightly
+  cancel-in-progress: false
+
+env:
+  CORPUS_SEED: "1"
+  CORPUS_SIZE: ${{ inputs.size || '1.5GB' }}
+  RUNS: ${{ inputs.runs || '3' }}
+
+jobs:
+  bench:
+    if: github.repository == 'flopwire/flopwire'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.ab.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - name: Pick the baseline
+        id: base
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+        run: |
+          scripts/perf-baseline.sh | tee -a "$GITHUB_OUTPUT"
+      - name: Build A (baseline) and B (this commit)
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
+          (cd "$RUNNER_TEMP/base" && go build -trimpath -o "$RUNNER_TEMP/flopwire-a" ./cmd/flopwire)
+          go build -trimpath -o "$RUNNER_TEMP/flopwire-b" ./cmd/flopwire
+          command -v sqlite3 >/dev/null || sudo apt-get install -y -q sqlite3 >/dev/null
+      # The corpus is regenerated each night rather than cached: generation
+      # is deterministic per generator version and seed, and takes less
+      # time than restoring a 1.5GB cache (docs/perf/README.md).
+      - name: Generate and verify the synthetic corpus
+        env:
+          GOMEMLIMIT: 2GiB
+        run: |
+          start=$(date +%s)
+          "$RUNNER_TEMP/flopwire-b" bench corpus --out "$RUNNER_TEMP/corpus" \
+            --seed "$CORPUS_SEED" --size "$CORPUS_SIZE" --verify
+          echo "corpus step: $(( $(date +%s) - start ))s"
+      - name: A/B bench
+        id: ab
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+          BASE_SOURCE: ${{ steps.base.outputs.source }}
+        run: |
+          start=$(date +%s)
+          mkdir -p perf-out
+          "$RUNNER_TEMP/flopwire-b" bench ab \
+            --a "$RUNNER_TEMP/flopwire-a" --a-commit "$BASE" \
+            --b "$RUNNER_TEMP/flopwire-b" --b-commit "$GITHUB_SHA" \
+            --home "$RUNNER_TEMP/corpus" --scratch "$RUNNER_TEMP/ab" \
+            --out perf-out --runs "$RUNS"
+          {
+            cat perf-out/ab.md
+            echo
+            echo "Baseline source: $BASE_SOURCE. A/B step: $(( $(date +%s) - start ))s."
+          } | tee perf-out/summary.md >>"$GITHUB_STEP_SUMMARY"
+          verdict="$(jq -r .verdict perf-out/ab.json)"
+          echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly
+          path: perf-out/
+          retention-days: 90
+
+  issue:
+    needs: bench
+    if: github.repository == 'flopwire/flopwire' && needs.bench.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: perf-nightly
+          path: perf-out
+      - name: Open, update or close the perf-regression issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERDICT: ${{ needs.bench.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Only main may change the issue; other refs print what they would do.
+          act=()
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then act=(echo "dry run:"); fi
+          # REGRESSED -> perf-regression; BASELINE_FAILED (the pinned
+          # baseline cannot run under main's harness; nothing compared) ->
+          # perf-baseline-broken. CLEAN closes both. BASELINE_FAILED leaves
+          # an open perf-regression issue alone: nothing was measured.
+          "${act[@]}" gh label create perf-regression --color B60205 --description "The nightly perf A/B run found a regression" --force
+          "${act[@]}" gh label create perf-baseline-broken --color FBCA04 --description "The nightly perf baseline cannot run under the current harness" --force
+          { cat perf-out/summary.md; echo; echo "Run: $RUN_URL"; } >body.md
+          open_issue() { gh issue list --label "$1" --state open --json number --jq '.[0].number // empty'; }
+          report() { # report LABEL TITLE
+            local num
+            num="$(open_issue "$1")"
+            if [[ -n "$num" ]]; then
+              "${act[@]}" gh issue comment "$num" --body-file body.md
+            else
+              "${act[@]}" gh issue create --title "$2" --label "$1" --body-file body.md
+            fi
+          }
+          resolve() { # resolve LABEL
+            local num
+            num="$(open_issue "$1")"
+            if [[ -n "$num" ]]; then
+              "${act[@]}" gh issue comment "$num" --body "Resolved: the nightly A/B run $RUN_URL is clean."
+              "${act[@]}" gh issue close "$num"
+            fi
+          }
+          case "$VERDICT" in
+            REGRESSED)
+              report perf-regression "Perf regression found by the nightly A/B bench"
+              resolve perf-baseline-broken ;;
+            BASELINE_FAILED)
+              report perf-baseline-broken "Nightly perf baseline cannot run under the current harness" ;;
+            CLEAN)
+              resolve perf-regression
+              resolve perf-baseline-broken ;;
+            *)
+              echo "unknown verdict '$VERDICT'" >&2
+              exit 1 ;;
+          esac
+          echo "verdict $VERDICT"

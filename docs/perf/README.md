@@ -1,10 +1,143 @@
-# Acceptance records
+# Performance records
 
-Each release commits the record of its local acceptance run here. The
-release checklist ([§5](../release-checklist.md#5-local-acceptance)) says
-when to make one.
+Two benchmarks track performance:
 
-## File name
+- **Nightly A/B** (primary drift signal). A GitHub Actions run on `main`
+  compares a baseline binary with `main` on a synthetic corpus. It runs
+  every night and opens an issue when `main` regressed.
+- **Local acceptance** (pre-release reality check). The release manager
+  runs it on the reference laptop over the real corpus before each
+  release. Each release commits its record here. The release checklist
+  ([§5](../release-checklist.md#5-local-acceptance)) says when to make one.
+
+## Nightly A/B
+
+The workflow is `.github/workflows/perf-nightly.yml`. It runs at 06:23 UTC
+and on manual dispatch, only in `flopwire/flopwire`, never on pull
+requests.
+
+1. `scripts/perf-baseline.sh` picks binary A, the baseline:
+   1. the `baseline` input of a manual run (a commit SHA or a `v*` tag;
+      for that run only);
+   2. else the newer of the latest release tag `v*` and the commit pinned
+      in `docs/perf/nightly-baseline`. The pin wins only when the tag is
+      its ancestor, so a release supersedes an older pin.
+
+   The baseline is pinned: no nightly moves it. A baseline that followed
+   the nightlies would hide drift below the threshold: 5% a night never
+   trips a 20% rule, but five such nights against a pinned baseline do.
+   A regression is reported every night until it is fixed or accepted.
+2. Binary B is the commit under test. The workflow builds both.
+3. `flopwire bench corpus` generates the synthetic corpus and checks that
+   every file parses with no parse errors through the production parsers.
+4. `flopwire bench ab` first reads the corpus's harness files once, so no run meets
+   a cold file cache. Then it runs the index, fresh and queries parts three
+   times per binary in ABBA blocks: A, B, B, A, A, B. Neither binary
+   always runs first, so drift during the job does not favour one side.
+   With an even run count each binary leads equally often; with an odd
+   count A leads one pair more. Both binaries run on the same runner and
+   the same corpus. The harness is B's for both runs; only the binary
+   under test changes.
+5. The step summary and the `perf-nightly` artifact hold every run's
+   record, the median records `A.json` and `B.json`, and the comparison
+   `ab.json` and `ab.md`.
+6. When the verdict is `REGRESSED`, the run opens an issue labelled
+   `perf-regression`, or comments on the open one. A later clean run
+   comments on the issue and closes it.
+
+### Verdict
+
+A metric regresses when all of these are true:
+
+- B's median grew by more than 20% over A's median.
+- B's median grew by more than the metric's minimum change (see the table
+  under [Format](#format)).
+- Every B run is above every A run.
+
+The last rule rejects runner noise: a median shift whose runs overlap is
+shown as `noise (runs overlap)` and is not a regression. A check (expected
+hits, read round-trips) regresses when it fails in any B run and passes in
+every A run. A changed hit count is reported, not counted.
+
+The `A spread` and `B spread` columns are (max - min) / median of one
+binary's runs. They measure the noise of the runner. When A and B are the
+same commit, the run is an A/A noise measurement.
+
+### Accept a regression
+
+To accept a deliberate regression, move the pin to the head of `main` in a
+PR that explains the regression:
+
+```sh
+git rev-parse origin/main >docs/perf/nightly-baseline
+```
+
+After it merges, the next nightly compares against the new pin; when it
+is clean it closes the issue. A release does the same implicitly: its tag
+becomes the baseline. To try a baseline once without moving the pin, run
+the workflow by hand:
+
+```sh
+gh workflow run perf-nightly.yml --ref main -f baseline=<sha or v* tag>
+```
+
+### Synthetic corpus
+
+`internal/synthcorpus` writes a fake home with `.claude/projects`,
+`.codex/sessions` and `.local/share/devin/cli/sessions.db`. Its shape
+follows the reference corpus
+([notes/local-search/README.md §2.1](../../notes/local-search/README.md))
+at 1.5GB instead of 18GB:
+
+| | Reference corpus | Synthetic, 1.5GB, seed 1 |
+|---|---|---|
+| Files | 13,728 | 1,006 |
+| Codex / Claude bytes | 65% / 34% | 73% / 26% |
+| Claude subagent files | 57% of Claude files | 57% |
+| Files over 20MB | 130, 30% of bytes, largest 213MB | 15, 39% of bytes, largest 108MB |
+| Line size p50 / p99 / max | 732B / 13KB / 1.2MB | 695B / 16KB / 1.2MB |
+| Bytes in lines over 100KB | 77% | 70% |
+
+The generator also writes `queries.yaml`, the query set. Each query
+searches for a needle that the generator put into known messages, so the
+expected hits are exact. The set covers a session id, a ranked phrase, an
+exact path, repo, since and agent filters (with `max_hits`), a regex, a
+subagent, a needle late in the largest file, Claude tool output, Devin and a
+very common term.
+
+The output depends only on the generator version
+(`synthcorpus.Version`) and the seed. Change the version whenever the
+generated bytes change. The workflow regenerates the corpus on every run.
+Generation and parse verification take less time than restoring a 1.5GB
+cache, and a cache would use most of the repository's cache quota.
+
+Make the corpus locally:
+
+```sh
+go build -o /tmp/flopwire ./cmd/flopwire
+/tmp/flopwire bench corpus --out /tmp/synth --size 1.5GB --verify
+/tmp/flopwire bench acceptance --scratch /tmp/synth-acc --home /tmp/synth --queries /tmp/synth/queries.yaml
+```
+
+Run the A/B comparison locally with two binaries:
+
+```sh
+/tmp/flopwire bench ab --a /tmp/flopwire-old --b /tmp/flopwire --home /tmp/synth \
+  --scratch /tmp/synth-ab --out /tmp/synth-ab-out --runs 3
+```
+
+A baseline binary must accept the commands and flags that the harness
+calls: `agent run`, `grep`, `search` and `read`. If a change renames one
+of them, the baseline cannot run. The verdict is then `BASELINE_FAILED`,
+not `REGRESSED`: nothing was compared, the summary shows A's error, and
+the run opens an issue labelled `perf-baseline-broken`. Move the pin
+(see [Accept a regression](#accept-a-regression)) to the commit that
+changed the flag, and compare that commit with the old baseline by hand
+first so the change does not hide a regression.
+
+## Local acceptance records
+
+### File name
 
 `<version>-<YYYY-MM-DD>.json`, for example `v0.4.0-2026-10-01.json`. The
 version is the release tag. The date is the UTC date of the run. `flopwire
@@ -12,7 +145,7 @@ bench acceptance --json` prints the name when it writes a record. A
 baseline recorded before a release tag exists uses `main-<short sha>` as
 the version, for example `main-9e4193d-2026-10-01.json`.
 
-## Make a record
+### Make a record
 
 1. Run the acceptance set on the reference laptop. Set the version of the
    release:
@@ -31,7 +164,7 @@ the version, for example `main-9e4193d-2026-10-01.json`.
 4. Commit the record in the release PR.
 5. Paste the comparison table into the release PR description.
 
-## Compare two records
+### Compare two records
 
 ```sh
 flopwire bench compare docs/perf/v0.3.0-2026-09-01.json docs/perf/v0.4.0-2026-10-01.json
@@ -51,7 +184,7 @@ when the corpus size changed by more than the threshold. Do not treat a
 regression across machines as real. Run both builds on one machine to
 confirm it.
 
-## Format
+### Format
 
 ```json
 {

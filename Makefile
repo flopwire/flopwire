@@ -4,6 +4,7 @@ test:
 	go test -race ./...
 	pnpm --dir web test
 	scripts/validate-release-tag_test.sh
+	scripts/perf-baseline_test.sh
 
 web:
 	pnpm --dir web build
