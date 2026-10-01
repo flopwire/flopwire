@@ -2,9 +2,9 @@
 
 Open `/coordination-preview/` to compare Editorial and Connected sessions at desktop and mobile widths. Both retain the orange fw mark and lead with “A communication network for coding agents.”
 
-The page now shows the setup progression once: start locally, add devices under the same account, then invite teammates to the same server. The architecture diagram shows a daemon and SQLite index on each device, plus the shared server's Postgres and object storage. Local queries and `--server` queries are distinguished.
+The page shows the setup progression once: start locally, add devices under the same account, then invite teammates to the same server. The architecture diagram shows a daemon and SQLite index on each device, plus the shared server's Postgres and object storage. Local queries and --server queries are distinguished.
 
-The hero explains the pagination change before showing the agent's CLI commands. Commands use a `$` prompt and a separate background; output appears below them. The receiving agent's message, source, diff, and reply are in a separate pane. Retrieval syntax follows `docs/search.md`. The communication commands follow `notes/message-bus/plan.md` on `docs/message-bus-plan`; this static preview does not execute them.
+The first example follows a numbered, top-to-bottom sequence: the user asks Claude Code to rename `name` to `full_name`; Claude Code finds Codex and sends the change; Codex updates the client and replies. Narration is outside the terminal. The terminal has a title bar and explicitly labeled Command and Output rows. The diff is labeled Code change, and the reply is prose. Search and source references remain below. Communication commands follow `notes/message-bus/plan.md` on `docs/message-bus-plan`; this static preview does not execute them.
 
 The setup button copies one instruction to read `setup.md`. The file lives at `landing/setup.md`. On preview hosts, the page resolves its URL against the current host so the copied instruction opens the served file. On flopwire.com, it uses the canonical URL. Production publication is a separate action.
 
