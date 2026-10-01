@@ -17,15 +17,16 @@ and on manual dispatch, only in `flopwire/flopwire`, never on pull
 requests.
 
 1. `scripts/perf-baseline.sh` picks binary A, the baseline:
-   1. the `baseline` input of a manual run;
-   2. else the latest release tag `v*`;
-   3. else the baseline that the previous nightly on `main` recorded (the
-      `perf-baseline` artifact);
-   4. else `main~1`.
+   1. the `baseline` input of a manual run (a commit SHA or a `v*` tag;
+      for that run only);
+   2. else the newer of the latest release tag `v*` and the commit pinned
+      in `docs/perf/nightly-baseline`. The pin wins only when the tag is
+      its ancestor, so a release supersedes an older pin.
 
-   A clean nightly records its own commit as the next baseline. A
-   regressed nightly keeps its baseline, so the regression is reported
-   every night until it is fixed.
+   The baseline is pinned: no nightly moves it. A baseline that followed
+   the nightlies would hide drift below the threshold: 5% a night never
+   trips a 20% rule, but five such nights against a pinned baseline do.
+   A regression is reported every night until it is fixed or accepted.
 2. Binary B is the commit under test. The workflow builds both.
 3. `flopwire bench corpus` generates the synthetic corpus and checks that
    every file parses with no parse errors through the production parsers.
@@ -60,12 +61,20 @@ same commit, the run is an A/A noise measurement.
 
 ### Accept a regression
 
-To accept a deliberate regression, run the workflow by hand on `main` with
-`baseline` set to the head of `main`. The run is A/A, so it is clean. It
-closes the issue and records `main` as the next baseline.
+To accept a deliberate regression, move the pin to the head of `main` in a
+PR that explains the regression:
 
 ```sh
-gh workflow run perf-nightly.yml --ref main -f baseline="$(git rev-parse origin/main)"
+git rev-parse origin/main >docs/perf/nightly-baseline
+```
+
+After it merges, the next nightly compares against the new pin; when it
+is clean it closes the issue. A release does the same implicitly: its tag
+becomes the baseline. To try a baseline once without moving the pin, run
+the workflow by hand:
+
+```sh
+gh workflow run perf-nightly.yml --ref main -f baseline=<sha or v* tag>
 ```
 
 ### Synthetic corpus
@@ -115,8 +124,12 @@ Run the A/B comparison locally with two binaries:
 
 A baseline binary must accept the commands and flags that the harness
 calls: `agent run`, `grep`, `search` and `read`. If a change renames one
-of them, the first nightly after it fails; set `baseline` to the new
-commit to reset it.
+of them, the baseline cannot run. The verdict is then `BASELINE_FAILED`,
+not `REGRESSED`: nothing was compared, the summary shows A's error, and
+the run opens an issue labelled `perf-baseline-broken`. Move the pin
+(see [Accept a regression](#accept-a-regression)) to the commit that
+changed the flag, and compare that commit with the old baseline by hand
+first so the change does not hide a regression.
 
 ## Local acceptance records
 

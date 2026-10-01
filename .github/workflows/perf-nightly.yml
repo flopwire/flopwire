@@ -1,10 +1,12 @@
 name: Perf nightly
 
 # Nightly A/B benchmark on a synthetic corpus (docs/perf/README.md).
-# Binary A is the baseline (scripts/perf-baseline.sh), binary B is main.
+# Binary A is the pinned baseline (scripts/perf-baseline.sh: the newer of
+# the latest v* tag and docs/perf/nightly-baseline), binary B is main.
 # Both run the acceptance parts alternately on one runner and one corpus;
 # medians are compared. A regression opens or updates one issue labelled
-# perf-regression; a later clean run closes it.
+# perf-regression; a later clean run closes it. A baseline that cannot run
+# under B's harness opens one labelled perf-baseline-broken instead.
 #
 # Never runs on pull requests: it builds and runs code, and a fork's PR
 # must not reach the issue token.
@@ -15,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       baseline:
-        description: "Baseline commit or tag (default: latest release tag, else the previous nightly's baseline, else main~1)"
+        description: "One-off baseline: commit SHA or v* tag (default: the newer of the latest v* tag and docs/perf/nightly-baseline)"
         required: false
         default: ""
       runs:
@@ -46,7 +48,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      actions: read # the previous nightly's baseline artifact
     outputs:
       verdict: ${{ steps.ab.outputs.verdict }}
     steps:
@@ -60,7 +61,6 @@ jobs:
       - name: Pick the baseline
         id: base
         env:
-          GH_TOKEN: ${{ github.token }}
           INPUT_BASELINE: ${{ inputs.baseline }}
         run: |
           scripts/perf-baseline.sh | tee -a "$GITHUB_OUTPUT"
@@ -103,23 +103,10 @@ jobs:
           } | tee perf-out/summary.md >>"$GITHUB_STEP_SUMMARY"
           verdict="$(jq -r .verdict perf-out/ab.json)"
           echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
-          # The next nightly's baseline: this commit when clean; the same
-          # baseline when regressed, so the regression is reported until fixed.
-          if [[ "$verdict" == CLEAN ]]; then
-            echo "$GITHUB_SHA" >perf-out/baseline.sha
-          else
-            echo "$BASE" >perf-out/baseline.sha
-          fi
       - uses: actions/upload-artifact@v4
         with:
           name: perf-nightly
           path: perf-out/
-          retention-days: 90
-      - if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-baseline
-          path: perf-out/baseline.sha
           retention-days: 90
 
   issue:
@@ -143,18 +130,42 @@ jobs:
           # Only main may change the issue; other refs print what they would do.
           act=()
           if [[ "$GITHUB_REF" != refs/heads/main ]]; then act=(echo "dry run:"); fi
-          label=perf-regression
-          "${act[@]}" gh label create "$label" --color B60205 --description "The nightly perf A/B run found a regression" --force
-          num="$(gh issue list --label "$label" --state open --json number --jq '.[0].number // empty')"
+          # REGRESSED -> perf-regression; BASELINE_FAILED (the pinned
+          # baseline cannot run under main's harness; nothing compared) ->
+          # perf-baseline-broken. CLEAN closes both. BASELINE_FAILED leaves
+          # an open perf-regression issue alone: nothing was measured.
+          "${act[@]}" gh label create perf-regression --color B60205 --description "The nightly perf A/B run found a regression" --force
+          "${act[@]}" gh label create perf-baseline-broken --color FBCA04 --description "The nightly perf baseline cannot run under the current harness" --force
           { cat perf-out/summary.md; echo; echo "Run: $RUN_URL"; } >body.md
-          if [[ "$VERDICT" == REGRESSED ]]; then
+          open_issue() { gh issue list --label "$1" --state open --json number --jq '.[0].number // empty'; }
+          report() { # report LABEL TITLE
+            local num
+            num="$(open_issue "$1")"
             if [[ -n "$num" ]]; then
               "${act[@]}" gh issue comment "$num" --body-file body.md
             else
-              "${act[@]}" gh issue create --title "Perf regression found by the nightly A/B bench" --label "$label" --body-file body.md
+              "${act[@]}" gh issue create --title "$2" --label "$1" --body-file body.md
             fi
-          elif [[ -n "$num" ]]; then
-            "${act[@]}" gh issue comment "$num" --body "Resolved: the nightly A/B run $RUN_URL is clean."
-            "${act[@]}" gh issue close "$num"
-          fi
-          echo "verdict $VERDICT, open issue: ${num:-none}"
+          }
+          resolve() { # resolve LABEL
+            local num
+            num="$(open_issue "$1")"
+            if [[ -n "$num" ]]; then
+              "${act[@]}" gh issue comment "$num" --body "Resolved: the nightly A/B run $RUN_URL is clean."
+              "${act[@]}" gh issue close "$num"
+            fi
+          }
+          case "$VERDICT" in
+            REGRESSED)
+              report perf-regression "Perf regression found by the nightly A/B bench"
+              resolve perf-baseline-broken ;;
+            BASELINE_FAILED)
+              report perf-baseline-broken "Nightly perf baseline cannot run under the current harness" ;;
+            CLEAN)
+              resolve perf-regression
+              resolve perf-baseline-broken ;;
+            *)
+              echo "unknown verdict '$VERDICT'" >&2
+              exit 1 ;;
+          esac
+          echo "verdict $VERDICT"
