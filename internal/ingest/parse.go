@@ -318,17 +318,10 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 			touched = append(touched, id)
 		}
 	}
-	slices.Sort(touched) // lock order
+	slices.Sort(touched)
 	// The flushes counted rows this supersession just retired: recount.
 	if tag.RowsAffected() > 0 {
-		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			for _, id := range touched {
-				if err := refreshDigest(ctx, tx, id, nil, digestRecount); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
+		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error { return recountDigests(ctx, tx, touched) }); err != nil {
 			return err
 		}
 	}

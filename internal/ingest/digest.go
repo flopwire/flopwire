@@ -87,10 +87,30 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 	return err
 }
 
-// recountDigests recounts the digests of conversations ids (sorted) from
-// their live rows. A conversation deleted meanwhile is skipped.
+// recountDigests recounts the digests of conversations ids from their live
+// rows. A conversation deleted meanwhile is skipped.
+//
+// Two sources can write one conversation at once (a file replaced at the
+// same path keeps its session, and the old source's refresh runs beside
+// the new one's live parse under a different source fence), so the
+// recount first locks the rows: a flush holds its conversation's row from
+// its upsert to its commit, and a count taken without the lock could
+// overwrite a digest that flush commits meanwhile. The rows are locked in
+// the order a flush upserts them (session id, bytewise), to avoid
+// deadlocks between the two.
 func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
-	for _, id := range ids {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`, ids)
+	if err != nil {
+		return err
+	}
+	locked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, id := range locked {
 		if err := refreshDigest(ctx, tx, id, nil, digestRecount); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}

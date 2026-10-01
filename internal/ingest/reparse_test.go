@@ -310,3 +310,52 @@ func TestCrashedReparseDigestRecountedOnRetry(t *testing.T) {
 		t.Fatal("the retry left the failed parse's digest wrong")
 	}
 }
+
+// Two sources can write one conversation at once: a file replaced at the
+// same path (previous_source_id) keeps its session id, and the idle
+// refresh of the old source runs beside the live parse of the new one
+// under different source fences. A recount must not overwrite the digest
+// of a flush that committed while it counted.
+func TestRecountWaitsForConcurrentFlush(t *testing.T) {
+	e := newEnv(t)
+	id := refreshedSource(t, e)
+	var conv string
+	if err := e.pool.QueryRow(e.ctx, `SELECT conversation_id::text FROM messages WHERE source_id=$1 AND NOT superseded`, id).Scan(&conv); err != nil {
+		t.Fatal(err)
+	}
+	// The other source's flush: it holds the conversation (its upsert locks
+	// the row), adds a live row and adds it to the digest.
+	flush, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flush.Rollback(e.ctx)
+	for _, sql := range []string{
+		`UPDATE conversations SET last_activity_at=last_activity_at WHERE id=$1`,
+		`INSERT INTO messages(id,conversation_id,source_id,native_id,part,ordinal,kind,role,text,text_len,content_sha,source_generation,parser)
+		 SELECT gen_random_uuid(),conversation_id,source_id,'other-source-row',part,ordinal+1,kind,role,text,text_len,content_sha,source_generation,parser
+		 FROM messages WHERE conversation_id=$1 AND NOT superseded`,
+		`UPDATE conversations SET digest=jsonb_set(digest,'{messages,user}','2') WHERE id=$1`,
+	} {
+		if _, err := flush.Exec(e.ctx, sql, conv); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- pgx.BeginFunc(e.ctx, e.pool, func(tx pgx.Tx) error { return recountDigests(e.ctx, tx, []string{conv}) })
+	}()
+	// Commit once the recount waits on the conversation.
+	for e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := flush.Commit(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND digest->'messages'->>'user'='2'`, conv) != 1 {
+		t.Fatal("recount overwrote a concurrent flush's digest")
+	}
+}
