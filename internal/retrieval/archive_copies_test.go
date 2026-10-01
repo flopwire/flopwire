@@ -4,14 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/auth"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/syncproto"
+	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/google/uuid"
 )
 
@@ -145,4 +151,137 @@ func TestNonTargetTextCopyStaysUnmasked(t *testing.T) {
 	if n := s.rowsWith("BLUEFALCON"); n != 2 {
 		t.Fatalf("%d rows hold the codename, want the Codex and Devin copies", n)
 	}
+}
+
+// A byte-identical record whose parsed text differs: a Claude tool result
+// whose output was persisted to tool-results/. Laptop A has the companion,
+// so its row holds the full output; laptop B archived the same session
+// file without it, so its row holds the preview from the same record line.
+// The texts differ (another content_sha) while the record is the same
+// bytes. After a redaction of A's row the catalog masks B's raw read, so
+// B's rows, conversation and stored bytes must be masked too.
+func TestAtRestNonTargetByteCopyOtherText(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	sess := "30000000-0000-4000-8000-0000000000a7"
+	dir := filepath.Join(s.home, ".claude", "projects", "-w-pc")
+	main := filepath.Join(dir, sess+".jsonl")
+	comp := filepath.Join(dir, sess, "tool-results", "toolu_pc1.txt")
+	os.MkdirAll(filepath.Dir(comp), 0o700)
+	preview := "<persisted-output>\nOutput too large (40KB). Full output saved to: " + comp +
+		"\n\nPreview (first 2KB):\nkey=BLUEFALCON-PREVIEW\n...\n</persisted-output>"
+	data := jline(map[string]any{"type": "user", "uuid": "30000000-0000-4000-8000-0000000000b1", "timestamp": "2026-09-30T12:00:00.000Z",
+		"sessionId": sess, "cwd": "/w/pc", "message": map[string]any{"role": "user", "content": "dump the config"}}) +
+		jline(map[string]any{"type": "assistant", "uuid": "30000000-0000-4000-8000-0000000000b2", "parentUuid": "30000000-0000-4000-8000-0000000000b1",
+			"timestamp": "2026-09-30T12:00:01.000Z", "sessionId": sess, "cwd": "/w/pc",
+			"message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_pc1", "name": "Bash", "input": map[string]any{"command": "cat config"}}}}}) +
+		jline(map[string]any{"type": "user", "uuid": "30000000-0000-4000-8000-0000000000b3", "parentUuid": "30000000-0000-4000-8000-0000000000b2",
+			"timestamp": "2026-09-30T12:00:02.000Z", "sessionId": sess, "cwd": "/w/pc",
+			"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_pc1", "content": preview}}}})
+	for i := range 60 {
+		data += jline(map[string]any{"type": "assistant", "uuid": fmt.Sprintf("30000000-0000-4000-8000-2%011d", i), "timestamp": "2026-09-30T12:00:03.000Z",
+			"sessionId": sess, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("filler %d %s", i, strings.Repeat("lorem ipsum ", 15))}}}})
+	}
+	if err := os.WriteFile(main, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(comp, []byte("key=BLUEFALCON-PREVIEW\nrest of the full output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The companion first: A's row is parsed once, with the full output.
+	if err := s.sy.Sync(ctx, devicesync.SourceSpec{Path: comp, Agent: transcript.AgentClaude, StorageKind: transcript.StorageCompanion, Parent: main}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sy.Sync(ctx, devicesync.SourceSpec{Path: main, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, SessionKey: sess, Parser: claude.ParserName}); err != nil {
+		t.Fatal(err)
+	}
+	laptopB := s.device("laptop-b")
+	s.rawUploadAs(laptopB, syncproto.Source{Path: "/w/laptop-b/" + sess + ".jsonl", FileID: "copy:pc", Agent: "claude", StorageKind: "jsonl_append",
+		Parser: claude.ParserName, SessionKey: sess}, 0, []byte(data))
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row := func(path string) string {
+		t.Helper()
+		var id string
+		if err := s.pool.QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN sources src ON src.id=m.source_id
+			WHERE src.path=$1 AND strpos(m.text,'BLUEFALCON')>0 AND NOT m.superseded`, path).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	target, other := row(main), row("/w/laptop-b/"+sess+".jsonl")
+	if n := s.count(`SELECT count(DISTINCT content_sha) FROM messages WHERE id=ANY($1::uuid[])`, []string{target, other}); n != 2 {
+		t.Fatalf("fixture: the two rows have the same text (%d distinct)", n)
+	}
+	if n := s.count(`SELECT count(*) FROM messages WHERE id=$1 AND version=1`, target); n != 1 {
+		t.Fatalf("fixture: the target has another version")
+	}
+
+	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: target}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.client.RawAt(ctx, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("BLUEFALCON")) {
+		t.Fatal("fixture: the catalog does not mask the copy's raw read")
+	}
+	cx, err := s.client.Read(ctx, format.ReadQuery{Address: other}, format.Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readJSON, _ := json.Marshal(cx)
+	hits, err := find(t, s.client, "BLUEFALCON", false, true, format.Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(readJSON, []byte("BLUEFALCON")) || len(hits) != 0 {
+		t.Errorf("read or grep serves the byte copy unmasked while its raw read is masked (%d grep hits, %d rows)", len(hits), s.rowsWith("BLUEFALCON"))
+	}
+	s.drainRepairs(s.queue)
+	s.requireNoSecretAtRest("BLUEFALCON")
+}
+
+// With --all-copies the Codex record of the same text is a target too, so
+// its line enters the catalog. A byte copy of that rollout archived from
+// another user's laptop (outside the owner's all_copies reach) has the
+// Codex record's native id, not the addressed row's: it must be found and
+// masked as well.
+func TestAllCopiesByteCopyOfOtherCopy(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, dv, export := s.writeRedactFixtures()
+	s.syncRedact(s.sy, specs, dv, export)
+	data, err := os.ReadFile(specs[1].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := s.member("bob@example.test")
+	s.rawUploadAs(bob, syncproto.Source{Path: "/w/laptop-b-rollout.jsonl", FileID: "copy:cx", Agent: "codex", StorageKind: "jsonl_append",
+		Parser: specs[1].Parser}, 0, data)
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var other string
+	if err := s.pool.QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN sources src ON src.id=m.source_id
+		WHERE src.path='/w/laptop-b-rollout.jsonl' AND strpos(m.text,'BLUEFALCON')>0 AND NOT m.superseded`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: s.hiddenMessage() + ":2-2", AllCopies: true}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.client.RawAt(ctx, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("BLUEFALCON")) {
+		t.Fatal("fixture: the catalog does not mask the copy's raw read")
+	}
+	if n := s.rowsWith("BLUEFALCON"); n != 0 {
+		t.Errorf("%d rows keep the line while the raw read of the byte copy is masked", n)
+	}
+	s.drainRepairs(s.queue)
+	s.requireNoSecretAtRest("BLUEFALCON")
 }

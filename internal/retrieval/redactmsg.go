@@ -40,6 +40,7 @@ type redactTarget struct {
 	gen, off, n                  *int64
 	persisted, native            string
 	enrichment                   map[string]any
+	sha                          []byte
 }
 
 // RedactMessage masks the message an address names (lines from..to of
@@ -102,9 +103,10 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		return res, err
 	}
 	// Rows that may be parsed from a byte-identical record elsewhere (the
-	// session archived from another device): candidates by text and
-	// native id.
-	candidates, err := byteCopyCandidates(ctx, s.Pool, sha, native)
+	// session archived from another device): candidates by the targets'
+	// native ids, or their text when they have none.
+	copyKeys := byteCopyKeysOf(targets)
+	candidates, err := byteCopyCandidates(ctx, s.Pool, copyKeys)
 	if err != nil {
 		return res, err
 	}
@@ -286,7 +288,7 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		// with the old catalog: start again to decide it. Every flush and
 		// parse write waits for this lock, so the probe is an index probe
 		// on content_sha (TestRedactionProbesUnderLockPlan).
-		again, err := byteCopyCandidates(ctx, tx, sha, native)
+		again, err := byteCopyCandidates(ctx, tx, copyKeys)
 		if err != nil {
 			return err
 		}
@@ -417,7 +419,7 @@ type querier interface {
 }
 
 const targetCols = `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
-			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text
+			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text,m.content_sha
 		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id`
 
 // redactTargetsSQL selects a redaction's targets: the row ($1), its other
@@ -430,12 +432,40 @@ const redactTargetsSQL = targetCols + `
 		ORDER BY m.id`
 
 // byteCopiesSQL selects the rows that may be parsed from a record
-// byte-identical to the addressed one: the same text and native id, of
-// any user (the catalog masks the raw reads of all of them). Served by
-// messages_content_sha_idx.
-const byteCopiesSQL = targetCols + `
-		WHERE m.content_sha=$1 AND m.native_id IS NOT DISTINCT FROM $2
-		ORDER BY m.id`
+// byte-identical to a target's, of any user (the catalog masks the raw
+// reads of all of them): rows with a target's native id ($1), and rows
+// without one that have the text (content_sha, $2) of a target without
+// one. Every parser derives a native id from the record's bytes, so a
+// byte-identical record has the target's native id, but its text can
+// differ: it may be assembled with context outside the record (a Claude
+// tool result filled from tool-results/ on one device and not on
+// another). Served by messages_native_idx and messages_content_sha_idx.
+// An empty list is a one-time filter, not a scan.
+const byteCopiesSQL = `(` + targetCols + ` WHERE cardinality($1::text[])>0 AND m.native_id=ANY($1::text[]))
+		UNION ALL (` + targetCols + ` WHERE cardinality($2::bytea[])>0 AND m.native_id IS NULL AND m.content_sha=ANY($2::bytea[]))
+		ORDER BY 1`
+
+// byteCopyKeys are byteCopiesSQL's parameters.
+type byteCopyKeys struct {
+	natives []string
+	shas    [][]byte
+}
+
+// byteCopyKeysOf returns the native ids of targets, and the text hashes
+// of the targets without one.
+func byteCopyKeysOf(targets []redactTarget) byteCopyKeys {
+	k := byteCopyKeys{natives: []string{}, shas: [][]byte{}}
+	for _, t := range targets {
+		if t.native != "" {
+			if !slices.Contains(k.natives, t.native) {
+				k.natives = append(k.natives, t.native)
+			}
+		} else {
+			k.shas = append(k.shas, t.sha)
+		}
+	}
+	return k
+}
 
 // redactTargets reads a redaction's target rows, ordered by id; with lock,
 // FOR UPDATE.
@@ -455,8 +485,8 @@ func redactTargets(ctx context.Context, q querier, lock bool, focus, conv string
 }
 
 // byteCopyCandidates reads the rows byteCopiesSQL selects, ordered by id.
-func byteCopyCandidates(ctx context.Context, q querier, sha []byte, native *string) ([]redactTarget, error) {
-	rows, err := q.Query(ctx, byteCopiesSQL, sha, native)
+func byteCopyCandidates(ctx context.Context, q querier, k byteCopyKeys) ([]redactTarget, error) {
+	rows, err := q.Query(ctx, byteCopiesSQL, k.natives, k.shas)
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +523,7 @@ func scanTargets(rows pgx.Rows) ([]redactTarget, error) {
 	for rows.Next() {
 		var t redactTarget
 		var gen int64
-		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv); err != nil {
+		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv, &t.sha); err != nil {
 			return nil, err
 		}
 		t.gen = &gen

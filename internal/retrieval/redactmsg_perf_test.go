@@ -37,10 +37,11 @@ func copyCorpus(t testing.TB, sessions int) (*Store, *perfguard.Counter, string,
 // The queries a redaction runs while it holds the redacted-lines lock
 // exclusively (every flush and parse write waits for it) are index
 // probes: the target re-read, with and without all_copies, and the
-// byte-copy probe on content_sha.
+// byte-copy probe on native_id and content_sha.
 func TestRedactionProbesUnderLockPlan(t *testing.T) {
 	s, _, id, conv, sha, native := copyCorpus(t, 200)
-	perfguard.AssertIndexedPlan(t, s.Pool, byteCopiesSQL, sha, native)
+	perfguard.AssertIndexedPlan(t, s.Pool, byteCopiesSQL, []string{native}, [][]byte{})
+	perfguard.AssertIndexedPlan(t, s.Pool, byteCopiesSQL, []string{}, [][]byte{sha})
 	for _, all := range []bool{false, true} {
 		perfguard.AssertIndexedPlan(t, s.Pool, redactTargetsSQL+" FOR UPDATE OF m", id, conv, native, all, sha, false, uuidZero, []string{id})
 	}
@@ -67,7 +68,7 @@ func probe(t testing.TB, pool *pgxpool.Pool, id, conv string, sha []byte, native
 		if err != nil {
 			return err
 		}
-		copies, err := byteCopyCandidates(ctx, tx, sha, &native)
+		copies, err := byteCopyCandidates(ctx, tx, byteCopyKeys{natives: []string{native}, shas: [][]byte{sha}})
 		if err != nil {
 			return err
 		}
