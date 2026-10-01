@@ -5,20 +5,71 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"slices"
 
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/jackc/pgx/v5"
 )
 
+// The rules upgrade reads every stored version of a source, superseded ones
+// included, through messages_source_idx (source_id, superseded). The ids to
+// rewrite are listed a page at a time, then locked and rewritten 64 at a
+// time by primary key. Rows a batch finds already stamped (a concurrent
+// upgrade got there first) are skipped. Rewritten rows drop out of the
+// listing, so the next page is the same query again, until a short page.
+const (
+	staleVersions = `SELECT id::text FROM messages WHERE source_id=$1
+    AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id LIMIT $3`
+	staleVersionsBatch = `SELECT id::text,text,enrichment FROM messages WHERE id=ANY($1::uuid[])
+    AND redaction_rules IS DISTINCT FROM $2 ORDER BY messages.id FOR UPDATE NOWAIT`
+	// A source's conversations: those that name it and those holding any
+	// of its row versions.
+	sourceConversations = `SELECT id::text FROM (SELECT id FROM conversations WHERE source_id=$1
+    UNION SELECT conversation_id FROM messages WHERE source_id=$1) s ORDER BY s.id`
+	sourceConversationsBatch = `SELECT id::text,COALESCE(title,''),digest FROM conversations
+    WHERE id=ANY($1::uuid[]) ORDER BY conversations.id FOR UPDATE NOWAIT`
+)
+
+// staleVersionsPage bounds the ids held in memory at once. A page re-reads
+// the source's index entries, so a source of N rows costs about
+// N·(N/staleVersionsPage) index reads; one page covers all but the largest
+// sources.
+var staleVersionsPage = 16384
+
 // maskStoredVersions applies new rules to historical row versions too. A
 // reparse can supersede an old row; it must not leave its secret searchable.
 // Batch commits are idempotent. Only derived data changes, never the archive.
+//
+// A row stored after a page is listed needs no masking: the caller holds the
+// source's parse fence (the "flopwire:source-parse:<source>" advisory lock
+// taken in parseFenced, parse_fence.go), so no other extraction writes this
+// source's rows meanwhile, and the sink stamps every row it writes with the
+// current redact.RulesVersion (sink.insert and sink.update).
 func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 	for {
-		n := 0
+		rows, err := q.Pool.Query(ctx, staleVersions, source, redact.RulesVersion, staleVersionsPage)
+		if err != nil {
+			return err
+		}
+		stale, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		if err := q.maskVersions(ctx, stale); err != nil {
+			return err
+		}
+		if len(stale) < staleVersionsPage {
+			break
+		}
+	}
+	return q.maskSourceSummaries(ctx, source)
+}
+
+// maskVersions locks and rewrites the listed row versions 64 at a time.
+func (q *Queue) maskVersions(ctx context.Context, stale []string) error {
+	for batch := range slices.Chunk(stale, 64) {
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT id::text,text,enrichment FROM messages WHERE source_id=$1
-    AND redaction_rules IS DISTINCT FROM $2 ORDER BY id LIMIT 64 FOR UPDATE NOWAIT`, source, redact.RulesVersion)
+			rows, err := tx.Query(ctx, staleVersionsBatch, batch, redact.RulesVersion)
 			if err != nil {
 				return archiveLockError(err)
 			}
@@ -34,7 +85,6 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 			if err != nil {
 				return archiveLockError(err)
 			}
-			n = len(records)
 			for _, r := range records {
 				text, _ := redact.Redact([]byte(r.text))
 				enrichment, err := maskRuleJSON(r.enrichment)
@@ -51,18 +101,24 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			break
-		}
 	}
-	// Cached summaries can retain strings no longer present in a live row.
-	last := ""
-	for {
-		var ids []string
+	return nil
+}
+
+// maskSourceSummaries rewrites the source's conversation titles and digests:
+// cached summaries can retain strings no longer present in a live row.
+func (q *Queue) maskSourceSummaries(ctx context.Context, source string) error {
+	rows, err := q.Pool.Query(ctx, sourceConversations, source)
+	if err != nil {
+		return err
+	}
+	conversations, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for batch := range slices.Chunk(conversations, 64) {
 		err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT c.id::text,COALESCE(c.title,''),c.digest FROM conversations c
-    WHERE c.id::text>$2 AND (c.source_id=$1 OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=$1 AND m.conversation_id=c.id))
-    ORDER BY c.id::text LIMIT 64 FOR UPDATE NOWAIT`, source, last)
+			rows, err := tx.Query(ctx, sourceConversationsBatch, batch)
 			if err != nil {
 				return archiveLockError(err)
 			}
@@ -79,7 +135,6 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 				return archiveLockError(err)
 			}
 			for _, r := range records {
-				ids = append(ids, r.id)
 				title, _ := redact.Redact([]byte(r.title))
 				digest, err := maskRuleJSON(r.digest)
 				if err != nil {
@@ -96,11 +151,8 @@ func (q *Queue) maskStoredVersions(ctx context.Context, source string) error {
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
-		}
-		last = ids[len(ids)-1]
 	}
+	return nil
 }
 
 // Decode strings before masking, including escaped PEM blocks in JSON.
