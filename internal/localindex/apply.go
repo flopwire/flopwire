@@ -117,8 +117,9 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 	}
 	type span struct{ min, max int64 }
 	spans := map[int64]*span{}
-	byConv := map[int64][]*transcript.Message{}
-	replaced := map[int64]bool{}
+	byConv := map[int64][]*transcript.Message{}  // every row written: folded into the digest
+	counted := map[int64][]*transcript.Message{} // new rows: added to the digest's counts
+	replaced := map[int64]bool{}                 // a counted attribute of an existing row changed
 	if len(b.prep) != len(b.Messages) {
 		b.prep = prepareAll(b.Messages)
 	}
@@ -130,11 +131,14 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 			}
 			convs[m.SessionID] = convID
 		}
-		inserted := res.Inserted
-		if err := w.upsertMessage(b, convID, m, &b.prep[i], res); err != nil {
+		change, err := w.upsertMessage(b, convID, m, &b.prep[i], res)
+		if err != nil {
 			return fmt.Errorf("message %s/%s part %d: %w", m.SessionID, m.NativeID, m.Part, err)
 		}
-		if res.Inserted == inserted { // an existing row changed: recount
+		switch change {
+		case rowAdded:
+			counted[convID] = append(counted[convID], m)
+		case rowChanged:
 			replaced[convID] = true
 		}
 		byConv[convID] = append(byConv[convID], m)
@@ -175,8 +179,11 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 		}
 	}
 	// Every append refreshes the digests of the conversations it touched:
-	// adding to the counts, or recounting when rows were replaced or
-	// superseded.
+	// adding new rows to the counts, or recounting when a counted
+	// attribute of an existing row changed or rows were superseded. A
+	// re-parse that touches rows without changing what the digest counts
+	// (a new generation, a moved line) adds nothing, so it does not
+	// recount the whole conversation per batch.
 	retired := b.SupersedeAbsent || len(b.RetireSources) > 0
 	ids := make([]int64, 0, len(convs))
 	for _, id := range convs {
@@ -186,7 +193,7 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		if err := w.refreshDigest(id, byConv[id], retired || replaced[id]); err != nil {
+		if err := w.refreshDigest(id, byConv[id], counted[id], retired || replaced[id]); err != nil {
 			return fmt.Errorf("digest of conversation %d: %w", id, err)
 		}
 	}
@@ -284,44 +291,85 @@ func (w *writeTx) conversationID(agent, sessionID string, sourceID int64) (int64
 // resolveLinks fills parent_conversation_id and spawned_by_message_id for
 // the conversation and for children that arrived before it (spec §4.3).
 func (w *writeTx) resolveLinks(convID int64) error {
-	if _, err := w.exec(`UPDATE conversations SET parent_conversation_id = (
-		  SELECT p.id FROM conversations p WHERE p.device_id = conversations.device_id AND p.agent = conversations.agent
-		    AND p.session_id = conversations.parent_session_id)
-		WHERE id = ? AND parent_session_id IS NOT NULL AND parent_conversation_id IS NULL`, convID); err != nil {
+	if _, err := w.exec(resolveParentSQL, convID); err != nil {
 		return err
 	}
-	if _, err := w.exec(`UPDATE conversations SET parent_conversation_id = ?
-		WHERE parent_conversation_id IS NULL AND (device_id, agent, parent_session_id) =
-		  (SELECT device_id, agent, session_id FROM conversations WHERE id = ?)`, convID, convID); err != nil {
+	if _, err := w.exec(resolveChildrenSQL, convID, convID); err != nil {
 		return err
 	}
-	// The spawning tool call: in the parent, the tool_call row whose call id
-	// (or native id) is the child's spawned_by_tool_call_id.
-	_, err := w.exec(`UPDATE conversations SET spawned_by_message_id = (
-		  SELECT m.id FROM messages m WHERE m.conversation_id = conversations.parent_conversation_id
-		    AND m.kind = 'tool_call' AND m.superseded_by IS NULL
-		    AND (m.tool_call_id = conversations.spawned_by_tool_call_id OR m.native_id = conversations.spawned_by_tool_call_id)
-		  ORDER BY m.id LIMIT 1)
-		WHERE spawned_by_message_id IS NULL AND spawned_by_tool_call_id IS NOT NULL AND parent_conversation_id IS NOT NULL
-		  AND (id = ? OR parent_conversation_id = ?)`, convID, convID)
+	_, err := w.exec(resolveSpawnSQL, convID, convID)
 	return err
 }
 
-// head is the current version of a message key.
+const (
+	resolveParentSQL = `UPDATE conversations SET parent_conversation_id = (
+		  SELECT p.id FROM conversations p WHERE p.device_id = conversations.device_id AND p.agent = conversations.agent
+		    AND p.session_id = conversations.parent_session_id)
+		WHERE id = ? AND parent_session_id IS NOT NULL AND parent_conversation_id IS NULL`
+	resolveChildrenSQL = `UPDATE conversations SET parent_conversation_id = ?
+		WHERE parent_conversation_id IS NULL AND (device_id, agent, parent_session_id) =
+		  (SELECT device_id, agent, session_id FROM conversations WHERE id = ?)`
+	// The spawning tool call: in the parent, the tool_call row whose call
+	// id (or native id) is the child's spawned_by_tool_call_id.
+	// The two lookups are separate so each uses its index
+	// (messages_tool_call, messages_native_head).
+	resolveSpawnSQL = `UPDATE conversations SET spawned_by_message_id = (SELECT min(id) FROM (
+		  SELECT m.id FROM messages m WHERE m.conversation_id = conversations.parent_conversation_id
+		    AND m.kind = 'tool_call' AND m.superseded_by IS NULL AND m.tool_call_id = conversations.spawned_by_tool_call_id
+		  UNION ALL
+		  SELECT m.id FROM messages m WHERE m.conversation_id = conversations.parent_conversation_id
+		    AND m.kind = 'tool_call' AND m.superseded_by IS NULL AND m.native_id = conversations.spawned_by_tool_call_id))
+		WHERE spawned_by_message_id IS NULL AND spawned_by_tool_call_id IS NOT NULL AND parent_conversation_id IS NOT NULL
+		  AND (id = ? OR parent_conversation_id = ?)`
+)
+
+// head is the current version of a message key, with the attributes the
+// digest counts.
 type head struct {
 	id, version int64
 	text        []byte
 	sha         []byte
+
+	kind                 string
+	tool, callID, enrich sql.NullString
+	isError, superseded  bool
+	onPath               sql.NullBool
 }
+
+// sameCounts reports whether refreshing the head with m (refresh's
+// coalescing of on_active_path and enrichment included) leaves every
+// attribute the digest counts as it was.
+func (h *head) sameCounts(m *transcript.Message, enr any) bool {
+	if h.kind != m.Kind.String() || h.tool.String != m.ToolName || h.callID.String != m.ToolCallID ||
+		h.isError != m.IsError || h.superseded != m.Superseded {
+		return false
+	}
+	if m.OnActivePath != nil && (!h.onPath.Valid || h.onPath.Bool != *m.OnActivePath) {
+		return false
+	}
+	if e, ok := enr.(string); ok && (!h.enrich.Valid || h.enrich.String != e) {
+		return false
+	}
+	return true
+}
+
+// rowChange is what an upsert did to the digest's counts.
+type rowChange int
+
+const (
+	rowAdded   rowChange = iota // a new key: its counts add
+	rowSame                     // nothing counted changed
+	rowChanged                  // a counted attribute changed, or a new version replaced the row: recount
+)
 
 func (w *writeTx) findHead(b *Batch, convID int64, m *transcript.Message) (*head, error) {
 	var row *sql.Row
 	var err error
 	if m.NativeID != "" {
-		row, err = w.queryRow(`SELECT id, version, text, content_sha FROM messages
+		row, err = w.queryRow(`SELECT `+headCols+` FROM messages
 			WHERE conversation_id = ? AND native_id = ? AND part = ? AND superseded_by IS NULL`, convID, m.NativeID, m.Part)
 	} else {
-		row, err = w.queryRow(`SELECT id, version, text, content_sha FROM messages
+		row, err = w.queryRow(`SELECT `+headCols+` FROM messages
 			WHERE source_id = ? AND ifnull(locator, byte_offset) = ? AND part = ? AND native_id IS NULL AND superseded_by IS NULL`,
 			b.SourceID, locatorKey(m), m.Part)
 	}
@@ -329,7 +377,7 @@ func (w *writeTx) findHead(b *Batch, convID int64, m *transcript.Message) (*head
 		return nil, err
 	}
 	h := &head{}
-	if err := row.Scan(&h.id, &h.version, &h.text, &h.sha); err != nil {
+	if err := row.Scan(&h.id, &h.version, &h.text, &h.sha, &h.kind, &h.tool, &h.callID, &h.enrich, &h.isError, &h.superseded, &h.onPath); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -337,6 +385,8 @@ func (w *writeTx) findHead(b *Batch, convID int64, m *transcript.Message) (*head
 	}
 	return h, nil
 }
+
+const headCols = `id, version, text, content_sha, kind, tool_name, tool_call_id, enrichment, is_error, superseded, on_active_path`
 
 // locatorKey matches the messages_locator_head index expression.
 func locatorKey(m *transcript.Message) any {
@@ -346,51 +396,59 @@ func locatorKey(m *transcript.Message) any {
 	return m.ByteOffset
 }
 
-func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, res *BatchResult) error {
+func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, res *BatchResult) (rowChange, error) {
 	h, err := w.findHead(b, convID, m)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if h == nil {
 		_, err := w.insertMessage(b, convID, m, p, 1)
 		res.Inserted++
-		return err
+		return rowAdded, err
+	}
+	enr, err := enrichmentJSON(m)
+	if err != nil {
+		return 0, err
+	}
+	change := rowChanged
+	if h.sameCounts(m, enr) {
+		change = rowSame
 	}
 	if bytes.Equal(h.sha, m.ContentSHA[:]) {
 		res.Touched++
-		return w.refresh(b, h.id, m, nil)
+		return change, w.refresh(b, h.id, m, enr, nil)
 	}
 	old, err := decompress(h.text)
 	if err != nil {
-		return fmt.Errorf("row %d: %w", h.id, err)
+		return 0, fmt.Errorf("row %d: %w", h.id, err)
 	}
 	if strings.HasPrefix(m.Text, old) {
 		if m.Text == old {
 			res.Touched++
-			return w.refresh(b, h.id, m, nil)
+			return change, w.refresh(b, h.id, m, enr, nil)
 		}
 		res.Grown++
 		if err := w.ftsDelete(h.id); err != nil {
-			return err
+			return 0, err
 		}
-		if err := w.refresh(b, h.id, m, p); err != nil {
-			return err
+		if err := w.refresh(b, h.id, m, enr, p); err != nil {
+			return 0, err
 		}
 		w.ftsInsert(h.id, p)
-		return nil
+		return change, nil
 	}
 	res.Versioned++
 	// Clear the head slot before inserting the new version.
 	if _, err := w.exec(`UPDATE messages SET superseded = 1, superseded_by = -1,
 		superseded_in_generation = coalesce(superseded_in_generation, ?) WHERE id = ?`, b.Generation, h.id); err != nil {
-		return err
+		return 0, err
 	}
 	newID, err := w.insertMessage(b, convID, m, p, h.version+1)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	_, err = w.exec(`UPDATE messages SET superseded_by = ? WHERE id = ?`, newID, h.id)
-	return err
+	return rowChanged, err
 }
 
 const msgCols = `conversation_id, source_id, native_id, part, parent_native_id, ordinal, kind, role, tool_name, tool_call_id,
@@ -428,11 +486,7 @@ func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p
 // generation stamp and the supersede state, and the text when newText is
 // set (p non-nil). The ordinal from first sight is kept, and on_active_path and
 // enrichment only change when the message carries a value.
-func (w *writeTx) refresh(b *Batch, id int64, m *transcript.Message, newText *prepared) error {
-	enr, err := enrichmentJSON(m)
-	if err != nil {
-		return err
-	}
+func (w *writeTx) refresh(b *Batch, id int64, m *transcript.Message, enr any, newText *prepared) error {
 	var supGen any
 	if m.Superseded {
 		supGen = b.Generation
@@ -442,7 +496,7 @@ func (w *writeTx) refresh(b *Batch, id int64, m *transcript.Message, newText *pr
 	if newText != nil {
 		text, textLen = newText.z, len(m.Text)
 	}
-	_, err = w.exec(`UPDATE messages SET source_id = ?, parent_native_id = ?, kind = ?, role = ?, tool_name = ?, tool_call_id = ?,
+	_, err := w.exec(`UPDATE messages SET source_id = ?, parent_native_id = ?, kind = ?, role = ?, tool_name = ?, tool_call_id = ?,
 		  is_error = ?, ts = coalesce(?, ts), full_len = ?, content_sha = ?,
 		  superseded = ?, superseded_in_generation = CASE WHEN ? THEN coalesce(superseded_in_generation, ?) ELSE NULL END,
 		  on_active_path = coalesce(?, on_active_path), enrichment = coalesce(?, enrichment), source_generation = ?,
@@ -671,7 +725,7 @@ func (w *writeTx) supersedeAbsent(sourceID, gen int64, sessionIDs ...string) (in
 func (w *writeTx) recountDigests(convs []int64) error {
 	slices.Sort(convs)
 	for _, id := range convs {
-		if err := w.refreshDigest(id, nil, true); err != nil {
+		if err := w.refreshDigest(id, nil, nil, true); err != nil {
 			return fmt.Errorf("digest of conversation %d: %w", id, err)
 		}
 	}

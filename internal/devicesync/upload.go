@@ -186,12 +186,12 @@ func (s *Syncer) nextBatch(ctx context.Context, g *genRow) ([]syncproto.Entry, [
 	var batch, bodies []syncproto.Entry
 	seen := map[syncproto.Hash]bool{}
 	var size int64
+	known, err := s.store.known(ctx, entryHashes(ents))
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, e := range ents {
-		known, err := s.store.known(ctx, e.Hash)
-		if err != nil {
-			return nil, nil, err
-		}
-		need := !known && !seen[e.Hash]
+		need := !known[e.Hash] && !seen[e.Hash]
 		if len(batch) > 0 && need && size+e.Size > batchRatio*s.cfg.MaxRequestBytes {
 			break
 		}
@@ -231,12 +231,17 @@ func (s *Syncer) nextBatch(ctx context.Context, g *genRow) ([]syncproto.Entry, [
 
 // release drops spooled bytes nothing pending needs any more.
 func (s *Syncer) release(ctx context.Context, src *sourceRow, g *genRow, acked []syncproto.Hash) {
+	var spooled []syncproto.Hash
 	for _, h := range acked {
-		if _, ok, _ := s.spool.Chunk(h); !ok {
-			continue
+		if _, ok, _ := s.spool.Chunk(h); ok {
+			spooled = append(spooled, h)
 		}
-		if ref, err := s.store.referenced(ctx, h); err == nil && !ref {
-			s.spool.DropChunk(h)
+	}
+	if ref, err := s.store.referenced(ctx, spooled); err == nil {
+		for _, h := range spooled {
+			if !ref[h] {
+				s.spool.DropChunk(h)
+			}
 		}
 	}
 	if g.TailAcked {

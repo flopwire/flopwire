@@ -527,7 +527,7 @@ func TestDiscoveryQueuesByModTime(t *testing.T) {
 	}
 	f.a.merge(ctx, found, true)
 	f.a.mu.Lock()
-	queued := append([]*target(nil), f.a.normal...)
+	queued := f.a.normal.targets()
 	f.a.mu.Unlock()
 	if len(queued) < 8 {
 		t.Fatalf("queued %d", len(queued))

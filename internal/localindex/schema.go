@@ -18,10 +18,11 @@ import (
 // 7: conversations_session, for address lookups by session id prefix, and
 // the token table at detail=full so bm25 ranks. 8: placements.other_cwds
 // and withhold. 9: conversations.branches and conversations.digest.
-// 10: additive extraction checkpoint metadata; existing rows remain intact.
+// 10: sources.extraction_report.
+// 11: messages_tool_call and conversations_unspawned, for link resolution.
 // Placements are carried across a rebuild (carryPlacements): a session
 // whose worktree is gone cannot be placed again from its transcript.
-const schemaVersion = 10
+const schemaVersion = 11
 
 // Column types follow spec §4 with SQLite equivalents: integer row ids
 // (FTS5 keys on the integer rowid), times as unix milliseconds, booleans as
@@ -91,6 +92,9 @@ CREATE TABLE conversations (
 CREATE INDEX conversations_parent ON conversations (agent, parent_session_id) WHERE parent_session_id IS NOT NULL;
 CREATE INDEX conversations_activity ON conversations (last_activity_at);
 CREATE INDEX conversations_session ON conversations (session_id);
+-- Children whose spawning tool call is not found yet (resolveLinks).
+CREATE INDEX conversations_unspawned ON conversations (parent_conversation_id)
+  WHERE spawned_by_message_id IS NULL AND spawned_by_tool_call_id IS NOT NULL;
 
 CREATE TABLE messages (
   id                       INTEGER PRIMARY KEY,  -- FTS rowid
@@ -137,6 +141,9 @@ CREATE INDEX messages_default ON messages (conversation_id, ordinal)
 CREATE INDEX messages_source_gen ON messages (source_id, source_generation);
 -- Failed tool calls, for the digest's count on append.
 CREATE INDEX messages_failed ON messages (conversation_id, tool_call_id) WHERE is_error = 1;
+-- A subagent's spawning tool call in its parent (resolveLinks).
+CREATE INDEX messages_tool_call ON messages (conversation_id, tool_call_id)
+  WHERE kind = 'tool_call' AND superseded_by IS NULL AND tool_call_id IS NOT NULL;
 -- Candidate ordering by message time (decision D7). Find and the
 -- ranked-search cap order FTS candidates either by looking up each one's
 -- time (messages_meta, keyed by id) or, for many candidates, by walking
@@ -229,23 +236,6 @@ func migrate(db *sql.DB, want Details, mode string) (got Details, rebuilt bool, 
 	var v int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return Details{}, false, err
-	}
-	if v == 9 {
-		tx, err := db.Begin()
-		if err != nil {
-			return Details{}, false, err
-		}
-		defer tx.Rollback()
-		if _, err = tx.Exec("ALTER TABLE sources ADD COLUMN extraction_report TEXT"); err != nil {
-			return Details{}, false, err
-		}
-		if _, err = tx.Exec("PRAGMA user_version = 10"); err != nil {
-			return Details{}, false, err
-		}
-		if err = tx.Commit(); err != nil {
-			return Details{}, false, err
-		}
-		return migrate(db, want, mode)
 	}
 	if v == schemaVersion {
 		var have string

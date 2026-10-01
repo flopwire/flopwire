@@ -276,7 +276,7 @@ func TestDigestAppendCost(t *testing.T) {
 	refresh := func(full bool) time.Duration {
 		t0 := time.Now()
 		for range 10 {
-			if err := s.write(ctx, func(w *writeTx) error { return w.refreshDigest(convID, last, full) }); err != nil {
+			if err := s.write(ctx, func(w *writeTx) error { return w.refreshDigest(convID, last, last, full) }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -284,4 +284,103 @@ func TestDigestAppendCost(t *testing.T) {
 	}
 	t.Logf("20k messages in %v; batches 1-10 %v, 191-200 %v; refresh at 20k rows: recount %v, append %v",
 		time.Since(start).Round(time.Millisecond), firstBatches.Round(time.Millisecond), lastBatches.Round(time.Millisecond), refresh(true), refresh(false))
+}
+
+// A re-parse in batches refreshes rows instead of recounting the
+// conversation per batch when nothing counted changed: the stored counts
+// must still equal a recount after every batch, including batches that
+// change a counted attribute (a result no longer failed, a renamed tool,
+// a row leaving the active path, new usage, a failed result's call id,
+// a row's kind, rows revived after their session was superseded) or mix
+// in new rows.
+func TestDigestReparseMatchesRecount(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	src := source(t, s, transcript.AgentClaude, "/p/s1.jsonl")
+	conv := &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "s1"}
+	build := func(variant int) [][]*transcript.Message {
+		var batches [][]*transcript.Message
+		ord := int64(0)
+		next := func(kind transcript.Kind, text string) *transcript.Message {
+			ord++
+			return msg("s1", fmt.Sprint("n", ord), ord, kind, text)
+		}
+		for b := range 4 {
+			var ms []*transcript.Message
+			ms = append(ms, next(transcript.KindUser, "please look at the retry path again"))
+			c := next(transcript.KindToolCall, `{"command":"go test ./..."}`)
+			c.ToolName, c.ToolCallID = "Bash", fmt.Sprint("call", b)
+			r := next(transcript.KindToolResult, "FAIL")
+			r.ToolCallID, r.IsError = c.ToolCallID, true
+			a := next(transcript.KindAssistant, "working on it")
+			a.Enrichment = map[string]any{"message_id": fmt.Sprint("m", b), "usage": map[string]int64{"input_tokens": 7, "output_tokens": 10}}
+			switch {
+			case variant == 1 && b == 1:
+				r.IsError = false
+			case variant == 1 && b == 2:
+				c.ToolName = "Shell"
+			case variant == 2 && b == 0:
+				off := false
+				a.OnActivePath = &off
+			case variant == 2 && b == 3:
+				a.Enrichment = map[string]any{"message_id": fmt.Sprint("m", b), "usage": map[string]int64{"input_tokens": 7, "output_tokens": 99}}
+			case variant == 3 && b == 1:
+				// A new row in a re-parsed batch.
+				ms = append(ms, msg("s1", "extra", 50, transcript.KindUser, "and one more thing"))
+			case variant == 4 && b == 0:
+				// The failed result now answers call1: the failed calls
+				// are counted by distinct call id.
+				r.ToolCallID = "call1"
+			case variant == 4 && b == 2:
+				a.Kind = transcript.KindUser
+			}
+			ms = append(ms, c, r, a)
+			batches = append(batches, ms)
+		}
+		return batches
+	}
+	var convID int64
+	check := func(what string) {
+		t.Helper()
+		if convID == 0 {
+			if err := s.DB().QueryRow(`SELECT id FROM conversations WHERE session_id = 's1'`).Scan(&convID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, _ := storedDigest(t, s, "s1")
+		var want digest.Counts
+		if err := s.write(ctx, func(w *writeTx) error {
+			var err error
+			want, err = w.digestCounts(convID, "claude", "s1", s.opts.DeviceID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var tok digest.Tokens
+		if got.Tokens != nil {
+			tok = *got.Tokens
+		}
+		if fmt.Sprint(got.Messages) != fmt.Sprint(want.Messages) || fmt.Sprint(got.Tools) != fmt.Sprint(want.Tools) ||
+			got.Failed != want.Failed || tok != want.Tokens {
+			t.Fatalf("%s: stored %v %v failed %d tokens %+v; recount %v %v failed %d tokens %+v",
+				what, got.Messages, got.Tools, got.Failed, tok, want.Messages, want.Tools, want.Failed, want.Tokens)
+		}
+	}
+	for variant := range 6 {
+		if variant == 5 {
+			// A multi-session source resets the session (recounted), then
+			// re-emits its rows unchanged: the upsert revives them.
+			if _, err := s.SupersedeSession(ctx, transcript.AgentClaude, "s1", 2); err != nil {
+				t.Fatal(err)
+			}
+			check("superseded session")
+		}
+		for i, ms := range build(variant) {
+			bt := Batch{SourceID: src.ID, Generation: 1, Messages: ms}
+			if i == 0 {
+				bt.Conversations = []*transcript.Conversation{conv}
+			}
+			apply(t, s, bt)
+			check(fmt.Sprintf("variant %d batch %d", variant, i))
+		}
+	}
 }

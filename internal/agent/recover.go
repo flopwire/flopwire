@@ -278,7 +278,7 @@ func (a *Agent) recoverPass(ctx context.Context) recoverResult {
 func (a *Agent) waitQuiet(ctx context.Context) {
 	for range 40 {
 		a.mu.Lock()
-		busy := a.busy > 0 || len(a.urgent)+len(a.normal) > 0
+		busy := a.busy > 0 || a.urgent.len()+a.normal.len() > 0
 		a.mu.Unlock()
 		if !busy || ctx.Err() != nil {
 			return

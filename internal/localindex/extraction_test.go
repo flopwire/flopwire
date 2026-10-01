@@ -2,7 +2,6 @@ package localindex
 
 import (
 	"database/sql"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -79,46 +78,5 @@ func TestExtractionCheckpointAtomicFailureAndReplay(t *testing.T) {
 	}
 	if saved.Watermark.Offset != 20 || saved.Extraction.Report.Issues[0].Count != 2 {
 		t.Fatal("replay double counted or lost cursor")
-	}
-}
-func TestExtractionMigrationPreservesVersionNineIndex(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "index.db")
-	s, err := Open(path, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := source(t, s, transcript.AgentClaude, "/old.jsonl")
-	apply(t, s, Batch{SourceID: st.ID, Generation: 1, NewGeneration: &transcript.Generation{Generation: 1},
-		Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "s"}},
-		Messages:      []*transcript.Message{msg("s", "m", 0, transcript.KindUser, "keep old rows")}, Watermark: &transcript.Watermark{Offset: 80, LineNo: 1}})
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{"ALTER TABLE sources DROP COLUMN extraction_report", "PRAGMA user_version=9"} {
-		if _, err := db.Exec(q); err != nil {
-			db.Close()
-			t.Fatal(err)
-		}
-	}
-	db.Close()
-	s, err = Open(path, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	got, err := s.Source(ctx, st.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Extraction != nil || got.Watermark.Offset != 80 {
-		t.Fatal("migration reset checkpoint or claimed assessed")
-	}
-	var n int
-	if err := s.DB().QueryRow("SELECT count(*) FROM messages").Scan(&n); err != nil || n != 1 {
-		t.Fatal("migration rebuilt messages")
 	}
 }

@@ -10,19 +10,18 @@ import (
 )
 
 // refreshDigest folds msgs, the rows a batch wrote for the conversation,
-// into its stored digest and updates its parent's subagent count. When
-// the batch only added rows (appended), their counts are added to the
-// stored ones; otherwise (full: a row replaced, rows superseded, no
-// digest yet) the aggregates are recounted over the live rows.
-func (w *writeTx) refreshDigest(convID int64, msgs []*transcript.Message, full bool) error {
+// into its stored digest and updates its parent's subagent count. Unless
+// full, the counts of added, the batch's new rows, are added to the
+// stored ones (the other rows of msgs changed nothing the digest counts);
+// when full (a counted attribute changed, rows superseded, no digest
+// yet) the aggregates are recounted over the live rows.
+func (w *writeTx) refreshDigest(convID int64, msgs, added []*transcript.Message, full bool) error {
 	var (
 		prev, cwd, root, branches, remote, title sql.NullString
 		start, last                              sql.NullInt64
 		agent, session, device                   string
 	)
-	row, err := w.queryRow(`SELECT c.digest, c.cwd, c.repo_root, c.branches, c.started_at, c.last_activity_at, c.agent, c.session_id, c.device_id, c.title,
-		  (SELECT p.remote FROM placements p WHERE p.agent = c.agent AND p.session_id = c.session_id)
-		FROM conversations c WHERE c.id = ?`, convID)
+	row, err := w.queryRow(refreshDigestSQL, convID)
 	if err != nil {
 		return err
 	}
@@ -47,7 +46,7 @@ func (w *writeTx) refreshDigest(convID int64, msgs []*transcript.Message, full b
 		}
 		out = digest.Update([]byte(prev.String), c, msgs, n)
 	} else {
-		failed, err := w.newFailed(convID, msgs)
+		failed, err := w.newFailed(convID, added)
 		if err != nil {
 			return err
 		}
@@ -55,18 +54,25 @@ func (w *writeTx) refreshDigest(convID int64, msgs []*transcript.Message, full b
 		if err != nil {
 			return err
 		}
-		out = digest.Append([]byte(prev.String), c, msgs, failed, subs)
+		out = digest.AppendRows([]byte(prev.String), c, msgs, added, failed, subs)
 	}
 	if _, err := w.exec(`UPDATE conversations SET digest = ? WHERE id = ?`, string(out), convID); err != nil {
 		return err
 	}
 	// A subagent changes its parent's count.
-	_, err = w.exec(`UPDATE conversations SET digest = json_set(digest, '$.subagents',
-		  (SELECT count(*) FROM conversations k WHERE k.device_id = conversations.device_id AND k.agent = conversations.agent
-		     AND k.parent_session_id = conversations.session_id AND k.id <> conversations.id))
-		WHERE digest IS NOT NULL AND id = (SELECT parent_conversation_id FROM conversations WHERE id = ?)`, convID)
+	_, err = w.exec(parentSubagentsSQL, convID)
 	return err
 }
+
+const (
+	refreshDigestSQL = `SELECT c.digest, c.cwd, c.repo_root, c.branches, c.started_at, c.last_activity_at, c.agent, c.session_id, c.device_id, c.title,
+		  (SELECT p.remote FROM placements p WHERE p.agent = c.agent AND p.session_id = c.session_id)
+		FROM conversations c WHERE c.id = ?`
+	parentSubagentsSQL = `UPDATE conversations SET digest = json_set(digest, '$.subagents',
+		  (SELECT count(*) FROM conversations k WHERE k.device_id = conversations.device_id AND k.agent = conversations.agent
+		     AND k.parent_session_id = conversations.session_id AND k.id <> conversations.id))
+		WHERE digest IS NOT NULL AND id = (SELECT parent_conversation_id FROM conversations WHERE id = ?)`
+)
 
 // digestCounts counts a conversation's live rows for its digest.
 func (w *writeTx) digestCounts(convID int64, agent, session, device string) (digest.Counts, error) {

@@ -179,7 +179,8 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 func (s *Syncer) sweepSpool(ctx context.Context) error {
 	return s.spool.sweep(func(h *syncproto.Hash, sid, gen int64) (bool, error) {
 		if h != nil {
-			return s.store.referenced(ctx, *h)
+			ref, err := s.store.referenced(ctx, []syncproto.Hash{*h})
+			return ref[*h], err
 		}
 		return s.store.pendingTail(ctx, sid, gen)
 	})
@@ -383,16 +384,47 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	}
 
 	var add []syncproto.Entry
+	// A rewrite-prone source spools the chunks the server is not known to
+	// hold. They are looked up in batches (bounded by count and bytes), not
+	// one query per chunk.
+	var pend []spooled
+	pendBytes := 0
+	flush := func() error {
+		if len(pend) == 0 {
+			return nil
+		}
+		hs := make([]syncproto.Hash, len(pend))
+		for i, p := range pend {
+			hs[i] = p.hash
+		}
+		known, err := s.store.known(ctx, hs)
+		if err != nil {
+			return err
+		}
+		for _, p := range pend {
+			if !known[p.hash] {
+				if err := s.spool.PutChunk(p.hash, p.data); err != nil {
+					return err
+				}
+			}
+		}
+		pend, pendBytes = pend[:0], 0
+		return nil
+	}
 	tail, err := Scan(s.cfg.Chunk, rr, from, end, s.buf, func(c Chunk, data []byte) error {
 		add = append(add, syncproto.Entry{Ordinal: g.Entries + int64(len(add)), Hash: c.Hash, Offset: c.Offset, Size: c.Size})
 		if !src.Spec.rewriteProne() {
 			return nil
 		}
-		if known, err := s.store.known(ctx, c.Hash); err != nil || known {
-			return err
+		pend = append(pend, spooled{c.Hash, bytes.Clone(data)})
+		if pendBytes += len(data); len(pend) >= batchRows || pendBytes >= spoolBatchBytes {
+			return flush()
 		}
-		return s.spool.PutChunk(c.Hash, data)
+		return nil
 	})
+	if err == nil {
+		err = flush()
+	}
 	if err != nil {
 		return fmt.Errorf("devicesync: chunk %s: %w", src.Spec.Path, err)
 	}
@@ -505,11 +537,12 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 		keep = g.Acked
 		entries = nil
 	}
+	known, _ := s.store.known(ctx, entryHashes(entries)) // on error, nothing is known: read every body
 	for _, e := range entries {
 		if _, ok, _ := s.spool.Chunk(e.Hash); ok {
 			continue
 		}
-		if known, err := s.store.known(ctx, e.Hash); err == nil && known {
+		if known[e.Hash] {
 			// The server holds this chunk (an earlier version shared it):
 			// the entry needs no body. Should the server later report it
 			// missing, the upload records the gap then.
@@ -537,6 +570,24 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 			s.cfg.Logger.Error("devicesync: record gap", "path", src.Spec.Path, "err", err)
 		}
 	}
+}
+
+// spooled is a chunk body waiting for the batched known lookup.
+type spooled struct {
+	hash syncproto.Hash
+	data []byte
+}
+
+// spoolBatchBytes bounds the chunk bodies capture holds for one batched
+// known lookup.
+const spoolBatchBytes = 4 << 20
+
+func entryHashes(ents []syncproto.Entry) []syncproto.Hash {
+	hs := make([]syncproto.Hash, len(ents))
+	for i, e := range ents {
+		hs[i] = e.Hash
+	}
+	return hs
 }
 
 // cut records a gap: the generation ends at entry keep, without a tail.

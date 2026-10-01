@@ -50,7 +50,11 @@ type target struct {
 	mode    pathpolicy.Mode // path rules' verdict while modeGen is the rules' generation
 	modeGen uint64
 
-	inBackground  bool   // queued in Agent.background
+	inBackground bool // queued in Agent.background
+	// The queue t is in and its neighbours there (queue), guarded by
+	// Agent.mu.
+	in            *queue
+	qprev, qnext  *target
 	indexedWith   string // effective extraction contract (or legacy parser version) last indexed
 	reparseFailed string // parser version whose full re-parse failed; not retried until restart
 }
