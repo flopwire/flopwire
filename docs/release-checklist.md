@@ -62,13 +62,19 @@ These need section 1.
 ## 5. Local acceptance
 
 `scripts/acceptance.sh` builds the binary and runs `flopwire bench acceptance`
-in four parts, plus the FAD parity sample. It takes 10 to 15 minutes. Stop
-other heavy work on the machine first; load changes the index time.
+in four parts, plus the FAD parity sample. It writes a JSON record of the
+run and compares it with the previous release's record. It takes 10 to 15
+minutes. Stop other heavy work on the machine first; load changes the index time.
 
-1. Run the whole set:
+The reference laptop is the machine that made the most recent record in
+[docs/perf](perf/README.md). Its `machine` fields name it. Run the set on
+that machine. Timings from two machines are not comparable. If
+docs/perf has no record yet, the first run sets the reference laptop.
+
+1. Run the whole set on the reference laptop. Set the release version:
 
    ```sh
-   scripts/acceptance.sh /tmp/flopwire-acceptance
+   FLOPWIRE_VERSION=v0.4.0 scripts/acceptance.sh /tmp/flopwire-acceptance
    ```
 
 2. To run one part, use the bench command directly:
@@ -77,7 +83,19 @@ other heavy work on the machine first; load changes the index time.
    flopwire bench acceptance --scratch /tmp/flopwire-acceptance --only index
    ```
 
-3. Read the table at the end.
+3. Read the pass/fail table.
+4. Read the comparison table after it. It compares this run with the most
+   recent record in [docs/perf](perf/README.md). It flags each metric that
+   grew by more than 20% and by more than its minimum change as
+   `REGRESSED`.
+5. If the comparison warns that the machine or the corpus differs, do not
+   treat its regressions as real. Rerun the previous release on this
+   machine to confirm a regression.
+6. Copy `/tmp/flopwire-acceptance/acceptance-record.json` to
+   `docs/perf/<version>-<YYYY-MM-DD>.json`. The run prints the name.
+7. Commit the record in the release PR.
+8. Paste the comparison table into the release PR description. Explain
+   each `REGRESSED` metric, or fix it before the release.
 
 | Check | Bar in the table | Accepted today |
 |---|---|---|
