@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -282,9 +284,12 @@ func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add 
 		return err
 	}
 	defer tx.Rollback()
-	for _, e := range add {
-		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO devsync_manifest VALUES (?, ?, ?, ?, ?, ?)`,
-			g.SourceID, g.Gen, e.Ordinal, e.Hash[:], e.Offset, e.Size); err != nil {
+	for part := range slices.Chunk(add, batchRows) {
+		args := make([]any, 0, 6*len(part))
+		for _, e := range part {
+			args = append(args, g.SourceID, g.Gen, e.Ordinal, e.Hash[:], e.Offset, e.Size)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO devsync_manifest VALUES `+values(len(part), 6), args...); err != nil {
 			return err
 		}
 	}
@@ -329,12 +334,42 @@ func (s *Store) updateGen(ctx context.Context, g *genRow, known []syncproto.Hash
 		g.Entries, g.Tail.Offset, g.Tail.Size, g.Tail.Hash[:], g.Acked, g.TailAcked, g.Lost, g.SrvTailOff, g.SrvTailLen, g.SourceID, g.Gen); err != nil {
 		return err
 	}
-	for _, h := range known {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO devsync_known VALUES (?)`, h[:]); err != nil {
+	if err := insertKnown(ctx, tx, known); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// batchRows bounds the rows one statement names (well under SQLite's
+// 32766 bound parameters).
+const batchRows = 500
+
+// values returns n parenthesized groups of k placeholders: "(?, ?), (?, ?)".
+func values(n, k int) string {
+	group := "(" + strings.Repeat("?, ", k-1) + "?)"
+	return strings.Repeat(group+", ", n-1) + group
+}
+
+func hashArgs(hs []syncproto.Hash) []any {
+	args := make([]any, len(hs))
+	for i, h := range hs {
+		args[i] = h[:]
+	}
+	return args
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// insertKnown adds hashes to the known set, batchRows per statement.
+func insertKnown(ctx context.Context, db execer, hs []syncproto.Hash) error {
+	for part := range slices.Chunk(hs, batchRows) {
+		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO devsync_known VALUES `+values(len(part), 1), hashArgs(part)...); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // setWatermark replaces the current generation's watermark; nil forces the
@@ -354,43 +389,64 @@ func (s *Store) setWatermark(ctx context.Context, src *sourceRow, wm *transcript
 
 // remember marks hashes as held by the server.
 func (s *Store) remember(ctx context.Context, hs []syncproto.Hash) error {
-	for _, h := range hs {
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO devsync_known VALUES (?)`, h[:]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return insertKnown(ctx, s.db, hs)
 }
 
 // forget drops hashes from the known set (the server said they are missing).
 func (s *Store) forget(ctx context.Context, hs []syncproto.Hash) error {
-	for _, h := range hs {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM devsync_known WHERE hash = ?`, h[:]); err != nil {
+	for part := range slices.Chunk(hs, batchRows) {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM devsync_known WHERE hash IN (`+placeholders(len(part))+`)`, hashArgs(part)...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) known(ctx context.Context, h syncproto.Hash) (bool, error) {
-	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM devsync_known WHERE hash = ?`, h[:]).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+func placeholders(n int) string { return strings.Repeat("?, ", n-1) + "?" }
+
+// hashSet runs query once per batchRows hashes, its IN list filled with
+// them, and returns the hashes it selects.
+func (s *Store) hashSet(ctx context.Context, query func(n int) string, hs []syncproto.Hash) (map[syncproto.Hash]bool, error) {
+	out := map[syncproto.Hash]bool{}
+	for part := range slices.Chunk(hs, batchRows) {
+		rows, err := s.db.QueryContext(ctx, query(len(part)), hashArgs(part)...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var b []byte
+			if err := rows.Scan(&b); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			var h syncproto.Hash
+			copy(h[:], b)
+			out[h] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	return err == nil, err
+	return out, nil
 }
 
-// referenced reports whether any unacknowledged manifest entry needs h.
-func (s *Store) referenced(ctx context.Context, h syncproto.Hash) (bool, error) {
-	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM devsync_manifest m JOIN devsync_gens g
+// known returns which of hs the server is known to hold.
+func (s *Store) known(ctx context.Context, hs []syncproto.Hash) (map[syncproto.Hash]bool, error) {
+	return s.hashSet(ctx, func(n int) string {
+		return `SELECT hash FROM devsync_known WHERE hash IN (` + placeholders(n) + `)`
+	}, hs)
+}
+
+// referenced returns which of hs an unacknowledged manifest entry needs.
+func (s *Store) referenced(ctx context.Context, hs []syncproto.Hash) (map[syncproto.Hash]bool, error) {
+	return s.hashSet(ctx, referencedSQL, hs)
+}
+
+func referencedSQL(n int) string {
+	return `SELECT DISTINCT m.hash FROM devsync_manifest m JOIN devsync_gens g
 	  ON g.source_id = m.source_id AND g.generation = m.generation
-	  WHERE m.hash = ? AND m.ordinal >= g.acked AND m.ordinal < g.entries AND g.lost = 0 LIMIT 1`, h[:]).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
+	  WHERE m.hash IN (` + placeholders(n) + `) AND m.ordinal >= g.acked AND m.ordinal < g.entries AND g.lost = 0`
 }
 
 // pendingTail reports whether generation gen of source sid still has an
