@@ -56,6 +56,28 @@ asks the running agent for a pass over the control socket and waits for it
 to finish. If the index is locked and no agent answers yet, `--once` waits.
 The search commands open the index read-only and never take the lock.
 
+## Local redactions: what they guarantee
+
+`flopwire redact` hides a message, or some of its lines, in the local
+index of this device. After the command succeeds, the hidden text does not
+come back through `flopwire` search, grep or read, through the MCP
+server, or in a conversation title or digest. This stays true after a
+re-index, a rebuild of the index, a grown or rewritten message, and a
+crash of the agent.
+
+Local redaction does not protect the files on disk:
+
+- The harness transcripts (`~/.claude`, `~/.codex`, the Devin store) are
+  not changed. They still hold the text.
+- The index database keeps `content_sha`, a SHA-256 of each message's
+  original text, for change detection. A person who can read the index
+  files can test guesses of a hidden message against it.
+- Free pages of the index database can hold old text until SQLite reuses
+  them. After each redaction the agent compacts the search files and
+  overwrites their free pages.
+
+To remove the text from the disk, delete it from the transcript as well.
+
 ## Recover the local index
 
 The local index is derived data. The agent can build it again from the
@@ -120,13 +142,14 @@ The agent does not open an index while a redaction is unreadable.
    hid. If you are not sure, run all of them again. A repeated redaction
    of hidden text reports `nothing to redact`.
 
-### The agent stops: "its key ... is missing" or "redactions.key is corrupt"
+### The agent stops: "its key ... is missing", "the key does not match", or "redactions.key is corrupt"
 
 The agent cannot read the redactions without the key.
 
 1. Stop the agent.
-2. Restore `index.db.redactions.key` from a backup, if you have one. Then
-   start the agent. Stop here.
+2. Restore `index.db.redactions.key` from the backup that you made with
+   this redaction file, if you have one. A key from another device or
+   another backup does not match. Then start the agent. Stop here.
 3. Without a backup, move both redaction files to a safe place:
    `mv index.db.redactions.jsonl index.db.redactions.jsonl.prev ~/`.
 4. Run `flopwire agent run --rebuild-index --once`.
