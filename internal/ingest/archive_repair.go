@@ -15,9 +15,14 @@ import (
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type archiveWork struct{ gen, from, revision int64 }
+
+// afterArchiveWorkLock, when set (tests), runs in a repair batch's
+// transaction after lockArchiveWork checked the work row.
+var afterArchiveWorkLock func()
 
 // QueueArchiveRepair records, in a message redaction's transaction, the
 // at-rest repair the new redacted lines need. The caller holds the
@@ -113,6 +118,9 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 					if err := lockArchiveWork(ctx, tx, source, w); err != nil {
 						return err
 					}
+					if afterArchiveWorkLock != nil {
+						afterArchiveWorkLock()
+					}
 					if plan != nil {
 						var owner string
 						if err := tx.QueryRow(ctx, `SELECT requested_by::text FROM message_redactions WHERE id=$1`, ids[0]).Scan(&owner); err != nil {
@@ -128,11 +136,20 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 							}
 						}
 					}
+					// Require the revision lockArchiveWork checked: a redaction
+					// (QueueArchiveRepair) bumps the row without the source lock,
+					// and its bump after the check means this batch scanned with
+					// an older catalog. A row it holds locked is re-read here.
+					var tag pgconn.CommandTag
+					var err error
 					if finished {
-						_, err := tx.Exec(ctx, `DELETE FROM archive_redaction_work WHERE source_id=$1 AND generation=$2`, source, w.gen)
-						return err
+						tag, err = tx.Exec(ctx, `DELETE FROM archive_redaction_work WHERE source_id=$1 AND generation=$2 AND revision=$3`, source, w.gen, w.revision)
+					} else {
+						tag, err = tx.Exec(ctx, `UPDATE archive_redaction_work SET from_offset=$3,revision=revision+1 WHERE source_id=$1 AND generation=$2 AND revision=$4`, source, w.gen, next, w.revision)
 					}
-					_, err := tx.Exec(ctx, `UPDATE archive_redaction_work SET from_offset=$3,revision=revision+1 WHERE source_id=$1 AND generation=$2`, source, w.gen, next)
+					if err == nil && tag.RowsAffected() != 1 {
+						err = ErrArchiveChanged
+					}
 					return err
 				}
 				if plan != nil {

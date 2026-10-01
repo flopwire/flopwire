@@ -1,10 +1,13 @@
 package ingest
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // A flush decides whether its upload needs an at-rest repair under the
@@ -67,5 +70,51 @@ func TestFlushRecordsRepairUnderRedactionLock(t *testing.T) {
 	}
 	if n := e.count(`SELECT count(*) FROM archive_redaction_work w JOIN sources s ON s.id=w.source_id WHERE s.path='/lock.jsonl'`); n != 1 {
 		t.Fatalf("%d repair records for an upload that committed after the redaction", n)
+	}
+}
+
+// A redaction that bumps a work row after the worker checked it, but
+// before the worker's batch commits, must not have its work cleared: the
+// worker scanned with the older catalog. lockArchiveWork does not lock the
+// work row, and QueueArchiveRepair does not take the source lock, so the
+// batch's DELETE must itself require the revision it checked.
+func TestRepairBatchKeepsWorkBumpedAfterCheck(t *testing.T) {
+	e := newEnv(t)
+	redaction := uuid.NewString()
+	e.exec(`INSERT INTO message_redactions(id,requested_by,message_id,all_copies,by_admin,messages,chunks,tails,created_at)
+		VALUES($1,$2,gen_random_uuid(),false,false,1,0,0,now())`, redaction, e.userID)
+	e.exec(`INSERT INTO redacted_lines(line_sha,spans,redaction_id) VALUES(sha256('x'::bytea),'[{"start":0,"end":1}]',$1)`, redaction)
+	flushOne(t, e, "/bump.jsonl", []byte("{\"a\":\"uploaded after a redaction\"}\n"))
+	var source string
+	if err := e.pool.QueryRow(e.ctx, `SELECT source_id::text FROM archive_redaction_work w JOIN sources s ON s.id=w.source_id WHERE s.path='/bump.jsonl'`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	afterArchiveWorkLock = func() {
+		afterArchiveWorkLock = nil
+		ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+		defer cancel()
+		if err := pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
+			if err := LockRedactedLines(ctx, tx); err != nil {
+				return err
+			}
+			return QueueArchiveRepair(ctx, tx, []string{source})
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { afterArchiveWorkLock = nil })
+	err := e.queue.repairUploadedArchive(e.ctx, source)
+	if n := e.count(`SELECT count(*) FROM archive_redaction_work WHERE source_id=$1`, source); n != 1 {
+		t.Fatalf("work bumped by a redaction during the batch was cleared (err %v)", err)
+	}
+	if !errors.Is(err, ErrArchiveChanged) {
+		t.Fatalf("stale batch: %v", err)
+	}
+	// The retry scans with the current catalog and clears it.
+	if err := e.queue.repairUploadedArchive(e.ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM archive_redaction_work WHERE source_id=$1`, source); n != 0 {
+		t.Fatalf("%d work rows after the retry", n)
 	}
 }
