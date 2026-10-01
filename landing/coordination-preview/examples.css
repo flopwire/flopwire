@@ -156,3 +156,88 @@
   .message-route figcaption { font-size: 12px; }
   .benchmark-plan { font-size: 15px; }
 }
+
+/* Show how the network grows, then expose the exact setup commands. */
+.adoption-path { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; padding: 0; margin: 32px 0 0; border-top: 1px solid var(--ink); }
+.adoption-path > li { min-width: 0; padding: 24px 24px 0 0; }
+.adoption-path > li + li { border-left: 1px solid var(--code-rule); padding-left: 24px; }
+.adoption-path h3 { font-size: 20px; line-height: 1.4; margin: 0 0 24px; }
+.adoption-map { min-height: 216px; display: flex; flex-direction: column; justify-content: flex-start; font: 400 12px/1.6 var(--mono); }
+.map-people { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.map-owner { min-width: 0; }
+.map-owner-label { display: block; text-align: center; margin-bottom: 12px; color: var(--muted); }
+.map-devices { display: flex; justify-content: space-around; gap: 16px; }
+.map-people .map-devices { gap: 8px; }
+.map-device { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.map-device svg { width: 40px; height: 40px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.map-local, .map-server { padding: 14px var(--artifact-inset); background: var(--code-surface); border-top: 1px solid var(--code-rule); border-bottom: 1px solid var(--code-rule); }
+.map-local { margin-top: 32px; }
+.map-server { background: var(--terminal-surface); color: var(--terminal-text); border-color: var(--terminal-rule); }
+.map-local span, .map-server span { display: block; margin-top: 4px; font-size: 12px; }
+.map-server span { color: var(--terminal-muted); }
+.map-connection { display: block; width: 100%; height: 32px; fill: none; stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.adoption-result { font-size: 15px; line-height: 1.7; margin: 0 0 18px; }
+.adoption-command summary { cursor: pointer; font-size: 13px; line-height: 1.7; text-decoration: underline; text-underline-offset: .2em; }
+.adoption-command .transcript-entry { grid-template-columns: 1fr; gap: 6px; }
+.adoption-command .hero-terminal-title > span:last-child { display: none; }
+.adoption-command .transcript-entry pre { font-size: 12px; }
+
+/* Sender acceptance and permission to act are separate decisions. */
+.permission-example { margin: 32px 0 0; max-width: 920px; }
+.permission-example > figcaption { font-size: 16px; line-height: 1.7; margin-bottom: 16px; }
+.permission-request { max-width: 620px; width: 100%; }
+.permission-sequence { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 32px; list-style: none; padding: 0; margin: 28px 0; }
+.permission-sequence li { position: relative; min-width: 0; }
+.permission-sequence li + li:before { content: ''; position: absolute; top: 10px; left: -24px; width: 14px; height: 1px; background: var(--ink); }
+.permission-sequence li + li:after { content: ''; position: absolute; top: 7px; left: -16px; width: 6px; height: 6px; border-top: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: rotate(45deg); }
+.permission-sequence strong { display: block; font-size: 15px; line-height: 1.5; }
+.permission-sequence span { display: block; font-size: 13px; line-height: 1.7; margin-top: 8px; color: var(--muted); }
+.permission-boundary { display: grid; grid-template-columns: minmax(0,1.2fr) minmax(0,1fr); gap: 28px; align-items: center; border-top: 1px solid var(--code-rule); padding-top: 24px; }
+.permission-boundary .agent-message.reply { width: 100%; max-width: 100%; justify-self: start; }
+.permission-boundary > p { font-size: 14px; line-height: 1.7; max-width: 45ch; }
+.delivery-timing { margin-top: 32px; display: grid; grid-template-columns: 1fr auto; max-width: 920px; gap: 12px 24px; }
+.delivery-timing h3 { font-size: 15px; line-height: 1.6; }
+.delivery-timing dl { grid-column: 1/-1; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 0; }
+.delivery-timing dl > div { display: flex; flex-wrap: wrap; gap: 8px 24px; border-top: 1px solid var(--code-rule); padding-top: 12px; font-size: 13px; line-height: 1.7; }
+.delivery-timing dt { color: var(--muted); }
+.delivery-timing dd { margin: 0; }
+.delivery-timing > p { grid-column: 1/-1; font-size: 12px; line-height: 1.7; color: var(--muted); }
+
+.sharing-matrix { width: 100%; max-width: 1000px; border-collapse: collapse; text-align: left; margin-top: 32px; font-size: 14px; line-height: 1.7; }
+.sharing-matrix caption { text-align: left; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+.sharing-matrix th, .sharing-matrix td { padding: 18px 16px; border-bottom: 1px solid var(--code-rule); vertical-align: middle; }
+.sharing-matrix thead th { border-top: 1px solid var(--ink); font-size: 12px; font-weight: 400; }
+.sharing-matrix th:first-child { padding-left: 0; width: 60%; }
+.sharing-matrix tbody th { font-weight: 400; }
+.sharing-matrix th code { display: block; font: 400 13px/1.7 var(--mono); overflow-wrap: anywhere; }
+.sharing-matrix th span { display: block; color: var(--muted); font: 400 12px/1.7 var(--mono); margin-top: 6px; overflow-wrap: anywhere; }
+.policy-yes { display: inline-flex; align-items: center; gap: 6px; color: var(--diff-added); }
+.policy-yes .icon { width: 16px; height: 16px; }
+
+@media (max-width: 1000px) {
+ .adoption-path > li { padding-right: 16px; }
+ .adoption-path > li + li { padding-left: 16px; }
+ .map-people { gap: 8px; }
+ .map-people .map-device svg { width: 30px; height: 30px; }
+}
+@media (max-width: 760px) {
+ .adoption-path { grid-template-columns: 1fr; }
+ .adoption-path > li, .adoption-path > li + li { padding: 24px 0; border-left: 0; }
+ .adoption-path > li + li { border-top: 1px solid var(--code-rule); }
+ .adoption-path h3 { margin-bottom: 20px; }
+ .adoption-map { min-height: 0; margin-bottom: 20px; max-width: 440px; }
+ .map-people { grid-template-columns: 1fr 1fr; gap: 16px; }
+ .map-people .map-device svg { width: 40px; height: 40px; }
+ .adoption-result { font-size: 14px; }
+ .permission-sequence { grid-template-columns: 1fr; gap: 28px; padding-left: 20px; }
+ .permission-sequence li + li:before { top: -22px; left: 1px; width: 1px; height: 12px; }
+ .permission-sequence li + li:after { top: -16px; left: -2px; transform: rotate(135deg); }
+ .permission-boundary { grid-template-columns: 1fr; gap: 16px; }
+ .delivery-timing dl { grid-template-columns: 1fr; gap: 16px; }
+ .sharing-matrix { table-layout: fixed; font-size: 12px; }
+ .sharing-matrix th:first-child { width: 54%; }
+ .sharing-matrix th, .sharing-matrix td { padding: 14px 6px; }
+ .sharing-matrix thead th { font-size: 11px; }
+ .sharing-matrix th code, .sharing-matrix th span { font-size: 11px; }
+ .policy-yes { gap: 3px; }
+}
