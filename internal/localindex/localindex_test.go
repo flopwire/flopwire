@@ -251,10 +251,29 @@ func TestActivePathAndTombstone(t *testing.T) {
 	apply(t, s, Batch{SourceID: src.ID, Generation: 1, Messages: ms})
 	eq(t, "parser off-path hidden", searchIDs(t, s, "gamma", SearchOptions{}), []string{"n3", "n2", "n1"})
 
+	// The header's message count (ListConversations, from the digest)
+	// follows the rows' path and supersession.
+	count := func(want int) {
+		t.Helper()
+		convs, err := s.ListConversations(ctx, ListOptions{IncludeDeleted: true})
+		if err != nil || len(convs) != 1 || convs[0].Messages != want {
+			t.Fatalf("message count: %+v %v, want %d", convs, err, want)
+		}
+	}
+	count(3)
 	n, err := s.SetActivePath(ctx, transcript.AgentDevin, "d1", []string{"n1", "n3", "n4"})
 	if err != nil || n != 4 { // n1,n2,n3 from NULL, n4 false->true
 		t.Fatalf("set active path: n=%d err=%v", n, err)
 	}
+	count(3)
+	if _, err := s.SetActivePath(ctx, transcript.AgentDevin, "d1", []string{"n1"}); err != nil {
+		t.Fatal(err)
+	}
+	count(1)
+	if _, err := s.SetActivePath(ctx, transcript.AgentDevin, "d1", []string{"n1", "n3", "n4"}); err != nil {
+		t.Fatal(err)
+	}
+	count(3)
 	eq(t, "branches hidden", searchIDs(t, s, "gamma", SearchOptions{}), []string{"n4", "n3", "n1"})
 	eq(t, "include_branches", searchIDs(t, s, "gamma", SearchOptions{Filter: Filter{IncludeBranches: true}}), []string{"n4", "n3", "n2", "n1"})
 	eq(t, "find hides branches", findIDs(t, s, "node n2", FindOptions{}), nil)
@@ -275,6 +294,7 @@ func TestActivePathAndTombstone(t *testing.T) {
 	if err := s.TombstoneConversation(ctx, transcript.AgentDevin, "d1", 2); err != nil {
 		t.Fatal(err)
 	}
+	count(0)
 	eq(t, "tombstoned", searchIDs(t, s, "gamma", SearchOptions{}), nil)
 	eq(t, "tombstoned kept", searchIDs(t, s, "gamma", SearchOptions{Filter: Filter{IncludeSuperseded: true, IncludeBranches: true}}), []string{"n4", "n3", "n2", "n1"})
 	if convs, _ := s.ListConversations(ctx, ListOptions{}); len(convs) != 0 {

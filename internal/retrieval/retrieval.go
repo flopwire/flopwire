@@ -471,8 +471,18 @@ func scanMessage(row pgx.Row) (format.Message, error) {
 const convCols = `c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(c.cwd,''),COALESCE(c.repo_root,c.cwd,''),d.name,u.email,
 	c.started_at,c.last_activity_at,COALESCE(c.parent_conversation_id::text,''),COALESCE(c.spawned_by_message_id::text,''),c.depth,
 	COALESCE(pc.session_id,c.parent_native_session_id,''),
-	(SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE),
+	` + messageCount + `,
 	c.branches,c.digest,` + liveSQL
+
+// messageCount is conversation c's live message count (live rows on the
+// active path). The digest holds it per kind, maintained by every append
+// and recounted whenever rows are replaced or superseded, so reading it
+// costs the same whatever the session's length. While a parse that
+// replaced rows has not recounted yet (digest_stale), or before the first
+// digest, the rows are counted.
+const messageCount = `CASE WHEN c.digest IS NULL OR c.digest_stale
+	THEN (SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE)
+	ELSE (SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) END`
 
 // liveSQL is whether a conversation c of device d is live: active within
 // format.LiveWindow, or reported open by its device (devices.live_sessions,

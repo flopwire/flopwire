@@ -73,11 +73,24 @@ func (s *Store) MessageByOrdinal(ctx context.Context, sessionID string, ordinal 
 // none; nil when the session has no rows.
 func (s *Store) FirstMessage(ctx context.Context, sessionID string) (*Row, error) {
 	var r *Row
-	err := s.stream(ctx, `SELECT `+rowCols+rowFrom+` WHERE m.conversation_id IN (SELECT id FROM conversations WHERE session_id = ?)
+	err := s.stream(ctx, firstLiveSQL, []any{sessionID}, func(x *Row) bool { r = x; return false })
+	if err != nil || r != nil {
+		return r, err
+	}
+	err = s.stream(ctx, `SELECT `+rowCols+rowFrom+` WHERE m.conversation_id IN (SELECT id FROM conversations WHERE session_id = ?)
 		ORDER BY m.superseded, m.on_active_path IS 0, c.depth, m.ordinal, m.id LIMIT 1`,
 		[]any{sessionID}, func(x *Row) bool { r = x; return false })
 	return r, err
 }
+
+// firstLiveSQL selects the first live row on the active path of a
+// session: the shallowest conversation's lowest ordinal, each
+// conversation's first row read from messages_default in ordinal order,
+// so the session's length does not matter. FirstMessage falls back to
+// the full order over all rows when there is none.
+var firstLiveSQL = `SELECT ` + rowCols + rowFrom + ` WHERE m.id = (SELECT f.id FROM (SELECT k.depth AS depth,
+		  (SELECT id FROM messages WHERE conversation_id = k.id AND superseded = 0 AND on_active_path IS NOT 0 ORDER BY ordinal, id LIMIT 1) AS fid
+		FROM conversations k WHERE k.session_id = ?) x JOIN messages f ON f.id = x.fid ORDER BY x.depth, f.ordinal, f.id LIMIT 1)`
 
 // MessagesAtLine returns the rows recorded at a transcript line (a JSONL
 // line can hold several), live rows first, in ordinal order.

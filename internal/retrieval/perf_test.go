@@ -49,6 +49,10 @@ func perfCorpus(t testing.TB, sessions, msgs int) (*Store, *perfguard.Counter) {
 		        '2026-09-01'::timestamptz+i*interval '1 minute'+j*interval '1 millisecond','step '||j||' of session '||i,20,
 		        sha256(convert_to(i||'/'||j,'UTF8')),0,'test'
 		 FROM generate_series(1,$1) i, generate_series(0,$2-1) j`, []any{sessions, msgs}},
+		// Digests carry the per-kind counts ingest maintains; the read
+		// header's message count comes from them.
+		{`UPDATE conversations c SET digest=(SELECT jsonb_build_object('messages',jsonb_object_agg(kind,k))
+		 FROM (SELECT kind,count(*) k FROM messages m WHERE m.conversation_id=c.id GROUP BY kind) x)`, nil},
 		{`ANALYZE`, nil},
 	} {
 		if _, err := pool.Exec(ctx, q.sql, q.args...); err != nil {
@@ -124,8 +128,8 @@ func TestSessionsPageScalingConstant(t *testing.T) {
 }
 
 // One outline page costs the same whatever the session's size, deep in
-// the session as at its start. The read header's message count (convCols)
-// is a separate per-session count, outside the page.
+// the session as at its start. The read header is guarded by
+// TestReadPageScalingConstant.
 func TestOutlinePageScalingConstant(t *testing.T) {
 	for _, deep := range []bool{false, true} {
 		t.Run(map[bool]string{false: "first", true: "deep"}[deep], func(t *testing.T) {
@@ -402,4 +406,44 @@ func TestOutlinePastEnd(t *testing.T) {
 			t.Fatalf("empty outline page renders as\n%s", b.String())
 		}
 	}
+}
+
+// A read of one page costs the same whatever the session's length: the
+// header (its message count) and the page, for a message address in the
+// middle of the session and for a bare session address (its first
+// message).
+func TestReadPageScalingConstant(t *testing.T) {
+	for _, at := range []string{"message", "session"} {
+		t.Run(at, func(t *testing.T) {
+			perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+				s, counter := perfCorpus(t, 3, n)
+				var addr string
+				q := `SELECT CASE $1::text WHEN 'message' THEN md5('m'||2||'/'||$2::int)::uuid::text ELSE md5('s'||2) END`
+				if err := s.Pool.QueryRow(context.Background(), q, at, n/2).Scan(&addr); err != nil {
+					t.Fatal(err)
+				}
+				return perfguard.Measure(t, s.Pool, counter, func() {
+					cx, err := s.Read(context.Background(), "", format.ReadQuery{Address: addr}, format.Filters{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(cx.Messages) == 0 || cx.Conversation.Messages != n {
+						t.Fatalf("read at n=%d: %d messages, header count %d", n, len(cx.Messages), cx.Conversation.Messages)
+					}
+				})
+			})
+		})
+	}
+}
+
+// A bare session address finds its first row through an index in
+// ordinal order, for any address and for the caller's own session.
+func TestFirstLivePlanIndexed(t *testing.T) {
+	s, _ := perfCorpus(t, 20, 200)
+	var sid, owner string
+	if err := s.Pool.QueryRow(context.Background(), `SELECT session_id,user_id::text FROM conversations WHERE id=md5('c'||2)::uuid`).Scan(&sid, &owner); err != nil {
+		t.Fatal(err)
+	}
+	perfguard.AssertIndexedPlan(t, s.Pool, firstLive(addressConversations+` c`, `c.session_id=$3`), "", false, sid)
+	perfguard.AssertIndexedPlan(t, s.Pool, firstLive(visible+` c`, `c.session_id=$1 AND c.user_id=$2`), sid, owner)
 }
