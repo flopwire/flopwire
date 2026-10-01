@@ -282,3 +282,31 @@ func TestReplacingParseFoldsDigest(t *testing.T) {
 	}
 	sameCounts(t, e, session)
 }
+
+// A parse that dies after a flush replaced rows, without its failure-path
+// recount (a crash, or the database gone), leaves the deferred recount to
+// the retry, even though the retry finds those rows unchanged.
+func TestCrashedReparseDigestRecountedOnRetry(t *testing.T) {
+	e := newEnv(t)
+	id := refreshedSource(t, e)
+	e.exec(`UPDATE messages SET kind='tool_call',parser='claude@2.0' WHERE source_id=$1`, id)
+	e.exec(`UPDATE conversations SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
+	e.exec(`UPDATE source_parse_state SET applied_parser='claude@2.99' WHERE source_id=$1`, id)
+	e.exec(`CREATE FUNCTION reject_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked version checkpoint'; END $$`)
+	e.exec(`CREATE TRIGGER reject_version BEFORE UPDATE ON source_parse_state FOR EACH ROW WHEN (NEW.applied_parser IS DISTINCT FROM OLD.applied_parser) EXECUTE FUNCTION reject_version()`)
+	e.exec(`CREATE TRIGGER reject_recount BEFORE UPDATE ON conversations FOR EACH ROW WHEN (NEW.digest->'messages'='{"user":1}') EXECUTE FUNCTION reject_version()`)
+	if err := e.queue.ParseSource(e.ctx, id); err == nil || !strings.Contains(err.Error(), "blocked version checkpoint") {
+		t.Fatalf("checkpoint failure: %v", err)
+	}
+	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded AND kind='user'`, id) != 1 {
+		t.Fatal("test did not replace the stored row")
+	}
+	e.exec(`DROP TRIGGER reject_version ON source_parse_state`)
+	e.exec(`DROP TRIGGER reject_recount ON conversations`)
+	if err := e.queue.ParseSource(e.ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
+		t.Fatal("the retry left the failed parse's digest wrong")
+	}
+}

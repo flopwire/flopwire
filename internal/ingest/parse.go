@@ -69,6 +69,8 @@ type job struct {
 	// for a recount (sink.kept, sink.dirty).
 	kept    map[uuid.UUID]struct{}
 	recount []string
+	// touched is the conversations the parse wrote to.
+	touched []string
 }
 
 // ParseSource brings one source's message rows up to date with its latest
@@ -212,6 +214,11 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		err = sink.flush()
 	}
 	j.kept, j.recount = sink.kept, sink.dirtyConversations()
+	for _, id := range sink.convIDs {
+		if id != "" {
+			j.touched = append(j.touched, id)
+		}
+	}
 	if ref := (*refusal)(nil); errors.As(err, &ref) {
 		if err := refuseSource(ctx, q.Pool, j.src, j.path, sink.gate.sessions(), ruleName(ref.d), ref.detail()); err != nil {
 			return err
@@ -403,6 +410,19 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 				}
 			}
 		}
+		// A parse that died after replacing rows left their digests
+		// stale; this one may have found the rows unchanged.
+		stale, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE digest_stale AND (id=ANY($1::uuid[]) OR source_id=$2)`, j.touched, j.src.id)
+		if err != nil {
+			return err
+		}
+		staleIDs, err := pgx.CollectRows(stale, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		for _, id := range staleIDs {
+			changed[id] = true
+		}
 		// Recount after retirement, including conversations wholly absent
 		// from the replacement, and those whose rows the parse replaced.
 		// Checkpoint failure rolls this back too.
@@ -414,7 +434,7 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 		if err := recountDigests(ctx, tx, ids); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
+		_, err = tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
 			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7,
 			applied_parser=COALESCE(NULLIF($8,''),applied_parser),
 			applied_redaction_rules=CASE WHEN $8<>'' THEN $9 ELSE applied_redaction_rules END,

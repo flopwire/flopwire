@@ -17,10 +17,12 @@ const (
 	// digestAppend adds the counts of msgs, rows a flush only added.
 	digestAppend digestMode = iota
 	// digestRecount recounts over the live rows (rows replaced or
-	// superseded).
+	// superseded) and clears digest_stale.
 	digestRecount
 	// digestFold folds msgs and leaves the counts to the recount when the
-	// parse completes.
+	// parse completes. It sets digest_stale: a parse that dies before
+	// then leaves the recount to the next parse that touches the
+	// conversation (complete).
 	digestFold
 )
 
@@ -73,7 +75,8 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 		}
 		out = digest.Append(prev, c, msgs, failed, subagents)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2 WHERE id=$1`, conv, out); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2,digest_stale=CASE $3::int WHEN 1 THEN false WHEN 2 THEN true ELSE digest_stale END WHERE id=$1`,
+		conv, out, int(mode)); err != nil {
 		return err
 	}
 	// A subagent changes its parent's count.
