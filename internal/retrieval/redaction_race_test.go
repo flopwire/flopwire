@@ -6,11 +6,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/ingest"
+	"github.com/flopwire/flopwire/internal/retrieval"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/syncproto"
 )
@@ -147,5 +150,108 @@ func TestRedactionRacingFlush(t *testing.T) {
 				t.Fatal("upload took chunk away from redaction purge job")
 			}
 		})
+	}
+}
+
+// A copy parsed after a redaction picked its targets, and committed before
+// the redaction commits, is masked too: the redaction re-reads its targets
+// under the lock that parse writes share.
+func TestRedactionMasksCopyParsedMeanwhile(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, dv, export := s.writeRedactFixtures()
+	s.syncRedact(s.sy, specs, dv, export)
+	var addr string
+	if err := s.pool.QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.agent='claude' AND strpos(m.text,'BLUEFALCON')>0`).Scan(&addr); err != nil {
+		t.Fatal(err)
+	}
+	// Another Codex session holding the same message.
+	b, err := os.ReadFile(specs[1].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copySpec := specs[1]
+	copySpec.Path = strings.ReplaceAll(specs[1].Path, "0000000000c1", "0000000000c2")
+	fired := 0
+	retrieval.SetBeforeRedactTx(func() {
+		fired++
+		if fired > 1 {
+			return
+		}
+		if err := os.WriteFile(copySpec.Path, bytes.ReplaceAll(b, []byte("0000000000c1"), []byte("0000000000c2")), 0o600); err != nil {
+			t.Error(err)
+			return
+		}
+		s.syncRedact(s.sy, []devicesync.SourceSpec{copySpec}, dv, export)
+	})
+	defer retrieval.SetBeforeRedactTx(nil)
+	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: addr + ":2-2", AllCopies: true}); err != nil {
+		t.Fatal(err)
+	}
+	if fired == 0 {
+		t.Fatal("hook did not run")
+	}
+	if n := s.count(`SELECT count(*) FROM messages m JOIN sources src ON src.id=m.source_id WHERE src.path=$1`, copySpec.Path); n == 0 {
+		t.Fatal("the copy was not parsed")
+	}
+	if n := s.rowsWith("BLUEFALCON"); n != 0 {
+		t.Fatalf("%d rows hold the codename: a copy committed during the redaction kept it", n)
+	}
+}
+
+// A writer that does not share the redacted-lines lock (the rules
+// upgrade's maskVersions locks a row FOR UPDATE, rewrites its text and
+// commits) can change a target after the redaction re-reads it. The
+// redaction's write must not restore the text it read before that change.
+func TestRedactionKeepsTextRewrittenMeanwhile(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	specs, dv, export := s.writeRedactFixtures()
+	s.syncRedact(s.sy, specs, dv, export)
+	var addr string
+	if err := s.pool.QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.agent='claude' AND strpos(m.text,'BLUEFALCON')>0`).Scan(&addr); err != nil {
+		t.Fatal(err)
+	}
+	fired := 0
+	done := make(chan error, 1)
+	retrieval.SetBeforeRedactTx(func() {
+		fired++
+		if fired > 1 {
+			return
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			done <- err
+			return
+		}
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM messages WHERE id=$1 FOR UPDATE`, addr); err != nil {
+			tx.Rollback(ctx)
+			done <- err
+			return
+		}
+		go func() {
+			// Commit once the redaction has re-read its targets.
+			time.Sleep(1500 * time.Millisecond)
+			if _, err := tx.Exec(ctx, `UPDATE messages SET text=replace(text,'last line','last [RULE]') WHERE id=$1`, addr); err != nil {
+				tx.Rollback(ctx)
+				done <- err
+				return
+			}
+			done <- tx.Commit(ctx)
+		}()
+	})
+	defer retrieval.SetBeforeRedactTx(nil)
+	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: addr + ":2-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	if err := s.pool.QueryRow(ctx, `SELECT text FROM messages WHERE id=$1`, addr).Scan(&text); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "BLUEFALCON") || !strings.Contains(text, "last [RULE]") {
+		t.Fatalf("the redaction overwrote a concurrent rewrite: %q", text)
 	}
 }

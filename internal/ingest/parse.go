@@ -183,11 +183,15 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	// A Devin export is read whole every time, so its count is replaced.
 	rr := redact.NewReaderAt(r, redact.ModeFor(j.kind, j.path))
 	countAll := full || isDevin
-	masks, err := q.masks.lineMasks(ctx, q.Pool)
+	masks, maskRevision, err := q.masks.lineMasks(ctx, q.Pool)
 	if err != nil {
 		return err
 	}
 	rr.SetLineMasks(masks)
+	sink.maskRevision = maskRevision
+	if afterLineMasks != nil {
+		afterLineMasks()
+	}
 	if countAll {
 		rr.CountFrom(0)
 	} else {
@@ -217,6 +221,11 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	}
 	if err == nil {
 		err = sink.flush()
+	}
+	if sink.masksMoved {
+		// However the parser reported the failed write: start again with
+		// the new catalog.
+		return errMasksMoved
 	}
 	j.kept, j.recount = sink.kept, sink.dirtyConversations()
 	for _, id := range sink.convIDs {
@@ -695,7 +704,7 @@ func (a *archiveFS) openRollout(_, sessionID string) (codex.File, error) {
 		return nil, err
 	}
 	f := newRedactedFile(NewReader(a.ctx, a.objects, g), string(transcript.StorageJSONLAppend), "")
-	masks, err := a.masks.lineMasks(a.ctx, a.pool)
+	masks, _, err := a.masks.lineMasks(a.ctx, a.pool)
 	if err != nil {
 		return nil, err
 	}
@@ -717,6 +726,10 @@ func serverExtractionContract(agent string) string {
 	return ""
 }
 
+// afterLineMasks, when set (tests), runs after a parse loads the
+// redacted-line catalog and before it reads the source.
+var afterLineMasks func()
+
 // maskCache keeps the redacted-line catalog between parses: every parse
 // needs it, and redacted_lines grows with every redaction while a parse
 // of an append reads a few lines. It reloads when
@@ -729,17 +742,17 @@ type maskCache struct {
 	catalog  *redact.LineCatalog
 }
 
-// get returns the current catalog, never nil.
-func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, error) {
+// get returns the current catalog, never nil, and its revision.
+func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, int64, error) {
 	var rev int64
 	if err := pool.QueryRow(ctx, `SELECT revision FROM redacted_lines_revision WHERE singleton`).Scan(&rev); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	c.mu.Lock()
 	if c.loaded && c.revision == rev {
 		cat := c.catalog
 		c.mu.Unlock()
-		return cat, nil
+		return cat, rev, nil
 	}
 	c.mu.Unlock()
 	var cat *redact.LineCatalog
@@ -752,24 +765,49 @@ func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCa
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	c.mu.Lock()
 	if !c.loaded || rev > c.revision {
 		c.loaded, c.revision, c.catalog = true, rev, cat
 	}
 	c.mu.Unlock()
-	return cat, nil
+	return cat, rev, nil
 }
 
-// lineMasks is LineMasks from the cache: nil when there are none.
-func (c *maskCache) lineMasks(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, error) {
-	cat, err := c.get(ctx, pool)
+// lineMasks is LineMasks from the cache (nil when there are none) and the
+// revision it is the lines of.
+func (c *maskCache) lineMasks(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, int64, error) {
+	cat, rev, err := c.get(ctx, pool)
 	if err != nil || cat.Empty() {
-		return nil, err
+		return nil, rev, err
 	}
-	return cat, nil
+	return cat, rev, nil
 }
+
+// redactedLinesLock orders changes to redacted_lines against the parse
+// writes that mask by them. A message redaction holds it exclusively for
+// its whole transaction (LockRedactedLines); every sink write transaction
+// shares it from its first statement, then checks that redacted_lines
+// has not moved since the parse loaded its catalog. A redaction that
+// commits first therefore moves the revision before the write checks it,
+// and one that commits later finds the written rows when it re-reads its
+// targets.
+const redactedLinesLock = "flopwire:redacted-lines"
+
+// LockRedactedLines takes the redacted-lines lock exclusively until tx
+// ends. A transaction that writes redacted_lines takes it first.
+func LockRedactedLines(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, redactedLinesLock)
+	return err
+}
+
+// errMasksMoved is a parse whose catalog went stale before it wrote: a
+// line was redacted meanwhile. The parse starts again.
+var errMasksMoved = errors.New("ingest: redacted lines changed during the parse; retry")
+
+// maskAttempts bounds the restarts of a parse racing redactions.
+const maskAttempts = 3
 
 // LineMasks loads the redacted message lines (notes/redaction.md) for the
 // server's redaction pass; nil when there are none.

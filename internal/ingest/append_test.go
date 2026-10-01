@@ -84,3 +84,44 @@ func TestAppendSeesLineRedactedSinceLastParse(t *testing.T) {
 	}
 	sameDigest(t, e, a.session.SessionID)
 }
+
+// A line redacted after a parse loaded the catalog, and before that parse
+// commits its rows, is not stored unmasked: the parse sees the revision
+// move when it writes, and starts again with the new catalog.
+func TestParseSeesLineRedactedMidParse(t *testing.T) {
+	e := newEnv(t)
+	a := newAppendSession(t, e, 8)
+	a.records(t, 4) // the queue has loaded the (empty) catalog
+	line := a.session.Lines(a.next, a.next+1)
+	secret := []byte("step 12:")
+	i := bytes.Index(line, secret)
+	if i < 0 {
+		t.Fatalf("fixture line lacks %q: %s", secret, line)
+	}
+	fired := 0
+	afterLineMasks = func() {
+		fired++
+		if fired > 1 {
+			return
+		}
+		// An admin redacts the line while the parse holds the old catalog.
+		e.exec(`INSERT INTO message_redactions(id,requested_by,message_id,all_copies,by_admin,messages,chunks,tails,created_at)
+			VALUES('a99e0000-0000-4000-a000-000000000002',$1,gen_random_uuid(),false,true,1,0,0,now())`, e.userID)
+		sum := redact.LineSum(line)
+		e.exec(`INSERT INTO redacted_lines(line_sha,spans,redaction_id) VALUES($1,$2,'a99e0000-0000-4000-a000-000000000002')`,
+			sum[:], []redact.Span{{Start: i, End: i + len(secret) + 20}})
+	}
+	defer func() { afterLineMasks = nil }()
+	a.add(t, line)
+	a.next++
+	if fired != 2 {
+		t.Fatalf("the parse loaded the catalog %d times, want 2 (a restart)", fired)
+	}
+	if n := e.count(`SELECT count(*) FROM messages WHERE strpos(text,'step 12:')>0`); n != 0 {
+		t.Fatal("a parse stored a line redacted before it committed, unmasked")
+	}
+	if n := e.count(`SELECT count(*) FROM messages WHERE NOT superseded AND strpos(text,'[REDACTED')>0`); n != 1 {
+		t.Fatalf("%d masked rows, want 1", n)
+	}
+	sameDigest(t, e, a.session.SessionID)
+}

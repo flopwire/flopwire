@@ -30,6 +30,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// beforeRedactTx, when set (tests), runs after a redaction picks its
+// targets and before its transaction.
+var beforeRedactTx func()
+
 type redactTarget struct {
 	id, text, sourceID, deviceID string
 	conv                         string
@@ -44,6 +48,22 @@ type redactTarget struct {
 // The caller acts as the owner (their own messages only) unless admin is
 // set (any user's).
 func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admin bool, req format.RedactRequest) (format.RedactResult, error) {
+	for attempt := 1; ; attempt++ {
+		res, err := s.redactOnce(ctx, userID, deviceID, admin, req)
+		if !errors.Is(err, errTargetsMoved) || attempt == redactAttempts {
+			return res, err
+		}
+	}
+}
+
+// errTargetsMoved is a redaction whose targets changed between reading
+// them and its transaction (a parse committed a copy): it starts again.
+var errTargetsMoved = errors.New("retrieval: redaction targets changed; retry")
+
+// redactAttempts bounds the restarts of a redaction racing parses.
+const redactAttempts = 5
+
+func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin bool, req format.RedactRequest) (format.RedactResult, error) {
 	who := struct {
 		UserID, DeviceID string
 		Admin            bool
@@ -77,28 +97,8 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 
 	// Targets: the row, its other versions, and with all_copies every row
 	// with the same text (the +N copies group), within the caller's reach.
-	rows, err := s.Pool.Query(ctx, `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
-			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text
-		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id
-		WHERE m.id=$1 OR (m.conversation_id=$2 AND m.native_id IS NOT DISTINCT FROM $3 AND $3 IS NOT NULL)
-		   OR ($4 AND m.content_sha=$5 AND ($6 OR c.user_id=$7))
-		ORDER BY m.id`, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
+	targets, err := redactTargets(ctx, s.Pool, false, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
 	if err != nil {
-		return res, err
-	}
-	var targets []redactTarget
-	for rows.Next() {
-		var t redactTarget
-		var gen int64
-		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv); err != nil {
-			rows.Close()
-			return res, err
-		}
-		t.gen = &gen
-		targets = append(targets, t)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return res, err
 	}
 
@@ -208,9 +208,29 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 	defer plan.Close()
 	chunks, tails := plan.Counts()
 
+	if beforeRedactTx != nil {
+		beforeRedactTx()
+	}
 	id := uuid.NewString()
 	now := time.Now().UTC()
 	err = plan.WithTx(ctx, func(tx pgx.Tx) error {
+		// Parse writes share this lock, so none commits while the redaction
+		// runs. A copy one committed after the targets were read is found
+		// here; a parse that loaded the catalog before this commits sees the
+		// revision move when it next writes. The re-read locks the rows:
+		// a writer that does not share the lock (the rules upgrade) could
+		// otherwise rewrite one between this read and the update below,
+		// and the update would restore the text read here.
+		if err := ingest.LockRedactedLines(ctx, tx); err != nil {
+			return err
+		}
+		current, err := redactTargets(ctx, tx, true, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
+		if err != nil {
+			return err
+		}
+		if !slices.EqualFunc(current, targets, func(a, b redactTarget) bool { return a.id == b.id && a.text == b.text }) {
+			return errTargetsMoved
+		}
 		lr := ""
 		if from > 0 {
 			lr = fmt.Sprintf("%d-%d", from, to)
@@ -300,6 +320,38 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 	}
 	res.ID, res.Messages, res.Chunks, res.Tails = id, len(newText), chunks, tails
 	return res, nil
+}
+
+// redactTargets reads a redaction's target rows, ordered by id; with lock,
+// FOR UPDATE.
+func redactTargets(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, lock bool, focus, conv string, native *string, allCopies bool, sha []byte, admin bool, userID string) ([]redactTarget, error) {
+	lockClause := ""
+	if lock {
+		lockClause = " FOR UPDATE OF m"
+	}
+	rows, err := q.Query(ctx, `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
+			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text
+		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id
+		WHERE m.id=$1 OR (m.conversation_id=$2 AND m.native_id IS NOT DISTINCT FROM $3 AND $3 IS NOT NULL)
+		   OR ($4 AND m.content_sha=$5 AND ($6 OR c.user_id=$7))
+		ORDER BY m.id`+lockClause, focus, conv, native, allCopies, sha, admin, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var targets []redactTarget
+	for rows.Next() {
+		var t redactTarget
+		var gen int64
+		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv); err != nil {
+			return nil, err
+		}
+		t.gen = &gen
+		targets = append(targets, t)
+	}
+	return targets, rows.Err()
 }
 
 // archived reads bytes of a source generation as stored (not through the
