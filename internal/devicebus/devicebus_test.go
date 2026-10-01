@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -605,5 +606,31 @@ func TestSendFromWithheldSessionRefused(t *testing.T) {
 	}
 	if len(srv.sends) != 1 {
 		t.Fatalf("server got %d sends", len(srv.sends))
+	}
+}
+
+// A send through the server passes the device redactor first: the secret
+// never leaves the machine, and the counts reach the sender.
+func TestSendRedactsBeforeTheServer(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	tok := "gh" + "p_" + strings.Repeat("aB3dE5", 6)
+	out, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "abcd", Body: "use " + tok + " for the push", Refs: []string{"ref " + tok}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	got := srv.sends[0]
+	srv.mu.Unlock()
+	if strings.Contains(got.Body, tok) || strings.Contains(strings.Join(got.Refs, " "), tok) {
+		t.Fatalf("secret sent to the server: %+v", got)
+	}
+	if len(got.Body) != len("use "+tok+" for the push") {
+		t.Fatalf("mask changed the body's length: %q", got.Body)
+	}
+	if out.Redactions["github-token"] != 2 {
+		t.Fatalf("redactions: %+v", out.Redactions)
 	}
 }

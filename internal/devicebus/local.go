@@ -30,8 +30,44 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent); err != nil {
 		return busproto.SendResponse{}, err
 	}
+	// The body and refs pass the device redactor before they leave the
+	// machine (plan §4 "Redaction"), as transcript text does. Masks keep
+	// the length, so the server's cap and duplicate check see the same
+	// sizes; it finds nothing left to mask, so its counts come from here.
+	counts := redactSend(&req)
 	srv, _ := b.cfg.Connect()
-	return srv.Send(ctx, req)
+	out, err := srv.Send(ctx, req)
+	if err == nil && len(counts) > 0 {
+		if out.Redactions == nil {
+			out.Redactions = map[string]int{}
+		}
+		for rule, n := range counts {
+			out.Redactions[rule] += n
+		}
+	}
+	return out, err
+}
+
+// redactSend masks secrets in a send's body and refs in place and counts
+// them by rule.
+func redactSend(req *busproto.SendRequest) map[string]int {
+	counts := map[string]int{}
+	mask := func(s string) string {
+		masked, matches := redact.Redact([]byte(s))
+		for _, m := range matches {
+			counts[m.Rule]++
+		}
+		return string(masked)
+	}
+	req.Body = mask(req.Body)
+	if len(req.Refs) > 0 {
+		refs := make([]string, len(req.Refs))
+		for i, r := range req.Refs {
+			refs[i] = mask(r)
+		}
+		req.Refs = refs
+	}
+	return counts
 }
 
 // Peers lists live sessions: the organization's from the server, or the
