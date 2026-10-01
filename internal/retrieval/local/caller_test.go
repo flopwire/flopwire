@@ -118,6 +118,41 @@ func TestDetectorCodexEnvAndDevinLock(t *testing.T) {
 	check(1000, "", "explicit", "env")
 }
 
+// Devin lock files outlive their sessions, so the pid a stale lock names
+// is reused by unrelated processes. A lock counts only when the process at
+// its pid is a devin process: a reused pid must not make a Claude Code
+// shell, or a plain terminal, send as that old Devin session, nor (two
+// stale locks naming one reused pid) hide the real caller.
+func TestDetectorStaleDevinLockOnReusedPid(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755)
+	os.WriteFile(filepath.Join(home, ".claude", "sessions", "300.json"), []byte(`{"pid":300,"sessionId":"claude-live"}`), 0o644)
+	locks := filepath.Join(home, ".local", "share", "devin", "cli", "session_locks")
+	os.MkdirAll(locks, 0o755)
+	os.WriteFile(filepath.Join(locks, "old-devin-a.lock"), []byte("100"), 0o644) // reused by a Claude Code shell
+	os.WriteFile(filepath.Join(locks, "old-devin-b.lock"), []byte("500"), 0o644) // reused by a terminal's zsh
+	os.WriteFile(filepath.Join(locks, "old-devin-c.lock"), []byte("200"), 0o644) // two stale locks on one reused pid
+	os.WriteFile(filepath.Join(locks, "old-devin-d.lock"), []byte("200"), 0o644)
+	// 100 (sh) -> 300 (claude); 400 (flopwire's parent sh) -> 500 (zsh) -> 600 (tmux);
+	// 150 (sh) -> 200 (bash) -> 300 (claude)
+	procs := map[int]struct {
+		ppid int
+		name string
+	}{100: {300, "sh"}, 300: {1, "claude"}, 400: {500, "sh"}, 500: {600, "zsh"}, 600: {1, "tmux"}, 150: {200, "sh"}, 200: {300, "bash"}}
+	proc := func(pid int) (int, string, bool) { p, ok := procs[pid]; return p.ppid, p.name, ok }
+	d := &Detector{Getenv: func(string) string { return "" }, Home: home, Proc: proc}
+	for _, tc := range []struct {
+		pid     int
+		session string
+	}{{100, "claude-live"}, {400, ""}, {150, "claude-live"}} {
+		d.Pid = tc.pid
+		c, ok := d.Detect(context.Background())
+		if c.SessionID != tc.session || ok != (tc.session != "") {
+			t.Errorf("pid %d: got %+v %v, want %q", tc.pid, c, ok, tc.session)
+		}
+	}
+}
+
 // TestDetectLive prints what the detector finds for the process running
 // the test (run it from an agent's shell tool).
 func TestDetectLive(t *testing.T) {

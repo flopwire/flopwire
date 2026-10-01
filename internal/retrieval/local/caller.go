@@ -30,12 +30,13 @@ type Caller struct {
 //  2. claude-sessions: an ancestor process has a Claude Code session file,
 //     <claude config dir>/sessions/<pid>.json; its sessionId is the live
 //     session (it follows /clear, which the environment does not).
-//  3. devin-lock: an ancestor process's pid is the one exactly one
+//  3. devin-lock: an ancestor process named devin has the pid exactly one
 //     <devin dir>/session_locks/<session>.lock names. Devin sets no
 //     variable for its children; its hooks' and MCP servers' parent is the
 //     `devin acp` process, which holds the lock (probes 2026-10-01). Lock
-//     files outlive their sessions, so a pid two locks name identifies
-//     none.
+//     files outlive their sessions and their pids are reused, so a lock
+//     naming a process that is not devin does not count, and a devin pid
+//     two locks name identifies none.
 //  4. codex-env, codex-rollout: an ancestor process is named codex. Its
 //     shell children carry CODEX_THREAD_ID, the thread id (codex-env).
 //     Without it (an MCP server: Codex scrubs their environment), the
@@ -107,17 +108,21 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 		if id := claudeSessionFile(filepath.Join(claudeDir, "sessions", itoa(pid)+".json")); id != "" {
 			return Caller{Agent: transcript.AgentClaude, SessionID: id, Rule: "claude-sessions"}, true
 		}
-		if devin == nil {
-			devin = devinLocks(filepath.Join(filepath.Dir(devinDB), "session_locks"))
-		}
-		if ids := devin[pid]; len(ids) == 1 {
-			return Caller{Agent: transcript.AgentDevin, SessionID: ids[0], Rule: "devin-lock"}, true
-		} else if len(ids) > 1 {
-			return Caller{}, false
-		}
 		ppid, name, ok := d.Proc(pid)
 		if !ok {
 			break
+		}
+		// A lock counts only when its pid is a devin process now: stale
+		// locks name pids the OS has since given to other processes.
+		if strings.Contains(strings.ToLower(filepath.Base(name)), "devin") {
+			if devin == nil {
+				devin = devinLocks(filepath.Join(filepath.Dir(devinDB), "session_locks"))
+			}
+			if ids := devin[pid]; len(ids) == 1 {
+				return Caller{Agent: transcript.AgentDevin, SessionID: ids[0], Rule: "devin-lock"}, true
+			} else if len(ids) > 1 {
+				return Caller{}, false
+			}
 		}
 		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") {
 			if id := env("CODEX_THREAD_ID"); id != "" {
