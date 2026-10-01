@@ -136,8 +136,10 @@ Run `flopwire agent flush --path <transcript>` or
 ## Messaging
 
 The agent carries messages between agent sessions
-([design](../notes/message-bus/plan.md)). The `flopwire hook` command and
-the `peers`, `send` and `inbox` commands use it. They are not built yet.
+([design](../notes/message-bus/plan.md)). The `peers`, `send` and `inbox`
+commands and MCP tools use it. The `flopwire hook` command, which prints
+messages into the recipient's session, is not built yet. Until it is, a
+message waits in the recipient's local inbox.
 
 With a server configuration, the agent does these things:
 
@@ -171,6 +173,54 @@ also reads these harness files. It never writes them or locks them:
 A message waits for 24 hours. Then it expires.
 
 To see the messaging state, run `flopwire agent status`.
+
+### Send and read messages
+
+Run these commands from an agent session's shell, or call the MCP tools
+`flopwire_peers`, `flopwire_send` and `flopwire_inbox`.
+
+1. List the live sessions:
+
+   ```sh
+   flopwire peers --repo .
+   ```
+
+   Each row is `SESSION  user  agent  live busy|idle  repo@branch  "title"`.
+   Your own session is not in the list.
+
+2. Send a message to a session, or to a person:
+
+   ```sh
+   flopwire send 4c19e0d2 -- "Heads-up: the list endpoint returns a cursor now."
+   flopwire send @alex --intent request -- "Can you rebase api on main?"
+   ```
+
+   Put the main point in the first line. Use `-` as the text to read it
+   from standard input. The command prints one line, for example:
+
+   ```text
+   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt
+   ```
+
+3. Check what you sent:
+
+   ```sh
+   flopwire inbox --sent
+   ```
+
+   To read one thread in full, use `flopwire inbox --thread ID`.
+
+The commands talk only to the device agent. If the agent does not run,
+they stop with an error that says how to start it.
+
+The sender is always the calling session. The commands find it as
+[search](search.md#your-own-session) does. If no session is found, `send`
+and `inbox` stop with an error. `peers` still lists the sessions. To name
+the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
+`codex` or `devin`).
+
+A session that a path rule keeps off the server cannot send. The agent
+refuses the request before anything leaves the device.
 
 ## How the agent finds changes
 
