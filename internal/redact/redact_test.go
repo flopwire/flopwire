@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/flopwire/flopwire/internal/auth"
 	"github.com/flopwire/flopwire/internal/redact/redacttest"
@@ -376,5 +377,24 @@ func TestAssignmentMarkerHasNoHash(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "[REDACTED:assignment]*") {
 		t.Fatalf("marker %s", out)
+	}
+}
+
+// A mask widened over a JSON escape stops on a character boundary: a
+// truncated \u escape before multibyte text must not leave half a
+// character behind, which would make valid UTF-8 input invalid.
+func TestEscapeWideningKeepsUTF8Valid(t *testing.T) {
+	for _, in := range []string{
+		`password="Xk9#mQ2z\u"é日 next`,
+		`password="Xk9#mQ2z\uA"日日 next`,
+		`password="Xk9#mQ2z\uAB"é next`,
+	} {
+		out, ms := Redact([]byte(in))
+		if len(ms) == 0 {
+			t.Fatalf("%q: no match", in)
+		}
+		if len(out) != len(in) || !utf8.Valid(out) || bytes.Contains(out, []byte("Xk9#mQ2z")) {
+			t.Errorf("%q -> %q (valid %v)", in, out, utf8.Valid(out))
+		}
 	}
 }

@@ -1032,3 +1032,17 @@ func TestHiddenLiveSessionIsNotAddressable(t *testing.T) {
 		t.Fatalf("prefix with a hidden candidate: %+v %v", out, err)
 	}
 }
+
+// A body the redactor masks next to multibyte text is stored: the mask
+// leaves valid UTF-8, so the insert does not fail.
+func TestRedactedMultibyteBodyIsStored(t *testing.T) {
+	tm := newTeam(t)
+	out := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", `try password="Xk9#mQ2z\u"é日 now`)
+	var stored string
+	if err := tm.pool.QueryRow(context.Background(), `SELECT body FROM bus_messages WHERE id=$1`, out.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, "Xk9#mQ2z") || !strings.HasSuffix(stored, " now") {
+		t.Fatalf("stored %q", stored)
+	}
+}
