@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -242,7 +243,8 @@ func codexRPC(ctx context.Context, path string, calls []rpcCall) ([]json.RawMess
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "app-server")
 	cmd.WaitDelay = 2 * time.Second
-	var errb bytes.Buffer
+	// The process writes stderr while wait reads it after an early EOF.
+	var errb lockedBuffer
 	cmd.Stderr = &errb
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -315,6 +317,24 @@ func codexRPC(ctx context.Context, path string, calls []rpcCall) ([]json.RawMess
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// lockedBuffer is a bytes.Buffer safe for one writer and one reader.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // codexEventName maps hooks/list's event names to the hooks.json spelling.
