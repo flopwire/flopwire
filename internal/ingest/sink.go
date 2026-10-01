@@ -444,11 +444,7 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 		default:
 			// A different version: the old row stays, superseded.
 			s.markReplaced(conv)
-			nr := s.insert(b, conv, m, search, enrichment, old.version+1)
-			if !old.superseded {
-				b.Queue(`UPDATE messages SET superseded_by=$2 WHERE id=$1`, old.id, nr.id)
-			}
-			have[key] = nr
+			have[key] = s.insert(b, conv, m, search, enrichment, old.version+1)
 		}
 	}
 	if b.Len() == 0 {
@@ -465,13 +461,16 @@ func (s *sink) markReplaced(conv string) {
 }
 
 // insert queues a new live row; an existing live row of the same key is
-// superseded first (the unique live index allows one).
+// superseded first (the unique live index allows one), linked to the new
+// row in the same update: one row version, not two. superseded_by is a
+// deferred foreign key, so it may name the row inserted after it.
 func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search string, enrichment []byte, version int) *row {
+	id := uuid.NewString()
 	if version > 1 {
-		b.Queue(`UPDATE messages SET superseded=true,superseded_in_generation=$3 WHERE conversation_id=$1 AND native_id IS NOT DISTINCT FROM $2 AND NOT superseded AND part=$4 AND ($2::text IS NOT NULL OR (source_id=$5 AND locator=$6))`,
-			conv, nullStr(clean(m.NativeID)), s.src.generation, m.Part, s.src.id, locator(m))
+		b.Queue(`UPDATE messages SET superseded=true,superseded_in_generation=$3,superseded_by=$7 WHERE conversation_id=$1 AND native_id IS NOT DISTINCT FROM $2 AND NOT superseded AND part=$4 AND ($2::text IS NOT NULL OR (source_id=$5 AND locator=$6))`,
+			conv, nullStr(clean(m.NativeID)), s.src.generation, m.Part, s.src.id, locator(m), id)
 	}
-	r := &row{id: uuid.NewString(), version: version, sha: m.ContentSHA[:], text: search, onPath: m.OnActivePath, sourceID: &s.src.id,
+	r := &row{id: id, version: version, sha: m.ContentSHA[:], text: search, onPath: m.OnActivePath, sourceID: &s.src.id,
 		generation: s.src.generation, parseAttempt: s.src.parseAttempt, offset: offPtr(m), isError: errPtr(m), enrichment: enrichment}
 	b.Queue(`INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
 			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules)

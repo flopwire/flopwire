@@ -33,8 +33,11 @@ import (
 )
 
 func benchCmd(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "compare" {
+		return benchCompare(args[1:], os.Stdout)
+	}
 	if len(args) == 0 || args[0] != "acceptance" {
-		return errors.New("usage: flopwire bench acceptance --scratch DIR [--only index,fresh,queries,report]")
+		return errors.New("usage: flopwire bench acceptance --scratch DIR [--only index,fresh,queries,report] [--json PATH]\n       flopwire bench compare [--strict] OLD|DIR NEW")
 	}
 	fs := flag.NewFlagSet("bench acceptance", flag.ContinueOnError)
 	scratch := fs.String("scratch", "", "scratch directory for indexes, copies and results (required)")
@@ -46,6 +49,7 @@ func benchCmd(ctx context.Context, args []string) error {
 	queries := fs.String("queries", "testdata/acceptance/queries.yaml", "query set")
 	index := fs.String("index", "", "index for the query part (default the one the index part built)")
 	idleAfter := fs.Duration("idle-after", 60*time.Second, "how long the agent idles before its memory is read")
+	jsonOut := fs.String("json", "", "with the report part, also write the acceptance record (docs/perf/README.md) to this file")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -78,7 +82,18 @@ func benchCmd(ctx context.Context, args []string) error {
 			}
 			res.Queries, err = b.queries(ctx, *queries, idx)
 		case "report":
-			return b.report(res)
+			if err := b.report(res); err != nil {
+				return err
+			}
+			if *jsonOut == "" {
+				return nil
+			}
+			rec := newAccRecord(res, b.oracleReports(), buildRecordOf(), machineInfo(), time.Now())
+			if err := writeAccRecord(*jsonOut, rec); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "bench: record written to %s; for a release commit it as docs/perf/%s\n", *jsonOut, recordFileName(rec))
+			return nil
 		default:
 			return fmt.Errorf("unknown part %q", part)
 		}
@@ -141,6 +156,8 @@ type indexResult struct {
 	SweepCPUMs  []float64 `json:"sweep_cpu_ms"` // no-change sweeps after the first
 	SweepFiles  int       `json:"sweep_files"`
 	LoadAverage string    `json:"load_average"`
+	CorpusFiles int64     `json:"corpus_files"`
+	CorpusBytes int64     `json:"corpus_bytes"`
 }
 
 func (b *bench) agentArgs(db string, extra ...string) []string {
@@ -173,6 +190,8 @@ func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResul
 		return nil, err
 	}
 	r := &indexResult{At: time.Now(), LoadAverage: loadAverage()}
+	cs := corpusSize(b.claude, b.codex, b.devin)
+	r.CorpusFiles, r.CorpusBytes = cs.Files, cs.Bytes
 	fmt.Fprintln(os.Stderr, "bench: indexing the full corpus into", dir)
 	cmd := exec.CommandContext(ctx, b.exe, b.agentArgs(b.indexPath(), "--once")...)
 	cmd.Env = b.agentEnv()
@@ -450,7 +469,8 @@ type queryResult struct {
 	Ms       []float64 `json:"ms"` // cold, then warm runs
 	WarmMs   float64   `json:"warm_ms"`
 	OK       bool      `json:"ok"`
-	Problems []string  `json:"problems,omitempty"`
+	Problems []string  `json:"problems,omitempty"` // with stderr; terminal and scratch only
+	Reasons  []string  `json:"reasons,omitempty"`  // path-free, for the record
 	// Reads round-trips the printed addresses: read ADDRESS[:LINE] of up to
 	// readsPerQuery hits must focus that message; ReadMs are their times.
 	Reads   int       `json:"reads"`
@@ -509,7 +529,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			o, err := exec.CommandContext(ctx, b.exe, args...).Output()
 			qr.Ms = append(qr.Ms, float64(time.Since(t0).Microseconds())/1000)
 			if err != nil {
-				qr.Problems = append(qr.Problems, fmt.Sprintf("%v: %s", err, errText(err)))
+				qr.problem("query command: "+exitReason(err), fmt.Sprintf("%v: %s", err, errText(err)))
 				break
 			}
 			out = o
@@ -528,7 +548,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 		}
 		if out != nil {
 			if err := json.Unmarshal(out, &parsed); err != nil {
-				qr.Problems = append(qr.Problems, "bad JSON: "+err.Error())
+				qr.problem("query output is not JSON", err.Error())
 			}
 		}
 		qr.Hits = len(parsed.Hits)
@@ -536,7 +556,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			qr.WarmMs = median(qr.Ms[1:])
 		}
 		if qr.Hits < q.Expect.MinHits {
-			qr.Problems = append(qr.Problems, fmt.Sprintf("%d hits, want >= %d", qr.Hits, q.Expect.MinHits))
+			qr.problem(fmt.Sprintf("%d hits, want >= %d", qr.Hits, q.Expect.MinHits), "")
 		}
 		for _, want := range q.Expect.Sessions {
 			found := false
@@ -544,7 +564,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 				found = found || strings.HasPrefix(h.SessionID, want)
 			}
 			if !found {
-				qr.Problems = append(qr.Problems, "missing session "+want)
+				qr.problem("missing session "+want, "")
 			}
 		}
 		for i, h := range parsed.Hits {
@@ -571,9 +591,9 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			}
 			switch {
 			case err != nil:
-				qr.Problems = append(qr.Problems, fmt.Sprintf("read %s: %v: %s", addr, err, errText(err)))
+				qr.problem("read: "+exitReason(err), fmt.Sprintf("%s: %v: %s", addr, err, errText(err)))
 			case json.Unmarshal(o, &cx) != nil || cx.Focus != h.MessageID || cx.Line != line:
-				qr.Problems = append(qr.Problems, fmt.Sprintf("read %s: focus %s line %d, want %s line %d", addr, cx.Focus, cx.Line, h.MessageID, line))
+				qr.problem("read: wrong focus", fmt.Sprintf("%s: focus %s line %d, want %s line %d", addr, cx.Focus, cx.Line, h.MessageID, line))
 			default:
 				qr.ReadsOK++
 			}
@@ -614,6 +634,19 @@ type oracleReport struct {
 	ParseErrors int            `json:"parse_errors"`
 }
 
+// oracleReports reads the oracle sample reports of this scratch directory.
+func (b *bench) oracleReports() []oracleReport {
+	var out []oracleReport
+	reports, _ := filepath.Glob(filepath.Join(b.scratch, "oracle", "report-*.json"))
+	for _, p := range reports {
+		var o oracleReport
+		if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &o) == nil && o.Convs > 0 {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 func (b *bench) report(r *accResults) error {
 	type row struct{ check, target, measured, pass string }
 	var rows []row
@@ -625,29 +658,25 @@ func (b *bench) report(r *accResults) error {
 	}
 	if x := r.Index; x != nil {
 		rows = append(rows,
-			row{"a. full index wall", "< 5 min", fmt.Sprintf("%s (cpu %.0fs, load %s)", (time.Duration(x.WallS) * time.Second).String(), x.CPUS, x.LoadAverage), yes(x.WallS < 300)},
+			row{"a. full index wall", "< 5 min", fmt.Sprintf("%s (cpu %.0fs, load %s)", (time.Duration(x.WallS) * time.Second).String(), x.CPUS, x.LoadAverage), yes(x.WallS < indexWallLimitS)},
 			row{"a. full index peak RSS", "< 600MB (spec: 300MB)", fmt.Sprintf("%.0fMB (%d rows, index %.1fGB)", x.PeakRSSMB, x.Rows, x.IndexMB/1000), yes(x.PeakRSSMB < peakRSSTarget)},
 			row{"a. idle agent after 60s", "< 120MB (spec: 50MB)", fmt.Sprintf("RSS %.0fMB, footprint %.0fMB", x.IdleRSSMB, x.IdleFootMB), yes(x.IdleRSSMB < idleRSSTarget)})
 		if len(x.SweepCPUMs) > 0 {
 			s := slices.Sorted(slices.Values(x.SweepCPUMs))
-			rows = append(rows, row{"a. no-change sweep CPU", "< 1s", fmt.Sprintf("median %.0fms, max %.0fms (%d sweeps, %d files)", median(s), s[len(s)-1], len(s), x.SweepFiles), yes(s[len(s)-1] < 1000)})
+			rows = append(rows, row{"a. no-change sweep CPU", "< 1s", fmt.Sprintf("median %.0fms, max %.0fms (%d sweeps, %d files)", median(s), s[len(s)-1], len(s), x.SweepFiles), yes(s[len(s)-1] < sweepCPULimitMs)})
 		}
 	}
 	if x := r.Fresh; x != nil {
-		rows = append(rows, row{"b. live line findable", "~2s", fmt.Sprintf("p50 %.0fms, p95 %.0fms, max %.0fms (n=%d, CLI find polls)", x.P50, x.P95, x.Max, len(x.Ms)), yes(x.P95 < 2000)})
+		rows = append(rows, row{"b. live line findable", "~2s", fmt.Sprintf("p50 %.0fms, p95 %.0fms, max %.0fms (n=%d, CLI find polls)", x.P50, x.P95, x.Max, len(x.Ms)), yes(x.P95 < freshP95LimitMs)})
 	}
-	reports, _ := filepath.Glob(filepath.Join(b.scratch, "oracle", "report-*.json"))
-	for _, p := range reports {
-		var o oracleReport
-		if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &o) == nil && o.Convs > 0 {
-			label := "c. FAD 0.3.1 parity sample: " + o.Agent
-			if a, ok := strings.CutPrefix(o.Agent, "agentsview-"); ok {
-				label = "c. agentsview parity sample: " + a
-			}
-			rows = append(rows, row{label, "match or documented",
-				fmt.Sprintf("%d/%d conversations match (%.0f%%), %d files, %d parse errors", o.Matched, o.Convs, 100*float64(o.Matched)/float64(o.Convs), o.Files, o.ParseErrors),
-				yes(o.ParseErrors == 0)})
+	for _, o := range b.oracleReports() {
+		label := "c. FAD 0.3.1 parity sample: " + o.Agent
+		if a, ok := strings.CutPrefix(o.Agent, "agentsview-"); ok {
+			label = "c. agentsview parity sample: " + a
 		}
+		rows = append(rows, row{label, "match or documented",
+			fmt.Sprintf("%d/%d conversations match (%.0f%%), %d files, %d parse errors", o.Matched, o.Convs, 100*float64(o.Matched)/float64(o.Convs), o.Files, o.ParseErrors),
+			yes(o.ParseErrors == 0)})
 	}
 	if x := r.Queries; x != nil {
 		ok, fast, reads, readsOK := 0, 0, 0, 0
@@ -658,7 +687,7 @@ func (b *bench) report(r *accResults) error {
 			if q.OK {
 				ok++
 			}
-			if q.WarmMs < 200 {
+			if q.WarmMs < queryWarmLimitMs {
 				fast++
 			}
 			warm = append(warm, q.WarmMs)
@@ -779,4 +808,24 @@ func loadAverage() string {
 		return ""
 	}
 	return strings.Trim(strings.TrimSpace(string(out)), "{} ")
+}
+
+// problem records why a query failed. reason is short and path-free; it
+// goes into the committed acceptance record (docs/perf/). detail (stderr,
+// addresses) is printed to the terminal and kept in the scratch results only.
+func (q *queryResult) problem(reason, detail string) {
+	q.Reasons = append(q.Reasons, reason)
+	if detail != "" {
+		reason += ": " + detail
+	}
+	q.Problems = append(q.Problems, reason)
+}
+
+// exitReason names how a subprocess failed without its stderr or paths.
+func exitReason(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ProcessState.String() // "exit status 1", "signal: killed"
+	}
+	return "failed to start"
 }

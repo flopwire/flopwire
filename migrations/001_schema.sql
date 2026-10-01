@@ -296,7 +296,9 @@ CREATE TABLE messages (
   content_sha bytea NOT NULL CHECK (octet_length(content_sha) = 32),
   version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
   superseded boolean NOT NULL DEFAULT false,
-  superseded_by uuid REFERENCES messages (id) ON DELETE SET NULL,
+  -- Deferred: the update that supersedes a row names the new version,
+  -- which the same transaction inserts after it.
+  superseded_by uuid REFERENCES messages (id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
   superseded_in_generation bigint,
   on_active_path boolean,
   enrichment jsonb,

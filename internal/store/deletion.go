@@ -49,6 +49,20 @@ const purgeLockID int64 = 0x5445414d454d // "FLOPWIRE"
 // never copies a manifest whose chunks are being deleted.
 const PurgeLockID = purgeLockID
 
+// sourceUnreferenced holds for a source s that no conversation or message
+// names as itself or as its parent transcript. The lookups include
+// superseded messages, so they need the unfiltered source_id indexes.
+const sourceUnreferenced = `NOT EXISTS (SELECT 1 FROM conversations c WHERE c.source_id IN (s.id,s.parent_source_id))
+	AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.source_id IN (s.id,s.parent_source_id))`
+
+// tombstoneSourcesSQL marks the deleted conversations' sources ($1) that
+// nothing references any more as tombstoned at $2.
+const tombstoneSourcesSQL = `UPDATE sources s SET tombstoned_at=COALESCE(tombstoned_at,$2) WHERE s.id=ANY($1) AND ` + sourceUnreferenced
+
+// orphanSourcesSQL returns the candidate sources ($1) and their companions
+// that nothing references any more.
+const orphanSourcesSQL = `SELECT COALESCE(array_agg(s.id),'{}') FROM sources s WHERE (s.id=ANY($1) OR s.parent_source_id=ANY($1)) AND ` + sourceUnreferenced
+
 // ConversationLockKey names the advisory lock that serializes every write to
 // one session of one user, whichever device it comes from. Ingest must take
 // pg_advisory_xact_lock(hashtextextended(key, 0)) and then check
@@ -257,9 +271,7 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 		}{
 			{`UPDATE conversation_tombstones SET job_id=$3 WHERE (id=$1 OR conversation_id=ANY($2::uuid[])) AND job_id IS NULL`, []any{root, ids, job.ID}},
 			{`DELETE FROM conversations WHERE id=ANY($1::uuid[])`, []any{ids}},
-			{`UPDATE sources s SET tombstoned_at=COALESCE(tombstoned_at,$2) WHERE s.id=ANY($1)
-				AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.source_id IN (s.id,s.parent_source_id))
-				AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.source_id IN (s.id,s.parent_source_id))`, []any{sources, now}},
+			{tombstoneSourcesSQL, []any{sources, now}},
 			// A tail is never in object storage; drop it now so no later
 			// backup copies the deleted bytes.
 			{`DELETE FROM provisional_tails WHERE source_id IN (SELECT id FROM sources WHERE id=ANY($1) AND tombstoned_at IS NOT NULL)`, []any{sources}},
@@ -333,9 +345,7 @@ func (p *Postgres) ProcessDeletionJobs(ctx context.Context) (int, error) {
 			return err
 		}
 		var orphans []uuid.UUID
-		if err = tx.QueryRow(ctx, `SELECT COALESCE(array_agg(s.id),'{}') FROM sources s WHERE (s.id=ANY($1) OR s.parent_source_id=ANY($1))
-			AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.source_id IN (s.id,s.parent_source_id))
-			AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.source_id IN (s.id,s.parent_source_id))`, candidates).Scan(&orphans); err != nil {
+		if err = tx.QueryRow(ctx, orphanSourcesSQL, candidates).Scan(&orphans); err != nil {
 			return err
 		}
 		sources = len(orphans)
