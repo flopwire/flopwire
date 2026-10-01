@@ -114,7 +114,9 @@ func TestArchiveRepairFutureGenerations(t *testing.T) {
 	cut := bytes.Index(data, []byte("BLUEFALCON")) + 4
 	upload(1, cut)
 	upload(2, cut+2)
-	if s.count(`SELECT count(*) FROM archive_redaction_work`) != 2 {
+	// The redaction queued its own targets' sources too; this one has a
+	// record per uploaded generation.
+	if s.count(`SELECT count(*) FROM archive_redaction_work w JOIN sources s ON s.id=w.source_id WHERE s.path=$1`, source.Path) != 2 {
 		t.Fatal("one work record required per pending generation")
 	}
 	// A fresh queue demonstrates durable work and a one-connection pool

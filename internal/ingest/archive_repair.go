@@ -15,9 +15,50 @@ import (
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type archiveWork struct{ gen, from, revision int64 }
+
+// afterArchiveWorkLock, when set (tests), runs in a repair batch's
+// transaction after lockArchiveWork checked the work row.
+var afterArchiveWorkLock func()
+
+// QueueArchiveRepair records, in a message redaction's transaction, the
+// at-rest repair the new redacted lines need. The caller holds the
+// redacted-lines lock exclusively (LockRedactedLines), so every flush has
+// either committed already or will see the new lines and record its own
+// work (flush decides under the shared lock). Queued here, all of them
+// from offset 0:
+//
+//   - every generation of the sources the redaction targets (sources): a
+//     parse may have moved a target to a generation the redaction's plan
+//     did not rewrite, or chunked the same line differently;
+//   - every generation a pending parse has not consumed yet: an upload
+//     that committed before the redaction took the lock, whose bytes no
+//     scan has checked against the new lines. A parse that already
+//     consumed its bytes wrote rows, which the redaction re-reads.
+//
+// Each work row is rescanned with the catalog current when its worker
+// runs, and a worker whose row this bumps retries (lockArchiveWork). The
+// sources get a parse request, which runs the repair. Tombstoned sources
+// are skipped: their manifests are being deleted.
+func QueueArchiveRepair(ctx context.Context, tx pgx.Tx, sources []string) error {
+	_, err := tx.Exec(ctx, `WITH wanted AS (
+		SELECT g.source_id,g.generation FROM generations g WHERE g.source_id=ANY($1::uuid[])
+		UNION
+		SELECT g.source_id,g.generation FROM source_parse_state p JOIN generations g ON g.source_id=p.source_id AND g.generation>=p.generation
+		WHERE p.requested_seq>p.parsed_seq
+	), queued AS (
+		INSERT INTO archive_redaction_work(source_id,generation,from_offset)
+		SELECT w.source_id,w.generation,0 FROM wanted w JOIN sources s ON s.id=w.source_id WHERE s.tombstoned_at IS NULL
+		ORDER BY w.source_id,w.generation
+		ON CONFLICT(source_id,generation) DO UPDATE SET from_offset=0,revision=archive_redaction_work.revision+1
+		RETURNING source_id
+	)
+	UPDATE source_parse_state SET requested_seq=requested_seq+1,requested_at=now() WHERE source_id IN (SELECT source_id FROM queued)`, sources)
+	return err
+}
 
 // repairUploadedArchive uses the durable parse request's retry/restart path.
 // Work is recorded by flush, never by a historical-archive sweep.
@@ -77,6 +118,9 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 					if err := lockArchiveWork(ctx, tx, source, w); err != nil {
 						return err
 					}
+					if afterArchiveWorkLock != nil {
+						afterArchiveWorkLock()
+					}
 					if plan != nil {
 						var owner string
 						if err := tx.QueryRow(ctx, `SELECT requested_by::text FROM message_redactions WHERE id=$1`, ids[0]).Scan(&owner); err != nil {
@@ -92,11 +136,20 @@ func (q *Queue) repairUploadedArchive(ctx context.Context, source string) error 
 							}
 						}
 					}
+					// Require the revision lockArchiveWork checked: a redaction
+					// (QueueArchiveRepair) bumps the row without the source lock,
+					// and its bump after the check means this batch scanned with
+					// an older catalog. A row it holds locked is re-read here.
+					var tag pgconn.CommandTag
+					var err error
 					if finished {
-						_, err := tx.Exec(ctx, `DELETE FROM archive_redaction_work WHERE source_id=$1 AND generation=$2`, source, w.gen)
-						return err
+						tag, err = tx.Exec(ctx, `DELETE FROM archive_redaction_work WHERE source_id=$1 AND generation=$2 AND revision=$3`, source, w.gen, w.revision)
+					} else {
+						tag, err = tx.Exec(ctx, `UPDATE archive_redaction_work SET from_offset=$3,revision=revision+1 WHERE source_id=$1 AND generation=$2 AND revision=$4`, source, w.gen, next, w.revision)
 					}
-					_, err := tx.Exec(ctx, `UPDATE archive_redaction_work SET from_offset=$3,revision=revision+1 WHERE source_id=$1 AND generation=$2`, source, w.gen, next)
+					if err == nil && tag.RowsAffected() != 1 {
+						err = ErrArchiveChanged
+					}
 					return err
 				}
 				if plan != nil {

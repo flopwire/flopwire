@@ -323,6 +323,27 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 				return err
 			}
 		}
+		// At-rest repair: rescan every generation of the targets' sources
+		// (a parse may have moved a target to a generation the plan did
+		// not rewrite) and every upload no parse has consumed yet, with
+		// the catalog that includes these lines.
+		repair := map[string]bool{}
+		for _, t := range current {
+			if t.sourceID != "" {
+				repair[t.sourceID] = true
+			}
+		}
+		for k := range spans {
+			repair[k.source] = true
+		}
+		sources := make([]string, 0, len(repair))
+		for id := range repair {
+			sources = append(sources, id)
+		}
+		slices.Sort(sources)
+		if err := ingest.QueueArchiveRepair(ctx, tx, sources); err != nil {
+			return err
+		}
 		return store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: who.UserID, DeviceID: who.DeviceID,
 			Action: "message.redaction.requested", TargetType: "message", TargetID: focus,
 			Metadata: map[string]any{"redaction_id": id, "lines": lr, "all_copies": req.AllCopies, "by_admin": who.Admin, "owner": owner,
