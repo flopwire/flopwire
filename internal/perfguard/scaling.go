@@ -16,8 +16,9 @@ const (
 	// at n (bulk work: reparse, rules upgrade, delete). A quadratic step
 	// shows as about k².
 	Linear Class = iota
-	// Constant: cost at k·n is at most 2 times cost at n (incremental
-	// work: an append, one retrieval page).
+	// Constant: the size-dependent cost at k·n is at most 2 times that at
+	// n, or 1 + (k-1)/2 times when k < 3, so a linear term (×k) always
+	// fails (incremental work: an append, one retrieval page).
 	Constant
 )
 
@@ -34,7 +35,7 @@ func (c Class) String() string {
 // Bound is the largest allowed cost ratio between sizes k·n and n.
 func (c Class) Bound(k int) float64 {
 	if c == Constant {
-		return 2
+		return min(2, 1+float64(k-1)/2)
 	}
 	return 1.5 * float64(k)
 }
@@ -58,10 +59,10 @@ func ratio(small, large, floor int64) float64 {
 // run builds a fixture of the given size, normally in a fresh pgtest
 // database, and returns the Measure of only the operation under test.
 //
-// For Linear, run also runs at size 1 and that baseline is subtracted
-// from both sizes before the ratio: a fixed per-operation cost (setup
-// lookups, a scan of an unrelated table) would otherwise pull the ratio
-// toward 1 and hide a quadratic term. Constant compares raw costs.
+// run also runs at size 1 and that baseline is subtracted from both
+// sizes before the ratio: a fixed per-operation cost (setup lookups, a
+// scan of an unrelated table) would otherwise pull the ratio toward 1 and
+// hide a quadratic term from Linear or a linear term from Constant.
 //
 // The failure lists rows and blocks per table at each size.
 func AssertScaling(t testing.TB, class Class, n, k int, run func(t testing.TB, n int) Cost) {
@@ -71,19 +72,13 @@ func AssertScaling(t testing.TB, class Class, n, k int, run func(t testing.TB, n
 	}
 	small := run(t, n)
 	large := run(t, k*n)
-	var base Cost
-	if class == Linear {
-		base = run(t, 1)
-	}
+	base := run(t, 1)
 	bound := class.Bound(k)
 	bt, st, lt := base.Total(), small.Total(), large.Total()
 	var over, report []string
 	check := func(what string, b, s, l, floor int64) {
 		r := ratio(s-b, l-b, floor)
-		line := fmt.Sprintf("%s %d → %d (×%.1f)", what, s, l, r)
-		if class == Linear {
-			line = fmt.Sprintf("%s %d → %d less baseline %d (×%.1f)", what, s, l, b, r)
-		}
+		line := fmt.Sprintf("%s %d → %d less baseline %d (×%.1f)", what, s, l, b, r)
 		report = append(report, line)
 		if r > bound {
 			over = append(over, line)
@@ -124,9 +119,7 @@ func breakdown(base, small, large Cost, bound float64) string {
 		}
 		fmt.Fprintf(&b, "%-40s %11d→%-11d %11d→%-11d%s\n", name, s.Rows(), l.Rows(), s.Blocks(), l.Blocks(), flag)
 	}
-	if base.Tables != nil {
-		fmt.Fprintf(&b, "baseline (n=1): %s\n", base)
-	}
+	fmt.Fprintf(&b, "baseline (n=1): %s\n", base)
 	fmt.Fprintf(&b, "small: %s\nlarge: %s", small, large)
 	return b.String()
 }

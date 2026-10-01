@@ -265,6 +265,26 @@ func TestAssertScalingConstant(t *testing.T) {
 	if r.failed() == "" {
 		t.Fatal("full scan passed the constant class")
 	}
+	// At k=2 a linear operation grows ×2, which a ×2 bound let through.
+	r = &recorder{TB: t}
+	AssertScaling(r, Constant, 60, 2, fullScan)
+	if r.failed() == "" {
+		t.Fatal("full scan passed the constant class at k=2")
+	}
+	// A large fixed cost (a 20000-row scan) must not hide a linear term
+	// from the constant class either.
+	fixedPlusScan := func(t testing.TB, n int) Cost {
+		pool, counter := itemsPool(t, n, 20000)
+		return Measure(t, pool, counter, func() {
+			exec(t, pool, `SELECT count(*) FROM filler`)
+			exec(t, pool, `SELECT max(v) FROM items`)
+		})
+	}
+	r = &recorder{TB: t}
+	AssertScaling(r, Constant, 60, 8, fixedPlusScan)
+	if r.failed() == "" {
+		t.Fatal("full scan behind a large fixed cost passed the constant class")
+	}
 }
 
 func TestAssertIndexedPlan(t *testing.T) {
