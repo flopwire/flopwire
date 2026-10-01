@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
@@ -103,6 +104,12 @@ type Config struct {
 	// holds nothing of it; the owed deletion is retried until then
 	// (placements.withhold).
 	Withhold func(context.Context, localindex.Withhold) error
+
+	// Bus is the message bus (devicebus): the agent gives it presence and
+	// session lookups, runs it with Run, and answers the control socket's
+	// pending, held, send, peers and inbox requests with it. nil: no
+	// messaging.
+	Bus *devicebus.Bus
 }
 
 func (c *Config) defaults() {
@@ -218,6 +225,13 @@ type Agent struct {
 	adminAt      time.Time // last admin fetch
 
 	stats Stats
+
+	// Process checks and the clock for presence (presence.go); tests
+	// replace them.
+	pidAlive  func(pid int) bool
+	procStart func(pid int) (time.Time, bool)
+	now       func() time.Time
+	rollouts  rolloutState // Codex busy or idle, by rollout
 }
 
 // Stats counts the agent's work since start.
@@ -235,7 +249,8 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		codex:   &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
 		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
-		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{}}
+		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
+		pidAlive: processAlive, procStart: processStart, now: time.Now}
 	a.idle = sync.NewCond(&a.mu)
 	if cfg.DevinDB != "-" {
 		a.devin.path = cfg.DevinDB
@@ -258,6 +273,9 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		SetBound(func(devicesync.SourceSpec) (int64, bool))
 	}); ok {
 		b.SetBound(a.uploadBound)
+	}
+	if cfg.Bus != nil {
+		cfg.Bus.SetSources(a.BusPresence, a.BusKnown)
 	}
 	return a
 }
@@ -311,6 +329,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.mu.Unlock()
 	defer a.bgWG.Wait()
 	a.kickWithholds(ctx) // owed from before a restart
+	if a.cfg.Bus != nil {
+		// Messaging runs beside indexing; a failing server only makes it
+		// back off (devicebus.Run).
+		a.bgWG.Add(1)
+		go func() {
+			defer a.bgWG.Done()
+			_ = a.cfg.Bus.Run(ctx)
+		}()
+	}
 	var wg sync.WaitGroup
 	a.startWorkers(ctx, &wg)
 	defer wg.Wait()
