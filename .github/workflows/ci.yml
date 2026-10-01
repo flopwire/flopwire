@@ -71,9 +71,12 @@ jobs:
       # the runner image ships 16.
       # apt.postgresql.org can stall; bound each attempt and retry.
       - name: Install PostgreSQL 17 client
-        timeout-minutes: 10
+        # 3 attempts x (2 x 150 s + 10 s) fits under 16 min.
+        timeout-minutes: 16
         run: |
           for attempt in 1 2 3; do
+            # Finish any install a killed attempt left half-configured.
+            sudo dpkg --configure -a || true
             if sudo timeout 150 /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null &&
               sudo timeout 150 apt-get install -y -q --no-install-recommends postgresql-client-17 >/dev/null; then
               echo /usr/lib/postgresql/17/bin >>"$GITHUB_PATH"
