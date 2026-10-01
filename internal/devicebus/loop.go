@@ -12,6 +12,7 @@ import (
 	"github.com/flopwire/flopwire/internal/bus"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/syncproto"
 )
 
@@ -63,6 +64,11 @@ func serverPresence(all []Session) []busproto.PresenceSession {
 	out := make([]busproto.PresenceSession, len(keep))
 	for i, s := range keep {
 		out[i] = s.PresenceSession
+		// The title comes from the local index, often the first prompt,
+		// unredacted; the server shows it to every member in peers.
+		if masked, ms := redact.Redact([]byte(s.Title)); len(ms) > 0 {
+			out[i].Title = string(masked)
+		}
 	}
 	slices.SortFunc(out, func(a, b busproto.PresenceSession) int {
 		if c := strings.Compare(a.Agent, b.Agent); c != 0 {

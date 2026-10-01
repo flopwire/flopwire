@@ -526,6 +526,25 @@ func TestPresenceChangeRepolls(t *testing.T) {
 	}
 }
 
+// A session's title (often its first prompt, from the local index, which
+// is not redacted) passes the device redactor before a poll reports it:
+// the server shows it to every member in peers.
+func TestPresenceTitleRedacted(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	tok := "gh" + "p_" + strings.Repeat("aB3dE5", 6)
+	s := sess("s1", "claude", "/src/api", false)
+	s.Title = "deploy with " + tok + " today"
+	p.set(s)
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	run(t, b)
+	waitFor(t, "a poll", func() bool { return srv.pollCount() == 1 })
+	got := srv.lastPoll().Sessions
+	if len(got) != 1 || strings.Contains(got[0].Title, tok) || !strings.HasPrefix(got[0].Title, "deploy with ") {
+		t.Fatalf("presence title: %+v", got)
+	}
+}
+
 // Presence that changes while no poll is in flight (here during a
 // backoff) also resets the cursor: the poll that first reports a new
 // session asks for the whole set at once instead of holding on a cursor
