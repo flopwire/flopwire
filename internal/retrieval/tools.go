@@ -352,16 +352,65 @@ func (s *Store) rank(ctx context.Context, b time.Duration, text string, offset, 
 // Sessions lists conversations by last activity, newest first: those
 // matching glob (session id, title, repo or cwd; see format.GlobLike) and
 // the filters (agent, repo, device, user, subagents, the excluded session;
-// since and until apply to the last activity).
-func (s *Store) Sessions(ctx context.Context, glob string, offset int, f format.Filters) (out *format.Sessions, err error) {
+// since and until apply to the last activity). One page of f.Limit after
+// cursor (format.SessionCursor; from the start when empty).
+func (s *Store) Sessions(ctx context.Context, glob, cursor string, f format.Filters) (out *format.Sessions, err error) {
 	err = s.budgeted(ctx, func(s *Store) error {
-		out, err = s.sessions(ctx, glob, offset, f)
+		out, err = s.sessions(ctx, glob, cursor, f)
 		return err
 	})
 	return out, err
 }
 
-func (s *Store) sessions(ctx context.Context, glob string, offset int, f format.Filters) (*format.Sessions, error) {
+func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error) {
+	sort, err := format.SortFor("sessions", f.Sort)
+	if err != nil {
+		return nil, err
+	}
+	var after *format.SessionKey
+	if cursor != "" {
+		k, err := format.ParseSessionCursor(cursor)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := uuid.Parse(k.ID); err != nil {
+			return nil, fmt.Errorf("%w: cursor %q: not a sessions cursor", ErrBadRequest, cursor)
+		}
+		after = &k
+	}
+	n := pageLimit(f.Limit)
+	sql, args := sessionsPage(glob, f, sort == format.SortOldest, after, n+1)
+	rows, err := s.db().Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := &format.Sessions{}
+	if out.Sessions, err = collect(rows, scanConv); err != nil {
+		return nil, err
+	}
+	if len(out.Sessions) > n {
+		out.Sessions, out.HasMore = out.Sessions[:n], true
+		out.Next = format.SessionCursor(out.Sessions[n-1])
+	}
+	if out.Sessions == nil {
+		out.Sessions = []format.ConversationInfo{}
+	}
+	if err := s.shortenConvs(ctx, out.Sessions); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// sessionsPage is the query for limit sessions after the cursor key
+// after (nil: from the start), in order of last activity, undated
+// sessions last, ties by id. The keyset walks
+// conversations_activity_idx: dated sessions after the key, then undated
+// ones, each branch stopping at limit, so a page reads about limit rows
+// however many sessions there are (unless a filter rejects most of
+// them). Devices and users join inside the page only when a filter needs
+// them (the planner drops an unused left join), and the output columns
+// join to the page's rows only.
+func sessionsPage(glob string, f format.Filters, oldest bool, after *format.SessionKey, limit int) (string, []any) {
 	q := &query{}
 	if f.Agent != "" {
 		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
@@ -397,34 +446,26 @@ func (s *Store) sessions(ctx context.Context, glob string, offset int, f format.
 		a := q.arg(like)
 		q.where(fmt.Sprintf("(c.session_id ILIKE %[1]s OR COALESCE(c.title,'') ILIKE %[1]s OR COALESCE(c.repo_root,c.cwd,'') ILIKE %[1]s OR COALESCE(c.repo_root,c.cwd,'') ILIKE '%%/' || %[1]s)", a))
 	}
-	out := &format.Sessions{Sessions: []format.ConversationInfo{}, Offset: offset}
-	if err := s.db().QueryRow(ctx, `SELECT count(*) FROM `+convFrom+` WHERE `+q.sql(), q.args...).Scan(&out.Total); err != nil {
-		return nil, err
+	page := `SELECT c.* FROM ` + visible + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql()
+	cmp, dir := "<", " DESC"
+	if oldest {
+		cmp, dir = ">", ""
 	}
-	n := pageLimit(f.Limit)
-	sort, err := format.SortFor("sessions", f.Sort)
-	if err != nil {
-		return nil, err
+	lim := " LIMIT " + strconv.Itoa(limit)
+	var parts []string
+	undated := page + ` AND c.last_activity_at IS NULL`
+	if after != nil && after.Undated {
+		undated += ` AND c.id` + cmp + q.arg(after.ID) + `::uuid`
+	} else {
+		dated := page + ` AND c.last_activity_at IS NOT NULL`
+		if after != nil {
+			dated += ` AND (c.last_activity_at,c.id)` + cmp + `(` + q.arg(after.Time()) + `::timestamptz,` + q.arg(after.ID) + `::uuid)`
+		}
+		parts = append(parts, `(`+dated+` ORDER BY c.last_activity_at`+dir+`,c.id`+dir+lim+`)`)
 	}
-	order := ` ORDER BY c.last_activity_at DESC NULLS LAST, c.id LIMIT `
-	if sort == format.SortOldest {
-		order = ` ORDER BY c.last_activity_at NULLS LAST, c.id LIMIT `
-	}
-	rows, err := s.db().Query(ctx, `SELECT `+convCols+` FROM `+convFrom+` WHERE `+q.sql()+
-		order+strconv.Itoa(n)+` OFFSET `+strconv.Itoa(offset), q.args...)
-	if err != nil {
-		return nil, err
-	}
-	if out.Sessions, err = collect(rows, scanConv); err != nil {
-		return nil, err
-	}
-	if err := s.shortenConvs(ctx, out.Sessions); err != nil {
-		return nil, err
-	}
-	if offset+len(out.Sessions) < out.Total {
-		out.Next = offset + len(out.Sessions)
-	}
-	return out, nil
+	parts = append(parts, `(`+undated+` ORDER BY c.id`+dir+lim+`)`)
+	return `SELECT ` + convCols + ` FROM (SELECT * FROM (` + strings.Join(parts, ` UNION ALL `) + `) p` + lim + `) c` + convJoins +
+		` ORDER BY c.last_activity_at` + dir + ` NULLS LAST,c.id` + dir, q.args
 }
 
 // conversations loads conversation infos by id, addresses shortened.
@@ -748,18 +789,36 @@ func (s *Store) readAt(ctx context.Context, deviceID string, rq format.ReadQuery
 // outline answers read --outline for a conversation: its user prompts and
 // tool calls in order, failed calls flagged, spawned subagents named.
 func (s *Store) outline(ctx context.Context, conv string, rq format.ReadQuery) (*format.Context, error) {
-	n, err := format.OutlinePage(rq)
-	if err != nil {
-		return nil, err
-	}
 	infos, err := s.conversations(ctx, []string{conv})
 	if err != nil {
 		return nil, err
 	}
-	out := &format.Context{Conversation: infos[conv], Messages: []format.Message{}, OutlineOffset: rq.Offset}
-	const where = ` WHERE m.conversation_id=$1 AND NOT m.superseded AND m.on_active_path IS NOT FALSE AND m.kind IN ('user','tool_call')`
-	if err := s.db().QueryRow(ctx, `SELECT count(*) FROM messages m`+where, conv).Scan(&out.OutlineTotal); err != nil {
-		return nil, err
+	out := &format.Context{Conversation: infos[conv], Messages: []format.Message{}}
+	out.Outline, out.OutlineNext, err = s.outlinePage(ctx, conv, out.Conversation.Repo, rq)
+	out.OutlineMore = out.OutlineNext != ""
+	return out, err
+}
+
+// outlinePage returns one page of a conversation's outline after
+// rq.Cursor and the cursor of the next page ("" when none). It reads
+// about a page of rows wherever the page falls: the keyset walks
+// messages_default_filter_idx from the cursor's ordinal, and the failed
+// calls and subagents are looked up for the page's rows only.
+func (s *Store) outlinePage(ctx context.Context, conv, root string, rq format.ReadQuery) ([]format.OutlineEntry, string, error) {
+	n, err := format.OutlinePage(rq)
+	if err != nil {
+		return nil, "", err
+	}
+	var after *outlineKey
+	if rq.Cursor != "" {
+		ord, id, err := format.ParseOutlineCursor(rq.Cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := uuid.Parse(id); err != nil {
+			return nil, "", fmt.Errorf("%w: cursor %q: not an outline cursor", ErrBadRequest, rq.Cursor)
+		}
+		after = &outlineKey{ord, id}
 	}
 	type row struct {
 		id, kind, tool, callID, text, sid string
@@ -767,33 +826,44 @@ func (s *Store) outline(ctx context.Context, conv string, rq format.ReadQuery) (
 		ts                                *time.Time
 		isErr                             bool
 	}
-	rows, err := s.db().Query(ctx, `SELECT m.id::text,m.kind,COALESCE(m.tool_name,''),COALESCE(m.tool_call_id,''),left(m.text,4000),c.session_id,m.ordinal,m.ts,COALESCE(m.is_error,false)
-		FROM messages m JOIN conversations c ON c.id=m.conversation_id`+where+` ORDER BY m.ordinal,m.id LIMIT $2 OFFSET $3`, conv, n, rq.Offset)
+	sql, args := outlinePageQuery(conv, after, n+1)
+	rows, err := s.db().Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	list, err := collect(rows, func(r pgx.Row) (row, error) {
 		var x row
 		return x, r.Scan(&x.id, &x.kind, &x.tool, &x.callID, &x.text, &x.sid, &x.ord, &x.ts, &x.isErr)
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	rows, err = s.db().Query(ctx, `SELECT DISTINCT tool_call_id FROM messages WHERE conversation_id=$1 AND NOT superseded AND is_error AND tool_call_id IS NOT NULL`, conv)
+	more := len(list) > n
+	if more {
+		list = list[:n]
+	}
+	var calls, msgIDs []string
+	for _, x := range list {
+		if x.callID != "" {
+			calls = append(calls, x.callID)
+		}
+		msgIDs = append(msgIDs, x.id)
+	}
+	rows, err = s.db().Query(ctx, `SELECT DISTINCT tool_call_id FROM messages WHERE conversation_id=$1 AND NOT superseded AND is_error AND tool_call_id=ANY($2)`, conv, calls)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	failedList, err := collect(rows, func(r pgx.Row) (string, error) {
 		var id string
 		return id, r.Scan(&id)
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	rows, err = s.db().Query(ctx, `SELECT spawned_by_message_id::text,session_id FROM conversations
-		WHERE parent_conversation_id=$1 AND spawned_by_message_id IS NOT NULL AND hidden_at IS NULL ORDER BY started_at,id`, conv)
+		WHERE parent_conversation_id=$1 AND spawned_by_message_id::text=ANY($2) AND hidden_at IS NULL ORDER BY started_at,id`, conv, msgIDs)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	type kid struct{ msg, sid string }
 	kids, err := collect(rows, func(r pgx.Row) (kid, error) {
@@ -801,7 +871,7 @@ func (s *Store) outline(ctx context.Context, conv string, rq format.ReadQuery) (
 		return k, r.Scan(&k.msg, &k.sid)
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var sids []string
 	for _, x := range list {
@@ -812,23 +882,45 @@ func (s *Store) outline(ctx context.Context, conv string, rq format.ReadQuery) (
 	}
 	short, err := s.addresses(ctx, sids)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	root := out.Conversation.Repo
+	var out []format.OutlineEntry
 	for _, x := range list {
-		e := format.NewOutlineEntry(format.MessageAddress(short[x.sid], x.ord), x.ts, x.kind, x.tool, x.text, root)
+		e := format.NewOutlineEntry(format.MessageAddress(short[x.sid], x.ord), x.id, x.ord, x.ts, x.kind, x.tool, x.text, root)
 		e.Error = x.isErr || x.callID != "" && slices.Contains(failedList, x.callID)
 		for _, k := range kids {
 			if k.msg == x.id {
 				e.Subagents = append(e.Subagents, short[k.sid])
 			}
 		}
-		out.Outline = append(out.Outline, e)
+		out = append(out, e)
 	}
-	if end := rq.Offset + len(list); end < out.OutlineTotal {
-		out.OutlineNext = end
+	next := ""
+	if more {
+		next = format.OutlineCursor(out[len(out)-1])
 	}
-	return out, nil
+	return out, next, nil
+}
+
+// outlineKey is an outline entry's place in the outline's order.
+type outlineKey struct {
+	ordinal int64
+	id      string
+}
+
+// outlinePageQuery selects limit outline rows of conversation conv after
+// the key after (nil: from the start).
+func outlinePageQuery(conv string, after *outlineKey, limit int) (string, []any) {
+	q := &query{}
+	q.where("m.conversation_id=" + q.arg(conv) + " AND NOT m.superseded AND m.on_active_path IS NOT FALSE AND m.kind IN ('user','tool_call')")
+	if after != nil {
+		// The ordinal bound is the index condition; ties on the ordinal
+		// go on by id.
+		o := q.arg(after.ordinal)
+		q.where("m.ordinal>=" + o + " AND (m.ordinal>" + o + " OR m.id>" + q.arg(after.id) + "::uuid)")
+	}
+	return `SELECT m.id::text,m.kind,COALESCE(m.tool_name,''),COALESCE(m.tool_call_id,''),left(m.text,4000),c.session_id,m.ordinal,m.ts,COALESCE(m.is_error,false)
+	FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE ` + q.sql() + ` ORDER BY m.ordinal,m.id LIMIT ` + strconv.Itoa(limit), q.args
 }
 
 // RawAt returns the transcript bytes of the message an address names, and

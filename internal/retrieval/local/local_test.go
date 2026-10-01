@@ -192,7 +192,7 @@ func TestExcludeSession(t *testing.T) {
 	if len(mine) == 0 {
 		t.Fatal("excluded too much")
 	}
-	s, err := b.Sessions(ctx, "", 0, format.Filters{ExcludeSession: "0b7e2c1a-0000-4000-8000-000000000002", Limit: 100})
+	s, err := b.Sessions(ctx, "", "", format.Filters{ExcludeSession: "0b7e2c1a-0000-4000-8000-000000000002", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,6 +455,68 @@ func TestAddressPrefixesAmongManyNeighbours(t *testing.T) {
 		cx, err := b.Read(ctx, format.ReadQuery{Address: h.Address}, format.Filters{})
 		if err != nil || cx.Focus != h.MessageID {
 			t.Fatalf("read %s: %v", h.Address, err)
+		}
+	}
+}
+
+// Sessions and outlines page by cursor: walking one entry at a time gives
+// the single page's entries, in order, both sorts.
+func TestCursorPaging(t *testing.T) {
+	b, _ := oracle(t)
+	for _, sort := range []string{format.SortNewest, format.SortOldest} {
+		all, err := b.Sessions(ctx, "", "", format.Filters{Limit: 100, Sort: sort})
+		if err != nil || all.HasMore || len(all.Sessions) < 3 {
+			t.Fatalf("sessions: %v %+v", err, all)
+		}
+		var got []string
+		cursor := ""
+		for range 100 {
+			page, err := b.Sessions(ctx, "", cursor, format.Filters{Limit: 1, Sort: sort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range page.Sessions {
+				got = append(got, c.ID)
+			}
+			if !page.HasMore {
+				break
+			}
+			cursor = page.Next
+		}
+		var want []string
+		for _, c := range all.Sessions {
+			want = append(want, c.ID)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s: walked %v, want %v", sort, got, want)
+		}
+	}
+	q := format.ReadQuery{Address: "0b7e2c1a-0000-4000-8000-000000000001", Outline: true}
+	whole, err := b.Read(ctx, q, format.Filters{})
+	if err != nil || whole.OutlineMore || len(whole.Outline) < 2 {
+		t.Fatalf("outline: %v %+v", err, whole)
+	}
+	var got []format.OutlineEntry
+	for q.Limit = 1; ; {
+		page, err := b.Read(ctx, q, format.Filters{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, page.Outline...)
+		if !page.OutlineMore {
+			break
+		}
+		q.Cursor = page.OutlineNext
+	}
+	if fmt.Sprint(got) != fmt.Sprint(whole.Outline) {
+		t.Fatalf("outline walk %+v\nwant %+v", got, whole.Outline)
+	}
+	for _, bad := range []string{"x", "1.y"} {
+		if _, err := b.Sessions(ctx, "", bad, format.Filters{}); !errors.Is(err, format.ErrBadRequest) {
+			t.Errorf("sessions cursor %q: %v", bad, err)
+		}
+		if _, err := b.Read(ctx, format.ReadQuery{Address: q.Address, Outline: true, Cursor: bad}, format.Filters{}); !errors.Is(err, format.ErrBadRequest) {
+			t.Errorf("outline cursor %q: %v", bad, err)
 		}
 	}
 }

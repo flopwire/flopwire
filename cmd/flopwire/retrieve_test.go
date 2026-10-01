@@ -33,7 +33,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 		case "/v1/grep", "/v1/search":
 			_ = json.NewEncoder(w).Encode(format.Page{Hits: []format.Hit{hit}, Total: 1, TotalSessions: 1, Exact: true})
 		case "/v1/sessions":
-			_ = json.NewEncoder(w).Encode(format.Sessions{Sessions: []format.ConversationInfo{{Address: "019a0000", Agent: "codex", Title: "t", Messages: 3}}, Total: 1})
+			_ = json.NewEncoder(w).Encode(format.Sessions{Sessions: []format.ConversationInfo{{Address: "019a0000", Agent: "codex", Title: "t", Messages: 3}}})
 		case "/v1/read":
 			_ = json.NewEncoder(w).Encode(format.Context{Focus: "m1", Messages: []format.Message{{ID: "m1", Address: "019a0000/491520", Kind: "tool_result", Text: "a\nb", LineFrom: 1, LineTo: 2, Lines: 2}}})
 		case "/v1/raw":

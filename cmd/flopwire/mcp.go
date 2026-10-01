@@ -84,7 +84,7 @@ func (syncOnlyBackend) Grep(context.Context, format.GrepQuery, format.Filters) (
 func (syncOnlyBackend) Search(context.Context, format.SearchQuery, format.Filters) (*format.Page, error) {
 	return nil, localindex.ErrSyncOnly
 }
-func (syncOnlyBackend) Sessions(context.Context, string, int, format.Filters) (*format.Sessions, error) {
+func (syncOnlyBackend) Sessions(context.Context, string, string, format.Filters) (*format.Sessions, error) {
 	return nil, localindex.ErrSyncOnly
 }
 func (syncOnlyBackend) Read(context.Context, format.ReadQuery, format.Filters) (*format.Context, error) {
@@ -109,7 +109,7 @@ Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its 
 
 Output is compact text (format="json" returns JSON). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note, never an error. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
 
-Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset.`
+Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions; the footer prints it).`
 
 func prop(typ, desc string) map[string]any {
 	p := map[string]any{"type": typ}
@@ -143,14 +143,17 @@ var filterDesc = map[string]string{
 	"include_self":       "include your own session, left out by default",
 	"limit":              "hits (sessions for flopwire_sessions) per page; default 20, max 500",
 	"offset":             "skip this many; the footer prints the next offset",
+	"cursor":             "where the next page starts; the footer prints it",
 	"format":             "text (default) or json",
 }
 
 // filterProps are the shared filter properties of a verb.
 func filterProps(verb string) map[string]any {
-	names := []string{"limit", "offset", "include_self", "agent", "repo", "branch", "since", "until", "device", "user", "exclude_subagents", "exclude_live", "sort"}
-	if verb != "sessions" {
-		names = append(names, "kind", "exclude_kind", "tool", "session", "include_superseded", "include_branches", "no_heading")
+	names := []string{"limit", "include_self", "agent", "repo", "branch", "since", "until", "device", "user", "exclude_subagents", "exclude_live", "sort"}
+	if verb == "sessions" {
+		names = append(names, "cursor")
+	} else {
+		names = append(names, "offset", "kind", "exclude_kind", "tool", "session", "include_superseded", "include_branches", "no_heading")
 	}
 	props := map[string]any{"format": map[string]any{"type": "string", "enum": []string{"text", "json"}, "description": filterDesc["format"]}}
 	for _, n := range names {
@@ -217,7 +220,7 @@ func mcpTools() []any {
 			map[string]any{"query": prop("string", "words and \"quoted phrases\"")}, "query"),
 		mcpTool("flopwire_sessions", "List sessions", "List past coding-agent sessions, newest activity first, filtered by repo, branch, agent, time or a glob. Use it to see who worked where, when and on what: each session prints SESSION who agent live|ended repo@branch msgs \"intent\" N files PR commits ✗failed (and the parent of a subagent), then its last reply. Pass SESSION to flopwire_read with outline=true for its digest and skeleton, or as session= to flopwire_grep and flopwire_search to search inside it.", "sessions",
 			map[string]any{"glob": prop("string", "matches session id, title, repo or cwd; * and ?; a bare word matches anywhere")}),
-		mcpTool("flopwire_read", "Read a message", "Read the message at an address that flopwire_grep, flopwire_search or flopwire_sessions printed, with its neighbours in conversation order. The header names the session, repo, branch, time span and message count. The focus text is numbered by line; long text is cut at max_chars and says which line_offset reads on; the hints name the before/after call for more messages. outline=true instead shows the session's digest and skeleton: every prompt, every tool call as tool(args) with failed calls and spawned subagents marked, no tool output; offset and limit page it.", "read",
+		mcpTool("flopwire_read", "Read a message", "Read the message at an address that flopwire_grep, flopwire_search or flopwire_sessions printed, with its neighbours in conversation order. The header names the session, repo, branch, time span and message count. The focus text is numbered by line; long text is cut at max_chars and says which line_offset reads on; the hints name the before/after call for more messages. outline=true instead shows the session's digest and skeleton: every prompt, every tool call as tool(args) with failed calls and spawned subagents marked, no tool output; limit sets the page size and the footer prints the cursor that reads on.", "read",
 			map[string]any{
 				"address":     prop("string", "SESSION/ORDINAL[:LINE], SESSION, a message id, or /path/transcript.jsonl:LINE"),
 				"before":      prop("integer", "messages before (default 0)"),
@@ -226,7 +229,7 @@ func mcpTools() []any {
 				"line_offset": prop("integer", "first line of the focus text to show"),
 				"raw":         prop("boolean", "the transcript record's raw bytes instead"),
 				"outline":     prop("boolean", "the session's digest and skeleton (prompts and tool calls, no output) instead of messages"),
-				"offset":      prop("integer", "outline: skip this many entries; the footer prints the next offset"),
+				"cursor":      prop("string", "outline: where the next page starts; the footer prints it"),
 				"limit":       prop("integer", "outline: entries per page (default 200, max 2000)"),
 			}, "address"),
 	}

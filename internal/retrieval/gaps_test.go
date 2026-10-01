@@ -3,6 +3,7 @@ package retrieval_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestServerDigestsBranchesSortOutlineLive(t *testing.T) {
 	c := s.client
 
 	// Digests and branches, stored at parse time.
-	out, err := c.Sessions(ctx, "", 0, format.Filters{Branch: "fix/*", Limit: 50})
+	out, err := c.Sessions(ctx, "", "", format.Filters{Branch: "fix/*", Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +98,25 @@ func TestServerDigestsBranchesSortOutlineLive(t *testing.T) {
 		}
 		spawned += len(e.Subagents)
 	}
-	if cx.OutlineTotal != 10 || len(cx.Outline) != 10 || failed != 1 || spawned != 2 || cx.Outline[0].Kind != "user" {
-		t.Fatalf("outline: total %d failed %d spawned %d %+v", cx.OutlineTotal, failed, spawned, cx.Outline)
+	if cx.OutlineMore || len(cx.Outline) != 10 || failed != 1 || spawned != 2 || cx.Outline[0].Kind != "user" {
+		t.Fatalf("outline: more %v failed %d spawned %d %+v", cx.OutlineMore, failed, spawned, cx.Outline)
+	}
+	// Paged three at a time: the same entries, each page marking its own
+	// failed calls and subagents.
+	var paged []format.OutlineEntry
+	for q := (format.ReadQuery{Address: "0b7e2c1a-0000-4000-8000-000000000002", Outline: true, Limit: 3}); ; {
+		page, err := c.Read(ctx, q, format.Filters{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged = append(paged, page.Outline...)
+		if !page.OutlineMore {
+			break
+		}
+		q.Cursor = page.OutlineNext
+	}
+	if !reflect.DeepEqual(paged, cx.Outline) {
+		t.Fatalf("paged outline differs:\n%+v\n%+v", paged, cx.Outline)
 	}
 
 	// Live: the device reported the held session. Active 30 minutes ago,
@@ -110,7 +128,7 @@ func TestServerDigestsBranchesSortOutlineLive(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE conversations SET last_activity_at=now()-interval '5 minutes' WHERE session_id='019a0000-0000-7000-8000-0000000000a2'`); err != nil {
 		t.Fatal(err)
 	}
-	all, err := c.Sessions(ctx, "", 0, format.Filters{Limit: 100})
+	all, err := c.Sessions(ctx, "", "", format.Filters{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +141,11 @@ func TestServerDigestsBranchesSortOutlineLive(t *testing.T) {
 	if len(live) != 2 || !live[held] || !live["019a0000-0000-7000-8000-0000000000a2"] {
 		t.Fatalf("live sessions %v", live)
 	}
-	rest, err := c.Sessions(ctx, "", 0, format.Filters{Limit: 100, ExcludeLive: true})
+	rest, err := c.Sessions(ctx, "", "", format.Filters{Limit: 100, ExcludeLive: true})
 	// The two live ones go; a2's subagent a5, idle since July, stays (a
 	// subagent goes with its parent only when the harness holds it open).
-	if err != nil || rest.Total != all.Total-2 {
-		t.Fatalf("exclude live: %v %d of %d", err, rest.Total, all.Total)
+	if err != nil || len(rest.Sessions) != len(all.Sessions)-2 {
+		t.Fatalf("exclude live: %v %d of %d", err, len(rest.Sessions), len(all.Sessions))
 	}
 	for _, x := range rest.Sessions {
 		if x.Live || x.SessionID == held {
@@ -183,7 +201,7 @@ func TestServerSelfLiveBranchRules(t *testing.T) {
 	listed := func(f format.Filters) *format.ConversationInfo {
 		t.Helper()
 		f.Limit = 100
-		out, err := c.Sessions(ctx, "", 0, f)
+		out, err := c.Sessions(ctx, "", "", f)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +227,7 @@ func TestServerSelfLiveBranchRules(t *testing.T) {
 	}
 
 	// Branch globs ignore case, as the local index's LIKE does.
-	if out, err := c.Sessions(ctx, "", 0, format.Filters{Branch: "FIX/*", Limit: 50}); err != nil || len(out.Sessions) == 0 {
+	if out, err := c.Sessions(ctx, "", "", format.Filters{Branch: "FIX/*", Limit: 50}); err != nil || len(out.Sessions) == 0 {
 		t.Fatalf("--branch FIX/*: %v %+v", err, out)
 	}
 }

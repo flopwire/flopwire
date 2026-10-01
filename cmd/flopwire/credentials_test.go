@@ -215,14 +215,14 @@ func TestEnvTokenAgentUploadWithoutConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions, err := c.Sessions(ctx, "", 0, format.Filters{})
+	sessions, err := c.Sessions(ctx, "", "", format.Filters{})
 	if err != nil || len(sessions.Sessions) == 0 {
 		t.Fatalf("read token sessions: %v %+v", err, sessions)
 	}
 	t.Setenv(client.EnvToken, upload)
 	c, _ = serverClient()
 	var apiErr *client.APIError
-	if _, err := c.Sessions(ctx, "", 0, format.Filters{}); !errors.As(err, &apiErr) || apiErr.StatusCode != 403 {
+	if _, err := c.Sessions(ctx, "", "", format.Filters{}); !errors.As(err, &apiErr) || apiErr.StatusCode != 403 {
 		t.Fatalf("upload token read: %v", err)
 	}
 	// Minting from a minted token is refused before any request.

@@ -2,6 +2,8 @@ package format
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -96,9 +98,9 @@ func TestOutlineRendering(t *testing.T) {
 	ts := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	cx := &Context{Conversation: ConversationInfo{Address: "aaaa1111", SessionID: "aaaa1111-full", Agent: "claude", Repo: "/x/flopwire",
 		Digest: &digest.Digest{Intent: "fix it", FilesEdited: []string{"a.go"}, PRs: []string{"o/r#43"}, Tokens: &digest.Tokens{Input: 1200, Output: 3_400_000}}},
-		OutlineTotal: 40}
+		OutlineMore: true, OutlineNext: "page-end"}
 	for i := range 40 {
-		e := OutlineEntry{Address: fmt.Sprintf("aaaa1111/%d", i), TS: &ts, Kind: "tool_call", Tool: "Bash", Text: "go test ./..."}
+		e := OutlineEntry{Address: fmt.Sprintf("aaaa1111/%d", i), ID: fmt.Sprintf("m%d", i), Ordinal: int64(i), TS: &ts, Kind: "tool_call", Tool: "Bash", Text: "go test ./..."}
 		if i%10 == 0 {
 			e.Kind, e.Tool, e.Text = "user", "", "run the tests"
 		}
@@ -114,10 +116,16 @@ func TestOutlineRendering(t *testing.T) {
 	out := b.String()
 	for _, want := range []string{"# intent: \"fix it\"", "# files edited (1): a.go", "# PRs: o/r#43", "# tokens: input 1.2k, output 3.4M",
 		"aaaa1111/0  2026-09-29 12:00Z  user: run the tests", "  aaaa1111/3  Bash(go test ./...)  error  → sub agent-1",
-		"output budget of 900 bytes reached; next: flopwire_read address=aaaa1111 outline=true offset="} {
+		"output budget of 900 bytes reached; next: flopwire_read address=aaaa1111 outline=true cursor="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("outline lacks %q:\n%s", want, out)
 		}
+	}
+	// The cursor is the last entry shown: its line is there, the next
+	// entry's is not.
+	if m := regexp.MustCompile(`outline: (\d+) entries shown, more follow;.* cursor=(\d+)\.m(\d+)\]`).FindStringSubmatch(out); m == nil || m[2] != m[3] ||
+		!strings.Contains(out, "aaaa1111/"+m[2]+" ") || strings.Contains(out, fmt.Sprintf("aaaa1111/%d ", atoi(m[2])+1)) || m[1] != fmt.Sprint(atoi(m[2])+1) {
+		t.Errorf("outline cursor is not after the last entry shown: %q\n%s", m, out)
 	}
 	if len(out) > 1100 {
 		t.Errorf("outline is %d bytes under a 900-byte budget", len(out))
@@ -137,4 +145,9 @@ func TestHeaderKeepsTheAddress(t *testing.T) {
 	if !strings.HasPrefix(h, "## "+addr+"  ") || len(h) > MaxHeader+3 || !strings.Contains(h, "✗1234") {
 		t.Fatalf("header (%d bytes): %s", len(h), h)
 	}
+}
+
+func atoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }

@@ -1531,9 +1531,20 @@ type ListOptions struct {
 	Like           string
 	IncludeDeleted bool
 	Limit          int // default 50
-	Offset         int
+	// After, when set, lists the conversations after this one in the
+	// list's order (a keyset cursor).
+	After *ListKey
 	// Oldest lists the least recent activity first.
 	Oldest bool
+}
+
+// ListKey is a conversation's place in ListConversations' order: its
+// last activity (Unix milliseconds; Undated when it has none, which sorts
+// last) and id.
+type ListKey struct {
+	At      int64
+	Undated bool
+	ID      int64
 }
 
 func (o *ListOptions) where() (string, []any) {
@@ -1565,15 +1576,6 @@ func (o *ListOptions) where() (string, []any) {
 	return where, args
 }
 
-// CountConversations counts the conversations ListConversations would
-// list without its limit and offset.
-func (s *Store) CountConversations(ctx context.Context, o ListOptions) (int, error) {
-	where, args := o.where()
-	var n int
-	err := s.rdb.QueryRowContext(ctx, `SELECT count(*) FROM conversations c WHERE `+where, args...).Scan(&n)
-	return n, err
-}
-
 // ListConversations returns conversations by most recent activity.
 func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]ConversationRow, error) {
 	if o.Limit <= 0 {
@@ -1581,8 +1583,16 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 	}
 	where, args := o.where()
 	order := `c.last_activity_at DESC NULLS LAST, c.id DESC`
+	cmp := "<"
 	if o.Oldest {
-		order = `c.last_activity_at NULLS LAST, c.id`
+		order, cmp = `c.last_activity_at NULLS LAST, c.id`, ">"
+	}
+	if k := o.After; k != nil && k.Undated {
+		where += " AND c.last_activity_at IS NULL AND c.id " + cmp + " ?"
+		args = append(args, k.ID)
+	} else if k != nil {
+		where += " AND (c.last_activity_at " + cmp + " ? OR c.last_activity_at = ? AND c.id " + cmp + " ? OR c.last_activity_at IS NULL)"
+		args = append(args, k.At, k.At, k.ID)
 	}
 	q := `SELECT c.id, c.agent, c.session_id, c.device_id, ifnull(c.cwd, ''), ifnull(c.repo_root, ''), ifnull(c.title, ''),
 		c.started_at, c.last_activity_at, ifnull(c.parent_conversation_id, 0), ifnull(c.parent_session_id, ''),
@@ -1590,8 +1600,8 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 		(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id AND m.superseded = 0 AND m.on_active_path IS NOT 0),
 		ifnull(c.branches, ''), ifnull(c.digest, '')
 		FROM conversations c LEFT JOIN sources s ON s.id = c.source_id
-		WHERE ` + where + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
-	rows, err := s.rdb.QueryContext(ctx, q, append(args, o.Limit, o.Offset)...)
+		WHERE ` + where + ` ORDER BY ` + order + ` LIMIT ?`
+	rows, err := s.rdb.QueryContext(ctx, q, append(args, o.Limit)...)
 	if err != nil {
 		return nil, err
 	}

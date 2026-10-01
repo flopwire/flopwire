@@ -302,8 +302,8 @@ func TestRetrievalEndToEnd(t *testing.T) {
 	}
 
 	// Sessions: the parent session and its subagents, which name it.
-	ss, err := c.Sessions(ctx, "", 0, format.Filters{Limit: 100})
-	if err != nil || ss.Total < 3 {
+	ss, err := c.Sessions(ctx, "", "", format.Filters{Limit: 100})
+	if err != nil || len(ss.Sessions) < 3 {
 		t.Fatalf("sessions: %+v %v", ss, err)
 	}
 	subs := 0
@@ -429,7 +429,7 @@ func TestHiddenConversationsLeftOut(t *testing.T) {
 		t.Fatalf("search: %v %v", page, err)
 	}
 	top := page.Hits[0]
-	before, err := c.Sessions(ctx, "", 0, format.Filters{Limit: 100})
+	before, err := c.Sessions(ctx, "", "", format.Filters{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ func TestHiddenConversationsLeftOut(t *testing.T) {
 			t.Fatalf("grep found the hidden session: %+v", h)
 		}
 	}
-	after, err := c.Sessions(ctx, "", 0, format.Filters{Limit: 100})
+	after, err := c.Sessions(ctx, "", "", format.Filters{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

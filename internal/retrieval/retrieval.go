@@ -497,7 +497,10 @@ func scanConv(row pgx.Row) (format.ConversationInfo, error) {
 	return c, err
 }
 
-const convFrom = visible + ` c JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id
+const convFrom = visible + ` c` + convJoins
+
+// convJoins joins a conversation c to what convCols needs.
+const convJoins = ` JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id
 	LEFT JOIN ` + visible + ` pc ON pc.id=c.parent_conversation_id`
 
 // Raw returns bytes [offset, offset+length) of a source generation,

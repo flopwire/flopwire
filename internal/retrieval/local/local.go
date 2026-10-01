@@ -353,8 +353,8 @@ func (b *Backend) Search(ctx context.Context, q format.SearchQuery, f format.Fil
 // Sessions lists conversations by last activity, newest first: those
 // matching glob (session id, title, repo or cwd; see format.GlobLike) and
 // the filters' agent, repo, device, time (on last activity) and subagent
-// conditions.
-func (b *Backend) Sessions(ctx context.Context, glob string, offset int, f format.Filters) (*format.Sessions, error) {
+// conditions. One page of f.Limit after cursor (format.SessionCursor).
+func (b *Backend) Sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error) {
 	lf, err := b.filter(ctx, f)
 	if err != nil {
 		return nil, err
@@ -363,16 +363,27 @@ func (b *Backend) Sessions(ctx context.Context, glob string, offset int, f forma
 	if err != nil {
 		return nil, err
 	}
-	o := localindex.ListOptions{Filter: lf, Like: format.GlobLike(glob), Limit: limit(f.Limit), Offset: offset, Oldest: sort == format.SortOldest}
+	n := limit(f.Limit)
+	o := localindex.ListOptions{Filter: lf, Like: format.GlobLike(glob), Limit: n + 1, Oldest: sort == format.SortOldest}
+	if cursor != "" {
+		k, err := format.ParseSessionCursor(cursor)
+		if err != nil {
+			return nil, err
+		}
+		id, err := strconv.ParseInt(k.ID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: cursor %q: not a sessions cursor", format.ErrBadRequest, cursor)
+		}
+		o.After = &localindex.ListKey{At: k.At / 1000, Undated: k.Undated, ID: id}
+	}
 	rows, err := b.Store.ListConversations(ctx, o)
 	if err != nil {
 		return nil, err
 	}
-	total, err := b.Store.CountConversations(ctx, o)
-	if err != nil {
-		return nil, err
+	out := &format.Sessions{Sessions: []format.ConversationInfo{}}
+	if len(rows) > n {
+		rows, out.HasMore = rows[:n], true
 	}
-	out := &format.Sessions{Sessions: []format.ConversationInfo{}, Total: total, Offset: offset}
 	var ids []string
 	for _, c := range rows {
 		ids = append(ids, c.SessionID, c.ParentSessionID)
@@ -384,8 +395,8 @@ func (b *Backend) Sessions(ctx context.Context, glob string, offset int, f forma
 	for _, c := range rows {
 		out.Sessions = append(out.Sessions, info(c, short))
 	}
-	if offset+len(rows) < total {
-		out.Next = offset + len(rows)
+	if out.HasMore {
+		out.Next = format.SessionCursor(out.Sessions[n-1])
 	}
 	return out, nil
 }
@@ -557,15 +568,31 @@ func (b *Backend) outline(ctx context.Context, convID int64, q format.ReadQuery)
 	if err != nil {
 		return nil, err
 	}
-	o, err := b.Store.Outline(ctx, convID, q.Offset, n)
+	var after *localindex.OutlineKey
+	if q.Cursor != "" {
+		ord, sid, err := format.ParseOutlineCursor(q.Cursor)
+		if err != nil {
+			return nil, err
+		}
+		id, err := strconv.ParseInt(sid, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: cursor %q: not an outline cursor", format.ErrBadRequest, q.Cursor)
+		}
+		after = &localindex.OutlineKey{Ordinal: ord, ID: id}
+	}
+	o, err := b.Store.Outline(ctx, convID, after, n+1)
 	if err != nil {
 		return nil, err
+	}
+	more := len(o.Rows) > n
+	if more {
+		o.Rows = o.Rows[:n]
 	}
 	infos, err := b.infos(ctx, []int64{convID})
 	if err != nil {
 		return nil, err
 	}
-	cx := &format.Context{Conversation: infos[convID], Messages: []format.Message{}, OutlineTotal: o.Total, OutlineOffset: q.Offset}
+	cx := &format.Context{Conversation: infos[convID], Messages: []format.Message{}, OutlineMore: more}
 	var sids []string
 	for _, r := range o.Rows {
 		sids = append(sids, r.SessionID)
@@ -579,15 +606,15 @@ func (b *Backend) outline(ctx context.Context, convID int64, q format.ReadQuery)
 	}
 	root := cx.Conversation.Repo
 	for _, r := range o.Rows {
-		e := format.NewOutlineEntry(format.MessageAddress(short[r.SessionID], r.Ordinal), tsPtr(r.TS), r.Kind.String(), r.ToolName, r.Text, root)
+		e := format.NewOutlineEntry(format.MessageAddress(short[r.SessionID], r.Ordinal), id(r.ID), r.Ordinal, tsPtr(r.TS), r.Kind.String(), r.ToolName, r.Text, root)
 		e.Error = r.IsError || r.ToolCallID != "" && o.Failed[r.ToolCallID]
 		for _, k := range o.Spawned[r.ID] {
 			e.Subagents = append(e.Subagents, short[k])
 		}
 		cx.Outline = append(cx.Outline, e)
 	}
-	if end := q.Offset + len(o.Rows); end < o.Total {
-		cx.OutlineNext = end
+	if more {
+		cx.OutlineNext = format.OutlineCursor(cx.Outline[len(cx.Outline)-1])
 	}
 	return cx, nil
 }

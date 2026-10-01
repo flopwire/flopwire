@@ -33,7 +33,7 @@ import (
 type backend interface {
 	Grep(ctx context.Context, q format.GrepQuery, f format.Filters) (*format.Page, error)
 	Search(ctx context.Context, q format.SearchQuery, f format.Filters) (*format.Page, error)
-	Sessions(ctx context.Context, glob string, offset int, f format.Filters) (*format.Sessions, error)
+	Sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error)
 	Read(ctx context.Context, q format.ReadQuery, f format.Filters) (*format.Context, error)
 	RawAt(ctx context.Context, address string) ([]byte, error)
 	Raw(ctx context.Context, sourceID string, generation, offset, length int64) ([]byte, error)
@@ -125,7 +125,8 @@ var flagDefs = []flagDef{
 	{"context", 'C', fInt, "gr"},
 	{"max-count", 'm', fInt, "g"},
 	{"limit", 0, fInt, "gslr"},
-	{"offset", 0, fInt, "gslr"},
+	{"offset", 0, fInt, "gs"},
+	{"cursor", 0, fString, "lr"},
 	{"sort", 0, fString, "gsl"},
 	{"no-heading", 0, fBool, "gs"},
 	{"timeout", 0, fString, "gs"},
@@ -568,12 +569,8 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if len(o.pos) == 1 {
 			glob = o.pos[0]
 		}
-		offset, err := o.int("offset")
-		if err != nil {
-			return badArg(err)
-		}
 		note := r.excludeSelf(ctx, &f, o.on["include-self"], p)
-		out, err := r.Sessions(ctx, glob, offset, f)
+		out, err := r.Sessions(ctx, glob, o.vals["cursor"], f)
 		if err != nil {
 			return err
 		}
@@ -617,12 +614,9 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			}
 			return writeRaw(w, data, asJSON)
 		}
-		q := format.ReadQuery{Address: o.pos[0], Outline: o.on["outline"], Limit: f.Limit, Self: self}
-		if q.Offset, err = o.int("offset"); err != nil {
-			return badArg(err)
-		}
-		if (q.Offset > 0 || q.Limit > 0) && !q.Outline {
-			return badArg(errors.New("--offset and --limit page an outline; add --outline, or use -A/-B to step through messages"))
+		q := format.ReadQuery{Address: o.pos[0], Outline: o.on["outline"], Cursor: o.vals["cursor"], Limit: f.Limit, Self: self}
+		if (q.Cursor != "" || q.Limit > 0) && !q.Outline {
+			return badArg(errors.New("--cursor and --limit page an outline; add --outline, or use -A/-B to step through messages"))
 		}
 		c, err := o.int("context")
 		if err != nil {
@@ -846,7 +840,8 @@ and skeleton, or as --session to grep and search inside it. A bare GLOB word mat
 anywhere (*word*). --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or
 RFC 3339; times are UTC.
 
-Output   --limit N (20)  --offset N  --sort newest|oldest  --json  --max-bytes N
+Output   --limit N (20)  --cursor C (from the footer)  --sort newest|oldest  --json
+         --max-bytes N
 Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since/--until (last
          activity)  --exclude-subagents  --exclude-live  --include-self  --device  --user
 Source   the local index; --server for the team server; --index PATH
@@ -866,11 +861,12 @@ prints with line numbers; long text is cut at --max-chars and says how to read o
 --outline prints the session's digest (intent, repos, branches, duration, messages by
 kind, subagents, commands, failed calls, tools, files edited, PRs, commits, issues,
 tokens, last reply) and its skeleton: every prompt, every tool call as tool(args) with
-failed calls and spawned subagents marked, no tool output. --offset/--limit (200) page it.
+failed calls and spawned subagents marked, no tool output. --limit (200) sets the page
+size; the footer prints the --cursor that reads on.
 
 Output   -B N / -A N / -C N messages before/after  --max-chars N (4000; neighbours
          get a quarter)  --line-offset N (first line of the focus)  --raw (the
-         transcript record's bytes)  --outline [--offset N --limit N]  --json
+         transcript record's bytes)  --outline [--cursor C --limit N]  --json
 Rows     --include-superseded  --include-branches
 Source   the local index; --server for the team server; --index PATH
 `,

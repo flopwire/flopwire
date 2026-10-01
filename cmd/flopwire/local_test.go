@@ -91,7 +91,7 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"search_newest", nil, []string{"search", "retry", "--sort", "newest", "--limit", "3"}},
 		{"sessions_branch", nil, []string{"sessions", "--branch", "fix/*", "--sort", "oldest"}},
 		{"read_outline", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline"}},
-		{"read_outline_paged", nil, []string{"read", "019a0000-0000-7000-8000-0000000000a1", "--outline", "--limit", "3", "--offset", "1"}},
+		{"read_outline_paged", nil, []string{"read", "019a0000-0000-7000-8000-0000000000a1", "--outline", "--limit", "3", "--cursor", "3239936.56"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

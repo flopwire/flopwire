@@ -127,6 +127,12 @@ A glob matches the session id, the title, the repo or the working
 directory. A word without `*` or `?` matches anywhere. `--sort oldest`
 lists the least recent activity first.
 
+The list pages by cursor, not offset. The footer says whether more
+sessions follow and gives the `--cursor` that reads them:
+`[20 sessions shown, more follow; next: --cursor 1788220800000000.ID]`.
+The last page says `end of list`. There is no total: a page reads about as
+many sessions as it shows, however long the list is.
+
 Each session prints its short digest (the header line grep uses, with
 its message count and the parent of a subagent), then its last reply:
 
@@ -188,9 +194,9 @@ flopwire read 0b7e2c1a
   user prompt (trimmed to one line, with its time), and every tool call
   as `tool(args summary)` on an indented line with its address. A failed
   call is marked `error`; a call that spawned a subagent names it
-  (`→ sub a85f12`). No tool output prints. `--offset` and `--limit`
-  (default 200, at most 2000) page it, and the output budget applies.
-  Any address in the session works.
+  (`→ sub a85f12`). No tool output prints. `--limit` (default 200, at
+  most 2000) and the output budget bound a page. The footer gives the
+  `--cursor` that reads the next page. Any address in the session works.
 - `--raw` prints the transcript record's bytes. When the local file is
   gone or replaced, the team server's copy is read by this device's path.
   On a terminal, control characters are shown as pictures. Into a pipe or
