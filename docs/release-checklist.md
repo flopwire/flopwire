@@ -1,9 +1,10 @@
 # Release checklist
 
-CI runs `go test -race ./...`, the web tests and the build. The checks on
-this page need real transcripts, real agent CLIs or two machines, so CI
-cannot run them. Run every check on a release candidate before you tag it.
-Record the measured numbers in the release PR. See [Releases](releases.md)
+CI runs `go test -race ./...`, the web tests, the build and the perf
+release gate (section 5). The other checks on this page need real
+transcripts, real agent CLIs or two machines, so CI cannot run them. Run
+every check on a release candidate before you tag it, except the ones
+marked optional. Record the measured numbers in the release PR. See [Releases](releases.md)
 for the release-please workflow and bot setup.
 
 All corpus checks read the harness directories (`~/.claude`, `~/.codex`,
@@ -59,21 +60,36 @@ These need section 1.
 | Ingest with server path rules | `FLOPWIRE_CORPUS=1 FLOPWIRE_CORPUS_DAYS=1 FLOPWIRE_CORPUS_RULES='deny ~/Code/<a repo>*' FLOPWIRE_CORPUS_UNPLACEABLE=exclude go test -run Corpus -timeout 2h ./internal/ingest` | 0 stored conversations covered by the rules. 0 parse failures. |
 | Server retrieval latency | `FLOPWIRE_CORPUS=1 go test -run Corpus -timeout 2h ./internal/retrieval` | Passes. Note the slowest queries. |
 
-## 5. Local acceptance
+## 5. Performance
 
-The nightly A/B run on GitHub Actions is the primary signal for
-performance drift ([docs/perf](perf/README.md#nightly-a-b)). It compares
-`main` with a pinned baseline (the latest release, or a later commit in
-`docs/perf/nightly-baseline`) on a synthetic corpus every night. The
-local run below is a reality check on the real corpus before a release.
+### 5a. CI release gate (required)
 
-1. Read each open `perf-regression` issue. Fix the regression, or explain
-   it in the release PR and accept it (see
-   [Accept a regression](perf/README.md#accept-a-regression)).
-2. Read the step summary of the most recent nightly run on `main`, and
-   each open `perf-baseline-broken` issue: while one is open, the nightly
-   compared nothing.
-3. Then run the local set below.
+The `perf-gate` check on the release-please PR runs the A/B bench on a
+synthetic corpus ([docs/perf](perf/README.md#release-gate)). It compares
+the PR head with the latest release tag, or with
+`docs/perf/nightly-baseline` when that pin is newer.
+
+1. Wait for the `perf-gate` check on the release PR.
+2. Read the "Perf release gate" comment on the PR. It holds the table and
+   the verdict.
+3. If the verdict is `CLEAN`, go to the next section.
+4. If the verdict is `REGRESSED`, fix each regressed metric on `main`, or
+   accept the regression: move the pin in a PR that explains it (see
+   [Accept a regression](perf/README.md#accept-a-regression)). Then rerun
+   the gate.
+5. If the verdict is `BASELINE_FAILED`, the baseline cannot run under the
+   new harness, and nothing was compared. Compare the two builds by hand,
+   then move the pin (see [docs/perf](perf/README.md#synthetic-corpus)).
+6. Read each open `perf-regression` and `perf-baseline-broken` issue from
+   the nightly run. Close each one, or explain it in the release PR.
+
+Do not tag a release while `perf-gate` fails.
+
+### 5b. Local acceptance (optional)
+
+The local run is a reality check on the real corpus. It is optional. Run
+it when the release changes the parsers, the indexing or the redaction:
+the real corpus has shapes that the synthetic corpus does not.
 
 `scripts/acceptance.sh` builds the binary and runs `flopwire bench acceptance`
 in four parts, plus the FAD parity sample. It writes a JSON record of the
@@ -110,6 +126,8 @@ docs/perf has no record yet, the first run sets the reference laptop.
 7. Commit the record in the release PR.
 8. Paste the comparison table into the release PR description. Explain
    each `REGRESSED` metric, or fix it before the release.
+
+When you run the set, these bars apply:
 
 | Check | Bar in the table | Accepted today |
 |---|---|---|
