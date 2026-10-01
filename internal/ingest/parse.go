@@ -32,31 +32,33 @@ var uncapped = map[transcript.Kind]transcript.CapConfig{}
 
 // job is one source's parse: its identity, stored cursor, and request.
 type job struct {
-	src                       source
-	path, fileID, kind, parse string
-	previous                  *string
-	parentID                  *string
-	tombstoned                bool
-	cursor                    transcript.Cursor
-	cursorGen                 int64
-	seq                       int64
-	reparse                   bool
-	dev                       deviceDirs
-	extraction                *transcript.ExtractionCheckpoint
+	src                         source
+	path, fileID, kind, parse   string
+	previous                    *string
+	parentID                    *string
+	tombstoned                  bool
+	cursor                      transcript.Cursor
+	cursorGen                   int64
+	seq                         int64
+	reparse                     bool
+	dev                         deviceDirs
+	extraction                  *transcript.ExtractionCheckpoint
+	appliedParser, appliedRules *string
+	derivedParser               string
 }
 
 // ParseSource brings one source's message rows up to date with its latest
 // generation. Evidence is already durable; a failure leaves the request
 // pending for a retry, never a re-upload.
-func (q *Queue) ParseSource(ctx context.Context, sourceID string) error {
+func (q *Queue) parseSource(ctx context.Context, sourceID string) error {
 	j := &job{}
 	var st, report []byte
 	err := q.Pool.QueryRow(ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,s.path,s.file_id,s.storage_kind,s.parser,
 			s.previous_source_id::text,s.parent_source_id::text,s.tombstoned_at IS NOT NULL,
-			p.generation,p.cursor_offset,p.cursor_line,p.cursor_state,p.requested_seq,p.reparse,COALESCE(d.home,''),COALESCE(d.claude_projects,''),p.extraction_report
+			p.generation,p.cursor_offset,p.cursor_line,p.cursor_state,p.requested_seq,p.reparse,COALESCE(d.home,''),COALESCE(d.claude_projects,''),p.extraction_report,p.applied_parser,p.applied_redaction_rules
 		FROM sources s JOIN devices d ON d.id=s.device_id JOIN source_parse_state p ON p.source_id=s.id WHERE s.id=$1`, sourceID).
 		Scan(&j.src.id, &j.src.deviceID, &j.src.userID, &j.src.agent, &j.path, &j.fileID, &j.kind, &j.parse, &j.previous, &j.parentID, &j.tombstoned,
-			&j.cursorGen, &j.cursor.Offset, &j.cursor.LineNo, &st, &j.seq, &j.reparse, &j.dev.home, &j.dev.claudeProjects, &report)
+			&j.cursorGen, &j.cursor.Offset, &j.cursor.LineNo, &st, &j.seq, &j.reparse, &j.dev.home, &j.dev.claudeProjects, &report, &j.appliedParser, &j.appliedRules)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted meanwhile
 	}
@@ -69,6 +71,9 @@ func (q *Queue) ParseSource(ctx context.Context, sourceID string) error {
 		if err := json.Unmarshal(report, j.extraction); err != nil {
 			return err
 		}
+	}
+	if j.extraction != nil {
+		j.extraction.Contract = transcript.ReparseKey(j.extraction.Contract)
 	}
 	if j.tombstoned {
 		return q.done(ctx, j, j.cursorGen)
@@ -109,8 +114,10 @@ func (q *Queue) ParseSource(ctx context.Context, sourceID string) error {
 	}
 	isDevin := j.src.agent == string(transcript.AgentDevin)
 	contract := serverExtractionContract(j.src.agent)
-	full := g.Generation != j.cursorGen || j.reparse || (contract != "" && (j.extraction == nil || j.extraction.Contract != contract || j.extraction.Generation != g.Generation || j.extraction.Offset != j.cursor.Offset || j.extraction.LineNo != j.cursor.LineNo || j.extraction.Report.Validate() != nil))
-	if full && !isDevin {
+	version := serverParserVersion(j.src.agent)
+	versionChanged := j.appliedParser == nil || transcript.ReparseKey(*j.appliedParser) != transcript.ReparseKey(version) || j.appliedRules == nil || *j.appliedRules != redact.RulesVersion
+	full := g.Generation != j.cursorGen || j.reparse || versionChanged || (contract != "" && (j.extraction == nil || j.extraction.Contract != contract || j.extraction.Generation != g.Generation || j.extraction.Offset != j.cursor.Offset || j.extraction.LineNo != j.cursor.LineNo || j.extraction.Report.Validate() != nil))
+	if full {
 		j.cursor = transcript.Cursor{} // a new generation is parsed whole; Devin's cursor spans exports
 	}
 	rules, err := loadRules(ctx, q.Pool)
@@ -184,6 +191,12 @@ func (q *Queue) ParseSource(ctx context.Context, sourceID string) error {
 			return err
 		}
 	}
+	if j.appliedRules == nil || *j.appliedRules != redact.RulesVersion {
+		if err := q.maskStoredVersions(ctx, j.src.id); err != nil {
+			return err
+		}
+	}
+	j.derivedParser = version
 	if err := q.finish(ctx, j, sink); err != nil {
 		return err
 	}
@@ -215,7 +228,7 @@ func (q *Queue) ParseSource(ctx context.Context, sourceID string) error {
 		}
 	}
 	j.cursor = next
-	return q.complete(ctx, j, g.Generation, !isDevin && (full || (result.Report != nil && result.FromOffset == 0 && originalOffset > 0)))
+	return q.complete(ctx, j, g.Generation, full || (!isDevin && result.Report != nil && result.FromOffset == 0 && originalOffset > 0))
 }
 
 // parseDevinExport rebuilds the session's store from the export in a
@@ -355,8 +368,11 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 			}
 		}
 		_, err := tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
-			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7
-		WHERE source_id=$1`, j.src.id, gen, j.cursor.Offset, j.cursor.LineNo, j.cursor.State, j.seq, report)
+			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7,
+			applied_parser=COALESCE(NULLIF($8,''),applied_parser),
+			applied_redaction_rules=CASE WHEN $8<>'' THEN $9 ELSE applied_redaction_rules END,
+			refresh_requested_at=CASE WHEN $8<>'' THEN NULL ELSE refresh_requested_at END
+		WHERE source_id=$1`, j.src.id, gen, j.cursor.Offset, j.cursor.LineNo, j.cursor.State, j.seq, report, j.derivedParser, redact.RulesVersion)
 		return err
 	})
 }
@@ -603,17 +619,6 @@ func serverExtractionContract(agent string) string {
 		return (&codex.Parser{Caps: uncapped}).ExtractionContract()
 	}
 	return ""
-}
-
-// queueContractChanges schedules one full assessment for legacy checkpoints
-// and new extraction policies. Pending work/backoff is preserved, not reset.
-func (q *Queue) queueContractChanges(ctx context.Context) error {
-	_, err := q.Pool.Exec(ctx, `UPDATE source_parse_state p SET requested_seq=requested_seq+1,reparse=true,requested_at=now()
- FROM sources s WHERE s.id=p.source_id AND s.agent IN ('claude','codex') AND s.storage_kind='jsonl_append'
- AND s.tombstoned_at IS NULL AND p.requested_seq=p.parsed_seq AND p.quarantined_at IS NULL
- AND (p.extraction_report->>'contract' IS DISTINCT FROM CASE s.agent WHEN 'claude' THEN $1 ELSE $2 END OR p.extraction_report->'report'->>'version' IS DISTINCT FROM '1')
- AND EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id)`, serverExtractionContract("claude"), serverExtractionContract("codex"))
-	return err
 }
 
 // LineMasks loads the redacted message lines (notes/redaction.md) for the

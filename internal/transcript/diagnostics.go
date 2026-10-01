@@ -246,5 +246,5 @@ func Contract(name string, caps map[Kind]CapConfig, maxRecord, maxCompanion int6
 	}
 	b, _ := json.Marshal(policy)
 	sum := sha256.Sum256(b)
-	return name + "/extraction@1/" + hex.EncodeToString(sum[:16])
+	return ReparseKey(name) + "/extraction@1/" + hex.EncodeToString(sum[:16])
 }

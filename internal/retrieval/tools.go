@@ -646,6 +646,9 @@ func (s *Store) Read(ctx context.Context, deviceID string, rq format.ReadQuery, 
 		out, err = s.readAt(ctx, deviceID, rq, f)
 		return err
 	})
+	if err == nil && out != nil && s.RefreshSession != nil {
+		s.RefreshSession(ctx, out.Conversation.ID)
+	}
 	return out, err
 }
 

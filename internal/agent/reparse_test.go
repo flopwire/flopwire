@@ -180,3 +180,23 @@ func TestDevinParserVersionChange(t *testing.T) {
 		t.Fatal(name)
 	}
 }
+
+func TestMinorParserVersionDoesNotScheduleDeviceReparse(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	waitRacy()
+	f.once()
+	// A minor-only version change on non-reporting parsers must not schedule
+	// the background rebuild or block policy-gated uploads.
+	f.a.claude = &versioned{Parser: f.a.claude, name: "claude@3.1"}
+	for _, target := range f.a.targets {
+		if target.src.Agent != transcript.AgentClaude {
+			continue
+		}
+		target.parser = f.a.claude
+		target.indexedWith = "claude@3.0"
+		if target.stale() {
+			t.Fatal("minor version scheduled device reparse")
+		}
+	}
+}

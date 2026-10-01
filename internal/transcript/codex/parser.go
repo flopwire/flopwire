@@ -33,9 +33,8 @@ import (
 
 // Parser names. Rows from response_item carry RowParser; rows created by
 // the enrichment sub-parser carry EventsVersion. Name is the source's
-// parser version: bump RowParser or EventsVersion whenever the rows a file
-// yields change, and the indexer re-parses every source whose recorded
-// parser differs.
+// parser version: bump the major in RowParser or EventsVersion when emitted
+// rows change. Minor bumps preserve existing rows.
 //
 // codex@2: empty tool outputs are emitted (is_error from the exit code);
 // kinds injected and agent_message; stringified JSON tool outputs are
@@ -45,7 +44,7 @@ import (
 // codex@3: the conversation lists every working directory the session
 // named (turn_context cwd, <cwd> tags) in OtherCwds, for path rules.
 const (
-	RowParser = "codex@3"
+	RowParser = "codex@3.0"
 	Name      = RowParser + "+" + EventsVersion
 )
 

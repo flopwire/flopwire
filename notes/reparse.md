@@ -1,0 +1,17 @@
+# Versioned reparse
+
+The server derives message rows from archived transcripts. Each message keeps the actual parser in `parser` and the applied rules in `redaction_rules`. A successful source checkpoint stores `applied_parser` and `applied_redaction_rules` alongside its cursor and extraction report. A missing stamp means the source has not completed a versioned parse.
+
+Parser names use major.minor versions, such as `claude@3.0`. Bump the major when emitted rows or cursor interpretation change. Bump the minor for changes that do not require rebuilding existing rows. Codex records both its main parser and its event parser in the source version. The shared reparse key removes minor components while retaining major components and the extraction policy hash. Devices use the same comparison. Policy changes that alter extracted content still require reparse.
+
+One background worker refreshes idle stale sources, newest capture first. A shared Postgres advisory fence allows only one idle refresh to execute across server processes. Each extraction also holds a source advisory fence, shared by live ingestion and refresh, so an old extraction cannot overwrite newer rows or a checkpoint. The fences use one separate database connection per active extraction; the normal pool remains available for short read/write transactions, including a one-slot pool.
+
+`FLOPWIRE_REPARSE_INTERVAL` controls the pause between idle sources. It defaults to two seconds per server process. When no stale source remains, the worker checks once per minute. A successful authorized session read sets `refresh_requested_at` and wakes the worker. Reads return the existing rows and never wait for extraction. The priority update runs after the read-only retrieval transaction and has a 250 ms timeout; a failed priority update does not fail the read. Hidden or unresolved reads do not schedule work.
+
+Staleness itself is durable work. Upgrade discovery does not bulk-fill the live ingest queue or trigger flush backpressure. Live uploads continue through the existing `requested_seq > parsed_seq` queue. They also force a full parse when their applied versions are stale. Backoff and quarantine apply to background refreshes. `Drain` processes pending live work and then due stale sources for tests and one-shot rebuilds.
+
+A full refresh resets the cursor, including Devin export state. Parser output arrives in batches, so searches can see mixed versions during refresh. Existing rows remain available; absent rows retire only in the final successful checkpoint transaction. That transaction also records the applied versions. A failure leaves the source stale for retry. A concurrent upload increments the request sequence and remains pending after the older snapshot completes.
+
+When redaction rules change, refresh masks all stored row versions, including superseded history. It also masks stored enrichment, conversation titles, and digests. The derived-data cleanup uses idempotent 64-row transactions. Contention retries without counting a parse failure. The source receives its new rule stamp only after cleanup and extraction finish. Archived objects and historical backups are not rewritten by this feature.
+
+A null stamp in a pre-upgrade database causes one initial assessment. This refresh preserves archived bytes and manual-redaction evidence. It excludes tombstoned sources, companion files, unsupported agents, sources without a generation, quarantined sources, and sources still in retry backoff.

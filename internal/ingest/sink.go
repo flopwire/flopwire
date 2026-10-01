@@ -12,6 +12,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/google/uuid"
@@ -429,7 +430,7 @@ func (s *sink) writeMessages(tx pgx.Tx) error {
 				s.repeated[m] = true
 			} else {
 				s.markReplaced(conv)
-				s.update(b, old.id, m, search, enrichment, false)
+				s.update(b, old.id, m, search, enrichment, search != old.text)
 				old.superseded, old.onPath, old.sourceID, old.generation = false, m.OnActivePath, &s.src.id, s.src.generation
 				old.parseAttempt = s.src.parseAttempt
 				old.isError, old.offset, old.enrichment = errPtr(m), offPtr(m), enrichment
@@ -473,20 +474,20 @@ func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search s
 	r := &row{id: uuid.NewString(), version: version, sha: m.ContentSHA[:], text: search, onPath: m.OnActivePath, sourceID: &s.src.id,
 		generation: s.src.generation, parseAttempt: s.src.parseAttempt, offset: offPtr(m), isError: errPtr(m), enrichment: enrichment}
 	b.Queue(`INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
-			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 		r.id, conv, s.src.id, nullStr(clean(m.NativeID)), nullStr(clean(m.ParentNativeID)), m.Part, m.Ordinal, m.Kind.String(), nullStr(clean(m.Role)),
 		nullStr(clean(m.ToolName)), nullStr(clean(m.ToolCallID)), errPtr(m), nullTime(m.TS), search, m.FullLen,
-		m.ContentSHA[:], version, m.OnActivePath, enrichment, s.src.generation, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen), nullStr(locator(m)), m.Parser, s.src.parseAttempt)
+		m.ContentSHA[:], version, m.OnActivePath, enrichment, s.src.generation, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen), nullStr(locator(m)), m.Parser, s.src.parseAttempt, redact.RulesVersion)
 	return r
 }
 
 // update queues an in-place update: metadata always, text when withText.
 func (s *sink) update(b *pgx.Batch, id string, m *transcript.Message, search string, enrichment []byte, withText bool) {
 	b.Queue(`UPDATE messages SET superseded=false,superseded_by=NULL,superseded_in_generation=NULL,source_id=$2,source_generation=$3,
-			on_active_path=$4,is_error=$5,enrichment=$6,line_no=$7,byte_offset=$8,byte_len=$9,parent_native_id=$10,tool_name=$11,ts=COALESCE($12,ts),parse_attempt=$13
+			on_active_path=$4,is_error=$5,enrichment=$6,line_no=$7,byte_offset=$8,byte_len=$9,parent_native_id=$10,tool_name=$11,ts=COALESCE($12,ts),parse_attempt=$13,parser=$14,redaction_rules=$15,kind=$16,role=$17,ordinal=$18,tool_call_id=$19,locator=$20
 		WHERE id=$1`, id, s.src.id, s.src.generation, m.OnActivePath, errPtr(m), enrichment, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen),
-		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt)
+		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt, m.Parser, redact.RulesVersion, m.Kind.String(), nullStr(clean(m.Role)), m.Ordinal, nullStr(clean(m.ToolCallID)), nullStr(locator(m)))
 	if withText {
 		b.Queue(`UPDATE messages SET text=$2,text_len=$3,content_sha=$4 WHERE id=$1`, id, search, m.FullLen, m.ContentSHA[:])
 	}

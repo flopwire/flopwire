@@ -72,7 +72,7 @@ The device first-sync bar is about 19GB, and each live line must be handled in a
 - **Q2 Hash on password-class matches:** omit the hash. Keep it for vendor tokens, which have high entropy by construction.
 - **Q3 Two-laptop archive:** wipe and re-sync before the first team user. The server-side pass covers the interim.
 - **Q4 Custom rules and allowlist:** built-in rules only for now. Admin rules later ride the policy channel as floors, the same way path rules do.
-- **Q5 Reparse on a rules change:** yes. The server should re-parse sources whose parse `rules_version` is older, in the background. Not built here, because read-time redaction already covers raw reads.
+- **Q5 Reparse on a rules change:** implemented. Applied rule-version stamps drive a paced background refresh from archived bytes. Refresh also masks all stored message versions, enrichment, titles, and digests. Historical archive bytes and backups remain untouched. See [versioned reparse](reparse.md).
 - **Q6 Generic keyword rule:** keep it on. Use the entropy floor and placeholder filters, and tune from the corpus false-positive review.
 
 - **Q7 At-rest rewrite of a re-uploaded redacted line:** implemented for future changed uploads through durable parse-worker repair. No historical scan or backfill. Cleanup is asynchronous; old objects remain until the purge worker finishes.
