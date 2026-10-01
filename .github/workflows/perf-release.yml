@@ -33,7 +33,7 @@ jobs:
   bench:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'release-please--branches--main')
+      (startsWith(github.event.pull_request.head.ref, 'release-please--branches--main') || github.event.pull_request.head.ref == 'ci/release-perf-gate')
     permissions:
       contents: read
     uses: ./.github/workflows/perf-ab.yml
@@ -46,7 +46,7 @@ jobs:
     if: >-
       !cancelled() &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'release-please--branches--main')
+      (startsWith(github.event.pull_request.head.ref, 'release-please--branches--main') || github.event.pull_request.head.ref == 'ci/release-perf-gate')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -101,7 +101,7 @@ jobs:
     steps:
       - name: Require a clean A/B verdict on the release PR
         env:
-          RELEASE_PR: ${{ github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release-please--branches--main') }}
+          RELEASE_PR: ${{ github.event.pull_request.head.repo.full_name == github.repository && (startsWith(github.event.pull_request.head.ref, 'release-please--branches--main') || github.event.pull_request.head.ref == 'ci/release-perf-gate') }}
           BENCH: ${{ needs.bench.result }}
           VERDICT: ${{ needs.bench.outputs.verdict }}
         run: |
