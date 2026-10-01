@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,9 @@ import (
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func refreshedSource(t *testing.T, e *env) string {
@@ -357,5 +360,61 @@ func TestRecountWaitsForConcurrentFlush(t *testing.T) {
 	}
 	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND digest->'messages'->>'user'='2'`, conv) != 1 {
 		t.Fatal("recount overwrote a concurrent flush's digest")
+	}
+}
+
+// A file replaced at the same path keeps its session: the old source's
+// refresh flushes into the conversation while the new source's checkpoint
+// retires the old source's rows and recounts the conversation. The two
+// must lock the conversation and its rows in one order, or they deadlock.
+func TestCheckpointAndConcurrentFlushDoNotDeadlock(t *testing.T) {
+	e := newEnv(t)
+	sp := bulkSpec(t, 40)
+	sync1(t, e.syncer(devicesync.Config{SealAfter: -1}), sp)
+	e.drain()
+	var src source
+	var session, conv string
+	if err := e.pool.QueryRow(e.ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,c.session_id,c.id::text
+		FROM sources s JOIN devices d ON d.id=s.device_id JOIN conversations c ON c.source_id=s.id WHERE s.path=$1`, sp.Path).
+		Scan(&src.id, &src.deviceID, &src.userID, &src.agent, &session, &conv); err != nil {
+		t.Fatal(err)
+	}
+	src.generation = 1
+	deadlocks := 0
+	for iter := range 30 {
+		src.parseAttempt = int64(1000 + iter)
+		var wg sync.WaitGroup
+		var flushErr, ckErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			s := newSink(e.ctx, e.pool, src)
+			s.convs[session] = &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: session}
+			for i := range 40 {
+				m := &transcript.Message{SessionID: session, NativeID: fmt.Sprintf("bulk-%04d", i), Kind: transcript.KindUser, Role: "user", Ordinal: int64(i), Parser: "claude@1"}
+				m.Text = fmt.Sprintf("iteration %d line %d", iter, i)
+				m.FullLen, m.ContentSHA = len(m.Text), sha256.Sum256([]byte(m.Text))
+				s.msgs = append(s.msgs, m)
+			}
+			flushErr = s.flush()
+		}()
+		go func() {
+			defer wg.Done()
+			ckErr = pgx.BeginTxFunc(e.ctx, e.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+				return checkpointDigests(e.ctx, tx, &job{src: source{id: uuid.NewString()}, previous: &src.id}, 2, true)
+			})
+		}()
+		wg.Wait()
+		for _, err := range []error{flushErr, ckErr} {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "40P01" {
+				deadlocks++
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if deadlocks > 0 {
+		t.Fatalf("%d deadlocks in 30 rounds", deadlocks)
 	}
 }

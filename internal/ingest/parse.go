@@ -361,73 +361,10 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 		}
 	}
 	return pgx.BeginTxFunc(ctx, q.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		changed := map[string]bool{}
-		for _, id := range j.recount {
-			changed[id] = true
-		}
-		if full {
-			retire := func(sql string, args ...any) error {
-				rows, err := tx.Query(ctx, sql, args...)
-				if err != nil {
-					return err
-				}
-				defer rows.Close()
-				for rows.Next() {
-					var id string
-					if err := rows.Scan(&id); err != nil {
-						return err
-					}
-					changed[id] = true
-				}
-				return rows.Err()
-			}
-			// Rows this parse neither wrote (parse_attempt) nor found
-			// unchanged (kept) are absent from the replacement.
-			rows, err := tx.Query(ctx, retireCandidatesSQL, j.src.id, gen, j.src.parseAttempt)
-			if err != nil {
-				return err
-			}
-			candidates, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
-			if err != nil {
-				return err
-			}
-			absent := slices.DeleteFunc(candidates, func(id uuid.UUID) bool { _, ok := j.kept[id]; return ok })
-			if len(absent) > 0 {
-				if err := retire(retireIDsSQL, absent, gen); err != nil {
-					return err
-				}
-			}
-			if j.previous != nil {
-				if err := retire(retirePreviousSQL, *j.previous, gen); err != nil {
-					return err
-				}
-			}
-		}
-		// A parse that died after replacing rows left their digests
-		// stale; this one may have found the rows unchanged.
-		stale, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE digest_stale AND (id=ANY($1::uuid[]) OR source_id=$2)`, j.touched, j.src.id)
-		if err != nil {
+		if err := checkpointDigests(ctx, tx, j, gen, full); err != nil {
 			return err
 		}
-		staleIDs, err := pgx.CollectRows(stale, pgx.RowTo[string])
-		if err != nil {
-			return err
-		}
-		for _, id := range staleIDs {
-			changed[id] = true
-		}
-		// Recount after retirement, including conversations wholly absent
-		// from the replacement, and those whose rows the parse replaced.
-		// Checkpoint failure rolls this back too.
-		ids := make([]string, 0, len(changed))
-		for id := range changed {
-			ids = append(ids, id)
-		}
-		slices.Sort(ids)
-		if err := recountDigests(ctx, tx, ids); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
+		_, err := tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
 			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7,
 			applied_parser=COALESCE(NULLIF($8,''),applied_parser),
 			applied_redaction_rules=CASE WHEN $8<>'' THEN $9 ELSE applied_redaction_rules END,
@@ -435,6 +372,99 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 		WHERE source_id=$1`, j.src.id, gen, j.cursor.Offset, j.cursor.LineNo, j.cursor.State, j.seq, report, j.derivedParser, redact.RulesVersion)
 		return err
 	})
+}
+
+// lockCheckpointSQL locks, in the order a flush upserts them, the
+// conversations a checkpoint writes: $1, and those holding the rows $2 or
+// the live rows of source $3 that it retires.
+const lockCheckpointSQL = `SELECT 1 FROM conversations WHERE id IN (SELECT unnest($1::uuid[])
+	UNION SELECT conversation_id FROM messages WHERE id=ANY($2::uuid[])
+	UNION SELECT conversation_id FROM messages WHERE source_id=$3 AND NOT superseded)
+	ORDER BY session_id COLLATE "C",id FOR UPDATE`
+
+// checkpointDigests retires, on a full parse, the rows absent from the
+// replacement and a previous source's live rows, then recounts the digests
+// of the conversations that changed.
+//
+// A flush locks its conversations before their message rows, so the
+// conversations are locked here before any row is retired: retiring first
+// would hold message rows a concurrent flush (another source writing the
+// same session) waits for, while the recount waits for that flush's
+// conversation.
+func checkpointDigests(ctx context.Context, tx pgx.Tx, j *job, gen int64, full bool) error {
+	changed := map[string]bool{}
+	for _, id := range j.recount {
+		changed[id] = true
+	}
+	// A parse that died after replacing rows left their digests
+	// stale; this one may have found the rows unchanged.
+	stale, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE digest_stale AND (id=ANY($1::uuid[]) OR source_id=$2)`, j.touched, j.src.id)
+	if err != nil {
+		return err
+	}
+	staleIDs, err := pgx.CollectRows(stale, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, id := range staleIDs {
+		changed[id] = true
+	}
+	if full {
+		retire := func(sql string, args ...any) error {
+			rows, err := tx.Query(ctx, sql, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					return err
+				}
+				changed[id] = true
+			}
+			return rows.Err()
+		}
+		// Rows this parse neither wrote (parse_attempt) nor found
+		// unchanged (kept) are absent from the replacement.
+		rows, err := tx.Query(ctx, retireCandidatesSQL, j.src.id, gen, j.src.parseAttempt)
+		if err != nil {
+			return err
+		}
+		candidates, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
+		absent := slices.DeleteFunc(candidates, func(id uuid.UUID) bool { _, ok := j.kept[id]; return ok })
+		if len(absent) > 0 || j.previous != nil {
+			ids := make([]string, 0, len(changed))
+			for id := range changed {
+				ids = append(ids, id)
+			}
+			if _, err := tx.Exec(ctx, lockCheckpointSQL, ids, absent, j.previous); err != nil {
+				return err
+			}
+		}
+		if len(absent) > 0 {
+			if err := retire(retireIDsSQL, absent, gen); err != nil {
+				return err
+			}
+		}
+		if j.previous != nil {
+			if err := retire(retirePreviousSQL, *j.previous, gen); err != nil {
+				return err
+			}
+		}
+	}
+	// Recount after retirement, including conversations wholly absent
+	// from the replacement, and those whose rows the parse replaced.
+	// Checkpoint failure rolls this back too.
+	ids := make([]string, 0, len(changed))
+	for id := range changed {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return recountDigests(ctx, tx, ids)
 }
 
 // companionChanged re-parses what a companion file feeds: a subagent whose
