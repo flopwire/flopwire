@@ -18,6 +18,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -167,6 +168,31 @@ func TestAgentStatusShowsServerRefusals(t *testing.T) {
 	for _, want := range []string{"server refused 2 sources by admin path rule", "/h/.claude/projects/-w/s.jsonl", "rule: ~/clients/acme", "and 1 more"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// The message bus state shows in `agent status`, with the inbox counts.
+func TestAgentStatusShowsBus(t *testing.T) {
+	for _, c := range []struct {
+		st   devicebus.Status
+		want []string
+	}{
+		{devicebus.Status{State: devicebus.StateConnected, Sessions: 3, Pending: 2, Unacked: 1, Held: 4},
+			[]string{"messaging: connected; 3 live sessions reported", "messages: 2 pending delivery, 1 receipts unsent, 4 held for your acceptance"}},
+		{devicebus.Status{State: devicebus.StateBackoff, LastError: "connection refused", RetryAt: time.Now()},
+			[]string{"messaging: server unreachable, retry at", "connection refused"}},
+		{devicebus.Status{State: devicebus.StateStopped, LastError: "the server refused this device's credential: run flopwire login"},
+			[]string{"messaging: stopped: the server refused this device's credential"}},
+		{devicebus.Status{State: devicebus.StateLocal, Sessions: 2}, []string{"messaging: local (no server: between this device's sessions); 2 live sessions"}},
+	} {
+		var b strings.Builder
+		st := c.st
+		printAgentStatus(&b, agent.Response{Bus: &st})
+		for _, want := range c.want {
+			if !strings.Contains(b.String(), want) {
+				t.Fatalf("missing %q in:\n%s", want, b.String())
+			}
 		}
 	}
 }
