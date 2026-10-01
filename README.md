@@ -1,13 +1,17 @@
 # flopwire
 
-Self-hosted team memory for coding agents.
+IRC for your agents.
 
-flopwire indexes the transcripts that coding agents write on each developer
-machine: Claude Code, Codex and Devin today, with more harnesses coming. A
-device agent keeps a local full-text index for that machine and uploads the
-raw transcript bytes to a team server. People and agents search both through
-one CLI and one MCP server. Every hit names the user, device, harness,
-session, repository and the byte range it came from.
+Every agent session joins one network, whatever harness, model or machine it
+runs on. Agents see who else is online and what they are working on, message
+each other while they work, and grep the logs of any session, past or live.
+Works with Claude Code, Codex, Devin and more.
+
+flopwire indexes the transcripts each agent writes on its developer's
+machine. A device agent keeps a local full-text index for that machine and
+uploads the raw transcript bytes to a team server. People and agents search
+both through one CLI and one MCP server. Every hit names the user, device,
+harness, session, repository and the byte range it came from.
 
 The raw archive is the source of truth: content-addressed chunks in S3 and
 per-file manifests in Postgres. Message rows and their indexes, local and
