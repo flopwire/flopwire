@@ -97,7 +97,7 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 
 	// Targets: the row, its other versions, and with all_copies every row
 	// with the same text (the +N copies group), within the caller's reach.
-	targets, err := redactTargets(ctx, s.Pool, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
+	targets, err := redactTargets(ctx, s.Pool, false, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
 	if err != nil {
 		return res, err
 	}
@@ -217,11 +217,14 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		// Parse writes share this lock, so none commits while the redaction
 		// runs. A copy one committed after the targets were read is found
 		// here; a parse that loaded the catalog before this commits sees the
-		// revision move when it next writes.
+		// revision move when it next writes. The re-read locks the rows:
+		// a writer that does not share the lock (the rules upgrade) could
+		// otherwise rewrite one between this read and the update below,
+		// and the update would restore the text read here.
 		if err := ingest.LockRedactedLines(ctx, tx); err != nil {
 			return err
 		}
-		current, err := redactTargets(ctx, tx, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
+		current, err := redactTargets(ctx, tx, true, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
 		if err != nil {
 			return err
 		}
@@ -319,16 +322,21 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 	return res, nil
 }
 
-// redactTargets reads a redaction's target rows, ordered by id.
+// redactTargets reads a redaction's target rows, ordered by id; with lock,
+// FOR UPDATE.
 func redactTargets(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
-}, focus, conv string, native *string, allCopies bool, sha []byte, admin bool, userID string) ([]redactTarget, error) {
+}, lock bool, focus, conv string, native *string, allCopies bool, sha []byte, admin bool, userID string) ([]redactTarget, error) {
+	lockClause := ""
+	if lock {
+		lockClause = " FOR UPDATE OF m"
+	}
 	rows, err := q.Query(ctx, `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
 			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text
 		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id
 		WHERE m.id=$1 OR (m.conversation_id=$2 AND m.native_id IS NOT DISTINCT FROM $3 AND $3 IS NOT NULL)
 		   OR ($4 AND m.content_sha=$5 AND ($6 OR c.user_id=$7))
-		ORDER BY m.id`, focus, conv, native, allCopies, sha, admin, userID)
+		ORDER BY m.id`+lockClause, focus, conv, native, allCopies, sha, admin, userID)
 	if err != nil {
 		return nil, err
 	}
