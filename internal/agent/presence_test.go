@@ -195,3 +195,34 @@ func TestPresenceWithheldByPathRule(t *testing.T) {
 		t.Fatalf("presence: %+v", all)
 	}
 }
+
+// Known sessions carry the path rules' verdict too, so a withheld session
+// that is not live is still kept off the server (devicebus notWithheld).
+func TestKnownWithheldByPathRule(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local /tmp/oracle-alpha"}
+	f.a = New(f.store, f.cfg)
+	f.once()
+	var withheld, open int
+	for _, s := range f.topSessions() {
+		known, err := f.a.BusKnown(ctx, s.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(known) == 0 {
+			t.Fatalf("session %s not known", s.id)
+		}
+		k := known[0]
+		if k.Withheld != strings.HasPrefix(k.Repo, "/tmp/oracle-alpha") {
+			t.Fatalf("withheld is not the local rule's verdict: %+v", k)
+		}
+		if k.Withheld {
+			withheld++
+		} else {
+			open++
+		}
+	}
+	if withheld == 0 || open == 0 {
+		t.Fatalf("withheld %d, open %d", withheld, open)
+	}
+}
