@@ -61,7 +61,7 @@ Output, newest message first, grouped under one header line per session
   | `agent` | `claude`, `codex` or `devin` |
   | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
   | `repo`, `branch` | The repo's name; the branch, or `a→b` when it switched |
-  | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits, failed tool calls. A `+` means the digest capped the list |
+  | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits (with or without a sha), failed tool calls. A `+` means the digest capped the list |
   | `intent` | What the session was for, cut to 80 characters at a word. Always last |
 
   Fields without a value are left out. The header stays within about 260
@@ -151,11 +151,12 @@ The answer is compact JSON, one line, one brief row per session:
   working directory), `branches`, `live`, `last_activity_at`, `messages`,
   `title` (cut to 160 bytes), `intent` (when it is not the title),
   `parent_session` (a subagent's parent), and from the digest the commit
-  ids and the counts of files edited and failed tool calls. A row is
-  about 270 bytes on the test fixtures and at most about 850 (20 commit
-  ids, a long title and intent), so the default page of 20 is about
-  5–17 KB, within the 24,000-byte MCP budget; a page that would pass it
-  is cut at a whole row and says so.
+  ids, the commits recorded without a sha (`commits_no_sha`, see
+  [commits](#commits)), and the counts of files edited and failed tool
+  calls. A row is about 270 bytes on the test fixtures and at most about
+  1,500 (20 commit ids, 5 commits without a sha, a long title and
+  intent), so the default page of 20 is about 5–30 KB; a page that would
+  pass the 24,000-byte MCP budget is cut at a whole row and says so.
 - `--detail` (MCP `detail: true`) prints every field instead, with the
   whole [digest](#session-digests): the files edited, PRs, tools,
   tokens and last reply.
@@ -199,18 +200,69 @@ headers show its short form; `read SESSION --outline` shows all of it;
 | `commands` | Shell commands run (Bash, exec_command, shell, ...) |
 | `tools` | Tool calls by tool name |
 | `prs` | PRs as `owner/repo#N`: the URLs `gh pr create`, `edit`, `merge`, `view` and the like print, and PR URLs in prompts and replies. At most 10 |
-| `commits` | Hashes `git commit` printed (`[branch abc1234] message`). At most 20 |
+| `commits` | Commit hashes the session made, as its transcript shows them (see [commits](#commits)). At most 20 |
+| `commits_no_sha` | Commits the session made whose hash its transcript never shows (`git commit -q`): `subject` (from `-m` or a here-document, cut to 80 characters; empty when the line does not give it), `branch` (the session's current branch) and `at` (when the call returned). At most 5 |
 | `issues` | Issue URLs as `owner/repo#N`, from prompts, replies and `gh issue` output. At most 10 |
 | `more` | The lists above that hit their cap (the lists keep the first ones seen) |
 | `failed` | Distinct tool calls the harness marked failed |
 | `last` | The last assistant reply, trimmed to about 160 characters |
 | `tokens` | Input, output, cache read and cache write tokens, where the harness records usage (Claude; each API message once) |
 
-A PR or commit counts only from the output of the command that makes or
-shows it, so a `cat` of an old log does not add one. The stored digest
+A PR counts only from the output of the command that makes or shows it,
+so a `cat` of an old log does not add one. The stored digest
 also holds the fold's bookkeeping (`state`), which output leaves out. A
 typical digest is a few hundred bytes; the caps keep a busy session's to
 a few KB.
+
+### Commits
+
+A commit counts from shell calls only (Bash, exec_command, Codex exec
+scripts, Devin exec); a hash in a prompt or a reply never counts. The
+command line is split into its commands (quotes, `$(…)`, here-documents,
+`cd`, `git -C`, `env` and `VAR=…` prefixes are understood; nothing is
+expanded).
+
+| How the commit shows | Recorded |
+|---|---|
+| `git commit`, `git cherry-pick`, `git revert` print `[branch abc1234] subject` | The hash, though a later command of the call failed (git prints the line only once the commit exists) |
+| `git commit -q` (or a commit whose output has no such line, such as hooks only) that succeeded | In `commits_no_sha`, until a later command shows its hash: then the hash moves to `commits` |
+| … then `git rev-parse HEAD` (or `--short HEAD`) | The bare hash it prints |
+| … then `git log -1` / `-n 1` (any of `--oneline`, `--format=%H…` or `%h…`, `--stat`, `--decorate`), or `git show` of HEAD | The hash of its one entry |
+| … then `git log` of HEAD with several entries, alone in its call | The first entry's hash |
+| … then `git push` | The new hash of the push line whose local ref is the commit's branch or `HEAD` (`abc..def  b -> b`) |
+| A commit and its `git log --oneline -1` in one `&&` chain | The hash, directly |
+
+A commit "succeeded" when the harness reports no error (exit code 0)
+and only `&&` follows the commit in its command line. A command that
+reveals HEAD must end its call's output, run in the same directory as
+the commit, and come before anything else moves HEAD: a later commit,
+merge, rebase, reset, checkout, switch, pull, am, cherry-pick, revert or
+`gh pr checkout` closes the window, and the commit stays without a hash.
+
+Not recorded:
+
+- a failed commit (hook rejected, nothing to commit), `git commit
+  --dry-run`;
+- a commit followed by `;`, `||` or `|` (`git commit -q -m x; git log
+  -1`): its success is unknown, and a following log may show the old HEAD;
+- hashes from `git log` of other revisions or paths, `git log -1 -- path`,
+  a `--format` that does not start with the hash, a push of another
+  branch or of a new branch (`* [new branch]` prints no hash);
+- merges (`Merge made by …` prints no hash), fast-forwards (no new
+  commit), `git rebase`, `git am`, `git pull`;
+- `gh pr merge` (the merge commit is made on GitHub; a PR URL it prints
+  counts as a PR);
+- commits made inside a script or alias (`./release.sh`), from an IDE, or
+  by another tool: the transcript shows no git command;
+- a commit without a hash that ran outside the session's repo and
+  working directory (`git -C /other commit -q`): its branch would be
+  the session's. With a hash, such a commit (a sibling worktree, say)
+  counts.
+
+The digest never asks the repository: a commit whose hash the transcript
+never shows stays in `commits_no_sha`. To match one, list the sessions on
+the branch (`sessions --repo R --branch B`) and compare the subject and
+time with `git log`.
 
 ## read
 
