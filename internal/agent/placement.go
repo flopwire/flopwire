@@ -36,7 +36,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -44,6 +43,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/provenance"
@@ -107,7 +107,7 @@ func (a *Agent) placeOf(key placeKey, path string) (placed, bool) {
 		return p, true
 	}
 	if h.state == hintsPending {
-		if fi, err := os.Stat(path); err == nil && time.Since(fi.ModTime()) < cwdWait {
+		if fi, err := fsprobe.Stat(path); err == nil && time.Since(fi.ModTime()) < cwdWait {
 			return placed{}, false
 		}
 	}
@@ -464,7 +464,7 @@ func decodeClaudeFolder(name string) string {
 			return ""
 		}
 		budget--
-		ents, err := os.ReadDir(dir)
+		ents, err := fsprobe.ReadDir(dir)
 		if err != nil {
 			return ""
 		}
@@ -484,7 +484,7 @@ func decodeClaudeFolder(name string) string {
 				return p
 			}
 			left := rest[len(c.enc)+1:]
-			if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+			if fi, err := fsprobe.Stat(p); err != nil || !fi.IsDir() {
 				continue
 			}
 			if len(left) < len(bestRest) {
@@ -532,7 +532,7 @@ const cwdScanLines = 200
 // cwdScanLines complete lines.
 func scanHints(path string) hints {
 	var h hints
-	f, err := os.Open(path)
+	f, err := fsprobe.Open(path)
 	if err != nil {
 		return h
 	}

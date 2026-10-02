@@ -1,10 +1,11 @@
 package agent
 
 import (
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/flopwire/flopwire/internal/fsprobe"
 )
 
 // watchEvent is a directory event: a directory whose entries changed, or
@@ -33,7 +34,7 @@ func (a *Agent) watchDirs(now time.Time) []string {
 		if d == "" || seen[d] || len(dirs) >= a.cfg.MaxWatch {
 			return
 		}
-		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+		if fi, err := fsprobe.Stat(d); err != nil || !fi.IsDir() {
 			return
 		}
 		seen[d] = true
@@ -77,7 +78,7 @@ func (a *Agent) watchDirs(now time.Time) []string {
 	}
 
 	// Recently active Claude projects, newest first.
-	entries, _ := os.ReadDir(a.cfg.ClaudeProjects)
+	entries, _ := fsprobe.ReadDir(a.cfg.ClaudeProjects)
 	type proj struct {
 		path string
 		mod  time.Time
@@ -87,6 +88,7 @@ func (a *Agent) watchDirs(now time.Time) []string {
 		if !e.IsDir() {
 			continue
 		}
+		fsprobe.Note(fsprobe.OpStat, filepath.Join(a.cfg.ClaudeProjects, e.Name())) // Info is an lstat
 		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) < recentProject {
 			projects = append(projects, proj{filepath.Join(a.cfg.ClaudeProjects, e.Name()), fi.ModTime()})
 		}

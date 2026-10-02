@@ -27,7 +27,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -35,6 +34,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicebus"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -60,13 +60,13 @@ func (a *Agent) registries() harnessLive {
 			h.at[id] = at
 		}
 	}
-	files, _ := filepath.Glob(filepath.Join(filepath.Dir(a.cfg.ClaudeProjects), "sessions", "*.json"))
+	files, _ := fsprobe.Glob(filepath.Join(filepath.Dir(a.cfg.ClaudeProjects), "sessions", "*.json"))
 	for _, f := range files {
 		pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json"))
 		if err != nil || pid <= 1 || !a.pidAlive(pid) {
 			continue
 		}
-		b, err := os.ReadFile(f)
+		b, err := fsprobe.ReadFile(f)
 		if err != nil {
 			continue
 		}
@@ -86,14 +86,14 @@ func (a *Agent) registries() harnessLive {
 		add(v.SessionID, at)
 		h.busy[v.SessionID] = h.busy[v.SessionID] || v.Status == "busy"
 	}
-	locks, _ := filepath.Glob(filepath.Join(a.cfg.CodexHome, "thread-writer-locks", "*.lock"))
+	locks, _ := fsprobe.Glob(filepath.Join(a.cfg.CodexHome, "thread-writer-locks", "*.lock"))
 	for _, f := range locks {
 		add(strings.TrimSuffix(filepath.Base(f), ".lock"), time.Time{})
 	}
 	if a.devin.path != "" {
-		locks, _ := filepath.Glob(filepath.Join(filepath.Dir(a.devin.path), "session_locks", "*.lock"))
+		locks, _ := fsprobe.Glob(filepath.Join(filepath.Dir(a.devin.path), "session_locks", "*.lock"))
 		for _, f := range locks {
-			b, err := os.ReadFile(f)
+			b, err := fsprobe.ReadFile(f)
 			if err != nil {
 				continue
 			}
@@ -143,7 +143,7 @@ type rolloutBusy struct {
 // busy is codexBusy for path, read again only when the file changed. keep
 // names the paths still live; the rest are forgotten.
 func (r *rolloutState) busy(path string, keep map[string]bool) bool {
-	fi, err := os.Stat(path)
+	fi, err := fsprobe.Stat(path)
 	if err != nil {
 		return false
 	}
@@ -172,7 +172,7 @@ func (r *rolloutState) busy(path string, keep map[string]bool) bool {
 // running after task_started until task_complete or turn_aborted.
 func codexBusy(path string) bool {
 	const tail = 256 << 10
-	f, err := os.Open(path)
+	f, err := fsprobe.Open(path)
 	if err != nil {
 		return false
 	}

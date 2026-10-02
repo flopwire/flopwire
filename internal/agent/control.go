@@ -15,6 +15,7 @@ import (
 	"github.com/flopwire/flopwire/internal/busrender"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -323,8 +324,8 @@ func (a *Agent) Pass(ctx context.Context) error {
 }
 
 func sameFile(a, b string) bool {
-	fa, err1 := os.Stat(a)
-	fb, err2 := os.Stat(b)
+	fa, err1 := fsprobe.Stat(a)
+	fb, err2 := fsprobe.Stat(b)
 	if err1 != nil || err2 != nil {
 		return filepath.Clean(a) == filepath.Clean(b)
 	}

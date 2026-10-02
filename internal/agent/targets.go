@@ -1,12 +1,12 @@
 package agent
 
 import (
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
@@ -177,7 +177,7 @@ func (a *Agent) discoverDir(dir string) (*found, bool) {
 		return f, true
 	}
 	if _, ok := under(a.cfg.CodexHome, dir); ok {
-		entries, err := os.ReadDir(dir)
+		entries, err := fsprobe.ReadDir(dir)
 		if err != nil {
 			return f, true
 		}

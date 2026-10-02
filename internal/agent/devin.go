@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -280,7 +280,7 @@ func devinCwds(ctx context.Context, path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(abs); err != nil {
+	if _, err := fsprobe.Stat(abs); err != nil {
 		return nil, err
 	}
 	q := url.Values{}
