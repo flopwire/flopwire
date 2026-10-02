@@ -230,8 +230,8 @@ func TestLateSupersedeRecountsAtomically(t *testing.T) {
 	}
 	consistent := func(when string) {
 		t.Helper()
-		if n := e.count(`SELECT count(*) FROM conversations c WHERE NOT c.digest_stale AND
-			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) <>
+		if n := e.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE NOT a.digest_stale AND
+			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(a.digest->'messages') x(k,v)) <>
 			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE)`); n != 0 {
 			t.Fatalf("%s: %d conversations whose digest count is not their live rows", when, n)
 		}

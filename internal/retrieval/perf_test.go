@@ -39,11 +39,13 @@ func perfCorpus(t testing.TB, sessions, msgs int) (*Store, *perfguard.Counter) {
 		{`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)
 		 SELECT md5('f'||i)::uuid,md5('d'||(i%40))::uuid,'claude','/p/'||i||'.jsonl','f'||i,'jsonl_append','test',now()
 		 FROM generate_series(1,$1) i`, []any{sessions}},
-		{`INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,repo_root,title,started_at,last_activity_at)
+		{`INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,repo_root,title,started_at)
 		 SELECT md5('c'||i)::uuid,md5('f'||i)::uuid,'claude',md5('s'||i),md5('d'||(i%40))::uuid,md5('u'||(i%40%10))::uuid,
-		        '/src/repo'||(i%5),'session '||i,'2026-09-01'::timestamptz+i*interval '1 minute',
-		        CASE WHEN i%7=0 THEN NULL ELSE '2026-09-01'::timestamptz+(i/3)*interval '1 minute'+(i/3%5)*interval '7 microseconds' END
+		        '/src/repo'||(i%5),'session '||i,'2026-09-01'::timestamptz+i*interval '1 minute'
 		 FROM generate_series(1,$1) i`, []any{sessions}},
+		{`UPDATE conversation_activity a SET last_activity_at=x.t FROM (SELECT md5('c'||i)::uuid id,
+		        CASE WHEN i%7=0 THEN NULL ELSE '2026-09-01'::timestamptz+(i/3)*interval '1 minute'+(i/3%5)*interval '7 microseconds' END t
+		 FROM generate_series(1,$1) i) x WHERE a.conversation_id=x.id`, []any{sessions}},
 		{`INSERT INTO messages(id,conversation_id,source_id,ordinal,kind,ts,text,text_len,content_sha,source_generation,parser)
 		 SELECT md5('m'||i||'/'||j)::uuid,md5('c'||i)::uuid,md5('f'||i)::uuid,j,(ARRAY['user','assistant','tool_call','tool_result'])[1+j%4],
 		        '2026-09-01'::timestamptz+i*interval '1 minute'+j*interval '1 millisecond','step '||j||' of session '||i,20,
@@ -51,9 +53,11 @@ func perfCorpus(t testing.TB, sessions, msgs int) (*Store, *perfguard.Counter) {
 		 FROM generate_series(1,$1) i, generate_series(0,$2-1) j`, []any{sessions, msgs}},
 		// Digests carry the per-kind counts ingest maintains; the read
 		// header's message count comes from them.
-		{`UPDATE conversations c SET digest=(SELECT jsonb_build_object('messages',jsonb_object_agg(kind,k))
-		 FROM (SELECT kind,count(*) k FROM messages m WHERE m.conversation_id=c.id GROUP BY kind) x)`, nil},
-		{`ANALYZE`, nil},
+		{`UPDATE conversation_activity a SET digest=(SELECT jsonb_build_object('messages',jsonb_object_agg(kind,k))
+		 FROM (SELECT kind,count(*) k FROM messages m WHERE m.conversation_id=a.conversation_id GROUP BY kind) x)`, nil},
+		// The activity rows were written twice after their insert: the
+		// dead versions go, as autovacuum would remove them.
+		{`VACUUM ANALYZE`, nil},
 	} {
 		if _, err := pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatalf("%s: %v", q.sql, err)
@@ -78,8 +82,8 @@ func sessionAt(t testing.TB, pool *pgxpool.Pool, i int) string {
 func sessionsCursor(t testing.TB, pool *pgxpool.Pool, i int) string {
 	t.Helper()
 	var c format.ConversationInfo
-	if err := pool.QueryRow(context.Background(), `SELECT id::text,last_activity_at FROM conversations
-		ORDER BY last_activity_at DESC NULLS LAST,id DESC OFFSET $1 LIMIT 1`, i).Scan(&c.ID, &c.LastActivityAt); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT c.id::text,a.last_activity_at FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id
+		ORDER BY a.last_activity_at DESC NULLS LAST,c.id DESC OFFSET $1 LIMIT 1`, i).Scan(&c.ID, &c.LastActivityAt); err != nil {
 		t.Fatal(err)
 	}
 	return format.SessionCursor(c)
@@ -188,7 +192,7 @@ func TestSessionsCursorWalk(t *testing.T) {
 	s, _ := perfCorpus(t, 103, 1)
 	ctx := context.Background()
 	want := func(order string, where string) []string {
-		rows, err := s.Pool.Query(ctx, `SELECT id::text FROM conversations WHERE `+where+` ORDER BY `+order)
+		rows, err := s.Pool.Query(ctx, `SELECT id::text FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE `+where+` ORDER BY `+order)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -456,9 +460,20 @@ func globCorpus(t testing.TB, sessions int) (*Store, *perfguard.Counter) {
 
 // A sessions glob that matches a few sessions reads those, not the list:
 // its cost is the same whatever the corpus size.
+//
+// Sequential scans are off, as in the plan tests: with the hot columns in
+// conversation_activity, a conversations row is narrow, and a scan of
+// this corpus's 4000 rows (about 150 pages) costs the planner less than
+// the four trigram index scans (crossover near 4500 rows), so it rightly
+// scans a table this small. What the guard catches is an index path that
+// walks the list and filters by the glob, which stays open.
 func TestSessionsRareGlobScalingConstant(t *testing.T) {
 	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
 		s, counter := globCorpus(t, n)
+		if _, err := s.Pool.Exec(context.Background(), `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET enable_seqscan=off', current_database()); END $$`); err != nil {
+			t.Fatal(err)
+		}
+		s.Pool.Reset() // new connections take the setting
 		return perfguard.Measure(t, s.Pool, counter, func() {
 			out, err := s.Sessions(context.Background(), "*zebracorn*", "", format.Filters{Limit: 20})
 			if err != nil {

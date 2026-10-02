@@ -31,7 +31,7 @@ func TestRedactionAndConcurrentFlushDoNotDeadlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer flush.Rollback(ctx)
-	if _, err := flush.Exec(ctx, `UPDATE conversations SET last_activity_at=last_activity_at WHERE id=$1`, conv); err != nil {
+	if _, err := flush.Exec(ctx, `SELECT 1 FROM conversations WHERE id=$1 FOR NO KEY UPDATE`, conv); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

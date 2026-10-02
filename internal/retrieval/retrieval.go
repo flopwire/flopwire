@@ -119,6 +119,22 @@ func (q *query) sql() string {
 // path rule change (D18).
 const visible = `(SELECT * FROM conversations WHERE hidden_at IS NULL)`
 
+// listed is visible with each conversation's hot fields
+// (conversation_activity: last_activity_at, digest, digest_stale), for
+// the queries that list or describe conversations (convCols). aid is the
+// id as the activity row holds it: a keyset bound on
+// (last_activity_at, aid) is an index condition on
+// conversation_activity_idx, one on (last_activity_at, id) is not (the
+// planner does not carry a range on id across the join).
+const listed = `(SELECT c.*,a.conversation_id AS aid,a.last_activity_at,a.digest,a.digest_stale FROM conversations c
+	JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.hidden_at IS NULL)`
+
+// lastActivity is conversation c's last activity where c is a plain
+// conversations row (a message's conversation in from).
+func lastActivity(c string) string {
+	return `(SELECT a.last_activity_at FROM conversation_activity a WHERE a.conversation_id=` + c + `.id)`
+}
+
 // from joins a message to what its filters and output need.
 const from = `messages m JOIN ` + visible + ` c ON c.id=m.conversation_id JOIN devices d ON d.id=c.device_id
 	JOIN users u ON u.id=c.user_id LEFT JOIN sources s ON s.id=m.source_id`
@@ -217,7 +233,7 @@ func convFilters(q *query, f format.Filters) {
 		q.where("EXISTS (SELECT 1 FROM unnest(c.branches) b WHERE b ILIKE " + q.arg(format.BranchMatch(f.Branch)) + ")")
 	}
 	if f.ExcludeLive {
-		q.where("COALESCE(c.last_activity_at,'-infinity') < " + q.arg(time.Now().Add(-format.LiveWindow)))
+		q.where("COALESCE(" + lastActivity("c") + ",'-infinity') < " + q.arg(time.Now().Add(-format.LiveWindow)))
 		// Sessions (and their subagents) the device reports open, while
 		// they (or the parent) wrote within the hour, as liveSQL has it.
 		q.where("NOT COALESCE(d.live_at>now()-interval '1 hour' AND " + heldOpen("d.live_sessions") + ",false)")
@@ -231,9 +247,9 @@ func convFilters(q *query, f format.Filters) {
 // the session id list ids: it is named there and wrote within the hour,
 // or its parent (on its device) is named and wrote within the hour.
 func heldOpen(ids string) string {
-	return `(c.session_id=ANY(` + ids + `) AND c.last_activity_at>now()-interval '1 hour'
+	return `(c.session_id=ANY(` + ids + `) AND ` + lastActivity("c") + `>now()-interval '1 hour'
 		OR c.parent_native_session_id=ANY(` + ids + `) AND EXISTS (SELECT 1 FROM conversations p WHERE p.device_id=c.device_id
-			AND p.session_id=c.parent_native_session_id AND p.last_activity_at>now()-interval '1 hour'))`
+			AND p.session_id=c.parent_native_session_id AND ` + lastActivity("p") + `>now()-interval '1 hour'))`
 }
 
 // excludeSessionTree is the condition leaving out a session and its
@@ -507,7 +523,7 @@ func scanConv(row pgx.Row) (format.ConversationInfo, error) {
 	return c, err
 }
 
-const convFrom = visible + ` c` + convJoins
+const convFrom = listed + ` c` + convJoins
 
 // convJoins joins a conversation c to what convCols needs.
 const convJoins = ` JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id

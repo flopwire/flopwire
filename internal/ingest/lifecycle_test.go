@@ -269,7 +269,7 @@ func TestAppendAndRewrite(t *testing.T) {
 	// superseded.
 	rows := e.count(`SELECT count(*) FROM messages m JOIN conversations c ON c.id=m.conversation_id
 		WHERE c.session_id LIKE '%c0de' AND NOT m.superseded AND m.on_active_path IS NOT FALSE`)
-	counted := e.count(`SELECT COALESCE(sum(v::int),0) FROM conversations c, jsonb_each_text(c.digest->'messages') AS x(k,v) WHERE c.session_id LIKE '%c0de'`)
+	counted := e.count(`SELECT COALESCE(sum(v::int),0) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id, jsonb_each_text(a.digest->'messages') AS x(k,v) WHERE c.session_id LIKE '%c0de'`)
 	if counted != rows {
 		t.Fatalf("digest counts %d messages; %d are live", counted, rows)
 	}
@@ -372,8 +372,8 @@ func TestDevinDeletionAndChainChange(t *testing.T) {
 		e.drain()
 		// Reads take the message count from the digest (retrieval
 		// messageCount): it must match the live rows.
-		if n := e.count(`SELECT count(*) FROM conversations c WHERE c.digest_stale OR
-			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) <>
+		if n := e.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE a.digest_stale OR
+			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(a.digest->'messages') x(k,v)) <>
 			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE)`); n != 0 {
 			t.Fatalf("after resyncing %s: %d conversations whose digest count is not their live rows", id, n)
 		}
@@ -611,7 +611,7 @@ func sameCounts(t *testing.T, e *env, like string) {
 	ctx := context.Background()
 	var conv string
 	var stored []byte
-	if err := e.pool.QueryRow(ctx, `SELECT id::text,digest FROM conversations WHERE session_id LIKE $1`, like).Scan(&conv, &stored); err != nil {
+	if err := e.pool.QueryRow(ctx, `SELECT c.id::text,a.digest FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.session_id LIKE $1`, like).Scan(&conv, &stored); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := e.pool.Begin(ctx)

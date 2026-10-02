@@ -419,7 +419,8 @@ func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filt
 // sessionsPage is the query for limit sessions after the cursor key
 // after (nil: from the start), in order of last activity, undated
 // sessions last, ties by id. The keyset walks
-// conversations_activity_idx: dated sessions after the key, then undated
+// conversation_activity_idx (joining each entry to its visible
+// conversation): dated sessions after the key, then undated
 // ones, each branch stopping at limit, so a page reads at most 2·limit rows
 // however many sessions there are (unless a filter rejects most of
 // them). Devices and users join inside the page only when a filter needs
@@ -461,7 +462,7 @@ func sessionsPage(glob string, f format.Filters, oldest bool, after *format.Sess
 		a := q.arg(like)
 		q.where(fmt.Sprintf("(c.session_id ILIKE %[1]s OR COALESCE(c.title,'') ILIKE %[1]s OR COALESCE(c.repo_root,c.cwd,'') ILIKE %[1]s OR COALESCE(c.repo_root,c.cwd,'') ILIKE '%%/' || %[1]s)", a))
 	}
-	page := `SELECT c.* FROM ` + visible + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql()
+	page := `SELECT c.* FROM ` + listed + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql()
 	cmp, dir := "<", " DESC"
 	if oldest {
 		cmp, dir = ">", ""
@@ -470,15 +471,15 @@ func sessionsPage(glob string, f format.Filters, oldest bool, after *format.Sess
 	var parts []string
 	undated := page + ` AND c.last_activity_at IS NULL`
 	if after != nil && after.Undated {
-		undated += ` AND c.id` + cmp + q.arg(after.ID) + `::uuid`
+		undated += ` AND c.aid` + cmp + q.arg(after.ID) + `::uuid`
 	} else {
 		dated := page + ` AND c.last_activity_at IS NOT NULL`
 		if after != nil {
-			dated += ` AND (c.last_activity_at,c.id)` + cmp + `(` + q.arg(after.Time()) + `::timestamptz,` + q.arg(after.ID) + `::uuid)`
+			dated += ` AND (c.last_activity_at,c.aid)` + cmp + `(` + q.arg(after.Time()) + `::timestamptz,` + q.arg(after.ID) + `::uuid)`
 		}
-		parts = append(parts, `(`+dated+` ORDER BY c.last_activity_at`+dir+`,c.id`+dir+lim+`)`)
+		parts = append(parts, `(`+dated+` ORDER BY c.last_activity_at`+dir+`,c.aid`+dir+lim+`)`)
 	}
-	parts = append(parts, `(`+undated+` ORDER BY c.id`+dir+lim+`)`)
+	parts = append(parts, `(`+undated+` ORDER BY c.last_activity_at`+dir+`,c.aid`+dir+lim+`)`)
 	// The branches are ordered explicitly before the page's LIMIT: Append
 	// happens to emit them in order, but nothing promises that (a Parallel
 	// Append need not), and the LIMIT would then drop dated rows. The sort

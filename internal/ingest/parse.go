@@ -441,7 +441,8 @@ func checkpointDigests(ctx context.Context, tx pgx.Tx, j *job, gen int64, full b
 	}
 	// A parse that died after replacing rows left their digests
 	// stale; this one may have found the rows unchanged.
-	stale, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE digest_stale AND (id=ANY($1::uuid[]) OR source_id=$2)`, j.touched, j.src.id)
+	stale, err := tx.Query(ctx, `SELECT c.id::text FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id
+		WHERE a.digest_stale AND (c.id=ANY($1::uuid[]) OR c.source_id=$2)`, j.touched, j.src.id)
 	if err != nil {
 		return err
 	}

@@ -230,7 +230,7 @@ func TestAppendDigestMatchesRecount(t *testing.T) {
 func sameDigest(t testing.TB, e *env, session string) {
 	t.Helper()
 	var conv, stored string
-	if err := e.pool.QueryRow(e.ctx, `SELECT id::text,digest::text FROM conversations WHERE session_id=$1`, session).Scan(&conv, &stored); err != nil {
+	if err := e.pool.QueryRow(e.ctx, `SELECT c.id::text,a.digest::text FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.session_id=$1`, session).Scan(&conv, &stored); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := e.pool.Begin(e.ctx)
@@ -243,7 +243,7 @@ func sameDigest(t testing.TB, e *env, session string) {
 	}
 	var same bool
 	var recounted string
-	if err := tx.QueryRow(e.ctx, `SELECT digest::text, digest=$2::jsonb FROM conversations WHERE id=$1`, conv, stored).Scan(&recounted, &same); err != nil {
+	if err := tx.QueryRow(e.ctx, `SELECT digest::text, digest=$2::jsonb FROM conversation_activity WHERE conversation_id=$1`, conv, stored).Scan(&recounted, &same); err != nil {
 		t.Fatal(err)
 	}
 	if !same {

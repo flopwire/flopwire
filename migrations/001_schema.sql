@@ -244,7 +244,6 @@ CREATE TABLE conversations (
   repo_root text,
   title text,
   started_at timestamptz,
-  last_activity_at timestamptz,
   -- Subagent linkage. The native ids are kept so a child that arrives before
   -- its parent resolves parent_conversation_id when the parent lands.
   parent_conversation_id uuid REFERENCES conversations (id) ON DELETE SET NULL,
@@ -255,14 +254,9 @@ CREATE TABLE conversations (
   extra jsonb NOT NULL DEFAULT '{}'::jsonb,
   -- The git branches the session ran on, first seen first.
   branches text[] NOT NULL DEFAULT '{}',
-  -- The conversation's digest (internal/digest), refreshed on every append.
-  digest jsonb,
-  -- The digest's counts wait for a recount: a parse replaced rows and
-  -- has not completed (ingest refreshDigest, digestFold).
-  digest_stale boolean NOT NULL DEFAULT false,
   UNIQUE (device_id, agent, session_id)
 );
-CREATE INDEX conversations_user_idx ON conversations (user_id, last_activity_at DESC);
+CREATE INDEX conversations_user_idx ON conversations (user_id);
 CREATE INDEX conversations_repo_idx ON conversations (repo_root) WHERE repo_root IS NOT NULL;
 -- Retrieval addresses name a session by any unique prefix of its id.
 CREATE INDEX conversations_session_idx ON conversations ((session_id COLLATE "C"));
@@ -274,6 +268,53 @@ CREATE INDEX conversations_unresolved_parent_idx ON conversations (device_id, ag
 -- digest's subagent count, refreshed on every parse batch.
 CREATE INDEX conversations_subagents_idx ON conversations (device_id, agent, parent_native_session_id)
   WHERE parent_native_session_id IS NOT NULL;
+
+-- A conversation's hot fields, which nearly every parse flush rewrites,
+-- one row per conversation. They live apart from conversations so that a
+-- flush leaves the conversations row, and its many indexes (the pg_trgm
+-- GIN indexes on session id, title and place among them), untouched
+-- unless a cold column changes: an update that changes an indexed column
+-- adds an entry to every index of the table, and GIN indexes never
+-- shrink. A flush writes this row once (ingest refreshDigest: digest and
+-- last activity together). That update adds entries only to the primary
+-- key and the activity index, both btrees, whose bottom-up deletion
+-- removes the dead versions' entries; one that leaves last_activity_at be
+-- (a recount, a parent's subagent count, a redaction) is HOT. The fill
+-- factor keeps room on the page for the new version.
+--
+-- Lock order: a writer of this row first holds its conversations row
+-- (FOR UPDATE or FOR NO KEY UPDATE, or an upsert of it), so the
+-- conversations lock order (store.LockConversationsSQL) covers it.
+CREATE TABLE conversation_activity (
+  conversation_id uuid PRIMARY KEY REFERENCES conversations (id) ON DELETE CASCADE,
+  last_activity_at timestamptz,
+  -- The conversation's digest (internal/digest), refreshed on every append.
+  digest jsonb,
+  -- The digest's counts wait for a recount: a parse replaced rows and
+  -- has not completed (ingest refreshDigest, digestFold).
+  digest_stale boolean NOT NULL DEFAULT false
+) WITH (fillfactor = 70);
+-- The sessions list's keyset: conversations by last activity, then id
+-- (internal/retrieval sessionsPage). Hidden conversations are left out
+-- after the join; they are purged within days of being hidden.
+CREATE INDEX conversation_activity_idx ON conversation_activity (last_activity_at, conversation_id);
+
+-- Every conversation has its activity row from the start, whoever
+-- inserts it.
+CREATE FUNCTION flopwire_conversation_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO conversation_activity (conversation_id) VALUES (NEW.id) ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END
+$$;
+CREATE TRIGGER conversations_activity_row AFTER INSERT ON conversations
+  FOR EACH ROW EXECUTE FUNCTION flopwire_conversation_activity();
+-- An update that changes nothing (a flush's upsert whose cold columns
+-- are as stored) writes no new row version and no index entry. The row
+-- stays locked: ON CONFLICT DO UPDATE and UPDATE lock it before the
+-- trigger runs.
+CREATE TRIGGER conversations_skip_noop BEFORE UPDATE ON conversations
+  FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger();
 
 -- text is the message's extracted text, whole and plain (no cap): the one
 -- copy that rendering, `find` (pg_trgm over the full text) and ranked

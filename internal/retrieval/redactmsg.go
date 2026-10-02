@@ -392,7 +392,7 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 			// prompt: it holds the redacted text too. (Locked above.)
 			var title string
 			var dg []byte
-			if err := tx.QueryRow(ctx, `SELECT COALESCE(title,''),digest FROM conversations WHERE id=$1`, t.conv).Scan(&title, &dg); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(c.title,''),a.digest FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.id=$1`, t.conv).Scan(&title, &dg); err != nil {
 				return err
 			}
 			if nt := maskTitle(title, t.text, txt, needles); nt != title {
@@ -407,7 +407,7 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 				hidden = strings.Split(t.text, "\n")
 			}
 			if nd := digest.Mask(dg, hidden, maskString); !bytes.Equal(nd, dg) {
-				if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2 WHERE id=$1`, t.conv, nd); err != nil {
+				if _, err := tx.Exec(ctx, `UPDATE conversation_activity SET digest=$2 WHERE conversation_id=$1`, t.conv, nd); err != nil {
 					return err
 				}
 			}

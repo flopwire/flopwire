@@ -272,8 +272,11 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	f.add("user", "use exponential backoff for the retry")
 	var other string
 	firstConv := f.conv
-	if err := f.s.Pool.QueryRow(ctx, `INSERT INTO conversations(id,agent,session_id,device_id,user_id,repo_root,title,last_activity_at)
-		SELECT gen_random_uuid(),'codex','sess-2',device_id,user_id,'/src/web','web work',now() FROM conversations WHERE id=$1 RETURNING id::text`, f.conv).Scan(&other); err != nil {
+	if err := f.s.Pool.QueryRow(ctx, `INSERT INTO conversations(id,agent,session_id,device_id,user_id,repo_root,title)
+		SELECT gen_random_uuid(),'codex','sess-2',device_id,user_id,'/src/web','web work' FROM conversations WHERE id=$1 RETURNING id::text`, f.conv).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.Pool.Exec(ctx, `UPDATE conversation_activity SET last_activity_at=now() WHERE conversation_id=$1`, other); err != nil {
 		t.Fatal(err)
 	}
 	f.conv, f.n = other, 10

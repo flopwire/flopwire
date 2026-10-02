@@ -47,10 +47,11 @@ func rulesFixture(t testing.TB, n int) (*pgxpool.Pool, *perfguard.Counter, []str
 		exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)
  VALUES($1::uuid,$2,'claude','/perf/'||$1::text,'f','jsonl_append','claude',now())`, src, device)
 		// Conversation ids are random, so the two kinds interleave in id order.
-		exec(`INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,title,digest)
- SELECT gen_random_uuid(), CASE WHEN g%2=0 THEN $1::uuid END, 'claude', $1::text||'-'||g, $2, $3,
-        'title '||g||' '||$5::text, jsonb_build_object('intent', 'step '||g||' '||$5::text)
+		exec(`INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,title)
+ SELECT gen_random_uuid(), CASE WHEN g%2=0 THEN $1::uuid END, 'claude', $1::text||'-'||g, $2, $3, 'title '||g||' '||$5::text
  FROM generate_series(1,$4) g`, src, device, user, convs, secret)
+		exec(`UPDATE conversation_activity a SET digest=jsonb_build_object('intent', 'step '||split_part(c.session_id,'-',6)||' '||$2::text)
+ FROM conversations c WHERE c.id=a.conversation_id AND c.session_id LIKE $1::text||'-%'`, src, secret)
 		exec(`WITH c AS (SELECT id, row_number() OVER (ORDER BY session_id) - 1 AS k FROM conversations WHERE session_id LIKE $1::text||'-%')
  INSERT INTO messages(id,conversation_id,source_id,ordinal,kind,text,text_len,content_sha,superseded,source_generation,parser,enrichment,redaction_rules)
  SELECT gen_random_uuid(), c.id, $1::uuid, g, 'user', 'message '||g||' '||$4::text, 60, sha256(convert_to('message '||g, 'UTF8')),
@@ -109,7 +110,7 @@ func TestRuleUpgradeScalesLinearly(t *testing.T) {
  count(*) FILTER (WHERE strpos(text,'ghp_')>0) FROM messages`, redact.RulesVersion).Scan(&stale, &secrets); err != nil || stale != 0 || secrets != 0 {
 			t.Fatalf("after upgrade: %d stale rows, %d with the secret, err %v", stale, secrets, err)
 		}
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM conversations WHERE strpos(title,'ghp_')>0 OR strpos(digest::text,'ghp_')>0`).Scan(&secrets); err != nil || secrets != 0 {
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE strpos(c.title,'ghp_')>0 OR strpos(a.digest::text,'ghp_')>0`).Scan(&secrets); err != nil || secrets != 0 {
 			t.Fatalf("after upgrade: %d conversations keep the secret, err %v", secrets, err)
 		}
 		return cost
