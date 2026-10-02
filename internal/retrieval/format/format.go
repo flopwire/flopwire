@@ -37,8 +37,14 @@ var (
 // included, injected text (CLAUDE.md, AGENTS.md, system reminders) left out
 // unless Kinds names it.
 type Filters struct {
-	Agent        string   `json:"agent,omitempty"`
-	Repo         string   `json:"repo,omitempty"`   // an absolute path (the repo or a directory under it), a repo name, or a glob
+	Agent string `json:"agent,omitempty"`
+	Repo  string `json:"repo,omitempty"` // an absolute path (the repo or a directory under it), a repo name, or a glob
+	// RepoRoots are the checkout roots of the repository Repo names, as
+	// the caller's device resolved them (local.ExpandRepo): its main
+	// checkout, linked worktrees, and the directories its placements
+	// know. A session also matches when its directory is one of them or
+	// lies under one.
+	RepoRoots    []string `json:"repo_root,omitempty"`
 	Device       string   `json:"device,omitempty"` // device id or name
 	User         string   `json:"user,omitempty"`   // user id or email
 	Kinds        []string `json:"kind,omitempty"`   // user, assistant, tool_call, tool_result, thinking, system, injected, agent_message
@@ -96,6 +102,9 @@ func (f Filters) Values() url.Values {
 	}
 	set("agent", f.Agent)
 	set("repo", f.Repo)
+	if len(f.RepoRoots) > 0 {
+		v["repo_root"] = append([]string(nil), f.RepoRoots...)
+	}
 	set("device", f.Device)
 	set("user", f.User)
 	set("kind", strings.Join(f.Kinds, ","))
@@ -131,6 +140,17 @@ func ParseFilters(v url.Values) (Filters, error) {
 		Branch: v.Get("branch"), Sort: v.Get("sort"), Live: List(v.Get("live")),
 		ExcludeConversation: v.Get("exclude_conversation"), ExcludeSession: v.Get("exclude_session"),
 		Kinds: List(v.Get("kind")), ExcludeKinds: List(v.Get("exclude_kind")), Tools: List(v.Get("tool"))}
+	if roots := v["repo_root"]; len(roots) > 0 {
+		if len(roots) > MaxRepoRoots {
+			return f, fmt.Errorf("repo_root: at most %d", MaxRepoRoots)
+		}
+		for _, r := range roots {
+			if !strings.HasPrefix(r, "/") || len(r) > 4096 {
+				return f, fmt.Errorf("repo_root: %q is not an absolute path", r)
+			}
+		}
+		f.RepoRoots = append([]string(nil), roots...)
+	}
 	var err error
 	for _, p := range []struct {
 		key string

@@ -7,6 +7,10 @@ import (
 // Query helpers shared by the local index and the server, so a filter or
 // a query means the same on both.
 
+// MaxRepoRoots bounds Filters.RepoRoots, so the filter fits a request
+// line.
+const MaxRepoRoots = 256
+
 // RepoMatch interprets a repo filter that is not a relative path (callers
 // resolve "." and "./x" to absolute paths first): an absolute path matches
 // that repo and every directory under it (prefix); a glob (* ? [) matches

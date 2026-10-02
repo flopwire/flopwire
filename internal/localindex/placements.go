@@ -131,3 +131,33 @@ func (s *Store) Withholds(ctx context.Context) ([]Withhold, error) {
 	}
 	return out, rows.Err()
 }
+
+// RepoDir is a directory a session ran in and the repository its
+// placement put it in.
+type RepoDir struct {
+	Dir    string // the worktree root, else the working directory
+	Main   string // the main checkout, or the bare repository
+	Remote string // normalized host/owner/name
+}
+
+// RepoDirs lists, without duplicates, the directories of every placement
+// that names a repository (a main checkout or a remote): the identity
+// facts --repo resolves against. An ambiguous recovery's candidates are
+// not counted: the session keeps matching by its directory only.
+func (s *Store) RepoDirs(ctx context.Context) ([]RepoDir, error) {
+	rows, err := s.DB().QueryContext(ctx, `SELECT DISTINCT ifnull(nullif(worktree_root, ''), ifnull(cwd, '')), ifnull(main_root, ''), ifnull(remote, '')
+		FROM placements WHERE ifnull(main_root, '') <> '' OR ifnull(remote, '') <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoDir
+	for rows.Next() {
+		var d RepoDir
+		if err := rows.Scan(&d.Dir, &d.Main, &d.Remote); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

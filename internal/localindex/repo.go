@@ -189,3 +189,78 @@ func remoteURL(config string) string {
 	}
 	return first
 }
+
+// maxWorktrees bounds the linked worktrees Worktrees lists.
+const maxWorktrees = 4096
+
+// Worktrees lists the live linked worktrees of the repository whose main
+// checkout (or bare repository) is main, from the gitdir files git keeps
+// under <common>/worktrees/<name>/gitdir. It reads files only; a missing
+// or unreadable entry is left out. Paths are as git wrote them (git
+// writes them with symlinks resolved).
+func Worktrees(main string) []string {
+	if main == "" {
+		return nil
+	}
+	common := filepath.Join(main, ".git")
+	if fi, err := os.Stat(common); err != nil || !fi.IsDir() {
+		if !IsBare(main) {
+			return nil
+		}
+		common = main
+	}
+	ents, err := os.ReadDir(filepath.Join(common, "worktrees"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if len(out) == maxWorktrees {
+			break
+		}
+		b, err := readGitFile(filepath.Join(common, "worktrees", e.Name(), "gitdir"))
+		if err != nil {
+			continue
+		}
+		p := strings.TrimSpace(string(b))
+		if !filepath.IsAbs(p) || filepath.Base(p) != ".git" {
+			continue
+		}
+		out = append(out, filepath.Dir(filepath.Clean(p)))
+	}
+	return out
+}
+
+// IsBare reports whether dir looks like a bare git repository: a HEAD
+// file and an objects directory, and no .git entry of its own.
+func IsBare(dir string) bool {
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+		return false
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(dir, "objects"))
+	return err == nil && fi.IsDir()
+}
+
+// RepoName is a repository's short name: the last element of its remote
+// (host/owner/name) when it has one, else of its main checkout. A bare
+// repository's directory drops ".git" and a leading dot, so
+// ~/Code/.app.git and ~/Code/app.git are both "app".
+func RepoName(main, remote string) string {
+	if remote != "" {
+		return remote[strings.LastIndexByte(remote, '/')+1:]
+	}
+	if main == "" {
+		return ""
+	}
+	n := filepath.Base(filepath.Clean(main))
+	if s, ok := strings.CutSuffix(n, ".git"); ok && s != "" {
+		n = strings.TrimPrefix(s, ".")
+		if n == "" {
+			n = s
+		}
+	}
+	return n
+}
