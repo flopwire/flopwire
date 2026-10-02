@@ -500,6 +500,11 @@ On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
 output could extend a turn. `flopwire hook` never does.
 
+`devin -r ID` on a session that another Devin process runs fires the
+`SessionStart` hooks, then Devin refuses the session. `flopwire hook`
+delivers nothing to such a process: the session's lock names a running
+`devin` that is not its parent. The messages wait for the running session.
+
 Devin also runs Flopwire hooks that it finds in these files:
 `~/.config/devin/config.json` and `.devin/` files in the repository, and
 Claude Code's `~/.claude/settings.json`, `~/.claude/settings.local.json`,
