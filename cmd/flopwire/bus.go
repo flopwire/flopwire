@@ -13,8 +13,9 @@ package main
 // busproto field names, with full session ids, a kind field and the
 // fields that say how to get more; --text prints the readable forms of
 // plan §3. MCP answers the same JSON by default (format=text: the
-// readable form), with the object as structuredContent. A failure is a busErr: a stable code, the cause, a
-// fix and an example; in JSON mode the CLI writes it to stderr as JSON.
+// readable form), with the object as structuredContent. A failure is a
+// busErr: a stable code, the cause, a fix and an example; in JSON mode
+// the CLI writes it to stderr as JSON.
 
 import (
 	"context"
