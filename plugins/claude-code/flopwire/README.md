@@ -8,6 +8,12 @@ The plugin connects Claude Code to Flopwire. It adds these parts:
 | Hooks | Run `flopwire hook \|\| true` on `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop`, with a 5-second timeout. They print the standing instruction and pending messages into the session, and ask the device agent to index the transcript. |
 | Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. |
 
+Devin CLI loads this plugin too. `flopwire setup` installs this directory
+into Devin with `devin plugins install --local`; see
+[docs/agent.md](../../../docs/agent.md#where-the-plugin-comes-from). Keep
+the plugin free of fields that Devin would read differently. A change to
+`hooks/hooks.json` or `.mcp.json` changes both harnesses.
+
 The plugin adds about 90 tokens to every session (the skill's name and
 description). The skill's body (about 640 tokens) loads only when the
 model uses it. `claude plugin details flopwire` shows the current numbers.

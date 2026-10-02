@@ -205,11 +205,10 @@ inspection, and JSON output.
 ## Install into the harnesses
 
 `flopwire setup` installs Flopwire into the coding-agent harnesses on this
-device. It installs the Flopwire plugin into Claude Code and into Codex:
-the MCP tools, the hooks and a messaging skill. It runs each harness's own
-plugin commands. It never edits the harness's settings files. It does not
-set up Devin yet: connect Devin by hand as
-[Connect the harness hooks](#connect-the-harness-hooks) shows.
+device. It installs the Flopwire plugin into Claude Code, Codex and Devin
+CLI: the MCP tools, the hooks and a messaging skill. It runs each harness's
+own plugin commands. It never edits the harness's settings files, and it
+writes no Devin config file.
 
 `flopwire setup` prints a JSON report. Add `--text` for a readable form.
 The report has these parts:
@@ -250,9 +249,10 @@ Follow these steps in order.
    empty, tell your user to approve the Flopwire hooks in Codex. See
    [Approve the Codex hooks](#approve-the-codex-hooks). Do not approve
    them yourself, and do not edit `~/.codex/config.toml`.
-10. Tell your user to restart their Claude Code and Codex sessions. A
-    running Claude Code session loads the plugin after a restart or after
-    `/reload-plugins`. A running Codex session loads it after a restart.
+10. Tell your user to restart their Claude Code, Codex and Devin
+    sessions. A running Claude Code session loads the plugin after a
+    restart or after `/reload-plugins`. A running Codex or Devin session
+    loads it after a restart.
 11. Run `flopwire setup --check`.
 12. Confirm that each detected harness has `installed: true` and
     `enabled: true`.
@@ -314,7 +314,11 @@ the `flopwire_send` tool in Codex.
 1. Run `flopwire setup --remove`.
 2. Run `flopwire setup --check`.
 3. Confirm that each detected harness has `installed: false`.
-4. Restart your Claude Code and Codex sessions.
+4. Restart your Claude Code, Codex and Devin sessions.
+
+`--remove` removes only what setup installed. It does not remove a Devin
+plugin that you installed without `--local`, or a plugin from another
+source. It reports each one in `warnings`.
 
 ### Where the plugin comes from
 
@@ -330,8 +334,37 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
-The Codex desktop app and the IDE extension were not tested with the
-plugin.
+Devin CLI has no marketplace. It loads a Claude Code plugin as it is, so
+setup installs `plugins/claude-code/flopwire` into Devin:
+
+```sh
+devin plugins install --local flopwire/flopwire#plugins/claude-code/flopwire -y
+```
+
+With a local checkout as the source, setup installs the directory
+`<checkout>/plugins/claude-code/flopwire` instead. Devin then links the
+directory, so edits apply in the next session.
+
+- `--local` installs on this device only. Without it, Devin also adds the
+  plugin to your personal plugins in Devin Cloud. They then load on every
+  device you sign in to and in cloud sessions, where `flopwire` is not
+  installed.
+- `-y` answers Devin's install prompt, which lists the skill, the four
+  hooks and the MCP server.
+- Devin keeps the plugin in `~/.local/share/devin/cli/plugins`. setup
+  updates it with `devin plugins update flopwire` and removes it with
+  `devin plugins remove flopwire --local -y`.
+- Devin cannot install a branch or tag: it reads `#` as a path in the
+  repository. setup refuses a `--source owner/repo#ref` for Devin. Use a
+  local checkout of that ref.
+- Devin shows the plugin's skill as `/flopwire:messaging`.
+
+Devin reads hooks from Claude Code's settings files, but not from Claude
+Code's plugins. The Claude Code plugin and the Devin plugin therefore never
+run in the same Devin session.
+
+The Codex desktop app, the IDE extension and Devin Desktop were not tested
+with the plugin.
 
 ## Connect the harness hooks
 
@@ -458,10 +491,33 @@ event, the matcher, the command or the timeout changes.
 
 ### Devin CLI
 
-1. Open `.devin/hooks.v1.json` in the repository. Create the file if it
-   does not exist.
-2. Add these entries. The event names are top-level keys. Do not put them
-   under a `hooks` key: Devin rejects that file.
+Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
+The plugin it installs runs `flopwire hook || true` on `SessionStart`,
+`UserPromptSubmit`, `PostToolUse` and `Stop`, and serves the MCP tools.
+Devin has no hook approval step.
+
+On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
+`Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
+output could extend a turn. `flopwire hook` never does.
+
+Devin also runs Flopwire hooks that it finds in these files:
+`~/.config/devin/config.json` and `.devin/` files in the repository, and
+Claude Code's `~/.claude/settings.json`, `~/.claude/settings.local.json`,
+`~/.claude.json` and the repository's `.claude/settings.json`. Each such
+hook then runs twice in a Devin session. Each message and the standing
+instruction still arrive once. `flopwire setup` reports each such entry in
+`warnings` and does not edit the file. Keep an entry in a Claude Code
+settings file when Claude Code has no Flopwire plugin and needs it.
+
+Use the manual configuration below only when you cannot install the
+plugin.
+
+1. Open `~/.config/devin/config.json`. To connect one repository only,
+   open `.devin/hooks.v1.json` in the repository instead.
+2. Add these entries. In `~/.config/devin/config.json`, put the events
+   under a `hooks` key and keep the other keys. In `.devin/hooks.v1.json`,
+   the event names are top-level keys: Devin rejects that file with a
+   `hooks` key.
 
 ```json
 {
@@ -480,9 +536,7 @@ event, the matcher, the command or the timeout changes.
 }
 ```
 
-Devin also runs the hooks in the repository's `.claude/settings.json`. When
-both files call `flopwire hook`, each message still arrives once, and the
-standing instruction arrives once.
+3. Run `devin mcp add flopwire --scope user -- flopwire mcp`.
 
 Do not add `flopwire hook` to `PreToolUse`. Devin does not show that
 event's output to the model, and the messages would be lost.
@@ -531,7 +585,13 @@ also reads these harness files. It never writes them or locks them:
 |---|---|---|
 | Claude Code | `~/.claude/sessions/<pid>.json` | Open while the process runs. Busy when `status` is `busy`. |
 | Codex | `~/.codex/thread-writer-locks/<thread>.lock` | Open while the file exists. Busy from the last task event in the rollout. |
-| Devin | `session_locks/<session>.lock` beside `sessions.db` | Open while the named process runs. Always idle. |
+| Devin | `session_locks/<session>.lock` beside `sessions.db` | Open while the named process runs and is `devin`. A Devin session without such a lock is not live, even when it wrote a moment ago. |
+
+Devin's store does not show whether a turn runs. The agent uses the hook
+events instead: each `flopwire hook` call tells the agent its event. After
+`UserPromptSubmit` or `PostToolUse` the Devin session is busy. After `Stop`
+it is idle. A session with no hook event for 15 minutes is idle. A session
+is idle until its first hook event after the agent starts.
 
 A message waits for 24 hours. Then it expires.
 
