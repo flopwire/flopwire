@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -158,6 +159,8 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary"}, nil); st != 200 {
 		t.Fatal("accept")
 	}
+	// The accept moved alex's generation: the next poll answers at once.
+	busCall(t, "POST", b.url+busproto.PathPoll, b.alex.device, alexPresence, &first)
 	// alex's device waits; gary's send wakes it.
 	type polled struct {
 		st  int
@@ -166,7 +169,7 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 	done := make(chan polled, 1)
 	go func() {
 		req := alexPresence
-		req.Cursor, req.WaitSeconds = first.Cursor, 20
+		req.Cursor, req.Gen, req.WaitSeconds = first.Cursor, first.Gen, 20
 		var out busproto.PollResponse
 		st, _ := busCall(t, "POST", b.url+busproto.PathPoll, b.alex.device, req, &out)
 		done <- polled{st, out}
@@ -224,7 +227,9 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 	// A device that gives up on its poll leaves the server healthy.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "POST", b.url+busproto.PathPoll, strings.NewReader(`{"sessions":[],"cursor":999999,"wait_seconds":20}`))
+	var now busproto.PollResponse
+	busCall(t, "POST", b.url+busproto.PathPoll, b.alex.device, busproto.PollRequest{Sessions: []busproto.PresenceSession{}}, &now)
+	req, _ := http.NewRequestWithContext(ctx, "POST", b.url+busproto.PathPoll, strings.NewReader(fmt.Sprintf(`{"sessions":[],"cursor":999999,"gen":%d,"wait_seconds":20}`, now.Gen)))
 	req.Header.Set("Authorization", "Bearer "+b.alex.device)
 	if res, err := http.DefaultClient.Do(req); err == nil {
 		res.Body.Close()

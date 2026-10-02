@@ -513,10 +513,10 @@ func TestPresenceChangeRepolls(t *testing.T) {
 	if got := srv.lastPoll().Sessions; len(got) != 1 || got[0].SessionID != "s1" {
 		t.Fatalf("first poll presence: %+v", got)
 	}
-	srv.pollCh <- pollReply{resp: busproto.PollResponse{Cursor: 9}}
+	srv.pollCh <- pollReply{resp: busproto.PollResponse{Cursor: 9, Gen: 4}}
 	waitFor(t, "the second poll", func() bool { return srv.pollCount() == 2 })
-	if srv.lastPoll().Cursor != 9 {
-		t.Fatalf("cursor %d", srv.lastPoll().Cursor)
+	if srv.lastPoll().Cursor != 9 || srv.lastPoll().Gen != 4 {
+		t.Fatalf("cursor %d gen %d", srv.lastPoll().Cursor, srv.lastPoll().Gen)
 	}
 	p.set(sess("s1", "claude", "/src/api", true), secret) // s1 turns busy
 	waitFor(t, "a poll with the new presence", func() bool { return srv.pollCount() == 3 })

@@ -131,13 +131,16 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 	defer timer.Stop()
 	timedOut := wait == 0
 	for {
-		woken := s.hub.wait(c.UserID)
+		woken, gen := s.hub.wait(c.UserID)
 		out, newest, err := s.deliverable(ctx, c, s.now())
 		if err != nil {
 			return busproto.PollResponse{}, err
 		}
-		if newest > req.Cursor || timedOut {
-			out.Cursor, out.Ignored = max(newest, req.Cursor), ignored
+		// A generation the device has not seen means the person's set
+		// changed since its last answer, maybe by shrinking (a revoke
+		// re-held a message), which the cursor cannot show.
+		if newest > req.Cursor || gen != req.Gen || timedOut {
+			out.Cursor, out.Gen, out.Ignored = max(newest, req.Cursor), gen, ignored
 			return out, nil
 		}
 		select {
@@ -550,8 +553,14 @@ const (
 	// after $3, with a new seq so the recipient's poll wakes.
 	releaseHeldSQL = `UPDATE bus_messages SET state='queued',seq=nextval('bus_messages_seq')
 		WHERE to_user=$1 AND from_user=$2 AND state='held' AND expires_at>$3`
-	// reholdSQL holds the queued messages from $2 to $1 again.
-	reholdSQL = `UPDATE bus_messages SET state='held' WHERE to_user=$1 AND from_user=$2 AND state='queued'`
+	// reholdSQL holds the undelivered messages from $2 to $1 again: queued
+	// ones, and @user ones a device claimed but no hook printed yet. A
+	// claim is undone, so an accept later offers the message again.
+	reholdSQL = `UPDATE bus_messages SET state='held',
+		to_session=CASE WHEN addressed='user' THEN NULL ELSE to_session END,
+		to_agent=CASE WHEN addressed='user' THEN NULL ELSE to_agent END,
+		claimed_by=NULL,claimed_device=NULL,claimed_at=NULL
+		WHERE to_user=$1 AND from_user=$2 AND state IN ('queued','claimed')`
 	// expireSQL expires a batch of undelivered messages past $1.
 	expireSQL = `UPDATE bus_messages SET state='expired' WHERE id IN (
 		SELECT id FROM bus_messages WHERE state IN ('queued','held','claimed') AND expires_at<=$1 LIMIT 1000)`
@@ -618,7 +627,13 @@ func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (b
 		out = busproto.AcceptResponse{User: p.email, UserID: p.id, Reheld: int(tag.RowsAffected())}
 		return audit(ctx, tx, c, now, "bus.revoke", "user", p.id, map[string]any{"was_accepted": was, "reheld": out.Reheld})
 	})
-	return out, err
+	if err != nil {
+		return busproto.AcceptResponse{}, err
+	}
+	// The recipient's devices drop the re-held messages from their inbox
+	// at once: their polls answer on the new generation.
+	s.hub.notify(c.UserID)
+	return out, nil
 }
 
 // Sweep marks undelivered messages past their expiry expired and drops

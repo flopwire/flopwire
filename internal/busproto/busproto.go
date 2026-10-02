@@ -286,6 +286,11 @@ type PollRequest struct {
 	// Cursor is the Cursor of the last answer (0 at start). The poll
 	// answers at once when it holds a message newer than Cursor.
 	Cursor int64 `json:"cursor"`
+	// Gen is the Gen of the last answer (0 at start). The poll answers at
+	// once when the person's generation differs: their set changed in a
+	// way the cursor does not show (an accept, or a revoke that held
+	// messages again).
+	Gen int64 `json:"gen"`
 	// WaitSeconds is how long to hold when nothing is new (0: answer at
 	// once), at most PollWait.
 	WaitSeconds int `json:"wait_seconds"`
@@ -310,6 +315,8 @@ type HeldSender struct {
 // PollResponse is the device's whole deliverable set.
 type PollResponse struct {
 	Cursor int64 `json:"cursor"`
+	// Gen is the person's change generation; the next poll sends it back.
+	Gen int64 `json:"gen"`
 	// Messages are addressed to sessions on this device (or claimed by
 	// it) and not yet delivered.
 	Messages  []Envelope   `json:"messages"`
