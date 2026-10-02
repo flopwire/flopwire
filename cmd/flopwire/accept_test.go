@@ -413,3 +413,36 @@ func TestAcceptStatementMatchesTheConsole(t *testing.T) {
 		t.Fatalf("web/src/messaging.ts does not hold the CLI's statement:\n%s", acceptStatement)
 	}
 }
+
+// Everything of a held message that its sender controls reaches the
+// person's terminal without control or format characters: the agent,
+// session, repo and branch come from the sender's device, not only the
+// body's preview.
+func TestAcceptVerbsPrintNoSenderControlCharacters(t *testing.T) {
+	const esc = "\x1b]52;c;cm0gLXJmIH4=\a\x1b[2J\u202e"
+	held := busproto.HeldResponse{Senders: []busproto.HeldGroup{{
+		HeldSender: busproto.HeldSender{User: "gary@example.test" + esc, UserID: "u-gary", Count: 1},
+		UserName:   "Gary" + esc,
+		Messages: []busproto.HeldMessage{{ID: "m1", Agent: "claude" + esc, Session: "s" + esc, Repo: "api" + esc, Branch: "main" + esc,
+			Intent: busproto.IntentInform, Preview: "hello" + esc}},
+	}}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case busproto.PathHeld:
+			_ = json.NewEncoder(w).Encode(held)
+		case busproto.PathAccepts:
+			_ = json.NewEncoder(w).Encode(busproto.AcceptsResponse{})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	cfg := client.Config{Server: srv.URL, SessionToken: "session"}
+	for _, c := range [][]string{{"accepts", "--text"}, {"accepts"}, {"accept", "gary"}} {
+		out, stderr, _ := acceptRun(t, true, cfg, nil, "\n", c[0], c[1:]...)
+		for _, bad := range []string{"\x1b", "\a", "\u202e"} {
+			if strings.Contains(out+stderr, bad) {
+				t.Fatalf("%v printed %q:\n%q\n%q", c, bad, out, stderr)
+			}
+		}
+	}
+}

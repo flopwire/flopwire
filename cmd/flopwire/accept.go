@@ -229,14 +229,7 @@ func (s acceptSession) list(ctx context.Context, io_ acceptIO, st busStyle) erro
 	if err := s.call(ctx, "GET", busproto.PathHeld, nil, &held); err != nil {
 		return err
 	}
-	for i := range held.Senders {
-		for j := range held.Senders[i].Messages {
-			// The server cuts previews; cut again, so a terminal never
-			// receives control sequences from another person's agent.
-			m := &held.Senders[i].Messages[j]
-			m.Preview = busproto.Preview(m.Preview)
-		}
-	}
+	cleanHeld(&held)
 	out := acceptsJSON{Kind: "accepts", Accepted: acc.Accepted, Held: held.Senders, Console: s.console}
 	if out.Accepted == nil {
 		out.Accepted = []busproto.Accepted{}
@@ -245,6 +238,22 @@ func (s acceptSession) list(ctx context.Context, io_ acceptIO, st busStyle) erro
 		_, err := io.WriteString(io_.out, acceptsText(out))
 		return err
 	})
+}
+
+// cleanHeld removes control and format characters from everything in a
+// held list that a sender controls (their name, and each message's
+// agent, session, repo, branch and preview), so a terminal never receives
+// control sequences from another person's device or agent.
+func cleanHeld(h *busproto.HeldResponse) {
+	for i := range h.Senders {
+		g := &h.Senders[i]
+		g.User, g.UserName = busproto.Preview(g.User), busproto.Preview(g.UserName)
+		for j := range g.Messages {
+			m := &g.Messages[j]
+			m.ID, m.Agent, m.Session = busproto.Preview(m.ID), busproto.Preview(m.Agent), busproto.Preview(m.Session)
+			m.Repo, m.Branch, m.Preview = busproto.Preview(m.Repo), busproto.Preview(m.Branch), busproto.Preview(m.Preview)
+		}
+	}
 }
 
 func acceptsText(a acceptsJSON) string {
@@ -296,6 +305,7 @@ func (s acceptSession) accept(ctx context.Context, sender string, io_ acceptIO, 
 	if err := s.call(ctx, "GET", busproto.PathHeld, nil, &held); err != nil {
 		return err
 	}
+	cleanHeld(&held)
 	name := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(sender), "@"))
 	var b strings.Builder
 	b.WriteString(wrap(acceptStatement, 76))
