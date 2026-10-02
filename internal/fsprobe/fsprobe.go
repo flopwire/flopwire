@@ -77,6 +77,13 @@ func ReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// EvalSymlinks is filepath.EvalSymlinks, noted as one stat (it lstats each
+// element of the path).
+func EvalSymlinks(path string) (string, error) {
+	Note(OpStat, path)
+	return filepath.EvalSymlinks(path)
+}
+
 // Glob is filepath.Glob, noted as one listing of the pattern's directory.
 func Glob(pattern string) ([]string, error) {
 	Note(OpList, filepath.Dir(pattern))

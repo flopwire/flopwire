@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 
 	"github.com/flopwire/flopwire/internal/fsprobe"
 )
@@ -50,7 +49,7 @@ func (OSFS) Open(path string) (File, error) {
 	return osFile{f, st.Size()}, nil
 }
 
-func (OSFS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
+func (OSFS) Glob(pattern string) ([]string, error) { return fsprobe.Glob(pattern) }
 
 type osFile struct {
 	*os.File

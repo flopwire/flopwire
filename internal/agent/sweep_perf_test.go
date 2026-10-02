@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -83,10 +86,11 @@ func TestNoChangeSweepScales(t *testing.T) {
 		if c.sql.Statements > 12 {
 			t.Errorf("n=%d: a sweep over unchanged files ran %d statements on the index, want <= 12:\n%s", n, c.sql.Statements, c.bySQL)
 		}
-		// Per tracked file: the merge stat, plus at most the discovery's own
-		// (a Codex rollout's FileID, a subagent's meta.json) and the watch
-		// set's checks of a hot session's directories.
-		if c.fs.Stats > int64(4*c.files)+32 {
+		// Per tracked file: the merge stat, plus the discovery's own (a Codex
+		// rollout's FileID, a subagent's meta.json) and the watch set's checks
+		// of a hot session's directories: about 3 per file at n, 2.2 at 8n.
+		// One more stat per file fails at both.
+		if c.fs.Stats > int64(3*c.files)+32 {
 			t.Errorf("n=%d: %d stats for %d files", n, c.fs.Stats, c.files)
 		}
 		// watchNew lists only directories it newly watches: none here.
@@ -239,28 +243,81 @@ func writeSweepFixture(t testing.TB, root string, n int) int {
 	return files
 }
 
+// sweepPathPackages are the packages a sweep runs code of: the agent, the
+// discovery and gate code, and the parsers a changed file reaches.
+var sweepPathPackages = []string{".", "../transcript", "../transcript/claude", "../transcript/codex", "../transcript/devin"}
+
+// directFSAllowed are direct file system uses off the sweep path, by
+// file and expression.
+var directFSAllowed = map[string]bool{
+	"proc_linux.go os.ReadFile": true, // /proc, for presence
+}
+
 // TestNoChangeSweepScales counts file system calls through fsprobe; a
-// direct os call on the agent's paths would escape it. The agent and the
-// discovery code it runs every sweep make none (proc_linux.go reads /proc).
+// direct one on the agent's paths would escape it. This fails on any
+// reference to a stat, open, listing or walk of package os or
+// path/filepath (a call or a function value such as stat := os.Stat),
+// os.DirFS, and any Readdir, Readdirnames or ReadDir method (*os.File
+// listings), in every non-test file of the packages a sweep runs.
 func TestFileSystemCallsGoThroughProbe(t *testing.T) {
-	direct := regexp.MustCompile(`\bos\.(Open|OpenFile|ReadFile|ReadDir|Stat|Lstat)\(|\bfilepath\.(Walk|WalkDir|Glob)\(`)
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	banned := map[string]map[string]bool{
+		"os": {"Open": true, "OpenFile": true, "ReadFile": true, "ReadDir": true, "Stat": true, "Lstat": true,
+			"DirFS": true, "OpenRoot": true, "OpenInRoot": true},
+		"path/filepath": {"Walk": true, "WalkDir": true, "Glob": true, "EvalSymlinks": true},
+		"io/fs":         {"ReadDir": true, "ReadFile": true, "Stat": true, "WalkDir": true, "Glob": true, "Sub": true},
 	}
-	files = append(files, "../transcript/change.go", "../transcript/claude/discover.go", "../transcript/codex/discover.go")
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") || f == "proc_linux.go" {
-			continue
-		}
-		b, err := os.ReadFile(f)
+	methods := map[string]bool{"Readdir": true, "Readdirnames": true, "ReadDir": true}
+	fset := token.NewFileSet()
+	checked := 0
+	for _, dir := range sweepPathPackages {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			if direct.MatchString(line) {
-				t.Errorf("%s:%d: use fsprobe, not a direct call: %s", f, i+1, strings.TrimSpace(line))
+		for _, name := range files {
+			if strings.HasSuffix(name, "_test.go") {
+				continue
 			}
+			f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checked++
+			imports := map[string]string{} // local name -> import path
+			for _, im := range f.Imports {
+				path, _ := strconv.Unquote(im.Path.Value)
+				local := path[strings.LastIndex(path, "/")+1:]
+				if im.Name != nil {
+					local = im.Name.Name
+				}
+				imports[local] = path
+			}
+			rel := filepath.ToSlash(filepath.Clean(name))
+			ast.Inspect(f, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				var expr string
+				if x, ok := sel.X.(*ast.Ident); ok && imports[x.Name] != "" {
+					if !banned[imports[x.Name]][sel.Sel.Name] {
+						return true
+					}
+					expr = x.Name + "." + sel.Sel.Name
+				} else if methods[sel.Sel.Name] {
+					expr = "(…)." + sel.Sel.Name
+				} else {
+					return true
+				}
+				if directFSAllowed[rel+" "+expr] {
+					return true
+				}
+				t.Errorf("%s: %s: use fsprobe, not a direct file system call", fset.Position(sel.Pos()), expr)
+				return true
+			})
 		}
+	}
+	if checked < 20 {
+		t.Fatalf("checked only %d files", checked)
 	}
 }

@@ -928,7 +928,7 @@ func (a *Agent) lookup(path, session string) *target {
 		if t := a.targets[path]; t != nil {
 			return t
 		}
-		if r, err := filepath.EvalSymlinks(path); err == nil {
+		if r, err := fsprobe.EvalSymlinks(path); err == nil {
 			if t := a.targets[r]; t != nil {
 				return t
 			}

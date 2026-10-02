@@ -31,6 +31,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
+
 	_ "modernc.org/sqlite" // registers the "sqlite" driver; pure Go, no cgo
 )
 
@@ -63,11 +65,11 @@ func pathFromRoot(root string) string {
 		return root
 	}
 	direct := filepath.Join(root, "sessions.db")
-	if fi, err := os.Stat(direct); err == nil && fi.Mode().IsRegular() {
+	if fi, err := fsprobe.Stat(direct); err == nil && fi.Mode().IsRegular() {
 		return direct
 	}
 	nested := filepath.Join(root, "cli", "sessions.db")
-	if fi, err := os.Stat(nested); err == nil && fi.Mode().IsRegular() {
+	if fi, err := fsprobe.Stat(nested); err == nil && fi.Mode().IsRegular() {
 		return nested
 	}
 	return direct
@@ -82,9 +84,10 @@ func openReadOnly(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(abs); err != nil {
+	if _, err := fsprobe.Stat(abs); err != nil {
 		return nil, fmt.Errorf("devin: %w", err)
 	}
+	fsprobe.Note(fsprobe.OpOpen, abs) // SQLite opens it below
 	q := url.Values{}
 	q.Set("mode", "ro")
 	q.Add("_pragma", "busy_timeout(5000)")

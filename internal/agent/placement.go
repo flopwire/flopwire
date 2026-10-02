@@ -312,7 +312,7 @@ func physicalPath(p string) string {
 	p = filepath.Clean(p)
 	rest := ""
 	for dir := p; ; {
-		if r, err := filepath.EvalSymlinks(dir); err == nil {
+		if r, err := fsprobe.EvalSymlinks(dir); err == nil {
 			return filepath.Join(r, rest)
 		}
 		parent := filepath.Dir(dir)

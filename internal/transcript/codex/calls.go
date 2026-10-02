@@ -283,7 +283,7 @@ func FindRollout(childPath, sessionID string) string {
 		filepath.Join(home, ArchivedDir, name),
 		filepath.Join(home, ArchivedDir, "*", "*", "*", name),
 	} {
-		if m, _ := filepath.Glob(pat); len(m) > 0 {
+		if m, _ := fsprobe.Glob(pat); len(m) > 0 {
 			return m[0]
 		}
 	}
