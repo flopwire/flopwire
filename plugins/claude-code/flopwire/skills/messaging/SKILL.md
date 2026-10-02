@@ -23,4 +23,4 @@ Messaging and retrieval work together: find the session in history first, then c
 
 ## After you send
 
-The result is a receipt, not a reply. A reply arrives in your context on its own, at your next tool call or with your user's next prompt. Do not poll `flopwire_peers` or `flopwire_inbox`, do not sleep to wait, and do not send "are you done?". Keep working; if you are blocked with nothing else to do, tell your user. Use `flopwire_inbox` only to check a sent message's state or re-read a thread.
+The result is a receipt, not a reply. A reply arrives in your context on its own, at your next tool call or with your user's next prompt. Do not poll `flopwire_peers` or `flopwire_inbox`, and do not send "are you done?". For a request, follow the receipt's `next`: it says whether to keep working, wait briefly, or tell your user. Use `flopwire_inbox` only to check a sent message's state or re-read a thread.

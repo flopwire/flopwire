@@ -1063,7 +1063,8 @@ JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
 "queued"|"held","to":{"session","agent","user","repo","branch","live","busy"},
 "sender","intent","sent","expires_at","redactions","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed","outcome":TEXT}. A refusal is {"kind":"error","error":{"code":
+"only_if_resumed","outcome":TEXT,"next":TEXT (request only: what to do until the
+reply)}. A refusal is {"kind":"error","error":{"code":
 "thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",
 "message_id","candidates"}} on stderr, exit 1.
