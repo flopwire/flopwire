@@ -3,7 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
-	"github.com/flopwire/flopwire/internal/store"
+	"slices"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/digest"
@@ -91,7 +91,9 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 	}
 	// A subagent changes its parent's count. The parent's conversations
 	// row is locked first, as an update of it would lock it, and then its
-	// activity row.
+	// activity row. The caller locked it already, in session order with
+	// conv (lockWithParents, or the flush's lockFlushSQL), so this lock
+	// does not wait.
 	_, err := tx.Exec(ctx, `UPDATE conversation_activity a SET digest=jsonb_set(a.digest,'{subagents}',to_jsonb((SELECT count(*) FROM conversations k
 			WHERE k.device_id=p.device_id AND k.agent=p.agent AND k.parent_native_session_id=p.session_id AND k.id<>p.id)))
 		FROM (SELECT p.id,p.device_id,p.agent,p.session_id FROM conversations p JOIN conversations c ON c.id=$1
@@ -109,27 +111,99 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 // the new one's live parse under a different source fence), so the
 // recount first locks the rows: a flush holds its conversation's row from
 // its upsert to its commit, and a count taken without the lock could
-// overwrite a digest that flush commits meanwhile. The rows are locked in
-// the order a flush upserts them (session id, bytewise), to avoid
-// deadlocks between the two.
+// overwrite a digest that flush commits meanwhile. A subagent's refresh
+// also updates its parent's count, so the parents are locked with them
+// (lockWithParents).
 func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(ctx, store.LockConversationsSQL, ids)
-	if err != nil {
-		return err
-	}
-	locked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	locked, err := lockWithParents(ctx, tx, ids)
 	if err != nil {
 		return err
 	}
 	for _, id := range locked {
+		if !slices.Contains(ids, id) {
+			continue // a parent, locked only for its subagent count
+		}
 		if err := refreshDigest(ctx, tx, id, nil, digestRecount, time.Time{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 	}
 	return nil
+}
+
+// parentsSQL selects, as p, the parent conversation of each subagent k:
+// the conversation of k's parent native session on k's device, as
+// refreshDigest and resolveLinks find it.
+const parentsSQL = `SELECT p.id FROM conversations k JOIN conversations p ON p.device_id=k.device_id AND p.agent=k.agent
+	AND p.session_id=k.parent_native_session_id AND p.id<>k.id WHERE k.id=ANY($1::uuid[])`
+
+// lockWithParentsSQL locks conversations $1 and their parents in the order
+// of store.LockConversationsSQL. It returns each locked row's natural key
+// and parent session as locked (a row updated while the lock waited is
+// returned as updated).
+const lockWithParentsSQL = `SELECT id::text,device_id::text,agent,session_id,COALESCE(parent_native_session_id,'') FROM conversations
+	WHERE id IN (SELECT unnest($1::uuid[]) UNION ` + parentsSQL + `)
+	ORDER BY session_id COLLATE "C",id FOR UPDATE`
+
+// lockWithParents locks conversations ids and the parent of each subagent
+// among them, all in store.LockConversationsSQL's order, and returns the
+// locked ids in that order. A writer that updates a subagent and then its
+// parent (the parent's subagent count, the subagent's link) must hold the
+// parent in that order too: a hide or deletion of the parent's tree locks
+// the parent and its subagents in it, and a parent locked after its
+// subagents deadlocks with it.
+//
+// A subagent's parent session can be set between the statement's snapshot
+// and its lock (its first flush, which holds the subagent's row): the
+// parent is then missing from the locked set. The locks are then dropped
+// (rolled back to a savepoint) and taken again, up to three times.
+func lockWithParents(ctx context.Context, tx pgx.Tx, ids []string) ([]string, error) {
+	type key struct{ device, agent, session string }
+	for attempt := 0; ; attempt++ {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := sp.Query(ctx, lockWithParentsSQL, ids)
+		if err != nil {
+			return nil, err
+		}
+		var locked []string
+		have := map[key]bool{}
+		var want []key
+		var row struct {
+			id string
+			k  key
+			p  string
+		}
+		_, err = pgx.ForEachRow(rows, []any{&row.id, &row.k.device, &row.k.agent, &row.k.session, &row.p}, func() error {
+			locked = append(locked, row.id)
+			have[row.k] = true
+			if row.p != "" && row.p != row.k.session && slices.Contains(ids, row.id) {
+				want = append(want, key{row.k.device, row.k.agent, row.p})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		// A parent session without a locked conversation is usually one
+		// not stored yet; only then is the database asked.
+		missing := false
+		if slices.ContainsFunc(want, func(k key) bool { return !have[k] }) {
+			if err := sp.QueryRow(ctx, `SELECT EXISTS(`+parentsSQL+` AND NOT p.id=ANY($2::uuid[]))`, ids, locked).Scan(&missing); err != nil {
+				return nil, err
+			}
+		}
+		if !missing || attempt == 3 {
+			return locked, sp.Commit(ctx)
+		}
+		if err := sp.Rollback(ctx); err != nil {
+			return nil, err
+		}
+	}
 }
 
 // digestCounts counts a conversation's live rows for its digest.

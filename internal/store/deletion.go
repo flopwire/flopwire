@@ -82,7 +82,10 @@ func ConversationLockKey(userID, agent, sessionID string) string {
 // and the digest recount and checkpoint lock them in the same order. A
 // writer locks its conversations this way before it touches any of their
 // message rows: a flush holds its conversation from the upsert and then
-// writes the messages, so the reverse order deadlocks with it.
+// writes the messages, so the reverse order deadlocks with it. A writer
+// that also locks a subagent's parent (its subagent count, its link, the
+// ON DELETE SET NULL of its link) takes the parent in this order too,
+// with the subagents, never after them.
 const LockConversationsSQL = `SELECT id::text FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`
 
 // InsertAudit writes an audit event inside the caller's transaction.

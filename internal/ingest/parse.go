@@ -330,30 +330,10 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 		// The flushes counted the rows this retires: the recount runs in
 		// the same transaction, so a failure between the two cannot leave
 		// digests counting retired rows (a retry would retire nothing and
-		// not recount). The conversations are locked first, in the order
-		// a flush upserts them (store.LockConversationsSQL's order, taken
-		// here over a subquery), before any message row.
-		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id IN
-				(SELECT conversation_id FROM messages WHERE source_id=$1 AND NOT superseded)
-				ORDER BY session_id COLLATE "C",id FOR UPDATE`, j.src.id)
-			if err != nil {
-				return err
-			}
-			retired, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `UPDATE messages SET superseded=true,superseded_in_generation=$2 WHERE source_id=$1 AND NOT superseded`, j.src.id, gen); err != nil {
-				return err
-			}
-			if afterLateSupersede != nil {
-				if err := afterLateSupersede(); err != nil {
-					return err
-				}
-			}
-			return recountDigests(ctx, tx, retired)
-		}); err != nil {
+		// not recount). The conversations are locked first, with their
+		// parents, in the order a flush upserts them (lockWithParents),
+		// before any message row.
+		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error { return retireLateSource(ctx, tx, j.src.id, gen) }); err != nil {
 			return err
 		}
 	}
@@ -365,6 +345,31 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	}
 	slices.Sort(touched)
 	return resolveLinks(ctx, q.Pool, j.src.deviceID, touched)
+}
+
+// retireLateSource retires the live rows of source sourceID, which a newer source
+// replaced in generation gen, and recounts their conversations' digests.
+func retireLateSource(ctx context.Context, tx pgx.Tx, sourceID string, gen int64) error {
+	rows, err := tx.Query(ctx, `SELECT DISTINCT conversation_id::text FROM messages WHERE source_id=$1 AND NOT superseded`, sourceID)
+	if err != nil {
+		return err
+	}
+	convs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if _, err := lockWithParents(ctx, tx, convs); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE messages SET superseded=true,superseded_in_generation=$2 WHERE source_id=$1 AND NOT superseded`, sourceID, gen); err != nil {
+		return err
+	}
+	if afterLateSupersede != nil {
+		if err := afterLateSupersede(); err != nil {
+			return err
+		}
+	}
+	return recountDigests(ctx, tx, convs)
 }
 
 // afterLateSupersede, when set (tests), runs in finish between retiring
@@ -417,13 +422,13 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 	})
 }
 
-// lockCheckpointSQL locks, in the order a flush upserts them, the
-// conversations a checkpoint writes: $1, and those holding the rows $2 or
-// the live rows of source $3 that it retires.
-const lockCheckpointSQL = `SELECT 1 FROM conversations WHERE id IN (SELECT unnest($1::uuid[])
+// checkpointConversationsSQL selects the conversations a checkpoint
+// writes: $1, and those holding the rows $2 or the live rows of source $3
+// that it retires. The checkpoint locks them with their parents
+// (lockWithParents), in the order a flush upserts them.
+const checkpointConversationsSQL = `SELECT id::text FROM (SELECT unnest($1::uuid[]) AS id
 	UNION SELECT conversation_id FROM messages WHERE id=ANY($2::uuid[])
-	UNION SELECT conversation_id FROM messages WHERE source_id=$3 AND NOT superseded)
-	ORDER BY session_id COLLATE "C",id FOR UPDATE`
+	UNION SELECT conversation_id FROM messages WHERE source_id=$3 AND NOT superseded) x`
 
 // checkpointDigests retires, on a full parse, the rows absent from the
 // replacement and a previous source's live rows, then recounts the digests
@@ -485,7 +490,15 @@ func checkpointDigests(ctx context.Context, tx pgx.Tx, j *job, gen int64, full b
 			for id := range changed {
 				ids = append(ids, id)
 			}
-			if _, err := tx.Exec(ctx, lockCheckpointSQL, ids, absent, j.previous); err != nil {
+			rows, err := tx.Query(ctx, checkpointConversationsSQL, ids, absent, j.previous)
+			if err != nil {
+				return err
+			}
+			convs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return err
+			}
+			if _, err := lockWithParents(ctx, tx, convs); err != nil {
 				return err
 			}
 		}
@@ -566,31 +579,65 @@ func (q *Queue) companionChanged(ctx context.Context, j *job) error {
 // them: parent conversation by native session id, then the spawning tool
 // call, falling back for Claude to the parent's tool_result that names the
 // child's agent or workflow run.
+//
+// Linking a child locks it and then its parent (the foreign key), while a
+// hide or deletion of the parent's tree locks both in session order. So
+// the children with a link to fill are locked first, with their parents,
+// in that order (lockWithParents).
 func resolveLinks(ctx context.Context, pool *pgxpool.Pool, deviceID string, touched []string) error {
 	if len(touched) == 0 {
 		return nil
 	}
-	for _, q := range []string{
-		`UPDATE conversations c SET parent_conversation_id=p.id FROM conversations p
-		 WHERE c.device_id=$1 AND c.parent_conversation_id IS NULL AND c.parent_native_session_id IS NOT NULL
-		   AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
-		   AND (c.id=ANY($2::uuid[]) OR p.id=ANY($2::uuid[]))`,
-		`UPDATE conversations c SET spawned_by_native_id=r.tool_call_id FROM messages r
-		 WHERE c.device_id=$1 AND c.agent='claude' AND c.spawned_by_native_id IS NULL AND c.parent_conversation_id IS NOT NULL
-		   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[]))
-		   AND r.conversation_id=c.parent_conversation_id AND NOT r.superseded AND r.kind='tool_result' AND r.tool_call_id IS NOT NULL
-		   AND (r.enrichment->>'agent_id'=c.extra->>'agent_id' OR r.enrichment->>'workflow_run_id'=c.extra->>'workflow_run_id')`,
-		`UPDATE conversations c SET spawned_by_message_id=m.id FROM messages m
-		 WHERE c.device_id=$1 AND c.spawned_by_message_id IS NULL AND c.spawned_by_native_id IS NOT NULL AND c.parent_conversation_id IS NOT NULL
-		   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[]))
-		   AND m.conversation_id=c.parent_conversation_id AND NOT m.superseded AND m.kind='tool_call'
-		   AND (m.tool_call_id=c.spawned_by_native_id OR m.native_id=c.spawned_by_native_id)`,
-	} {
-		if _, err := pool.Exec(ctx, q, deviceID, touched); err != nil {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, unlinkedSQL, deviceID, touched)
+		if err != nil {
 			return err
 		}
-	}
-	return nil
+		children, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil || len(children) == 0 {
+			return err
+		}
+		if _, err := lockWithParents(ctx, tx, children); err != nil {
+			return err
+		}
+		for _, q := range linkSQL {
+			if _, err := tx.Exec(ctx, q, deviceID, touched, children); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// unlinkedSQL selects the children on device $1 that resolveLinks may
+// link for the conversations $2: those among $2, and those whose parent
+// is, with a link still unset.
+const unlinkedSQL = `SELECT id::text FROM conversations WHERE id=ANY($2::uuid[]) AND device_id=$1 AND parent_native_session_id IS NOT NULL
+		AND (parent_conversation_id IS NULL OR spawned_by_native_id IS NULL OR spawned_by_message_id IS NULL)
+	UNION SELECT id::text FROM conversations WHERE parent_conversation_id=ANY($2::uuid[]) AND device_id=$1
+		AND (spawned_by_native_id IS NULL OR spawned_by_message_id IS NULL)
+	UNION SELECT c.id::text FROM conversations p JOIN conversations c ON c.device_id=p.device_id AND c.agent=p.agent
+		AND c.parent_native_session_id=p.session_id AND c.parent_conversation_id IS NULL AND c.id<>p.id
+	WHERE p.id=ANY($2::uuid[]) AND p.device_id=$1`
+
+// linkSQL are resolveLinks' updates, in order. They write only the
+// children $3 that resolveLinks locked: a child stored after it selected
+// them is not locked with its parent, and its own parse links it.
+var linkSQL = []string{
+	`UPDATE conversations c SET parent_conversation_id=p.id FROM conversations p
+	 WHERE c.device_id=$1 AND c.parent_conversation_id IS NULL AND c.parent_native_session_id IS NOT NULL
+	   AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
+	   AND (c.id=ANY($2::uuid[]) OR p.id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])`,
+	`UPDATE conversations c SET spawned_by_native_id=r.tool_call_id FROM messages r
+	 WHERE c.device_id=$1 AND c.agent='claude' AND c.spawned_by_native_id IS NULL AND c.parent_conversation_id IS NOT NULL
+	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])
+	   AND r.conversation_id=c.parent_conversation_id AND NOT r.superseded AND r.kind='tool_result' AND r.tool_call_id IS NOT NULL
+	   AND (r.enrichment->>'agent_id'=c.extra->>'agent_id' OR r.enrichment->>'workflow_run_id'=c.extra->>'workflow_run_id')`,
+	`UPDATE conversations c SET spawned_by_message_id=m.id FROM messages m
+	 WHERE c.device_id=$1 AND c.spawned_by_message_id IS NULL AND c.spawned_by_native_id IS NOT NULL AND c.parent_conversation_id IS NOT NULL
+	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])
+	   AND m.conversation_id=c.parent_conversation_id AND NOT m.superseded AND m.kind='tool_call'
+	   AND (m.tool_call_id=c.spawned_by_native_id OR m.native_id=c.spawned_by_native_id)`,
 }
 
 // tombstoneSource drops the raw evidence of a source whose conversation was
