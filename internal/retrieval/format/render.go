@@ -243,8 +243,7 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 				e.printf("%s:%d\n", s.Address, s.Hits)
 				return
 			}
-			e.printf("%s  %s  %s  %s  %d %s  %s\n", s.Address, s.Agent, stamp(s.LastActivityAt), Clean(repoAt(s.Repo, s.Branches)), s.Hits,
-				plural(s.Hits, "hit", "hits"), quoteTitle(s.Title))
+			e.printf("%s\n", sessionLine(s))
 		})
 		if err != nil {
 			return err
@@ -388,11 +387,41 @@ func WriteSearch(w io.Writer, p *Page, st Style) error {
 	return e.err
 }
 
-func quoteTitle(t string) string {
+// titleField is the title: field, cut to 100 bytes; "" when there is
+// no title.
+func titleField(t string) string {
 	if t == "" {
-		return "-"
+		return ""
 	}
-	return strconv.Quote(oneLine(ClipAround(t, 0, 100)))
+	return quotedField("title", ClipAround(t, 0, 100))
+}
+
+// sessionLine is grep -l's line for a session with matches: its labeled
+// address, agent, last match time, repo, branch, hit count and title.
+func sessionLine(s *ConversationInfo) string {
+	parts := []string{field("session", s.Address), field("agent", s.Agent)}
+	if s.LastActivityAt != nil {
+		parts = append(parts, field("active", isoStamp(s.LastActivityAt)))
+	}
+	if s.Repo != "" {
+		parts = append(parts, field("repo", repoName(s.Repo)))
+	}
+	if b := branchLabel(s.Branches); b != "" {
+		parts = append(parts, field("branch", b))
+	}
+	parts = append(parts, field("hits", strconv.Itoa(s.Hits)))
+	if t := titleField(s.Title); t != "" {
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, "  ")
+}
+
+// isoStampLayout is how a header prints a time: UTC to the minute, one
+// token; since and until accept it back.
+const isoStampLayout = "2006-01-02T15:04Z"
+
+func isoStamp(t *time.Time) string {
+	return t.UTC().Format(isoStampLayout)
 }
 
 // WriteSessions renders a sessions page: one line per session with its
@@ -405,13 +434,13 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 	now := st.now()
 	lines, err := units(st, len(s.Sessions), func(e *errWriter, i int) {
 		c := &s.Sessions[i]
-		sub := ""
+		extra := []string{field("msgs", strconv.Itoa(c.Messages))}
 		if c.ParentSession != "" {
-			sub = "  sub of " + c.ParentSession
+			extra = append(extra, field("parent", c.ParentSession))
 		} else if c.Depth > 0 {
-			sub = "  subagent"
+			extra = append(extra, field("parent", "unknown"))
 		}
-		e.printf("%s%s\n", summary(c, now, fmt.Sprintf("%d msgs", c.Messages)), sub)
+		e.printf("%s\n", summary(c, now, extra...))
 		if c.Digest != nil && c.Digest.Last != "" {
 			e.printf("    last: %s\n", quoteClip(c.Digest.Last, 170))
 		}
@@ -446,32 +475,7 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 // the hints name the address to go on from.
 func WriteRead(w io.Writer, cx *Context, st Style) error {
 	e := &errWriter{w: w}
-	c := cx.Conversation
-	head := []string{c.Agent, c.SessionID}
-	if c.Repo != "" {
-		head = append(head, Clean(c.Repo))
-	} else if c.Cwd != "" {
-		head = append(head, Clean(c.Cwd))
-	}
-	if b := branchLabel(c.Branches); b != "" {
-		head = append(head, "on "+Clean(b))
-	}
-	if c.Device != "" {
-		head = append(head, "device "+Clean(c.Device))
-	}
-	if c.User != "" {
-		head = append(head, "user "+Clean(c.User))
-	}
-	if c.ParentSession != "" {
-		head = append(head, "sub of "+c.ParentSession)
-	}
-	if c.StartedAt != nil || c.LastActivityAt != nil {
-		head = append(head, stamp(c.StartedAt)+" to "+stamp(c.LastActivityAt))
-	}
-	if c.Messages > 0 {
-		head = append(head, fmt.Sprintf("%d msgs", c.Messages))
-	}
-	header := fmt.Sprintf("# %s  %s\n", strings.Join(head, "  "), quoteTitle(c.Title))
+	header := "# " + readHeader(&cx.Conversation) + "\n"
 	e.printf("%s", header)
 	if cx.Outline != nil || cx.OutlineMore {
 		return writeOutline(e, cx, st, len(header))
@@ -529,6 +533,43 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 		e.printf("   [later messages: %s]\n", st.more(cx.Messages[hi].Address, "after"))
 	}
 	return e.err
+}
+
+// readHeader is read's header line as labeled fields (see field): the
+// full session id, agent, repo (or cwd), branch, device, user, parent,
+// first and last activity (UTC), message count and, last, the title.
+func readHeader(c *ConversationInfo) string {
+	head := []string{field("session", c.SessionID), field("agent", c.Agent)}
+	if c.Repo != "" {
+		head = append(head, field("repo", c.Repo))
+	} else if c.Cwd != "" {
+		head = append(head, field("cwd", c.Cwd))
+	}
+	if b := branchLabel(c.Branches); b != "" {
+		head = append(head, field("branch", b))
+	}
+	if c.Device != "" {
+		head = append(head, field("device", c.Device))
+	}
+	if c.User != "" {
+		head = append(head, field("user", c.User))
+	}
+	if c.ParentSession != "" {
+		head = append(head, field("parent", c.ParentSession))
+	}
+	if c.StartedAt != nil {
+		head = append(head, field("start", isoStamp(c.StartedAt)))
+	}
+	if c.LastActivityAt != nil {
+		head = append(head, field("active", isoStamp(c.LastActivityAt)))
+	}
+	if c.Messages > 0 {
+		head = append(head, field("msgs", strconv.Itoa(c.Messages)))
+	}
+	if t := titleField(c.Title); t != "" {
+		head = append(head, t)
+	}
+	return strings.Join(head, "  ")
 }
 
 // readMessage renders one message of read's answer. room > 0 bounds the
@@ -634,17 +675,20 @@ func (g *grouper) open(e *errWriter, h *Hit) bool {
 	g.cur = h.SessionID
 	switch c := g.info[h.SessionID]; {
 	case g.seen[h.SessionID]:
-		e.printf("## %s\n", sessionOf(h.Address))
+		e.printf("## %s\n", field("session", sessionOf(h.Address)))
 	case c != nil:
 		e.printf("%s\n", header(c, g.now))
 	default:
-		parts := []string{sessionOf(h.Address)}
+		parts := []string{field("session", sessionOf(h.Address))}
 		if h.User != "" {
-			parts = append(parts, Clean(h.User))
+			parts = append(parts, field("who", h.User))
 		}
-		parts = append(parts, h.Agent)
+		parts = append(parts, field("agent", h.Agent))
 		if h.Repo != "" {
-			parts = append(parts, Clean(repoAt(h.Repo, h.Branches)))
+			parts = append(parts, field("repo", repoName(h.Repo)))
+		}
+		if b := branchLabel(h.Branches); b != "" {
+			parts = append(parts, field("branch", b))
 		}
 		e.printf("## %s\n", strings.Join(parts, "  "))
 	}

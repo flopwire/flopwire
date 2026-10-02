@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/flopwire/flopwire/internal/digest"
 )
@@ -34,31 +36,30 @@ func who(c *ConversationInfo) string {
 	return dev
 }
 
-// ago renders a duration coarsely: just now, 4m ago, 2h ago, 3d ago.
+// ago renders a duration coarsely: 0m, 4m, 2h, 3d.
 func ago(d time.Duration) string {
 	switch {
-	case d < time.Minute:
-		return "just now"
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+		return fmt.Sprintf("%dm", max(int(d/time.Minute), 0))
 	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+		return fmt.Sprintf("%dh", int(d/time.Hour))
 	}
-	return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
+	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
-// when is "live, 4m ago" for a live session, else "ended DATE".
+// when is a live session's "live: AGE" (since its last activity), else
+// "ended: DATE".
 func when(c *ConversationInfo, now time.Time) string {
 	if c.Live {
 		if c.LastActivityAt == nil {
-			return "live"
+			return field("live", "yes")
 		}
-		return "live, " + ago(now.Sub(*c.LastActivityAt))
+		return field("live", ago(now.Sub(*c.LastActivityAt)))
 	}
 	if c.LastActivityAt == nil {
 		return ""
 	}
-	return "ended " + c.LastActivityAt.UTC().Format(time.DateOnly)
+	return field("ended", c.LastActivityAt.UTC().Format(time.DateOnly))
 }
 
 // branchLabel is the branches a session ran on: one, a→b, or a→…→z.
@@ -85,43 +86,38 @@ func repoAt(repo string, branches []string) string {
 
 var prNum = regexp.MustCompile(`#(\d+)$`)
 
-// outcome is the short digest's counts: files edited, the first PR (and
-// how many more), commits, failed tool calls.
+// outcome is the short digest's counts as labeled fields: files edited,
+// the first PR (and how many more), commits, failed tool calls. A count
+// the digest capped ends in "+".
 func outcome(d *digest.Digest) []string {
 	if d == nil {
 		return nil
 	}
 	var out []string
-	if n := len(d.FilesEdited); n > 0 {
-		more := ""
-		if d.FilesMore {
-			more = "+"
+	more := func(b bool) string {
+		if b {
+			return "+"
 		}
-		out = append(out, fmt.Sprintf("%d%s %s", n, more, plural(n, "file", "files")))
+		return ""
+	}
+	if n := len(d.FilesEdited); n > 0 {
+		out = append(out, field("files", fmt.Sprintf("%d%s", n, more(d.FilesMore))))
 	}
 	if len(d.PRs) > 0 {
 		pr := d.PRs[0]
 		if m := prNum.FindStringSubmatch(pr); m != nil {
 			pr = "#" + m[1]
 		}
-		s := "PR " + clip(pr, 60)
+		out = append(out, field("pr", clip(pr, 60)))
 		if len(d.PRs) > 1 || d.Truncated("prs") {
-			s += fmt.Sprintf(" +%d", len(d.PRs)-1)
-			if d.Truncated("prs") {
-				s += "+"
-			}
+			out = append(out, field("prs", fmt.Sprintf("%d%s", len(d.PRs), more(d.Truncated("prs")))))
 		}
-		out = append(out, s)
 	}
 	if n := len(d.Commits); n > 0 {
-		more := ""
-		if d.Truncated("commits") {
-			more = "+"
-		}
-		out = append(out, fmt.Sprintf("%d%s %s", n, more, plural(n, "commit", "commits")))
+		out = append(out, field("commits", fmt.Sprintf("%d%s", n, more(d.Truncated("commits")))))
 	}
 	if d.Failed > 0 {
-		out = append(out, fmt.Sprintf("✗%d", d.Failed))
+		out = append(out, field("failed", strconv.Itoa(d.Failed)))
 	}
 	return out
 }
@@ -147,7 +143,7 @@ func quoteClip(s string, n int) string {
 // or its first sentence when shorter), the whole line about MaxHeader.
 const (
 	IntentShort = 80
-	MaxHeader   = 200
+	MaxHeader   = 260
 )
 
 // shortIntent is s's first sentence when that fits in n bytes, else s cut
@@ -170,52 +166,55 @@ func shortIntent(s string, n int) string {
 	return strings.TrimRight(cut, " ,;:-") + "…"
 }
 
-// summary is a session's one-line short digest: address, who, agent, when
-// (live or ended), repo@branch, intent, and what it did, as counts and
-// ids. A session without a digest yet gets the first five. The fields are
-// separated by two spaces; empty ones are left out. The line stays within
-// about MaxHeader bytes whatever the session holds: long names are cut,
-// then the intent shrinks, then who and repo go. The address is never
-// cut: read takes it back with the hit's ORDINAL:LINE.
+// summary is a session's one-line short digest as labeled fields (see
+// field): session (its address), who, agent, live or ended, repo, branch,
+// extra (the caller's fields), what it did as counts and ids, and last
+// the intent. A session without a digest yet gets the first six. Empty
+// fields are left out. The line stays within about MaxHeader bytes
+// whatever the session holds: long names are cut, then the intent
+// shrinks, then who, repo and branch go. The address is never cut: read
+// takes it back with the hit's ORDINAL:LINE.
 func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 	w := ""
 	if s := who(c); s != "" {
-		w = clip(Clean(s), 40)
+		w = field("who", clip(Clean(s), 40))
 	}
-	repo := ""
+	var where []string
 	if c.Repo != "" {
-		repo = clip(Clean(repoAt(c.Repo, c.Branches)), 50)
+		where = append(where, field("repo", clip(Clean(repoName(c.Repo)), 50)))
+	}
+	if b := branchLabel(c.Branches); b != "" {
+		where = append(where, field("branch", clip(Clean(b), 50)))
 	}
 	tail := outcome(c.Digest)
-	build := func(w, repo string, intent bool) string {
-		parts := []string{c.Address}
+	build := func(w string, where []string, intent bool) string {
+		parts := []string{field("session", c.Address)}
 		if w != "" {
 			parts = append(parts, w)
 		}
-		parts = append(parts, clip(c.Agent, 12))
+		parts = append(parts, field("agent", clip(c.Agent, 12)))
 		if s := when(c, now); s != "" {
 			parts = append(parts, s)
 		}
-		if repo != "" {
-			parts = append(parts, repo)
-		}
+		parts = append(parts, where...)
 		parts = append(parts, extra...)
+		parts = append(parts, tail...)
 		if intent {
 			if i := intentOf(c); i != "" {
-				line := strings.Join(append(append([]string{}, parts...), tail...), "  ")
-				if room := min(IntentShort, MaxHeader-len(line)-4); room >= 16 {
-					parts = append(parts, strconv.Quote(Clean(shortIntent(i, room))))
+				line := strings.Join(parts, "  ")
+				if room := min(IntentShort, MaxHeader-len(line)-len("  intent: \"\"")); room >= 16 {
+					parts = append(parts, quotedField("intent", shortIntent(i, room)))
 				}
 			}
 		}
-		return strings.Join(append(parts, tail...), "  ")
+		return strings.Join(parts, "  ")
 	}
-	line := build(w, repo, true)
+	line := build(w, where, true)
 	if len(line) > MaxHeader {
-		line = build("", repo, false)
+		line = build("", where, false)
 	}
 	if len(line) > MaxHeader {
-		line = build("", "", false)
+		line = build("", nil, false)
 	}
 	return line
 }
@@ -223,6 +222,69 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 // header is the grouped layout's line opening a session's hits.
 func header(c *ConversationInfo, now time.Time) string {
 	return "## " + summary(c, now)
+}
+
+// field is one labeled field of a header line, "key: value". The value
+// prints bare when it is a plain token, else quoted as a JSON string, so
+// a header splits into fields unambiguously however its values read:
+// fields are separated by two spaces, and a quoted value may hold spaces,
+// quotes or text that looks like another field. Text fields (intent,
+// title) always quote (quotedField).
+func field(key, v string) string {
+	v = Clean(v)
+	if !bareValue(v) {
+		return quotedField(key, v)
+	}
+	return key + ": " + v
+}
+
+// quotedField is key: "value", the value on one line (newlines as ⏎),
+// control characters shown, quoted as a JSON string.
+func quotedField(key, v string) string {
+	return key + ": " + jsonQuote(oneLine(v))
+}
+
+// bareValue reports whether v can print unquoted: not empty, no space
+// (of any kind), quote, backslash or control character, not starting
+// with a quote and not ending in a colon (which would read as a key).
+func bareValue(v string) bool {
+	if v == "" || strings.HasSuffix(v, ":") {
+		return false
+	}
+	for _, r := range v {
+		if r == '"' || r == '\\' || r == '\'' || unicode.IsSpace(r) || !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// jsonQuote quotes s as a JSON string, leaving printable Unicode as is.
+func jsonQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x2028 || r == 0x2029 || !unicode.IsPrint(r) && r != ' ':
+			if r > 0xffff {
+				hi, lo := utf16.EncodeRune(r)
+				fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+			} else {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // writeDigest prints a session's full digest, one "# " line per field
