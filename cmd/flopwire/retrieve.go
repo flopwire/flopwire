@@ -22,8 +22,10 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/grep"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -85,7 +87,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 			indexPath = local.IndexPath()
 		}
 		team := func(ctx context.Context, repo string) (string, []string, error) {
-			return local.ExpandRepo(repo, localRepoDirs(ctx, indexPath), true)
+			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
 		}
 		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team}, nil
 	}
@@ -115,6 +117,24 @@ func localRepoDirs(ctx context.Context, indexPath string) []localindex.RepoDir {
 	defer s.Close()
 	dirs, _ := s.RepoDirs(ctx)
 	return dirs
+}
+
+// deviceUploads judges a directory by this device's path rules, as its
+// agent does (agent.DevicePolicy): true when a session placed there may
+// reach the server. A --repo request to the server names only such
+// checkouts. Without a config directory nothing is judged allowed.
+func deviceUploads() func(pathpolicy.Placement) bool {
+	dir, err := configDir()
+	if err != nil {
+		return func(pathpolicy.Placement) bool { return false }
+	}
+	cfg := agent.Config{}
+	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
+	if cc, err := client.Load(); err == nil {
+		cfg.UserRuleList, cfg.Unplaceable = cc.Denylist, cc.Unplaceable
+	}
+	pol := agent.DevicePolicy(cfg)
+	return func(pl pathpolicy.Placement) bool { return agent.Uploads(pol, pl) }
 }
 
 // noIndexError: the local index does not exist yet, because the device

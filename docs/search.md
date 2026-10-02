@@ -330,8 +330,13 @@ it. A second clone of the same remote is then the same repo.
 The device resolves `--repo` from its git files and from where it placed
 its sessions. It never runs git. With `--server`, it sends the
 repository's checkout roots with the query, because the server cannot
-read this device's git files. The server stores only the directory each
-transcript recorded. For this reason:
+read this device's git files. It leaves out every checkout that a
+`local` or `deny` path rule covers (see
+[agent.md](agent.md#keep-sessions-out-with-path-rules)), because the
+server keeps each query in its audit log. A rule on the main checkout or
+the remote covers every checkout, so then only the path that you gave is
+sent. The server stores only the directory each transcript recorded. For
+this reason:
 
 - With `--server`, a path matches the sessions in this device's checkouts
   of the repository. It also matches a session on another device that ran

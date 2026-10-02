@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -190,6 +191,36 @@ func (a *Agent) buildPolicy() pathpolicy.Policy {
 		}
 	}
 	return pol
+}
+
+// DevicePolicy is the path rules an agent configured with cfg puts in
+// force before it asks the server: the user's rules (UserRules,
+// UserRuleList), the admin rules it cached last (AdminRulesCache) and the
+// unplaceable settings. A command other than the agent uses it to judge a
+// directory as the agent would before it names that directory to the
+// server. Unparseable rules are skipped, as the agent skips them.
+func DevicePolicy(cfg Config) pathpolicy.Policy {
+	if cfg.Home == "" {
+		cfg.Home = defaultHome()
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.DiscardHandler)
+	}
+	a := &Agent{cfg: cfg, log: cfg.Logger}
+	a.adminRaw = a.readAdminCache()
+	return a.buildPolicy()
+}
+
+// Uploads reports whether pol lets a session placed at pl reach the
+// server: pl as recorded and with its symlinks resolved, as decideOne
+// matches it.
+func Uploads(pol pathpolicy.Policy, pl pathpolicy.Placement) bool {
+	if pol.Mode(pl) != pathpolicy.Allow {
+		return false
+	}
+	rp := pl
+	rp.Cwd, rp.Worktree, rp.Main = physicalPath(pl.Cwd), physicalPath(pl.Worktree), physicalPath(pl.Main)
+	return rp == pl || pol.Mode(rp) == pathpolicy.Allow
 }
 
 // withPhysical adds, for each absolute path rule whose literal prefix (up

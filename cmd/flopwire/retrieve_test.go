@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,10 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // The CLI tools and MCP tools call the server's retrieval endpoints with
@@ -430,4 +434,79 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 	if len(queries) != 1 || queries[0].Get("repo") != main || !slices.Contains(queries[0]["repo_root"], wt) || !slices.Contains(queries[0]["repo_root"], main) {
 		t.Fatalf("sessions --server --repo . sent %v", queries)
 	}
+}
+
+// --server --repo names only checkouts the path rules let reach the
+// server: a worktree, or a deleted one the placements remember, under a
+// local or deny rule is not named in the request (the server audits every
+// query), while the main checkout and an allowed worktree are. A rule on
+// the main checkout covers every worktree, so then only the argument
+// itself is sent.
+func TestServerRepoLeavesOutWithheldCheckouts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		_ = json.NewEncoder(w).Encode(format.Sessions{})
+	}))
+	defer srv.Close()
+	cfgDir := t.TempDir()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(cfgDir, "config.json"))
+	index := filepath.Join(t.TempDir(), "index.db")
+	t.Setenv("FLOPWIRE_INDEX", index)
+	if err := client.Save(client.Config{Server: srv.URL, Token: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, ok, secret, gone := filepath.Join(base, "app"), filepath.Join(base, "app-ok"), filepath.Join(base, "app-wt-secret"), filepath.Join(base, "app-gone-secret")
+	os.MkdirAll(main, 0o755)
+	for _, args := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "init"}, {"worktree", "add", "-q", ok}, {"worktree", "add", "-q", secret}} {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = main
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	s, err := localindex.Open(index, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, dir := range []string{secret, gone} {
+		if err := s.SavePlacement(t.Context(), localindex.Placement{Agent: transcript.AgentClaude, SessionID: fmt.Sprintf("s%d", i), How: localindex.PlacedByWorktree,
+			Placement: pathpolicy.Placement{Cwd: dir, Worktree: dir, Main: main}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	rules := filepath.Join(cfgDir, "path-rules")
+	sent := func(t *testing.T, from string) url.Values {
+		t.Helper()
+		queries = nil
+		t.Chdir(from)
+		captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
+		if len(queries) != 1 {
+			t.Fatalf("queries %v", queries)
+		}
+		return queries[0]
+	}
+	t.Run("withheld worktrees", func(t *testing.T) {
+		os.WriteFile(rules, []byte("local "+secret+"\ndeny "+gone+"\n"), 0o600)
+		q := sent(t, main)
+		roots := q["repo_root"]
+		if slices.Contains(roots, secret) || slices.Contains(roots, gone) || !slices.Contains(roots, ok) || !slices.Contains(roots, main) {
+			t.Fatalf("roots sent from the main checkout: %v", roots)
+		}
+	})
+	t.Run("withheld main checkout", func(t *testing.T) {
+		os.WriteFile(rules, []byte("local "+main+"\n"), 0o600)
+		q := sent(t, ok)
+		if q.Get("repo") != ok || len(q["repo_root"]) != 0 {
+			t.Fatalf("sent from a worktree of a withheld main checkout: %v", q)
+		}
+	})
 }

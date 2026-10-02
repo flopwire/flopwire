@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
 
@@ -33,11 +34,26 @@ import (
 //     server, which matches it across the team.
 //   - A glob passes through.
 func ExpandRepo(arg string, dirs []localindex.RepoDir, team bool) (repo string, roots []string, err error) {
+	return expandRepo(arg, dirs, team, nil)
+}
+
+// ServerRepo is ExpandRepo for a request to the server, without the
+// checkouts the path rules keep off it: uploads reports whether a
+// session placed at a directory may reach the server
+// (agent.Uploads). The server audits every query, so a checkout under a
+// local or deny rule is never named in one. A root is kept only when
+// every main checkout and remote of the repository allows it; a rule on
+// the main checkout therefore leaves only the argument itself (repo).
+func ServerRepo(arg string, dirs []localindex.RepoDir, uploads func(pathpolicy.Placement) bool) (repo string, roots []string, err error) {
+	return expandRepo(arg, dirs, true, uploads)
+}
+
+func expandRepo(arg string, dirs []localindex.RepoDir, team bool, uploads func(pathpolicy.Placement) bool) (repo string, roots []string, err error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" || strings.ContainsAny(arg, "*?[") {
 		return arg, nil, nil
 	}
-	x := &expander{canon: map[string]string{}, dirs: dirs}
+	x := &expander{canon: map[string]string{}, dirs: dirs, uploads: uploads}
 	if isPathArg(arg) {
 		abs, err := filepath.Abs(arg)
 		if err != nil {
@@ -76,6 +92,9 @@ func isPathArg(s string) bool {
 type expander struct {
 	canon map[string]string
 	dirs  []localindex.RepoDir
+	// uploads, for a request to the server, keeps only the roots the
+	// path rules let reach it (ServerRepo); nil keeps every root.
+	uploads func(pathpolicy.Placement) bool
 }
 
 // real is p with symlinks resolved, or p cleaned when it does not exist.
@@ -233,7 +252,30 @@ func (x *expander) rootsOf(id *ident, seeds []string, arg string) []string {
 			add(lp + r[len(rp):])
 		}
 	}
+	if x.uploads != nil {
+		roots = slices.DeleteFunc(roots, func(r string) bool { return !x.allowed(id, r) })
+	}
 	return roots
+}
+
+// allowed reports whether a session at root, on repository id, may reach
+// the server under each of the repository's main checkouts and remotes.
+func (x *expander) allowed(id *ident, root string) bool {
+	mains, remotes := slices.Collect(mapKeys(id.mains)), slices.Collect(mapKeys(id.remotes))
+	if len(mains) == 0 {
+		mains = []string{""}
+	}
+	if len(remotes) == 0 {
+		remotes = []string{""}
+	}
+	for _, m := range mains {
+		for _, r := range remotes {
+			if !x.uploads(pathpolicy.Placement{Cwd: root, Worktree: root, Main: m, Remote: r}) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // wireRoots fits roots to a request (format.MaxRepoRoots): a root under

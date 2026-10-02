@@ -34,6 +34,7 @@ import (
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/bus"
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 )
@@ -304,12 +305,24 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		a.Limit = peersDefaultLimit
 	}
 	q := busproto.PeersQuery{Repo: a.Repo, User: strings.TrimPrefix(a.User, "@"), Agent: a.Agent}
+	var fullRepo string
+	var fullRoots []string
 	if q.Repo != "" {
 		// Expanded here: only this device can read its git files and its
-		// local index's placements. A name keeps matching by name.
+		// local index's placements. A name keeps matching by name. With a
+		// server the request names only the checkouts the path rules let
+		// reach it (local.ServerRepo); the filter run here uses them all.
 		var err error
-		if q.Repo, q.Roots, err = local.ExpandRepo(local.ResolveRepo(q.Repo), localRepoDirs(ctx, local.IndexPath()), true); err != nil {
+		dirs := localRepoDirs(ctx, local.IndexPath())
+		arg := local.ResolveRepo(q.Repo)
+		if fullRepo, fullRoots, err = local.ExpandRepo(arg, dirs, true); err != nil {
 			return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
+		}
+		q.Repo, q.Roots = fullRepo, fullRoots
+		if cc, err := client.Load(); err == nil && cc.Server != "" && cc.Token != "" {
+			if q.Repo, q.Roots, err = local.ServerRepo(arg, dirs, deviceUploads()); err != nil {
+				return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
+			}
 		}
 	}
 	self, known := c.caller(ctx)
@@ -322,7 +335,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		// off the server: ask without naming it and leave it out here. The
 		// repo filter runs here too: --repo . names the session's own repo,
 		// which may be the withheld one.
-		q.Session, localRepo, localRoots, q.Repo, q.Roots = "", q.Repo, q.Roots, "", nil
+		q.Session, localRepo, localRoots, q.Repo, q.Roots = "", fullRepo, fullRoots, "", nil
 		resp, err = c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	}
 	if err != nil {
