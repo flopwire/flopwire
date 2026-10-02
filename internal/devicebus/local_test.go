@@ -426,6 +426,17 @@ func TestTakeBoundedConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	// A take while another caller's lease is out gets nothing, so the
+	// concurrent takes may leave some queued: one caller takes the rest.
+	for range 12 {
+		got, err := deliver(lb.Bus, "bbbb3333", "", Limit{Count: 2})
+		if err != nil || len(got) == 0 {
+			break
+		}
+		for _, e := range got {
+			seen[e.Body]++
+		}
+	}
 	if len(seen) != 12 {
 		t.Fatalf("delivered %d of 12: %v", len(seen), seen)
 	}
