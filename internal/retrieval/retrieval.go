@@ -165,6 +165,31 @@ func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	return h, err
 }
 
+// repoWhere adds f's repo condition: Repo as format.RepoMatch reads it,
+// or a directory that is one of RepoRoots or lies under one.
+func repoWhere(q *query, f format.Filters) {
+	var ors []string
+	if prefix, like := format.RepoMatch(f.Repo); prefix != "" {
+		a := q.arg(prefix)
+		ors = append(ors, fmt.Sprintf("c.repo_root=%s OR c.cwd=%s OR c.cwd LIKE %s OR c.repo_root LIKE %s", a, a, q.arg(likeEscape(prefix)+"/%"), q.arg(likeEscape(prefix)+"/%")))
+	} else if like != "" {
+		ors = append(ors, "COALESCE(c.repo_root,c.cwd) ILIKE "+q.arg(like))
+	}
+	if len(f.RepoRoots) > 0 {
+		roots := make([]string, 0, len(f.RepoRoots))
+		likes := make([]string, 0, len(f.RepoRoots))
+		for _, r := range f.RepoRoots {
+			r = strings.TrimSuffix(r, "/")
+			roots, likes = append(roots, r), append(likes, likeEscape(r)+"/%")
+		}
+		a, l := q.arg(roots), q.arg(likes)
+		ors = append(ors, fmt.Sprintf("c.repo_root=ANY(%[1]s) OR c.cwd=ANY(%[1]s) OR c.cwd LIKE ANY(%[2]s) OR c.repo_root LIKE ANY(%[2]s)", a, l))
+	}
+	if len(ors) > 0 {
+		q.where("(" + strings.Join(ors, " OR ") + ")")
+	}
+}
+
 // filters adds the WHERE conditions of f.
 func filters(q *query, f format.Filters) error {
 	if !f.IncludeSuperseded {
@@ -179,12 +204,7 @@ func filters(q *query, f format.Filters) error {
 	if f.Agent != "" {
 		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
 	}
-	if prefix, like := format.RepoMatch(f.Repo); prefix != "" {
-		a := q.arg(prefix)
-		q.where(fmt.Sprintf("(c.repo_root=%s OR c.cwd=%s OR c.cwd LIKE %s OR c.repo_root LIKE %s)", a, a, q.arg(likeEscape(prefix)+"/%"), q.arg(likeEscape(prefix)+"/%")))
-	} else if like != "" {
-		q.where("COALESCE(c.repo_root,c.cwd) ILIKE " + q.arg(like))
-	}
+	repoWhere(q, f)
 	if f.Device != "" {
 		a := q.arg(f.Device)
 		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))

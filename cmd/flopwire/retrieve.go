@@ -53,6 +53,10 @@ type retriever struct {
 	// busSocket is the device agent's control socket for the message bus
 	// tools; "" is the default beside the client config.
 	busSocket string
+	// teamRepo, set for the server, expands a --repo argument on this
+	// device (local.ExpandRepo with the local index's placements), since
+	// the server cannot read this device's git files.
+	teamRepo func(ctx context.Context, repo string) (string, []string, error)
 }
 
 // whoCalls is the calling session: the one an MCP request's _meta names
@@ -77,7 +81,13 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		if err != nil {
 			return nil, fmt.Errorf("--server: %w (run flopwire login and enroll first)", err)
 		}
-		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }}, nil
+		if indexPath == "" {
+			indexPath = local.IndexPath()
+		}
+		team := func(ctx context.Context, repo string) (string, []string, error) {
+			return local.ExpandRepo(repo, localRepoDirs(ctx, indexPath), true)
+		}
+		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team}, nil
 	}
 	if indexPath == "" {
 		indexPath = local.IndexPath()
@@ -90,6 +100,21 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		return nil, err
 	}
 	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close}, nil
+}
+
+// localRepoDirs is what the local index at indexPath knows of where
+// sessions ran (localindex.Store.RepoDirs), nil when there is no index.
+func localRepoDirs(ctx context.Context, indexPath string) []localindex.RepoDir {
+	if _, err := os.Stat(indexPath); err != nil {
+		return nil
+	}
+	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
+	if err != nil {
+		return nil
+	}
+	defer s.Close()
+	dirs, _ := s.RepoDirs(ctx)
+	return dirs
 }
 
 // noIndexError: the local index does not exist yet, because the device
@@ -533,6 +558,11 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 	f, err := o.filters()
 	if err != nil {
 		return badArg(err)
+	}
+	if r.teamRepo != nil && f.Repo != "" {
+		if f.Repo, f.RepoRoots, err = r.teamRepo(ctx, f.Repo); err != nil {
+			return err // a format.ErrBadRequest
+		}
 	}
 	if f.Session == "self" {
 		if f.Session, err = r.self(ctx, p); err != nil {

@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -390,5 +392,42 @@ func TestReadCountsMessages(t *testing.T) {
 	}
 	if strings.Contains(mcpInstructions, "before/after") || !strings.Contains(mcpInstructions, "messages_before/messages_after") {
 		t.Error("instructions name read's old arguments")
+	}
+}
+
+// --server --repo . expands on this device: the server cannot read its
+// git files, so the request names every checkout of the repository (#81).
+func TestServerRepoExpandsCheckouts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		_ = json.NewEncoder(w).Encode(format.Sessions{})
+	}))
+	defer srv.Close()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "missing.db"))
+	if err := client.Save(client.Config{Server: srv.URL, Token: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, wt := filepath.Join(base, "app"), filepath.Join(base, "app-api")
+	os.MkdirAll(main, 0o755)
+	for _, args := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "init"}, {"worktree", "add", "-q", wt}} {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = main
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	t.Chdir(main)
+	captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
+	if len(queries) != 1 || queries[0].Get("repo") != main || !slices.Contains(queries[0]["repo_root"], wt) || !slices.Contains(queries[0]["repo_root"], main) {
+		t.Fatalf("sessions --server --repo . sent %v", queries)
 	}
 }

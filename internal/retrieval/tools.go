@@ -431,12 +431,7 @@ func sessionsPage(glob string, f format.Filters, oldest bool, after *format.Sess
 	if f.Agent != "" {
 		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
 	}
-	if prefix, like := format.RepoMatch(f.Repo); prefix != "" {
-		a := q.arg(prefix)
-		q.where(fmt.Sprintf("(c.repo_root=%s OR c.cwd=%s OR c.cwd LIKE %s OR c.repo_root LIKE %s)", a, a, q.arg(likeEscape(prefix)+"/%"), q.arg(likeEscape(prefix)+"/%")))
-	} else if like != "" {
-		q.where("COALESCE(c.repo_root,c.cwd) ILIKE " + q.arg(like))
-	}
+	repoWhere(q, f)
 	if f.Device != "" {
 		a := q.arg(f.Device)
 		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))

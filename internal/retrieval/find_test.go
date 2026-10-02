@@ -312,6 +312,18 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	if p = grepQ(format.GrepQuery{Pattern: "retry", Fixed: true}, format.Filters{Repo: "web"}); len(p.Hits) != 1 || p.Hits[0].Repo != "/src/web" {
 		t.Fatalf("repo name: %+v", p.Hits)
 	}
+	// RepoRoots: the checkouts of one repository, as the caller's device
+	// expanded --repo (a worktree's root here, or a directory under it).
+	roots := format.Filters{Repo: "/src/web-fix", RepoRoots: []string{"/src/web-fix", "/src/web"}}
+	if p = grepQ(format.GrepQuery{Pattern: "retry", Fixed: true}, roots); len(p.Hits) != 1 || p.Hits[0].Repo != "/src/web" {
+		t.Fatalf("repo roots: %+v", p.Hits)
+	}
+	if ss, err := f.s.Sessions(ctx, "", "", roots); err != nil || len(ss.Sessions) != 1 || ss.Sessions[0].SessionID != "sess-2" {
+		t.Fatalf("sessions by repo roots: %+v %v", ss, err)
+	}
+	if ss, err := f.s.Sessions(ctx, "", "", format.Filters{Repo: "/src/web-fix", RepoRoots: []string{"/src/we"}}); err != nil || len(ss.Sessions) != 0 {
+		t.Fatalf("a root matches whole path elements only: %+v %v", ss, err)
+	}
 	if p = grepQ(format.GrepQuery{Pattern: "retry", Fixed: true}, format.Filters{ExcludeKinds: []string{"tool_result"}}); len(p.Hits) != 2 {
 		t.Fatalf("exclude kind: %+v", p.Hits)
 	}
