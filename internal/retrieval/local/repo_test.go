@@ -258,3 +258,19 @@ func TestWireRoots(t *testing.T) {
 		t.Fatal("a list that fits is kept as it is")
 	}
 }
+
+// For the server a bare name that fits two local repositories is not an
+// error: the server matches the name across the team, as it did before
+// --repo knew repositories, and the request carries both repositories'
+// checkouts.
+func TestServerRepoAmbiguousNameKeepsTheName(t *testing.T) {
+	w := newRepoWorld(t)
+	dirs, err := w.b.Store.RepoDirs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, roots, err := ExpandRepo("app", dirs, true)
+	if err != nil || repo != "app" || !slices.Contains(roots, filepath.Join(w.base, "app-api")) || !slices.Contains(roots, filepath.Join(w.base, "other", "app")) {
+		t.Fatalf("--server --repo app: %q %v %v", repo, roots, err)
+	}
+}

@@ -28,7 +28,9 @@ import (
 //     at or above it when they agree on one.
 //   - A short form (a name such as "app", or owner/name, or
 //     host/owner/name) names the one repository the placements know by
-//     that name or remote. Two or more is an error that lists them.
+//     that name or remote. Two or more is an error that lists them,
+//     except for the server (team), which gets the name and every one's
+//     checkouts.
 //     None leaves the name to match the last element of a session's
 //     directory, as before. team keeps the name in repo as well, for the
 //     server, which matches it across the team.
@@ -75,6 +77,21 @@ func expandRepo(arg string, dirs []localindex.RepoDir, team bool, uploads func(p
 			return arg, wireRoots(roots), nil
 		}
 		return "", roots, nil
+	}
+	if team {
+		// The server matches the name across the team, every repository
+		// by it included, as before; the request adds each one's
+		// checkouts here.
+		seen := map[string]bool{}
+		for _, g := range groups {
+			for _, r := range x.rootsOf(g, nil, "") {
+				if !seen[r] {
+					seen[r] = true
+					roots = append(roots, r)
+				}
+			}
+		}
+		return arg, wireRoots(roots), nil
 	}
 	labels := make([]string, 0, len(groups))
 	for _, g := range groups {

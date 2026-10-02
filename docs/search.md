@@ -323,7 +323,7 @@ it. A second clone of the same remote is then the same repo.
 | A path outside git | Sessions in that directory or under it |
 | A path that no longer exists | The repository the device placed sessions there in, when they agree on one; else sessions in that directory or under it |
 | The bare repository's path | Every worktree of it |
-| A name (`app`) | The one repository with that name: the last element of its remote, else of its main checkout (`.app.git` and `app.git` are `app`). Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. When no repository has the name, a session whose directory's last element is the name |
+| A name (`app`) | The one repository with that name: the last element of its remote, else of its main checkout (`.app.git` and `app.git` are `app`). Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. With `--server` they are not an error: the name matches both, as below. When no repository has the name, a session whose directory's last element is the name |
 | `owner/name`, `host/owner/name` | The repository whose remote ends with it |
 | A glob (`team*`) | A session whose directory, or its last element, matches |
 
@@ -344,7 +344,7 @@ this reason:
   another path, even of the same remote.
 - With `--server`, a name matches every session whose directory has that
   last element, on every device of the team, as well as this device's
-  checkouts of the repository by that name. Two different repositories
+  checkouts of each repository by that name. Two different repositories
   with the same name on two devices are not told apart there.
 
 `flopwire peers --repo` matches the same way, against the repo root that
