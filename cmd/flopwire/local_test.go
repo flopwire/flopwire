@@ -92,6 +92,13 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"sessions_branch", nil, []string{"sessions", "--branch", "fix/*", "--sort", "oldest"}},
 		{"read_outline", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline"}},
 		{"read_outline_paged", nil, []string{"read", "019a0000-0000-7000-8000-0000000000a1", "--outline", "--limit", "3", "--cursor", "3239936.56"}},
+		// --json is byte-for-byte what it was before sessions turned JSON
+		// by default and the headers were labeled (issue #64).
+		{"grep_files_json", nil, []string{"grep", "-l", "retr", "--json"}},
+		{"search_json", nil, []string{"search", "exponential backoff", "--limit", "3", "--json"}},
+		{"read_json", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "-B", "1", "-A", "1", "--json"}},
+		{"read_outline_json", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline", "--json"}},
+		{"sessions_json", nil, []string{"sessions", "--branch", "fix/*", "--json"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

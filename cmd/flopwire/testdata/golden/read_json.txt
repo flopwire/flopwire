@@ -1,0 +1,129 @@
+{
+  "conversation": {
+    "address": "0b7e2c1a-0000-4000-8000-000000000001",
+    "id": "1",
+    "agent": "claude",
+    "session_id": "0b7e2c1a-0000-4000-8000-000000000001",
+    "title": "why does the login test flake?",
+    "cwd": "/tmp/oracle-alpha",
+    "repo": "/tmp/oracle-alpha",
+    "device": "local",
+    "started_at": "2026-09-23T10:00:00Z",
+    "last_activity_at": "2026-09-23T10:00:25Z",
+    "messages": 9,
+    "branches": [
+      "main"
+    ],
+    "digest": {
+      "intent": "why does the login test flake?",
+      "repos": [
+        "/tmp/oracle-alpha"
+      ],
+      "branches": [
+        "main"
+      ],
+      "duration_s": 25,
+      "messages": {
+        "assistant": 2,
+        "system": 1,
+        "thinking": 1,
+        "tool_call": 2,
+        "tool_result": 2,
+        "user": 1
+      },
+      "subagents": 1,
+      "commands": 1,
+      "tools": {
+        "Bash": 1,
+        "Task": 1
+      },
+      "failed": 1,
+      "last": "Use fake timers: vi.useFakeTimers() before the login call.",
+      "tokens": {
+        "input": 60,
+        "output": 56
+      }
+    }
+  },
+  "focus": "6",
+  "messages": [
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000001/10178560",
+      "id": "5",
+      "native_id": "c1000000-0000-4000-8000-000000000005#0",
+      "ordinal": 10178560,
+      "kind": "tool_result",
+      "role": "user",
+      "tool_name": "Task",
+      "tool_call_id": "toolu_oracle_1",
+      "ts": "2026-09-23T10:00:10Z",
+      "text": "The test uses real timers; setTimeout(500) races the assertion.",
+      "text_len": 63,
+      "lines": 1,
+      "line_from": 1,
+      "line_to": 1,
+      "version": 1,
+      "provenance": {
+        "source_id": "1",
+        "path": "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+        "generation": 1,
+        "line_no": 6,
+        "byte_offset": 2485,
+        "byte_len": 684
+      }
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000001/13578240",
+      "id": "6",
+      "native_id": "c1000000-0000-4000-8000-000000000006#0",
+      "ordinal": 13578240,
+      "kind": "tool_call",
+      "role": "assistant",
+      "tool_name": "Bash",
+      "tool_call_id": "toolu_oracle_2",
+      "ts": "2026-09-23T10:00:12Z",
+      "text": "{\"command\":\"bun test tests/login.test.ts\",\"description\":\"Run the login test\"}",
+      "text_len": 77,
+      "lines": 1,
+      "line_from": 1,
+      "line_to": 1,
+      "version": 1,
+      "provenance": {
+        "source_id": "1",
+        "path": "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+        "generation": 1,
+        "line_no": 8,
+        "byte_offset": 3315,
+        "byte_len": 665
+      }
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000001/16302080",
+      "id": "7",
+      "native_id": "c1000000-0000-4000-8000-000000000007#0",
+      "ordinal": 16302080,
+      "kind": "tool_result",
+      "role": "user",
+      "tool_name": "Bash",
+      "tool_call_id": "toolu_oracle_2",
+      "is_error": true,
+      "ts": "2026-09-23T10:00:15Z",
+      "text": "tests/login.test.ts:14: expected 200, received 401\nexit code 1",
+      "text_len": 62,
+      "lines": 2,
+      "line_from": 1,
+      "line_to": 2,
+      "version": 1,
+      "provenance": {
+        "source_id": "1",
+        "path": "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+        "generation": 1,
+        "line_no": 9,
+        "byte_offset": 3980,
+        "byte_len": 605
+      }
+    }
+  ],
+  "more_before": true,
+  "more_after": true
+}
