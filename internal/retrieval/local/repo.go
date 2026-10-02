@@ -44,6 +44,9 @@ func ExpandRepo(arg string, dirs []localindex.RepoDir, team bool) (repo string, 
 			return arg, nil, nil
 		}
 		repo, roots = x.path(abs)
+		if team {
+			roots = wireRoots(roots)
+		}
 		return repo, roots, nil
 	}
 	groups := x.named(arg)
@@ -53,7 +56,7 @@ func ExpandRepo(arg string, dirs []localindex.RepoDir, team bool) (repo string, 
 	case 1:
 		roots = x.rootsOf(groups[0], nil, "")
 		if team {
-			return arg, roots, nil
+			return arg, wireRoots(roots), nil
 		}
 		return "", roots, nil
 	}
@@ -230,10 +233,33 @@ func (x *expander) rootsOf(id *ident, seeds []string, arg string) []string {
 			add(lp + r[len(rp):])
 		}
 	}
-	if len(roots) > format.MaxRepoRoots {
-		roots = roots[:format.MaxRepoRoots] // the argument's own checkouts come first
-	}
 	return roots
+}
+
+// wireRoots fits roots to a request (format.MaxRepoRoots): a root under
+// another one adds nothing and goes first; then the last ones go, so the
+// argument's own checkouts and the live worktrees stay.
+func wireRoots(roots []string) []string {
+	if len(roots) <= format.MaxRepoRoots {
+		return roots
+	}
+	var out []string
+	for _, r := range roots {
+		under := false
+		for _, o := range roots {
+			if o != r && strings.HasPrefix(r, strings.TrimSuffix(o, "/")+"/") {
+				under = true
+				break
+			}
+		}
+		if !under {
+			out = append(out, r)
+		}
+	}
+	if len(out) > format.MaxRepoRoots {
+		out = out[:format.MaxRepoRoots]
+	}
+	return out
 }
 
 // symlinkPrefixes returns the leading parts in which logical and real

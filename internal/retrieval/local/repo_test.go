@@ -241,3 +241,20 @@ func TestSymlinkPrefixes(t *testing.T) {
 		}
 	}
 }
+
+// Roots sent to the server fit format.MaxRepoRoots: nested roots go
+// first, then the last ones; the first (the argument's checkouts) stay.
+func TestWireRoots(t *testing.T) {
+	var roots []string
+	for i := range format.MaxRepoRoots + 10 {
+		roots = append(roots, fmt.Sprintf("/w/r%03d", i))
+	}
+	roots = append([]string{"/w/r000/sub"}, roots...)
+	got := wireRoots(roots)
+	if len(got) != format.MaxRepoRoots || got[0] != "/w/r000" || slices.Contains(got, "/w/r000/sub") {
+		t.Fatalf("wireRoots: %d, first %v", len(got), got[:2])
+	}
+	if short := []string{"/a", "/a/b"}; !slices.Equal(wireRoots(short), short) {
+		t.Fatal("a list that fits is kept as it is")
+	}
+}
