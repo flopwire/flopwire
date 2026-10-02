@@ -15,6 +15,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/flopwire/flopwire/internal/fsprobe"
 )
 
 const (
@@ -46,7 +48,7 @@ func IdentityOf(fi os.FileInfo) Identity {
 
 // StatIdentity stats path and returns its gate tuple.
 func StatIdentity(path string) (Identity, error) {
-	fi, err := os.Stat(path)
+	fi, err := fsprobe.Stat(path)
 	if err != nil {
 		return Identity{}, err
 	}

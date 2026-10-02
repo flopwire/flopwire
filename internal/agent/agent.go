@@ -41,6 +41,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -383,12 +384,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-settle:
 			a.shrinkIfIdle(ctx)
 		case <-sweep.C:
-			if err := a.sweep(ctx); err != nil {
-				a.log.Error("agent: sweep", "err", err)
-			}
-			a.watchNew(ctx, w, "")
-			a.maybeRecover(ctx, recovered, false)
-			a.shrinkIfIdle(ctx)
+			a.periodicSweep(ctx, w, recovered)
 		case <-recovered:
 			// Placements settled or changed: index and offer what waited.
 			if err := a.sweep(ctx); err != nil {
@@ -410,6 +406,20 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.dirEvent(ctx, ev, w)
 		}
 	}
+}
+
+// periodicSweep is Run's sweep tick: a full pass, a listing of each
+// directory it made worth watching, the recovery pass when due, and a
+// memory trim when idle. Over unchanged files it stats each tracked file
+// and lists each transcript directory once, and opens no file and runs no
+// per-file query (TestNoChangeSweepScales).
+func (a *Agent) periodicSweep(ctx context.Context, w *watcher, recovered chan<- struct{}) {
+	if err := a.sweep(ctx); err != nil {
+		a.log.Error("agent: sweep", "err", err)
+	}
+	a.watchNew(ctx, w, "")
+	a.maybeRecover(ctx, recovered, false)
+	a.shrinkIfIdle(ctx)
 }
 
 // load reads the gate state of every indexed source, so a restart parses
@@ -518,7 +528,7 @@ func (a *Agent) merge(ctx context.Context, f *found, full bool) int {
 	}
 	sts := make([]statted, 0, len(list))
 	for _, t := range list {
-		fi, err := os.Stat(t.path)
+		fi, err := fsprobe.Stat(t.path)
 		if err != nil {
 			continue // gone; the next full pass retires it
 		}
@@ -780,7 +790,7 @@ func (a *Agent) dirEvent(ctx context.Context, ev watchEvent, w *watcher) {
 	if ev.modify {
 		return
 	}
-	if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+	if fi, err := fsprobe.Stat(p); err == nil && !fi.IsDir() {
 		p = filepath.Dir(p)
 	}
 	a.scanDir(ctx, p, w)
@@ -921,7 +931,7 @@ func (a *Agent) lookup(path, session string) *target {
 		if t := a.targets[path]; t != nil {
 			return t
 		}
-		if r, err := filepath.EvalSymlinks(path); err == nil {
+		if r, err := fsprobe.EvalSymlinks(path); err == nil {
 			if t := a.targets[r]; t != nil {
 				return t
 			}

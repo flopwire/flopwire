@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -46,7 +47,7 @@ func Discover(home string) ([]transcript.Source, error) {
 	var out []transcript.Source
 	for _, dir := range []string{SessionsDir, ArchivedDir} {
 		root := filepath.Join(home, dir)
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		err := fsprobe.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
 					if d != nil && d.IsDir() {

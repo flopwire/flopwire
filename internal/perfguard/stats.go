@@ -92,6 +92,8 @@ type Cost struct {
 	// Postgres leaves it 0 and reports blocks per table instead.
 	// (Not TableCost.Pages, a Postgres table's size.)
 	SQLitePages int64
+	// FS is the file system calls the work made through fsprobe (FSCounter).
+	FS FSCost
 }
 
 // Total sums the cost over every table.
@@ -109,6 +111,9 @@ func (c Cost) String() string {
 	fmt.Fprintf(&b, "total: %s statements=%d", c.Total(), c.Statements)
 	if c.SQLitePages != 0 {
 		fmt.Fprintf(&b, " sqlite pages=%d", c.SQLitePages)
+	}
+	if c.FS != (FSCost{}) {
+		fmt.Fprintf(&b, " fs %s", c.FS)
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.Tables)) {
 		if tc := c.Tables[name]; !tc.idle() {

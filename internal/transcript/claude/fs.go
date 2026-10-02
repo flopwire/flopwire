@@ -5,7 +5,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
+
+	"github.com/flopwire/flopwire/internal/fsprobe"
 )
 
 // FS is how the parser reads the files beside a transcript: the
@@ -32,7 +33,7 @@ type File interface {
 type OSFS struct{}
 
 func (OSFS) Open(path string) (File, error) {
-	f, err := os.Open(path)
+	f, err := fsprobe.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +49,7 @@ func (OSFS) Open(path string) (File, error) {
 	return osFile{f, st.Size()}, nil
 }
 
-func (OSFS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
+func (OSFS) Glob(pattern string) ([]string, error) { return fsprobe.Glob(pattern) }
 
 type osFile struct {
 	*os.File

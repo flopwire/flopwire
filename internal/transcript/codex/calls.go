@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -282,7 +283,7 @@ func FindRollout(childPath, sessionID string) string {
 		filepath.Join(home, ArchivedDir, name),
 		filepath.Join(home, ArchivedDir, "*", "*", "*", name),
 	} {
-		if m, _ := filepath.Glob(pat); len(m) > 0 {
+		if m, _ := fsprobe.Glob(pat); len(m) > 0 {
 			return m[0]
 		}
 	}
@@ -303,7 +304,7 @@ func openLocalRollout(childPath, sessionID string) (File, error) {
 		if p == "" {
 			return nil, os.ErrNotExist
 		}
-		f, err = os.Open(p)
+		f, err = fsprobe.Open(p)
 	}
 	if err != nil {
 		return nil, err

@@ -221,6 +221,11 @@ func Open(path string, opts Options) (*Store, error) {
 // "sqlite" to count statements and pages on the connections a test claims.
 var sqliteDriver = "sqlite"
 
+// UseDriver sets the database/sql driver of stores opened from now on. Tests
+// in other packages call it from init with perfguard.SQLiteDriver to count
+// the statements a store runs.
+func UseDriver(name string) { sqliteDriver = name }
+
 func openWriter(path string, opts Options) (*Store, error) {
 	wdb, err := sql.Open(sqliteDriver, dsn(path, false, opts.WriteCacheMB, false))
 	if err != nil {
