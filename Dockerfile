@@ -4,6 +4,7 @@ WORKDIR /src/web
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
 COPY web/ .
+COPY landing/assets/brand-mark.svg landing/assets/favicon.svg /src/landing/assets/
 RUN pnpm build
 
 FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS go-build
