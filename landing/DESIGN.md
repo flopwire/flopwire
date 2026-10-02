@@ -60,3 +60,9 @@ The study used three Sol subagents with live site inspection. Motion observation
 Environment uses a centered heading and laptop-to-server band. Sharing uses a heading row above three comparable policy columns. Setup retains the split CTA/terminal composition. This removes the repeated run of left-heading/right-evidence sections without changing the shared outer container or hiding content.
 
 Read-only Claude consultation (`20260930-172149-claude-bda5771a`, default model/effort) confirmed the repeated grid diagnosis and recommended topology band → policy ledger → setup split. Adopted that composition; used a centered environment heading and a soft policy surface rather than the suggested extra separator rules, respecting the user's earlier request. Mobile follows source order and stacks policies.
+
+## Approved identity: centered ƒ/w
+
+Concept D replaces the loose wave in the header, footer, and favicon. The vermilion ƒ has a w-shaped crossbar centered on its slanted stem. The black lowercase Plex Mono wordmark stays at weight 500. Header mark height is 40px on desktop and 34px on mobile; the footer uses 32px. Assets and usage rules live in `assets/BRAND.md`.
+
+The rest of the homepage keeps its existing warm paper, thin borders, squared controls, and Plex type pairing. The curved mark supplies the brand gesture. Connection diagrams retain their thin vermilion paths.
