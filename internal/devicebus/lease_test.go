@@ -289,3 +289,25 @@ func TestInboxFromAnEarlierBuildIsRecreated(t *testing.T) {
 		t.Fatalf("take on a recreated inbox: %v %v", ids(got), err)
 	}
 }
+
+// The device clock steps back (an NTP correction, a manual change) while
+// a lease is out and its hook was killed. The lease still ends within
+// about one lease of the step: a lease ending further ahead than one lease
+// from now cannot be one this clock handed out, and otherwise the
+// session would get no message until the clock caught up again.
+func TestLeaseEndsAfterAClockStepBack(t *testing.T) {
+	lb := newLocalBus(t)
+	out, err := lb.send(t, "aaaa1111", "bbbb", "taken before the clock stepped back")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := lb.Take(ctx, "bbbb3333", "", Limit{}); len(got) != 1 {
+		t.Fatalf("take: %v", ids(got))
+	}
+	lb.advance(-time.Hour)
+	lb.advance(LeaseFor)
+	got, err := lb.Take(ctx, "bbbb3333", "", Limit{})
+	if err != nil || !slices.Equal(ids(got), []string{out.ID}) || got[0].Attempt != 2 {
+		t.Fatalf("a lease after the clock stepped back an hour: %v %v (the session is blocked until the clock catches up)", ids(got), err)
+	}
+}

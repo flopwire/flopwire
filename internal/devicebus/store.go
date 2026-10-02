@@ -145,7 +145,7 @@ func decodeEnvelopes(rows *sql.Rows) ([]busproto.Envelope, error) {
 func (s *store) take(ctx context.Context, session, agent string, now time.Time, lim Limit, lease time.Duration, maxAttempts int) ([]busproto.Envelope, error) {
 	var out []busproto.Envelope
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
-		if _, err := expireLeases(ctx, tx, now, maxAttempts); err != nil {
+		if _, err := expireLeases(ctx, tx, now, lease, maxAttempts); err != nil {
 			return err
 		}
 		var leased int
@@ -213,15 +213,21 @@ func decodeLeasable(rows *sql.Rows) ([]busproto.Envelope, error) {
 // maxAttempts times becomes undelivered (ReasonUnconfirmed), and one from
 // the server owes the server that report. It returns how many became
 // undelivered.
-func expireLeases(ctx context.Context, x execer, now time.Time, maxAttempts int) (int64, error) {
+//
+// A lease that ends more than two leases from now was handed out before
+// the device clock stepped back; it counts as ended, else the session
+// would get nothing until the clock caught up. (Not one lease: a caller
+// that read the clock just before another may run after it.)
+func expireLeases(ctx context.Context, x execer, now time.Time, lease time.Duration, maxAttempts int) (int64, error) {
+	ended, stepped := ms(now), ms(now.Add(2*lease))
 	res, err := x.ExecContext(ctx, `UPDATE devbus_messages SET state='undelivered', reason=?, lease_until=NULL,
 			ack=CASE WHEN origin='server' THEN 'report' ELSE '' END
-		WHERE state='leased' AND lease_until<=? AND attempts>=?`, busproto.ReasonUnconfirmed, ms(now), maxAttempts)
+		WHERE state='leased' AND (lease_until<=? OR lease_until>?) AND attempts>=?`, busproto.ReasonUnconfirmed, ended, stepped, maxAttempts)
 	if err != nil {
 		return 0, err
 	}
 	gone, _ := res.RowsAffected()
-	_, err = x.ExecContext(ctx, `UPDATE devbus_messages SET state='queued', lease_until=NULL WHERE state='leased' AND lease_until<=?`, ms(now))
+	_, err = x.ExecContext(ctx, `UPDATE devbus_messages SET state='queued', lease_until=NULL WHERE state='leased' AND (lease_until<=? OR lease_until>?)`, ended, stepped)
 	return gone, err
 }
 

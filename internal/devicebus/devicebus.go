@@ -316,7 +316,7 @@ func (b *Bus) Requeue(ctx context.Context, ids []string) error {
 // the loop runs it on every presence tick, so a message reaches
 // undelivered (and its sender learns it) without another hook.
 func (b *Bus) expireLeases(ctx context.Context) {
-	gone, err := expireLeases(ctx, b.st.db, b.cfg.Now(), b.cfg.MaxAttempts)
+	gone, err := expireLeases(ctx, b.st.db, b.cfg.Now(), b.cfg.Lease, b.cfg.MaxAttempts)
 	if err != nil {
 		if ctx.Err() == nil {
 			b.log.Warn("devicebus: leases", "err", err)
