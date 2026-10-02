@@ -323,8 +323,8 @@ it. A second clone of the same remote is then the same repo.
 | A path outside git | Sessions in that directory or under it |
 | A path that no longer exists | The repository the device placed sessions there in, when they agree on one; else sessions in that directory or under it |
 | The bare repository's path | Every worktree of it |
-| A name (`app`) | The one repository with that name: the last element of its remote, else of its main checkout (`.app.git` and `app.git` are `app`). Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. With `--server` they are not an error: the name matches both, as below. When no repository has the name, a session whose directory's last element is the name |
-| `owner/name`, `host/owner/name` | The repository whose remote ends with it |
+| A name (`app`) | The one repository with that name: the last element of its remote or of its main checkout (`.app.git` and `app.git` are `app`). A checkout at `~/Code/app` with the remote `github.com/acme/web` is named both `app` and `web`. Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. With `--server` they are not an error: the name matches both, as below. When no repository has the name, a session whose directory's last element is the name |
+| `owner/name`, `host/owner/name` | The repository whose remote, or main checkout's path, ends with it |
 | A glob (`team*`) | A session whose directory, or its last element, matches |
 
 The device resolves `--repo` from its git files and from where it placed
