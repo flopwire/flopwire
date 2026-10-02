@@ -5,10 +5,11 @@ package main
 // the CLI and over MCP, as peers, send and inbox do; --text (format=text)
 // prints the readable rows. grep, search and read are text-shaped: they
 // print text by default, and --json prints the answer as before. Over MCP
-// every retrieval tool also returns its answer as structuredContent,
-// declared by an outputSchema, bounded like the text: whole hits,
-// sessions, messages or outline entries until the next would pass the
-// budget, and fields that say where the next page starts.
+// (and for sessions on the CLI) the JSON is compact and bounded like the
+// text: whole hits, sessions, messages or outline entries until the next
+// would pass the budget, and fields that say where the next page starts.
+// Every MCP answer is one text block: no structuredContent, because
+// Claude Code shows a model only that and Codex shows both (#84).
 
 import (
 	"bytes"
@@ -19,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -45,20 +47,103 @@ func jsonModeArgs(verb string, args []string) bool {
 	return verb == "sessions" || slices.Contains(flags, "--json")
 }
 
-// sessionsJSON is sessions' JSON answer: format.Sessions with the kind and
-// the paging fields always present. has_more says sessions follow;
+// sessionsJSON is sessions' JSON answer: one page of sessions (brief
+// by default, format.ConversationInfo with --detail), the kind, and the
+// paging fields always present. has_more says sessions follow;
 // next_cursor is then the cursor that reads them.
 type sessionsJSON struct {
-	Kind     string                    `json:"kind"` // "sessions"
-	Sessions []format.ConversationInfo `json:"sessions"`
-	HasMore  bool                      `json:"has_more"`
-	Next     string                    `json:"next_cursor,omitempty"`
-	Notes    []string                  `json:"notes,omitempty"`
-	Excluded string                    `json:"excluded,omitempty"`
-	Hint     string                    `json:"hint,omitempty"`
+	Kind     string   `json:"kind"` // "sessions"
+	Sessions any      `json:"sessions"`
+	HasMore  bool     `json:"has_more"`
+	Next     string   `json:"next_cursor,omitempty"`
+	Notes    []string `json:"notes,omitempty"`
+	Excluded string   `json:"excluded,omitempty"`
+	Hint     string   `json:"hint,omitempty"`
 }
 
-// pageJSON is grep's and search's structured answer: format.Page (the
+// sessionBrief is a session in sessions' concise default: what an agent
+// needs to pick a session and match it to presence (the full id, repo,
+// branches, commit ids), with counts instead of lists and no reply text.
+// --detail prints format.ConversationInfo with the whole digest instead.
+type sessionBrief struct {
+	SessionID string `json:"session_id"`
+	// Address is the shortest unique prefix read takes, when it is not
+	// the whole id.
+	Address        string     `json:"address,omitempty"`
+	Agent          string     `json:"agent"`
+	User           string     `json:"user,omitempty"`
+	Device         string     `json:"device,omitempty"`
+	Repo           string     `json:"repo,omitempty"`
+	Branches       []string   `json:"branches,omitempty"`
+	Live           bool       `json:"live"`
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	Messages       int        `json:"messages"`
+	Title          string     `json:"title,omitempty"`
+	// Intent is the digest's intent when it is not the title.
+	Intent        string   `json:"intent,omitempty"`
+	ParentSession string   `json:"parent_session,omitempty"`
+	Commits       []string `json:"commits,omitempty"`
+	Files         int      `json:"files,omitempty"`
+	Failed        int      `json:"failed,omitempty"`
+}
+
+// briefTitle is the most of a title the concise sessions answer prints.
+const briefTitle = 160
+
+func brief(c format.ConversationInfo) sessionBrief {
+	b := sessionBrief{SessionID: c.SessionID, Address: c.Address, Agent: c.Agent, User: c.User, Repo: c.Repo, Branches: c.Branches,
+		Live: c.Live, LastActivityAt: c.LastActivityAt, Messages: c.Messages, Title: format.ClipAround(c.Title, 0, briefTitle), ParentSession: c.ParentSession}
+	if b.Repo == "" {
+		b.Repo = c.Cwd
+	}
+	if b.Address == b.SessionID {
+		b.Address = ""
+	}
+	if c.Device != "local" {
+		b.Device = c.Device
+	}
+	if d := c.Digest; d != nil {
+		if d.Intent != "" && d.Intent != c.Title {
+			b.Intent = format.ClipAround(d.Intent, 0, briefTitle)
+		}
+		b.Commits, b.Files, b.Failed = d.Commits, len(d.FilesEdited), d.Failed
+	}
+	return b
+}
+
+// boundSessions is the sessions answer in JSON, within budget: whole
+// sessions, the cursor after the last one kept. Each session is brief
+// unless detail asks for the whole description.
+func boundSessions(s *format.Sessions, budget int, mcp, detail bool) sessionsJSON {
+	all := s.Sessions
+	items := make([]any, len(all))
+	for i, c := range all {
+		if detail {
+			items[i] = c
+		} else {
+			items[i] = brief(c)
+		}
+	}
+	out := sessionsJSON{Kind: "sessions", Sessions: items, HasMore: s.HasMore || s.Next != "", Next: s.Next, Notes: s.Notes, Excluded: s.Excluded}
+	if !fitsBudget(out, budget) && len(all) > 1 {
+		n := most(len(all), func(k int) bool {
+			c := out
+			c.Sessions, c.HasMore, c.Next = items[:k], true, format.SessionCursor(all[k-1])
+			return fitsBudget(c, room(budget))
+		})
+		if n < len(all) {
+			out.Sessions, out.HasMore, out.Next = items[:n], true, format.SessionCursor(all[n-1])
+			out.Hint = budgetHint(budget, arg(mcp, "--cursor", "cursor", out.Next))
+			return out
+		}
+	}
+	if out.HasMore {
+		out.Hint = "pass next_cursor as " + arg(mcp, "--cursor", "cursor", "C") + " for the next page"
+	}
+	return out
+}
+
+// pageJSON is grep's and search's bounded JSON answer: format.Page (the
 // --json shape) with its kind, and a hint when the budget cut the page.
 type pageJSON struct {
 	Kind string `json:"kind"` // "grep" or "search"
@@ -66,22 +151,11 @@ type pageJSON struct {
 	Hint string `json:"hint,omitempty"`
 }
 
-// readJSON is read's structured answer: format.Context with its kind.
+// readJSON is read's bounded JSON answer: format.Context with its kind.
 type readJSON struct {
 	Kind string `json:"kind"` // "read"
 	*format.Context
 	Hint string `json:"hint,omitempty"`
-}
-
-// rawRecordJSON is read raw=true's structured answer: the record's bytes as a
-// string, left out (Omitted) when they pass the budget.
-type rawRecordJSON struct {
-	Kind    string `json:"kind"` // "raw"
-	Address string `json:"address"`
-	Bytes   int    `json:"bytes"`
-	Raw     string `json:"raw,omitempty"`
-	Omitted bool   `json:"omitted,omitempty"`
-	Hint    string `json:"hint,omitempty"`
 }
 
 // jsonSize is v's size as compact JSON.
@@ -124,33 +198,7 @@ func budgetHint(budget int, next string) string {
 	return fmt.Sprintf("output budget of %d bytes reached; next: %s", budget, next)
 }
 
-// boundSessions is the sessions answer in JSON, within budget: whole
-// sessions, the cursor after the last one kept.
-func boundSessions(s *format.Sessions, budget int, mcp bool) sessionsJSON {
-	out := sessionsJSON{Kind: "sessions", Sessions: s.Sessions, HasMore: s.HasMore || s.Next != "", Next: s.Next, Notes: s.Notes, Excluded: s.Excluded}
-	if out.Sessions == nil {
-		out.Sessions = []format.ConversationInfo{}
-	}
-	all := out.Sessions
-	if !fitsBudget(out, budget) && len(all) > 1 {
-		n := most(len(all), func(k int) bool {
-			c := out
-			c.Sessions, c.HasMore, c.Next = all[:k], true, format.SessionCursor(all[k-1])
-			return fitsBudget(c, room(budget))
-		})
-		if n < len(all) {
-			out.Sessions, out.HasMore, out.Next = all[:n], true, format.SessionCursor(all[n-1])
-			out.Hint = budgetHint(budget, arg(mcp, "--cursor", "cursor", out.Next))
-			return out
-		}
-	}
-	if out.HasMore {
-		out.Hint = "pass next_cursor as " + arg(mcp, "--cursor", "cursor", "C") + " for the next page"
-	}
-	return out
-}
-
-// boundPage is a grep or search page as structured content, within
+// boundPage is a grep or search page as bounded JSON, within
 // budget: whole hits (or -l/-c sessions), the next offset after the last
 // one kept, and the session descriptions of the hits kept. One hit that
 // alone passes the budget keeps its first lines.
@@ -220,7 +268,7 @@ func boundPage(kind string, p *format.Page, mode string, budget int, mcp bool) p
 	return out
 }
 
-// boundRead is read's answer as structured content, within budget: an
+// boundRead is read's answer as bounded JSON, within budget: an
 // outline keeps whole entries and gives the cursor after the last one
 // kept; messages keep the focus and the nearest neighbours, and a focus
 // that alone passes the budget keeps its first lines.
@@ -322,20 +370,6 @@ func boundRead(cx *format.Context, budget int, mcp bool) readJSON {
 	return out
 }
 
-// boundRaw is a raw record as structured content: its bytes when they fit
-// the budget.
-func boundRaw(addr string, data []byte, budget int, mcp bool) rawRecordJSON {
-	out := rawRecordJSON{Kind: "raw", Address: addr, Bytes: len(data), Raw: string(data)}
-	if !fitsBudget(out, budget) {
-		out.Raw, out.Omitted = "", true
-		out.Hint = fmt.Sprintf("the record is %d bytes, past the output budget of %d bytes; the text answer holds it whole", len(data), budget)
-		if !mcp {
-			out.Hint = fmt.Sprintf("the record is %d bytes, past --max-bytes %d", len(data), budget)
-		}
-	}
-	return out
-}
-
 // --- errors ---
 
 // Error codes of the retrieval tools, beside busproto's bad_request and
@@ -387,59 +421,4 @@ func retrievalErr(verb string, err error, mcp bool) *busErr {
 // verbs do.
 func writeErrorJSON(w io.Writer, e *busErr) error {
 	return writeOut(w, errorJSON{Kind: "error", Error: e})
-}
-
-// --- output schemas ---
-
-var (
-	strArr     = arr(typ("string"))
-	convSchema = obj([]string{"address", "id", "agent", "session_id"}, map[string]any{
-		"address": typ("string"), "id": typ("string"), "agent": typ("string"), "session_id": typ("string"), "title": typ("string"),
-		"cwd": typ("string"), "repo": typ("string"), "device": typ("string"), "user": typ("string"), "started_at": typ("string"),
-		"last_activity_at": typ("string"), "parent_conversation_id": typ("string"), "parent_session": typ("string"),
-		"spawned_by_message_id": typ("string"), "depth": typ("integer"), "messages": typ("integer"), "hits": typ("integer"),
-		"branches": strArr, "digest": typ("object"), "live": typ("boolean")})
-	provSchema = obj([]string{"path", "generation"}, map[string]any{
-		"source_id": typ("string"), "path": typ("string"), "file_id": typ("string"), "generation": typ("integer"), "line_no": typ("integer"),
-		"byte_offset": typ("integer"), "byte_len": typ("integer"), "locator": typ("string")})
-	hitSchema = obj([]string{"address", "message_id", "conversation_id", "agent", "session_id", "ordinal", "kind", "provenance"}, map[string]any{
-		"address": typ("string"), "message_id": typ("string"), "conversation_id": typ("string"), "agent": typ("string"), "session_id": typ("string"),
-		"ordinal": typ("integer"), "title": typ("string"), "repo": typ("string"), "device": typ("string"), "user": typ("string"), "branches": strArr,
-		"kind": typ("string"), "tool_name": typ("string"), "is_error": typ("boolean"), "ts": typ("string"), "score": typ("number"),
-		"snippet": typ("string"), "text_line": typ("integer"),
-		"lines":      arr(obj([]string{"n", "text"}, map[string]any{"n": typ("integer"), "text": typ("string"), "match": typ("boolean")})),
-		"more_lines": typ("integer"), "superseded": typ("boolean"), "off_active_path": typ("boolean"), "copies": typ("integer"), "provenance": provSchema})
-	pageProps = func(kind string) map[string]any {
-		return map[string]any{
-			"kind": map[string]any{"type": "string", "enum": []string{kind}}, "hits": arr(hitSchema), "sessions": arr(convSchema),
-			"total": typ("integer"), "total_sessions": typ("integer"), "exact": typ("boolean"), "offset": typ("integer"), "next_offset": typ("integer"),
-			"truncated": typ("boolean"), "reason": typ("string"), "notes": strArr, "excluded": typ("string"), "session_info": arr(convSchema), "hint": typ("string")}
-	}
-	messageSchema = obj([]string{"address", "id", "ordinal", "kind", "text", "text_len", "provenance"}, map[string]any{
-		"address": typ("string"), "id": typ("string"), "native_id": typ("string"), "ordinal": typ("integer"), "kind": typ("string"), "role": typ("string"),
-		"tool_name": typ("string"), "tool_call_id": typ("string"), "is_error": typ("boolean"), "ts": typ("string"), "text": typ("string"),
-		"text_len": typ("integer"), "stored_len": typ("integer"), "lines": typ("integer"), "line_from": typ("integer"), "line_to": typ("integer"),
-		"clipped": typ("boolean"), "version": typ("integer"), "superseded": typ("boolean"), "off_active_path": typ("boolean"), "provenance": provSchema})
-	outlineSchema = obj([]string{"address", "id", "ordinal", "kind", "text"}, map[string]any{
-		"address": typ("string"), "id": typ("string"), "ordinal": typ("integer"), "ts": typ("string"), "kind": typ("string"), "tool": typ("string"),
-		"text": typ("string"), "error": typ("boolean"), "subagents": strArr})
-)
-
-// retrievalOutputSchema is a retrieval tool's outputSchema. read's covers
-// both of its answers: messages or an outline (kind "read"), and a raw
-// record (kind "raw").
-func retrievalOutputSchema(verb string) map[string]any {
-	switch verb {
-	case "grep", "search":
-		return obj([]string{"kind", "hits"}, pageProps(verb))
-	case "sessions":
-		return obj([]string{"kind", "sessions", "has_more"}, map[string]any{
-			"kind": map[string]any{"type": "string", "enum": []string{"sessions"}}, "sessions": arr(convSchema), "has_more": typ("boolean"),
-			"next_cursor": typ("string"), "notes": strArr, "excluded": typ("string"), "hint": typ("string")})
-	}
-	return obj([]string{"kind"}, map[string]any{
-		"kind": map[string]any{"type": "string", "enum": []string{"read", "raw"}}, "conversation": convSchema, "focus": typ("string"),
-		"line": typ("integer"), "messages": arr(messageSchema), "more_before": typ("boolean"), "more_after": typ("boolean"),
-		"outline": arr(outlineSchema), "outline_more": typ("boolean"), "outline_next": typ("string"),
-		"address": typ("string"), "bytes": typ("integer"), "raw": typ("string"), "omitted": typ("boolean"), "hint": typ("string")})
 }

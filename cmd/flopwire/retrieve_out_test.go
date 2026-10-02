@@ -14,27 +14,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
-
-// toolSchemas are the tools' outputSchemas as a client decodes them.
-func toolSchemas(t *testing.T) map[string]map[string]any {
-	t.Helper()
-	var tools []map[string]any
-	raw, _ := json.Marshal(mcpTools())
-	if err := json.Unmarshal(raw, &tools); err != nil {
-		t.Fatal(err)
-	}
-	out := map[string]map[string]any{}
-	for _, tl := range tools {
-		s, ok := tl["outputSchema"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s has no outputSchema", tl["name"])
-		}
-		out[tl["name"].(string)] = s
-	}
-	return out
-}
 
 // sessions answers JSON by default; it is main's sessions --json, field
 // for field, with the kind and the paging fields always present.
@@ -89,13 +71,13 @@ func TestJSONAndTextFlagsOnEveryVerb(t *testing.T) {
 	if a, b := cli("sessions"), cli("sessions", "--json"); a != b || !strings.HasPrefix(a, `{"kind":"sessions",`) {
 		t.Fatalf("sessions --json is not the default:\n%s\n%s", a, b)
 	}
-	if out := cli("sessions", "--text", "--json"); !strings.HasPrefix(out, "session: ") {
+	if out := cli("sessions", "--text", "--json"); !strings.HasPrefix(out, "0b7e2c1a-0000-4000-8000-000000000002 agent=claude ") {
 		t.Fatalf("sessions --text --json: %s", out)
 	}
-	if a, b := cli("grep", "retr"), cli("grep", "retr", "--text"); a != b || !strings.HasPrefix(a, "## session: ") {
+	if a, b := cli("grep", "retr"), cli("grep", "retr", "--text"); a != b || !strings.HasPrefix(a, "## 0b7e2c1a-") {
 		t.Fatalf("grep --text is not the default:\n%s\n%s", a, b)
 	}
-	if out := cli("search", "backoff", "--json", "--text"); !strings.HasPrefix(out, "## session: ") {
+	if out := cli("search", "backoff", "--json", "--text"); !strings.HasPrefix(out, "## 0b7e2c1a-") {
 		t.Fatalf("search --json --text: %s", out)
 	}
 }
@@ -166,48 +148,60 @@ func TestRetrievalJSONErrors(t *testing.T) {
 	}
 }
 
-// Every retrieval tool returns structuredContent that validates against
-// its outputSchema, within the 24000-byte budget; in JSON mode the text
-// is that same object.
-func TestMCPRetrievalStructuredContent(t *testing.T) {
+// No tool declares an outputSchema, and every result is one text block
+// with no structuredContent: Claude Code shows a model only
+// structuredContent when a result has it, and Codex shows both (#84). In
+// JSON mode (sessions by default, format="json" elsewhere) the text is
+// one compact JSON document with the named fields; in text mode it is
+// not JSON. read raw=true answers the record's bytes whatever format says.
+func TestMCPRetrievalOneTextBlock(t *testing.T) {
+	for _, tl := range mcpTools() {
+		tm := tl.(map[string]any)
+		if _, ok := tm["outputSchema"]; ok {
+			t.Errorf("%s declares an outputSchema", tm["name"])
+		}
+	}
 	oracleIndex(t)
 	r, err := openRetriever(false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.close()
-	schemas := toolSchemas(t)
 	for _, c := range []struct {
 		tool, args string
-		json       bool
+		fields     []string // a JSON answer's fields; nil for text
 	}{
-		{"flopwire_grep", `{"pattern":"retr","include_self":true}`, false},
-		{"flopwire_grep", `{"pattern":"retr","output_mode":"sessions"}`, false},
-		{"flopwire_grep", `{"pattern":"chi","output_mode":"count","format":"json"}`, true},
-		{"flopwire_grep", `{"pattern":"exit","context":2,"format":"json","include_self":true}`, true},
-		{"flopwire_search", `{"query":"retry backoff"}`, false},
-		{"flopwire_search", `{"query":"timers","format":"json"}`, true},
-		{"flopwire_sessions", `{"include_self":true}`, true},
-		{"flopwire_sessions", `{"branch":"fix/*","format":"text"}`, false},
-		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240:1","before":1,"after":1}`, false},
-		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000002","outline":true,"format":"json"}`, true},
-		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240","raw":true}`, false},
+		{"flopwire_grep", `{"pattern":"retr","include_self":true}`, nil},
+		{"flopwire_grep", `{"pattern":"retr","output_mode":"sessions"}`, nil},
+		{"flopwire_grep", `{"pattern":"chi","output_mode":"count","format":"json"}`, []string{"kind", "hits", "sessions", "total"}},
+		{"flopwire_grep", `{"pattern":"exit","context":2,"format":"json","include_self":true}`, []string{"kind", "hits", "session_info", "total"}},
+		{"flopwire_search", `{"query":"retry backoff"}`, nil},
+		{"flopwire_search", `{"query":"timers","format":"json"}`, []string{"kind", "hits"}},
+		{"flopwire_sessions", `{"include_self":true}`, []string{"kind", "sessions", "has_more"}},
+		{"flopwire_sessions", `{"include_self":true,"detail":true}`, []string{"kind", "sessions", "has_more"}},
+		{"flopwire_sessions", `{"branch":"fix/*","format":"text"}`, nil},
+		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240:1","before":1,"after":1}`, nil},
+		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000002","outline":true,"format":"json"}`, []string{"kind", "conversation", "outline"}},
+		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240","raw":true,"format":"json"}`, []string{"uuid", "sessionId"}},
 	} {
 		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+c.tool+`","arguments":`+c.args+`}}`)
 		text, isErr, structured := mcpContent(t, resp)
-		if isErr || structured == nil {
+		if isErr || structured != nil || strings.Contains(resp, "structuredContent") {
 			t.Fatalf("%s %s: %s", c.tool, c.args, resp)
 		}
-		if errs := validateSchema(c.tool, schemas[c.tool], structured); len(errs) > 0 {
-			t.Errorf("%s %s does not validate:\n%s", c.tool, c.args, strings.Join(errs, "\n"))
+		if len(text) > format.MaxOutput {
+			t.Errorf("%s %s: %d bytes, over the budget", c.tool, c.args, len(text))
 		}
-		if jsonSize(structured) > format.MaxOutput || len(text) > format.MaxOutput {
-			t.Errorf("%s %s: over the budget", c.tool, c.args)
+		var obj map[string]any
+		dec := json.NewDecoder(strings.NewReader(text))
+		isJSON := dec.Decode(&obj) == nil && !dec.More()
+		if isJSON != (c.fields != nil) {
+			t.Errorf("%s %s: JSON %v, want %v:\n%.300s", c.tool, c.args, isJSON, c.fields != nil, text)
 		}
-		var fromText map[string]any
-		isJSON := json.Unmarshal([]byte(text), &fromText) == nil && strings.HasPrefix(text, `{"kind":`)
-		if isJSON != c.json || c.json && !reflect.DeepEqual(fromText, structured) {
-			t.Errorf("%s %s: JSON text %v, want %v; or it differs from structuredContent:\n%s", c.tool, c.args, isJSON, c.json, text)
+		for _, k := range c.fields {
+			if _, ok := obj[k]; !ok {
+				t.Errorf("%s %s: no %q in %.300s", c.tool, c.args, k, text)
+			}
 		}
 	}
 }
@@ -241,31 +235,33 @@ func (b *bigBackend) Raw(context.Context, string, int64, int64, int64) ([]byte, 
 	return b.raw, nil
 }
 
-// Structured content stays within the budget in whole objects, whatever
+// JSON answers (format="json", and sessions) stay within the budget in
+// whole objects, whatever
 // the backend returns, and its fields say where the next page starts: the
 // offset after the last hit kept, the cursor after the last session or
 // outline entry kept, the line_offset after the last line of a focus that
 // alone passes the budget.
-func TestStructuredContentBudget(t *testing.T) {
+func TestJSONAnswerBudget(t *testing.T) {
 	ts := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
-	schemas := toolSchemas(t)
 	call := func(b *bigBackend, tool, args string) map[string]any {
 		t.Helper()
 		r := &retriever{backend: b}
-		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+tool+`","arguments":`+args+`}}`)
-		text, isErr, s := mcpContent(t, resp)
-		if isErr || s == nil {
+		// The text answer stays within the budget too: its entries do; the
+		// notes and footer around them may pass it a little (format's
+		// tests allow the same), and one hit past the budget is not cut
+		// (format's units keep the first whole), a deferred item.
+		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+tool+`","arguments":`+withFormat(args, "text")+`}}`)
+		if text, isErr, _ := mcpContent(t, resp); isErr || len(text) > format.MaxOutput+500 && !strings.Contains(args, `"z"`) {
+			t.Fatalf("%s %s text: %d bytes", tool, args, len(text))
+		}
+		resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+tool+`","arguments":`+withFormat(args, "json")+`}}`)
+		text, isErr, structured := mcpContent(t, resp)
+		var s map[string]any
+		if isErr || structured != nil || json.Unmarshal([]byte(text), &s) != nil {
 			t.Fatalf("%s: %.300s", tool, resp)
 		}
-		// The text budget covers the entries, not the notes and footer
-		// around them (format's tests allow the same); the text of one hit
-		// or one raw record past the budget is not cut (format's units keep
-		// the first whole), a deferred item.
-		if n := jsonSize(s); n > format.MaxOutput || len(text) > format.MaxOutput+500 && !strings.Contains(args, "raw") && !strings.Contains(args, `"z"`) {
-			t.Fatalf("%s %s: structured %d bytes, text %d", tool, args, n, len(text))
-		}
-		if errs := validateSchema(tool, schemas[tool], s); len(errs) > 0 {
-			t.Fatalf("%s does not validate: %v", tool, errs)
+		if len(text) > format.MaxOutput {
+			t.Fatalf("%s %s: %d bytes", tool, args, len(text))
 		}
 		return s
 	}
@@ -350,6 +346,34 @@ func TestStructuredContentBudget(t *testing.T) {
 		!strings.Contains(s["hint"].(string), "output budget of 24000 bytes reached; next: cursor=") {
 		t.Fatalf("sessions: %d kept, has_more %v, next %v, hint %v", len(got), s["has_more"], s["next_cursor"], s["hint"])
 	}
+	// The concise default: a page of 20 busy sessions (20 commits, 25
+	// files, long title and intent, every digest list full) fits the
+	// budget whole, with room to spare; --detail does not.
+	busy := &format.Sessions{}
+	for i := range 20 {
+		c := info(i)
+		c.SessionID, c.Repo, c.User, c.Branches = fmt.Sprintf("%08x-0000-4000-8000-000000000000", i), "/src/some-repository", "someone@example.test", []string{"feat/a-long-branch-name", "main"}
+		d := &digest.Digest{Intent: strings.Repeat("i", 300), Failed: 3, Last: strings.Repeat("l", 160), Tools: map[string]int{"Bash": 40, "Edit": 30, "Read": 90, "Grep": 12}}
+		for k := range 25 {
+			d.FilesEdited = append(d.FilesEdited, fmt.Sprintf("internal/pkg%02d/file.go", k))
+		}
+		for k := range 20 {
+			d.Commits = append(d.Commits, fmt.Sprintf("%07x", k*977))
+		}
+		for k := range 10 {
+			d.PRs = append(d.PRs, fmt.Sprintf("org/repo#%d", 100+k))
+		}
+		c.Digest = d
+		busy.Sessions = append(busy.Sessions, c)
+	}
+	s = call(&bigBackend{sessions: busy}, "flopwire_sessions", `{}`)
+	if n := len(s["sessions"].([]any)); n != 20 || s["has_more"] != false || jsonSize(s) > 20000 {
+		t.Fatalf("20 busy sessions: %d kept, %d bytes", n, jsonSize(s))
+	}
+	t.Logf("20 busy sessions, concise: %d bytes", jsonSize(s))
+	if s = call(&bigBackend{sessions: busy}, "flopwire_sessions", `{"detail":true}`); len(s["sessions"].([]any)) == 20 {
+		t.Fatalf("20 busy sessions with detail fit the budget: %d bytes", jsonSize(s))
+	}
 	// Under the budget the backend's own cursor stays, and the hint says
 	// how to use it.
 	small := &format.Sessions{HasMore: true, Next: "fetched-page-end", Sessions: ss.Sessions[:2]}
@@ -396,10 +420,12 @@ func TestStructuredContentBudget(t *testing.T) {
 	if n := len(s["outline"].([]any)); n == 0 || n >= 2000 || s["outline_more"] != true || s["outline_next"] != format.OutlineCursor(ol.Outline[n-1]) {
 		t.Fatalf("outline: %d kept, more %v, next %v", n, s["outline_more"], s["outline_next"])
 	}
-	// A raw record past the budget: the text holds it whole, the
-	// structured answer says it left it out.
-	s = call(&bigBackend{raw: []byte(strings.Repeat("r", 50000))}, "flopwire_read", `{"address":"s000/1","raw":true}`)
-	if s["kind"] != "raw" || s["omitted"] != true || s["bytes"] != float64(50000) || s["raw"] != nil {
-		t.Fatalf("raw: %v", s)
+}
+
+// withFormat adds format f to a JSON object of arguments.
+func withFormat(args, f string) string {
+	if args == "{}" {
+		return `{"format":"` + f + `"}`
 	}
+	return `{"format":"` + f + `",` + args[1:]
 }

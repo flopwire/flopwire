@@ -63,7 +63,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 	}
 	// D17: control characters from the transcript are shown, not sent to
 	// the terminal.
-	if !strings.HasPrefix(out, "## session: 019a0000 who: gary@example.test agent: codex\n491520:3 tool_result: upload.test.ts:9 timeout␛]52;c;evil␇\n") {
+	if !strings.HasPrefix(out, "## 019a0000 who=gary@example.test agent=codex\n491520:3 tool_result: upload.test.ts:9 timeout␛]52;c;evil␇\n") {
 		t.Fatalf("grep output %q", out)
 	}
 	if err := run(t.Context(), []string{"search", "backoff"}); err == nil || !strings.Contains(err.Error(), "--server") {
@@ -72,7 +72,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 
 	c := &retriever{backend: client.HTTP{Server: srv.URL, Token: "device"}}
 	text, err := mcpCall(t.Context(), c, "flopwire_search", map[string]any{"query": "backoff", "include_branches": true, "limit": float64(5), "offset": float64(5)})
-	if err != nil || !strings.HasPrefix(text, "## session: 019a0000 who: gary@example.test agent: codex\n491520 ") {
+	if err != nil || !strings.HasPrefix(text, "## 019a0000 who=gary@example.test agent=codex\n491520 ") {
 		t.Fatalf("mcp search: %q %v", text, err)
 	}
 	q = queries[len(queries)-1]
@@ -92,7 +92,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 		t.Fatalf("raw query %v", q)
 	}
 	if text, err = mcpCall(t.Context(), c, "flopwire_sessions", map[string]any{"glob": "team*", "agent": "codex"}); err != nil ||
-		!strings.HasPrefix(text, `{"kind":"sessions","sessions":[{"address":"019a0000","id":"","agent":"codex","session_id":"","title":"t","messages":3}],"has_more":false`) {
+		text != `{"kind":"sessions","sessions":[{"session_id":"","address":"019a0000","agent":"codex","live":false,"messages":3,"title":"t"}],"has_more":false}` {
 		t.Fatalf("mcp sessions: %q %v", text, err)
 	}
 	if q = queries[len(queries)-1]; q.Get("glob") != "team*" || q.Get("agent") != "codex" {

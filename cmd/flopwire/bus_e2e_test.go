@@ -355,8 +355,8 @@ func TestBusHistoryToPresence(t *testing.T) {
 	waitPeer(t, sock, e2eA, moved)
 
 	// 1. History: who committed on feat-a in this repo? sessions answers
-	// JSON by default; the match is by field name: session_id and
-	// digest.commits.
+	// concise JSON by default; the match is by field name: session_id,
+	// repo and commits.
 	r, err := openRetriever(false, index)
 	if err != nil {
 		t.Fatal(err)
@@ -373,11 +373,10 @@ func TestBusHistoryToPresence(t *testing.T) {
 	type histSession struct {
 		SessionID string   `json:"session_id"`
 		Title     string   `json:"title"`
+		Repo      string   `json:"repo"`
 		Branches  []string `json:"branches"`
 		Live      bool     `json:"live"`
-		Digest    struct {
-			Commits []string `json:"commits"`
-		} `json:"digest"`
+		Commits   []string `json:"commits"`
 	}
 	var hj struct {
 		Kind     string        `json:"kind"`
@@ -389,7 +388,7 @@ func TestBusHistoryToPresence(t *testing.T) {
 	}
 	bySHA := func(sha string) histSession {
 		for _, c := range hj.Sessions {
-			if slices.Contains(c.Digest.Commits, sha) {
+			if slices.Contains(c.Commits, sha) {
 				return c
 			}
 		}
@@ -400,7 +399,7 @@ func TestBusHistoryToPresence(t *testing.T) {
 	if len(hj.Sessions) != 2 || m.SessionID != moved || e.SessionID != ended {
 		t.Fatalf("history on feat-a: %s", hist.String())
 	}
-	if m.Title != title || !slices.Equal(m.Branches, []string{"feat-a", "feat-b"}) || !m.Live {
+	if m.Title != title || m.Repo != repo || !slices.Equal(m.Branches, []string{"feat-a", "feat-b"}) || !m.Live {
 		t.Fatalf("moved session in history: %+v", m)
 	}
 	if e.Live {
@@ -412,7 +411,7 @@ func TestBusHistoryToPresence(t *testing.T) {
 		Sessions []histSession `json:"sessions"`
 	}
 	if err != nil || json.Unmarshal([]byte(text), &mj) != nil || len(mj.Sessions) != 2 || !slices.ContainsFunc(mj.Sessions, func(c histSession) bool {
-		return c.SessionID == moved && slices.Contains(c.Digest.Commits, movedSH) && c.Title == title
+		return c.SessionID == moved && slices.Contains(c.Commits, movedSH) && c.Title == title
 	}) {
 		t.Fatalf("flopwire_sessions: %s %v", text, err)
 	}

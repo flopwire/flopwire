@@ -96,13 +96,13 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"read_outline_paged", nil, []string{"read", "019a0000-0000-7000-8000-0000000000a1", "--outline", "--limit", "3", "--cursor", "3239936.56"}},
 		// grep, search and read --json are byte-for-byte what they were
 		// before sessions turned JSON by default and the headers were
-		// labeled (issue #64); sessions --json is the new default, which
-		// TestSessionsJSONKeepsMainFields compares with main's.
+		// labeled (issue #64); sessions --json --detail is main's --json, which
+		// TestSessionsJSONKeepsMainFields compares field for field.
 		{"grep_files_json", nil, []string{"grep", "-l", "retr", "--json"}},
 		{"search_json", nil, []string{"search", "exponential backoff", "--limit", "3", "--json"}},
 		{"read_json", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "-B", "1", "-A", "1", "--json"}},
 		{"read_outline_json", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline", "--json"}},
-		{"sessions_json", nil, []string{"sessions", "--branch", "fix/*", "--json"}},
+		{"sessions_json", nil, []string{"sessions", "--branch", "fix/*", "--json", "--detail"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -231,24 +231,27 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 	lineAddr := regexp.MustCompile(`^([^\s/\[]+/\d+)(?::(\d+))?[:-]`)
 	// A labeled session line (grep -l, sessions --text), or -c's
 	// SESSION:COUNT.
-	sessAddr := regexp.MustCompile(`^(?:session: ([^\s"]+) |([^\s/\[:]+):\d+$)`)
-	// The grouped layout: a "## session: SESSION ..." header, then
+	sessAddr := regexp.MustCompile(`^(?:([^\s"#\[]+) agent=|([^\s/\[:]+):\d+$)`)
+	// The grouped layout: a "## SESSION ..." header, then
 	// ORDINAL:LINE (ORDINAL-LINE- for context) lines whose address is
 	// SESSION/ORDINAL.
-	header := regexp.MustCompile(`^## session: ([^\s"]+)`)
+	header := regexp.MustCompile(`^## ([^\s"]+)`)
 	grouped := regexp.MustCompile(`^(\d+)[:-](\d+)[ :-]`)
 	type addr struct{ msg, line, session string }
 	var addrs []addr
 	collect := func(out string) {
 		// sessions answers JSON by default: its address and full id both
 		// read the session.
-		var ss sessionsJSON
+		var ss sessionsOut
 		if strings.HasPrefix(out, `{"kind":"sessions"`) {
 			if err := json.Unmarshal([]byte(out), &ss); err != nil {
 				t.Fatalf("sessions JSON: %v\n%s", err, out)
 			}
 			for _, c := range ss.Sessions {
-				addrs = append(addrs, addr{session: c.Address}, addr{session: c.SessionID})
+				if c.Address != "" { // left out when it is the whole id
+					addrs = append(addrs, addr{session: c.Address})
+				}
+				addrs = append(addrs, addr{session: c.SessionID})
 			}
 			return
 		}
@@ -334,7 +337,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		case a.session != "":
 			// A full session id reads the session it names (the
 			// message addresses use its shortest unique prefix).
-			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "# session: "+a.session+" ") {
+			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "# "+a.session+" ") {
 				t.Errorf("read %s: no focus in that session:\n%s", target, out)
 			}
 		case !strings.Contains(out, ">> "+a.msg+"  "):
@@ -439,7 +442,7 @@ func TestSelfAndLive(t *testing.T) {
 	r.live = func(bool) map[string]time.Time { return map[string]time.Time{open: time.Now()} }
 	liveOf := func(out string) map[string]bool {
 		t.Helper()
-		var ss sessionsJSON
+		var ss sessionsOut
 		if err := json.Unmarshal([]byte(out), &ss); err != nil || ss.Kind != "sessions" {
 			t.Fatalf("sessions JSON: %v\n%s", err, out)
 		}
@@ -454,7 +457,7 @@ func TestSelfAndLive(t *testing.T) {
 		t.Fatalf("live session: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--text")
-	if err != nil || !strings.Contains(out, "session: "+open+" agent: codex live: 30m ") {
+	if err != nil || !strings.Contains(out, open+" agent=codex live=30m ") {
 		t.Fatalf("live header: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--exclude-live")
@@ -472,4 +475,14 @@ func TestSelfAndLive(t *testing.T) {
 	if live, ok := liveOf(out)[open]; err != nil || !ok || live {
 		t.Fatalf("--exclude-live with an idle held session: %v\n%s", err, out)
 	}
+}
+
+// sessionsOut decodes sessions' JSON answer: the brief rows decode into
+// the fields they share with format.ConversationInfo.
+type sessionsOut struct {
+	Kind     string                    `json:"kind"`
+	Sessions []format.ConversationInfo `json:"sessions"`
+	HasMore  bool                      `json:"has_more"`
+	Next     string                    `json:"next_cursor"`
+	Hint     string                    `json:"hint"`
 }

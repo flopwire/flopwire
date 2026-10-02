@@ -1,16 +1,16 @@
-## session: 0b7e2c1a-0000-4000-8000-000000000002 agent: claude ended: 2026-09-23 repo: oracle-beta branch: fix/retry failed: 1 intent: "the upload retry test is flaky; find out why"
+## 0b7e2c1a-0000-4000-8000-000000000002 agent=claude ended=2026-09-23 repo=oracle-beta branch=fix/retry failed=1 intent="the upload retry test is flaky; find out why"
 76627968:1 system: This session is being continued from a previous conversation. Summary: retries used fixed delays; switching to backoff.
-## session: agent-b000000000000002 agent: claude ended: 2026-09-23 repo: oracle-beta branch: fix/retry intent: "Find every retry call site."
+## agent-b000000000000002 agent=claude ended=2026-09-23 repo=oracle-beta branch=fix/retry intent="Find every retry call site."
 4153344:1 tool_result/Agent +1 copies: CI retries twice.
-## session: agent-b000000000000003 agent: claude ended: 2026-09-23 repo: oracle-beta branch: fix/retry intent: "Check the CI retry config."
+## agent-b000000000000003 agent=claude ended=2026-09-23 repo=oracle-beta branch=fix/retry intent="Check the CI retry config."
 0:1 user: Check the CI retry config.
-## session: agent-b000000000000002
+## agent-b000000000000002
 1527808:1 tool_call/Agent: {"description":"Nested check","prompt":"Check the CI retry config."}
-## session: agent-b000000000000001 agent: claude ended: 2026-09-23 repo: oracle-beta branch: fix/retry intent: "Review the retry change for correctness."
+## agent-b000000000000001 agent=claude ended=2026-09-23 repo=oracle-beta branch=fix/retry intent="Review the retry change for correctness."
 0:1 user: Review the retry change for correctness.
-## session: agent-b000000000000002
+## agent-b000000000000002
 0:1 user: Find every retry call site.
-## session: 0b7e2c1a-0000-4000-8000-000000000002
+## 0b7e2c1a-0000-4000-8000-000000000002
 64409600:1 tool_call/Agent: {"description":"Scan retries","prompt":"Find every retry call site.","subagent_type":"Explore"}
 61956096:1 tool_result/Workflow: Workflow review-retry launched in background.
 59088896:1 tool_call/Workflow: {"workflow":"review-retry","description":"Review retry change"}

@@ -196,11 +196,11 @@ const mcpInstructions = `Flopwire searches past coding-agent transcripts (Claude
 
 Workflow: flopwire_grep for exact strings and regexes (like rg: error text, identifiers, commands, paths); flopwire_search for fuzzy natural-language questions; flopwire_sessions to list sessions by repo, agent or time; then flopwire_read on any address a result prints to see the full message and its neighbours. Hits are excerpts: read before you rely on one. If the hits don't answer the question, say the transcripts don't hold it rather than guess.
 
-Layout: grep and search group hits under one header line per session, of "key: value" fields one space apart: "## session: SESSION who: user@device agent: claude live: 4m (or ended: DATE) repo: NAME branch: B files: N pr: #N commits: N failed: N intent: \"...\"". A value with a space or quote is a JSON string; intent comes last; empty fields are left out. Under it each hit is "ORDINAL:LINE kind/tool: text"; its address for flopwire_read is SESSION/ORDINAL:LINE. no_heading=true prints one line per hit with the full address and [agent kind time repo@branch] instead. flopwire_read's header is labeled the same way: "# session: FULL ID agent: A repo: PATH branch: B start: T active: T msgs: N title: \"...\"". flopwire_read address=SESSION outline=true shows a session's digest (intent, files edited, PRs, commits, tokens) and its skeleton (every prompt, every tool call as tool(args), failed calls, subagents) without tool output: read it before reading messages one by one.
+Layout: grep and search group hits under one header per session: "## SESSION agent=claude ended=DATE (or live=4m) repo=NAME branch=B commits=N failed=N intent=\"...\""; a value with a space, quote or = is a JSON string. Under it each hit is "ORDINAL:LINE kind/tool: text"; its address for flopwire_read is SESSION/ORDINAL:LINE. no_heading=true prints one line per hit with the full address instead. flopwire_read's header has the same form. flopwire_read address=SESSION outline=true shows a session's digest and skeleton (every prompt, every tool call as tool(args)) without tool output: read it before reading messages one by one.
 
 Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its start), a message id, a transcript /path.jsonl:LINE, or "self" (your own session). Ordinals are stable ids, not positions: use before/after to step through a session.
 
-grep, search and read answer compact text (format="json": JSON); flopwire_sessions answers JSON (format="text": labeled rows). Every tool also returns structuredContent, as its outputSchema declares. Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note, never an error. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
+grep, search and read answer text (format="json": compact JSON); flopwire_sessions answers JSON (format="text": rows). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note, never an error. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
 
 Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions: its next_cursor).
 
@@ -239,7 +239,8 @@ var filterDesc = map[string]string{
 	"limit":              "hits (sessions for flopwire_sessions) per page; default 20, max 500",
 	"offset":             "skip this many; the footer prints the next offset",
 	"cursor":             "where the next page starts: next_cursor of the previous answer",
-	"format":             "text (default): the readable answer; json: the structured answer as compact JSON",
+	"format":             "text (default) or json (compact)",
+	"detail":             "each session's whole description and digest (files, tools, tokens, last reply) instead of the brief row",
 }
 
 // formatProp is a retrieval tool's format argument: sessions answers JSON
@@ -255,7 +256,7 @@ func formatProp(verb string) map[string]any {
 func filterProps(verb string) map[string]any {
 	names := []string{"limit", "include_self", "agent", "repo", "branch", "since", "until", "device", "user", "exclude_subagents", "exclude_live", "sort"}
 	if verb == "sessions" {
-		names = append(names, "cursor")
+		names = append(names, "cursor", "detail")
 	} else {
 		names = append(names, "offset", "kind", "exclude_kind", "tool", "session", "include_superseded", "include_branches", "no_heading")
 	}
@@ -265,7 +266,7 @@ func filterProps(verb string) map[string]any {
 		switch n {
 		case "limit", "offset":
 			typ = "integer"
-		case "include_self", "exclude_subagents", "include_superseded", "include_branches", "exclude_live", "no_heading":
+		case "include_self", "exclude_subagents", "include_superseded", "include_branches", "exclude_live", "no_heading", "detail":
 			typ = "boolean"
 		}
 		props[n] = prop(typ, filterDesc[n])
@@ -299,14 +300,14 @@ func mcpTool(name, title, desc, verb string, own map[string]any, required ...str
 	// Every tool only reads a local index (or the team server's), so a
 	// client may run them without asking and in parallel.
 	ann := map[string]any{"title": title, "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
-	return map[string]any{"name": name, "title": title, "description": desc, "inputSchema": schema, "outputSchema": retrievalOutputSchema(verb), "annotations": ann}
+	return map[string]any{"name": name, "title": title, "description": desc, "inputSchema": schema, "annotations": ann}
 }
 
 // mcpTools describes the four retrieval tools and the three message bus
 // tools (mcp_bus.go).
 func mcpTools() []any {
 	return append([]any{
-		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header line per session of labeled fields (## session: S agent: A ended: DATE repo: R branch: B … intent: \"…\"; a value with a space is a JSON string); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), lines cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For a fuzzy question use flopwire_search.", "grep",
+		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For a fuzzy question use flopwire_search.", "grep",
 			map[string]any{
 				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; needs a run of 3 letters or digits every match contains"),
 				"fixed_strings":   prop("boolean", "pattern is a literal string"),
@@ -323,16 +324,16 @@ func mcpTools() []any {
 			}, "pattern"),
 		mcpTool("flopwire_search", "Search transcripts", "Ranked (BM25) search of past coding-agent transcripts for fuzzy or natural-language questions: what was decided, why something failed, how a thing was done. Quoted phrases must match. Hits are grouped under a header line per session (as flopwire_grep's); each prints as ORDINAL:LINE kind/tool: snippet, best first (sort=newest|oldest orders by time); the address for flopwire_read is SESSION/ORDINAL:LINE. When no message has every word it ranks messages with any of them and says so first: those hits may be unrelated, so check them with flopwire_read. For exact text use flopwire_grep.", "search",
 			map[string]any{"query": prop("string", "words and \"quoted phrases\"")}, "query"),
-		mcpTool("flopwire_sessions", "List sessions", `List past coding-agent sessions, newest activity first, filtered by repo, branch, agent, time or a glob, as JSON: {"kind":"sessions","sessions":[{"session_id" (the full id),"address","agent","title","repo","branches","live","last_activity_at","messages","parent_session","digest":{"intent","commits","prs","files_edited","last",…}}…],"has_more","next_cursor"}. Use it to see who worked where, when and on what. Pass session_id to flopwire_read with outline=true for its digest and skeleton, as session= to flopwire_grep and flopwire_search to search inside it, or to flopwire_peers session= to see whether it is live. has_more=true: pass next_cursor as cursor; a session active again during a walk moves, so newest first it may be skipped and oldest first shown twice. format="text": a labeled line per session.`, "sessions",
+		mcpTool("flopwire_sessions", "List sessions", `List past coding-agent sessions, newest activity first, filtered by repo, branch, agent, time or a glob, as JSON: {"kind":"sessions","sessions":[{"session_id" (full),"agent","user","repo","branches","live","last_activity_at","messages","title","commits","files","failed",…}],"has_more","next_cursor"}; detail=true adds the whole digest. Use it to see who worked where, when and on what. Pass session_id to flopwire_read with outline=true for its digest and skeleton, as session= to flopwire_grep and flopwire_search to search inside it, or to flopwire_peers session= to see whether it is live. has_more=true: pass next_cursor as cursor; a session active again during a walk moves (newest first it may be skipped, oldest first shown twice).`, "sessions",
 			map[string]any{"glob": prop("string", "matches session id, title, repo or cwd; * and ?; a bare word matches anywhere")}),
-		mcpTool("flopwire_read", "Read a message", "Read the message at an address that flopwire_grep, flopwire_search or flopwire_sessions printed, with its neighbours in conversation order. The header is labeled fields (# session: FULL ID agent: … repo: … branch: … start: … active: … msgs: … title: \"…\"). The focus text is numbered by line; long text is cut at max_chars and says which line_offset reads on; the hints name the before/after call for more messages. outline=true instead shows the session's digest and skeleton: every prompt, every tool call as tool(args) with failed calls and spawned subagents marked, no tool output; limit sets the page size and the footer prints the cursor that reads on.", "read",
+		mcpTool("flopwire_read", "Read a message", "Read the message at an address that flopwire_grep, flopwire_search or flopwire_sessions printed, with its neighbours in conversation order. The header is # FULL_ID agent=A repo=PATH branch=B start=T active=T msgs=N title=\"…\". The focus text is numbered by line; long text is cut at max_chars and says which line_offset reads on; the hints name the before/after call for more messages. outline=true instead shows the session's digest and skeleton: every prompt, every tool call as tool(args) with failed calls and spawned subagents marked, no tool output; limit sets the page size and the footer prints the cursor that reads on.", "read",
 			map[string]any{
 				"address":     prop("string", "SESSION/ORDINAL[:LINE], SESSION, a message id, or /path/transcript.jsonl:LINE"),
 				"before":      prop("integer", "messages before (default 0)"),
 				"after":       prop("integer", "messages after (default 0; a SESSION address shows 20 messages)"),
 				"max_chars":   prop("integer", "bytes of the focus text (default 4000, at most 24000; neighbours get a quarter)"),
 				"line_offset": prop("integer", "first line of the focus text to show"),
-				"raw":         prop("boolean", "the transcript record's raw bytes instead"),
+				"raw":         prop("boolean", "the transcript record's raw bytes instead, whatever format says"),
 				"outline":     prop("boolean", "the session's digest and skeleton (prompts and tool calls, no output) instead of messages"),
 				"cursor":      prop("string", "outline: where the next page starts; the footer prints it"),
 				"limit":       prop("integer", "outline: entries per page (default 200, max 2000)"),
@@ -460,26 +461,18 @@ func mcpArgs(name string) []string {
 	return nil
 }
 
-// mcpCall runs one tool and returns its text answer.
+// mcpCall runs one tool and returns its answer: one text block.
 func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
-	text, _, err := mcpCallFull(ctx, r, name, args)
-	return text, err
-}
-
-// mcpCallFull runs one tool and returns its text answer and, for the
-// message bus tools, the structured result (structuredContent).
-func mcpCallFull(ctx context.Context, r *retriever, name string, args map[string]any) (string, any, error) {
 	if _, ok := busToolNames[name]; ok {
 		return busMCPCall(ctx, r, name, args)
 	}
 	return mcpRetrievalCall(ctx, r, name, args)
 }
 
-// mcpRetrievalCall runs one retrieval tool and returns its answer: the
-// text (or, in JSON mode, the structured object as compact JSON) and the
-// structured object. In JSON mode a failure's text is the JSON error
-// object.
-func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, any, error) {
+// mcpRetrievalCall runs one retrieval tool and returns its answer: text,
+// or in JSON mode compact JSON within the budget. In JSON mode a
+// failure's text is the JSON error object.
+func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
 	o, asJSON, err := mcpOpts(name, args)
 	if err != nil {
 		err = badArg(err)
@@ -487,9 +480,8 @@ func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[s
 		err = badArg(fmt.Errorf("%s: missing %s", name, map[string]string{"grep": "pattern", "search": "query", "read": "address"}[o.verb]))
 	}
 	var b bytes.Buffer
-	var rec any
 	if err == nil {
-		err = runToolRec(ctx, r, o, &b, format.Style{MCP: true, Budget: format.MaxOutput}, selfMCP, &rec)
+		err = runTool(ctx, r, o, &b, format.Style{MCP: true, Budget: format.MaxOutput}, selfMCP)
 	}
 	if err != nil {
 		if o == nil {
@@ -501,15 +493,15 @@ func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[s
 		if asJSON {
 			var eb bytes.Buffer
 			_ = writeErrorJSON(&eb, retrievalErr(mcpVerbs[name], err, true))
-			return "", nil, &mcpBusError{text: strings.TrimRight(eb.String(), "\n")}
+			return "", &mcpBusError{text: strings.TrimRight(eb.String(), "\n")}
 		}
-		return "", nil, err
+		return "", err
 	}
 	text := strings.ToValidUTF8(b.String(), "�")
 	if asJSON && !o.on["raw"] {
 		text = strings.TrimRight(text, "\n")
 	}
-	return text, rec, nil
+	return text, nil
 }
 
 // mcpError is the short isError text of a failed call, with a hint.
@@ -681,7 +673,7 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			case <-cctx.Done():
 				return
 			}
-			text, structured, err := mcpCallFull(cctx, r, p.Name, p.Arguments)
+			text, err := mcpCall(cctx, r, p.Name, p.Arguments)
 			if cctx.Err() != nil && ctx.Err() == nil {
 				return // cancelled by the client: no response
 			}
@@ -690,9 +682,6 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 				return
 			}
 			res := map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}}
-			if structured != nil {
-				res["structuredContent"] = structured
-			}
 			reply("result", res)
 		}()
 	default:
