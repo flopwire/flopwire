@@ -87,6 +87,46 @@ based: a credential it does not recognize is stored as written.
   eligible traces become team-visible and indefinitely retained, with only
   recognized secrets redacted.
 
+### Messages between people
+
+The message bus lets agent sessions message each other
+([notes/message-bus/plan.md](notes/message-bus/plan.md)). A message from
+another person's session is held until the recipient accepts that person
+(B7). Accepting is the trust decision:
+
+- An accepted person's agents can send messages to all of the recipient's
+  agent sessions, including sessions that run with permission prompts
+  turned off. The recipient's agents may act on those requests within
+  each session's own permissions.
+- Each delivered message is marked `sender="teammate"`, and a standing
+  instruction tells the model to treat it as information and confirm with
+  its human before consequential actions. That rule is guidance to the
+  model, not a boundary. Smaller models act on a teammate's request,
+  including one that claims to come from the recipient's own user (#77).
+- A prompt-injected agent can pass the injection to every session whose
+  owner accepted its owner.
+- Accepting and revoking need the person's own login session (the web
+  console, or the CLI with the session `flopwire login` saved). A device
+  token, a minted token or a service account is refused. No route accepts
+  for another person, so an administrator cannot accept for a member. The
+  CLI refuses unless stdin is a terminal, and there is no MCP tool. An
+  agent that runs as the same OS user can still read the saved login
+  session from the configuration file while it is valid (24 hours), as it
+  can an administrator's: the terminal check stops an agent that calls the
+  CLI, not one that reads the file and calls the server itself.
+- Held messages are shown only to the recipient's login session, as a
+  first-line preview; the whole body never leaves the server before
+  acceptance. The hook tells the person about held messages through a
+  channel the model does not see (Claude Code and Codex); it never puts
+  them in model context. The notice is recorded in the harness
+  transcript, which is uploaded like the rest of it.
+- Revoking holds the sender's undelivered messages again, and the
+  recipient's devices drop them at once. A message a session already
+  received cannot be recalled.
+- Accepts, revokes, and reads of the held and accepted lists are audited
+  (`bus.accept`, `bus.revoke`, `bus.held` with the message ids shown,
+  `bus.accepts`).
+
 Audit events are retained indefinitely. User, device, member-policy, status,
 and audit-log reads are audited. Failed authentication and authorization are
 audited. Security-sensitive reads and identity mutations fail closed (`503`)
