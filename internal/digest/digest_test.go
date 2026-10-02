@@ -95,12 +95,20 @@ func TestFoldPairsCallAndResultAcrossBatches(t *testing.T) {
 	if fmt.Sprint(d.PRs) != "[o/r#9]" {
 		t.Fatalf("prs %v", d.PRs)
 	}
-	// A failed call names nothing.
-	_, b = fold(t, nil, Conv{}, Counts{}, msg(1, transcript.KindToolCall, "Bash", "y", `{"command":"git commit -m x"}`))
-	failed := msg(2, transcript.KindToolResult, "Bash", "y", "[main abcdef1] x")
+	// A failed call names no PR.
+	_, b = fold(t, nil, Conv{}, Counts{}, msg(1, transcript.KindToolCall, "Bash", "z", `{"command":"gh pr create --fill"}`))
+	failedPR := msg(2, transcript.KindToolResult, "Bash", "z", "https://github.com/o/r/pull/10")
+	failedPR.IsError = true
+	if d, _ := fold(t, b, Conv{}, Counts{}, failedPR); len(d.PRs) != 0 {
+		t.Fatalf("prs from a failed call: %v", d.PRs)
+	}
+	// A commit's "[branch sha]" line counts though a later command of the
+	// call failed: git prints it only once the commit exists.
+	_, b = fold(t, nil, Conv{}, Counts{}, msg(1, transcript.KindToolCall, "Bash", "y", `{"command":"git commit -m x && go test ./..."}`))
+	failed := msg(2, transcript.KindToolResult, "Bash", "y", "Exit code 1\n[main abcdef1] x\nFAIL")
 	failed.IsError = true
-	if d, _ := fold(t, b, Conv{}, Counts{}, failed); len(d.Commits) != 0 {
-		t.Fatalf("commits from a failed call: %v", d.Commits)
+	if d, _ := fold(t, b, Conv{}, Counts{}, failed); fmt.Sprint(d.Commits) != "[abcdef1]" {
+		t.Fatalf("commits from a call that failed after its commit: %v", d.Commits)
 	}
 }
 

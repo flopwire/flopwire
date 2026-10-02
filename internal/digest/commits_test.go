@@ -154,6 +154,7 @@ const (
 )
 
 var commitCases = []commitCase{
+	{"env -u X git commit", []step{{cmd: `env -u TMUX GIT_EDITOR=true git commit -m x`, out: "[api-cursors 650a939] x\n"}}, []string{sha1}, nil},
 	{"commit prints its sha", []step{{cmd: `git commit -am "fix upload"`, out: "[api-cursors 650a939] fix upload\n 2 files changed, 3 insertions(+)"}},
 		[]string{sha1}, nil},
 	{"root commit", []step{{cmd: `git commit -m init`, out: "[main (root-commit) 650a939] init\n 1 file changed"}}, []string{sha1}, nil},
@@ -230,8 +231,15 @@ var commitCases = []commitCase{
 		{cmd: `git log --oneline -1`, out: sha1 + " two\n"}}, []string{sha1}, []string{"one"}},
 	{"-q, then log in another directory", []step{{cmd: `git commit -q -m x`}, {cmd: `cd /r/vendor/lib && git log --oneline -1`, out: old + " lib\n"}},
 		nil, []string{"x"}},
-	{"commit in another repo prints its sha", []step{{cmd: `cd /elsewhere && git commit -m x`, out: "[main 1f2e3d4] x\n"}}, nil, nil},
+	// Outside the session's repo and cwd (a sibling worktree, another
+	// repo): a sha names its commit wherever it was made, so it counts; a
+	// commit without one does not (its branch would be the session's).
+	{"commit in another directory prints its sha", []step{{cmd: `cd /elsewhere && git commit -m x`, out: "[main 1f2e3d4] x\n"}}, []string{old}, nil},
 	{"git -C another repo commit -q", []step{{cmd: `git -C /elsewhere commit -q -m x`}}, nil, nil},
+	{"-q in another directory, then log there", []step{{cmd: `cd /r-wt-x && git commit -q -m x`}, {cmd: `cd /r-wt-x && git log --oneline -1`, out: sha1 + " x\n"}},
+		[]string{sha1}, nil},
+	{"-q in another directory, then log in the session's", []step{{cmd: `cd /r-wt-x && git commit -q -m x`}, {cmd: `git log --oneline -1`, out: old + " older\n"}},
+		nil, nil},
 	{"dry run", []step{{cmd: `git commit --dry-run -m x`, out: "On branch api-cursors\nChanges to be committed:\n"}}, nil, nil},
 }
 
@@ -339,5 +347,62 @@ func TestMaskHidesCommitSubject(t *testing.T) {
 		func(s string) string { return strings.Repeat("█", len(s)) }))
 	if strings.Contains(out, "sk-ABC") {
 		t.Fatalf("subject kept: %s", out)
+	}
+}
+
+// A Codex exec script that commits and then runs a command that fails
+// (rg with no match): the printed sha counts though the script's output
+// shows a failure.
+func TestCodexScriptPrintedCommitSurvivesALaterFailure(t *testing.T) {
+	call := msg(10, transcript.KindToolCall, "exec", "s1", "script")
+	call.Enrichment = map[string]any{"commands": []map[string]any{{"cmd": "git commit -m x", "cwd": "/r", "exit_code": 0},
+		{"cmd": "rg -n TODO src", "cwd": "/r", "exit_code": 1}}}
+	call.IsError = true
+	res := msg(11, transcript.KindToolResult, "exec", "s1", "Script completed\nOutput:\n"+`{"chunk_id":"a","exit_code":0,"output":"[main 650a939] x\n 1 file changed\n"}`+
+		"\n"+`{"chunk_id":"b","exit_code":1,"output":""}`)
+	if d := Parse(Fold(nil, repoConv, []*transcript.Message{call, res})); fmt.Sprint(d.Commits) != "[650a939]" {
+		t.Fatalf("commits %v", d.Commits)
+	}
+}
+
+// A Codex chunk the text cap cut does not decode as JSON; its printed
+// commit line still counts.
+func TestCodexCutChunkKeepsItsCommitLine(t *testing.T) {
+	call := msg(10, transcript.KindToolCall, "exec", "s1", "script")
+	call.Enrichment = map[string]any{"commands": []map[string]any{{"cmd": "git commit -m x", "cwd": "/r", "exit_code": 0},
+		{"cmd": "git status", "cwd": "/r", "exit_code": 0}}}
+	res := msg(11, transcript.KindToolResult, "exec", "s1", "Script completed\nOutput:\n"+`{"chunk_id":"a","exit_code":0,"output":"[main 650a939] x\n 1 file changed\n`+
+		"\n"+`{"chunk_id":"b","exit_code":0,"output":"clean\n"}`)
+	if d := Parse(Fold(nil, repoConv, []*transcript.Message{call, res})); fmt.Sprint(d.Commits) != "[650a939]" {
+		t.Fatalf("commits %v", d.Commits)
+	}
+}
+
+// A Codex exec script whose command events are missing: the commands are
+// read from the script's exec_command calls.
+func TestCodexScriptWithoutEvents(t *testing.T) {
+	call := msg(10, transcript.KindToolCall, "exec", "s1", `text(await tools.exec_command({cmd:"git add a.go && git commit -q -m \"Add cursor\" && git log --oneline -1","max_output_tokens":6000}));`+"\n")
+	res := msg(11, transcript.KindToolResult, "exec", "s1", "Script completed\nOutput:\n"+`{"chunk_id":"a","exit_code":0,"output":"650a939 Add cursor\n"}`)
+	if d := Parse(Fold(nil, repoConv, []*transcript.Message{call, res})); fmt.Sprint(d.Commits) != "[650a939]" {
+		t.Fatalf("commits %v, without sha %+v", d.Commits, d.CommitsNoSHA)
+	}
+}
+
+// Calls whose results never come do not block later ones: past
+// maxPending, the oldest pending call gives way.
+func TestPendingCallsDoNotBlockLaterOnes(t *testing.T) {
+	var msgs []*transcript.Message
+	// The calls left waiting have later ordinals than the one that gets
+	// its result (Codex re-emits a call at its own, earlier ordinal).
+	msgs = append(msgs, msg(1, transcript.KindToolCall, "Bash", "c", `{"command":"git commit -m y"}`))
+	for i := range maxPending + 4 {
+		msgs = append(msgs, msg(int64(100+i), transcript.KindToolCall, "Bash", fmt.Sprint("lost", i), `{"command":"git commit -m x"}`))
+		if i == 2 {
+			msgs = append(msgs, msg(2, transcript.KindToolResult, "Bash", "c", "[main 650a939] y\n"))
+		}
+	}
+	d := Parse(Fold(nil, repoConv, msgs))
+	if fmt.Sprint(d.Commits) != "[650a939]" || len(d.State.Pending) != maxPending {
+		t.Fatalf("commits %v, %d pending", d.Commits, len(d.State.Pending))
 	}
 }

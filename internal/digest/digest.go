@@ -112,6 +112,8 @@ type State struct {
 	Open     *Open    `json:"oc,omitempty"`
 	Resolved []string `json:"rs,omitempty"`
 	V        int      `json:"v,omitempty"`
+	// Seq counts the calls made pending (see Call.Seq).
+	Seq int64 `json:"q,omitempty"`
 	// Usage is the last API message whose usage the token counts hold
 	// (see Append).
 	Usage *UsageMark `json:"u,omitempty"`
@@ -126,7 +128,11 @@ const foldVersion = 2
 type Call struct {
 	Kinds   string `json:"k,omitempty"`
 	Ord     int64  `json:"o,omitempty"`
-	Outside bool   `json:"x,omitempty"` // the commit ran outside the session's repo
+	Outside bool   `json:"x,omitempty"` // the commit ran outside the session's repo and cwd
+	// PrintOK: the command line that may print "[branch sha]" exited 0
+	// (Codex and Devin record each command's exit code), so its line
+	// counts though another command of the call failed.
+	PrintOK bool   `json:"po,omitempty"`
 	Commit  int    `json:"m,omitempty"`
 	Subject string `json:"s,omitempty"`
 	Where   string `json:"w,omitempty"`
@@ -136,6 +142,8 @@ type Call struct {
 	RevOK   int    `json:"ro,omitempty"`
 	// OpenID is the earlier commit (its call id) a non-self reveal shows.
 	OpenID string `json:"op,omitempty"`
+	// Seq orders the pending calls by when they were folded.
+	Seq int64 `json:"q,omitempty"`
 }
 
 // Open is a commit without a sha that a later command may show: its
@@ -501,7 +509,7 @@ func (d *Digest) Fold(m *transcript.Message) {
 		}
 		delete(d.State.Pending, m.ToolCallID)
 		if len(d.State.Pending) == 0 {
-			d.State.Pending = nil
+			d.State.Pending, d.State.Seq = nil, 0
 		}
 		d.foldResult(m, c)
 	}
@@ -551,9 +559,22 @@ func (d *Digest) foldCall(m *transcript.Message) {
 		return
 	}
 	p := st.pendingMap()
-	if _, have := p[m.ToolCallID]; have || len(p) < maxPending {
-		p[m.ToolCallID] = c
+	if _, have := p[m.ToolCallID]; !have && len(p) >= maxPending {
+		// A call whose result never came (a harness that drops it) must
+		// not block later ones: the oldest gives way.
+		// Ordinals need not follow the order calls are folded in (Codex
+		// re-emits a call when its events arrive), so the fold counts.
+		oldest := ""
+		for id, o := range p {
+			if oldest == "" || o.Seq < p[oldest].Seq || o.Seq == p[oldest].Seq && id < oldest {
+				oldest = id
+			}
+		}
+		delete(p, oldest)
 	}
+	st.Seq++
+	c.Seq = st.Seq
+	p[m.ToolCallID] = c
 }
 
 func joinKinds(k, add string) string {
@@ -602,7 +623,9 @@ func (d *Digest) foldResult(m *transcript.Message, c *Call) {
 				}
 			}
 		case "commit":
-			if callOK && !c.Outside {
+			// git prints "[branch sha]" only once the commit exists: a
+			// later command's failure does not undo it.
+			{
 				for _, sm := range commitOut.FindAllStringSubmatch(out, -1) {
 					d.add("commits", &d.Commits, sm[1], maxCommit)
 					printed++
@@ -631,13 +654,16 @@ func (d *Digest) foldResult(m *transcript.Message, c *Call) {
 		}
 		sha = revealed(c.Reveal, c.Style, out, b)
 	}
-	if c.Commit != okNone && succeeded(c.Commit) && printed == 0 && !c.Outside && m.ToolCallID != "" &&
+	if c.Commit != okNone && succeeded(c.Commit) && printed == 0 && m.ToolCallID != "" &&
 		!slices.Contains(st.Resolved, m.ToolCallID) {
 		if c.Self && sha != "" {
 			d.add("commits", &d.Commits, sha, maxCommit)
 			d.resolved(m.ToolCallID)
 		} else {
-			if d.noSHA(m.ToolCallID) < 0 {
+			// A commit outside the session's repo and cwd is kept only
+			// until a later command shows its sha (Open): without one,
+			// its branch and repo would be the session's, not its own.
+			if d.noSHA(m.ToolCallID) < 0 && !c.Outside {
 				rec := Commit{ID: m.ToolCallID, Subject: c.Subject, Branch: branch}
 				if !m.TS.IsZero() {
 					t := m.TS.UTC().Truncate(time.Second)
@@ -649,7 +675,7 @@ func (d *Digest) foldResult(m *transcript.Message, c *Call) {
 					d.More = append(d.More, "commits_no_sha")
 				}
 			}
-			if d.noSHA(m.ToolCallID) >= 0 && (st.HeadOrd == nil || *st.HeadOrd <= c.Ord) {
+			if (c.Outside || d.noSHA(m.ToolCallID) >= 0) && (st.HeadOrd == nil || *st.HeadOrd <= c.Ord) {
 				st.Open = &Open{ID: m.ToolCallID, Ord: c.Ord, Where: c.Where}
 			}
 		}
@@ -658,6 +684,9 @@ func (d *Digest) foldResult(m *transcript.Message, c *Call) {
 		if i := d.noSHA(c.OpenID); i >= 0 {
 			d.CommitsNoSHA = slices.Delete(d.CommitsNoSHA, i, i+1)
 			d.add("commits", &d.Commits, sha, maxCommit)
+			d.resolved(c.OpenID)
+		} else if st.Open != nil && st.Open.ID == c.OpenID && !slices.Contains(st.Resolved, c.OpenID) {
+			d.add("commits", &d.Commits, sha, maxCommit) // a commit outside the repo (see above)
 			d.resolved(c.OpenID)
 		}
 		if st.Open != nil && st.Open.ID == c.OpenID {

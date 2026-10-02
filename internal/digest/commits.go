@@ -14,8 +14,9 @@ import (
 // output of the call that made it, or, when that output names no sha
 // (git commit -q), from a later command whose output shows HEAD:
 //
-//   - git commit, cherry-pick and revert print "[branch sha] subject": the
-//     sha counts when the call succeeded.
+//   - git commit, cherry-pick and revert print "[branch sha] subject" once
+//     the commit exists: the sha counts, even when a later command of the
+//     call failed.
 //   - A successful git commit whose output prints no sha opens a window.
 //     The next git rev-parse HEAD, git log (HEAD's entry only) or git show
 //     of HEAD in the same directory, or a git push line for the commit's
@@ -162,11 +163,19 @@ func readGit(line, base string) (gitCall, bool) {
 }
 
 // stripPrefix drops leading variable assignments and command prefixes
-// (env, command, time, nohup, sudo).
+// (env and its options, command, time, nohup, sudo).
 func stripPrefix(w []string) []string {
 	for len(w) > 0 {
 		switch {
-		case w[0] == "env" || w[0] == "command" || w[0] == "time" || w[0] == "nohup" || w[0] == "sudo" || w[0] == "exec":
+		case w[0] == "env":
+			w = w[1:]
+			for len(w) > 0 && strings.HasPrefix(w[0], "-") {
+				if (w[0] == "-u" || w[0] == "-C" || w[0] == "-S") && len(w) > 1 {
+					w = w[1:]
+				}
+				w = w[1:]
+			}
+		case w[0] == "command" || w[0] == "time" || w[0] == "nohup" || w[0] == "sudo" || w[0] == "exec":
 			w = w[1:]
 		case assignment.MatchString(w[0]):
 			w = w[1:]
@@ -472,24 +481,24 @@ func revealed(kind, style, out, branch string) string {
 func shellOut(text string) (string, bool) {
 	failed := false
 	if strings.Contains(text, `"exit_code":`) {
+		// A chunk the text cap cut does not decode: its line stays as is.
 		var outs []string
+		decoded := false
 		for _, l := range strings.Split(text, "\n") {
-			if !strings.HasPrefix(l, "{") || !strings.Contains(l, `"exit_code":`) {
-				continue
-			}
 			var c struct {
-				Exit   *int   `json:"exit_code"`
-				Output string `json:"output"`
+				Exit   *int    `json:"exit_code"`
+				Output *string `json:"output"`
 			}
-			if json.Unmarshal([]byte(l), &c) != nil {
+			if !strings.HasPrefix(l, "{") || !strings.Contains(l, `"exit_code":`) || json.Unmarshal([]byte(l), &c) != nil || c.Output == nil {
+				outs = append(outs, l)
 				continue
 			}
 			if c.Exit != nil && *c.Exit != 0 {
 				failed = true
 			}
-			outs = append(outs, c.Output)
+			outs, decoded = append(outs, *c.Output), true
 		}
-		if len(outs) > 0 {
+		if decoded {
 			return strings.Join(outs, "\n"), failed
 		}
 	}
@@ -547,7 +556,7 @@ func shellCmds(m *transcript.Message) []shellCmd {
 	}
 	args := jsonArgs(m.Text)
 	if args == nil {
-		return nil
+		return scriptCmds(m.Text)
 	}
 	for _, k := range []string{"command", "cmd"} {
 		if s := argString(args[k]); s != "" {
@@ -559,6 +568,30 @@ func shellCmds(m *transcript.Message) []shellCmd {
 		}
 	}
 	return nil
+}
+
+// execCall is a Codex exec script's call of exec_command: its cmd (a JS
+// string literal, which JSON decodes) and, when given, its workdir.
+var execCall = regexp.MustCompile(`exec_command\(\{\s*cmd:\s*("(?:[^"\\]|\\.)*")(?:\s*,\s*"?workdir"?:\s*("(?:[^"\\]|\\.)*"))?`)
+
+// scriptCmds are the commands a Codex exec script runs, read from its
+// text, for a call whose command events are missing.
+func scriptCmds(text string) []shellCmd {
+	if !strings.Contains(text, "exec_command(") {
+		return nil
+	}
+	var out []shellCmd
+	for _, m := range execCall.FindAllStringSubmatch(text, -1) {
+		var c shellCmd
+		if json.Unmarshal([]byte(m[1]), &c.line) != nil {
+			return nil // a literal JSON does not read: trust none of it
+		}
+		if m[2] != "" {
+			_ = json.Unmarshal([]byte(m[2]), &c.cwd)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // Success of a commit or a reveal, as a call's command lines say it.
