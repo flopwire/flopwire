@@ -182,6 +182,7 @@ describe("admin console", () => {
       "Collection policy",
       "Archive control",
       "Audit log",
+      "Messaging",
     ]);
 
     fireEvent.click(

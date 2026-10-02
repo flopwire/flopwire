@@ -99,3 +99,39 @@ export async function request<T>(
   }
   return response.json() as Promise<T>;
 }
+
+// Message bus acceptance (GET /v1/bus/held, /v1/bus/accepts). The held
+// list carries previews only, never a whole message; a preview is text
+// another person's agent wrote, shown as inert text.
+export type HeldMessage = {
+  id: string;
+  agent: string;
+  session: string;
+  repo?: string;
+  branch?: string;
+  intent: "request" | "inform" | "done";
+  addressed: "session" | "user";
+  preview: string;
+  bytes: number;
+  refs?: number;
+  sent: string;
+  expires_at: string;
+};
+export type HeldGroup = {
+  user: string;
+  user_id: string;
+  user_name?: string;
+  count: number;
+  oldest: string;
+  newest: string;
+  messages: HeldMessage[];
+  more?: number;
+};
+export type Accepted = { user: string; user_id: string; accepted_at: string };
+export type AcceptResult = {
+  user: string;
+  user_id: string;
+  accepted: boolean;
+  released?: number;
+  reheld?: number;
+};

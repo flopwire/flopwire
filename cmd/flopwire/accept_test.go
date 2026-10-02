@@ -396,3 +396,14 @@ func mustLoad(t *testing.T) client.Config {
 	}
 	return cfg
 }
+
+// The console states what accepting means in the same words as the CLI.
+func TestAcceptStatementMatchesTheConsole(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "messaging.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `"`+acceptStatement+`"`) {
+		t.Fatalf("web/src/messaging.ts does not hold the CLI's statement:\n%s", acceptStatement)
+	}
+}
