@@ -56,6 +56,65 @@ func (a *Agent) releaseStart(session, source string) {
 	delete(s.at, session+"\x00"+source)
 }
 
+// hookBusyCap bounds how long a session counts as busy after the hook
+// event that began or continued its turn: a turn that ended without a Stop
+// hook (the harness was interrupted or killed) must not stay busy forever.
+// A single tool call longer than this reads as idle until the next event.
+const hookBusyCap = 15 * time.Minute
+
+// hookTurns is each session's last hook event: UserPromptSubmit, PreToolUse
+// and PostToolUse mean a turn is running; Stop, SessionStart and SessionEnd
+// mean none is. Every event reaches the agent as the flush request of
+// `flopwire hook`, so this costs nothing extra. Only Devin's presence uses
+// it: Devin has no other read-only signal of a running turn.
+type hookTurns struct {
+	mu sync.Mutex
+	m  map[string]hookTurn
+}
+
+type hookTurn struct {
+	busy bool
+	at   time.Time
+}
+
+// noteHookEvent records a session's hook event.
+func (a *Agent) noteHookEvent(session, event string) {
+	var busy bool
+	switch event {
+	case "UserPromptSubmit", "PreToolUse", "PostToolUse":
+		busy = true
+	case "Stop", "SessionStart", "SessionEnd":
+	default:
+		return
+	}
+	if session == "" {
+		return
+	}
+	now := a.now()
+	t := &a.turns
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.m == nil {
+		t.m = map[string]hookTurn{}
+	}
+	for k, v := range t.m {
+		if now.Sub(v.at) > hookBusyCap {
+			delete(t.m, k)
+		}
+	}
+	t.m[session] = hookTurn{busy: busy, at: now}
+}
+
+// hookBusy reports whether the session's last hook event says a turn is
+// running, within hookBusyCap.
+func (a *Agent) hookBusy(session string) bool {
+	t := &a.turns
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	v, ok := t.m[session]
+	return ok && v.busy && a.now().Sub(v.at) <= hookBusyCap
+}
+
 // ExcerptBudget bounds the local index lookups for ref excerpts: they
 // share the hook's 200 ms budget, and a ref without an excerpt still
 // prints its address. Tests under the race detector widen it.

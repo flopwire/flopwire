@@ -135,7 +135,7 @@ where you run admin commands.
 5. Keep the agent running. On macOS, install the launchd user agent in
    `deploy/launchd/com.flopwire.agent.plist`. See
    [docs/two-laptop.md](docs/two-laptop.md#install-the-agent-as-a-launchd-user-agent).
-6. Install Flopwire into Claude Code and Codex, so uploads are immediate,
+6. Install Flopwire into Claude Code, Codex and Devin CLI, so uploads are immediate,
    messages reach your sessions and the MCP tools are available:
 
    ```sh
@@ -145,8 +145,9 @@ where you run admin commands.
    It installs the plugin with each harness's own commands and reports
    what you must still do. In Codex, approve the plugin's hooks once when
    Codex shows "Hooks need review"; see
-   [docs/agent.md](docs/agent.md#approve-the-codex-hooks). Connect Devin
-   by hand; see [docs/agent.md](docs/agent.md#connect-the-harness-hooks).
+   [docs/agent.md](docs/agent.md#approve-the-codex-hooks). Devin loads
+   the Claude Code plugin; setup installs it on this device only
+   (`devin plugins install --local`).
 7. Check the agent:
 
    ```sh
@@ -242,10 +243,9 @@ flopwire inbox --sent                                    # what you sent, and it
 
 The `flopwire hook` command prints each message into the recipient's
 session: inside a running turn at its next tool call, or with its human's
-next prompt. A message never wakes an idle session. In Claude Code and
-Codex, `flopwire setup` installs the hooks; Codex runs them after you
-approve them once. Connect Devin as
-[docs/agent.md](docs/agent.md#connect-the-harness-hooks) shows.
+next prompt. A message never wakes an idle session. In Claude Code, Codex
+and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
+you approve them once.
 
 ## Path rules
 
@@ -361,7 +361,7 @@ Merging that PR creates the version tag and GitHub source release. See
 | `internal/retrieval` | grep, search, sessions and read, local and server |
 | `internal/store`, `migrations` | Postgres persistence and the schema |
 | `internal/backup` | Backup and restore |
-| `plugins/claude-code/flopwire`, `.claude-plugin` | The Claude Code plugin and the marketplace manifest that `flopwire setup` installs from |
+| `plugins/claude-code/flopwire`, `.claude-plugin` | The Claude Code plugin (Devin CLI loads it too) and the marketplace manifest that `flopwire setup` installs from |
 | `plugins/codex/flopwire`, `.agents/plugins` | The Codex plugin and its marketplace manifest |
 | `web` | TypeScript admin console |
 | `deploy` | launchd plist, nginx example |

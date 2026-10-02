@@ -3,8 +3,12 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"maps"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -246,20 +250,86 @@ func waitFlush(t *testing.T, fa *hookAgent, n int) []agent.Request {
 // Claude and Codex, the session for Devin, which has no transcript file.
 func TestHookFlushes(t *testing.T) {
 	for _, c := range []struct {
-		in         string
-		env        map[string]string
-		path, sess string
+		in                string
+		env               map[string]string
+		path, sess, event string
 	}{
-		{claudeIn(evPostToolUse), nil, claudeTranscript, claudeSID},
-		{codexIn("Stop"), nil, codexTranscript, codexSID},
-		{devinIn(evPostToolUse), devinEnv, "", devinSID},
+		{claudeIn(evPostToolUse), nil, claudeTranscript, claudeSID, evPostToolUse},
+		{codexIn("Stop"), nil, codexTranscript, codexSID, "Stop"},
+		{devinIn(evPostToolUse), devinEnv, "", devinSID, evPostToolUse},
+		{devinIn("Stop"), devinEnv, "", devinSID, "Stop"},
 	} {
 		fa := newHookAgent(t)
 		runHook(t, fa.sock, c.in, c.env)
 		f := waitFlush(t, fa, 1)
-		if f[0].Path != c.path || f[0].Session != c.sess {
-			t.Fatalf("flush %+v, want %q %q", f[0], c.path, c.sess)
+		// The event is the agent's busy or idle signal for the session.
+		if f[0].Path != c.path || f[0].Session != c.sess || f[0].Event != c.event {
+			t.Fatalf("flush %+v, want %q %q %q", f[0], c.path, c.sess, c.event)
 		}
+	}
+}
+
+// `devin -r ID` on a session another devin process holds runs the
+// SessionStart hooks, then Devin refuses the session (probes 2026-10-01).
+// That hook is not the session's own: a message it took would print into
+// a process that never shows it to a model, and its SessionStart must not
+// mark the running session idle. Seen live in review of #85: the refused
+// hook took a queued message and the live session never got it.
+func TestHookDevinSessionHeldByAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	// A running process named devin, as the holder of the session lock: a
+	// copy of sleep (the process name follows the file, not a symlink).
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep binary")
+	}
+	b, err := os.ReadFile(sleep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devin := filepath.Join(dir, "devin")
+	if err := os.WriteFile(devin, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holder := exec.Command(devin, "30")
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Process.Kill(); holder.Wait() })
+	db := filepath.Join(dir, "cli", "sessions.db")
+	if err := os.MkdirAll(filepath.Join(dir, "cli", "session_locks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(dir, "cli", "session_locks", devinSID+".lock")
+	if err := os.WriteFile(lock, []byte(strconv.Itoa(holder.Process.Pid)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	maps.Copy(env, devinEnv)
+	env["CHISEL_SESSION_DB"] = db
+
+	for _, ev := range []string{evSessionStart, evUserPromptSubmit, evPostToolUse} {
+		fa := newHookAgent(t)
+		fa.msgs = []busproto.Envelope{testEnvelope("m1", "for the live session", busproto.IntentInform)}
+		fa.resp.Instruct = true
+		out, _ := runHook(t, fa.sock, devinIn(ev), env)
+		if out != "" || len(fa.requests("pending")) != 0 {
+			t.Fatalf("%s from a process that does not hold the session: out %q, pending %v", ev, out, fa.requests("pending"))
+		}
+		if f := waitFlush(t, fa, 1); f[0].Event != "" || f[0].Session != devinSID {
+			t.Fatalf("%s: flush %+v carries the event of a process that does not hold the session", ev, f[0])
+		}
+	}
+
+	// The lock names a process that is not devin (a reused pid) or none:
+	// the session is not held elsewhere, and the hook delivers.
+	if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fa := newHookAgent(t)
+	fa.msgs = []busproto.Envelope{testEnvelope("m1", "for the live session", busproto.IntentInform)}
+	if out, _ := runHook(t, fa.sock, devinIn(evPostToolUse), env); !strings.Contains(out, "for the live session") {
+		t.Fatalf("stale lock: out %q", out)
 	}
 }
 

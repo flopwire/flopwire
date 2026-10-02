@@ -96,7 +96,9 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 	f.once()
 	alive := map[int]bool{}
 	started := map[int]time.Time{}
+	names := map[int]string{}
 	f.a.pidAlive = func(pid int) bool { return alive[pid] }
+	f.a.procName = func(pid int) string { return names[pid] }
 	f.a.procStart = func(pid int) (time.Time, bool) { t, ok := started[pid]; return t, ok }
 
 	cl, cx, dv := f.pick("claude"), f.pick("codex"), f.pick("devin")
@@ -149,13 +151,21 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 		t.Fatal("Codex session busy after task_complete")
 	}
 
-	// Devin: a session lock naming a running pid; reported idle.
+	// Devin: live only while a session lock names a running devin process,
+	// even when it wrote a minute ago (the lock outlives the session).
+	if _, ok := f.presence(dv.last.Add(time.Minute))[dv.id]; ok {
+		t.Fatal("a Devin session without a lock is live")
+	}
 	lock := filepath.Join(filepath.Dir(devinPath), "session_locks", dv.id+".lock")
 	writeFile(t, lock, "5151\n")
-	if _, ok := f.presence(dv.last.Add(30 * time.Minute))[dv.id]; ok {
+	if _, ok := f.presence(dv.last.Add(time.Minute))[dv.id]; ok {
 		t.Fatal("Devin lock of a dead pid counted")
 	}
-	alive[5151] = true
+	alive[5151], names[5151] = true, "zsh"
+	if _, ok := f.presence(dv.last.Add(time.Minute))[dv.id]; ok {
+		t.Fatal("Devin lock naming a reused pid (not devin) counted")
+	}
+	names[5151] = "devin"
 	s, ok = f.presence(dv.last.Add(30 * time.Minute))[dv.id]
 	if !ok || s.Busy {
 		t.Fatalf("Devin session held open: %+v %v", s, ok)
@@ -163,6 +173,55 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 	// The registries were only read.
 	if fi, err := os.Stat(lock); err != nil || fi.Size() != 5 {
 		t.Fatalf("lock file changed: %v", err)
+	}
+}
+
+// Devin's busy or idle is its last hook event, as `flopwire hook` hands it
+// to the agent with each flush: a prompt or a tool call means a turn runs,
+// Stop means it ended. A busy mark lapses after hookBusyCap.
+func TestPresenceDevinBusyFromHookEvents(t *testing.T) {
+	devinPath, _ := buildDevin(t)
+	f := newFixture(t, devinPath)
+	f.once()
+	f.a.pidAlive = func(pid int) bool { return pid == 5151 }
+	f.a.procName = func(int) string { return "devin" }
+	dv := f.pick("devin")
+	writeFile(t, filepath.Join(filepath.Dir(devinPath), "session_locks", dv.id+".lock"), "5151\n")
+	at := dv.last.Add(time.Minute)
+	f.a.now = func() time.Time { return at }
+	busy := func() bool {
+		t.Helper()
+		s, ok := f.presence(at)[dv.id]
+		if !ok {
+			t.Fatal("Devin session not live")
+		}
+		return s.Busy
+	}
+	if busy() {
+		t.Fatal("busy before any hook event")
+	}
+	for _, c := range []struct {
+		event string
+		busy  bool
+	}{
+		{"SessionStart", false},
+		{"UserPromptSubmit", true},
+		{"PostToolUse", true},
+		{"Notification", true}, // not a turn event: no change
+		{"Stop", false},
+		{"PostToolUse", true},
+		{"SessionEnd", false},
+	} {
+		f.a.noteHookEvent(dv.id, c.event)
+		if got := busy(); got != c.busy {
+			t.Fatalf("after %s: busy %v, want %v", c.event, got, c.busy)
+		}
+	}
+	f.a.noteHookEvent(dv.id, "PostToolUse")
+	f.a.noteHookEvent("", "PostToolUse") // no session: ignored
+	at = at.Add(hookBusyCap + time.Second)
+	if busy() {
+		t.Fatal("busy past hookBusyCap with no hook event")
 	}
 }
 

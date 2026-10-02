@@ -15,13 +15,16 @@ import (
 )
 
 // TestMain lets the test binary stand in for the harness CLIs: run through
-// a symlink named "claude" it is fakeClaude, named "codex" fakeCodex.
+// a symlink named "claude" it is fakeClaude, named "codex" fakeCodex,
+// named "devin" fakeDevin.
 func TestMain(m *testing.M) {
 	switch filepath.Base(os.Args[0]) {
 	case "claude":
 		os.Exit(fakeClaude(os.Args[1:]))
 	case "codex":
 		os.Exit(fakeCodex(os.Args[1:]))
+	case "devin":
+		os.Exit(fakeDevin(os.Args[1:]))
 	}
 	os.Exit(m.Run())
 }

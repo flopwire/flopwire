@@ -114,7 +114,7 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 		}
 		// A lock counts only when its pid is a devin process now: stale
 		// locks name pids the OS has since given to other processes.
-		if strings.Contains(strings.ToLower(filepath.Base(name)), "devin") {
+		if IsDevinProcess(name) {
 			if devin == nil {
 				devin = devinLocks(filepath.Join(filepath.Dir(devinDB), "session_locks"))
 			}
@@ -162,6 +162,44 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 		return Caller{Agent: transcript.AgentCodex, SessionID: cx, Rule: "codex-env"}, true
 	}
 	return Caller{}, false
+}
+
+// DevinHeldElsewhere reports whether the Devin session's lock (in
+// session_locks beside devinDB) names a running devin process that is not
+// d.Pid or one of its ancestors: another devin process holds the session.
+// `devin -r ID` on a live session runs its SessionStart hooks before Devin
+// refuses the session (probes 2026-10-01), so such a hook is not the
+// session's own. When the process table cannot tell, it reports false.
+func (d *Detector) DevinHeldElsewhere(devinDB, session string) bool {
+	if d.Proc == nil || session == "" || strings.ContainsAny(session, `/\`) {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(devinDB), "session_locks", session+".lock"))
+	if err != nil {
+		return false
+	}
+	holder, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || holder <= 1 {
+		return false
+	}
+	if _, name, ok := d.Proc(holder); !ok || !IsDevinProcess(name) {
+		return false // the session ended: a dead pid, or one the OS reused
+	}
+	pid := d.Pid
+	for range 8 {
+		if pid <= 1 {
+			break
+		}
+		if pid == holder {
+			return false
+		}
+		ppid, _, ok := d.Proc(pid)
+		if !ok {
+			return false
+		}
+		pid = ppid
+	}
+	return true
 }
 
 // devinLocks maps each pid a Devin session lock names to the sessions

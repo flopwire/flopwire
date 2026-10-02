@@ -38,6 +38,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busrender"
+	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -123,10 +124,19 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	harness := hookHarness(in, getenv)
+	// A Devin hook whose session another devin process holds comes from a
+	// `devin -r` that Devin refuses after its SessionStart hooks: nothing
+	// it prints reaches a model, and its event says nothing about the
+	// running session's turn. It delivers nothing and only flushes.
+	elsewhere := harness == transcript.AgentDevin && devinHeldElsewhere(in.SessionID, getenv)
+	flushIn := in
+	if elsewhere {
+		flushIn.Event = ""
+	}
 	flushed := make(chan struct{})
 	go func() {
 		defer close(flushed)
-		hookFlush(ctx, *socket, in, harness)
+		hookFlush(ctx, *socket, flushIn, harness)
 	}()
 	defer func() { <-flushed }()
 
@@ -143,6 +153,10 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	if in.SessionID == "" {
 		warn("the input names no session_id; nothing delivered")
+		return nil
+	}
+	if elsewhere {
+		warn("another devin process holds this session; nothing delivered")
 		return nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
@@ -213,7 +227,7 @@ func firstLine(s string, n int) string {
 // answer, and the hook must not wait on indexing. A Devin session has no
 // transcript file; the agent finds it by session id.
 func hookFlush(ctx context.Context, socket string, in hookInput, harness transcript.Agent) {
-	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID}
+	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID, Event: in.Event}
 	if harness == transcript.AgentDevin {
 		req.Path = ""
 	}
@@ -233,6 +247,22 @@ func hookFlush(ctx context.Context, socket string, in hookInput, harness transcr
 	}
 	b, _ := json.Marshal(req)
 	c.Write(append(b, '\n'))
+}
+
+// devinHeldElsewhere reports whether another devin process holds the
+// session: its lock, beside the sessions.db Devin names for hooks
+// (CHISEL_SESSION_DB), names a running devin that is not an ancestor of
+// this hook.
+func devinHeldElsewhere(session string, getenv func(string) string) bool {
+	db := getenv("CHISEL_SESSION_DB")
+	if db == "" {
+		db = getenv("FLOPWIRE_DEVIN_DB")
+	}
+	d := local.NewDetector()
+	if db == "" {
+		db = filepath.Join(d.Home, ".local", "share", "devin", "cli", "sessions.db")
+	}
+	return d.DevinHeldElsewhere(db, session)
 }
 
 var codexRollout = regexp.MustCompile(`(^|/)rollout-[^/]*\.jsonl$`)

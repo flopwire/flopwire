@@ -27,7 +27,11 @@ type Request struct {
 	Op      string `json:"op"`
 	Path    string `json:"path,omitempty"`    // flush: the transcript path
 	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
-	Index   string `json:"index,omitempty"`   // pass: the index the caller means; refused if it is not this agent's
+	// Event (flush from `flopwire hook`): the hook event that sent it. The
+	// agent keeps the session's last one as its busy or idle state
+	// (hookTurns).
+	Event string `json:"event,omitempty"`
+	Index string `json:"index,omitempty"` // pass: the index the caller means; refused if it is not this agent's
 	// redact: the message address (ADDRESS[:L1-L2]) and whether every
 	// identical copy goes too (notes/redaction.md).
 	Address   string `json:"address,omitempty"`
@@ -195,6 +199,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Error = err.Error()
 		}
 	case req.Op == "flush":
+		a.noteHookEvent(req.Session, req.Event)
 		resp.Path, err = a.FlushPath(ctx, req.Path, req.Session)
 		resp.OK = err == nil
 		if err != nil {

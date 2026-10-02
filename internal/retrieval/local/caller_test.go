@@ -153,6 +153,50 @@ func TestDetectorStaleDevinLockOnReusedPid(t *testing.T) {
 	}
 }
 
+// A Devin session is held elsewhere when its lock names a running devin
+// that is not an ancestor of the asking process: the hooks of a `devin -r`
+// Devin is about to refuse.
+func TestDevinHeldElsewhere(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "sessions.db")
+	os.MkdirAll(filepath.Join(dir, "session_locks"), 0o755)
+	lock := func(session, pid string) {
+		os.WriteFile(filepath.Join(dir, "session_locks", session+".lock"), []byte(pid+"\n"), 0o644)
+	}
+	lock("live", "200")  // held by devin 200
+	lock("ended", "999") // dead pid
+	lock("reused", "500")
+	// 100 (sh, the hook's parent) -> 200 (devin, the holder); 300 (sh) ->
+	// 400 (devin -r, refused); 500 (zsh, a reused pid).
+	procs := map[int]struct {
+		ppid int
+		name string
+	}{100: {200, "sh"}, 200: {1, "devin"}, 300: {400, "sh"}, 400: {1, "devin"}, 500: {1, "zsh"}}
+	proc := func(pid int) (int, string, bool) { p, ok := procs[pid]; return p.ppid, p.name, ok }
+	d := &Detector{Proc: proc}
+	for _, c := range []struct {
+		pid     int
+		session string
+		want    bool
+	}{
+		{100, "live", false}, // the holder's own hook
+		{300, "live", true},  // a refused resume
+		{300, "ended", false},
+		{300, "reused", false},
+		{300, "no-lock", false},
+		{300, "../live", false},
+	} {
+		d.Pid = c.pid
+		if got := d.DevinHeldElsewhere(db, c.session); got != c.want {
+			t.Errorf("pid %d session %q: %v, want %v", c.pid, c.session, got, c.want)
+		}
+	}
+	d.Proc = nil // no process table: cannot tell
+	if d.DevinHeldElsewhere(db, "live") {
+		t.Error("held elsewhere without a process table")
+	}
+}
+
 // TestDetectLive prints what the detector finds for the process running
 // the test (run it from an agent's shell tool).
 func TestDetectLive(t *testing.T) {
