@@ -398,8 +398,10 @@ these cases:
 - The agent is not running.
 - The agent does not answer within 200 milliseconds. The agent keeps the
   messages for the next hook.
-- The hook process is more than 3 seconds old when it would ask for
-  messages. Its harness may have stopped waiting for it.
+- The hook process started so long ago that it cannot finish asking for
+  messages within 3 seconds of its start. Its harness may have stopped
+  waiting for it. Such a hook also does not report its event to the
+  agent, because a later event may have arrived first.
 - The input is not hook JSON.
 
 It writes the reason on stderr. It never writes the environment or a

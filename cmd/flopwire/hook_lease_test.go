@@ -114,7 +114,11 @@ func TestHookLate(t *testing.T) {
 	if out != "" || len(fa.requests("pending")) != 0 || !strings.Contains(errOut, "too late to deliver") {
 		t.Fatalf("late hook: out %q err %q pending %v", out, errOut, fa.requests("pending"))
 	}
-	waitFlush(t, fa, 1) // the flush still goes: it is the presence signal
+	// The flush still goes, without the stale event: a Stop may have come
+	// since, and a late PostToolUse must not mark the session busy.
+	if f := waitFlush(t, fa, 1); f[0].Event != "" || f[0].Session != claudeSID {
+		t.Fatalf("late flush: %+v", f[0])
+	}
 
 	setHookTimes(t, time.Now, 300*time.Millisecond)
 	w := &slowWriter{d: 400 * time.Millisecond}

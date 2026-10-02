@@ -167,8 +167,13 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	// it prints reaches a model, and its event says nothing about the
 	// running session's turn. It delivers nothing and only flushes.
 	elsewhere := harness == transcript.AgentDevin && devinHeldElsewhere(in.SessionID, getenv)
+	// A hook that starts this late (its exec waited, see hookLate) carries
+	// a stale event: a Stop may have come since. It delivers nothing, and
+	// its flush carries no event, so it cannot mark the session busy.
+	age := time.Since(started)
+	late := age+hookPendingBudget > hookLate
 	flushIn := in
-	if elsewhere {
+	if elsewhere || late {
 		flushIn.Event = ""
 	}
 	flushed := make(chan struct{})
@@ -197,7 +202,7 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		warn("another devin process holds this session; nothing delivered")
 		return nil
 	}
-	if age := time.Since(started); age+hookPendingBudget > hookLate {
+	if late {
 		warn("started %s ago, too late to deliver; nothing delivered", age.Round(time.Millisecond))
 		return nil
 	}
