@@ -63,11 +63,16 @@ func (s Style) read(addr string) string {
 // more is the hint for messages beyond the ones read shows: the address
 // to go on from and the direction.
 func (s Style) more(addr, dir string) string {
+	return s.More(addr, dir, 10)
+}
+
+// More is the call that reads n whole messages before or after (dir) the
+// message at addr.
+func (s Style) More(addr, dir string, n int) string {
 	if s.MCP {
-		return fmt.Sprintf("flopwire_read address=%s %s=10", addr, dir)
+		return fmt.Sprintf("flopwire_read address=%s messages_%s=%d", addr, dir, n)
 	}
-	flag := map[string]string{"before": "-B", "after": "-A"}[dir]
-	return fmt.Sprintf("flopwire read %s %s 10", addr, flag)
+	return fmt.Sprintf("flopwire read %s --messages-%s %d", addr, dir, n)
 }
 
 // cursor is the argument that reads the next sessions page.

@@ -180,7 +180,7 @@ func TestMCPRetrievalOneTextBlock(t *testing.T) {
 		{"flopwire_sessions", `{"include_self":true}`, []string{"kind", "sessions", "has_more"}},
 		{"flopwire_sessions", `{"include_self":true,"detail":true}`, []string{"kind", "sessions", "has_more"}},
 		{"flopwire_sessions", `{"branch":"fix/*","format":"text"}`, nil},
-		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240:1","before":1,"after":1}`, nil},
+		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240:1","messages_before":1,"messages_after":1}`, nil},
 		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000002","outline":true,"format":"json"}`, []string{"kind", "conversation", "outline"}},
 		{"flopwire_read", `{"address":"0b7e2c1a-0000-4000-8000-000000000001/13578240","raw":true,"format":"json"}`, []string{"uuid", "sessionId"}},
 	} {
@@ -387,13 +387,13 @@ func TestJSONAnswerBudget(t *testing.T) {
 	for i := range 41 {
 		cx.Messages = append(cx.Messages, format.Message{ID: fmt.Sprintf("m%d", i), Address: fmt.Sprintf("s000/%d", i), Kind: "assistant", Text: strings.Repeat("w", 3000), TextLen: 3000})
 	}
-	s = call(&bigBackend{cx: cx}, "flopwire_read", `{"address":"s000/20","before":20,"after":20}`)
+	s = call(&bigBackend{cx: cx}, "flopwire_read", `{"address":"s000/20","messages_before":20,"messages_after":20}`)
 	var ids []string
 	for _, m := range s["messages"].([]any) {
 		ids = append(ids, m.(map[string]any)["id"].(string))
 	}
 	if !slices.Contains(ids, "m20") || len(ids) >= 41 || len(ids) < 3 || !slices.Contains(ids, "m19") || !slices.Contains(ids, "m21") ||
-		s["more_before"] != true || s["more_after"] != true || !strings.Contains(s["hint"].(string), "before=10") {
+		s["more_before"] != true || s["more_after"] != true || !strings.Contains(s["hint"].(string), "messages_before=10") {
 		t.Fatalf("read neighbours: %v %v %v %v", ids, s["more_before"], s["more_after"], s["hint"])
 	}
 	// A focus that alone passes the budget keeps its first lines and says

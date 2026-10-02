@@ -510,7 +510,7 @@ func (b *Backend) Read(ctx context.Context, q format.ReadQuery, f format.Filters
 		after = sessionAfter
 	}
 	if before < 0 || after < 0 || before > maxContext || after > maxContext {
-		return nil, bad("before and after must be between 0 and %d", maxContext)
+		return nil, bad("messages before and after must each be between 0 and %d", maxContext)
 	}
 	rows, err := b.Store.Context(ctx, focus.ID, before+1, after+1, localindex.Filter{IncludeSuperseded: f.IncludeSuperseded, IncludeBranches: f.IncludeBranches})
 	if err != nil {

@@ -79,7 +79,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 	if q.Get("q") != "backoff" || q.Get("include_branches") != "true" || q.Get("limit") != "5" || q.Get("offset") != "5" {
 		t.Fatalf("mcp search query %v", q)
 	}
-	if text, err = mcpCall(t.Context(), c, "flopwire_read", map[string]any{"address": "019a0000/491520:2", "before": float64(1)}); err != nil || !strings.Contains(text, ">> 019a0000/491520") {
+	if text, err = mcpCall(t.Context(), c, "flopwire_read", map[string]any{"address": "019a0000/491520:2", "messages_before": float64(1)}); err != nil || !strings.Contains(text, ">> 019a0000/491520") {
 		t.Fatalf("mcp read: %q %v", text, err)
 	}
 	if q = queries[len(queries)-1]; q.Get("address") != "019a0000/491520:2" || q.Get("before") != "1" {
@@ -275,5 +275,120 @@ func TestSincePrintedForm(t *testing.T) {
 		if !strings.Contains(toolHelp[v], "'2026-09-23 10:00Z'") {
 			t.Errorf("%s help has no printed-form --since example", v)
 		}
+	}
+}
+
+// readQueryBackend records read's query and answers a fixed context.
+type readQueryBackend struct {
+	bigBackend
+	q format.ReadQuery
+}
+
+func (b *readQueryBackend) Read(_ context.Context, q format.ReadQuery, _ format.Filters) (*format.Context, error) {
+	b.q = q
+	c := *b.cx
+	return &c, nil
+}
+
+// read's neighbours are whole messages, and its flags and arguments say
+// so: --messages-before/--messages-after (MCP messages_before and
+// messages_after). grep's line-context names on read are usage errors
+// that name the right one; grep keeps -A/-B/-C and before/after/context
+// as lines.
+func TestReadCountsMessages(t *testing.T) {
+	cx := &format.Context{Focus: "m0", Conversation: format.ConversationInfo{Agent: "claude", SessionID: "s"},
+		Messages: []format.Message{{ID: "m0", Address: "s/0", Kind: "user", Text: "hi"}}}
+	b := &readQueryBackend{bigBackend: bigBackend{cx: cx}}
+	r := &retriever{backend: b}
+	o, err := parseArgs("read", []string{"s/0", "--messages-before", "2", "--messages-after=3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runTool(t.Context(), r, o, io.Discard, format.Style{}, selfCLI); err != nil || b.q.Before != 2 || b.q.After != 3 {
+		t.Fatalf("CLI read: %+v %v", b.q, err)
+	}
+	for _, c := range []struct {
+		args      []string
+		flag, fix string
+	}{
+		{[]string{"-A", "2"}, "-A", "use --messages-after N"},
+		{[]string{"-B2"}, "-B", "use --messages-before N"},
+		{[]string{"-C", "1"}, "-C", "use --messages-before N --messages-after N"},
+		{[]string{"--after-context", "1"}, "--after-context", "use --messages-after N"},
+		{[]string{"--before-context=1"}, "--before-context", "use --messages-before N"},
+		{[]string{"--context", "1"}, "--context", "use --messages-before N --messages-after N"},
+	} {
+		_, err := parseArgs("read", append([]string{"s/0"}, c.args...))
+		want := "read: " + c.flag + " is grep's line context; read counts whole messages, not lines: " + c.fix +
+			" (a tool call and its result are two messages; --line-offset N for lines of the focus)"
+		if err == nil || err.Error() != want {
+			t.Errorf("read %v: %v", c.args, err)
+		}
+	}
+	// In --json mode the usage error is the JSON error object.
+	var stderr bytes.Buffer
+	if err := toolCmdIO(t.Context(), "read", []string{"s/0", "-A", "2", "--json"}, io.Discard, &stderr); err == nil ||
+		!strings.Contains(stderr.String(), `"code":"bad_request"`) || !strings.Contains(stderr.String(), "--messages-after N") || !strings.Contains(stderr.String(), "--messages-after 2") {
+		t.Fatalf("read -A --json: %v %s", err, stderr.String())
+	}
+	o, err = parseArgs("grep", []string{"x", "-A", "1", "-B", "2", "-C", "3", "--before-context", "4", "--after-context=5", "--context", "6"})
+	if err != nil || o.vals["after-context"] != "5" || o.vals["before-context"] != "4" || o.vals["context"] != "6" {
+		t.Fatalf("grep line context: %+v %v", o, err)
+	}
+	if _, err := parseArgs("grep", []string{"x", "--messages-after", "1"}); err == nil || !strings.Contains(err.Error(), "grep: unknown flag --messages-after") {
+		t.Fatalf("grep --messages-after: %v", err)
+	}
+
+	// MCP: the new names reach the query; the old ones are rejected.
+	if _, err := mcpCall(t.Context(), r, "flopwire_read", map[string]any{"address": "s/0", "messages_before": float64(4), "messages_after": float64(5)}); err != nil || b.q.Before != 4 || b.q.After != 5 {
+		t.Fatalf("MCP read: %+v %v", b.q, err)
+	}
+	for _, k := range []string{"before", "after", "context"} {
+		_, err := mcpCall(t.Context(), r, "flopwire_read", map[string]any{"address": "s/0", k: float64(5)})
+		want := `flopwire_read: unknown argument "` + k + `"; use messages_before and messages_after, which count whole messages, not lines (a tool call and its result are two messages; line_offset for lines of the focus)`
+		if err == nil || mcpError("flopwire_read", err) != want {
+			t.Errorf("MCP read %s: %v", k, err)
+		}
+	}
+	// The JSON error object carries the same detail and a valid example.
+	_, err = mcpCall(t.Context(), r, "flopwire_read", map[string]any{"address": "s/0", "context": "5", "format": "json"})
+	if text := mcpError("flopwire_read", err); !strings.Contains(text, `unknown argument \"context\"; use messages_before and messages_after`) || !strings.Contains(text, `messages_after=2`) {
+		t.Fatalf("MCP read context JSON: %s", text)
+	}
+	o, _, err = mcpOpts("flopwire_grep", map[string]any{"pattern": "x", "before": float64(1), "after": float64(2), "context": float64(3)})
+	if err != nil || o.vals["before-context"] != "1" || o.vals["after-context"] != "2" || o.vals["context"] != "3" {
+		t.Fatalf("MCP grep line context: %+v %v", o, err)
+	}
+	if _, _, err := mcpOpts("flopwire_grep", map[string]any{"pattern": "x", "messages_after": float64(1)}); err == nil || !strings.Contains(err.Error(), `unknown argument "messages_after"`) {
+		t.Fatalf("MCP grep messages_after: %v", err)
+	}
+	// The schema: read takes the new names, described as whole messages;
+	// grep's before/after/context stay lines.
+	for _, tl := range mcpTools() {
+		tm := tl.(map[string]any)
+		props := tm["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		desc := func(k string) string { d, _ := props[k].(map[string]any)["description"].(string); return d }
+		switch tm["name"] {
+		case "flopwire_read":
+			for _, k := range []string{"before", "after", "context"} {
+				if _, ok := props[k]; ok {
+					t.Errorf("flopwire_read takes %s", k)
+				}
+			}
+			for _, k := range []string{"messages_before", "messages_after"} {
+				if !strings.HasPrefix(desc(k), "whole messages "+strings.TrimPrefix(k, "messages_")+" the focus, in conversation order; a tool call and its result are two messages") {
+					t.Errorf("flopwire_read %s: %q", k, desc(k))
+				}
+			}
+		case "flopwire_grep":
+			for _, k := range []string{"before", "after", "context"} {
+				if !strings.HasPrefix(desc(k), "lines of context") {
+					t.Errorf("flopwire_grep %s: %q", k, desc(k))
+				}
+			}
+		}
+	}
+	if strings.Contains(mcpInstructions, "before/after") || !strings.Contains(mcpInstructions, "messages_before/messages_after") {
+		t.Error("instructions name read's old arguments")
 	}
 }

@@ -262,8 +262,8 @@ func TestReadBudgetKeepsFocus(t *testing.T) {
 	}
 	out := b.String()
 	if !strings.Contains(out, ">> sess/5") || strings.Contains(out, "sess/0 ") || strings.Contains(out, "sess/10 ") ||
-		!regexp.MustCompile(`\[earlier messages: flopwire_read address=sess/[34] before=10\]`).MatchString(out) ||
-		!regexp.MustCompile(`\[later messages: flopwire_read address=sess/[67] after=10\]`).MatchString(out) || strings.Contains(out, "sess/0\n") {
+		!regexp.MustCompile(`\[earlier messages: flopwire_read address=sess/[34] messages_before=10\]`).MatchString(out) ||
+		!regexp.MustCompile(`\[later messages: flopwire_read address=sess/[67] messages_after=10\]`).MatchString(out) || strings.Contains(out, "sess/0\n") {
 		t.Fatalf("read under a budget:\n%s", out)
 	}
 }

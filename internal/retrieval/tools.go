@@ -750,7 +750,7 @@ func (s *Store) readAt(ctx context.Context, deviceID string, rq format.ReadQuery
 		after = sessionAfter
 	}
 	if before < 0 || after < 0 || before > maxContext || after > maxContext {
-		return nil, fmt.Errorf("%w: before and after must be between 0 and %d", ErrBadRequest, maxContext)
+		return nil, fmt.Errorf("%w: messages before and after must each be between 0 and %d", ErrBadRequest, maxContext)
 	}
 	var conv string
 	var ord int64
