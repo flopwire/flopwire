@@ -416,7 +416,8 @@ func editDistance(a, b string) int {
 }
 
 // filters builds format.Filters from the options. A relative --repo (".",
-// "./x") becomes the absolute git root holding it, for the server too.
+// "./x") becomes the absolute git root holding it; the backend (or, for
+// the server, teamRepo) expands it to the repository's checkouts.
 func (o *opts) filters() (format.Filters, error) {
 	v := url.Values{}
 	for _, k := range filterKeys {
@@ -904,7 +905,7 @@ Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a matc
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
          --limit N (20)  --offset N  --sort newest|oldest|relevance  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
-Filters  --agent claude,codex,devin  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since 7d
+Filters  --agent claude,codex,devin  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since 7d
          --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
          --exclude-subagents  --exclude-live  --include-superseded  --include-branches
          --include-self  --device D  --user U
@@ -928,7 +929,7 @@ show once, "+N copies".
 
 Output   --limit N (20)  --offset N  --sort relevance|newest|oldest  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
-Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since  --until  --kind
+Filters  --agent  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since  --until  --kind
          --exclude-kind  --tool  --session SESSION|self  --exclude-subagents  --exclude-live
          --include-superseded  --include-branches  --include-self  --device  --user
 Times    --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339 (UTC)
@@ -951,7 +952,7 @@ search, or to flopwire peers --session (is it live?). A bare GLOB word matches a
 
 Output   --limit N (20)  --cursor C (next_cursor)  --sort newest|oldest  --detail  --text
          --max-bytes N  (--json: the default)
-Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since/--until (last
+Filters  --agent  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since/--until (last
          activity)  --exclude-subagents  --exclude-live  --include-self  --device  --user
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example"}}; exit 1
 Source   the local index; --server for the team server; --index PATH

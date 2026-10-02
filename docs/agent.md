@@ -832,6 +832,16 @@ repository.
 A relative working directory (for example `.`) does not count as a
 directory.
 
+The same facts decide which repo a session is on for `--repo` in
+`sessions`, `grep`, `search` and `peers`. A session's repository is its
+main checkout (for a worktree of a bare repository, the bare repository)
+and its remote. All worktrees of one repository are then one repo, with
+or without a remote. Two repositories with the same name stay two repos.
+A session in a deleted worktree stays on its repo through the stored main
+checkout, or through the one that the recovery pass below records. A
+session with only candidates is on no repo by its candidates. It still
+matches by its directory. See [search.md](search.md#which-repo).
+
 ### Sessions in deleted worktrees
 
 The agent can first see a session after its worktree was deleted. Then git

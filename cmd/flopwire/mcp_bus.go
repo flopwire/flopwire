@@ -42,7 +42,7 @@ func mcpBusTools() []any {
 			`List the live coding-agent sessions you can message with flopwire_send, as JSON: {"kind":"peers","peers":[{"session" (the full id),"agent","user","repo","branch","title","busy","own",…}],"total","more","limit","caller","hint"}. Your own person's sessions come first; your own session (caller) is left out. busy: a turn is running, so a message arrives at its next tool call; idle: it waits for that session's human. Use it after history named a session: session=ID says whether that exact session is live. Do not choose a recipient by title or current branch alone (a title is the session's original task; it may have switched branches since it committed); find it with flopwire_sessions repo=R branch=B first. Do not call it repeatedly to watch whether a peer finished.`,
 			read(), map[string]any{
 				"session": prop("string", "only this session: its full id or a prefix, as history (flopwire_sessions) printed it"),
-				"repo":    prop("string", `only sessions on this repo: "." (this repo), a repo name, or /abs/path`),
+				"repo":    prop("string", `only sessions on this repo: "." (this repo: every checkout and worktree of it), a repo name, or /abs/path`),
 				"user":    prop("string", "only this person's sessions: an email or its local part"),
 				"agent":   prop("string", "only this harness: claude, codex or devin"),
 				"limit":   prop("integer", "sessions per answer; default 50, max 500; more=true says the list was cut"),
