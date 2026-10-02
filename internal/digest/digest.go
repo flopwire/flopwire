@@ -69,7 +69,9 @@ type Digest struct {
 	Tools     map[string]int `json:"tools,omitempty"`
 	PRs       []string       `json:"prs,omitempty"`
 	Commits   []string       `json:"commits,omitempty"`
-	Issues    []string       `json:"issues,omitempty"`
+	// CommitsNoSHA are commits whose sha the transcript never showed.
+	CommitsNoSHA []Commit `json:"commits_no_sha,omitempty"`
+	Issues       []string `json:"issues,omitempty"`
 	// More names the lists that hit their cap: "prs", "commits",
 	// "issues" (the lists keep the first ones seen).
 	More   []string `json:"more,omitempty"`
@@ -81,6 +83,14 @@ type Digest struct {
 	State *State `json:"state,omitempty"`
 }
 
+// Commit is a commit recorded without its sha.
+type Commit struct {
+	ID      string     `json:"id,omitempty"`
+	Subject string     `json:"subject,omitempty"`
+	Branch  string     `json:"branch,omitempty"`
+	At      *time.Time `json:"at,omitempty"`
+}
+
 // State is what Fold keeps between batches.
 type State struct {
 	// First is the first user prompt, Long the first that is no weak
@@ -90,12 +100,50 @@ type State struct {
 	Long     string `json:"g,omitempty"`
 	LongOrd  *int64 `json:"go,omitempty"`
 	LastOrd  *int64 `json:"lo,omitempty"`
-	// Pending maps a tool call id to what its output may name: "pr",
-	// "commit", "issue" (comma-joined).
-	Pending map[string]string `json:"p,omitempty"`
+	// Pending maps a tool call id to what its output may name.
+	Pending map[string]*Call `json:"n,omitempty"`
+	// HeadOrd is the ordinal of the last call that moved HEAD, Open the
+	// commit without a sha that a later command may still show, Resolved
+	// the call ids of commits whose sha a later command showed (a re-fold
+	// does not record them again). V is the fold's version: a digest
+	// folded by another drops HeadOrd and Open, so a re-fold of every row
+	// in order (a re-parse) rebuilds them.
+	HeadOrd  *int64   `json:"h,omitempty"`
+	Open     *Open    `json:"oc,omitempty"`
+	Resolved []string `json:"rs,omitempty"`
+	V        int      `json:"v,omitempty"`
 	// Usage is the last API message whose usage the token counts hold
 	// (see Append).
 	Usage *UsageMark `json:"u,omitempty"`
+}
+
+// foldVersion is State.V.
+const foldVersion = 2
+
+// Call is a pending tool call: what its output may name (Kinds: "pr",
+// "commit", "issue", comma-joined) and what its command line says about
+// a commit (see callGit).
+type Call struct {
+	Kinds   string `json:"k,omitempty"`
+	Ord     int64  `json:"o,omitempty"`
+	Outside bool   `json:"x,omitempty"` // the commit ran outside the session's repo
+	Commit  int    `json:"m,omitempty"`
+	Subject string `json:"s,omitempty"`
+	Where   string `json:"w,omitempty"`
+	Reveal  string `json:"r,omitempty"`
+	Style   string `json:"y,omitempty"`
+	Self    bool   `json:"f,omitempty"`
+	RevOK   int    `json:"ro,omitempty"`
+	// OpenID is the earlier commit (its call id) a non-self reveal shows.
+	OpenID string `json:"op,omitempty"`
+}
+
+// Open is a commit without a sha that a later command may show: its
+// call id, the call's ordinal and the directory it ran in.
+type Open struct {
+	ID    string `json:"i"`
+	Ord   int64  `json:"o"`
+	Where string `json:"w,omitempty"`
 }
 
 // UsageMark names an API message (Claude's message.id; "" when the row
@@ -140,6 +188,19 @@ func Parse(b []byte) *Digest {
 	return d
 }
 
+// parseFold is Parse for a fold: a digest an older fold wrote loses the
+// bookkeeping that orders commits and HEAD moves (see State.V).
+func parseFold(prev []byte) *Digest {
+	d := Parse(prev)
+	if st := d.State; st != nil && st.V != foldVersion {
+		st.HeadOrd, st.Open = nil, nil
+	}
+	if d.State != nil {
+		d.State.V = foldVersion
+	}
+	return d
+}
+
 // Marshal encodes d for storage.
 func (d *Digest) Marshal() []byte {
 	b, _ := json.Marshal(d)
@@ -149,7 +210,7 @@ func (d *Digest) Marshal() []byte {
 // Update folds msgs into the stored digest prev, sets the conversation
 // facts and counts, and returns the new stored form.
 func Update(prev []byte, c Conv, msgs []*transcript.Message, n Counts) []byte {
-	d := Parse(prev)
+	d := parseFold(prev)
 	d.setConv(c)
 	for _, m := range msgs {
 		d.Fold(m)
@@ -166,7 +227,7 @@ func Update(prev []byte, c Conv, msgs []*transcript.Message, n Counts) []byte {
 // Fold is Update for a batch whose counts a later recount sets: it folds
 // msgs into prev and leaves the counted fields as they are.
 func Fold(prev []byte, c Conv, msgs []*transcript.Message) []byte {
-	d := Parse(prev)
+	d := parseFold(prev)
 	d.setConv(c)
 	for _, m := range msgs {
 		d.Fold(m)
@@ -192,7 +253,7 @@ func Append(prev []byte, c Conv, msgs []*transcript.Message, failed, subagents i
 // refreshed them): every row of fold is folded, and only the rows of
 // count, the new ones, add to the counts.
 func AppendRows(prev []byte, c Conv, fold, count []*transcript.Message, failed, subagents int) []byte {
-	d := Parse(prev)
+	d := parseFold(prev)
 	n := Counts{Messages: map[string]int{}, Tools: map[string]int{}, Failed: d.Failed + failed, Subagents: subagents}
 	for k, v := range d.Messages {
 		n.Messages[k] = v
@@ -428,18 +489,13 @@ func (d *Digest) Fold(m *transcript.Message) {
 			d.addFile(p)
 		}
 		if IsShell(m.ToolName) || len(commandsOf(m)) > 0 {
-			if cls := classify(Command(m)); cls != "" && m.ToolCallID != "" {
-				p := d.state().pendingMap()
-				if len(p) < maxPending {
-					p[m.ToolCallID] = cls
-				}
-			}
+			d.foldCall(m)
 		}
 	case transcript.KindToolResult:
 		if d.State == nil || m.ToolCallID == "" {
 			return
 		}
-		cls, ok := d.State.Pending[m.ToolCallID]
+		c, ok := d.State.Pending[m.ToolCallID]
 		if !ok {
 			return
 		}
@@ -447,25 +503,183 @@ func (d *Digest) Fold(m *transcript.Message) {
 		if len(d.State.Pending) == 0 {
 			d.State.Pending = nil
 		}
-		if m.IsError {
-			return
+		d.foldResult(m, c)
+	}
+}
+
+// foldCall reads a shell call: what its output may name, and what it
+// does to HEAD.
+func (d *Digest) foldCall(m *transcript.Message) {
+	st := d.state()
+	cmd := Command(m)
+	c := &Call{Kinds: classify(cmd), Ord: m.Ordinal}
+	g, ok := readCall(shellCmds(m))
+	switch {
+	case !ok:
+		if commitCmd.MatchString(cmd) {
+			c.Kinds = joinKinds(c.Kinds, "commit")
 		}
-		for _, c := range strings.Split(cls, ",") {
-			switch c {
-			case "pr":
-				for _, u := range prURL.FindAllStringSubmatch(m.Text, -1) {
+	default:
+		if g.printed {
+			c.Kinds = joinKinds(c.Kinds, "commit")
+			c.Outside = d.outside(d.abs(g.pwhere))
+		}
+		if g.commit != okNone {
+			c.Commit, c.Subject, c.Where = g.commit, g.subject, d.abs(g.where)
+			c.Outside = d.outside(c.Where)
+		}
+		if g.reveal != "" {
+			c.Reveal, c.Style, c.Self, c.RevOK = g.reveal, g.style, g.self, g.revOK
+			if !g.self {
+				prev := st.Pending[m.ToolCallID]
+				switch o := st.Open; {
+				case prev != nil && prev.Ord == m.Ordinal && prev.OpenID != "":
+					c.OpenID = prev.OpenID // the same call again (Codex re-emits it enriched)
+				case o != nil && (st.HeadOrd == nil || *st.HeadOrd <= o.Ord) && o.Ord < m.Ordinal && d.abs(g.revWhere) == o.Where:
+					c.OpenID = o.ID
+				}
+				if c.OpenID == "" {
+					c.Reveal = ""
+				}
+			}
+		}
+		if g.mover && (st.HeadOrd == nil || m.Ordinal > *st.HeadOrd) {
+			st.HeadOrd = ptr(m.Ordinal)
+		}
+	}
+	if (c.Kinds == "" && c.Commit == okNone && c.Reveal == "") || m.ToolCallID == "" {
+		return
+	}
+	p := st.pendingMap()
+	if _, have := p[m.ToolCallID]; have || len(p) < maxPending {
+		p[m.ToolCallID] = c
+	}
+}
+
+func joinKinds(k, add string) string {
+	if k == "" {
+		return add
+	}
+	return k + "," + add
+}
+
+// abs is a command's directory, "" standing for the session's.
+func (d *Digest) abs(where string) string {
+	if where == "" || !strings.HasPrefix(where, "/") && !strings.ContainsAny(where, "$~`") {
+		return joinDir(d.Cwd, where)
+	}
+	return where
+}
+
+// outside reports whether directory where is known to be outside the
+// session's repo and cwd.
+func (d *Digest) outside(where string) bool {
+	if !strings.HasPrefix(where, "/") {
+		return false
+	}
+	under := func(root string) bool {
+		return strings.HasPrefix(root, "/") && (where == root || strings.HasPrefix(where, strings.TrimSuffix(root, "/")+"/"))
+	}
+	r, cwd := d.root(), d.Cwd
+	if !strings.HasPrefix(r, "/") && !strings.HasPrefix(cwd, "/") {
+		return false
+	}
+	return !under(r) && !under(cwd)
+}
+
+// foldResult reads a pending call's output.
+func (d *Digest) foldResult(m *transcript.Message, c *Call) {
+	out, failedChunk := shellOut(m.Text)
+	callOK := !m.IsError && !failedChunk
+	succeeded := func(k int) bool { return k == okExit || k == okResult && callOK }
+	printed := 0
+	for _, k := range strings.Split(c.Kinds, ",") {
+		switch k {
+		case "pr":
+			if callOK {
+				for _, u := range prURL.FindAllStringSubmatch(out, -1) {
 					d.add("prs", &d.PRs, u[1]+"#"+u[2], maxPRs)
 				}
-			case "commit":
-				for _, sm := range commitOut.FindAllStringSubmatch(m.Text, -1) {
+			}
+		case "commit":
+			if callOK && !c.Outside {
+				for _, sm := range commitOut.FindAllStringSubmatch(out, -1) {
 					d.add("commits", &d.Commits, sm[1], maxCommit)
+					printed++
 				}
-			case "issue":
-				for _, u := range issueURL.FindAllStringSubmatch(m.Text, -1) {
+			}
+		case "issue":
+			if callOK {
+				for _, u := range issueURL.FindAllStringSubmatch(out, -1) {
 					d.add("issues", &d.Issues, u[1]+"#"+u[2], maxIssues)
 				}
 			}
 		}
+	}
+	st := d.state()
+	branch := ""
+	if n := len(d.Branches); n > 0 {
+		branch = d.Branches[n-1]
+	}
+	sha := ""
+	if c.Reveal != "" && succeeded(c.RevOK) {
+		b := branch
+		if !c.Self {
+			if i := d.noSHA(c.OpenID); i >= 0 {
+				b = d.CommitsNoSHA[i].Branch
+			}
+		}
+		sha = revealed(c.Reveal, c.Style, out, b)
+	}
+	if c.Commit != okNone && succeeded(c.Commit) && printed == 0 && !c.Outside && m.ToolCallID != "" &&
+		!slices.Contains(st.Resolved, m.ToolCallID) {
+		if c.Self && sha != "" {
+			d.add("commits", &d.Commits, sha, maxCommit)
+			d.resolved(m.ToolCallID)
+		} else {
+			if d.noSHA(m.ToolCallID) < 0 {
+				rec := Commit{ID: m.ToolCallID, Subject: c.Subject, Branch: branch}
+				if !m.TS.IsZero() {
+					t := m.TS.UTC().Truncate(time.Second)
+					rec.At = &t
+				}
+				if len(d.CommitsNoSHA) < maxNoSHA {
+					d.CommitsNoSHA = append(d.CommitsNoSHA, rec)
+				} else if !slices.Contains(d.More, "commits_no_sha") {
+					d.More = append(d.More, "commits_no_sha")
+				}
+			}
+			if d.noSHA(m.ToolCallID) >= 0 && (st.HeadOrd == nil || *st.HeadOrd <= c.Ord) {
+				st.Open = &Open{ID: m.ToolCallID, Ord: c.Ord, Where: c.Where}
+			}
+		}
+	}
+	if !c.Self && c.OpenID != "" && sha != "" {
+		if i := d.noSHA(c.OpenID); i >= 0 {
+			d.CommitsNoSHA = slices.Delete(d.CommitsNoSHA, i, i+1)
+			d.add("commits", &d.Commits, sha, maxCommit)
+			d.resolved(c.OpenID)
+		}
+		if st.Open != nil && st.Open.ID == c.OpenID {
+			st.Open = nil
+		}
+	}
+}
+
+// noSHA is the index of the commit without a sha that call id made, or -1.
+func (d *Digest) noSHA(id string) int {
+	return slices.IndexFunc(d.CommitsNoSHA, func(c Commit) bool { return c.ID == id })
+}
+
+// resolved records that a later command showed call id's commit.
+func (d *Digest) resolved(id string) {
+	st := d.state()
+	if slices.Contains(st.Resolved, id) {
+		return
+	}
+	st.Resolved = append(st.Resolved, id)
+	if len(st.Resolved) > maxCommit {
+		st.Resolved = st.Resolved[len(st.Resolved)-maxCommit:]
 	}
 }
 
@@ -484,14 +698,14 @@ func (d *Digest) textRefs(text string) {
 
 func (d *Digest) state() *State {
 	if d.State == nil {
-		d.State = &State{}
+		d.State = &State{V: foldVersion}
 	}
 	return d.State
 }
 
-func (s *State) pendingMap() map[string]string {
+func (s *State) pendingMap() map[string]*Call {
 	if s.Pending == nil {
-		s.Pending = map[string]string{}
+		s.Pending = map[string]*Call{}
 	}
 	return s.Pending
 }
@@ -547,20 +761,18 @@ func (d *Digest) Truncated(name string) bool { return slices.Contains(d.More, na
 var (
 	prURL     = regexp.MustCompile(`https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)`)
 	issueURL  = regexp.MustCompile(`https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)`)
-	commitOut = regexp.MustCompile(`\[[^\]\s]+(?: \([^)\n]*\))? ([0-9a-f]{7,40})\] `)
+	commitOut = regexp.MustCompile(`\[(?:detached HEAD|[^\]\s]+)(?: \([^)\n]*\))? ([0-9a-f]{7,40})\] `)
 	prCmd     = regexp.MustCompile(`\bgh\s+pr\s+(?:create|edit|merge|view|ready|comment|review|close|reopen)\b`)
 	issueCmd  = regexp.MustCompile(`\bgh\s+issue\s+(?:create|edit|view|comment|close|reopen)\b`)
 	commitCmd = regexp.MustCompile(`\bgit\b[^|;&\n]*?\bcommit\b`)
 )
 
-// classify says what a shell command's output may name.
+// classify says what a shell command's output may name besides commits
+// (readCall finds those).
 func classify(cmd string) string {
 	var out []string
 	if prCmd.MatchString(cmd) {
 		out = append(out, "pr")
-	}
-	if commitCmd.MatchString(cmd) {
-		out = append(out, "commit")
 	}
 	if issueCmd.MatchString(cmd) {
 		out = append(out, "issue")
@@ -780,6 +992,9 @@ func Mask(b []byte, lines []string, mask func(string) string) []byte {
 		for i := range *list {
 			(*list)[i] = hide((*list)[i])
 		}
+	}
+	for i := range d.CommitsNoSHA {
+		d.CommitsNoSHA[i].Subject = hide(d.CommitsNoSHA[i].Subject)
 	}
 	return d.Marshal()
 }
