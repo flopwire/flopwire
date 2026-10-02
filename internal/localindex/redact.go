@@ -764,6 +764,23 @@ func (w *writeTx) ensureSHAIndex() error {
 	return nil
 }
 
+// dropUnusedSHAIndex drops messages_sha from an index whose sidecar
+// records no redaction: an index built before it moved off the schema
+// carries it on the write path for nothing. Dropping it is cheap (its
+// pages go to the free list) and needs no reindex. With redactions
+// recorded it stays: an --all-copies redaction may have built it.
+func (w *writeTx) dropUnusedSHAIndex() error {
+	t := w.s.tombs
+	t.mu.RLock()
+	n := len(t.entries)
+	t.mu.RUnlock()
+	if n > 0 {
+		return nil
+	}
+	_, err := w.tx.ExecContext(w.ctx, `DROP INDEX IF EXISTS messages_sha`)
+	return err
+}
+
 // lineHashes returns the tombstone hashes and lengths of the non-blank
 // hidden lines, without repeats.
 func (k *keyer) lineHashes(hidden []string) ([]string, []int) {

@@ -321,3 +321,40 @@ func shaIndexExists(t testing.TB, db *sql.DB) bool {
 	}
 	return n > 0
 }
+
+// An index that carries messages_sha from before it left the schema
+// loses it at Open when no redaction is recorded, so its writes get
+// cheaper without a reindex. With redactions recorded it is kept.
+func TestOpenDropsUnusedSHAIndex(t *testing.T) {
+	for _, redacted := range []bool{false, true} {
+		p := newPerfIndex(t)
+		p.index(t, perfguard.ClaudeTranscript(50), transcript.Cursor{}, 1)
+		ctx := context.Background()
+		if redacted {
+			var session string
+			var ordinal int64
+			if err := p.s.DB().QueryRow(`SELECT c.session_id, m.ordinal FROM messages m JOIN conversations c ON c.id = m.conversation_id
+				WHERE m.kind = 'user' ORDER BY m.ordinal LIMIT 1`).Scan(&session, &ordinal); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.s.RedactMessage(ctx, LocalRedaction{Session: session, Ordinal: ordinal}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := p.s.writeWait(ctx, func(w *writeTx) error { return w.ensureSHAIndex() }); err != nil {
+			t.Fatal(err)
+		}
+		path := p.s.Path()
+		if err := p.s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Open(path, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.s = s // closed by newPerfIndex's cleanup
+		if got := shaIndexExists(t, s.DB()); got != redacted {
+			t.Errorf("redactions recorded %v: messages_sha exists after Open = %v", redacted, got)
+		}
+	}
+}
