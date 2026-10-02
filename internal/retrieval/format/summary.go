@@ -201,13 +201,13 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 		parts = append(parts, tail...)
 		if intent {
 			if i := intentOf(c); i != "" {
-				line := strings.Join(parts, "  ")
-				if room := min(IntentShort, MaxHeader-len(line)-len("  intent: \"\"")); room >= 16 {
+				line := strings.Join(parts, fieldSep)
+				if room := min(IntentShort, MaxHeader-len(line)-len(` intent: "…"`)); room >= 16 {
 					parts = append(parts, quotedField("intent", shortIntent(i, room)))
 				}
 			}
 		}
-		return strings.Join(parts, "  ")
+		return strings.Join(parts, fieldSep)
 	}
 	line := build(w, where, true)
 	if len(line) > MaxHeader {
@@ -219,6 +219,9 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 	return line
 }
 
+// fieldSep separates the fields of a header line.
+const fieldSep = " "
+
 // header is the grouped layout's line opening a session's hits.
 func header(c *ConversationInfo, now time.Time) string {
 	return "## " + summary(c, now)
@@ -227,9 +230,9 @@ func header(c *ConversationInfo, now time.Time) string {
 // field is one labeled field of a header line, "key: value". The value
 // prints bare when it is a plain token, else quoted as a JSON string, so
 // a header splits into fields unambiguously however its values read:
-// fields are separated by two spaces, and a quoted value may hold spaces,
-// quotes or text that looks like another field. Text fields (intent,
-// title) always quote (quotedField).
+// fields are separated by one space (fieldSep), and a quoted value may
+// hold spaces, quotes or text that looks like another field. Text fields
+// (intent, title) always quote (quotedField).
 func field(key, v string) string {
 	v = Clean(v)
 	if !bareValue(v) {
@@ -245,8 +248,8 @@ func quotedField(key, v string) string {
 }
 
 // bareValue reports whether v can print unquoted: not empty, no space
-// (of any kind), quote, backslash or control character, not starting
-// with a quote and not ending in a colon (which would read as a key).
+// (of any kind), quote, apostrophe, backslash or control character, and
+// not ending in a colon (which would read as a key).
 func bareValue(v string) bool {
 	if v == "" || strings.HasSuffix(v, ":") {
 		return false

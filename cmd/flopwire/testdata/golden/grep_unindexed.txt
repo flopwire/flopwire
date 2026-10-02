@@ -1,5 +1,5 @@
 [unindexed: the pattern has no run of 3 characters every match must contain, so messages were scanned newest first]
-## session: 019a0000-0000-7000-8000-0000000000a1  agent: codex  ended: 2026-03-20  repo: oracle-beta  branch: main  files: 2  intent: "add a health check endpoint"
+## session: 019a0000-0000-7000-8000-0000000000a1 agent: codex ended: 2026-03-20 repo: oracle-beta branch: main files: 2 intent: "add a health check endpoint"
 14372864:1 user: why 404?
 12435456:1 assistant: Added /healthz; the test still fails with 404 because the route is registered after the auth middleware.
 [showing 1-2 of 3 hits in 1 session; next: --offset 2]

@@ -231,7 +231,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 	lineAddr := regexp.MustCompile(`^([^\s/\[]+/\d+)(?::(\d+))?[:-]`)
 	// A labeled session line (grep -l, sessions --text), or -c's
 	// SESSION:COUNT.
-	sessAddr := regexp.MustCompile(`^(?:session: ([^\s"]+)  |([^\s/\[:]+):\d+$)`)
+	sessAddr := regexp.MustCompile(`^(?:session: ([^\s"]+) |([^\s/\[:]+):\d+$)`)
 	// The grouped layout: a "## session: SESSION ..." header, then
 	// ORDINAL:LINE (ORDINAL-LINE- for context) lines whose address is
 	// SESSION/ORDINAL.
@@ -334,7 +334,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		case a.session != "":
 			// A full session id reads the session it names (the
 			// message addresses use its shortest unique prefix).
-			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "# session: "+a.session+"  ") {
+			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "# session: "+a.session+" ") {
 				t.Errorf("read %s: no focus in that session:\n%s", target, out)
 			}
 		case !strings.Contains(out, ">> "+a.msg+"  "):
@@ -454,7 +454,7 @@ func TestSelfAndLive(t *testing.T) {
 		t.Fatalf("live session: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--text")
-	if err != nil || !strings.Contains(out, "session: "+open+"  agent: codex  live: 30m  ") {
+	if err != nil || !strings.Contains(out, "session: "+open+" agent: codex live: 30m ") {
 		t.Fatalf("live header: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--exclude-live")

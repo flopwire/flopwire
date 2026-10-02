@@ -12,7 +12,7 @@ import (
 )
 
 // parseFields splits a labeled line the way the help documents it:
-// "key: value" fields two spaces apart, each value bare (no space, quote,
+// "key: value" fields one space apart, each value bare (no space, quote,
 // backslash or control character) or a JSON string. It fails on anything
 // else, so a test that passes proves the line splits unambiguously.
 func parseFields(t *testing.T, line string) ([]string, map[string]string) {
@@ -43,7 +43,7 @@ func parseFields(t *testing.T, line string) ([]string, map[string]string) {
 			}
 			rest = rest[end+1:]
 		} else {
-			end := strings.Index(rest, "  ")
+			end := strings.Index(rest, " ")
 			if end < 0 {
 				end = len(rest)
 			}
@@ -56,13 +56,16 @@ func parseFields(t *testing.T, line string) ([]string, map[string]string) {
 			t.Fatalf("key %s twice in %q", m[1], line)
 		}
 		keys, vals[m[1]] = append(keys, m[1]), v
-		if rest != "" && !strings.HasPrefix(rest, "  ") {
-			t.Fatalf("fields not two spaces apart at %q in %q", rest, line)
+		if rest != "" && (!strings.HasPrefix(rest, " ") || strings.HasPrefix(rest, "  ")) {
+			t.Fatalf("fields not one space apart at %q in %q", rest, line)
 		}
-		rest = strings.TrimPrefix(rest, "  ")
+		rest = strings.TrimPrefix(rest, " ")
 	}
 	return keys, vals
 }
+
+// docFieldRE is the regex docs/search.md gives for splitting a header.
+var docFieldRE = regexp.MustCompile(`([a-z_]+): ("(?:[^"\\]|\\.)*"|\S+)`)
 
 // Headers are labeled fields that split the same way whatever the
 // transcript holds: titles and intents with quotes, double spaces, text
@@ -88,6 +91,21 @@ func TestLabeledHeadersSplitUnambiguously(t *testing.T) {
 		gotKeys, vals := parseFields(t, line)
 		if !slices.Equal(gotKeys, keys) {
 			t.Errorf("%s: keys %v, want %v\n%s", name, gotKeys, keys, line)
+		}
+		// The one-regex recipe docs/search.md gives splits it the same.
+		var reKeys []string
+		for _, m := range docFieldRE.FindAllStringSubmatch(line, -1) {
+			v := m[2]
+			if strings.HasPrefix(v, `"`) && json.Unmarshal([]byte(v), &v) != nil {
+				t.Fatalf("%s: %s is not a JSON string", name, m[2])
+			}
+			if vals[m[1]] != v {
+				t.Errorf("%s: the docs regex reads %s = %q, the parser %q", name, m[1], v, vals[m[1]])
+			}
+			reKeys = append(reKeys, m[1])
+		}
+		if !slices.Equal(reKeys, keys) {
+			t.Errorf("%s: the docs regex reads keys %v", name, reKeys)
 		}
 		for k, v := range want {
 			if vals[k] != v {

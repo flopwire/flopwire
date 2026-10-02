@@ -413,7 +413,7 @@ func sessionLine(s *ConversationInfo) string {
 	if t := titleField(s.Title); t != "" {
 		parts = append(parts, t)
 	}
-	return strings.Join(parts, "  ")
+	return strings.Join(parts, fieldSep)
 }
 
 // isoStampLayout is how a header prints a time: UTC to the minute, one
@@ -569,7 +569,7 @@ func readHeader(c *ConversationInfo) string {
 	if t := titleField(c.Title); t != "" {
 		head = append(head, t)
 	}
-	return strings.Join(head, "  ")
+	return strings.Join(head, fieldSep)
 }
 
 // readMessage renders one message of read's answer. room > 0 bounds the
@@ -690,7 +690,7 @@ func (g *grouper) open(e *errWriter, h *Hit) bool {
 		if b := branchLabel(h.Branches); b != "" {
 			parts = append(parts, field("branch", b))
 		}
-		e.printf("## %s\n", strings.Join(parts, "  "))
+		e.printf("## %s\n", strings.Join(parts, fieldSep))
 	}
 	g.seen[h.SessionID] = true
 	return true

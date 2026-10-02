@@ -873,7 +873,7 @@ var toolHelp = map[string]string{
 
 Hits group under a header of "key: value" fields per session (a value with a space is a
 JSON string), newest first; the address for flopwire read is SESSION/ORDINAL:LINE.
-  ## session: SESSION  agent: claude  ended: 2026-09-23  repo: api  branch: main  intent: "..."
+  ## session: SESSION agent: claude ended: 2026-09-23 repo: api branch: main intent: "..."
   ORDINAL:LINE kind/tool: text        (--no-heading: SESSION/ORDINAL:LINE: [attribution] text)
 Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a match spans
          lines of one message)  (-n, -r accepted)
@@ -920,7 +920,7 @@ JSON: {"kind":"sessions","sessions":[{"address","session_id":FULL ID,"agent","ti
 "branches","last_activity_at","live","messages","parent_session","digest":{"intent",
 "commits","prs","files_edited","last",…}}…],"has_more":bool,"next_cursor":C}.
 has_more: pass next_cursor as --cursor. --text: a labeled line per session, its last reply:
-  session: S  agent: claude  ended: 2026-09-23  repo: api  branch: main  msgs: 24  intent: "..."
+  session: S agent: claude ended: 2026-09-23 repo: api branch: main msgs: 24 intent: "..."
 Pass session_id to flopwire read --outline (digest and skeleton), as --session to grep and
 search, or to flopwire peers --session (is it live?). A bare GLOB word matches anywhere.
 --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339; times are UTC.
@@ -940,8 +940,8 @@ Source   the local index; --server for the team server; --index PATH
 
 ADDRESS is SESSION/ORDINAL[:LINE], SESSION (any unique prefix of the id), a message
 id, /path/to/transcript.jsonl:LINE, or self (the calling agent's session). The header is
-labeled fields, as grep's: # session: FULL ID  agent: A  repo: PATH  branch: B  start: T
-active: T  msgs: N  title: "..." (UTC; a value with a space is a JSON string). The focus text
+labeled fields, as grep's: # session: FULL ID agent: A repo: PATH branch: B start: T
+active: T msgs: N title: "..." (UTC; a value with a space is a JSON string). The focus text
 prints with line numbers; long text is cut at --max-chars and says how to read on.
 --max-bytes N keeps the focus and the nearest neighbours within N bytes.
 
