@@ -723,7 +723,7 @@ func TestPollWakesOnSendAndTimesOut(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := tm.s.Poll(context.Background(), tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: out.Cursor, WaitSeconds: 20})
+		out, err := tm.s.Poll(context.Background(), tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: out.Cursor, Gen: out.Gen, WaitSeconds: 20})
 		done <- result{out, err}
 	}()
 	time.Sleep(200 * time.Millisecond)
@@ -740,7 +740,7 @@ func TestPollWakesOnSendAndTimesOut(t *testing.T) {
 		}
 		// The next poll from that cursor waits again.
 		cursor := r.out.Cursor
-		again, err := tm.s.Poll(context.Background(), tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: cursor})
+		again, err := tm.s.Poll(context.Background(), tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: cursor, Gen: r.out.Gen})
 		if err != nil || len(again.Messages) != 1 || again.Cursor != cursor {
 			t.Fatalf("full set again %+v %v", again, err)
 		}
@@ -750,7 +750,7 @@ func TestPollWakesOnSendAndTimesOut(t *testing.T) {
 	// A canceled poll returns the context's error.
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
-	if _, err := tm.s.Poll(ctx, tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: 1 << 40, WaitSeconds: 20}); !errors.Is(err, context.Canceled) {
+	if _, err := tm.s.Poll(ctx, tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: 1 << 40, Gen: 1, WaitSeconds: 20}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled poll: %v", err)
 	}
 }
@@ -763,7 +763,7 @@ func TestAcceptWakesPoll(t *testing.T) {
 	first := tm.present(tm.alexMac, alex)
 	done := make(chan busproto.PollResponse, 1)
 	go func() {
-		out, _ := tm.s.Poll(context.Background(), tm.alexMac, busproto.PollRequest{Sessions: []busproto.PresenceSession{alex}, Cursor: first.Cursor, WaitSeconds: 20})
+		out, _ := tm.s.Poll(context.Background(), tm.alexMac, busproto.PollRequest{Sessions: []busproto.PresenceSession{alex}, Cursor: first.Cursor, Gen: first.Gen, WaitSeconds: 20})
 		done <- out
 	}()
 	time.Sleep(200 * time.Millisecond)
@@ -1044,5 +1044,190 @@ func TestRedactedMultibyteBodyIsStored(t *testing.T) {
 	}
 	if strings.Contains(stored, "Xk9#mQ2z") || !strings.HasSuffix(stored, " now") {
 		t.Fatalf("stored %q", stored)
+	}
+}
+
+// Revoking a sender wakes the recipient's poll, whose answer no longer
+// lists the re-held message: the device drops it before a hook prints it.
+func TestRevokeWakesPoll(t *testing.T) {
+	tm := newTeam(t)
+	alexLogin := busproto.Caller{UserID: tm.alex}
+	if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	queued := tm.mustSend(tm.garyMac, "g-api-1111", "a-api", "queued before the revoke")
+	alex := live("a-api-4444", "claude", "/Users/alex/code/api", false)
+	first := tm.present(tm.alexMac, alex)
+	if len(first.Messages) != 1 || first.Messages[0].ID != queued.ID {
+		t.Fatalf("before revoke %+v", first)
+	}
+	done := make(chan busproto.PollResponse, 1)
+	go func() {
+		out, _ := tm.s.Poll(context.Background(), tm.alexMac, busproto.PollRequest{Sessions: []busproto.PresenceSession{alex}, Cursor: first.Cursor, Gen: first.Gen, WaitSeconds: 20})
+		done <- out
+	}()
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case out := <-done:
+		t.Fatalf("poll answered before the revoke: %+v", out)
+	default:
+	}
+	if _, err := tm.s.Revoke(context.Background(), alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if len(out.Messages) != 0 || len(out.Held) != 1 || out.Held[0].Count != 1 || out.Gen == first.Gen {
+			t.Fatalf("after revoke %+v", out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("revoke did not wake the poll")
+	}
+}
+
+// A change between two polls (no poll waiting) still reaches the device at
+// once: its next poll names an older generation.
+func TestPollAnswersAtOnceOnANewGeneration(t *testing.T) {
+	tm := newTeam(t)
+	alexLogin := busproto.Caller{UserID: tm.alex}
+	if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	tm.mustSend(tm.garyMac, "g-api-1111", "a-api", "queued")
+	alex := live("a-api-4444", "claude", "/Users/alex/code/api", false)
+	first := tm.present(tm.alexMac, alex)
+	if _, err := tm.s.Revoke(context.Background(), alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	out, err := tm.s.Poll(context.Background(), tm.alexMac, busproto.PollRequest{Sessions: []busproto.PresenceSession{alex}, Cursor: first.Cursor, Gen: first.Gen, WaitSeconds: 20})
+	if err != nil || len(out.Messages) != 0 || time.Since(start) > 5*time.Second {
+		t.Fatalf("poll after a revoke between polls: %+v %v after %s", out, err, time.Since(start))
+	}
+	// With the new generation it waits again.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := tm.s.Poll(ctx, tm.alexMac, busproto.PollRequest{Sessions: []busproto.PresenceSession{alex}, Cursor: out.Cursor, Gen: out.Gen, WaitSeconds: 20}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("poll on the current generation: %v", err)
+	}
+}
+
+// Revoking re-holds an @user message a device claimed but did not deliver:
+// the device drops it. Accepting again returns it to that device's claim.
+func TestRevokeReholdsClaimedMessage(t *testing.T) {
+	tm := newTeam(t)
+	alexLogin := busproto.Caller{UserID: tm.alex}
+	if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	out := tm.mustSend(tm.garyMac, "g-web-2222", "@alex", "to a person", func(r *busproto.SendRequest) { r.Repo = "api" })
+	api := live("a-api-4444", "claude", "/Users/alex/code/api", false)
+	tm.present(tm.alexMac, api)
+	if _, err := tm.s.Claim(context.Background(), tm.alexMac, busproto.ClaimRequest{MessageID: out.ID, SessionID: "a-api-4444"}); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := tm.s.Revoke(context.Background(), alexLogin, "gary")
+	if err != nil || rev.Reheld != 1 || tm.state(out.ID) != "held" {
+		t.Fatalf("revoke %+v %v state %s", rev, err, tm.state(out.ID))
+	}
+	if got := tm.present(tm.alexMac, api); len(got.Messages) != 0 || len(got.Claimable) != 0 {
+		t.Fatalf("re-held claimed message still offered: %+v", got)
+	}
+	if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	got := tm.present(tm.alexMac, api)
+	if len(got.Messages) != 1 || got.Messages[0].ID != out.ID || got.Messages[0].ToSession != "a-api-4444" || tm.state(out.ID) != "claimed" {
+		t.Fatalf("released message not back with its claim: %+v %s", got, tm.state(out.ID))
+	}
+}
+
+// The held list groups a person's held messages by sender, newest first,
+// with previews only: the first line, without control or format
+// characters, cut to PreviewRunes. Other people's held messages and
+// messages not held are not listed.
+func TestHeldListsPreviewsBySender(t *testing.T) {
+	tm := newTeam(t)
+	sam := tm.user("sam")
+	samMac := tm.device(sam)
+	tm.present(samMac, live("s-api-5555", "codex", "/Users/sam/api", true))
+	first := tm.mustSend(tm.garyMac, "g-api-1111", "a-api", "\n  Please rerun the migration‮ evil\x1b[2J\nsecond line stays on the server")
+	tm.advance(time.Second)
+	long := tm.mustSend(tm.garyMac, "g-api-1111", "@alex", strings.Repeat("x", 300))
+	tm.mustSend(samMac, "s-api-5555", "a-api", "from sam")
+	tm.mustSend(tm.alexMac, "a-api-4444", "g-api", "alex to gary: held for gary, not alex")
+	out, err := tm.s.Held(context.Background(), tm.alex)
+	if err != nil || len(out.Senders) != 2 {
+		t.Fatalf("held %+v %v", out, err)
+	}
+	g := out.Senders[0]
+	if g.User != "gary@example.test" || g.UserName != "Gary" || g.Count != 2 || len(g.Messages) != 2 || g.More != 0 {
+		t.Fatalf("gary's group %+v", g)
+	}
+	if m := g.Messages[0]; m.ID != long.ID || m.Preview != strings.Repeat("x", busproto.PreviewRunes)+"…" || m.Bytes != 300 || m.Addressed != "user" {
+		t.Fatalf("newest first, cut: %+v", m)
+	}
+	if m := g.Messages[1]; m.ID != first.ID || m.Preview != "Please rerun the migration evil[2J" || m.Repo != "api" || m.Branch != "main" || m.Agent != "claude" || m.Session != "g-api-1111" {
+		t.Fatalf("preview %+v", m)
+	}
+	if out.Senders[1].User != "sam@example.test" || out.Senders[1].Count != 1 {
+		t.Fatalf("sam's group %+v", out.Senders[1])
+	}
+	// Accepting gary takes his messages off the list.
+	if _, err := tm.s.Accept(context.Background(), busproto.Caller{UserID: tm.alex}, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := tm.s.Held(context.Background(), tm.alex); len(out.Senders) != 1 || out.Senders[0].User != "sam@example.test" {
+		t.Fatalf("after accept %+v", out)
+	}
+}
+
+// A revoke that lands after a hook printed a claimed @user message, but
+// before the device's receipt reached the server, must not deliver that
+// message a second time: the late receipt is taken (the message was
+// delivered), and a later accept never offers it to another device.
+func TestRevokeAfterAPrintedClaimDeliversOnce(t *testing.T) {
+	for _, receiptFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "receipt before the accept", false: "receipt after the accept"}[receiptFirst], func(t *testing.T) {
+			tm := newTeam(t)
+			alexLinux := tm.device(tm.alex)
+			alexLogin := busproto.Caller{UserID: tm.alex}
+			if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+				t.Fatal(err)
+			}
+			out := tm.mustSend(tm.garyMac, "g-web-2222", "@alex", "to a person", func(r *busproto.SendRequest) { r.Repo = "api" })
+			api := live("a-api-4444", "claude", "/Users/alex/code/api", false)
+			lin := live("a-lin-5555", "codex", "/home/alex/api", false)
+			tm.present(tm.alexMac, api)
+			tm.present(alexLinux, lin)
+			if _, err := tm.s.Claim(context.Background(), tm.alexMac, busproto.ClaimRequest{MessageID: out.ID, SessionID: "a-api-4444"}); err != nil {
+				t.Fatal(err)
+			}
+			// The mac's hook prints it; the revoke lands before the receipt.
+			if _, err := tm.s.Revoke(context.Background(), alexLogin, "gary"); err != nil {
+				t.Fatal(err)
+			}
+			ack := func() {
+				t.Helper()
+				if ack, err := tm.s.Ack(context.Background(), tm.alexMac, busproto.AckRequest{IDs: []string{out.ID}}); err != nil || len(ack.Acked) != 1 {
+					t.Fatalf("receipt of the printed message: %+v %v", ack, err)
+				}
+			}
+			if receiptFirst {
+				ack()
+			}
+			if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+				t.Fatal(err)
+			}
+			if got := tm.present(alexLinux, lin); len(got.Claimable) != 0 || len(got.Messages) != 0 {
+				t.Fatalf("the printed message is offered to another device: %+v", got)
+			}
+			if !receiptFirst {
+				ack()
+			}
+			if st := tm.state(out.ID); st != "delivered" {
+				t.Fatalf("state %s, want delivered", st)
+			}
+		})
 	}
 }

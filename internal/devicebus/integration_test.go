@@ -239,7 +239,7 @@ func TestDevicesOverTheServer(t *testing.T) {
 	if got, _ := lap.Pending(ctx, "g-lap-1111", ""); len(got) != 0 {
 		t.Fatalf("held message delivered: %+v", got)
 	}
-	s.post(busproto.PathAccepts, gary, busproto.AcceptRequest{Sender: "alex@example.test"}, nil)
+	s.post(busproto.PathAccepts, gary, busproto.AcceptRequest{Sender: "alex@example.test", Password: "a member's correct password"}, nil)
 	waitFor(t, "the released message", func() bool {
 		got, _ = lap.Pending(ctx, "g-lap-1111", "")
 		return len(got) == 1 && got[0].ID == held.ID && got[0].Sender == busproto.SenderTeammate

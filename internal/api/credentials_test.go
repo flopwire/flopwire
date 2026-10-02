@@ -41,10 +41,13 @@ type member struct {
 	userID, session, device, deviceID string
 }
 
+// memberPassword is every newMember's password.
+const memberPassword = "a member's correct password"
+
 func newMember(t *testing.T, url, adminToken, email string) member {
 	t.Helper()
 	invite := postJSON(t, url+"/v1/admin/invites", map[string]string{"email": email, "role": "member"}, bearer(adminToken))
-	claimed := postJSON(t, url+"/v1/invites/claim", map[string]string{"code": invite["code"].(string), "name": "M", "password": "a member's correct password"}, nil)
+	claimed := postJSON(t, url+"/v1/invites/claim", map[string]string{"code": invite["code"].(string), "name": "M", "password": memberPassword}, nil)
 	m := member{userID: claimed["user"].(map[string]any)["id"].(string), session: claimed["token"].(string)}
 	enrolled := postJSON(t, url+"/v1/devices", map[string]string{"name": "laptop", "platform": "darwin-arm64"}, bearer(m.session))
 	m.device, m.deviceID = enrolled["token"].(string), enrolled["device"].(map[string]any)["id"].(string)

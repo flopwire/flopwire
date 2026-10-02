@@ -471,3 +471,71 @@ func TestHookEscapesHostileBody(t *testing.T) {
 		t.Fatalf("no reply line:\n%s", c)
 	}
 }
+
+// The held-message notice goes to the person, never to the model: on
+// Claude Code and Codex as a UserPromptSubmit systemMessage, which those
+// harnesses show and do not give the model; on Devin (no such channel)
+// and on other events, not at all. Model context never names a held
+// sender or says one exists.
+func TestHookHeldNoticeIsForThePersonOnly(t *testing.T) {
+	held := []busproto.HeldSender{{User: "alex@example.test", UserID: "u-alex", Count: 2, Oldest: time.Now()}}
+	cases := map[string]struct {
+		in     func(string) string
+		env    map[string]string
+		notice bool
+	}{
+		"claude":              {claudeIn, map[string]string{"CLAUDECODE": "1"}, true},
+		"codex":               {codexIn, map[string]string{"CODEX_THREAD_ID": codexSID}, true},
+		"devin":               {devinIn, devinEnv, false},
+		"devin-claude-config": {claudeIn, devinEnv, false},
+	}
+	for name, c := range cases {
+		for _, ev := range []string{evSessionStart, evUserPromptSubmit, evPostToolUse} {
+			for _, withMessage := range []bool{false, true} {
+				fa := newHookAgent(t)
+				fa.resp.Held, fa.resp.Notice, fa.resp.Console = held, held, "https://flopwire.example.test/#messages"
+				if withMessage {
+					fa.msgs = []busproto.Envelope{testEnvelope("m1", "pagination changed", busproto.IntentInform)}
+				}
+				out, _ := runHook(t, fa.sock, c.in(ev), c.env)
+				want := c.notice && ev == evUserPromptSubmit
+				if reqs := fa.requests("pending"); len(reqs) != 1 || reqs[0].Notice != want {
+					t.Fatalf("%s %s: pending asked notice=%v, want %v", name, ev, reqs[0].Notice, want)
+				}
+				if out == "" {
+					if want || withMessage {
+						t.Fatalf("%s %s message=%v: nothing printed", name, ev, withMessage)
+					}
+					continue
+				}
+				o := decodeHook(t, out)
+				ctxt := o.HookSpecificOutput.AdditionalContext
+				if strings.Contains(ctxt, "alex") || strings.Contains(strings.ToLower(ctxt), "held") || strings.Contains(ctxt, "accept") {
+					t.Fatalf("%s %s: model context mentions the held sender:\n%s", name, ev, ctxt)
+				}
+				if withMessage != (ctxt != "") {
+					t.Fatalf("%s %s message=%v: context %q", name, ev, withMessage, ctxt)
+				}
+				if !want {
+					if o.SystemMessage != "" || strings.Contains(out, "alex") {
+						t.Fatalf("%s %s: a notice where the model could see it or none should be:\n%s", name, ev, out)
+					}
+					continue
+				}
+				if o.SystemMessage != "Flopwire: 2 messages from alex@example.test (2) are held until you accept the sender; your agents have not seen them. To review, open https://flopwire.example.test/#messages or run flopwire accepts --text in a terminal." {
+					t.Fatalf("%s: notice %q", name, o.SystemMessage)
+				}
+			}
+		}
+	}
+}
+
+// Nothing to notice (the agent rate-limited it, or nothing is held):
+// nothing printed, even though held senders exist.
+func TestHookPrintsNoNoticeWhenNoneIsDue(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Held = []busproto.HeldSender{{User: "alex@example.test", UserID: "u-alex", Count: 2}}
+	if out, _ := runHook(t, fa.sock, claudeIn(evUserPromptSubmit), map[string]string{"CLAUDECODE": "1"}); out != "" {
+		t.Fatalf("printed %q", out)
+	}
+}

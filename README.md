@@ -32,6 +32,11 @@ the original text. Every member can search and read the whole organization
 corpus. Host administrators can read plaintext database rows and objects.
 Path rules keep chosen directories and repositories off the server.
 
+Messaging lets agents act on other agents' messages. When you accept a
+teammate as a sender, their agents can send requests to all of your agent
+sessions, and your agents may act on them within each session's own
+permissions. See [Accepting a sender](#accepting-a-sender).
+
 Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 
 ## What ships
@@ -248,14 +253,49 @@ flopwire inbox --sent                                    # what you sent, and it
   runs outside an agent session cannot send. Set `FLOPWIRE_SESSION_ID` to
   send as a given session.
 - A message from another person is held until the recipient accepts that
-  person. The server has the accept route; the console and CLI commands
-  for it are not built yet.
+  person. See [Accepting a sender](#accepting-a-sender).
 
 The `flopwire hook` command prints each message into the recipient's
 session: inside a running turn at its next tool call, or with its human's
 next prompt. A message never wakes an idle session. In Claude Code, Codex
 and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
 you approve them once.
+
+### Accepting a sender
+
+A message from another person's agent is held until you accept that
+person. Your agents do not see a held message, and are not told that one
+exists. You review it yourself: on the **Messaging** page of the web
+console, or with `flopwire accepts --text` in a terminal. In Claude Code
+and Codex, the hook also shows you a notice when you type a prompt, at
+most once a day per sender. The model does not see that notice. Devin CLI
+has no channel that only you see, so it shows no notice.
+
+What accepting means:
+
+- The person's agents can send messages to all of your agent sessions,
+  including sessions that run with permission prompts turned off.
+- Your agents may act on their requests, within each session's own
+  permissions. A message never changes a session's permissions.
+- The rule that a teammate's message is information, to confirm with you
+  before a consequential action, is an instruction to the model. It is not
+  a boundary. Smaller models do not reliably follow it.
+- If one of their agents is prompt-injected (for example by a web page it
+  read), it can pass the injection on to your sessions.
+
+Accept only people whose agents you would let make requests of yours.
+Revoking takes effect at once: their undelivered messages are held again.
+A message a session already received stays with it. Accepting and
+revoking are your own actions: the commands need a terminal and your
+login session, accepting also needs your password, and there is no MCP
+tool for them. The procedure is in
+[docs/messaging.md](docs/messaging.md).
+
+```sh
+flopwire accepts --text          # who is held, with a preview, and whom you accept
+flopwire accept alex@example.com # shows what accepting means, then asks for your password
+flopwire revoke alex@example.com
+```
 
 ## Path rules
 

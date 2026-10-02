@@ -4,7 +4,8 @@
 //
 // Every route authenticates with a person's enrolled device credential
 // ("Authorization: Bearer <token>"), except the accept routes, which need
-// that person's login session. The server takes the device and user from
+// that person's login session, and the held list, which shows previews of
+// messages the person has not accepted and so must never reach an agent. The server takes the device and user from
 // the credential, never from the request.
 //
 //	POST   /v1/bus/send             SendRequest  -> SendResponse
@@ -16,6 +17,7 @@
 //	GET    /v1/bus/accepts          -> AcceptsResponse (login session)
 //	POST   /v1/bus/accepts          AcceptRequest -> AcceptResponse (login session)
 //	DELETE /v1/bus/accepts/{user}   -> AcceptResponse (login session)
+//	GET    /v1/bus/held             -> HeldResponse (login session)
 //
 // A failure is a problem document (Error) with a stable Code.
 //
@@ -49,6 +51,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -59,6 +63,7 @@ const (
 	PathPeers   = "/v1/bus/peers"
 	PathInbox   = "/v1/bus/inbox"
 	PathAccepts = "/v1/bus/accepts" // DELETE PathAccepts + "/" + user to revoke
+	PathHeld    = "/v1/bus/held"
 )
 
 const (
@@ -149,6 +154,7 @@ const (
 	CodeSessionNotOnDevice = "session_not_on_device"
 	CodeDeviceRequired     = "bus_device_required"
 	CodeLoginRequired      = "login_session_required"
+	CodePasswordRequired   = "password_required" // 403: accept needs the person's password
 	CodeNotFound           = "not_found"
 	CodeAlreadyClaimed     = "already_claimed"
 	CodeNotEligible        = "not_eligible"
@@ -286,6 +292,11 @@ type PollRequest struct {
 	// Cursor is the Cursor of the last answer (0 at start). The poll
 	// answers at once when it holds a message newer than Cursor.
 	Cursor int64 `json:"cursor"`
+	// Gen is the Gen of the last answer (0 at start). The poll answers at
+	// once when the person's generation differs: their set changed in a
+	// way the cursor does not show (an accept, or a revoke that held
+	// messages again).
+	Gen int64 `json:"gen"`
 	// WaitSeconds is how long to hold when nothing is new (0: answer at
 	// once), at most PollWait.
 	WaitSeconds int `json:"wait_seconds"`
@@ -310,6 +321,8 @@ type HeldSender struct {
 // PollResponse is the device's whole deliverable set.
 type PollResponse struct {
 	Cursor int64 `json:"cursor"`
+	// Gen is the person's change generation; the next poll sends it back.
+	Gen int64 `json:"gen"`
 	// Messages are addressed to sessions on this device (or claimed by
 	// it) and not yet delivered.
 	Messages  []Envelope   `json:"messages"`
@@ -404,9 +417,13 @@ type InboxResponse struct {
 }
 
 // AcceptRequest is POST /v1/bus/accepts: accept messages from Sender (an
-// email, its local part, a name or a user id).
+// email, its local part, a name or a user id). Password is the person's
+// own, typed by them: a login session alone does not accept, because the
+// one `flopwire login` saves can be read by any process of the person's
+// OS user, an agent included (CodePasswordRequired).
 type AcceptRequest struct {
-	Sender string `json:"sender"`
+	Sender   string `json:"sender"`
+	Password string `json:"password,omitempty"`
 }
 
 // Accepted is one sender the person accepts.
@@ -432,6 +449,76 @@ type AcceptResponse struct {
 	Accepted bool   `json:"accepted"`
 	Released int    `json:"released,omitempty"`
 	Reheld   int    `json:"reheld,omitempty"`
+}
+
+// HeldMessage is one held message as its recipient's human reviews it
+// before accepting the sender. It carries a preview, never the body: the
+// first line, cut to PreviewRunes, with control and format characters
+// removed. The preview is text another person's agent wrote; a client
+// shows it as inert text.
+type HeldMessage struct {
+	ID string `json:"id"`
+	// Agent, Repo (the repo name, not its path) and Branch describe the
+	// sending session.
+	Agent     string    `json:"agent"`
+	Session   string    `json:"session"`
+	Repo      string    `json:"repo,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	Intent    Intent    `json:"intent"`
+	Addressed string    `json:"addressed"` // session or user
+	Preview   string    `json:"preview"`
+	Bytes     int       `json:"bytes"` // the whole body's length
+	Refs      int       `json:"refs,omitempty"`
+	Sent      time.Time `json:"sent"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// HeldGroup is one sender's held messages, newest first, at most
+// HeldPerSender of them; More counts the rest.
+type HeldGroup struct {
+	HeldSender
+	UserName string        `json:"user_name,omitempty"`
+	Newest   time.Time     `json:"newest"`
+	Messages []HeldMessage `json:"messages"`
+	More     int           `json:"more,omitempty"`
+}
+
+// HeldResponse is GET /v1/bus/held: the person's held messages by sender.
+type HeldResponse struct {
+	Senders []HeldGroup `json:"senders"`
+}
+
+const (
+	// PreviewRunes bounds a held message's preview.
+	PreviewRunes = 200
+	// HeldPerSender bounds the previews listed per sender.
+	HeldPerSender = 20
+)
+
+// Preview is the first non-blank line of body, without control or format
+// characters (which could reorder or hide text), cut to PreviewRunes.
+func Preview(body string) string {
+	line := ""
+	for l := range strings.SplitSeq(body, "\n") {
+		if strings.TrimSpace(l) != "" {
+			line = l
+			break
+		}
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.TrimSpace(line) {
+		if r == utf8.RuneError || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		if n == PreviewRunes {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // Caller is the authenticated device (or, for accepts, person) a server

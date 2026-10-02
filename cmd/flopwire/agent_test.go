@@ -18,6 +18,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/domain"
@@ -178,8 +179,12 @@ func TestAgentStatusShowsBus(t *testing.T) {
 		st   devicebus.Status
 		want []string
 	}{
-		{devicebus.Status{State: devicebus.StateConnected, Sessions: 3, Pending: 2, Unacked: 1, Held: 4},
-			[]string{"messaging: connected; 3 live sessions reported", "messages: 2 pending delivery, 1 receipts unsent, 4 held for your acceptance"}},
+		{devicebus.Status{State: devicebus.StateConnected, Sessions: 3, Pending: 2, Unacked: 1, Held: 4, HeldSenders: []busproto.HeldSender{
+			{User: "alex@example.test", UserID: "u1", Count: 3, Oldest: time.Date(2026, 10, 2, 9, 0, 0, 0, time.Local)},
+			{User: "sam@example.test", UserID: "u2", Count: 1, Oldest: time.Date(2026, 10, 2, 10, 0, 0, 0, time.Local)}}},
+			[]string{"messaging: connected; 3 live sessions reported", "messages: 2 pending delivery, 1 receipts unsent, 4 held for your acceptance",
+				"  held from alex@example.test: 3 messages, oldest 2026-10-02 09:00:00\n  held from sam@example.test: 1 message, oldest 2026-10-02 10:00:00\n",
+				"flopwire accepts --text in a terminal"}},
 		{devicebus.Status{State: devicebus.StateBackoff, LastError: "connection refused", RetryAt: time.Now()},
 			[]string{"messaging: server unreachable, retry at", "connection refused"}},
 		{devicebus.Status{State: devicebus.StateStopped, LastError: "the server refused this device's credential: run flopwire login"},

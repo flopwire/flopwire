@@ -31,6 +31,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -289,6 +290,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		var connect func() (devicebus.Server, string)
 		if ccErr == nil && cc.Server != "" && cc.Token != "" && !*noSync {
 			connect = busConnect(cc, client.Load)
+			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
 		}
 		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log}); b != nil {
 			defer b.Close()
@@ -793,6 +795,12 @@ func printBusStatus(w io.Writer, b *devicebus.Status) {
 		fmt.Fprintf(w, "messaging: %s\n", b.State)
 	}
 	fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	for _, h := range b.HeldSenders {
+		fmt.Fprintf(w, "  held from %s: %d %s, oldest %s\n", busproto.Preview(h.User), h.Count, plural(h.Count, "message", "messages"), h.Oldest.Local().Format(time.DateTime))
+	}
+	if len(b.HeldSenders) > 0 {
+		fmt.Fprintln(w, "  review them in the web console, or run flopwire accepts --text in a terminal")
+	}
 }
 
 // printRedactions shows what the redactor masked before upload (counts

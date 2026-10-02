@@ -112,6 +112,9 @@ type Config struct {
 	// pending, held, send, peers and inbox requests with it. nil: no
 	// messaging.
 	Bus *devicebus.Bus
+	// Console is the web console page where the user reviews held
+	// messages ("" without a server); the held notice names it.
+	Console string
 }
 
 func (c *Config) defaults() {

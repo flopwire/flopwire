@@ -513,10 +513,10 @@ func TestPresenceChangeRepolls(t *testing.T) {
 	if got := srv.lastPoll().Sessions; len(got) != 1 || got[0].SessionID != "s1" {
 		t.Fatalf("first poll presence: %+v", got)
 	}
-	srv.pollCh <- pollReply{resp: busproto.PollResponse{Cursor: 9}}
+	srv.pollCh <- pollReply{resp: busproto.PollResponse{Cursor: 9, Gen: 4}}
 	waitFor(t, "the second poll", func() bool { return srv.pollCount() == 2 })
-	if srv.lastPoll().Cursor != 9 {
-		t.Fatalf("cursor %d", srv.lastPoll().Cursor)
+	if srv.lastPoll().Cursor != 9 || srv.lastPoll().Gen != 4 {
+		t.Fatalf("cursor %d gen %d", srv.lastPoll().Cursor, srv.lastPoll().Gen)
 	}
 	p.set(sess("s1", "claude", "/src/api", true), secret) // s1 turns busy
 	waitFor(t, "a poll with the new presence", func() bool { return srv.pollCount() == 3 })
@@ -751,5 +751,44 @@ func TestRequeueWithdrawsTheReceipt(t *testing.T) {
 	}
 	if owed, _ := b.st.owed(ctx, 10); !slices.Equal(owed, []string{"mq"}) {
 		t.Fatalf("receipt after the second take: %v", owed)
+	}
+}
+
+// The held notice names each sender at most once per NoticeEvery, across
+// every hook that asks (one device, many sessions), and names a sender
+// again a day later while their messages are still held.
+func TestHeldNoticeOncePerSenderPerDay(t *testing.T) {
+	st, err := openStore(filepath.Join(t.TempDir(), "bus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.db.Close() })
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	alex := busproto.HeldSender{User: "alex@example.test", UserID: "u-alex", Count: 1}
+	sam := busproto.HeldSender{User: "sam@example.test", UserID: "u-sam", Count: 3}
+	ids := func(hs []busproto.HeldSender) string {
+		var out []string
+		for _, h := range hs {
+			out = append(out, h.UserID)
+		}
+		return strings.Join(out, ",")
+	}
+	for _, c := range []struct {
+		at   time.Duration
+		held []busproto.HeldSender
+		want string
+	}{
+		{0, []busproto.HeldSender{alex}, "u-alex"},
+		{time.Minute, []busproto.HeldSender{alex}, ""},               // another session's prompt
+		{time.Hour, []busproto.HeldSender{alex, sam}, "u-sam"},       // a new sender is named at once
+		{23 * time.Hour, []busproto.HeldSender{alex, sam}, ""},       // within the day
+		{24 * time.Hour, []busproto.HeldSender{alex, sam}, "u-alex"}, // alex again a day later
+		{25 * time.Hour, []busproto.HeldSender{alex, sam}, "u-sam"},
+	} {
+		got, err := st.notice(ctx, c.held, now.Add(c.at), NoticeEvery)
+		if err != nil || ids(got) != c.want {
+			t.Fatalf("at +%s: %q %v, want %q", c.at, ids(got), err, c.want)
+		}
 	}
 }

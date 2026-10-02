@@ -110,6 +110,7 @@ func (b *Bus) runServer(ctx context.Context) {
 		sent     []busproto.PresenceSession
 		started  time.Time
 		cursor   int64
+		gen      int64 // the person's generation in the last answer
 		backoff  time.Duration
 		next     time.Time // no poll before this
 		stop     *halt
@@ -149,7 +150,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
 			inflight, started = true, now
-			req := busproto.PollRequest{Sessions: sent, Cursor: cursor, WaitSeconds: int(b.cfg.PollWait / time.Second)}
+			req := busproto.PollRequest{Sessions: sent, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
 			go func() {
 				resp, err := srv.Poll(pctx, req)
@@ -208,7 +209,7 @@ func (b *Bus) runServer(ctx context.Context) {
 				continue
 			}
 			backoff = 0
-			cursor = a.resp.Cursor
+			cursor, gen = a.resp.Cursor, a.resp.Gen
 			if err := b.answered(ctx, a.resp, skip); err != nil {
 				// A claim could not be made (or the inbox not written):
 				// back off, then ask for the whole set again.

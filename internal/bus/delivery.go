@@ -131,13 +131,16 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 	defer timer.Stop()
 	timedOut := wait == 0
 	for {
-		woken := s.hub.wait(c.UserID)
+		woken, gen := s.hub.wait(c.UserID)
 		out, newest, err := s.deliverable(ctx, c, s.now())
 		if err != nil {
 			return busproto.PollResponse{}, err
 		}
-		if newest > req.Cursor || timedOut {
-			out.Cursor, out.Ignored = max(newest, req.Cursor), ignored
+		// A generation the device has not seen means the person's set
+		// changed since its last answer, maybe by shrinking (a revoke
+		// re-held a message), which the cursor cannot show.
+		if newest > req.Cursor || gen != req.Gen || timedOut {
+			out.Cursor, out.Gen, out.Ignored = max(newest, req.Cursor), gen, ignored
 			return out, nil
 		}
 		select {
@@ -304,10 +307,11 @@ func (s *Store) readEnvelope(ctx context.Context, q querier, id string, out *bus
 }
 
 // AckSQL marks delivered those of the messages $1 to the person $2 that
-// the device $3 holds: claimed by it, or queued to a session on it.
+// the device $3 holds: claimed by it (also when a revoke held the claimed
+// message again after its hook printed it), or queued to a session on it.
 const AckSQL = `UPDATE bus_messages m SET state='delivered',delivered_at=$4
 	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND (
-		(m.state='claimed' AND m.claimed_device=$3)
+		(m.state IN ('claimed','held') AND m.claimed_device=$3)
 		OR (m.state='queued' AND m.addressed='session' AND (
 			EXISTS(SELECT 1 FROM bus_presence p WHERE p.device_id=$3 AND p.agent=m.to_agent AND p.session_id=m.to_session)
 			OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=$3 AND c.agent=m.to_agent AND c.session_id=m.to_session))))
@@ -544,14 +548,84 @@ func (s *Store) Accepts(ctx context.Context, userID string) (busproto.AcceptsRes
 	return out, err
 }
 
+// HeldListSQL is the person $1's held messages expiring after $2, newest
+// first, with enough of each to decide on its sender: the sending session
+// and the body's head (Held cuts it to a preview; the whole body never
+// leaves the server). Bounded: a sender's held messages count against no
+// limit of the recipient's, so their number is not.
+const HeldListSQL = `SELECT m.id,m.from_user::text,(SELECT email FROM users WHERE id=m.from_user),(SELECT name FROM users WHERE id=m.from_user),
+		m.from_agent,m.from_session,m.from_repo,m.from_branch,m.intent,m.addressed,left(m.body,2000),octet_length(m.body),cardinality(m.refs),m.created_at,m.expires_at
+	FROM bus_messages m WHERE m.to_user=$1 AND m.state='held' AND m.expires_at>$2 ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`
+
+// Held lists the person's held messages by sender (B7), for their human to
+// review before accepting: previews only, at most HeldPerSender each. It
+// serves a login session only (internal/api): an agent must never read
+// what a sender its human has not accepted wrote.
+func (s *Store) Held(ctx context.Context, userID string) (busproto.HeldResponse, error) {
+	out := busproto.HeldResponse{Senders: []busproto.HeldGroup{}}
+	now := s.now()
+	summary, err := held(ctx, s.Pool, userID, now)
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.Pool.Query(ctx, HeldListSQL, userID, now)
+	if err != nil {
+		return out, err
+	}
+	type row struct {
+		busproto.HeldMessage
+		userID, user, name, head string
+	}
+	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var v row
+		var intent string
+		err := r.Scan(&v.ID, &v.userID, &v.user, &v.name, &v.Agent, &v.Session, &v.Repo, &v.Branch, &intent, &v.Addressed, &v.head, &v.Bytes, &v.Refs, &v.Sent, &v.ExpiresAt)
+		v.Intent, v.Repo, v.Preview = busproto.Intent(intent), RepoName(v.Repo), busproto.Preview(v.head)
+		return v, err
+	})
+	if err != nil {
+		return out, err
+	}
+	index := map[string]int{}
+	for _, h := range summary {
+		index[h.UserID] = len(out.Senders)
+		out.Senders = append(out.Senders, busproto.HeldGroup{HeldSender: h, Messages: []busproto.HeldMessage{}})
+	}
+	for _, v := range all {
+		i, ok := index[v.userID]
+		if !ok {
+			continue // held after the summary was read; the next read lists it
+		}
+		g := &out.Senders[i]
+		g.UserName = v.name
+		if v.Sent.After(g.Newest) {
+			g.Newest = v.Sent
+		}
+		if len(g.Messages) < busproto.HeldPerSender {
+			g.Messages = append(g.Messages, v.HeldMessage)
+		}
+	}
+	for i := range out.Senders {
+		out.Senders[i].More = max(0, out.Senders[i].Count-len(out.Senders[i].Messages))
+	}
+	return out, nil
+}
+
 // Acceptance and sweep statements.
 const (
-	// releaseHeldSQL queues the held messages from $2 to $1 that expire
-	// after $3, with a new seq so the recipient's poll wakes.
-	releaseHeldSQL = `UPDATE bus_messages SET state='queued',seq=nextval('bus_messages_seq')
+	// releaseHeldSQL releases the held messages from $2 to $1 that expire
+	// after $3, with a new seq so the recipient's poll wakes: queued, or
+	// claimed again by the device that claimed one before a revoke (its
+	// hook may have printed it, so no other device may take it).
+	releaseHeldSQL = `UPDATE bus_messages SET state=CASE WHEN claimed_device IS NULL THEN 'queued' ELSE 'claimed' END,seq=nextval('bus_messages_seq')
 		WHERE to_user=$1 AND from_user=$2 AND state='held' AND expires_at>$3`
-	// reholdSQL holds the queued messages from $2 to $1 again.
-	reholdSQL = `UPDATE bus_messages SET state='held' WHERE to_user=$1 AND from_user=$2 AND state='queued'`
+	// reholdSQL holds the undelivered messages from $2 to $1 again: queued
+	// ones, and @user ones a device claimed and has not acknowledged. The
+	// claim is kept: that device's hook may have printed the message
+	// before the revoke landed, so its late receipt is taken (AckSQL) and
+	// an accept returns the message to that device, never to another.
+	reholdSQL = `UPDATE bus_messages SET state='held'
+		WHERE to_user=$1 AND from_user=$2 AND state IN ('queued','claimed')`
 	// expireSQL expires a batch of undelivered messages past $1.
 	expireSQL = `UPDATE bus_messages SET state='expired' WHERE id IN (
 		SELECT id FROM bus_messages WHERE state IN ('queued','held','claimed') AND expires_at<=$1 LIMIT 1000)`
@@ -618,7 +692,13 @@ func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (b
 		out = busproto.AcceptResponse{User: p.email, UserID: p.id, Reheld: int(tag.RowsAffected())}
 		return audit(ctx, tx, c, now, "bus.revoke", "user", p.id, map[string]any{"was_accepted": was, "reheld": out.Reheld})
 	})
-	return out, err
+	if err != nil {
+		return busproto.AcceptResponse{}, err
+	}
+	// The recipient's devices drop the re-held messages from their inbox
+	// at once: their polls answer on the new generation.
+	s.hub.notify(c.UserID)
+	return out, nil
 }
 
 // Sweep marks undelivered messages past their expiry expired and drops

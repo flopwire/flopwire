@@ -54,6 +54,12 @@ CREATE INDEX IF NOT EXISTS devbus_ack ON devbus_messages (ack) WHERE ack = 'owed
 CREATE INDEX IF NOT EXISTS devbus_from ON devbus_messages (from_session, created_at);
 CREATE INDEX IF NOT EXISTS devbus_thread ON devbus_messages (thread_id, created_at);
 CREATE INDEX IF NOT EXISTS devbus_expires ON devbus_messages (expires_at);
+-- The held-message notice (Bus.HeldNotice): when the user was last told
+-- about each sender's held messages.
+CREATE TABLE IF NOT EXISTS devbus_notices (
+  sender_user TEXT PRIMARY KEY,
+  noticed_at  INTEGER NOT NULL              -- unix ms
+);
 `
 
 func openStore(path string) (*store, error) {
@@ -319,3 +325,24 @@ func (s *store) counts(ctx context.Context, now time.Time) (counts, error) {
 var errNoRows = sql.ErrNoRows
 
 func isNoRows(err error) bool { return errors.Is(err, errNoRows) }
+
+// notice returns which of held were not noticed since now-every and
+// records them noticed now, in one transaction: of two hooks asking at
+// once, one gets each sender.
+func (s *store) notice(ctx context.Context, held []busproto.HeldSender, now time.Time, every time.Duration) ([]busproto.HeldSender, error) {
+	var out []busproto.HeldSender
+	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
+		for _, h := range held {
+			res, err := tx.ExecContext(ctx, `INSERT INTO devbus_notices(sender_user,noticed_at) VALUES(?,?)
+				ON CONFLICT(sender_user) DO UPDATE SET noticed_at=excluded.noticed_at WHERE noticed_at<=?`, h.UserID, ms(now), ms(now.Add(-every)))
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				out = append(out, h)
+			}
+		}
+		return nil
+	})
+	return out, err
+}

@@ -15,18 +15,22 @@ import {
   useState,
 } from "react";
 import {
+  Accepted,
+  AcceptResult,
   AdminStatus,
   APIError,
   AuditEvent,
   DeletionJob,
   Device,
   Health,
+  HeldGroup,
   Policy,
   request,
   User,
 } from "./api";
+import { ACCEPT_STATEMENT, plural } from "./messaging";
 
-type Route = "health" | "people" | "policy" | "archive" | "audit";
+type Route = "health" | "people" | "policy" | "archive" | "audit" | "messages";
 type Session = { token: string; user: User };
 const SESSION_KEY = "flopwire.admin.session";
 const DELETION_KEY_PREFIX = "flopwire.admin.deletion.";
@@ -213,16 +217,22 @@ function Console({
   const [credentialMutationPending, setCredentialMutationPending] =
     useState(false);
   const [transitionWarning, setTransitionWarning] = useState("");
-  const labels: Record<Route, string> = {
-    health: "System health",
-    people: "People & devices",
-    policy: "Collection policy",
-    archive: "Archive control",
-    audit: "Audit log",
-  };
+  // Every person reviews their own held messages; the other routes are
+  // an administrator's.
+  const isAdmin = session.user.role === "admin";
+  const labels: Partial<Record<Route, string>> = isAdmin
+    ? {
+        health: "System health",
+        people: "People & devices",
+        policy: "Collection policy",
+        archive: "Archive control",
+        audit: "Audit log",
+        messages: "Messaging",
+      }
+    : { messages: "Messaging" };
   const readRoute = (): Route => {
     const value = window.location.hash.slice(1);
-    return value in labels ? (value as Route) : "health";
+    return value in labels ? (value as Route) : isAdmin ? "health" : "messages";
   };
   const [route, setRoute] = useState<Route>(readRoute);
   const routeRef = useRef(route);
@@ -246,7 +256,7 @@ function Console({
       window.removeEventListener("hashchange", changed);
       window.removeEventListener("flopwire:unauthorized", onLogout);
     };
-  }, [credentialMutationPending, onLogout]);
+  }, [credentialMutationPending, onLogout, isAdmin]);
   useEffect(() => {
     if (!credentialMutationPending) return;
     const blockUnload = (event: BeforeUnloadEvent) => {
@@ -357,6 +367,7 @@ function Console({
           <ArchiveRoute token={session.token} userID={session.user.id} />
         )}
         {route === "audit" && <AuditRoute token={session.token} />}
+        {route === "messages" && <MessagingRoute token={session.token} />}
       </main>
     </div>
   );
@@ -1534,22 +1545,280 @@ function ServicePanel({
   );
 }
 
+// MessagingRoute is the signed-in person's review of senders (B7): messages
+// held from people they have not accepted, grouped by sender, and the
+// people they accept. Accepting is behind a statement of what it means;
+// revoking is one step. Previews are text another person's agent wrote:
+// React renders them as text, never as HTML or markdown.
+function MessagingRoute({ token }: { token: string }) {
+  const [held, setHeld] = useState<HeldGroup[]>([]);
+  const [accepted, setAccepted] = useState<Accepted[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [acceptError, setAcceptError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState("");
+  // Opening or closing the accept panel starts it empty.
+  const confirm = (id: string | null) => {
+    setConfirming(id);
+    setPassword("");
+    setAcceptError("");
+  };
+  const refresh = useCallback(async () => {
+    try {
+      const [h, a] = await Promise.all([
+        request<{ senders: HeldGroup[] }>("/v1/bus/held", token),
+        request<{ accepted: Accepted[] }>("/v1/bus/accepts", token),
+      ]);
+      setHeld(h.senders ?? []);
+      setAccepted(a.accepted ?? []);
+      setError("");
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  // Accepting needs the person's password as well as the session: the
+  // session `flopwire login` saves on a device can be read by an agent of
+  // the same OS user, the password cannot.
+  async function accept(group: HeldGroup) {
+    setBusy(group.user_id);
+    setOutcome("");
+    setAcceptError("");
+    const typed = password;
+    setPassword("");
+    try {
+      const out = await request<AcceptResult>("/v1/bus/accepts", token, {
+        method: "POST",
+        body: JSON.stringify({ sender: group.user_id, password: typed }),
+      });
+      const n = out.released ?? 0;
+      setOutcome(
+        `Accepted ${out.user}. ${n} held ${plural(n, "message was", "messages were")} released to your sessions; their agents' next messages arrive without being held.`,
+      );
+      confirm(null);
+      await refresh();
+    } catch (reason) {
+      if (reason instanceof APIError && reason.status === 403)
+        setAcceptError(
+          "Not accepted: the password was not correct. Type your own Flopwire password.",
+        );
+      else if (reason instanceof APIError && reason.status === 429)
+        setAcceptError("Too many attempts. Wait a minute, then try again.");
+      else setError(message(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function revoke(person: Accepted) {
+    setBusy(person.user_id);
+    setOutcome("");
+    try {
+      const out = await request<AcceptResult>(
+        `/v1/bus/accepts/${encodeURIComponent(person.user_id)}`,
+        token,
+        { method: "DELETE" },
+      );
+      const n = out.reheld ?? 0;
+      setOutcome(
+        `Revoked ${out.user}. ${n} undelivered ${plural(n, "message is", "messages are")} held again, and their next messages are held until you accept them again. A message a session already received stays with it.`,
+      );
+      await refresh();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+  const total = held.reduce((n, g) => n + g.count, 0);
+  return (
+    <Page
+      title="Messaging"
+      kicker="FLOPWIRE / MESSAGING"
+      intro="Messages from another person's agents wait here until you accept that person. Your agents do not see held messages or this page."
+    >
+      {error && (
+        <RecoveryError
+          text={error}
+          action="Reload this page. If it persists, sign in again, or ask your administrator to check the server."
+        />
+      )}
+      {outcome && (
+        <div className="success messaging-outcome" role="status">
+          {outcome}
+        </div>
+      )}
+      <section className="record-list" aria-labelledby="held-title">
+        <div className="section-heading">
+          <div>
+            <span className="porcelain">HELD · {total}</span>
+            <h2 id="held-title">Waiting for you</h2>
+          </div>
+        </div>
+        {loading ? (
+          <LoadingRows />
+        ) : error ? null : held.length === 0 ? (
+          <Empty text="No one you have not accepted has messaged your agents. Held messages expire after 24 hours." />
+        ) : (
+          held.map((group) => (
+            <div className="held-group" key={group.user_id}>
+              <div className="record">
+                <div className="identity">
+                  <Initials name={group.user_name || group.user} />
+                  <div>
+                    <strong>{group.user_name || group.user}</strong>
+                    <p>{group.user}</p>
+                  </div>
+                </div>
+                <div className="record-meta">
+                  <State state="checking">
+                    {group.count} held
+                  </State>
+                  <time dateTime={group.newest}>{relative(group.newest)}</time>
+                  {confirming !== group.user_id && (
+                    <button
+                      className="button secondary"
+                      disabled={busy !== null}
+                      onClick={() => confirm(group.user_id)}
+                    >
+                      Review and accept
+                    </button>
+                  )}
+                </div>
+              </div>
+              <ul className="held-messages" aria-label={`Held from ${group.user}`}>
+                {group.messages.map((m) => (
+                  <li key={m.id}>
+                    <p className="held-preview">{m.preview}</p>
+                    <span className="porcelain">
+                      {m.agent} · {m.repo ? `${m.repo}${m.branch ? "@" + m.branch : ""}` : "no repo"} · {m.intent} ·{" "}
+                      {relative(m.sent)}
+                    </span>
+                  </li>
+                ))}
+                {(group.more ?? 0) > 0 && (
+                  <li className="porcelain">and {group.more} more</li>
+                )}
+              </ul>
+              {confirming === group.user_id && (
+                <form
+                  className="action-panel accept-panel"
+                  role="region"
+                  aria-label={`Accept ${group.user}`}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void accept(group);
+                  }}
+                >
+                  <h3>Accept messages from {group.user}?</h3>
+                  <p className="accept-statement">{ACCEPT_STATEMENT}</p>
+                  <p>
+                    Accepting releases the {group.count} held{" "}
+                    {plural(group.count, "message", "messages")} above to your
+                    sessions now. Revoking later holds undelivered messages
+                    again; it cannot recall one a session already received.
+                  </p>
+                  <Field
+                    label="Your password, to confirm it is you"
+                    type="password"
+                    value={password}
+                    onChange={setPassword}
+                    autoComplete="current-password"
+                  />
+                  {acceptError && (
+                    <div className="error" role="alert">
+                      {acceptError}
+                    </div>
+                  )}
+                  <div className="button-row">
+                    <button
+                      type="submit"
+                      className="button primary"
+                      disabled={busy !== null || password === ""}
+                    >
+                      {busy === group.user_id
+                        ? "Accepting…"
+                        : `Accept ${group.user}`}
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary"
+                      disabled={busy !== null}
+                      onClick={() => confirm(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          ))
+        )}
+      </section>
+      <section className="record-list" aria-labelledby="accepted-title">
+        <div className="section-heading">
+          <div>
+            <span className="porcelain">ACCEPTED · {accepted.length}</span>
+            <h2 id="accepted-title">People whose agents can message yours</h2>
+          </div>
+        </div>
+        {loading ? (
+          <LoadingRows />
+        ) : error ? null : accepted.length === 0 ? (
+          <Empty text="You accept no one. Every message from another person is held until you accept them." />
+        ) : (
+          accepted.map((person) => (
+            <div className="record" key={person.user_id}>
+              <div>
+                <strong>{person.user}</strong>
+                <p>
+                  Accepted{" "}
+                  <time dateTime={person.accepted_at}>
+                    {relative(person.accepted_at)}
+                  </time>
+                </p>
+              </div>
+              <div className="record-meta">
+                <button
+                  className="text-button danger-text"
+                  disabled={busy !== null}
+                  onClick={() => void revoke(person)}
+                >
+                  {busy === person.user_id ? "Revoking…" : `Revoke ${person.user}`}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </section>
+    </Page>
+  );
+}
+
 function Page({
   title,
   intro,
   action,
+  kicker = "FLOPWIRE / ADMIN",
   children,
 }: {
   title: string;
   intro: string;
   action?: ReactNode;
+  kicker?: string;
   children: ReactNode;
 }) {
   return (
     <div className="page">
       <header className="page-title">
         <div>
-          <span className="porcelain">FLOPWIRE / ADMIN</span>
+          <span className="porcelain">{kicker}</span>
           <h1>{title}</h1>
           <p>{intro}</p>
         </div>
@@ -1580,6 +1849,7 @@ function NavMark({ route }: { route: Route }) {
       "M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83",
     archive: "M4 7h16v13H4zM2 4h20v3H2zM9 11h6",
     audit: "M4 6h16M4 12h16M4 18h10",
+    messages: "M4 5h16v11H9l-5 4z",
   };
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
