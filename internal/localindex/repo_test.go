@@ -121,3 +121,30 @@ func TestWorktreesAndRepoName(t *testing.T) {
 		}
 	}
 }
+
+// A worktree entry git still lists whose directory is now another
+// repository (the worktree was deleted by hand and the path reused) is
+// not a worktree of this one; a deleted worktree's entry still is.
+func TestWorktreesSkipsAReusedPath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	base := realTemp(t)
+	main := filepath.Join(base, "app")
+	os.MkdirAll(main, 0o755)
+	gitRun(t, main, "init", "-q")
+	gitRun(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	reused, gone := filepath.Join(base, "app-reused"), filepath.Join(base, "app-gone")
+	gitRun(t, main, "worktree", "add", "-q", "-b", "r", reused)
+	gitRun(t, main, "worktree", "add", "-q", "-b", "g", gone)
+	for _, d := range []string{reused, gone} {
+		if err := os.RemoveAll(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.MkdirAll(reused, 0o755)
+	gitRun(t, reused, "init", "-q")
+	if got := Worktrees(main); len(got) != 1 || got[0] != gone {
+		t.Fatalf("Worktrees = %v, want only %s", got, gone)
+	}
+}

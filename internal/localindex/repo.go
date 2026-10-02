@@ -196,7 +196,8 @@ const maxWorktrees = 4096
 // Worktrees lists the live linked worktrees of the repository whose main
 // checkout (or bare repository) is main, from the gitdir files git keeps
 // under <common>/worktrees/<name>/gitdir. It reads files only; a missing
-// or unreadable entry is left out. Paths are as git wrote them (git
+// or unreadable entry is left out, and so is one whose directory now
+// holds another repository (pointsBack). Paths are as git wrote them (git
 // writes them with symlinks resolved).
 func Worktrees(main string) []string {
 	if main == "" {
@@ -223,12 +224,42 @@ func Worktrees(main string) []string {
 			continue
 		}
 		p := strings.TrimSpace(string(b))
-		if !filepath.IsAbs(p) || filepath.Base(p) != ".git" {
+		if !filepath.IsAbs(p) || filepath.Base(p) != ".git" || !pointsBack(filepath.Clean(p), filepath.Join(common, "worktrees", e.Name())) {
 			continue
 		}
 		out = append(out, filepath.Dir(filepath.Clean(p)))
 	}
 	return out
+}
+
+// pointsBack reports whether the worktree's .git entry dotgit is still
+// this worktree's: missing (the worktree was deleted), or a .git file
+// whose gitdir is entry. A directory, or a file naming another gitdir,
+// means the path now holds another repository.
+func pointsBack(dotgit, entry string) bool {
+	fi, err := os.Lstat(dotgit)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	if !fi.Mode().IsRegular() {
+		return false
+	}
+	b, err := readGitFile(dotgit)
+	if err != nil {
+		return false
+	}
+	line, _, _ := strings.Cut(string(b), "\n")
+	g, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
+	if !ok {
+		return false
+	}
+	g = absFrom(filepath.Dir(dotgit), strings.TrimSpace(g))
+	if g == filepath.Clean(entry) {
+		return true
+	}
+	rg, err1 := filepath.EvalSymlinks(g)
+	re, err2 := filepath.EvalSymlinks(entry)
+	return err1 == nil && err2 == nil && rg == re
 }
 
 // IsBare reports whether dir looks like a bare git repository: a HEAD
