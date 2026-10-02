@@ -145,8 +145,10 @@ type Status struct {
 	// delivered messages whose receipt the server has not taken yet.
 	Pending int `json:"pending"`
 	Unacked int `json:"unacked"`
-	// Held counts messages from people the user has not accepted (B7).
-	Held int `json:"held"`
+	// Held counts messages from people the user has not accepted (B7);
+	// HeldSenders names them.
+	Held        int                   `json:"held"`
+	HeldSenders []busproto.HeldSender `json:"held_senders,omitempty"`
 }
 
 // Bus is the device's message bus. Open it, set its sources, then Run it.
@@ -282,6 +284,23 @@ func (b *Bus) Held() []busproto.HeldSender {
 	return append([]busproto.HeldSender{}, b.held...)
 }
 
+// NoticeEvery is how often the user is told about one sender's held
+// messages: once a day, the lifetime of a held message (B8), whichever
+// session the notice reaches.
+const NoticeEvery = 24 * time.Hour
+
+// HeldNotice returns the senders whose held messages the user should be
+// told about now (held, and not noticed in the last NoticeEvery), and
+// records them noticed. The caller shows them to the person only, never
+// to a model.
+func (b *Bus) HeldNotice(ctx context.Context) ([]busproto.HeldSender, error) {
+	held := b.Held()
+	if len(held) == 0 {
+		return nil, nil
+	}
+	return b.st.notice(ctx, held, b.cfg.Now(), NoticeEvery)
+}
+
 // Status reports the bus state and the local inbox counts.
 func (b *Bus) Status(ctx context.Context) Status {
 	b.mu.Lock()
@@ -289,6 +308,7 @@ func (b *Bus) Status(ctx context.Context) Status {
 	for _, h := range b.held {
 		st.Held += h.Count
 	}
+	st.HeldSenders = append([]busproto.HeldSender(nil), b.held...)
 	b.mu.Unlock()
 	if c, err := b.st.counts(ctx, b.cfg.Now()); err == nil {
 		st.Pending, st.Unacked = c.pending, c.owed

@@ -49,6 +49,10 @@ type Request struct {
 	// by a SessionStart hook (its source: startup, resume, clear,
 	// compact): the answer's Instruct then says whether to print the
 	// standing instruction.
+	// Notice (pending): the caller can show the user a notice the model
+	// does not see; the answer's Notice then names the held senders due
+	// one (devicebus.HeldNotice).
+	Notice   bool                  `json:"notice,omitempty"`
 	Limit    int                   `json:"limit,omitempty"`
 	MaxBytes int                   `json:"max_bytes,omitempty"`
 	Start    string                `json:"start,omitempty"`
@@ -80,8 +84,13 @@ type Response struct {
 	// Sent, Peers, Inbox: the answers to send, peers and inbox. BusError: a
 	// refusal with its code (and candidates or the refused message id);
 	// Call returns it as the error. Bus (status): the bus state.
-	Messages []busproto.Envelope     `json:"messages,omitempty"`
-	Held     []busproto.HeldSender   `json:"held,omitempty"`
+	Messages []busproto.Envelope   `json:"messages,omitempty"`
+	Held     []busproto.HeldSender `json:"held,omitempty"`
+	// Notice (pending with Notice): the held senders to tell the user
+	// about now, at most once a day each; Console the web console page
+	// for them.
+	Notice   []busproto.HeldSender   `json:"notice,omitempty"`
+	Console  string                  `json:"console,omitempty"`
 	Sent     *busproto.SendResponse  `json:"sent,omitempty"`
 	Peers    *busproto.PeersResponse `json:"peers,omitempty"`
 	Inbox    *busproto.InboxResponse `json:"inbox,omitempty"`
@@ -254,6 +263,11 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 		}
 		resp.Messages, err = b.Take(ctx, req.Session, req.Agent, lim)
 		resp.Held = b.Held()
+		if req.Notice {
+			if resp.Notice, _ = b.HeldNotice(ctx); len(resp.Notice) > 0 {
+				resp.Console = a.cfg.Console
+			}
+		}
 		if err != nil && resp.Instruct {
 			a.releaseStart(req.Session, req.Start)
 			resp.Instruct = false

@@ -753,3 +753,42 @@ func TestRequeueWithdrawsTheReceipt(t *testing.T) {
 		t.Fatalf("receipt after the second take: %v", owed)
 	}
 }
+
+// The held notice names each sender at most once per NoticeEvery, across
+// every hook that asks (one device, many sessions), and names a sender
+// again a day later while their messages are still held.
+func TestHeldNoticeOncePerSenderPerDay(t *testing.T) {
+	st, err := openStore(filepath.Join(t.TempDir(), "bus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.db.Close() })
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	alex := busproto.HeldSender{User: "alex@example.test", UserID: "u-alex", Count: 1}
+	sam := busproto.HeldSender{User: "sam@example.test", UserID: "u-sam", Count: 3}
+	ids := func(hs []busproto.HeldSender) string {
+		var out []string
+		for _, h := range hs {
+			out = append(out, h.UserID)
+		}
+		return strings.Join(out, ",")
+	}
+	for _, c := range []struct {
+		at   time.Duration
+		held []busproto.HeldSender
+		want string
+	}{
+		{0, []busproto.HeldSender{alex}, "u-alex"},
+		{time.Minute, []busproto.HeldSender{alex}, ""},               // another session's prompt
+		{time.Hour, []busproto.HeldSender{alex, sam}, "u-sam"},       // a new sender is named at once
+		{23 * time.Hour, []busproto.HeldSender{alex, sam}, ""},       // within the day
+		{24 * time.Hour, []busproto.HeldSender{alex, sam}, "u-alex"}, // alex again a day later
+		{25 * time.Hour, []busproto.HeldSender{alex, sam}, "u-sam"},
+	} {
+		got, err := st.notice(ctx, c.held, now.Add(c.at), NoticeEvery)
+		if err != nil || ids(got) != c.want {
+			t.Fatalf("at +%s: %q %v, want %q", c.at, ids(got), err, c.want)
+		}
+	}
+}

@@ -37,6 +37,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/flopwire/flopwire/internal/agent"
+	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -74,9 +75,11 @@ type hookInput struct {
 	TurnID         string `json:"turn_id"` // Codex
 }
 
-// hookOutput is the Claude-format hook JSON.
+// hookOutput is the Claude-format hook JSON. SystemMessage is shown to the
+// person and not to the model, on Claude Code and Codex (see heldNotice).
 type hookOutput struct {
-	HookSpecificOutput hookSpecific `json:"hookSpecificOutput"`
+	SystemMessage      string       `json:"systemMessage,omitempty"`
+	HookSpecificOutput hookSpecific `json:"hookSpecificOutput,omitzero"`
 }
 
 type hookSpecific struct {
@@ -161,23 +164,30 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
 	defer cancel()
+	notice := in.Event == evUserPromptSubmit && noticeChannel(harness)
 	resp, err := agent.Call(pctx, *socket, agent.Request{Op: "pending", Session: in.SessionID,
-		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, Start: start})
+		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, Start: start, Notice: notice})
 	if err != nil {
 		warn("%s; nothing delivered", hookReason(err))
 		return nil
 	}
-	// resp.Held (senders waiting for the user's acceptance) is for the
-	// user-visible notice of the accept and revoke work (#61); it is not
-	// model context, so nothing here prints it.
-	text := busrender.Context(resp.Instruct, resp.Messages, resp.Excerpts, busrender.HookBytes)
-	if text == "" {
+	// resp.Held and resp.Notice (senders whose messages wait for the
+	// person's acceptance) never go into model context: not their names,
+	// not that they exist. The notice goes to the person alone.
+	out := hookOutput{}
+	if notice {
+		out.SystemMessage = heldNotice(resp.Notice, resp.Console)
+	}
+	if text := busrender.Context(resp.Instruct, resp.Messages, resp.Excerpts, busrender.HookBytes); text != "" {
+		out.HookSpecificOutput = hookSpecific{HookEventName: in.Event, AdditionalContext: text}
+	}
+	if out == (hookOutput{}) {
 		return nil
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if enc.Encode(hookOutput{hookSpecific{HookEventName: in.Event, AdditionalContext: text}}) != nil {
+	if enc.Encode(out) != nil {
 		warn("could not encode the output")
 		return nil
 	}
@@ -185,6 +195,45 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		warn("could not write the output: %d messages were marked delivered", len(resp.Messages))
 	}
 	return nil
+}
+
+// noticeChannel reports whether the harness shows a hook's systemMessage
+// to the person without giving it to the model, on UserPromptSubmit:
+//
+//   - Claude Code: yes. A probe (claude 2.1.287, Haiku) asked the model to
+//     quote every marker in its context: it quoted the additionalContext
+//     markers and not the systemMessage ones, also after --resume; the
+//     stream showed the systemMessage as an informational notice.
+//   - Codex: yes. codex-rs/hooks parses systemMessage into a Warning
+//     entry, which core/hook_runtime.rs sends as a Warning event to the
+//     UI; only additionalContext becomes a developer message.
+//   - Devin CLI: no documented user-only field (its hook docs list
+//     decision, reason and additionalContext only), so nothing is shown:
+//     the notice must never fall back to model context.
+//   - Unknown: nothing.
+func noticeChannel(h transcript.Agent) bool {
+	return h == transcript.AgentClaude || h == transcript.AgentCodex
+}
+
+// heldNotice is the person's notice of senders whose messages are held
+// until they accept them: who and how many, and where to review. It never
+// carries a message's text.
+func heldNotice(held []busproto.HeldSender, console string) string {
+	if len(held) == 0 {
+		return ""
+	}
+	var who []string
+	n := 0
+	for _, h := range held {
+		who = append(who, fmt.Sprintf("%s (%d)", busproto.Preview(h.User), h.Count))
+		n += h.Count
+	}
+	review := "run flopwire accepts --text in a terminal"
+	if console != "" {
+		review = "open " + console + " or " + review
+	}
+	return fmt.Sprintf("Flopwire: %d %s from %s %s held until you accept the sender; your agents have not seen %s. To review, %s.",
+		n, plural(n, "message", "messages"), strings.Join(who, ", "), plural(n, "is", "are"), plural(n, "it", "them"), review)
 }
 
 // hookReason is a pending failure as a short reason for stderr. Agent
