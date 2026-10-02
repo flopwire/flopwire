@@ -12,9 +12,10 @@ package main
 // Output (issue #55): the CLI prints compact JSON by default, in the
 // busproto field names, with full session ids, a kind field and the
 // fields that say how to get more; --text prints the readable forms of
-// plan §3. MCP answers text by default and JSON with format=json, as the
-// retrieval tools do. A failure is a busErr: a stable code, the cause, a
-// fix and an example; in JSON mode the CLI writes it to stderr as JSON.
+// plan §3. MCP answers the same JSON by default (format=text: the
+// readable form), as one text block. A failure is a
+// busErr: a stable code, the cause, a fix and an example; in JSON mode
+// the CLI writes it to stderr as JSON.
 
 import (
 	"context"
@@ -43,16 +44,10 @@ type busStyle struct {
 	JSON   bool
 	MCP    bool
 	Budget int
-	// record, when set, receives the answer's JSON object (MCP's
-	// structuredContent), whichever form is written.
-	record *any
 }
 
 // emit writes the answer: v as compact JSON, or text's output.
 func (s busStyle) emit(w io.Writer, v any, text func() error) error {
-	if s.record != nil {
-		*s.record = v
-	}
 	if s.JSON {
 		return writeOut(w, v)
 	}
@@ -985,8 +980,8 @@ func busMain(ctx context.Context, verb string, args []string) error {
 // discovery is how an agent finds whom to message (issue #55): history
 // first, then presence.
 const discovery = `Find the recipient from history, then presence: flopwire sessions --repo R --branch B
---json (and flopwire read SESSION --outline: the commits it made) names the session
-behind a change; flopwire peers --session ID shows whether that exact session is live;
+names the session behind a change (its session_id and commits); flopwire peers
+--session ID shows whether that exact session is live;
 then send to that id. Do not pick a recipient by a peer's title or current branch
 alone: the title is its original task, and it may have switched branches since.`
 

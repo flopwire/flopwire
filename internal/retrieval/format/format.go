@@ -224,8 +224,8 @@ func List(s string) []string {
 	return out
 }
 
-// ParseTime accepts RFC 3339, a date, the UTC minute hits print
-// ("2026-09-23 10:00Z"), or a duration before now (Go durations, plus Nd
+// ParseTime accepts RFC 3339, a date, the UTC minute hits and headers
+// print ("2026-09-23 10:00Z", "2026-09-23T10:00Z"), or a duration before now (Go durations, plus Nd
 // for days and Nw for weeks).
 func ParseTime(s string, now time.Time) (time.Time, error) {
 	if d, err := time.ParseDuration(s); err == nil {
@@ -244,6 +244,9 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 		return t, nil
 	}
 	if t, err := time.Parse(stampLayout, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(isoStampLayout, s); err == nil {
 		return t, nil
 	}
 	t, err := time.Parse(time.RFC3339Nano, s)

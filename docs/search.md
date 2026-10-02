@@ -2,7 +2,9 @@
 
 Flopwire gives people and agents four tools over coding-agent transcripts
 (Claude Code, Codex, Devin). The CLI and the MCP server have the same
-four, with the same flags and the same output:
+four, with the same flags and the same output. `grep`, `search` and
+`read` print text by default (`--json` for JSON). `sessions` prints JSON
+by default (`--text` for readable rows). See [Output](#output).
 
 | Tool | CLI | MCP | Use it for |
 |---|---|---|---|
@@ -43,21 +45,29 @@ Output, newest message first, grouped under one header line per session
 (rg's `--heading` layout):
 
 ```
-## 0b7e2c1a  claude  ended 2026-09-23  alpha@main  "why does the login test flake?"  2 files  PR #43  1 commit  ✗1
+## 0b7e2c1a-0000-4000-8000-000000000001 agent=claude ended=2026-09-23 repo=alpha branch=main files=2 pr=#43 commits=1 failed=1 intent="why does the login test flake?"
 16302080-1- tests/login.test.ts:14: expected 200, received 401
 16302080:2 tool_result/Bash error: exit code 1
 [3 hits in 3 sessions]
 ```
 
-- The header is the session's short digest (see [Session digests](#session-digests)):
-  its address, who (`user@device`, on the team server), the agent, when
-  (`live, 4m ago` or `ended DATE`), `repo@branch`, the intent, and what
-  it did as counts: files edited, the first PR (`+N` more), commits, and
-  `✗N` failed tool calls. Empty fields are left out. The header stays
-  within about 200 bytes: the intent is cut to 80 characters at a word
-  (its first sentence when shorter), long names are cut. A session
-  indexed so recently that it has no digest yet gets a header with its
-  address, who, agent, when and repo only.
+- The header is the session's short digest (see [Session digests](#session-digests))
+  (see [Header lines](#header-lines)): the full session id (the
+  SESSION of a hit's address), then:
+
+  | Key | Value |
+  |---|---|
+  | `who` | `user@device`, on the team server |
+  | `agent` | `claude`, `codex` or `devin` |
+  | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
+  | `repo`, `branch` | The repo's name; the branch, or `a→b` when it switched |
+  | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits, failed tool calls. A `+` means the digest capped the list |
+  | `intent` | What the session was for, cut to 80 characters at a word. Always last |
+
+  Fields without a value are left out. The header stays within about 260
+  bytes: long names are cut, then the intent, then `who`, `repo` and
+  `branch` go. A session indexed so recently that it has no digest yet
+  gets the session id, `who`, `agent`, the time, `repo` and `branch` only.
 - Under the header, a matching line is `ORDINAL:LINE kind/tool: text` on
   a message's first matching line and `ORDINAL:LINE: text` on the others.
   A context line is `ORDINAL-LINE- text`. The address for `read` is
@@ -105,7 +115,7 @@ flopwire search papercut --agent codex --since 30d --offset 20
 - BM25 ranking. Prompts and replies (user, assistant, agent_message) rank
   above tool calls and tool output that match as well. `--sort newest` or
   `oldest` orders the matching messages by time instead.
-- Hits are grouped under the same session headers as grep's:
+- Hits are grouped under the same labeled session headers as grep's:
   `ORDINAL:LINE kind/tool: snippet`. `--no-heading` prints the flat form.
 - A quoted phrase must appear as written.
 - When no message holds every word, search ranks the messages that hold
@@ -127,22 +137,44 @@ A glob matches the session id, the title, the repo or the working
 directory. A word without `*` or `?` matches anywhere. `--sort oldest`
 lists the least recent activity first.
 
-The list pages by cursor, not offset. The footer says whether more
-sessions follow and gives the `--cursor` that reads them:
-`[20 sessions shown, more follow; next: --cursor 1788220800000000.ID]`.
-The last page says `end of list`. There is no total: a page reads about as
-many sessions as it shows, however long the list is.
+The answer is compact JSON, one line, one brief row per session:
+
+```
+{"kind":"sessions","sessions":[{"session_id":"01a0d550-…","address":"01a0d550","agent":"codex","user":"gary@example.test","repo":"/src/pandora","branches":["main"],"live":false,"last_activity_at":"2026-09-24T18:02:11Z","messages":151,"title":"…","intent":"scope a proper fix for…","commits":["3d446be"],"files":9,"failed":3},…],"has_more":true,"next_cursor":"1788220800000000.ID"}
+```
+
+- `session_id` is the full harness session id. `flopwire peers
+  --session ID`, `flopwire send ID` and `--session` of grep and search
+  take it. `address` is its shortest unique prefix, left out when it is
+  the whole id.
+- A row has `agent`, `user` and `device` (when known), `repo` (or the
+  working directory), `branches`, `live`, `last_activity_at`, `messages`,
+  `title` (cut to 160 bytes), `intent` (when it is not the title),
+  `parent_session` (a subagent's parent), and from the digest the commit
+  ids and the counts of files edited and failed tool calls. A row is
+  about 270 bytes on the test fixtures and at most about 850 (20 commit
+  ids, a long title and intent), so the default page of 20 is about
+  5–17 KB, within the 24,000-byte MCP budget; a page that would pass it
+  is cut at a whole row and says so.
+- `--detail` (MCP `detail: true`) prints every field instead, with the
+  whole [digest](#session-digests): the files edited, PRs, tools,
+  tokens and last reply.
+- The list pages by cursor, not offset. `has_more` says whether more
+  sessions follow; pass `next_cursor` as `--cursor` (MCP `cursor`). There
+  is no total: a page reads about as many sessions as it shows, however
+  long the list is.
 
 The cursor is a position in the order, not a snapshot. A session whose
 last activity changes during a walk moves: newest first, it is skipped
 if it had not been shown yet; oldest first, it can show again on a later
 page. Start a new walk to see the list as it is now.
 
-Each session prints its short digest (the header line grep uses, with
-its message count and the parent of a subagent), then its last reply:
+`--text` (MCP `format: "text"`) prints each session's short digest, the
+line grep's header uses with `msgs` and `parent`, then its last reply. Its footer gives the cursor: `[20 sessions shown, more follow;
+next: --cursor 1788220800000000.ID]`, or `end of list`.
 
 ```
-01a0d550  codex  ended 2026-09-24  pandora@main  151 msgs  "scope a proper fix for…"  9 files  PR #110  1 commit  ✗3
+01a0d550-6c1e-7a52-9d0e-3f4b2a1c9e77 agent=codex ended=2026-09-24 repo=pandora branch=main msgs=151 files=9 pr=#110 commits=1 failed=3 intent="scope a proper fix for…"
     last: "One loose end: local rollout. The daemon still uses 3d446be…"
 ```
 
@@ -188,6 +220,10 @@ flopwire read 0b7e2c1a/28672 -B 2 -A 2
 flopwire read 0b7e2c1a
 ```
 
+- The header is grep's form: `# FULL_ID agent=claude repo=/src/api
+  branch=main device=mac user=U parent=P start=2026-09-23T10:00Z
+  active=2026-09-23T11:02Z msgs=42 title="…"`.
+  `cwd` stands in for `repo` outside a repo. Times are UTC.
 - The focus message prints with line numbers. The addressed line is
   marked `>`, and the text starts a few lines above it.
 - `--max-chars` (default 4000) bounds the focus text. Neighbours get a
@@ -205,7 +241,38 @@ flopwire read 0b7e2c1a
 - `--raw` prints the transcript record's bytes. When the local file is
   gone or replaced, the team server's copy is read by this device's path.
   On a terminal, control characters are shown as pictures. Into a pipe or
-  a file, or with `--json`, the bytes are exact.
+  a file, or with `--json`, the bytes are exact. Over MCP, `raw: true`
+  answers the record's bytes whatever `format` says (the record is
+  itself JSON).
+
+## Output
+
+Text-shaped answers stay text; record-shaped answers are JSON.
+
+- `grep`, `search` and `read` print transcript text and code, so they
+  print text by default: JSON would escape every newline and quote.
+  `--json` prints the answer as JSON instead.
+- `sessions` prints compact JSON by default, as `peers`, `send` and
+  `inbox` do. `--text` prints readable rows.
+- All seven verbs accept both `--json` and `--text`. Each is a no-op
+  where it is the default; `--text` wins when both are given.
+- In JSON mode a failure prints one JSON object on stderr and exits 1:
+  `{"kind":"error","error":{"code":"bad_request","detail":"…","fix":"…","example":"…"}}`.
+  Codes: `bad_request`, `not_found`, `forbidden`, `no_index`,
+  `sync_only`, `error`. In text mode it prints one line.
+
+### Header lines
+
+Header lines (grep and search session headers, `sessions --text`, `grep
+-l`, read's header) are the session id, then `key=value` fields, one
+space apart. A value is bare when it is one token. An empty value, and a
+value with a space, a quote, a backslash, `=` or a control character,
+print as a JSON string; `intent` and `title` always do, and come last.
+The session id follows the same rule. To split a header, take the first
+token after `## ` or `# ` (`"(?:[^"\\]|\\.)*"|\S+`), then match the rest
+with `([a-z_]+)=("(?:[^"\\]|\\.)*"|\S+)`, and decode quoted values as
+JSON. Hit lines keep rg's shape, `ORDINAL:LINE
+kind/tool: text`.
 
 ## Filters
 
@@ -301,8 +368,15 @@ The approval line also approves `flopwire_send`, which sends messages (see
 call.
 
 Add `--server` to the arguments to query the team server. The MCP output
-is the same compact text as the CLI. Pass `format: "json"` for JSON. The
-server's instructions describe the addresses and the shared filters once.
+is the same as the CLI's: text for `flopwire_grep`, `flopwire_search` and
+`flopwire_read` (`format: "json"` for JSON), JSON for `flopwire_sessions`
+(`format: "text"` for rows). Every answer is one text block within the
+24,000-byte budget: whole hits, sessions, messages or outline entries,
+and the footer (or `next_offset`, `next_cursor`, `outline_next` and
+`hint` in JSON) says where to go on. No tool returns `structuredContent`:
+Claude Code shows a model only that part of a result, and Codex shows
+both parts, so either would replace or double the answer. The server's instructions describe the addresses and the
+shared filters once.
 
 The MCP server runs up to 8 tool calls at once. A client's
 `notifications/cancelled` stops a call. A request line over 4MB gets a

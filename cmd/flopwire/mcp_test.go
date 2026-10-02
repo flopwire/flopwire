@@ -89,7 +89,7 @@ func TestMCPConcurrencyCancellationAndLongLines(t *testing.T) {
 		t.Fatalf("ping while a call runs: %s", l)
 	}
 	send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"flopwire_sessions","arguments":{}}}`)
-	if l := next(); !strings.Contains(l, `"id":3`) || !strings.Contains(l, "no sessions") {
+	if l := next(); !strings.Contains(l, `"id":3`) || !strings.Contains(l, `"text":"{\"kind\":\"sessions\",\"sessions\":[],\"has_more\":false}"`) || strings.Contains(l, "structuredContent") {
 		t.Fatalf("second call while the first runs: %s", l)
 	}
 	send(strings.Repeat("x", 5<<20))

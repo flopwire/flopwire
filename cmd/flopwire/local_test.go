@@ -72,11 +72,13 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"grep_session", nil, []string{"grep", "retr", "--session", "0b7e2c1a-0000-4000-8000-000000000002"}},
 		{"grep_error_flag", nil, []string{"grep", "-F", "exit code 1"}},
 		{"grep_max_bytes", nil, []string{"grep", "retr", "--session", "0b7e2c1a-0000-4000-8000-000000000002", "--max-bytes", "600"}},
-		{"sessions_max_bytes", nil, []string{"sessions", "--max-bytes", "300"}},
+		{"sessions_max_bytes", nil, []string{"sessions", "--max-bytes", "300", "--text"}},
+		{"sessions_json_max_bytes", nil, []string{"sessions", "--max-bytes", "3000"}},
 		{"search", nil, []string{"search", "exponential backoff", "--limit", "3"}},
 		{"search_any_term", nil, []string{"search", "how", "did", "we", "handle", "the", "exponential", "tokenizer?"}},
 		{"search_phrase", nil, []string{"search", `"use exponential"`}},
 		{"sessions", nil, []string{"sessions"}},
+		{"sessions_text", nil, []string{"sessions", "--text"}},
 		{"sessions_glob", nil, []string{"sessions", "flak", "--agent", "claude"}},
 		{"read_session", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000001", "--max-chars", "400"}},
 		{"read_path", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "-B", "1", "-A", "1"}},
@@ -89,9 +91,18 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"grep_relevance", nil, []string{"grep", "retr", "--sort", "relevance", "--limit", "3"}},
 		{"grep_self_session", nil, []string{"grep", "chi", "--session", "self"}},
 		{"search_newest", nil, []string{"search", "retry", "--sort", "newest", "--limit", "3"}},
-		{"sessions_branch", nil, []string{"sessions", "--branch", "fix/*", "--sort", "oldest"}},
+		{"sessions_branch", nil, []string{"sessions", "--branch", "fix/*", "--sort", "oldest", "--text"}},
 		{"read_outline", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline"}},
 		{"read_outline_paged", nil, []string{"read", "019a0000-0000-7000-8000-0000000000a1", "--outline", "--limit", "3", "--cursor", "3239936.56"}},
+		// grep, search and read --json are byte-for-byte what they were
+		// before sessions turned JSON by default and the headers were
+		// labeled (issue #64); sessions --json --detail is main's --json, which
+		// TestSessionsJSONKeepsMainFields compares field for field.
+		{"grep_files_json", nil, []string{"grep", "-l", "retr", "--json"}},
+		{"search_json", nil, []string{"search", "exponential backoff", "--limit", "3", "--json"}},
+		{"read_json", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "-B", "1", "-A", "1", "--json"}},
+		{"read_outline_json", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline", "--json"}},
+		{"sessions_json", nil, []string{"sessions", "--branch", "fix/*", "--json", "--detail"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -212,20 +223,58 @@ func mcpResponses(t *testing.T, out string) map[int]mcpResp {
 	return got
 }
 
+// sameMessage reports whether two message addresses name the same
+// message: the same ordinal in sessions one of whose ids is a prefix of
+// the other's (headers print the full session id, read the shortest
+// unique prefix).
+func sameMessage(a, b string) bool {
+	sa, oa, _ := strings.Cut(a, "/")
+	sb, ob, _ := strings.Cut(b, "/")
+	return oa == ob && (strings.HasPrefix(sa, sb) || strings.HasPrefix(sb, sa))
+}
+
+// focusIs reports whether read's text answer focuses the message at addr.
+func focusIs(out, addr string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		if f, ok := strings.CutPrefix(l, ">> "); ok && sameMessage(strings.Fields(f)[0], addr) {
+			return true
+		}
+	}
+	return false
+}
+
 // Every address grep, search and sessions print (text and JSON, CLI and
 // MCP) round-trips through read: a message address reads that message
 // with the addressed line marked, a session address reads the session.
 func TestAddressesRoundTripThroughRead(t *testing.T) {
 	oracleIndex(t)
 	lineAddr := regexp.MustCompile(`^([^\s/\[]+/\d+)(?::(\d+))?[:-]`)
-	sessAddr := regexp.MustCompile(`^([^\s/\[:]+)(?:  |:\d+$)`)
-	// The grouped layout: a "## SESSION ..." header, then ORDINAL:LINE
-	// (ORDINAL-LINE- for context) lines whose address is SESSION/ORDINAL.
-	header := regexp.MustCompile(`^## ([^\s]+)`)
+	// A labeled session line (grep -l, sessions --text), or -c's
+	// SESSION:COUNT.
+	sessAddr := regexp.MustCompile(`^(?:([^\s"#\[]+) agent=|([^\s/\[:]+):\d+$)`)
+	// The grouped layout: a "## SESSION ..." header, then
+	// ORDINAL:LINE (ORDINAL-LINE- for context) lines whose address is
+	// SESSION/ORDINAL.
+	header := regexp.MustCompile(`^## ([^\s"]+)`)
 	grouped := regexp.MustCompile(`^(\d+)[:-](\d+)[ :-]`)
 	type addr struct{ msg, line, session string }
 	var addrs []addr
 	collect := func(out string) {
+		// sessions answers JSON by default: its address and full id both
+		// read the session.
+		var ss sessionsOut
+		if strings.HasPrefix(out, `{"kind":"sessions"`) {
+			if err := json.Unmarshal([]byte(out), &ss); err != nil {
+				t.Fatalf("sessions JSON: %v\n%s", err, out)
+			}
+			for _, c := range ss.Sessions {
+				if c.Address != "" { // left out when it is the whole id
+					addrs = append(addrs, addr{session: c.Address})
+				}
+				addrs = append(addrs, addr{session: c.SessionID})
+			}
+			return
+		}
 		cur := ""
 		for _, l := range strings.Split(out, "\n") {
 			if m := header.FindStringSubmatch(l); m != nil {
@@ -236,7 +285,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 			} else if m := lineAddr.FindStringSubmatch(l); m != nil {
 				addrs = append(addrs, addr{msg: m[1], line: m[2]})
 			} else if m := sessAddr.FindStringSubmatch(l); m != nil {
-				addrs = append(addrs, addr{session: m[1]})
+				addrs = append(addrs, addr{session: m[1] + m[2]})
 			}
 		}
 	}
@@ -248,6 +297,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		{"search", "--include-self", "retry backoff test"},
 		{"search", "--include-self", "timers"},
 		{"sessions", "--include-self", "--limit", "100"},
+		{"sessions", "--include-self", "--limit", "100", "--text"},
 	} {
 		collect(captureStdout(t, func() error { return run(t.Context(), args) }))
 	}
@@ -263,6 +313,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		{"flopwire_grep", map[string]any{"pattern": "test", "include_self": true, "limit": float64(50)}},
 		{"flopwire_search", map[string]any{"query": "upload retries", "include_self": true}},
 		{"flopwire_sessions", map[string]any{"include_self": true}},
+		{"flopwire_sessions", map[string]any{"include_self": true, "format": "text"}},
 	} {
 		text, err := mcpCall(t.Context(), r, call.tool, call.args)
 		if err != nil {
@@ -304,10 +355,12 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		out := captureStdout(t, func() error { return run(t.Context(), []string{"read", target}) })
 		switch {
 		case a.session != "":
-			if !strings.Contains(out, ">> "+a.session+"/") {
+			// A full session id reads the session it names (the
+			// message addresses use its shortest unique prefix).
+			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "# "+a.session+" ") {
 				t.Errorf("read %s: no focus in that session:\n%s", target, out)
 			}
-		case !strings.Contains(out, ">> "+a.msg+"  "):
+		case !focusIs(out, a.msg):
 			t.Errorf("read %s: focus is not that message:\n%s", target, out)
 		case a.line != "" && !regexp.MustCompile(`(?m)^>\s*`+a.line+`  `).MatchString(out):
 			t.Errorf("read %s: line %s not marked:\n%s", target, a.line, out)
@@ -320,7 +373,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		}
 		if a.msg != "" {
 			for _, m := range cx.Messages {
-				if m.ID == cx.Focus && m.Address != a.msg {
+				if m.ID == cx.Focus && !sameMessage(m.Address, a.msg) {
 					t.Errorf("read --json %s: focus address %s", target, m.Address)
 				}
 			}
@@ -407,12 +460,28 @@ func TestSelfAndLive(t *testing.T) {
 	}
 	setActivity(open, time.Now().Add(-30*time.Minute))
 	r.live = func(bool) map[string]time.Time { return map[string]time.Time{open: time.Now()} }
+	liveOf := func(out string) map[string]bool {
+		t.Helper()
+		var ss sessionsOut
+		if err := json.Unmarshal([]byte(out), &ss); err != nil || ss.Kind != "sessions" {
+			t.Fatalf("sessions JSON: %v\n%s", err, out)
+		}
+		live := map[string]bool{}
+		for _, c := range ss.Sessions {
+			live[c.SessionID] = c.Live
+		}
+		return live
+	}
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex")
-	if err != nil || !strings.Contains(out, open+"  codex  live, ") {
+	if live, ok := liveOf(out)[open]; err != nil || !ok || !live {
+		t.Fatalf("live session: %v\n%s", err, out)
+	}
+	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--text")
+	if err != nil || !strings.Contains(out, open+" agent=codex live=30m ") {
 		t.Fatalf("live header: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--exclude-live")
-	if err != nil || strings.Contains(out, open) || !strings.Contains(out, "[no sessions]") {
+	if err != nil || strings.Contains(out, open) || !strings.HasPrefix(out, `{"kind":"sessions","sessions":[],"has_more":false`) {
 		t.Fatalf("--exclude-live: %v\n%s", err, out)
 	}
 	if out, err = call("grep", "health", "--exclude-live", "--include-self"); err != nil || strings.Contains(out, open) {
@@ -423,7 +492,17 @@ func TestSelfAndLive(t *testing.T) {
 	setActivity(open, time.Now().Add(-2*time.Hour))
 	r.live = func(bool) map[string]time.Time { return map[string]time.Time{open: {}} }
 	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--exclude-live")
-	if err != nil || !strings.Contains(out, open+"  codex  ended ") {
+	if live, ok := liveOf(out)[open]; err != nil || !ok || live {
 		t.Fatalf("--exclude-live with an idle held session: %v\n%s", err, out)
 	}
+}
+
+// sessionsOut decodes sessions' JSON answer: the brief rows decode into
+// the fields they share with format.ConversationInfo.
+type sessionsOut struct {
+	Kind     string                    `json:"kind"`
+	Sessions []format.ConversationInfo `json:"sessions"`
+	HasMore  bool                      `json:"has_more"`
+	Next     string                    `json:"next_cursor"`
+	Hint     string                    `json:"hint"`
 }

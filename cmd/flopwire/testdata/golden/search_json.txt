@@ -1,0 +1,113 @@
+{
+  "hits": [
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/50458624",
+      "message_id": "26",
+      "conversation_id": "3",
+      "agent": "claude",
+      "session_id": "0b7e2c1a-0000-4000-8000-000000000002",
+      "ordinal": 50458624,
+      "title": "Exponential backoff for upload retries",
+      "repo": "/tmp/oracle-beta",
+      "device": "local",
+      "branches": [
+        "fix/retry"
+      ],
+      "kind": "user",
+      "ts": "2026-09-23T11:00:09Z",
+      "score": -14.820392939194189,
+      "snippet": "use exponential backoff",
+      "text_line": 1,
+      "provenance": {
+        "source_id": "3",
+        "path": "$HOME/.claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002.jsonl",
+        "generation": 1,
+        "line_no": 13,
+        "byte_offset": 12319,
+        "byte_len": 481
+      }
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/56520704",
+      "message_id": "27",
+      "conversation_id": "3",
+      "agent": "claude",
+      "session_id": "0b7e2c1a-0000-4000-8000-000000000002",
+      "ordinal": 56520704,
+      "title": "Exponential backoff for upload retries",
+      "repo": "/tmp/oracle-beta",
+      "device": "local",
+      "branches": [
+        "fix/retry"
+      ],
+      "kind": "assistant",
+      "ts": "2026-09-23T11:00:10Z",
+      "score": -14.446558041002586,
+      "snippet": "Switching to exponential backoff.",
+      "text_line": 1,
+      "provenance": {
+        "source_id": "3",
+        "path": "$HOME/.claude/projects/-tmp-oracle-beta/0b7e2c1a-0000-4000-8000-000000000002.jsonl",
+        "generation": 1,
+        "line_no": 17,
+        "byte_offset": 13799,
+        "byte_len": 627
+      }
+    }
+  ],
+  "excluded": "left out your own session 019a0000-0000-7000-8000-00000000c0de and its subagents; --include-self includes them",
+  "session_info": [
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002",
+      "id": "3",
+      "agent": "claude",
+      "session_id": "0b7e2c1a-0000-4000-8000-000000000002",
+      "title": "Exponential backoff for upload retries",
+      "cwd": "/tmp/oracle-beta",
+      "repo": "/tmp/oracle-beta",
+      "device": "local",
+      "started_at": "2026-09-23T11:00:00Z",
+      "last_activity_at": "2026-09-23T11:00:34Z",
+      "messages": 24,
+      "branches": [
+        "fix/retry"
+      ],
+      "digest": {
+        "intent": "the upload retry test is flaky; find out why",
+        "repos": [
+          "/tmp/oracle-beta"
+        ],
+        "branches": [
+          "fix/retry"
+        ],
+        "duration_s": 34,
+        "messages": {
+          "assistant": 3,
+          "system": 3,
+          "thinking": 1,
+          "tool_call": 7,
+          "tool_result": 7,
+          "user": 3
+        },
+        "subagents": 2,
+        "commands": 2,
+        "tools": {
+          "Agent": 1,
+          "Bash": 2,
+          "Glob": 1,
+          "Grep": 1,
+          "TodoWrite": 1,
+          "Workflow": 1
+        },
+        "failed": 1,
+        "last": "Done: backoff added.",
+        "tokens": {
+          "input": 600,
+          "output": 850,
+          "cache_read": 300,
+          "cache_creation": 30
+        }
+      }
+    }
+  ]
+}

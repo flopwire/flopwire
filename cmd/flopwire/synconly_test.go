@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -21,10 +23,21 @@ func TestLocalVerbsOnSyncOnlyIndex(t *testing.T) {
 	s.Close()
 	t.Setenv("FLOPWIRE_INDEX", db)
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "none.json"))
-	for _, args := range [][]string{{"grep", "x"}, {"search", "x"}, {"read", "0b7e2c1a"}, {"sessions"}} {
+	for _, args := range [][]string{{"grep", "x"}, {"search", "x"}, {"read", "0b7e2c1a"}, {"sessions", "--text"}} {
 		err := run(t.Context(), args)
 		if err == nil || err.Error() != "this device is sync-only; use --server" {
 			t.Errorf("%v: %v", args, err)
+		}
+	}
+	// In JSON mode (sessions by default, any verb with --json) the error
+	// is a JSON object on stderr, with a code and the fix.
+	for _, args := range [][]string{{"sessions"}, {"grep", "--json", "x"}} {
+		var out, stderr strings.Builder
+		err := toolCmdIO(t.Context(), args[0], args[1:], &out, &stderr)
+		var e errorJSON
+		if !errors.Is(err, errReported) || out.Len() != 0 || json.Unmarshal([]byte(stderr.String()), &e) != nil || e.Kind != "error" ||
+			e.Error.Code != codeSyncOnly || e.Error.Detail != "this device is sync-only; use --server" || !strings.Contains(e.Error.Example, "--server") {
+			t.Errorf("%v: %v %q", args, err, stderr.String())
 		}
 	}
 }

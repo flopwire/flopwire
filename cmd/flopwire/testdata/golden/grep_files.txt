@@ -1,6 +1,6 @@
-0b7e2c1a-0000-4000-8000-000000000002  claude  2026-09-23 11:00Z  oracle-beta@fix/retry  8 hits  "Exponential backoff for upload retries"
-agent-b000000000000002  claude  2026-09-23 11:00Z  oracle-beta@fix/retry  3 hits  "Scan retries"
-agent-b000000000000003  claude  2026-09-23 11:00Z  oracle-beta@fix/retry  2 hits  "Nested check"
-agent-b000000000000001  claude  2026-09-23 11:00Z  oracle-beta@fix/retry  1 hit  "Review the retry change for correctness."
+0b7e2c1a-0000-4000-8000-000000000002 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=8 title="Exponential backoff for upload retries"
+agent-b000000000000002 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=3 title="Scan retries"
+agent-b000000000000003 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=2 title="Nested check"
+agent-b000000000000001 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=1 title="Review the retry change for correctness."
 [4 sessions, 14 hits]
 [left out your own session 019a0000-0000-7000-8000-00000000c0de and its subagents; --include-self includes them]

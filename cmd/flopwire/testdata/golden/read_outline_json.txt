@@ -1,0 +1,152 @@
+{
+  "conversation": {
+    "address": "0b7e2c1a-0000-4000-8000-000000000002",
+    "id": "3",
+    "agent": "claude",
+    "session_id": "0b7e2c1a-0000-4000-8000-000000000002",
+    "title": "Exponential backoff for upload retries",
+    "cwd": "/tmp/oracle-beta",
+    "repo": "/tmp/oracle-beta",
+    "device": "local",
+    "started_at": "2026-09-23T11:00:00Z",
+    "last_activity_at": "2026-09-23T11:00:34Z",
+    "messages": 24,
+    "branches": [
+      "fix/retry"
+    ],
+    "digest": {
+      "intent": "the upload retry test is flaky; find out why",
+      "repos": [
+        "/tmp/oracle-beta"
+      ],
+      "branches": [
+        "fix/retry"
+      ],
+      "duration_s": 34,
+      "messages": {
+        "assistant": 3,
+        "system": 3,
+        "thinking": 1,
+        "tool_call": 7,
+        "tool_result": 7,
+        "user": 3
+      },
+      "subagents": 2,
+      "commands": 2,
+      "tools": {
+        "Agent": 1,
+        "Bash": 2,
+        "Glob": 1,
+        "Grep": 1,
+        "TodoWrite": 1,
+        "Workflow": 1
+      },
+      "failed": 1,
+      "last": "Done: backoff added.",
+      "tokens": {
+        "input": 600,
+        "output": 850,
+        "cache_read": 300,
+        "cache_creation": 30
+      }
+    }
+  },
+  "focus": "",
+  "messages": [],
+  "outline": [
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/872448",
+      "id": "14",
+      "ordinal": 872448,
+      "ts": "2026-09-23T11:00:00Z",
+      "kind": "user",
+      "text": "the upload retry test is flaky; find out why"
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/7073792",
+      "id": "17",
+      "ordinal": 7073792,
+      "ts": "2026-09-23T11:00:03Z",
+      "kind": "tool_call",
+      "tool": "Grep",
+      "text": "retry"
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/9793536",
+      "id": "18",
+      "ordinal": 9793536,
+      "ts": "2026-09-23T11:00:03Z",
+      "kind": "tool_call",
+      "tool": "Bash",
+      "text": "cat logs/upload.log"
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/43872256",
+      "id": "21",
+      "ordinal": 43872256,
+      "ts": "2026-09-23T11:00:06Z",
+      "kind": "tool_call",
+      "tool": "Glob",
+      "text": "src/**/*.ts"
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/43872257",
+      "id": "22",
+      "ordinal": 43872257,
+      "ts": "2026-09-23T11:00:06Z",
+      "kind": "tool_call",
+      "tool": "Bash",
+      "text": "bun test upload",
+      "error": true
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/47058947",
+      "id": "25",
+      "ordinal": 47058947,
+      "ts": "2026-09-23T11:00:08Z",
+      "kind": "user",
+      "text": "also check the CI config"
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/50458624",
+      "id": "26",
+      "ordinal": 50458624,
+      "ts": "2026-09-23T11:00:09Z",
+      "kind": "user",
+      "text": "use exponential backoff"
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/59088896",
+      "id": "28",
+      "ordinal": 59088896,
+      "ts": "2026-09-23T11:00:11Z",
+      "kind": "tool_call",
+      "tool": "Workflow",
+      "text": "Review retry change",
+      "subagents": [
+        "agent-b000000000000001"
+      ]
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/64409600",
+      "id": "30",
+      "ordinal": 64409600,
+      "ts": "2026-09-23T11:00:13Z",
+      "kind": "tool_call",
+      "tool": "Agent",
+      "text": "Explore: Scan retries",
+      "subagents": [
+        "agent-b000000000000002"
+      ]
+    },
+    {
+      "address": "0b7e2c1a-0000-4000-8000-000000000002/69898240",
+      "id": "32",
+      "ordinal": 69898240,
+      "ts": "2026-09-23T11:00:21Z",
+      "kind": "tool_call",
+      "tool": "TodoWrite",
+      "text": ""
+    }
+  ]
+}

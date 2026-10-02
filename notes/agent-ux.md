@@ -72,7 +72,7 @@ Each rule carries its source. "Derived" marks my own inference.
    - shorten the ordinal (base-36);
    - keep it as is, since agents never did arithmetic on it in these runs.
 6. **Cursor instead of offset** for grep and search (MCP `nextCursor`). Offsets re-run the scan from the newest row each page. A cursor carrying (ts, id) would make page 2 cheap and stable under appends.
-7. **structuredContent + outputSchema** for MCP. `format=json` is currently text holding JSON and has no budget.
+7. **structuredContent + outputSchema** for MCP. `format=json` is currently text holding JSON and has no budget. Tried and dropped on 2026-10-01 (§6): clients show a model `structuredContent` instead of the text (Claude Code) or beside it (Codex).
 8. **Search totals and zero-hit terms.** Search prints no total. The any-term retry could also name the terms that match nothing (`zzqxv: 0 messages`), which is the strongest "not in the corpus" signal.
 9. **A session address reads from the first message,** which for Codex is often a large system or developer prompt. Focusing the first user message would save a `line_offset` or `after` round trip.
 10. **CLI budget for humans.** Piped CLI output is now budgeted like an agent's. A human exporting with `> file` gets the footer hint, or uses `--json`. If that is unwelcome, add `--max-output 0`.
@@ -95,3 +95,26 @@ Tasks:
 | t5 | correct "not in transcripts", no hallucination; 9 calls | correct; 7 calls; the any-term note shown first | correct; 6 calls |
 
 No run hallucinated. Truncation hid no answer. The remaining waste is reading whole sessions to learn what they were about (proposals 1 and 2) and unindexed `.` greps used as an outline (proposal 2).
+
+## 6. Output format (2026-10-01, issues #64, #84)
+
+The decision on #55: record-shaped answers are JSON by default, text-shaped answers stay text.
+
+- **sessions answers concise JSON by default,** on the CLI and in `flopwire_sessions`, like `peers`, `send` and `inbox`: `{"kind":"sessions","sessions":[…],"has_more","next_cursor"}`, one brief row per session (full `session_id`, agent, user, repo, branches, live, last activity, messages, title, intent, parent, commit ids, counts of files and failed calls). `--detail` (`detail: true`) prints main's `--json` rows with the whole digest. `--text` (`format: "text"`) prints rows.
+- **grep, search and read stay text.** CLI `--json` is byte-for-byte unchanged (golden files captured from main).
+- **Header lines** (grep/search session header, `sessions --text`, `grep -l`, read's header): the session id, then `key=value` fields one space apart. An empty value, or one with a space, quote, backslash, `=` or control character, prints as a JSON string; `intent` and `title` always do, and come last. Header times are `2026-09-23T10:00Z`, which `--since` accepts.
+- **Hit lines keep rg's shape** (`ORDINAL:LINE kind/tool: text`); `--no-heading` is unchanged.
+- **One text block per MCP answer; no `structuredContent`, no `outputSchema`,** on all seven tools. Claude Code 2.1.287 shows a model only `structuredContent` when a result has it; Codex shows both, the text JSON-escaped (review on #84). `format: "json"` returns compact JSON within the 24,000-byte budget as the text.
+- **Errors in JSON mode** are one JSON object on stderr (`{"kind":"error","error":{"code","detail","fix","example"}}`), exit 1; over MCP the `isError` text is that object.
+
+Cost, oracle fixtures (bytes of the default output, main → now):
+
+| Query | main | now |
+|---|---|---|
+| grep, search (seven queries) | 5010 | 5369 (+7.2%) |
+| `grep -l retr` | 590 | 695 (+17.8%) |
+| read (three queries) | 3795 | 3867 (+1.9%) |
+| `sessions` (13 sessions) | 2645 text | 3489 JSON (about 270 bytes a row) |
+| 20 busy sessions (20 commits, 25 files each) | — | 16950 JSON |
+
+Header forms tried on the grep and search queries: `key: value` two spaces apart 5731, one space 5640, the session bare and `key=value` 5369 (shipped). Instructions plus tool descriptions: main 9,340 bytes, now 9,335.
