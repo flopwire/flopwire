@@ -550,20 +550,6 @@ func (b *Bus) runLocal(ctx context.Context) {
 	}
 }
 
-// repoMatches is the server's peers repo filter (internal/bus): an
-// absolute path matches that root and every directory under it; anything
-// else matches the repo name.
-func repoMatches(filter, repo string) bool {
-	if filter == "" {
-		return true
-	}
-	if strings.HasPrefix(filter, "/") {
-		f := strings.TrimRight(filter, "/")
-		return repo == f || strings.HasPrefix(repo, f+"/")
-	}
-	return bus.RepoName(repo) == bus.RepoName(filter)
-}
-
 // peersLocal lists the device's live sessions, the calling one left out,
 // busy first.
 func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.PeersResponse, error) {
@@ -575,7 +561,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 	now := b.cfg.Now()
 	out := busproto.PeersResponse{Peers: []busproto.Peer{}}
 	for _, s := range live {
-		if s.SessionID == q.Session || !repoMatches(q.Repo, s.Repo) || (q.Agent != "" && !strings.EqualFold(q.Agent, s.Agent)) ||
+		if s.SessionID == q.Session || !bus.RepoMatches(q.Repo, q.Roots, s.Repo) || (q.Agent != "" && !strings.EqualFold(q.Agent, s.Agent)) ||
 			(q.User != "" && !b.isLocalUser(q.User)) {
 			continue
 		}

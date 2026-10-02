@@ -219,7 +219,7 @@ func prop(typ, desc string) map[string]any {
 // like.
 var filterDesc = map[string]string{
 	"agent":              "claude, codex or devin; a comma list",
-	"repo":               `"." (this repo), a repo name, /abs/path, or a glob like "team*"`,
+	"repo":               `"." (this repo: every checkout and worktree of it), /abs/path, a repo name or owner/name, or a glob like "team*"`,
 	"since":              `"7d", "24h", "2026-09-01", "2026-09-23 10:00Z" (the form hits print) or RFC 3339; times are UTC`,
 	"until":              `exclusive; same forms as since`,
 	"kind":               "comma list of user, assistant, tool_call, tool_result, thinking, system, agent_message, injected (injected CLAUDE.md/AGENTS.md text is hidden unless named)",

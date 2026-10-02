@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
 )
@@ -422,5 +423,39 @@ func TestDenyRuleAppliesToTranscriptWrittenAfterCreate(t *testing.T) {
 				t.Error("sync filter allows the denied transcript")
 			}
 		})
+	}
+}
+
+// DevicePolicy reads the rules an agent starts with from disk: the user's
+// file and list and the cached admin floor. Uploads judges a placement as
+// the agent does, through a symlink too.
+func TestDevicePolicyAndUploads(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(filepath.Join(real, "app-secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	user := filepath.Join(dir, "path-rules")
+	os.WriteFile(user, []byte("local "+filepath.Join(real, "app-secret")+"\n"), 0o600)
+	cache := filepath.Join(dir, "admin-path-rules.json")
+	os.WriteFile(cache, []byte(`{"rules":["deny repo:github.com/acme/*"]}`), 0o600)
+	pol := DevicePolicy(Config{UserRules: user, UserRuleList: []string{"deny /listed"}, AdminRulesCache: cache, Home: dir})
+	for _, c := range []struct {
+		pl   pathpolicy.Placement
+		want bool
+	}{
+		{pathpolicy.Placement{Cwd: filepath.Join(real, "app"), Worktree: filepath.Join(real, "app")}, true},
+		{pathpolicy.Placement{Cwd: filepath.Join(real, "app-secret"), Worktree: filepath.Join(real, "app-secret")}, false},
+		{pathpolicy.Placement{Cwd: filepath.Join(link, "app-secret"), Worktree: filepath.Join(link, "app-secret")}, false},
+		{pathpolicy.Placement{Cwd: "/listed/x", Worktree: "/listed/x"}, false},
+		{pathpolicy.Placement{Cwd: "/p/web", Worktree: "/p/web", Remote: "github.com/acme/web"}, false},
+	} {
+		if got := Uploads(pol, c.pl); got != c.want {
+			t.Errorf("Uploads(%+v) = %v, want %v", c.pl, got, c.want)
+		}
 	}
 }

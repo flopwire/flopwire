@@ -74,17 +74,29 @@ func RepoName(repo string) string {
 	return repo
 }
 
-// repoMatches applies a repo filter: an absolute path matches that root
-// and every directory under it; anything else matches the repo name.
-func repoMatches(filter, repo string) bool {
-	if filter == "" {
+// RepoMatches applies a peers repo filter to a session's repo root: an
+// absolute path matches that root and every directory under it; anything
+// else matches the repo name; "" matches all. roots, the checkout roots
+// the caller's device expanded the filter to (local.ExpandRepo), match
+// the same way as paths, so a session in a linked worktree is on its
+// repository.
+func RepoMatches(filter string, roots []string, repo string) bool {
+	if filter == "" && len(roots) == 0 {
 		return true
 	}
-	if strings.HasPrefix(filter, "/") {
-		f := strings.TrimRight(filter, "/")
+	under := func(f string) bool {
+		f = strings.TrimRight(f, "/")
 		return repo == f || strings.HasPrefix(repo, f+"/")
 	}
-	return RepoName(repo) == RepoName(filter)
+	for _, r := range roots {
+		if strings.HasPrefix(r, "/") && under(r) {
+			return true
+		}
+	}
+	if strings.HasPrefix(filter, "/") {
+		return under(filter)
+	}
+	return filter != "" && RepoName(repo) == RepoName(filter)
 }
 
 func inTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {

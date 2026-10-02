@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -33,6 +35,13 @@ type fakeAgent struct {
 
 func startFakeAgent(t *testing.T, answer func(agent.Request) agent.Response) *fakeAgent {
 	t.Helper()
+	// --repo reads the local index's placements: never this machine's.
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "missing.db"))
+	// ... and so does the client config with the path rules beside it,
+	// unless the test set its own.
+	if _, set := os.LookupEnv("FLOPWIRE_CONFIG"); !set {
+		t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	}
 	fa := &fakeAgent{sock: filepath.Join(shortSockDir(t), "a.sock"), answer: answer}
 	ln, err := net.Listen("unix", fa.sock)
 	if err != nil {
@@ -856,6 +865,104 @@ func TestMCPInboxBudgetCountsTheHint(t *testing.T) {
 		if isErr || len(text) > format.MaxOutput || json.Unmarshal([]byte(text), &in) != nil || !in.More {
 			t.Fatalf("body %d: %d bytes (budget %d), more %v", body, len(text), format.MaxOutput, in.More)
 		}
+	}
+}
+
+// peers --repo . from a main checkout names the repository: the request
+// carries its checkout roots, so a peer in a linked worktree is on it,
+// and the filter run here (the caller withheld) keeps it too (#81).
+func TestPeersRepoCoversWorktrees(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	asCaller(t, claudeSelf)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, wt, other := filepath.Join(base, "app"), filepath.Join(base, "app-api"), filepath.Join(base, "other", "app")
+	os.MkdirAll(main, 0o755)
+	os.MkdirAll(other, 0o755)
+	for _, g := range []struct {
+		dir  string
+		args []string
+	}{{main, []string{"init", "-q"}}, {main, []string{"commit", "-q", "--allow-empty", "-m", "init"}}, {main, []string{"worktree", "add", "-q", wt}}, {other, []string{"init", "-q"}}} {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, g.args...)...)
+		cmd.Dir = g.dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", g.args, err, out)
+		}
+	}
+	wtPeer, otherPeer := "9d00e0d4-0000-4000-8000-000000000001", "9d00e0d5-0000-4000-8000-000000000001"
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Peers.Session != "" {
+			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "withheld"})
+		}
+		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{
+			{Session: wtPeer, Agent: "codex", User: "g@x.test", Repo: wt},
+			{Session: otherPeer, Agent: "codex", User: "g@x.test", Repo: other},
+		}}}
+	})
+	t.Chdir(main)
+	out, stderr, err := cliJSON(t, fa, "", "peers", "--repo", ".")
+	var pj peersJSON
+	if err != nil || json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 || pj.Peers[0].Session != wtPeer {
+		t.Fatalf("peers --repo . from the main checkout: %q %q %v", out, stderr, err)
+	}
+	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Roots, wt) {
+		t.Fatalf("the request names no worktree: %+v", r.Peers)
+	}
+}
+
+// With a server, peers --repo names only the checkouts the path rules let
+// reach it: a worktree under a local rule is left out of the request,
+// while the filter run here for a withheld caller still covers it.
+func TestPeersRepoLeavesOutWithheldCheckouts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	cfgDir := t.TempDir()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(cfgDir, "config.json"))
+	if err := client.Save(client.Config{Server: "https://flopwire.example.test", Token: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	asCaller(t, claudeSelf)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, ok, secret := filepath.Join(base, "app"), filepath.Join(base, "app-ok"), filepath.Join(base, "app-secret")
+	os.MkdirAll(main, 0o755)
+	for _, args := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "init"}, {"worktree", "add", "-q", ok}, {"worktree", "add", "-q", secret}} {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = main
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "path-rules"), []byte("local "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretPeer := "9d00e0d6-0000-4000-8000-000000000001"
+	withheld := false
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if withheld && r.Peers.Session != "" {
+			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "withheld"})
+		}
+		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: secretPeer, Agent: "codex", User: "g@x.test", Repo: secret}}}}
+	})
+	t.Chdir(main)
+	if _, stderr, err := cliJSON(t, fa, "", "peers", "--repo", "."); err != nil {
+		t.Fatalf("peers: %q %v", stderr, err)
+	}
+	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Roots, ok) || slices.Contains(r.Peers.Roots, secret) {
+		t.Fatalf("the request to the server: %+v", r.Peers)
+	}
+	withheld = true
+	out, stderr, err := cliJSON(t, fa, "", "peers", "--repo", ".")
+	var pj peersJSON
+	if err != nil || json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 || pj.Peers[0].Session != secretPeer {
+		t.Fatalf("the filter run here drops the withheld worktree's peer: %q %q %v", out, stderr, err)
 	}
 }
 

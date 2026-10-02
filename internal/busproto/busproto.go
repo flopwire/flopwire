@@ -401,6 +401,10 @@ type Peer struct {
 // out), repo (a name or an absolute path), user, agent.
 type PeersQuery struct {
 	Session, Repo, User, Agent string
+	// Roots are the checkout roots of the repository Repo names, as the
+	// caller's device expanded it (local.ExpandRepo): a session on any of
+	// them, or under one, is on that repository.
+	Roots []string
 }
 
 // PeersResponse lists live sessions, the caller's own person first, the

@@ -24,7 +24,7 @@ import (
 // subagents, without superseded rows and without off-path branches.
 type Filter struct {
 	Agents    []transcript.Agent
-	Repos     []string // repo_root or cwd equals, or lies under, one of these
+	Repos     []string // repo_root or cwd equals, or lies under, one of these (a repository's checkout roots: local.ExpandRepo)
 	RepoLikes []string // or its repo root (its cwd without one) matches one of these LIKE patterns (backslash escapes)
 	Devices   []string
 	// Branches keeps conversations one of whose git branches matches one
@@ -69,17 +69,20 @@ func (f *Filter) where() (string, []any) {
 		}
 	}
 	if len(f.Repos)+len(f.RepoLikes) > 0 {
+		// One uncorrelated subquery: SQLite evaluates it once, however
+		// many roots a repository expands to (local.ExpandRepo) and
+		// however many message rows the outer query walks.
 		var ors []string
 		for _, r := range f.Repos {
 			r = strings.TrimSuffix(r, "/")
-			ors = append(ors, "(c.repo_root = ? OR substr(c.repo_root, 1, ?) = ? OR c.cwd = ? OR substr(c.cwd, 1, ?) = ?)")
+			ors = append(ors, "(rc.repo_root = ? OR substr(rc.repo_root, 1, ?) = ? OR rc.cwd = ? OR substr(rc.cwd, 1, ?) = ?)")
 			args = append(args, r, len(r)+1, r+"/", r, len(r)+1, r+"/")
 		}
 		for _, p := range f.RepoLikes {
-			ors = append(ors, `ifnull(c.repo_root, c.cwd) LIKE ? ESCAPE '\'`)
+			ors = append(ors, `ifnull(rc.repo_root, rc.cwd) LIKE ? ESCAPE '\'`)
 			args = append(args, p)
 		}
-		conds = append(conds, "("+strings.Join(ors, " OR ")+")")
+		conds = append(conds, "c.id IN (SELECT rc.id FROM conversations rc WHERE "+strings.Join(ors, " OR ")+")")
 	}
 	if len(f.Devices) > 0 {
 		conds = append(conds, in("c.device_id", len(f.Devices)))

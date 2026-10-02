@@ -206,6 +206,14 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 	if st, _ := busCall(t, "GET", b.url+busproto.PathPeers+"?session=gary-1111", b.gary.device, nil, &peers); st != 200 || len(peers.Peers) != 1 || peers.Peers[0].Session != "alex-2222" {
 		t.Fatalf("peers %d %+v", st, peers)
 	}
+	// repo_root carries the checkout roots the device expanded --repo to.
+	peers = busproto.PeersResponse{}
+	if st, _ := busCall(t, "GET", b.url+busproto.PathPeers+"?session=gary-1111&repo=/src/api-x&repo_root=/src/api-x&repo_root=/src/api", b.gary.device, nil, &peers); st != 200 || len(peers.Peers) != 1 {
+		t.Fatalf("peers by repo roots %d %+v", st, peers)
+	}
+	if st, _ := busCall(t, "GET", b.url+busproto.PathPeers+"?session=gary-1111&repo=/src/api-x", b.gary.device, nil, &peers); st != 200 || len(peers.Peers) != 0 {
+		t.Fatalf("peers by a worktree's path alone %d %+v", st, peers)
+	}
 	var inbox busproto.InboxResponse
 	if st, _ := busCall(t, "GET", b.url+busproto.PathInbox+"?session=gary-1111&sent=true", b.gary.device, nil, &inbox); st != 200 || len(inbox.Messages) != 2 ||
 		inbox.Messages[0].State != busproto.StateRefused || inbox.Messages[1].State != busproto.StateDelivered {
@@ -214,7 +222,7 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 	if st, _ := busCall(t, "GET", b.url+busproto.PathInbox+"?session=gary-1111&limit=x", b.gary.device, nil, nil); st != 400 {
 		t.Fatalf("bad limit %d", st)
 	}
-	for action, want := range map[string]int{"bus.send": 2, "bus.poll": 1, "bus.deliver": 1, "bus.peers": 1, "bus.inbox": 1} {
+	for action, want := range map[string]int{"bus.send": 2, "bus.poll": 1, "bus.deliver": 1, "bus.peers": 3, "bus.inbox": 1} {
 		if n := len(auditMeta(t, b.s, action)); n != want {
 			t.Errorf("%s audited %d times, want %d", action, n, want)
 		}

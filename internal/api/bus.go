@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/flopwire/flopwire/internal/auth"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/domain"
+	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -191,7 +193,11 @@ func (a *API) busAck(w http.ResponseWriter, r *http.Request) {
 // sessions listed, as sessions.list does.
 func (a *API) busPeers(w http.ResponseWriter, r *http.Request) {
 	v := r.URL.Query()
-	q := busproto.PeersQuery{Session: v.Get("session"), Repo: v.Get("repo"), User: v.Get("user"), Agent: v.Get("agent")}
+	q := busproto.PeersQuery{Session: v.Get("session"), Repo: v.Get("repo"), User: v.Get("user"), Agent: v.Get("agent"), Roots: v["repo_root"]}
+	if len(q.Roots) > format.MaxRepoRoots {
+		a.busFailed(w, r, &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: fmt.Sprintf("repo_root: at most %d", format.MaxRepoRoots)})
+		return
+	}
 	c := a.caller(r)
 	out, err := a.bus.Peers(r.Context(), c, q)
 	if err != nil {

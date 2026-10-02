@@ -13,7 +13,7 @@ import (
 )
 
 func TestFiltersRoundTrip(t *testing.T) {
-	f := Filters{Agent: "codex", Repo: "/src/flopwire", Device: "laptop-a", User: "gary@example.test", Kinds: []string{"user", "tool_result"},
+	f := Filters{Agent: "codex", Repo: "/src/flopwire", RepoRoots: []string{"/src/flopwire", "/src/flopwire-wt, with a comma"}, Device: "laptop-a", User: "gary@example.test", Kinds: []string{"user", "tool_result"},
 		ExcludeKinds: []string{"thinking"}, Tools: []string{"Bash", "exec_command"}, Session: "0b7e2c1a",
 		Since: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), Until: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC),
 		ExcludeSubagents: true, IncludeSuperseded: true, IncludeBranches: true, ExcludeConversation: "c", ExcludeSession: "s", Limit: 7,
@@ -34,6 +34,12 @@ func TestFiltersRoundTrip(t *testing.T) {
 	}
 	if _, err := ParseFilters(map[string][]string{"limit": {"-1"}}); err == nil {
 		t.Fatal("negative limit accepted")
+	}
+	if _, err := ParseFilters(map[string][]string{"repo_root": {"relative/x"}}); err == nil {
+		t.Fatal("relative repo_root accepted")
+	}
+	if _, err := ParseFilters(map[string][]string{"repo_root": make([]string, MaxRepoRoots+1)}); err == nil {
+		t.Fatal("too many repo_root values accepted")
 	}
 	q := GrepQuery{Pattern: "a|b", CaseSensitive: true, Mode: ModeCount, Offset: 3, Limit: 4, MaxPerSession: 2, Before: 1, After: 2, OnlyMatching: true, Multiline: true}
 	if got, err := ParseGrepQuery(q.Values(f.Values())); err != nil || got != q {

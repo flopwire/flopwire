@@ -665,11 +665,17 @@ func TestPeers(t *testing.T) {
 	if len(got.Peers) != 2 || !got.Peers[0].Own || got.Peers[0].Session != "g-lin-3333" || got.Peers[1].Session != "a-api-4444" || got.Peers[1].Title != "uploaded title" {
 		t.Fatalf("own first, repo filter: %+v", got.Peers)
 	}
-	for q, n := range map[busproto.PeersQuery]int{
-		{User: "alex"}: 1, {User: "@gary@example.test"}: 3, {Agent: "codex"}: 2, {Repo: "/Users/gary"}: 2, {Repo: "web"}: 1,
+	for _, c := range []struct {
+		q busproto.PeersQuery
+		n int
+	}{
+		{busproto.PeersQuery{User: "alex"}, 1}, {busproto.PeersQuery{User: "@gary@example.test"}, 3}, {busproto.PeersQuery{Agent: "codex"}, 2},
+		{busproto.PeersQuery{Repo: "/Users/gary"}, 2}, {busproto.PeersQuery{Repo: "web"}, 1},
+		// The checkout roots the caller's device expanded --repo to.
+		{busproto.PeersQuery{Repo: "/nowhere", Roots: []string{"/home/gary/api", "/Users/alex/code/api"}}, 2},
 	} {
-		if got, _ := tm.s.Peers(context.Background(), tm.garyMac, q); len(got.Peers) != n {
-			t.Errorf("%+v: %d peers, want %d", q, len(got.Peers), n)
+		if got, _ := tm.s.Peers(context.Background(), tm.garyMac, c.q); len(got.Peers) != c.n {
+			t.Errorf("%+v: %d peers, want %d", c.q, len(got.Peers), c.n)
 		}
 	}
 	tm.advance(busproto.PresenceTTL + time.Second)

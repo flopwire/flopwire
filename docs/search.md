@@ -290,7 +290,7 @@ kind/tool: text`.
 | Flag | Takes |
 |---|---|
 | `--agent` | `claude`, `codex`, `devin` (comma list) |
-| `--repo` | `.`, a repo name, an absolute path, or a glob such as `team*` |
+| `--repo` | A path (`.`, `./x`, `../x`, an absolute path), a repo name, `owner/name`, `host/owner/name`, or a glob such as `team*`. See [Which repo](#which-repo) |
 | `--branch` | A git branch the session ran on, or a glob such as `feat/*` |
 | `--since`, `--until` | `24h`, `7d`, `2w`, `2026-09-01`, or RFC 3339 |
 | `--kind`, `--exclude-kind` | `user`, `assistant`, `tool_call`, `tool_result`, `thinking`, `system`, `agent_message`, `injected` |
@@ -302,6 +302,54 @@ kind/tool: text`.
 
 Injected text (CLAUDE.md, AGENTS.md, system reminders) is hidden unless
 `--kind` names `injected`.
+
+### Which repo
+
+`--repo` names a repository, not one checkout of it. A session in a
+linked worktree (`git worktree add`) is on the same repo as a session in
+the main checkout. This is also true of the worktrees of a bare
+repository, with or without a remote.
+
+A repository is known by its main checkout. For a bare repository with
+worktrees beside it (`~/Code/.app.git` and `~/Code/app`), it is the bare
+repository. The comparison resolves symlinks, so `/tmp/x` and
+`/private/tmp/x` are one path. When the repository has a remote (`origin`,
+else the first), the normalized remote (`github.com/acme/app`) also names
+it. A second clone of the same remote is then the same repo.
+
+| `--repo` | Matches |
+|---|---|
+| `.`, `./x`, `../x`, or an absolute path in a checkout | Every session of the repository that holds the path: the main checkout, every linked worktree, subdirectories, and worktrees deleted since (see [agent.md](agent.md#sessions-in-deleted-worktrees)) |
+| A path outside git | Sessions in that directory or under it |
+| A path that no longer exists | The repository the device placed sessions there in, when they agree on one; else sessions in that directory or under it |
+| The bare repository's path | Every worktree of it |
+| A name (`app`) | The one repository with that name: the last element of its remote or of its main checkout (`.app.git` and `app.git` are `app`). A checkout at `~/Code/app` with the remote `github.com/acme/web` is named both `app` and `web`. Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. With `--server` they are not an error: the name matches both, as below. When no repository has the name, a session whose directory's last element is the name |
+| `owner/name`, `host/owner/name` | The repository whose remote, or main checkout's path, ends with it |
+| A glob (`team*`) | A session whose directory, or its last element, matches |
+
+The device resolves `--repo` from its git files and from where it placed
+its sessions. It never runs git. With `--server`, it sends the
+repository's checkout roots with the query, because the server cannot
+read this device's git files. It leaves out every checkout that a
+`local` or `deny` path rule covers (see
+[agent.md](agent.md#keep-sessions-out-with-path-rules)), because the
+server keeps each query in its audit log. A rule on the main checkout or
+the remote covers every checkout, so then only the path that you gave is
+sent. The server stores only the directory each transcript recorded. For
+this reason:
+
+- With `--server`, a path matches the sessions in this device's checkouts
+  of the repository. It also matches a session on another device that ran
+  under the same path. It does not match another device's checkout at
+  another path, even of the same remote.
+- With `--server`, a name matches every session whose directory has that
+  last element, on every device of the team, as well as this device's
+  checkouts of each repository by that name. Two different repositories
+  with the same name on two devices are not told apart there.
+
+`flopwire peers --repo` matches the same way, against the repo root that
+each live session reports. An `@user` message's `--repo` is still routed
+by repo name, the last element of the session's repo root.
 
 ### Live sessions
 

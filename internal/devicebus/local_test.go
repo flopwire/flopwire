@@ -322,6 +322,11 @@ func TestLocalPeers(t *testing.T) {
 	if out, _ := lb.Peers(ctx, busproto.PeersQuery{Repo: "api"}); len(out.Peers) != 2 || !out.Peers[0].Busy {
 		t.Fatalf("repo filter, busy first: %+v", out.Peers)
 	}
+	// The checkout roots the caller expanded --repo to: /src/web-fix's
+	// repository also has its main checkout at /src/web.
+	if out, _ := lb.Peers(ctx, busproto.PeersQuery{Repo: "/src/web-fix", Roots: []string{"/src/web-fix", "/src/web"}}); len(out.Peers) != 1 || out.Peers[0].Session != "bbbb3333" {
+		t.Fatalf("repo roots: %+v", out.Peers)
+	}
 	if out, _ := lb.Peers(ctx, busproto.PeersQuery{Agent: "codex"}); len(out.Peers) != 1 {
 		t.Fatalf("agent filter: %+v", out.Peers)
 	}

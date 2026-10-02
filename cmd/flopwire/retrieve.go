@@ -22,8 +22,10 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/grep"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -53,6 +55,10 @@ type retriever struct {
 	// busSocket is the device agent's control socket for the message bus
 	// tools; "" is the default beside the client config.
 	busSocket string
+	// teamRepo, set for the server, expands a --repo argument on this
+	// device (local.ExpandRepo with the local index's placements), since
+	// the server cannot read this device's git files.
+	teamRepo func(ctx context.Context, repo string) (string, []string, error)
 }
 
 // whoCalls is the calling session: the one an MCP request's _meta names
@@ -77,7 +83,13 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		if err != nil {
 			return nil, fmt.Errorf("--server: %w (run flopwire login and enroll first)", err)
 		}
-		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }}, nil
+		if indexPath == "" {
+			indexPath = local.IndexPath()
+		}
+		team := func(ctx context.Context, repo string) (string, []string, error) {
+			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
+		}
+		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team}, nil
 	}
 	if indexPath == "" {
 		indexPath = local.IndexPath()
@@ -90,6 +102,39 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		return nil, err
 	}
 	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close}, nil
+}
+
+// localRepoDirs is what the local index at indexPath knows of where
+// sessions ran (localindex.Store.RepoDirs), nil when there is no index.
+func localRepoDirs(ctx context.Context, indexPath string) []localindex.RepoDir {
+	if _, err := os.Stat(indexPath); err != nil {
+		return nil
+	}
+	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
+	if err != nil {
+		return nil
+	}
+	defer s.Close()
+	dirs, _ := s.RepoDirs(ctx)
+	return dirs
+}
+
+// deviceUploads judges a directory by this device's path rules, as its
+// agent does (agent.DevicePolicy): true when a session placed there may
+// reach the server. A --repo request to the server names only such
+// checkouts. Without a config directory nothing is judged allowed.
+func deviceUploads() func(pathpolicy.Placement) bool {
+	dir, err := configDir()
+	if err != nil {
+		return func(pathpolicy.Placement) bool { return false }
+	}
+	cfg := agent.Config{}
+	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
+	if cc, err := client.Load(); err == nil {
+		cfg.UserRuleList, cfg.Unplaceable = cc.Denylist, cc.Unplaceable
+	}
+	pol := agent.DevicePolicy(cfg)
+	return func(pl pathpolicy.Placement) bool { return agent.Uploads(pol, pl) }
 }
 
 // noIndexError: the local index does not exist yet, because the device
@@ -391,7 +436,8 @@ func editDistance(a, b string) int {
 }
 
 // filters builds format.Filters from the options. A relative --repo (".",
-// "./x") becomes the absolute git root holding it, for the server too.
+// "./x") becomes the absolute git root holding it; the backend (or, for
+// the server, teamRepo) expands it to the repository's checkouts.
 func (o *opts) filters() (format.Filters, error) {
 	v := url.Values{}
 	for _, k := range filterKeys {
@@ -533,6 +579,11 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 	f, err := o.filters()
 	if err != nil {
 		return badArg(err)
+	}
+	if r.teamRepo != nil && f.Repo != "" {
+		if f.Repo, f.RepoRoots, err = r.teamRepo(ctx, f.Repo); err != nil {
+			return err // a format.ErrBadRequest
+		}
 	}
 	if f.Session == "self" {
 		if f.Session, err = r.self(ctx, p); err != nil {
@@ -874,7 +925,7 @@ Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a matc
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
          --limit N (20)  --offset N  --sort newest|oldest|relevance  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
-Filters  --agent claude,codex,devin  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since 7d
+Filters  --agent claude,codex,devin  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since 7d
          --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
          --exclude-subagents  --exclude-live  --include-superseded  --include-branches
          --include-self  --device D  --user U
@@ -898,7 +949,7 @@ show once, "+N copies".
 
 Output   --limit N (20)  --offset N  --sort relevance|newest|oldest  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
-Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since  --until  --kind
+Filters  --agent  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since  --until  --kind
          --exclude-kind  --tool  --session SESSION|self  --exclude-subagents  --exclude-live
          --include-superseded  --include-branches  --include-self  --device  --user
 Times    --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339 (UTC)
@@ -921,7 +972,7 @@ search, or to flopwire peers --session (is it live?). A bare GLOB word matches a
 
 Output   --limit N (20)  --cursor C (next_cursor)  --sort newest|oldest  --detail  --text
          --max-bytes N  (--json: the default)
-Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since/--until (last
+Filters  --agent  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since/--until (last
          activity)  --exclude-subagents  --exclude-live  --include-self  --device  --user
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example"}}; exit 1
 Source   the local index; --server for the team server; --index PATH

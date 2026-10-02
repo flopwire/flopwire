@@ -90,6 +90,12 @@ func configDir() (string, error) {
 	return filepath.Dir(p), nil
 }
 
+// pathRuleFiles are the user's path rules file and the admin rules cache
+// in the config directory dir.
+func pathRuleFiles(dir string) (user, adminCache string) {
+	return filepath.Join(dir, "path-rules"), filepath.Join(dir, "admin-path-rules.json")
+}
+
 // reexecAfter: an initial pass that indexed at least this many sources was
 // a bulk load. The agent then re-executes itself, so the long-running
 // process starts from a small heap: neither Go (on macOS) nor SQLite's
@@ -257,8 +263,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
-	cfg.UserRules = filepath.Join(dir, "path-rules")
-	cfg.AdminRulesCache = filepath.Join(dir, "admin-path-rules.json")
+	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
 	if ccErr == nil {
 		cfg.UserRuleList = cc.Denylist
 		cfg.Unplaceable = cc.Unplaceable

@@ -84,3 +84,67 @@ func TestRemoteURLFallsBackToFirstRemote(t *testing.T) {
 		t.Fatalf("remote %q", got)
 	}
 }
+
+// Worktrees lists a repository's live linked worktrees from its git
+// files, for a main checkout and for a bare repository; RepoName drops a
+// bare directory's ".git" and leading dot.
+func TestWorktreesAndRepoName(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	base := realTemp(t)
+	main := filepath.Join(base, "app")
+	os.MkdirAll(main, 0o755)
+	gitRun(t, main, "init", "-q")
+	gitRun(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	wt := filepath.Join(base, "app-x")
+	gitRun(t, main, "worktree", "add", "-q", wt)
+	bare := filepath.Join(base, ".lib.git")
+	gitRun(t, base, "clone", "-q", "--bare", main, bare)
+	bwt := filepath.Join(base, "lib")
+	gitRun(t, bare, "worktree", "add", "-q", bwt)
+	if got := Worktrees(main); len(got) != 1 || got[0] != wt {
+		t.Fatalf("Worktrees(main) = %v", got)
+	}
+	if got := Worktrees(bare); len(got) != 1 || got[0] != bwt {
+		t.Fatalf("Worktrees(bare) = %v", got)
+	}
+	if got := Worktrees(base); got != nil {
+		t.Fatalf("Worktrees(not a repository) = %v", got)
+	}
+	if !IsBare(bare) || IsBare(main) || IsBare(base) {
+		t.Fatal("IsBare")
+	}
+	for _, c := range [][3]string{{bare, "", "lib"}, {"/x/lib.git", "", "lib"}, {main, "", "app"}, {main, "github.com/acme/web", "web"}, {"/x/.git", "", ".git"}} {
+		if got := RepoName(c[0], c[1]); got != c[2] {
+			t.Errorf("RepoName(%s, %s) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
+
+// A worktree entry git still lists whose directory is now another
+// repository (the worktree was deleted by hand and the path reused) is
+// not a worktree of this one; a deleted worktree's entry still is.
+func TestWorktreesSkipsAReusedPath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	base := realTemp(t)
+	main := filepath.Join(base, "app")
+	os.MkdirAll(main, 0o755)
+	gitRun(t, main, "init", "-q")
+	gitRun(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	reused, gone := filepath.Join(base, "app-reused"), filepath.Join(base, "app-gone")
+	gitRun(t, main, "worktree", "add", "-q", "-b", "r", reused)
+	gitRun(t, main, "worktree", "add", "-q", "-b", "g", gone)
+	for _, d := range []string{reused, gone} {
+		if err := os.RemoveAll(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.MkdirAll(reused, 0o755)
+	gitRun(t, reused, "init", "-q")
+	if got := Worktrees(main); len(got) != 1 || got[0] != gone {
+		t.Fatalf("Worktrees = %v, want only %s", got, gone)
+	}
+}
