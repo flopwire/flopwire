@@ -43,8 +43,10 @@
 // session. A message to @user arrives in Claimable on each of that person's
 // devices with an eligible live session; the device claims it for one
 // session with ClaimRequest (atomic: one claim wins) and then delivers it.
-// After a hook prints a message, the device acknowledges it with
-// AckRequest, which sets delivered_at.
+// A hook takes a message on lease and confirms it after printing it; the
+// device then acknowledges it with AckRequest, which sets delivered_at. A
+// message no hook confirmed after MaxAttempts leases (devicebus) is
+// reported in AckRequest.Undelivered and becomes undelivered.
 package busproto
 
 import (
@@ -137,6 +139,17 @@ const (
 	StateRead      State = "read"
 	StateExpired   State = "expired"
 	StateRefused   State = "refused"
+	// StateUndelivered: the message will not be delivered; Reason says
+	// why (ReasonUnconfirmed). The sender can send it again.
+	StateUndelivered State = "undelivered"
+)
+
+// Reasons of an undelivered message.
+const (
+	// ReasonUnconfirmed: hooks took the message devicebus.MaxAttempts times
+	// and none confirmed printing it (each was killed, timed out, or lost
+	// its confirmation).
+	ReasonUnconfirmed = "unconfirmed"
 )
 
 // Sender is own when both sessions belong to one person, else teammate (B4).
@@ -270,6 +283,11 @@ type Envelope struct {
 	ToRepo    string    `json:"to_repo,omitempty"`
 	Addressed string    `json:"addressed"` // session or user
 	Seq       int64     `json:"seq"`
+	// Attempt is set by the device agent only, never by the server: how
+	// many hooks have been handed the message, this one included. Above 1
+	// it is a redelivery: an earlier hook took it and never confirmed
+	// printing it, so the session may have seen it already.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // PresenceSession is one live session in a poll's heartbeat.
@@ -346,14 +364,18 @@ type ClaimResponse struct {
 	Message Envelope `json:"message"`
 }
 
-// AckRequest is POST /v1/bus/ack: these messages were delivered.
+// AckRequest is POST /v1/bus/ack: the messages in IDs were delivered (a
+// hook confirmed printing them); those in Undelivered will not be (no hook
+// confirmed them after devicebus.MaxAttempts leases) and become
+// undelivered with ReasonUnconfirmed. Together at most MaxAck ids.
 type AckRequest struct {
-	IDs []string `json:"ids"`
+	IDs         []string `json:"ids"`
+	Undelivered []string `json:"undelivered,omitempty"`
 }
 
-// AckResponse splits the ids. Rejected ids are not deliverable by this
-// device (unknown, another device's, held again, or expired); the device
-// drops them from its inbox.
+// AckResponse splits the ids of both lists. Rejected ids are not
+// deliverable by this device (unknown, another device's, held again, or
+// expired); the device does not send them again.
 type AckResponse struct {
 	Acked    []string `json:"acked"`
 	Rejected []string `json:"rejected"`
@@ -402,11 +424,13 @@ type InboxQuery struct {
 type InboxItem struct {
 	Envelope
 	// Direction is received or sent, from the session's side.
-	Direction    string     `json:"direction"`
-	State        State      `json:"state"`
-	RefuseReason string     `json:"refuse_reason,omitempty"`
-	DeliveredAt  *time.Time `json:"delivered_at,omitempty"`
-	ReadAt       *time.Time `json:"read_at,omitempty"`
+	Direction string `json:"direction"`
+	State     State  `json:"state"`
+	// Reason says why a message is refused (the limit's code) or
+	// undelivered (ReasonUnconfirmed).
+	Reason      string     `json:"reason,omitempty"`
+	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
+	ReadAt      *time.Time `json:"read_at,omitempty"`
 }
 
 // InboxResponse is one page, newest first. Next, when set, is the before

@@ -495,7 +495,7 @@ type message struct {
 
 func (m *message) insert(ctx context.Context, tx pgx.Tx, c busproto.Caller) error {
 	_, err := tx.Exec(ctx, `INSERT INTO bus_messages(id,thread_id,reply_to,from_user,from_device,from_agent,from_session,from_repo,from_branch,
-		to_user,to_agent,to_session,to_repo,addressed,sender,intent,body,body_sha,refs,state,refuse_reason,created_at,expires_at)
+		to_user,to_agent,to_session,to_repo,addressed,sender,intent,body,body_sha,refs,state,reason,created_at,expires_at)
 		VALUES($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::uuid,$6,$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
 		m.id, m.thread, m.replyTo, c.UserID, c.DeviceID, m.from.agent, m.from.id, m.from.repo, m.from.branch,
 		m.toUser, m.toAgent, m.toSession, m.toRepo, m.addressed, m.sender, string(m.intent), m.body, m.sha, m.refs, string(m.state), m.refused, m.created, m.expires)

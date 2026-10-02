@@ -79,7 +79,7 @@ func TestLocalSendToSession(t *testing.T) {
 		out.To.Repo != "/src/web" || !strings.HasPrefix(out.ID, "m") || len(out.ID) != 17 || out.ThreadID != out.ID || out.ExpiresAt.Sub(out.Sent) != busproto.DefaultTTL {
 		t.Fatalf("outcome: %+v", out)
 	}
-	got, err := lb.Pending(ctx, "bbbb3333", "")
+	got, err := deliver(lb.Bus, "bbbb3333", "", Limit{})
 	if err != nil || len(got) != 1 {
 		t.Fatalf("pending: %v %v", got, err)
 	}
@@ -89,7 +89,7 @@ func TestLocalSendToSession(t *testing.T) {
 		e.Addressed != "session" || !slices.Equal(e.Refs, []string{"aaaa1111/12"}) || e.Body != "Heads-up: pagination is changing.\nDetails follow." {
 		t.Fatalf("envelope: %+v", e)
 	}
-	if again, _ := lb.Pending(ctx, "bbbb3333", ""); len(again) != 0 {
+	if again, _ := deliver(lb.Bus, "bbbb3333", "", Limit{}); len(again) != 0 {
 		t.Fatal("delivered twice")
 	}
 	// The sender's and the recipient's inboxes.
@@ -107,7 +107,7 @@ func TestLocalSendToSession(t *testing.T) {
 	if err != nil || out.Redactions["github-token"] != 1 {
 		t.Fatalf("redaction: %+v %v", out, err)
 	}
-	got, _ = lb.Pending(ctx, "bbbb3333", "")
+	got, _ = deliver(lb.Bus, "bbbb3333", "", Limit{})
 	if len(got) != 1 || strings.Contains(got[0].Body, tok) {
 		t.Fatalf("body not redacted: %+v", got)
 	}
@@ -146,10 +146,10 @@ func TestLocalUserAddressed(t *testing.T) {
 	if err != nil || !out.To.Live || !out.To.Busy || out.To.Repo != "api" || out.To.Session != "" {
 		t.Fatalf("send: %+v %v", out, err)
 	}
-	if got, _ := lb.Pending(ctx, "aaaa2222", ""); len(got) != 0 {
+	if got, _ := deliver(lb.Bus, "aaaa2222", "", Limit{}); len(got) != 0 {
 		t.Fatal("went to the idle session while a busy one is on the repo")
 	}
-	got, _ := lb.Pending(ctx, "aaaa1111", "")
+	got, _ := deliver(lb.Bus, "aaaa1111", "", Limit{})
 	if len(got) != 1 || got[0].Addressed != "user" || got[0].ToSession != "aaaa1111" || got[0].ToRepo != "api" {
 		t.Fatalf("pending: %+v", got)
 	}
@@ -175,7 +175,7 @@ func TestLocalUserAddressed(t *testing.T) {
 	if err := lb.claimLocal(ctx, all); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := lb.Pending(ctx, "cccc4444", ""); len(got) != 1 || got[0].Body != "later" {
+	if got, _ := deliver(lb.Bus, "cccc4444", "", Limit{}); len(got) != 1 || got[0].Body != "later" {
 		t.Fatalf("waiting message not given to the new session: %+v", got)
 	}
 }
@@ -194,10 +194,10 @@ func TestLocalLimits(t *testing.T) {
 		}
 		in, _ := lb.Inbox(ctx, busproto.InboxQuery{Session: "aaaa1111", SentOnly: true})
 		i := slices.IndexFunc(in.Messages, func(m busproto.InboxItem) bool { return m.ID == be.MessageID })
-		if len(in.Messages) != 2 || i < 0 || in.Messages[i].State != busproto.StateRefused || in.Messages[i].RefuseReason != busproto.CodeDuplicate {
+		if len(in.Messages) != 2 || i < 0 || in.Messages[i].State != busproto.StateRefused || in.Messages[i].Reason != busproto.CodeDuplicate {
 			t.Fatalf("refused message not listed: %+v", in.Messages)
 		}
-		if got, _ := lb.Pending(ctx, "bbbb3333", ""); len(got) != 1 {
+		if got, _ := deliver(lb.Bus, "bbbb3333", "", Limit{}); len(got) != 1 {
 			t.Fatalf("refused message delivered: %d", len(got))
 		}
 		lb.advance(busproto.DuplicateWindow + time.Second)
@@ -211,7 +211,7 @@ func TestLocalLimits(t *testing.T) {
 			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("n", i)); err != nil {
 				t.Fatal(i, err)
 			}
-			lb.Pending(ctx, "bbbb3333", "") // keep the recipient under its cap
+			deliver(lb.Bus, "bbbb3333", "", Limit{}) // keep the recipient under its cap
 		}
 		_, err := lb.send(t, "aaaa1111", "bbbb", "one more")
 		var be *busproto.Error
@@ -272,7 +272,7 @@ func TestLocalLimits(t *testing.T) {
 		if _, err := lb.send(t, "aaaa1111", "bbbb", "the 51st"); code(err) != busproto.CodeRecipientFull {
 			t.Fatalf("recipient full: %v", err)
 		}
-		lb.Pending(ctx, "bbbb3333", "")
+		deliver(lb.Bus, "bbbb3333", "", Limit{})
 		if _, err := lb.send(t, "aaaa1111", "bbbb", "after delivery"); err != nil {
 			t.Fatal(err)
 		}
@@ -299,7 +299,7 @@ func TestLocalExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	lb.advance(busproto.DefaultTTL + time.Second)
-	if got, _ := lb.Pending(ctx, "bbbb3333", ""); len(got) != 0 {
+	if got, _ := deliver(lb.Bus, "bbbb3333", "", Limit{}); len(got) != 0 {
 		t.Fatal("expired message delivered")
 	}
 	in, _ := lb.Inbox(ctx, busproto.InboxQuery{Session: "aaaa1111"})
@@ -377,23 +377,23 @@ func TestTakeBounded(t *testing.T) {
 		}
 		return out
 	}
-	got, err := lb.Take(ctx, "bbbb3333", "", Limit{Count: 3})
+	got, err := deliver(lb.Bus, "bbbb3333", "", Limit{Count: 3})
 	if err != nil || !slices.Equal(bodies(got), []string{"m0", "m1", "m2"}) {
 		t.Fatalf("count bound: %v %v", bodies(got), err)
 	}
 	// m3 is 33 bytes, m4 43: with a separator of 2, both need 78.
-	got, _ = lb.Take(ctx, "bbbb3333", "", Limit{Bytes: 77, Sep: 2})
+	got, _ = deliver(lb.Bus, "bbbb3333", "", Limit{Bytes: 77, Sep: 2})
 	if !slices.Equal(bodies(got), []string{"m3"}) {
 		t.Fatalf("byte bound: %v", bodies(got))
 	}
-	got, _ = lb.Take(ctx, "bbbb3333", "", Limit{Bytes: 1, Size: func(e busproto.Envelope) int { return 1000 }})
+	got, _ = deliver(lb.Bus, "bbbb3333", "", Limit{Bytes: 1, Size: func(e busproto.Envelope) int { return 1000 }})
 	if !slices.Equal(bodies(got), []string{"m4"}) {
 		t.Fatalf("oversized first message: %v", bodies(got))
 	}
 	if st := lb.Status(ctx); st.Pending != 2 {
 		t.Fatalf("pending after bounded takes: %d", st.Pending)
 	}
-	got, _ = lb.Pending(ctx, "bbbb3333", "")
+	got, _ = deliver(lb.Bus, "bbbb3333", "", Limit{})
 	if !slices.Equal(bodies(got), []string{"m5", "m6"}) {
 		t.Fatalf("the rest: %v", bodies(got))
 	}
@@ -413,7 +413,7 @@ func TestTakeBoundedConcurrent(t *testing.T) {
 	for range 8 {
 		wg.Go(func() {
 			for range 4 {
-				got, err := lb.Take(ctx, "bbbb3333", "", Limit{Count: 2})
+				got, err := deliver(lb.Bus, "bbbb3333", "", Limit{Count: 2})
 				if err != nil {
 					t.Error(err)
 				}

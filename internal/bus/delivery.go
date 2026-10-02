@@ -306,68 +306,105 @@ func (s *Store) readEnvelope(ctx context.Context, q querier, id string, out *bus
 	return err
 }
 
-// AckSQL marks delivered those of the messages $1 to the person $2 that
-// the device $3 holds: claimed by it (also when a revoke held the claimed
+// heldByDevice is AckSQL's and UndeliveredSQL's test that the device $3
+// holds a message: claimed by it (also when a revoke held the claimed
 // message again after its hook printed it), or queued to a session on it.
-const AckSQL = `UPDATE bus_messages m SET state='delivered',delivered_at=$4
-	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND (
+const heldByDevice = `(
 		(m.state IN ('claimed','held') AND m.claimed_device=$3)
 		OR (m.state='queued' AND m.addressed='session' AND (
 			EXISTS(SELECT 1 FROM bus_presence p WHERE p.device_id=$3 AND p.agent=m.to_agent AND p.session_id=m.to_session)
-			OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=$3 AND c.agent=m.to_agent AND c.session_id=m.to_session))))
+			OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=$3 AND c.agent=m.to_agent AND c.session_id=m.to_session))))`
+
+// AckSQL marks delivered those of the messages $1 to the person $2 that
+// the device $3 holds.
+const AckSQL = `UPDATE bus_messages m SET state='delivered',delivered_at=$4
+	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND ` + heldByDevice + `
 	RETURNING m.id`
 
-// Ack records that a hook printed these messages (delivered_at). Acking a
-// message already delivered to the person is a no-op that reports it
-// acked.
+// UndeliveredSQL marks undelivered (reason $4) those of the messages $1 to
+// the person $2 that the device $3 holds and gave up on: no hook confirmed
+// printing them. The sender's inbox shows the state, so the sender can
+// send again.
+const UndeliveredSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
+	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND ` + heldByDevice + `
+	RETURNING m.id`
+
+// Ack records that hooks printed the messages in IDs (delivered_at), and
+// that the device gave up on those in Undelivered. Acking a message
+// already delivered to the person (or reporting one already undelivered)
+// is a no-op that reports it acked.
 func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequest) (busproto.AckResponse, error) {
 	out := busproto.AckResponse{Acked: []string{}, Rejected: []string{}}
-	if len(req.IDs) == 0 || len(req.IDs) > busproto.MaxAck {
-		return out, badRequest("ids: 1 to %d message ids", busproto.MaxAck)
+	if n := len(req.IDs) + len(req.Undelivered); n == 0 || n > busproto.MaxAck {
+		return out, badRequest("ids and undelivered: 1 to %d message ids", busproto.MaxAck)
 	}
-	var ids []string
-	for _, id := range req.IDs {
-		if len(id) > 64 {
-			return out, badRequest("ids: a message id is at most 64 bytes")
-		}
-		if !slices.Contains(ids, id) {
-			ids = append(ids, id)
+	var ids, gone []string
+	for _, l := range []struct {
+		in  []string
+		out *[]string
+	}{{req.IDs, &ids}, {req.Undelivered, &gone}} {
+		for _, id := range l.in {
+			if len(id) > 64 {
+				return out, badRequest("ids: a message id is at most 64 bytes")
+			}
+			if !slices.Contains(ids, id) && !slices.Contains(gone, id) {
+				*l.out = append(*l.out, id)
+			}
 		}
 	}
 	now := s.now()
 	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, AckSQL, ids, c.UserID, c.DeviceID, now)
+		acked, before, err := settle(ctx, tx, AckSQL, ackedBeforeSQL, ids, c, now)
 		if err != nil {
 			return err
 		}
-		acked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		undelivered, already, err := settle(ctx, tx, UndeliveredSQL, undeliveredBeforeSQL, gone, c, busproto.ReasonUnconfirmed)
 		if err != nil {
 			return err
 		}
-		rows, err = tx.Query(ctx, ackedBeforeSQL, ids, c.UserID, acked)
-		if err != nil {
-			return err
-		}
-		before, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			if slices.Contains(acked, id) || slices.Contains(before, id) {
+		for _, id := range append(slices.Clone(ids), gone...) {
+			if slices.Contains(acked, id) || slices.Contains(before, id) || slices.Contains(undelivered, id) || slices.Contains(already, id) {
 				out.Acked = append(out.Acked, id)
 			} else {
 				out.Rejected = append(out.Rejected, id)
 			}
 		}
-		if acked == nil {
-			acked = []string{}
+		meta := map[string]any{"delivered": acked, "already": len(before), "rejected": out.Rejected}
+		if len(gone) > 0 {
+			meta["undelivered"] = undelivered
 		}
-		return audit(ctx, tx, c, now, "bus.deliver", "bus_message", "", map[string]any{"delivered": acked, "already": len(before), "rejected": out.Rejected})
+		return audit(ctx, tx, c, now, "bus.deliver", "bus_message", "", meta)
 	})
 	if err != nil {
 		return busproto.AckResponse{}, err
 	}
 	return out, nil
+}
+
+// settle runs one of Ack's updates (AckSQL or UndeliveredSQL, with arg
+// as $4) over ids, and its before query: the ids it changed, and those
+// already in its end state.
+func settle(ctx context.Context, tx pgx.Tx, update, beforeSQL string, ids []string, c busproto.Caller, arg any) (changed, before []string, err error) {
+	changed, before = []string{}, []string{}
+	if len(ids) == 0 {
+		return changed, before, nil
+	}
+	rows, err := tx.Query(ctx, update, ids, c.UserID, c.DeviceID, arg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if changed, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		return nil, nil, err
+	}
+	if changed == nil {
+		changed = []string{}
+	}
+	rows, err = tx.Query(ctx, beforeSQL, ids, c.UserID, changed)
+	if err != nil {
+		return nil, nil, err
+	}
+	before, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	return changed, before, err
 }
 
 // PeersSQL is every live session (seen since $1), with its person, device
@@ -460,11 +497,11 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 // optionally only sent ($3), in thread $4 (”), before the keyset
 // ($5 time, $6 id), newest first, $7 rows.
 const InboxSQL = `SELECT * FROM (
-	SELECT ` + envCols + `,'received' AS direction,m.state,m.refuse_reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
 	WHERE m.to_session=$1 AND m.to_user=$2 AND m.state NOT IN ('held','refused') AND NOT $3
 		AND (m.state<>'expired' OR m.sender='own' OR EXISTS(SELECT 1 FROM bus_accepts a WHERE a.recipient_user=$2 AND a.sender_user=m.from_user))
 	UNION ALL
-	SELECT ` + envCols + `,'sent',m.state,m.refuse_reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
 	WHERE m.from_session=$1 AND m.from_user=$2) x
 	WHERE ($4='' OR thread_id=$4) AND ($5::timestamptz IS NULL OR (created_at,id)<($5,$6))
 	ORDER BY created_at DESC,id DESC LIMIT $7`
@@ -503,7 +540,7 @@ func (s *Store) Inbox(ctx context.Context, c busproto.Caller, q busproto.InboxQu
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (busproto.InboxItem, error) {
 		var it busproto.InboxItem
 		var state string
-		e, err := scanEnvelope(r, &it.Direction, &state, &it.RefuseReason, &it.DeliveredAt, &it.ReadAt)
+		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt)
 		it.Envelope, it.State = e, busproto.State(state)
 		return it, err
 	})
@@ -632,7 +669,8 @@ const (
 	// dropPresenceSQL drops presence older than $1.
 	dropPresenceSQL = `DELETE FROM bus_presence WHERE seen_at<$1`
 	// ackedBeforeSQL: which of $1 (not $3) were delivered to $2 before.
-	ackedBeforeSQL = `SELECT id FROM bus_messages WHERE id=ANY($1::text[]) AND to_user=$2 AND state IN ('delivered','read') AND NOT (id=ANY($3::text[]))`
+	ackedBeforeSQL       = `SELECT id FROM bus_messages WHERE id=ANY($1::text[]) AND to_user=$2 AND state IN ('delivered','read') AND NOT (id=ANY($3::text[]))`
+	undeliveredBeforeSQL = `SELECT id FROM bus_messages WHERE id=ANY($1::text[]) AND to_user=$2 AND state='undelivered' AND NOT (id=ANY($3::text[]))`
 )
 
 // Accept lets the person c.UserID receive messages from sender (B7) and

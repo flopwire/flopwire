@@ -179,6 +179,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			}
 		case <-wait:
 		case <-tick.C:
+			b.expireLeases(ctx)
 			// A session started, ended, or turned busy or idle: the server
 			// records presence when a poll starts, so start another. Its
 			// cursor is reset: a message already older than the cursor
@@ -380,8 +381,8 @@ func (b *Bus) kickAcks() {
 	}
 }
 
-// runAcks sends delivery receipts in batches of up to busproto.MaxAck,
-// retrying with backoff. A rejected id is not deliverable by this device;
+// runAcks sends delivery receipts and undelivered reports in batches of
+// up to busproto.MaxAck ids, retrying with backoff. A rejected id is not deliverable by this device;
 // it is not sent again.
 func (b *Bus) runAcks(ctx context.Context) {
 	var backoff time.Duration
@@ -398,8 +399,12 @@ func (b *Bus) runAcks(ctx context.Context) {
 		case <-time.After(b.cfg.AckDelay):
 		}
 		for {
-			ids, err := b.st.owed(ctx, busproto.MaxAck)
-			if err != nil || len(ids) == 0 {
+			ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
+			var gone []string
+			if err == nil && len(ids) < busproto.MaxAck {
+				gone, err = b.st.owed(ctx, "report", busproto.MaxAck-len(ids))
+			}
+			if err != nil || len(ids)+len(gone) == 0 {
 				if err != nil && ctx.Err() == nil {
 					b.log.Warn("devicebus: receipts", "err", err)
 				}
@@ -407,7 +412,7 @@ func (b *Bus) runAcks(ctx context.Context) {
 			}
 			srv, _ := b.cfg.Connect()
 			actx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids})
+			resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone})
 			cancel()
 			if err == nil {
 				err = b.st.acked(ctx, resp.Acked, resp.Rejected)

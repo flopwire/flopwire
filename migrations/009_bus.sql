@@ -41,8 +41,10 @@ CREATE SEQUENCE bus_messages_seq;
 --
 -- state: queued (deliverable), held (B7: a cross-user sender the recipient
 -- has not accepted), claimed (an @user message one device took), delivered
--- (delivered_at: a hook printed it), read (read_at; not set yet), expired
--- (undelivered at expires_at), refused (a send limit; refuse_reason).
+-- (delivered_at: a hook printed it and confirmed the print), read (read_at;
+-- not set yet), expired (undelivered at expires_at), refused (a send limit;
+-- reason), undelivered (the device gave up on it; reason: unconfirmed, no
+-- hook confirmed printing it after devicebus.MaxAttempts leases).
 CREATE TABLE bus_messages (
   id text PRIMARY KEY,
   seq bigint NOT NULL DEFAULT nextval('bus_messages_seq'),
@@ -67,8 +69,8 @@ CREATE TABLE bus_messages (
   body_sha bytea NOT NULL CHECK (octet_length(body_sha) = 32),
   refs text[] NOT NULL DEFAULT '{}',
   state text NOT NULL
-    CHECK (state IN ('queued', 'held', 'claimed', 'delivered', 'read', 'expired', 'refused')),
-  refuse_reason text NOT NULL DEFAULT '',
+    CHECK (state IN ('queued', 'held', 'claimed', 'delivered', 'read', 'expired', 'refused', 'undelivered')),
+  reason text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
   claimed_by text,
