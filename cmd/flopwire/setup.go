@@ -21,9 +21,9 @@ import (
 )
 
 // flopwire setup installs Flopwire into each coding-agent harness on this
-// machine through the harness's own plugin commands (issue #58). It never
-// edits a harness's settings files itself; it reads them only to warn about
-// older manual entries that would now run twice.
+// machine through the harness's own plugin commands (issues #58, #59, #60).
+// It never edits a harness's settings files itself; it reads them only to
+// warn about older manual entries that would now run twice.
 
 // defaultPluginSource is where a harness fetches the Flopwire plugins: this
 // repository, which is its own marketplace.
@@ -45,8 +45,9 @@ const setupHelp = `flopwire setup — install Flopwire into the coding-agent har
   flopwire setup --text     a readable report instead of JSON
 
 For each harness it finds, setup runs that harness's own plugin commands. It
-never edits the harness's settings files. Harnesses: Claude Code (claude) and
-Codex (codex). Devin is not set up by this command yet; see docs/agent.md.
+never edits the harness's settings files. Harnesses: Claude Code (claude),
+Codex (codex) and Devin CLI (devin). Devin loads the Claude Code plugin;
+setup installs it with devin plugins install --local, on this machine only.
 
 Codex runs a plugin's hooks only after you trust them once: start codex and
 answer its "Hooks need review" prompt, or use /hooks. setup reports whether
@@ -65,7 +66,7 @@ Flags
                      (default $FLOPWIRE_PLUGIN_SOURCE, else flopwire/flopwire)
   --scope SCOPE      Claude Code install scope: user (default), project or
                      local; project and local apply to the current directory.
-                     Codex installs for the user only
+                     Codex and Devin install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","note"},"agent":{"running",
 "socket"},"server":{"configured","url"},"harnesses":[{"harness","detected","command",
@@ -154,6 +155,7 @@ type setupHarness struct {
 var setupHarnesses = []setupHarness{
 	{name: "claude", apply: setupClaude},
 	{name: "codex", apply: setupCodex},
+	{name: "devin", apply: setupDevin},
 }
 
 func setupMain(ctx context.Context, args []string) error {
