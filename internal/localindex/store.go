@@ -308,7 +308,14 @@ func openWriter(path string, opts Options) (*Store, error) {
 	go s.writer()
 	// Redactions the sidecar holds and the rows may not reflect (a lost
 	// transaction, a sidecar beside a new database).
-	if err := s.writeWait(context.Background(), func(w *writeTx) error { return w.reconcile() }); err != nil {
+	// It is the writer's first request, before Open returns, so no
+	// redaction (which builds messages_sha) can run ahead of it.
+	if err := s.writeWait(context.Background(), func(w *writeTx) error {
+		if err := w.dropUnusedSHAIndex(); err != nil {
+			return err
+		}
+		return w.reconcile()
+	}); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("localindex: apply redactions: %w; see %s", err, RecoveryDoc)
 	}

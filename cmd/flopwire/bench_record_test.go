@@ -16,7 +16,7 @@ var testMachine = machineRecord{OS: "darwin", Arch: "arm64", CPUModel: "Apple M3
 
 func sampleResults() *accResults {
 	return &accResults{
-		Index: &indexResult{WallS: 450, PeakRSSMB: 410, IdleRSSMB: 80, SweepCPUMs: []float64{120, 340, 90}, CorpusFiles: 1200, CorpusBytes: 9e9},
+		Index: &indexResult{WallS: 450, PeakRSSMB: 410, IdleRSSMB: 95, IdleAnonMB: 80, SweepCPUMs: []float64{120, 340, 90}, CorpusFiles: 1200, CorpusBytes: 9e9},
 		Fresh: &freshResult{P95: 1500},
 		Queries: &queriesResult{Results: []queryResult{
 			{Name: "error", Ms: []float64{400, 294, 290, 300}, WarmMs: 294, Hits: 20, OK: true, Reads: 5, ReadsOK: 5},
@@ -397,5 +397,20 @@ func TestCompareRecordsMinimumChange(t *testing.T) {
 	}
 	if c.Regressions != 2 {
 		t.Errorf("regressions = %d, want 2", c.Regressions)
+	}
+}
+
+// The idle metric reads anonymous memory from /proc/<pid>/status, not
+// total RSS, whose file-backed pages vary with the page cache.
+func TestProcStatusAnon(t *testing.T) {
+	status := []byte("Name:\tflopwire\nVmRSS:\t   40960 kB\nRssAnon:\t   20480 kB\nRssFile:\t   20480 kB\n")
+	if mb, ok := procStatusMB(status, "RssAnon"); !ok || mb != 20 {
+		t.Fatalf("RssAnon = %v, %v; want 20MB", mb, ok)
+	}
+	if _, ok := procStatusMB(status, "RssShmem"); ok {
+		t.Fatal("found a missing key")
+	}
+	if got := anonMB(-1, 0, 33); got != 33 {
+		t.Fatalf("no /proc and no footprint: got %v, want the total RSS", got)
 	}
 }

@@ -133,7 +133,7 @@ When you run the set, these bars apply:
 |---|---|---|
 | a. full index wall | < 5 min | About 7.5 min on the reference laptop (10.2GB index, baseline `main-9e4193d`). Whole tool output is indexed (D3). Record the number; a large regression blocks. |
 | a. full index peak RSS | < 600MB | Must pass. |
-| a. idle agent after 60s | < 120MB RSS | About 176MB RSS (129MB footprint) on the reference laptop, baseline `main-9e4193d`. Accepted. A `REGRESSED` flag from `bench compare` blocks. |
+| a. idle agent after 60s | < 120MB anonymous | About 129MB footprint (176MB RSS) on the reference laptop, baseline `main-9e4193d`. Accepted. A `REGRESSED` flag from `bench compare` blocks. The `main-9e4193d` record holds total RSS under `idle.rss`, so a comparison with it shows a drop of about 27% that is not real (docs/perf/README.md). |
 | a. no-change sweep CPU | < 1s | Must pass. |
 | b. live line findable | p95 < 2s | Must pass. |
 | c. FAD 0.3.1 parity sample | 0 parse errors; mismatches documented | Must pass. Needs `cargo` for `tools/fad-dump`. Set `AGENTSVIEW_SRC` for the second oracle. |

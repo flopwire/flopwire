@@ -247,10 +247,17 @@ A query whose command fails on its first run has no
 |---|---|---|---|---|
 | `index.wall` | s | 300 | 10 | Wall time of the full local index of the corpus |
 | `index.peak_rss` | MB | 600 | 16 | Peak RSS of that index run |
-| `idle.rss` | MB | 120 | 16 | RSS of the agent after 60 s idle on the built index |
+| `idle.rss` | MB | 120 | 16 | Anonymous memory of the agent after 60 s idle on the built index: `RssAnon` on Linux, the physical footprint on macOS |
 | `sweep.cpu_max` | ms | 1000 | 100 | Slowest no-change sweep CPU time |
 | `fresh.p95` | ms | 2000 | 20 | p95 time until an appended line is findable |
 | `query.<name>.warm` | ms | 200 | 20 | Warm CLI latency of each query in `testdata/acceptance/queries.yaml` |
+
+`idle.rss` leaves out file-backed pages (the binary and the index files
+the agent read), which come and go with the page cache: total RSS showed
+a 12% change between two builds whose own memory was the same. Records
+from before 2026-10-02 hold total RSS under this name, so a comparison
+with one of them shows a drop that is not real. The bench's
+raw results (`<scratch>/acceptance.json`) still hold total RSS as `idle_rss_mb`.
 
 The minimum change is the absolute growth a metric needs before it can
 count as a regression. Small numbers vary from run to run; without the
