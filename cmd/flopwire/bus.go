@@ -473,13 +473,17 @@ const (
 // sendJSON is send's receipt: busproto.SendResponse (id, thread_id,
 // state, to, sender, intent, sent, expires_at, redactions) with who sent
 // it, when it arrives, and the --text line. It is a receipt, never a
-// reply: a reply arrives later as a received message.
+// reply: a reply arrives later as a received message. Next, for a
+// request only, tells the sender what to do until the reply comes
+// (issue #83): Flopwire never starts a turn, so a sender that ends its
+// turn sees the reply only when its human next prompts it.
 type sendJSON struct {
 	Kind string `json:"kind"` // "send_receipt"
 	busproto.SendResponse
 	From    callerJSON `json:"from"`
 	Arrives string     `json:"arrives"`
 	Outcome string     `json:"outcome"`
+	Next    string     `json:"next,omitempty"`
 }
 
 // runSend sends one message as the calling session and prints its receipt.
@@ -522,9 +526,13 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 		return &busErr{Code: codeAgentError, Detail: "the device agent answered the send without an outcome", Fix: "check the agent", Example: "flopwire agent status"}
 	}
 	resp.Sent.Sent, resp.Sent.ExpiresAt = resp.Sent.Sent.UTC(), resp.Sent.ExpiresAt.UTC()
-	r := sendJSON{Kind: "send_receipt", SendResponse: *resp.Sent, From: callerJSON{Session: self.SessionID, Agent: string(self.Agent)}, Arrives: arrival(*resp.Sent), Outcome: sendOutcome(*resp.Sent)}
+	r := sendJSON{Kind: "send_receipt", SendResponse: *resp.Sent, From: callerJSON{Session: self.SessionID, Agent: string(self.Agent)}, Arrives: arrival(*resp.Sent), Outcome: sendOutcome(*resp.Sent), Next: sendNext(*resp.Sent)}
 	return st.emit(w, r, func() error {
-		_, err := io.WriteString(w, r.Outcome+"\n")
+		line := r.Outcome
+		if r.Next != "" {
+			line += ". " + r.Next
+		}
+		_, err := io.WriteString(w, line+"\n")
 		return err
 	})
 }
@@ -551,6 +559,31 @@ func arrival(r busproto.SendResponse) string {
 		return arriveIfResumed
 	}
 	return arriveNextSession
+}
+
+// What a requester does until the reply comes (issue #83). The outcome
+// already says when the request arrives and why; next says only what
+// that means for the reply, without repeating it. Both are true in every
+// harness: a reply is delivered at the sender's next tool call or with
+// its human's next prompt, never by starting a turn.
+const (
+	// The recipient is busy: a reply may come within this turn.
+	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits for your user's next prompt. Keep working, or wait briefly if you need it to continue."
+	// Idle, held, queued for @user, or not running: no reply until a
+	// human acts.
+	nextNoWait = "Do not wait for the reply; tell your user you asked."
+)
+
+// sendNext is the receipt's next: what to do until the reply comes. Only
+// a request expects a reply; inform and done get "".
+func sendNext(r busproto.SendResponse) string {
+	if r.Intent != busproto.IntentRequest {
+		return ""
+	}
+	if arrival(r) == arriveNextToolCall {
+		return nextBusy
+	}
+	return nextNoWait
 }
 
 // expiry is a time as the outcome line prints it: UTC to the minute.
@@ -1030,7 +1063,8 @@ JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
 "queued"|"held","to":{"session","agent","user","repo","branch","live","busy"},
 "sender","intent","sent","expires_at","redactions","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed","outcome":TEXT}. A refusal is {"kind":"error","error":{"code":
+"only_if_resumed","outcome":TEXT,"next":TEXT (request only: what to do until the
+reply)}. A refusal is {"kind":"error","error":{"code":
 "thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",
 "message_id","candidates"}} on stderr, exit 1.

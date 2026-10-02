@@ -141,7 +141,7 @@ func TestBusEndToEndLocal(t *testing.T) {
 		t.Fatalf("peers:\n%s %v", out, err)
 	}
 	out, err = busCLI(t, sock, e2eA, "Heads-up: the list endpoint returns a cursor now.\nUse it for page 2.\n", "send", "e2e0bbbb", "--intent", "request", "--", "-")
-	if err != nil || !strings.HasPrefix(out, "sent m") || !strings.HasSuffix(out, " to e2e0bbbb ("+osUser(t)+" claude e2e-api@main): idle, arrives with its human's next prompt\n") {
+	if err != nil || !strings.HasPrefix(out, "sent m") || !strings.HasSuffix(out, " to e2e0bbbb ("+osUser(t)+" claude e2e-api@main): idle, arrives with its human's next prompt. "+nextNoWait+"\n") {
 		t.Fatalf("send: %q %v", out, err)
 	}
 	id := strings.Fields(out)[1]
@@ -290,6 +290,20 @@ func TestBusEndToEndServer(t *testing.T) {
 	var n int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM bus_messages WHERE from_session=$1 OR body LIKE '%client''s key%'`, secret).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("the withheld session's send reached the server: %d %v", n, err)
+	}
+	// A request's receipt says what to do until the reply comes, as it
+	// does without a server (issue #83): idle, held and queued for @user
+	// all mean do not wait.
+	member("sam@example.test")
+	for _, c := range []struct{ to, text, head string }{
+		{"e2e0bbbb", "Which cursor field does the client send?", "sent m"},
+		{"@sam", "Can you review the cursor change?", "held m"},
+		{"@alex", "Is the pager rota current?", "queued m"},
+	} {
+		out, err := busCLI(t, sock, e2eA, "", "send", c.to, "--intent", "request", "--", c.text)
+		if err != nil || !strings.HasPrefix(out, c.head) || !strings.HasSuffix(out, ". "+nextNoWait+"\n") {
+			t.Fatalf("request to %s: %q %v", c.to, out, err)
+		}
 	}
 }
 
