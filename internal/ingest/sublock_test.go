@@ -279,3 +279,73 @@ func TestLockWithParentsSeesParentSetWhileWaiting(t *testing.T) {
 		t.Fatalf("the parent is not locked: %v", err)
 	}
 }
+
+// resolveLinks locks the children it selected, with their parents, and
+// then links. A subagent whose first flush commits in between (here while
+// the lock waits on a sibling) must not be linked by these updates: they
+// would lock it after its parent, which a hide of the parent's tree holds
+// while it waits for the parent. Its own parse links it.
+func TestResolveLinksSkipsChildStoredWhileLocking(t *testing.T) {
+	e := newEnv(t)
+	parent, sib, late := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	e.exec(`INSERT INTO conversations(id,agent,session_id,device_id,user_id) VALUES($1,'claude','m-main',$2,$3)`, parent, e.deviceID, e.userID)
+	e.exec(`INSERT INTO conversations(id,agent,session_id,device_id,user_id,parent_native_session_id) VALUES($1,'claude','z-sib',$2,$3,'m-main')`, sib, e.deviceID, e.userID)
+	flush, err := e.pool.Begin(e.ctx) // the sibling's flush holds its row
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flush.Rollback(e.ctx)
+	if _, err := flush.Exec(e.ctx, `SELECT 1 FROM conversations WHERE id=$1 FOR UPDATE`, sib); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- resolveLinks(e.ctx, e.pool, e.deviceID, []string{parent}) }()
+	waitForLockWait(t, e, "link resolution")
+	// A new subagent's first flush commits.
+	e.exec(`INSERT INTO conversations(id,agent,session_id,device_id,user_id,parent_native_session_id) VALUES($1,'claude','a-late',$2,$3,'m-main')`, late, e.deviceID, e.userID)
+	// A hide of the parent's tree locks it in session order: the new
+	// subagent, then the parent (held by the link resolution).
+	hide, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hide.Rollback(e.ctx)
+	if _, err := hide.Exec(e.ctx, `SELECT 1 FROM conversations WHERE id=$1 FOR UPDATE`, late); err != nil {
+		t.Fatal(err)
+	}
+	hideDone := make(chan error, 1)
+	go func() {
+		_, err := hide.Exec(e.ctx, `SELECT 1 FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY session_id COLLATE "C",id FOR UPDATE`, []string{parent, sib})
+		if err == nil {
+			err = hide.Commit(e.ctx)
+		}
+		hideDone <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the hide never waited on the link resolution")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := flush.Commit(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	linkErr, hideErr := <-done, <-hideDone
+	if isDeadlock(linkErr) || isDeadlock(hideErr) {
+		t.Fatalf("link resolution deadlocked with a hide: links %v, hide %v", linkErr, hideErr)
+	}
+	if linkErr != nil || hideErr != nil {
+		t.Fatalf("links %v, hide %v", linkErr, hideErr)
+	}
+	if n := e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND parent_conversation_id=$2`, sib, parent); n != 1 {
+		t.Fatal("the sibling is not linked")
+	}
+	// The new subagent's own parse links it.
+	if err := resolveLinks(e.ctx, e.pool, e.deviceID, []string{late}); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND parent_conversation_id=$2`, late, parent); n != 1 {
+		t.Fatal("the new subagent is not linked by its own parse")
+	}
+}

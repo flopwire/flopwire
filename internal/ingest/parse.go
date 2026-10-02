@@ -601,7 +601,7 @@ func resolveLinks(ctx context.Context, pool *pgxpool.Pool, deviceID string, touc
 			return err
 		}
 		for _, q := range linkSQL {
-			if _, err := tx.Exec(ctx, q, deviceID, touched); err != nil {
+			if _, err := tx.Exec(ctx, q, deviceID, touched, children); err != nil {
 				return err
 			}
 		}
@@ -620,20 +620,22 @@ const unlinkedSQL = `SELECT id::text FROM conversations WHERE id=ANY($2::uuid[])
 		AND c.parent_native_session_id=p.session_id AND c.parent_conversation_id IS NULL AND c.id<>p.id
 	WHERE p.id=ANY($2::uuid[]) AND p.device_id=$1`
 
-// linkSQL are resolveLinks' updates, in order.
+// linkSQL are resolveLinks' updates, in order. They write only the
+// children $3 that resolveLinks locked: a child stored after it selected
+// them is not locked with its parent, and its own parse links it.
 var linkSQL = []string{
 	`UPDATE conversations c SET parent_conversation_id=p.id FROM conversations p
 	 WHERE c.device_id=$1 AND c.parent_conversation_id IS NULL AND c.parent_native_session_id IS NOT NULL
 	   AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
-	   AND (c.id=ANY($2::uuid[]) OR p.id=ANY($2::uuid[]))`,
+	   AND (c.id=ANY($2::uuid[]) OR p.id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])`,
 	`UPDATE conversations c SET spawned_by_native_id=r.tool_call_id FROM messages r
 	 WHERE c.device_id=$1 AND c.agent='claude' AND c.spawned_by_native_id IS NULL AND c.parent_conversation_id IS NOT NULL
-	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[]))
+	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])
 	   AND r.conversation_id=c.parent_conversation_id AND NOT r.superseded AND r.kind='tool_result' AND r.tool_call_id IS NOT NULL
 	   AND (r.enrichment->>'agent_id'=c.extra->>'agent_id' OR r.enrichment->>'workflow_run_id'=c.extra->>'workflow_run_id')`,
 	`UPDATE conversations c SET spawned_by_message_id=m.id FROM messages m
 	 WHERE c.device_id=$1 AND c.spawned_by_message_id IS NULL AND c.spawned_by_native_id IS NOT NULL AND c.parent_conversation_id IS NOT NULL
-	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[]))
+	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])
 	   AND m.conversation_id=c.parent_conversation_id AND NOT m.superseded AND m.kind='tool_call'
 	   AND (m.tool_call_id=c.spawned_by_native_id OR m.native_id=c.spawned_by_native_id)`,
 }
