@@ -734,8 +734,8 @@ func TestMCPBusStructuredAndBudget(t *testing.T) {
 			schemas[tm["name"].(string)] = s
 		}
 	}
-	if len(schemas) != 3 {
-		t.Fatalf("output schemas: %v", schemas)
+	if len(schemas) != 7 { // the retrieval tools' too
+		t.Fatalf("output schemas: %d", len(schemas))
 	}
 	for name, args := range map[string]string{
 		"flopwire_peers": `{}`,
@@ -811,8 +811,8 @@ func TestBusParseErrorsAreJSON(t *testing.T) {
 }
 
 // validateSchema checks v (decoded JSON) against the JSON Schema subset the
-// bus tools' outputSchemas use: type, properties, required, items, enum
-// and additionalProperties (a schema).
+// tools' outputSchemas use: type, properties, required, items, enum and
+// additionalProperties (a schema).
 func validateSchema(path string, schema map[string]any, v any) []string {
 	var errs []string
 	switch schema["type"] {
@@ -856,6 +856,10 @@ func validateSchema(path string, schema map[string]any, v any) []string {
 	case "integer":
 		if n, ok := v.(float64); !ok || n != float64(int64(n)) {
 			errs = append(errs, path+": not an integer")
+		}
+	case "number":
+		if _, ok := v.(float64); !ok {
+			errs = append(errs, path+": not a number")
 		}
 	default:
 		errs = append(errs, fmt.Sprintf("%s: schema type %v", path, schema["type"]))

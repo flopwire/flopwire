@@ -1,4 +1,4 @@
-# codex  019a0000-0000-7000-8000-0000000000a1  /tmp/oracle-beta  on main  device local  2026-03-20 09:00Z to 2026-03-20 09:00Z  12 msgs  "add a health check endpoint"
+# session: 019a0000-0000-7000-8000-0000000000a1  agent: codex  repo: /tmp/oracle-beta  branch: main  device: local  start: 2026-03-20T09:00Z  active: 2026-03-20T09:00Z  msgs: 12  title: "add a health check endpoint"
 # intent: "add a health check endpoint"
 # where: /tmp/oracle-beta  main  duration 21s
 # messages: user 2, assistant 2, tool_call 3, tool_result 3, thinking 1

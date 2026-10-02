@@ -195,7 +195,7 @@ var flagDefs = []flagDef{
 	{"sent", 0, fBool, "i"},
 	{"thread", 0, fString, "i"},
 	{"socket", 0, fString, "pmi"},
-	{"text", 0, fBool, "pmi"},
+	{"text", 0, fBool, "gslrpmi"},
 }
 
 // filterKeys are the flags that become format.Filters.
@@ -518,6 +518,13 @@ func pageInfos(p *format.Page) []*format.ConversationInfo {
 
 // runTool runs one tool and writes its text (or JSON) answer to w.
 func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.Style, p selfPolicy) error {
+	return runToolRec(ctx, r, o, w, st, p, nil)
+}
+
+// runToolRec is runTool that also stores, in rec when it is set, the
+// answer as structured content (MCP's structuredContent) within the
+// style's budget.
+func runToolRec(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.Style, p selfPolicy, rec *any) error {
 	f, err := o.filters()
 	if err != nil {
 		return badArg(err)
@@ -532,7 +539,26 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		f.Live = r.liveIDs()
 	}
 	st.Flat = o.on["no-heading"]
-	asJSON := o.on["json"]
+	asJSON := jsonMode(o)
+	// emit writes the answer: the readable text, the --json form (grep,
+	// search and read on the CLI: indented, as before), or the structured
+	// object (sessions, and every tool over MCP: compact and bounded).
+	emit := func(full any, bounded func() any, text func() error) error {
+		var b any
+		if rec != nil || asJSON && (st.MCP || o.verb == "sessions") {
+			b = bounded()
+		}
+		if rec != nil {
+			*rec = b
+		}
+		switch {
+		case !asJSON:
+			return text()
+		case st.MCP || o.verb == "sessions":
+			return writeOut(w, b)
+		}
+		return writeJSON(w, full)
+	}
 	switch o.verb {
 	case "grep":
 		spec := grep.Spec{Patterns: append([]string{}, o.list["regexp"]...), Fixed: o.on["fixed-strings"], IgnoreCase: o.on["ignore-case"],
@@ -580,10 +606,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		if asJSON {
-			return writeJSON(w, page)
-		}
-		return format.WriteGrep(w, page, q.Mode, st)
+		return emit(page, func() any { return boundPage("grep", page, q.Mode, st.Budget, st.MCP) }, func() error { return format.WriteGrep(w, page, q.Mode, st) })
 	case "search":
 		if len(o.pos) == 0 {
 			return badArg(errors.New("search needs a QUERY (flopwire search --help)"))
@@ -602,10 +625,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		if asJSON {
-			return writeJSON(w, page)
-		}
-		return format.WriteSearch(w, page, st)
+		return emit(page, func() any { return boundPage("search", page, "", st.Budget, st.MCP) }, func() error { return format.WriteSearch(w, page, st) })
 	case "sessions":
 		if len(o.pos) > 1 {
 			return badArg(fmt.Errorf("sessions takes one GLOB; got %q", strings.Join(o.pos, " ")))
@@ -625,10 +645,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(infos...)
 		out.Excluded = note
-		if asJSON {
-			return writeJSON(w, out)
-		}
-		return format.WriteSessions(w, out, st)
+		return emit(out, func() any { return boundSessions(out, st.Budget, st.MCP) }, func() error { return format.WriteSessions(w, out, st) })
 	case "read":
 		if len(o.pos) != 1 {
 			return badArg(errors.New("read needs one ADDRESS: SESSION/ORDINAL[:LINE], SESSION, a message id, or /path/file.jsonl:LINE"))
@@ -657,7 +674,10 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			if err != nil {
 				return err
 			}
-			return writeRaw(w, data, asJSON)
+			if rec != nil {
+				*rec = boundRaw(o.pos[0], data, st.Budget, st.MCP)
+			}
+			return writeRaw(w, data, o.on["json"])
 		}
 		q := format.ReadQuery{Address: o.pos[0], Outline: o.on["outline"], Cursor: o.vals["cursor"], Limit: f.Limit, Self: self}
 		if (q.Cursor != "" || q.Limit > 0) && !q.Outline {
@@ -683,10 +703,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			return err
 		}
 		r.markLive(&cx.Conversation)
-		if asJSON {
-			return writeJSON(w, cx)
-		}
-		return format.WriteRead(w, cx, st)
+		return emit(cx, func() any { return boundRead(cx, st.Budget, st.MCP) }, func() error { return format.WriteRead(w, cx, st) })
 	}
 	return fmt.Errorf("unknown tool %q", o.verb)
 }
@@ -743,18 +760,44 @@ func cliStyle(o *opts) (format.Style, error) {
 }
 
 // toolCmd is the CLI entry of a tool: parse, print help, open, run.
+// In JSON mode (sessions by default, any verb with --json) a failure is
+// one JSON object on stderr, as the message bus verbs print it, and the
+// command exits 1.
 func toolCmd(ctx context.Context, verb string, args []string) error {
+	return toolCmdIO(ctx, verb, args, os.Stdout, os.Stderr)
+}
+
+func toolCmdIO(ctx context.Context, verb string, args []string, stdout, stderr io.Writer) error {
 	o, err := parseArgs(verb, args)
+	asJSON := false
 	if err != nil {
-		return err
+		asJSON, err = jsonModeArgs(verb, args), badArg(err)
+	} else {
+		asJSON = jsonMode(o)
+		err = runToolCmd(ctx, verb, o, stdout, stderr, asJSON)
 	}
-	if o.on["help"] {
-		fmt.Print(toolHelp[verb])
+	if err == nil {
 		return nil
 	}
+	if !asJSON {
+		return errors.New(shortError(err))
+	}
+	if werr := writeErrorJSON(stderr, retrievalErr(verb, err, false)); werr != nil {
+		return errors.New(shortError(err))
+	}
+	return errReported
+}
+
+func runToolCmd(ctx context.Context, verb string, o *opts, stdout, stderr io.Writer, asJSON bool) error {
+	if o.on["help"] {
+		_, err := io.WriteString(stdout, toolHelp[verb])
+		return err
+	}
 	if len(o.pos) == 0 && len(o.list["regexp"]) == 0 && verb != "sessions" {
-		fmt.Fprint(os.Stderr, toolHelp[verb])
-		return fmt.Errorf("%s: missing argument", verb)
+		if !asJSON {
+			fmt.Fprint(stderr, toolHelp[verb])
+		}
+		return badArg(fmt.Errorf("%s: missing argument", verb))
 	}
 	r, err := openRetriever(o.on["server"], o.vals["index"])
 	if err != nil {
@@ -765,10 +808,7 @@ func toolCmd(ctx context.Context, verb string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := runTool(ctx, r, o, os.Stdout, st, selfCLI); err != nil {
-		return errors.New(shortError(err))
-	}
-	return nil
+	return runTool(ctx, r, o, stdout, st, selfCLI)
 }
 
 // raw is plumbing: the archived bytes of a source generation range, by
@@ -831,15 +871,15 @@ var toolHelp = map[string]string{
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
   flopwire grep -l flaky --repo flopwire --agent codex  sessions with matches
 
-Hits group under a header per session, newest first; the address for flopwire read is
-SESSION/ORDINAL:LINE:  ## SESSION who agent live|ended DATE repo@branch "intent" N files PR
-                       ORDINAL:LINE kind/tool: text
---no-heading: one line per hit, SESSION/ORDINAL:LINE: [agent kind time repo@branch] text.
+Hits group under a header of "key: value" fields per session (a value with a space is a
+JSON string), newest first; the address for flopwire read is SESSION/ORDINAL:LINE.
+  ## session: SESSION  agent: claude  ended: 2026-09-23  repo: api  branch: main  intent: "..."
+  ORDINAL:LINE kind/tool: text        (--no-heading: SESSION/ORDINAL:LINE: [attribution] text)
 Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a match spans
          lines of one message)  (-n, -r accepted)
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
          --limit N (20)  --offset N  --sort newest|oldest|relevance  --no-heading  --json
-         --timeout 30s (max 60s)  --max-bytes N (whole hits within N bytes)
+         (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
 Filters  --agent claude,codex,devin  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since 7d
          --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
          --exclude-subagents  --exclude-live  --include-superseded  --include-branches
@@ -856,39 +896,40 @@ out (a human at a terminal sees all); --session self searches only it.
   flopwire search '"exponential backoff" retry' --repo flopwire   quoted phrases must match
   flopwire search papercut --agent codex --since 30d --sort newest
 
-Hits are grouped under one header per session (as grep's), best first:
+Hits are grouped under one labeled header per session (as grep's), best first:
   ORDINAL:LINE kind/tool: snippet
 The address for flopwire read is SESSION/ORDINAL:LINE. When no message has every word,
 it ranks messages with any of them (common words dropped) and says so. Identical texts
 show once, "+N copies".
 
 Output   --limit N (20)  --offset N  --sort relevance|newest|oldest  --no-heading  --json
-         --timeout 30s (max 60s)  --max-bytes N (whole hits within N bytes)
+         (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
 Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since  --until  --kind
          --exclude-kind  --tool  --session SESSION|self  --exclude-subagents  --exclude-live
          --include-superseded  --include-branches  --include-self  --device  --user
 Times    --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339 (UTC)
 Source   the local index; --server for the team server; --index PATH
 `,
-	"sessions": `flopwire sessions — list sessions, newest activity first, like a glob over transcripts
+	"sessions": `flopwire sessions — list sessions, newest activity first, as JSON (--text: readable)
 
   flopwire sessions                         the latest sessions
   flopwire sessions 'flopwire*' --since 7d    by repo name, title or session id
   flopwire sessions --agent codex --repo . --branch 'feat/*'
 
-Each session prints its short digest, then its last reply:
-  SESSION  user@device  agent  live, 4m ago | ended DATE  repo@branch  N msgs  "intent"
-    N files  PR #N +M  N commits  ✗N (failed tool calls)
-      last: "..."
-(on one line up to "✗N"). Pass SESSION to flopwire read --outline for its full digest
-and skeleton, or as --session to grep and search inside it. A bare GLOB word matches
-anywhere (*word*). --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or
-RFC 3339; times are UTC.
+JSON: {"kind":"sessions","sessions":[{"address","session_id":FULL ID,"agent","title","repo",
+"branches","last_activity_at","live","messages","parent_session","digest":{"intent",
+"commits","prs","files_edited","last",…}}…],"has_more":bool,"next_cursor":C}.
+has_more: pass next_cursor as --cursor. --text: a labeled line per session, its last reply:
+  session: S  agent: claude  ended: 2026-09-23  repo: api  branch: main  msgs: 24  intent: "..."
+Pass session_id to flopwire read --outline (digest and skeleton), as --session to grep and
+search, or to flopwire peers --session (is it live?). A bare GLOB word matches anywhere.
+--since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339; times are UTC.
 
-Output   --limit N (20)  --cursor C (from the footer)  --sort newest|oldest  --json
-         --max-bytes N
+Output   --limit N (20)  --cursor C (next_cursor)  --sort newest|oldest  --text  --max-bytes N
+         (--json: the default)
 Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since/--until (last
          activity)  --exclude-subagents  --exclude-live  --include-self  --device  --user
+Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example"}}; exit 1
 Source   the local index; --server for the team server; --index PATH
 `,
 	"read": `flopwire read — read a message (and its neighbours) at an address from grep, search or sessions
@@ -898,8 +939,9 @@ Source   the local index; --server for the team server; --index PATH
   flopwire read 0b7e2c1a --outline         the session's digest and skeleton
 
 ADDRESS is SESSION/ORDINAL[:LINE], SESSION (any unique prefix of the id), a message
-id, /path/to/transcript.jsonl:LINE, or self (the calling agent's session). The header
-gives the session's repo, branch, time span (UTC) and message count. The focus text
+id, /path/to/transcript.jsonl:LINE, or self (the calling agent's session). The header is
+labeled fields, as grep's: # session: FULL ID  agent: A  repo: PATH  branch: B  start: T
+active: T  msgs: N  title: "..." (UTC; a value with a space is a JSON string). The focus text
 prints with line numbers; long text is cut at --max-chars and says how to read on.
 --max-bytes N keeps the focus and the nearest neighbours within N bytes.
 
@@ -911,7 +953,7 @@ size; the footer prints the --cursor that reads on.
 
 Output   -B N / -A N / -C N messages before/after  --max-chars N (4000; neighbours
          get a quarter)  --line-offset N (first line of the focus)  --raw (the
-         transcript record's bytes)  --outline [--cursor C --limit N]  --json
+         transcript record's bytes)  --outline [--cursor C --limit N]  --json  (--text)
 Rows     --include-superseded  --include-branches
 Source   the local index; --server for the team server; --index PATH
 `,
