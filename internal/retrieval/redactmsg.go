@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -30,12 +31,21 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// beforeRedactTx, when set (tests), runs after a redaction picks its
+// targets and before its transaction.
+var beforeRedactTx func()
+
 type redactTarget struct {
 	id, text, sourceID, deviceID string
 	conv                         string
 	gen, off, n                  *int64
 	persisted, native            string
 	enrichment                   map[string]any
+	sha                          []byte
+	// user owns the row's conversation; firstSeen is when the server
+	// first stored the record (messages.first_seen_at).
+	user      string
+	firstSeen time.Time
 }
 
 // RedactMessage masks the message an address names (lines from..to of
@@ -44,6 +54,22 @@ type redactTarget struct {
 // The caller acts as the owner (their own messages only) unless admin is
 // set (any user's).
 func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admin bool, req format.RedactRequest) (format.RedactResult, error) {
+	for attempt := 1; ; attempt++ {
+		res, err := s.redactOnce(ctx, userID, deviceID, admin, req)
+		if !errors.Is(err, errTargetsMoved) || attempt == redactAttempts {
+			return res, err
+		}
+	}
+}
+
+// errTargetsMoved is a redaction whose targets changed between reading
+// them and its transaction (a parse committed a copy): it starts again.
+var errTargetsMoved = errors.New("retrieval: redaction targets changed; retry")
+
+// redactAttempts bounds the restarts of a redaction racing parses.
+const redactAttempts = 5
+
+func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin bool, req format.RedactRequest) (format.RedactResult, error) {
 	who := struct {
 		UserID, DeviceID string
 		Admin            bool
@@ -77,28 +103,16 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 
 	// Targets: the row, its other versions, and with all_copies every row
 	// with the same text (the +N copies group), within the caller's reach.
-	rows, err := s.Pool.Query(ctx, `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
-			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text
-		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id
-		WHERE m.id=$1 OR (m.conversation_id=$2 AND m.native_id IS NOT DISTINCT FROM $3 AND $3 IS NOT NULL)
-		   OR ($4 AND m.content_sha=$5 AND ($6 OR c.user_id=$7))
-		ORDER BY m.id`, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID)
+	targets, err := redactTargets(ctx, s.Pool, false, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID, nil)
 	if err != nil {
 		return res, err
 	}
-	var targets []redactTarget
-	for rows.Next() {
-		var t redactTarget
-		var gen int64
-		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv); err != nil {
-			rows.Close()
-			return res, err
-		}
-		t.gen = &gen
-		targets = append(targets, t)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	// Rows that may be parsed from a byte-identical record elsewhere (the
+	// session archived from another device): candidates by the targets'
+	// native ids, or their text when they have none.
+	copyKeys := byteCopyKeysOf(targets)
+	candidates, err := byteCopyCandidates(ctx, s.Pool, copyKeys)
+	if err != nil {
 		return res, err
 	}
 
@@ -112,13 +126,12 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 		gen    int64
 	}
 	spans := map[srcGen][]redact.Span{}
-	type lineFix struct {
-		raw   []byte
-		spans []redact.Span
-	}
 	lines := map[[32]byte]lineFix{}
+	// ownFirst is, per redacted line, the earliest time the caller's own
+	// rows stored it (first uploader wins, below).
+	ownFirst := map[[32]byte]time.Time{}
 	newText := map[string]string{}
-	for _, t := range targets {
+	process := func(t redactTarget) error {
 		masked := t.text
 		if from == 0 {
 			masked, _ = redact.MaskText(t.text, 0, 0)
@@ -128,11 +141,11 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 			}
 		}
 		if masked == t.text {
-			continue // another version without the hidden lines
+			return nil // another version without the hidden lines
 		}
 		newText[t.id] = masked
 		if t.sourceID == "" {
-			continue
+			return nil
 		}
 		k := srcGen{t.sourceID, *t.gen}
 		add := func(off int64, rec []byte, sp []redact.Span) {
@@ -140,6 +153,11 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 				sp = append(sp, priorMasks.MatchBytes(rec)...)
 			}
 			sum := redact.LineSum(rec)
+			if t.user == who.UserID {
+				if first, ok := ownFirst[sum]; !ok || t.firstSeen.Before(first) {
+					ownFirst[sum] = t.firstSeen
+				}
+			}
 			line := lines[sum]
 			if line.raw == nil {
 				line.raw = bytes.Clone(rec)
@@ -165,13 +183,13 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 					add(off, line, sp)
 				}
 			}); err != nil {
-				return res, err
+				return err
 			}
-			continue
+			return nil
 		}
 		rec, err := s.archived(ctx, t.sourceID, *t.gen, *t.off, *t.n)
 		if err != nil {
-			return res, err
+			return err
 		}
 		sp, found := redact.MaskRecord(rec, needles, from == 0)
 		if !found || len(sp) == 0 {
@@ -185,10 +203,100 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 			if err := s.persistedSpans(ctx, t, needles, from == 0, func(src string, gen int64, sp []redact.Span) {
 				spans[srcGen{src, gen}] = append(spans[srcGen{src, gen}], sp...)
 			}); err != nil {
-				return res, err
+				return err
+			}
+		}
+		return nil
+	}
+	for _, t := range targets {
+		if err := process(t); err != nil {
+			return res, err
+		}
+	}
+	// The catalog masks every byte-identical record in raw reads and later
+	// parses, whichever source holds it. A copy parsed before this
+	// redaction is therefore a target too: its rows, its conversation and
+	// its stored bytes are masked like the target's (notes/redaction.md,
+	// step 1). Copies that are not byte-identical stay out of the catalog
+	// and out of the targets unless all_copies.
+	isTarget := map[string]bool{}
+	for _, t := range targets {
+		isTarget[t.id] = true
+	}
+	//
+	// First uploader wins: on the owner route, another user's byte copy is
+	// a target only when the caller's own rows stored every line it holds
+	// strictly before it did (messages.first_seen_at, the server's clock
+	// when the row was first inserted). Otherwise a member could upload a
+	// copy of a teammate's record and redact it, rewriting the teammate's
+	// rows and archive. Such copies are skipped and reported; --admin
+	// redacts them. The caller's own copies (other devices) always count.
+	var copyIDs []string
+	type match struct {
+		c    redactTarget
+		sums [][32]byte
+	}
+	var others []match
+	for _, c := range candidates {
+		if isTarget[c.id] {
+			continue
+		}
+		sums, err := s.heldLines(ctx, c, lines)
+		if err != nil {
+			return res, err
+		}
+		if len(sums) == 0 {
+			continue
+		}
+		if !who.Admin && c.user != who.UserID {
+			others = append(others, match{c, sums})
+			continue
+		}
+		if err := process(c); err != nil {
+			return res, err
+		}
+		copyIDs = append(copyIDs, c.id)
+		targets = append(targets, c)
+	}
+	// A user holds a line from the earliest of their rows that hold it,
+	// superseded versions included: a reparse stores a new version of the
+	// same bytes later, and must not make its owner look like the later
+	// uploader.
+	type userLine struct {
+		user string
+		sum  [32]byte
+	}
+	theirFirst := map[userLine]time.Time{}
+	for _, m := range others {
+		for _, sum := range m.sums {
+			k := userLine{m.c.user, sum}
+			if first, ok := theirFirst[k]; !ok || m.c.firstSeen.Before(first) {
+				theirFirst[k] = m.c.firstSeen
 			}
 		}
 	}
+	var skipped []redactTarget
+	for _, m := range others {
+		first := true
+		for _, sum := range m.sums {
+			if own, ok := ownFirst[sum]; !ok || !own.Before(theirFirst[userLine{m.c.user, sum}]) {
+				first = false
+			}
+		}
+		if !first {
+			skipped = append(skipped, m.c)
+			continue
+		}
+		if err := process(m.c); err != nil {
+			return res, err
+		}
+		copyIDs = append(copyIDs, m.c.id)
+		targets = append(targets, m.c)
+	}
+	if err := s.describeSkipped(ctx, skipped, &res); err != nil {
+		return res, err
+	}
+	slices.SortFunc(targets, func(a, b redactTarget) int { return strings.Compare(a.id, b.id) })
 	if len(newText) == 0 {
 		return res, fmt.Errorf("%w: nothing to redact", ErrBadRequest)
 	}
@@ -208,9 +316,53 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 	defer plan.Close()
 	chunks, tails := plan.Counts()
 
+	if beforeRedactTx != nil {
+		beforeRedactTx()
+	}
 	id := uuid.NewString()
 	now := time.Now().UTC()
 	err = plan.WithTx(ctx, func(tx pgx.Tx) error {
+		// Parse writes share this lock, so none commits while the redaction
+		// runs. A copy one committed after the targets were read is found
+		// here; a parse that loaded the catalog before this commits sees the
+		// revision move when it next writes. The re-read locks the rows:
+		// a writer that does not share the lock (the rules upgrade) could
+		// otherwise rewrite one between this read and the update below,
+		// and the update would restore the text read here.
+		if err := ingest.LockRedactedLines(ctx, tx); err != nil {
+			return err
+		}
+		// A parse flush holds its conversations from their upsert and then
+		// writes their message rows; so does a checkpoint. Lock the targets'
+		// conversations first, in the order every multi-conversation writer
+		// takes them (store.LockConversationsSQL), before the re-read locks
+		// any message row. A target that moved to another conversation
+		// meanwhile changes the set, and the redaction starts again.
+		convs := make([]string, 0, len(targets))
+		for _, t := range targets {
+			convs = append(convs, t.conv)
+		}
+		if _, err := tx.Exec(ctx, store.LockConversationsSQL, convs); err != nil {
+			return err
+		}
+		current, err := redactTargets(ctx, tx, true, focus, conv, native, req.AllCopies, sha, who.Admin, who.UserID, copyIDs)
+		if err != nil {
+			return err
+		}
+		if !slices.EqualFunc(current, targets, func(a, b redactTarget) bool { return a.id == b.id && a.text == b.text && a.conv == b.conv }) {
+			return errTargetsMoved
+		}
+		// A candidate a parse committed after the first read was parsed
+		// with the old catalog: start again to decide it. Every flush and
+		// parse write waits for this lock, so the probe is an index probe
+		// on content_sha (TestRedactionProbesUnderLockPlan).
+		again, err := byteCopyCandidates(ctx, tx, copyKeys)
+		if err != nil {
+			return err
+		}
+		if !slices.EqualFunc(again, candidates, func(a, b redactTarget) bool { return a.id == b.id }) {
+			return errTargetsMoved
+		}
 		lr := ""
 		if from > 0 {
 			lr = fmt.Sprintf("%d-%d", from, to)
@@ -237,10 +389,10 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 				return err
 			}
 			// The conversation's title is the first line of its first
-			// prompt: it holds the redacted text too.
+			// prompt: it holds the redacted text too. (Locked above.)
 			var title string
 			var dg []byte
-			if err := tx.QueryRow(ctx, `SELECT COALESCE(title,''),digest FROM conversations WHERE id=$1 FOR UPDATE`, t.conv).Scan(&title, &dg); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(c.title,''),a.digest FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.id=$1`, t.conv).Scan(&title, &dg); err != nil {
 				return err
 			}
 			if nt := maskTitle(title, t.text, txt, needles); nt != title {
@@ -255,7 +407,7 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 				hidden = strings.Split(t.text, "\n")
 			}
 			if nd := digest.Mask(dg, hidden, maskString); !bytes.Equal(nd, dg) {
-				if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2 WHERE id=$1`, t.conv, nd); err != nil {
+				if _, err := tx.Exec(ctx, `UPDATE conversation_activity SET digest=$2 WHERE conversation_id=$1`, t.conv, nd); err != nil {
 					return err
 				}
 			}
@@ -290,6 +442,27 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 				return err
 			}
 		}
+		// At-rest repair: rescan every generation of the targets' sources
+		// (a parse may have moved a target to a generation the plan did
+		// not rewrite) and every upload no parse has consumed yet, with
+		// the catalog that includes these lines.
+		repair := map[string]bool{}
+		for _, t := range current {
+			if t.sourceID != "" {
+				repair[t.sourceID] = true
+			}
+		}
+		for k := range spans {
+			repair[k.source] = true
+		}
+		sources := make([]string, 0, len(repair))
+		for id := range repair {
+			sources = append(sources, id)
+		}
+		slices.Sort(sources)
+		if err := ingest.QueueArchiveRepair(ctx, tx, sources); err != nil {
+			return err
+		}
 		return store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: who.UserID, DeviceID: who.DeviceID,
 			Action: "message.redaction.requested", TargetType: "message", TargetID: focus,
 			Metadata: map[string]any{"redaction_id": id, "lines": lr, "all_copies": req.AllCopies, "by_admin": who.Admin, "owner": owner,
@@ -300,6 +473,171 @@ func (s *Store) RedactMessage(ctx context.Context, userID, deviceID string, admi
 	}
 	res.ID, res.Messages, res.Chunks, res.Tails = id, len(newText), chunks, tails
 	return res, nil
+}
+
+// lineFix is a redacted record line: its original bytes and the spans to
+// mask.
+type lineFix struct {
+	raw   []byte
+	spans []redact.Span
+}
+
+type querier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+const targetCols = `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
+			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text,m.content_sha,
+			c.user_id::text,m.first_seen_at
+		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id`
+
+// redactTargetsSQL selects a redaction's targets: the row ($1), its other
+// versions, with all_copies ($4) the rows with its text, and the byte
+// copies already chosen ($8).
+const redactTargetsSQL = targetCols + `
+		WHERE m.id=$1 OR (m.conversation_id=$2 AND m.native_id IS NOT DISTINCT FROM $3 AND $3 IS NOT NULL)
+		   OR ($4 AND m.content_sha=$5 AND ($6 OR c.user_id=$7))
+		   OR m.id=ANY($8::uuid[])
+		ORDER BY m.id`
+
+// byteCopiesSQL selects the rows that may be parsed from a record
+// byte-identical to a target's, of any user (the catalog masks the raw
+// reads of all of them): rows with a target's native id ($1), and rows
+// without one that have the text (content_sha, $2) of a target without
+// one. Every parser derives a native id from the record's bytes, so a
+// byte-identical record has the target's native id, but its text can
+// differ: it may be assembled with context outside the record (a Claude
+// tool result filled from tool-results/ on one device and not on
+// another). Served by messages_native_idx and messages_content_sha_idx.
+// An empty list is a one-time filter, not a scan.
+const byteCopiesSQL = `(` + targetCols + ` WHERE cardinality($1::text[])>0 AND m.native_id=ANY($1::text[]))
+		UNION ALL (` + targetCols + ` WHERE cardinality($2::bytea[])>0 AND m.native_id IS NULL AND m.content_sha=ANY($2::bytea[]))
+		ORDER BY 1`
+
+// byteCopyKeys are byteCopiesSQL's parameters.
+type byteCopyKeys struct {
+	natives []string
+	shas    [][]byte
+}
+
+// byteCopyKeysOf returns the native ids of targets, and the text hashes
+// of the targets without one.
+func byteCopyKeysOf(targets []redactTarget) byteCopyKeys {
+	k := byteCopyKeys{natives: []string{}, shas: [][]byte{}}
+	for _, t := range targets {
+		if t.native != "" {
+			if !slices.Contains(k.natives, t.native) {
+				k.natives = append(k.natives, t.native)
+			}
+		} else {
+			k.shas = append(k.shas, t.sha)
+		}
+	}
+	return k
+}
+
+// redactTargets reads a redaction's target rows, ordered by id; with lock,
+// FOR UPDATE.
+func redactTargets(ctx context.Context, q querier, lock bool, focus, conv string, native *string, allCopies bool, sha []byte, admin bool, userID string, copies []string) ([]redactTarget, error) {
+	lockClause := ""
+	if lock {
+		lockClause = " FOR UPDATE OF m"
+	}
+	if copies == nil {
+		copies = []string{}
+	}
+	rows, err := q.Query(ctx, redactTargetsSQL+lockClause, focus, conv, native, allCopies, sha, admin, userID, copies)
+	if err != nil {
+		return nil, err
+	}
+	return scanTargets(rows)
+}
+
+// byteCopyCandidates reads the rows byteCopiesSQL selects, ordered by id.
+func byteCopyCandidates(ctx context.Context, q querier, k byteCopyKeys) ([]redactTarget, error) {
+	rows, err := q.Query(ctx, byteCopiesSQL, k.natives, k.shas)
+	if err != nil {
+		return nil, err
+	}
+	return scanTargets(rows)
+}
+
+// heldLines returns the hashes among lines that row c was parsed from:
+// its record's, or without a byte range, those of any line of its
+// generation.
+func (s *Store) heldLines(ctx context.Context, c redactTarget, lines map[[32]byte]lineFix) ([][32]byte, error) {
+	if c.sourceID == "" {
+		return nil, nil
+	}
+	if c.off == nil || c.n == nil || *c.n <= 0 {
+		var found [][32]byte
+		err := s.eachLine(ctx, c.sourceID, *c.gen, func(_ int64, line []byte) {
+			if sum := redact.LineSum(line); !slices.Contains(found, sum) {
+				if _, ok := lines[sum]; ok {
+					found = append(found, sum)
+				}
+			}
+		})
+		return found, err
+	}
+	rec, err := s.archived(ctx, c.sourceID, *c.gen, *c.off, *c.n)
+	if err != nil {
+		return nil, err
+	}
+	if sum := redact.LineSum(rec); lines[sum].raw != nil {
+		return [][32]byte{sum}, nil
+	}
+	return nil, nil
+}
+
+// describeSkipped fills res.Skipped with the skipped copies' owners and
+// devices per source, ordered by source: names only, never text. A copy
+// in a source whose raw evidence is hidden (sourceHidden, the rule raw
+// reads apply: any conversation it feeds is hidden by an admin path rule)
+// is only counted (res.SkippedHidden): the caller may not learn whose or
+// where it is.
+func (s *Store) describeSkipped(ctx context.Context, skipped []redactTarget, res *format.RedactResult) error {
+	bySource := map[string]*format.SkippedCopies{}
+	for _, c := range skipped {
+		sk := bySource[c.sourceID]
+		if sk == nil {
+			sk = &format.SkippedCopies{SourceID: c.sourceID}
+			bySource[c.sourceID] = sk
+		}
+		sk.Messages++
+	}
+	for _, id := range slices.Sorted(maps.Keys(bySource)) {
+		sk := bySource[id]
+		hidden, err := s.sourceHidden(ctx, id)
+		if err != nil {
+			return err
+		}
+		if hidden {
+			res.SkippedHidden += sk.Messages
+			continue
+		}
+		if err := s.Pool.QueryRow(ctx, `SELECT u.email,d.name FROM sources src JOIN devices d ON d.id=src.device_id JOIN users u ON u.id=d.user_id
+			WHERE src.id=$1`, id).Scan(&sk.User, &sk.Device); err != nil {
+			return err
+		}
+		res.Skipped = append(res.Skipped, *sk)
+	}
+	return nil
+}
+
+func scanTargets(rows pgx.Rows) ([]redactTarget, error) {
+	defer rows.Close()
+	var targets []redactTarget
+	for rows.Next() {
+		var t redactTarget
+		var gen int64
+		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv, &t.sha, &t.user, &t.firstSeen); err != nil {
+			return nil, err
+		}
+		t.gen = &gen
+		targets = append(targets, t)
+	}
+	return targets, rows.Err()
 }
 
 // archived reads bytes of a source generation as stored (not through the

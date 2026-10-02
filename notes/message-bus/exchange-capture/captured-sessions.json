@@ -1,0 +1,56 @@
+{
+  "sessions": [
+    {
+      "address": "b5dd812f",
+      "id": "2",
+      "agent": "claude",
+      "session_id": "b5dd812f-aae0-4bb1-8363-45dee116e371",
+      "title": "You are the API agent for this repository (current branch: api-cursors). Do these steps in order:",
+      "cwd": "/tmp/capture/app-api",
+      "repo": "/tmp/capture/app-api",
+      "device": "local",
+      "started_at": "2026-10-02T00:36:16.508Z",
+      "last_activity_at": "2026-10-02T00:38:43.354Z",
+      "messages": 23,
+      "branches": [
+        "api-cursors"
+      ],
+      "digest": {
+        "intent": "You are the API agent for this repository (current branch: api-cursors). Do these steps in order: 1. In src/api/users.ts…",
+        "repos": [
+          "/tmp/capture/app-api"
+        ],
+        "branches": [
+          "api-cursors"
+        ],
+        "duration_s": 146,
+        "messages": {
+          "thinking": 1,
+          "tool_call": 11,
+          "tool_result": 10,
+          "user": 1
+        },
+        "files_edited": [
+          "src/api/users.ts"
+        ],
+        "commands": 7,
+        "tools": {
+          "Bash": 7,
+          "Read": 1,
+          "ToolSearch": 1,
+          "Write": 1,
+          "mcp__plugin_flopwire_flopwire__flopwire_send": 1
+        },
+        "failed": 1,
+        "tokens": {
+          "input": 16,
+          "output": 2190,
+          "cache_read": 154497,
+          "cache_creation": 13600
+        }
+      },
+      "live": true
+    }
+  ],
+  "excluded": "left out your own session 01a0fa0a-b16a-7ca2-87a6-092f0f36cd28 and its subagents; --include-self includes them"
+}

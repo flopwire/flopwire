@@ -1,0 +1,409 @@
+{
+  "flopwire": {
+    "version": "main-9e4193d",
+    "commit": "9e4193da7c346ff14a377128920f3943ff14f523",
+    "dirty": false
+  },
+  "recorded_at": "2026-10-01T14:44:48.69658Z",
+  "machine": {
+    "os": "darwin",
+    "arch": "arm64",
+    "cpu_model": "Apple M1 Pro",
+    "cores": 10,
+    "ram_bytes": 17179869184
+  },
+  "corpus": {
+    "files": 14008,
+    "bytes": 19475103368
+  },
+  "metrics": [
+    {
+      "name": "index.wall",
+      "value": 453.2098165,
+      "unit": "s",
+      "limit": 300,
+      "result": "FAIL"
+    },
+    {
+      "name": "index.peak_rss",
+      "value": 392.796875,
+      "unit": "MB",
+      "limit": 600,
+      "result": "PASS"
+    },
+    {
+      "name": "idle.rss",
+      "value": 176.09375,
+      "unit": "MB",
+      "limit": 120,
+      "result": "FAIL"
+    },
+    {
+      "name": "sweep.cpu_max",
+      "value": 351.976,
+      "unit": "ms",
+      "limit": 1000,
+      "result": "PASS"
+    },
+    {
+      "name": "fresh.p95",
+      "value": 568.561,
+      "unit": "ms",
+      "limit": 2000,
+      "result": "PASS"
+    },
+    {
+      "name": "query.session-uuid.warm",
+      "value": 122.407,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.issue-250-papercut.warm",
+      "value": 141.083,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.gh-issue-edit-250.warm",
+      "value": 140.089,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.pandora-recent.warm",
+      "value": 214.771,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.launchd-pandora.warm",
+      "value": 143.194,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.tmux.warm",
+      "value": 219.564,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.pueue.warm",
+      "value": 185.111,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.ms-playwright.warm",
+      "value": 213.617,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.missing-scope.warm",
+      "value": 143.351,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.gh-project-item-list.warm",
+      "value": 221.83,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.hero-capitalization.warm",
+      "value": 123.585,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.clean-macos-vm.warm",
+      "value": 145.855,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.apple-virtual-machine.warm",
+      "value": 129.669,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.merge-head-sessionpane.warm",
+      "value": 114.588,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.sessionpane-path.warm",
+      "value": 311.188,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.skiphtml-urltransform.warm",
+      "value": 119.71,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.collapse-threshold.warm",
+      "value": 136.824,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.compact-markdown-text.warm",
+      "value": 161.173,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.capability-snapshots-migration.warm",
+      "value": 137.997,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.live-e2e-codex-live.warm",
+      "value": 136.81,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.durable-controller.warm",
+      "value": 144.212,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.livekit-turn-domain.warm",
+      "value": 144.981,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.vmpass2.warm",
+      "value": 112.88,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.blob-unavailable.warm",
+      "value": 248.249,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.durable-before-commit.warm",
+      "value": 200.477,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    },
+    {
+      "name": "query.self-expires.warm",
+      "value": 145.604,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.dev-browser-playwright.warm",
+      "value": 154.108,
+      "unit": "ms",
+      "limit": 200,
+      "result": "PASS"
+    },
+    {
+      "name": "query.error-common-term.warm",
+      "value": 350.782,
+      "unit": "ms",
+      "limit": 200,
+      "result": "FAIL"
+    }
+  ],
+  "checks": [
+    {
+      "name": "oracle.claude",
+      "detail": "49/50 conversations match, 50 files, 0 parse errors",
+      "result": "PASS"
+    },
+    {
+      "name": "oracle.codex",
+      "detail": "47/47 conversations match, 47 files, 0 parse errors",
+      "result": "PASS"
+    },
+    {
+      "name": "oracle.devin",
+      "detail": "43/53 conversations match, 75 files, 0 parse errors",
+      "result": "PASS"
+    },
+    {
+      "name": "query.session-uuid",
+      "detail": "8 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.issue-250-papercut",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.gh-issue-edit-250",
+      "detail": "10 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.pandora-recent",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.launchd-pandora",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.tmux",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.pueue",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.ms-playwright",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.missing-scope",
+      "detail": "2 hits, reads 2/2",
+      "result": "PASS"
+    },
+    {
+      "name": "query.gh-project-item-list",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.hero-capitalization",
+      "detail": "14 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.clean-macos-vm",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.apple-virtual-machine",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.merge-head-sessionpane",
+      "detail": "4 hits, reads 4/4",
+      "result": "PASS"
+    },
+    {
+      "name": "query.sessionpane-path",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.skiphtml-urltransform",
+      "detail": "35 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.collapse-threshold",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.compact-markdown-text",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.capability-snapshots-migration",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.live-e2e-codex-live",
+      "detail": "7 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.durable-controller",
+      "detail": "20 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.livekit-turn-domain",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.vmpass2",
+      "detail": "5 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.blob-unavailable",
+      "detail": "50 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.durable-before-commit",
+      "detail": "25 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.self-expires",
+      "detail": "4 hits, reads 4/4",
+      "result": "PASS"
+    },
+    {
+      "name": "query.dev-browser-playwright",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    },
+    {
+      "name": "query.error-common-term",
+      "detail": "100 hits, reads 5/5",
+      "result": "PASS"
+    }
+  ]
+}

@@ -389,6 +389,20 @@ purge lock: uploads continue and deletion requests take effect at once, but
 the physical purge waits for the backup to finish. A backup is valid only
 after `manifest.json` exists and `backup-verify` succeeds.
 
+The backup command refuses to run while a message redaction still repairs
+archived bytes. The error is `redaction_repair_pending` and gives the number
+of pending generations. Follow these steps:
+
+1. Wait for the parse queue to finish. The repair runs before each parse.
+2. If the error names quarantined sources, release them. Their repair runs
+   only after release.
+3. Run the backup again.
+
+`--allow-pending-redaction-repair` takes the backup anyway. Use it only when a
+backup is more urgent than the redaction. The objects in that backup can hold
+the redacted text. A backup taken before a redaction always keeps the
+redacted text. Rotate a redacted secret.
+
 Restore refuses a database with any user objects or a bucket with objects.
 It uploads and re-verifies every object, restores the dump, and checks that
 the restored chunk inventory matches the manifest. Discard a partially

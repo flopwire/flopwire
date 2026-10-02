@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,6 +31,8 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -144,6 +148,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	once := fs.Bool("once", false, "index everything that changed, upload it (with a configured server or FLOPWIRE_TOKEN), then exit")
 	syncWait := fs.Duration("sync-timeout", 5*time.Minute, "with --once: how long to wait for the upload to finish")
 	noSync := fs.Bool("no-sync", false, "never upload, even with a configured server")
+	rebuildIndex := fs.Bool("rebuild-index", false, "drop the local index's rows and search files and index every transcript again; keeps sync state, placements and local redactions (see docs/agent.md#recover-the-local-index)")
 	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from the client config's "mode"`)
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
@@ -240,6 +245,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 				a.ResetGates()
 			}
 		}}
+	// A re-executed agent (it holds the lock already) rebuilt before.
+	opts.RebuildIndex = *rebuildIndex && opts.LockFile == nil
 	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log)
 	if err != nil || store == nil {
 		return nil, err // store == nil: the running agent did the pass
@@ -275,6 +282,19 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			if !*once && !tr.env {
 				go rotateLoop(ctx, tr, time.Hour, time.Now, log)
 			}
+		}
+	}
+	if !*once {
+		// Messaging (devicebus): through the server when this device syncs
+		// with one, else between the device's own sessions.
+		var connect func() (devicebus.Server, string)
+		if ccErr == nil && cc.Server != "" && cc.Token != "" && !*noSync {
+			connect = busConnect(cc, client.Load)
+			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
+		}
+		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log}); b != nil {
+			defer b.Close()
+			cfg.Bus = b
 		}
 	}
 	a = agent.New(store, cfg) // installs the path rules filter on sched
@@ -344,7 +364,7 @@ func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options,
 		if !errors.As(err, &locked) {
 			return store, err
 		}
-		if !once {
+		if !once || opts.RebuildIndex {
 			return nil, fmt.Errorf("agent already running (pid %d)", locked.PID)
 		}
 		_, err = agent.Call(ctx, socket, agent.Request{Op: "pass", Index: dbPath})
@@ -427,6 +447,43 @@ func withholdSession(cc client.Config, load func() (client.Config, error)) func(
 		send := agent.WithholdSession(cur.Server, cur.Token, hc)
 		mu.Unlock()
 		return send(ctx, w)
+	}
+}
+
+// openBus opens the local message inbox. One that cannot be opened (a
+// damaged file, a full disk) turns messaging off with an error in the
+// log; it never stops indexing and upload.
+func openBus(path string, cfg devicebus.Config) *devicebus.Bus {
+	b, err := devicebus.Open(path, cfg)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("agent: messaging off: the local inbox cannot be opened", "path", path, "err", err)
+		}
+		return nil
+	}
+	return b
+}
+
+// busConnect is devicebus's Connect for the configured server: the saved
+// token and TLS pin are followed as adminRulesFrom follows them, and the
+// key changes when either does, so a bus stopped by a refused credential
+// or pin resumes after `flopwire login`.
+func busConnect(cc client.Config, load func() (client.Config, error)) func() (devicebus.Server, string) {
+	var mu sync.Mutex
+	server, _ := client.NormalizeServer(cc.Server)
+	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
+	return func() (devicebus.Server, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		cur := cc
+		if c, same := savedConfig(server, load); same {
+			cur = c
+		}
+		if cur.TLSFingerprint != pin {
+			pin, hc = cur.TLSFingerprint, cur.HTTPClient()
+		}
+		sum := sha256.Sum256([]byte(cur.Token + "\x00" + cur.TLSFingerprint))
+		return client.Bus{Server: cur.Server, Token: cur.Token, HTTP: hc}, hex.EncodeToString(sum[:8])
 	}
 }
 
@@ -682,6 +739,7 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 			}
 		}
 	}
+	printBusStatus(w, resp.Bus)
 	if st == nil {
 		fmt.Fprintln(w, "sync: off (no server configured)")
 		return
@@ -716,6 +774,32 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		for _, f := range st.Failing {
 			fmt.Fprintf(w, "  %s\n    %s (%d attempts since %s)\n", f.Path, f.Error, f.Attempts, f.Since.Local().Format(time.DateTime))
 		}
+	}
+}
+
+// printBusStatus renders the message bus state (devicebus.Status).
+func printBusStatus(w io.Writer, b *devicebus.Status) {
+	if b == nil {
+		return
+	}
+	switch b.State {
+	case devicebus.StateLocal:
+		fmt.Fprintf(w, "messaging: local (no server: between this device's sessions); %d live sessions\n", b.Sessions)
+	case devicebus.StateConnected:
+		fmt.Fprintf(w, "messaging: connected; %d live sessions reported\n", b.Sessions)
+	case devicebus.StateBackoff:
+		fmt.Fprintf(w, "messaging: server unreachable, retry at %s: %s\n", b.RetryAt.Local().Format(time.TimeOnly), b.LastError)
+	case devicebus.StateStopped, devicebus.StateDisabled:
+		fmt.Fprintf(w, "messaging: %s: %s\n", b.State, b.LastError)
+	default:
+		fmt.Fprintf(w, "messaging: %s\n", b.State)
+	}
+	fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	for _, h := range b.HeldSenders {
+		fmt.Fprintf(w, "  held from %s: %d %s, oldest %s\n", busproto.Preview(h.User), h.Count, plural(h.Count, "message", "messages"), h.Oldest.Local().Format(time.DateTime))
+	}
+	if len(b.HeldSenders) > 0 {
+		fmt.Fprintln(w, "  review them in the web console, or run flopwire accepts --text in a terminal")
 	}
 }
 

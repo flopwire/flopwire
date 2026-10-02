@@ -183,11 +183,15 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	// A Devin export is read whole every time, so its count is replaced.
 	rr := redact.NewReaderAt(r, redact.ModeFor(j.kind, j.path))
 	countAll := full || isDevin
-	masks, err := q.masks.lineMasks(ctx, q.Pool)
+	masks, maskRevision, err := q.masks.lineMasks(ctx, q.Pool)
 	if err != nil {
 		return err
 	}
 	rr.SetLineMasks(masks)
+	sink.maskRevision = maskRevision
+	if afterLineMasks != nil {
+		afterLineMasks()
+	}
 	if countAll {
 		rr.CountFrom(0)
 	} else {
@@ -217,6 +221,11 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	}
 	if err == nil {
 		err = sink.flush()
+	}
+	if sink.masksMoved {
+		// However the parser reported the failed write: start again with
+		// the new catalog.
+		return errMasksMoved
 	}
 	j.kept, j.recount = sink.kept, sink.dirtyConversations()
 	for _, id := range sink.convIDs {
@@ -309,13 +318,24 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	// its previous before this one arrived): this one's rows are history.
 	// A source this one names as its own previous is older, not newer: a
 	// path whose file identity came back (inode reuse) links both ways.
-	tag, err := q.Pool.Exec(ctx, `UPDATE messages m SET superseded=true,superseded_in_generation=n.gen
-		FROM (SELECT COALESCE(max(g.generation),0) AS gen FROM sources s JOIN generations g ON g.source_id=s.id
+	var gen int64
+	err := q.Pool.QueryRow(ctx, `SELECT COALESCE(max(g.generation),0) FROM sources s JOIN generations g ON g.source_id=s.id
 			WHERE s.previous_source_id=$1 AND s.tombstoned_at IS NULL
-			  AND s.id IS DISTINCT FROM (SELECT previous_source_id FROM sources WHERE id=$1) HAVING count(*)>0) n
-		WHERE m.source_id=$1 AND NOT m.superseded`, j.src.id)
-	if err != nil {
+			  AND s.id IS DISTINCT FROM (SELECT previous_source_id FROM sources WHERE id=$1) HAVING count(*)>0`, j.src.id).Scan(&gen)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return err
+	default:
+		// The flushes counted the rows this retires: the recount runs in
+		// the same transaction, so a failure between the two cannot leave
+		// digests counting retired rows (a retry would retire nothing and
+		// not recount). The conversations are locked first, with their
+		// parents, in the order a flush upserts them (lockWithParents),
+		// before any message row.
+		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error { return retireLateSource(ctx, tx, j.src.id, gen) }); err != nil {
+			return err
+		}
 	}
 	var touched []string
 	for _, id := range sink.convIDs {
@@ -324,14 +344,37 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 		}
 	}
 	slices.Sort(touched)
-	// The flushes counted rows this supersession just retired: recount.
-	if tag.RowsAffected() > 0 {
-		if err := pgx.BeginFunc(ctx, q.Pool, func(tx pgx.Tx) error { return recountDigests(ctx, tx, touched) }); err != nil {
+	return resolveLinks(ctx, q.Pool, j.src.deviceID, touched)
+}
+
+// retireLateSource retires the live rows of source sourceID, which a newer source
+// replaced in generation gen, and recounts their conversations' digests.
+func retireLateSource(ctx context.Context, tx pgx.Tx, sourceID string, gen int64) error {
+	rows, err := tx.Query(ctx, `SELECT DISTINCT conversation_id::text FROM messages WHERE source_id=$1 AND NOT superseded`, sourceID)
+	if err != nil {
+		return err
+	}
+	convs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if _, err := lockWithParents(ctx, tx, convs); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE messages SET superseded=true,superseded_in_generation=$2 WHERE source_id=$1 AND NOT superseded`, sourceID, gen); err != nil {
+		return err
+	}
+	if afterLateSupersede != nil {
+		if err := afterLateSupersede(); err != nil {
 			return err
 		}
 	}
-	return resolveLinks(ctx, q.Pool, j.src.deviceID, touched)
+	return recountDigests(ctx, tx, convs)
 }
+
+// afterLateSupersede, when set (tests), runs in finish between retiring
+// a source a newer one replaced and recounting its digests.
+var afterLateSupersede func() error
 
 // recordRedactions stores what the server's pass masked in the source's
 // latest generation: replaced on a full parse, added to on an append.
@@ -379,13 +422,13 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 	})
 }
 
-// lockCheckpointSQL locks, in the order a flush upserts them, the
-// conversations a checkpoint writes: $1, and those holding the rows $2 or
-// the live rows of source $3 that it retires.
-const lockCheckpointSQL = `SELECT 1 FROM conversations WHERE id IN (SELECT unnest($1::uuid[])
+// checkpointConversationsSQL selects the conversations a checkpoint
+// writes: $1, and those holding the rows $2 or the live rows of source $3
+// that it retires. The checkpoint locks them with their parents
+// (lockWithParents), in the order a flush upserts them.
+const checkpointConversationsSQL = `SELECT id::text FROM (SELECT unnest($1::uuid[]) AS id
 	UNION SELECT conversation_id FROM messages WHERE id=ANY($2::uuid[])
-	UNION SELECT conversation_id FROM messages WHERE source_id=$3 AND NOT superseded)
-	ORDER BY session_id COLLATE "C",id FOR UPDATE`
+	UNION SELECT conversation_id FROM messages WHERE source_id=$3 AND NOT superseded) x`
 
 // checkpointDigests retires, on a full parse, the rows absent from the
 // replacement and a previous source's live rows, then recounts the digests
@@ -403,7 +446,8 @@ func checkpointDigests(ctx context.Context, tx pgx.Tx, j *job, gen int64, full b
 	}
 	// A parse that died after replacing rows left their digests
 	// stale; this one may have found the rows unchanged.
-	stale, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE digest_stale AND (id=ANY($1::uuid[]) OR source_id=$2)`, j.touched, j.src.id)
+	stale, err := tx.Query(ctx, `SELECT c.id::text FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id
+		WHERE a.digest_stale AND (c.id=ANY($1::uuid[]) OR c.source_id=$2)`, j.touched, j.src.id)
 	if err != nil {
 		return err
 	}
@@ -446,7 +490,15 @@ func checkpointDigests(ctx context.Context, tx pgx.Tx, j *job, gen int64, full b
 			for id := range changed {
 				ids = append(ids, id)
 			}
-			if _, err := tx.Exec(ctx, lockCheckpointSQL, ids, absent, j.previous); err != nil {
+			rows, err := tx.Query(ctx, checkpointConversationsSQL, ids, absent, j.previous)
+			if err != nil {
+				return err
+			}
+			convs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return err
+			}
+			if _, err := lockWithParents(ctx, tx, convs); err != nil {
 				return err
 			}
 		}
@@ -527,31 +579,65 @@ func (q *Queue) companionChanged(ctx context.Context, j *job) error {
 // them: parent conversation by native session id, then the spawning tool
 // call, falling back for Claude to the parent's tool_result that names the
 // child's agent or workflow run.
+//
+// Linking a child locks it and then its parent (the foreign key), while a
+// hide or deletion of the parent's tree locks both in session order. So
+// the children with a link to fill are locked first, with their parents,
+// in that order (lockWithParents).
 func resolveLinks(ctx context.Context, pool *pgxpool.Pool, deviceID string, touched []string) error {
 	if len(touched) == 0 {
 		return nil
 	}
-	for _, q := range []string{
-		`UPDATE conversations c SET parent_conversation_id=p.id FROM conversations p
-		 WHERE c.device_id=$1 AND c.parent_conversation_id IS NULL AND c.parent_native_session_id IS NOT NULL
-		   AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
-		   AND (c.id=ANY($2::uuid[]) OR p.id=ANY($2::uuid[]))`,
-		`UPDATE conversations c SET spawned_by_native_id=r.tool_call_id FROM messages r
-		 WHERE c.device_id=$1 AND c.agent='claude' AND c.spawned_by_native_id IS NULL AND c.parent_conversation_id IS NOT NULL
-		   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[]))
-		   AND r.conversation_id=c.parent_conversation_id AND NOT r.superseded AND r.kind='tool_result' AND r.tool_call_id IS NOT NULL
-		   AND (r.enrichment->>'agent_id'=c.extra->>'agent_id' OR r.enrichment->>'workflow_run_id'=c.extra->>'workflow_run_id')`,
-		`UPDATE conversations c SET spawned_by_message_id=m.id FROM messages m
-		 WHERE c.device_id=$1 AND c.spawned_by_message_id IS NULL AND c.spawned_by_native_id IS NOT NULL AND c.parent_conversation_id IS NOT NULL
-		   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[]))
-		   AND m.conversation_id=c.parent_conversation_id AND NOT m.superseded AND m.kind='tool_call'
-		   AND (m.tool_call_id=c.spawned_by_native_id OR m.native_id=c.spawned_by_native_id)`,
-	} {
-		if _, err := pool.Exec(ctx, q, deviceID, touched); err != nil {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, unlinkedSQL, deviceID, touched)
+		if err != nil {
 			return err
 		}
-	}
-	return nil
+		children, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil || len(children) == 0 {
+			return err
+		}
+		if _, err := lockWithParents(ctx, tx, children); err != nil {
+			return err
+		}
+		for _, q := range linkSQL {
+			if _, err := tx.Exec(ctx, q, deviceID, touched, children); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// unlinkedSQL selects the children on device $1 that resolveLinks may
+// link for the conversations $2: those among $2, and those whose parent
+// is, with a link still unset.
+const unlinkedSQL = `SELECT id::text FROM conversations WHERE id=ANY($2::uuid[]) AND device_id=$1 AND parent_native_session_id IS NOT NULL
+		AND (parent_conversation_id IS NULL OR spawned_by_native_id IS NULL OR spawned_by_message_id IS NULL)
+	UNION SELECT id::text FROM conversations WHERE parent_conversation_id=ANY($2::uuid[]) AND device_id=$1
+		AND (spawned_by_native_id IS NULL OR spawned_by_message_id IS NULL)
+	UNION SELECT c.id::text FROM conversations p JOIN conversations c ON c.device_id=p.device_id AND c.agent=p.agent
+		AND c.parent_native_session_id=p.session_id AND c.parent_conversation_id IS NULL AND c.id<>p.id
+	WHERE p.id=ANY($2::uuid[]) AND p.device_id=$1`
+
+// linkSQL are resolveLinks' updates, in order. They write only the
+// children $3 that resolveLinks locked: a child stored after it selected
+// them is not locked with its parent, and its own parse links it.
+var linkSQL = []string{
+	`UPDATE conversations c SET parent_conversation_id=p.id FROM conversations p
+	 WHERE c.device_id=$1 AND c.parent_conversation_id IS NULL AND c.parent_native_session_id IS NOT NULL
+	   AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
+	   AND (c.id=ANY($2::uuid[]) OR p.id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])`,
+	`UPDATE conversations c SET spawned_by_native_id=r.tool_call_id FROM messages r
+	 WHERE c.device_id=$1 AND c.agent='claude' AND c.spawned_by_native_id IS NULL AND c.parent_conversation_id IS NOT NULL
+	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])
+	   AND r.conversation_id=c.parent_conversation_id AND NOT r.superseded AND r.kind='tool_result' AND r.tool_call_id IS NOT NULL
+	   AND (r.enrichment->>'agent_id'=c.extra->>'agent_id' OR r.enrichment->>'workflow_run_id'=c.extra->>'workflow_run_id')`,
+	`UPDATE conversations c SET spawned_by_message_id=m.id FROM messages m
+	 WHERE c.device_id=$1 AND c.spawned_by_message_id IS NULL AND c.spawned_by_native_id IS NOT NULL AND c.parent_conversation_id IS NOT NULL
+	   AND (c.id=ANY($2::uuid[]) OR c.parent_conversation_id=ANY($2::uuid[])) AND c.id=ANY($3::uuid[])
+	   AND m.conversation_id=c.parent_conversation_id AND NOT m.superseded AND m.kind='tool_call'
+	   AND (m.tool_call_id=c.spawned_by_native_id OR m.native_id=c.spawned_by_native_id)`,
 }
 
 // tombstoneSource drops the raw evidence of a source whose conversation was
@@ -695,7 +781,7 @@ func (a *archiveFS) openRollout(_, sessionID string) (codex.File, error) {
 		return nil, err
 	}
 	f := newRedactedFile(NewReader(a.ctx, a.objects, g), string(transcript.StorageJSONLAppend), "")
-	masks, err := a.masks.lineMasks(a.ctx, a.pool)
+	masks, _, err := a.masks.lineMasks(a.ctx, a.pool)
 	if err != nil {
 		return nil, err
 	}
@@ -717,6 +803,10 @@ func serverExtractionContract(agent string) string {
 	return ""
 }
 
+// afterLineMasks, when set (tests), runs after a parse loads the
+// redacted-line catalog and before it reads the source.
+var afterLineMasks func()
+
 // maskCache keeps the redacted-line catalog between parses: every parse
 // needs it, and redacted_lines grows with every redaction while a parse
 // of an append reads a few lines. It reloads when
@@ -729,17 +819,17 @@ type maskCache struct {
 	catalog  *redact.LineCatalog
 }
 
-// get returns the current catalog, never nil.
-func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, error) {
+// get returns the current catalog, never nil, and its revision.
+func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, int64, error) {
 	var rev int64
 	if err := pool.QueryRow(ctx, `SELECT revision FROM redacted_lines_revision WHERE singleton`).Scan(&rev); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	c.mu.Lock()
 	if c.loaded && c.revision == rev {
 		cat := c.catalog
 		c.mu.Unlock()
-		return cat, nil
+		return cat, rev, nil
 	}
 	c.mu.Unlock()
 	var cat *redact.LineCatalog
@@ -752,24 +842,49 @@ func (c *maskCache) get(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCa
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	c.mu.Lock()
 	if !c.loaded || rev > c.revision {
 		c.loaded, c.revision, c.catalog = true, rev, cat
 	}
 	c.mu.Unlock()
-	return cat, nil
+	return cat, rev, nil
 }
 
-// lineMasks is LineMasks from the cache: nil when there are none.
-func (c *maskCache) lineMasks(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, error) {
-	cat, err := c.get(ctx, pool)
+// lineMasks is LineMasks from the cache (nil when there are none) and the
+// revision it is the lines of.
+func (c *maskCache) lineMasks(ctx context.Context, pool *pgxpool.Pool) (*redact.LineCatalog, int64, error) {
+	cat, rev, err := c.get(ctx, pool)
 	if err != nil || cat.Empty() {
-		return nil, err
+		return nil, rev, err
 	}
-	return cat, nil
+	return cat, rev, nil
 }
+
+// redactedLinesLock orders changes to redacted_lines against the parse
+// writes that mask by them. A message redaction holds it exclusively for
+// its whole transaction (LockRedactedLines); every sink write transaction
+// shares it from its first statement, then checks that redacted_lines
+// has not moved since the parse loaded its catalog. A redaction that
+// commits first therefore moves the revision before the write checks it,
+// and one that commits later finds the written rows when it re-reads its
+// targets.
+const redactedLinesLock = "flopwire:redacted-lines"
+
+// LockRedactedLines takes the redacted-lines lock exclusively until tx
+// ends. A transaction that writes redacted_lines takes it first.
+func LockRedactedLines(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, redactedLinesLock)
+	return err
+}
+
+// errMasksMoved is a parse whose catalog went stale before it wrote: a
+// line was redacted meanwhile. The parse starts again.
+var errMasksMoved = errors.New("ingest: redacted lines changed during the parse; retry")
+
+// maskAttempts bounds the restarts of a parse racing redactions.
+const maskAttempts = 3
 
 // LineMasks loads the redacted message lines (notes/redaction.md) for the
 // server's redaction pass; nil when there are none.

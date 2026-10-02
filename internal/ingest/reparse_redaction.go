@@ -26,8 +26,8 @@ const (
 	// of its row versions.
 	sourceConversations = `SELECT id::text FROM (SELECT id FROM conversations WHERE source_id=$1
     UNION SELECT conversation_id FROM messages WHERE source_id=$1) s ORDER BY s.id`
-	sourceConversationsBatch = `SELECT id::text,COALESCE(title,''),digest FROM conversations
-    WHERE id=ANY($1::uuid[]) ORDER BY conversations.id FOR UPDATE NOWAIT`
+	sourceConversationsBatch = `SELECT id::text,COALESCE(title,''),(SELECT a.digest FROM conversation_activity a WHERE a.conversation_id=conversations.id)
+    FROM conversations WHERE id=ANY($1::uuid[]) ORDER BY conversations.id FOR UPDATE NOWAIT`
 )
 
 // staleVersionsPage bounds the ids held in memory at once. A page re-reads
@@ -140,8 +140,13 @@ func (q *Queue) maskSourceSummaries(ctx context.Context, source string) error {
 				if err != nil {
 					return err
 				}
-				if string(title) != r.title || !bytes.Equal(digest, r.digest) {
-					if _, err := tx.Exec(ctx, `UPDATE conversations SET title=$2,digest=$3 WHERE id=$1`, r.id, string(title), digest); err != nil {
+				if string(title) != r.title {
+					if _, err := tx.Exec(ctx, `UPDATE conversations SET title=$2 WHERE id=$1`, r.id, string(title)); err != nil {
+						return err
+					}
+				}
+				if !bytes.Equal(digest, r.digest) {
+					if _, err := tx.Exec(ctx, `UPDATE conversation_activity SET digest=$2 WHERE conversation_id=$1`, r.id, digest); err != nil {
 						return err
 					}
 				}

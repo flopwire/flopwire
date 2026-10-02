@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -121,7 +122,7 @@ func SubagentSessionID(agentID string) string { return "agent-" + agentID }
 // project directory then session id. It reads directory entries only. A
 // missing root yields no sessions and no error.
 func Discover(root string) ([]*Session, error) {
-	projects, err := os.ReadDir(root)
+	projects, err := fsprobe.ReadDir(root)
 	if os.IsNotExist(err) {
 		return nil, nil
 	} else if err != nil {
@@ -147,7 +148,7 @@ func Discover(root string) ([]*Session, error) {
 func DiscoverProject(dir string) ([]*Session, error) { return discoverProject(dir) }
 
 func discoverProject(dir string) ([]*Session, error) {
-	entries, err := os.ReadDir(dir)
+	entries, err := fsprobe.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +185,7 @@ func discoverProject(dir string) ([]*Session, error) {
 // <session>/subagents (flat, workflows/<runId>/, or deeper) and every other
 // file as a companion.
 func discoverSessionDir(s *Session, dir string) error {
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err := fsprobe.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil // removed during the walk
@@ -204,7 +205,7 @@ func discoverSessionDir(s *Session, dir string) error {
 				sa.RunID = parts[2]
 			}
 			meta := strings.TrimSuffix(path, ".jsonl") + ".meta.json"
-			if st, err := os.Stat(meta); err == nil && st.Mode().IsRegular() {
+			if st, err := fsprobe.Stat(meta); err == nil && st.Mode().IsRegular() {
 				sa.MetaPath = meta
 			}
 			s.Subagents = append(s.Subagents, sa)

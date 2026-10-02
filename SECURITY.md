@@ -2,8 +2,10 @@
 
 ## Security boundary
 
-flopwire archives raw, unredacted coding-agent traces. Those traces can contain
-source code, credentials, personal information, tool output, and prompts.
+flopwire archives agent traces. Those traces can contain source code,
+personal information, tool output, and prompts. Secrets are redacted on the
+device before upload and again on the server, but redaction is pattern-
+based: a credential it does not recognize is stored as written.
 
 - Deployment administrators and anyone with host-level access are trusted to
   read the complete corpus.
@@ -82,7 +84,50 @@ source code, credentials, personal information, tool output, and prompts.
   [docs/runbook.md](docs/runbook.md#delete-a-conversation).
 - The organization administrator, not each member, authorizes collection.
   There is no per-member consent gate. Administrators must tell members that
-  eligible traces become team-visible, unredacted, and indefinitely retained.
+  eligible traces become team-visible and indefinitely retained, with only
+  recognized secrets redacted.
+
+### Messages between people
+
+The message bus lets agent sessions message each other
+([notes/message-bus/plan.md](notes/message-bus/plan.md)). A message from
+another person's session is held until the recipient accepts that person
+(B7). Accepting is the trust decision:
+
+- An accepted person's agents can send messages to all of the recipient's
+  agent sessions, including sessions that run with permission prompts
+  turned off. The recipient's agents may act on those requests within
+  each session's own permissions.
+- Each delivered message is marked `sender="teammate"`, and a standing
+  instruction tells the model to treat it as information and confirm with
+  its human before consequential actions. That rule is guidance to the
+  model, not a boundary. Smaller models act on a teammate's request,
+  including one that claims to come from the recipient's own user (#77).
+- A prompt-injected agent can pass the injection to every session whose
+  owner accepted its owner.
+- Accepting and revoking need the person's own login session (the web
+  console, or the CLI with the session `flopwire login` saved). A device
+  token, a minted token or a service account is refused. No route accepts
+  for another person, so an administrator cannot accept for a member. The
+  CLI refuses unless stdin is a terminal, and there is no MCP tool.
+  Accepting also needs the person's password, checked by the server and
+  limited like login: an agent that runs as the same OS user can read the
+  saved login session from the configuration file (24 hours), or run the
+  CLI under a pseudo-terminal, but it does not have the password. With
+  the saved session alone such an agent can still list held previews and
+  revoke a sender; it cannot accept one.
+- Held messages are shown only to the recipient's login session, as a
+  first-line preview; the whole body never leaves the server before
+  acceptance. The hook tells the person about held messages through a
+  channel the model does not see (Claude Code and Codex); it never puts
+  them in model context. The notice is recorded in the harness
+  transcript, which is uploaded like the rest of it.
+- Revoking holds the sender's undelivered messages again, and the
+  recipient's devices drop them at once. A message a session already
+  received cannot be recalled.
+- Accepts, revokes, and reads of the held and accepted lists are audited
+  (`bus.accept`, `bus.revoke`, `bus.held` with the message ids shown,
+  `bus.accepts`).
 
 Audit events are retained indefinitely. User, device, member-policy, status,
 and audit-log reads are audited. Failed authentication and authorization are

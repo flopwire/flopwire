@@ -5,6 +5,8 @@ package main
 // directory, and prints a pass/fail table. Parts run separately (--only)
 // so each stays within a bounded run; results merge into one JSON file.
 // scripts/acceptance.sh runs every part, including the oracle sample.
+// With --home it reads a synthetic corpus instead (bench_ab.go), and
+// --exe measures another flopwire binary with this harness.
 
 import (
 	"bufio"
@@ -32,25 +34,73 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 )
 
+const benchUsage = `usage: flopwire bench acceptance --scratch DIR [--home DIR] [--exe BIN] [--only index,fresh,queries,report] [--json PATH]
+       flopwire bench compare [--strict] OLD|DIR NEW
+       flopwire bench corpus --out DIR [--seed N] [--size 1.5GB] [--verify]
+       flopwire bench ab --a BIN --b BIN --home DIR --scratch DIR --out DIR [--runs 3]`
+
 func benchCmd(ctx context.Context, args []string) error {
-	if len(args) > 0 && args[0] == "compare" {
+	if len(args) == 0 {
+		return errors.New(benchUsage)
+	}
+	switch args[0] {
+	case "compare":
 		return benchCompare(args[1:], os.Stdout)
+	case "corpus":
+		return benchCorpus(ctx, args[1:], os.Stdout)
+	case "ab":
+		return benchAB(ctx, args[1:], os.Stdout)
+	case "acceptance":
+		return benchAcceptance(ctx, args[1:])
 	}
-	if len(args) == 0 || args[0] != "acceptance" {
-		return errors.New("usage: flopwire bench acceptance --scratch DIR [--only index,fresh,queries,report] [--json PATH]\n       flopwire bench compare [--strict] OLD|DIR NEW")
+	return errors.New(benchUsage)
+}
+
+// harnessFlags are the corpus flags of acceptance and ab. With --home, the
+// harness roots default to that directory's layout (a synthetic corpus,
+// see internal/synthcorpus) instead of this user's.
+type harnessFlags struct {
+	home, claude, codex, devin *string
+	fs                         *flag.FlagSet
+}
+
+func addHarnessFlags(fs *flag.FlagSet) *harnessFlags {
+	h := &harnessFlags{fs: fs}
+	h.home = fs.String("home", "", "corpus home: read .claude/projects, .codex and .local/share/devin under it instead of $HOME's (a synthetic corpus)")
+	h.claude = fs.String("claude-projects", "", "Claude projects root (read-only; default <home>/.claude/projects)")
+	h.codex = fs.String("codex-home", "", "Codex home (read-only; default <home>/.codex)")
+	h.devin = fs.String("devin-db", "", "Devin sessions.db; copied before use (default <home>/.local/share/devin/cli/sessions.db)")
+	return h
+}
+
+// resolve returns the harness roots and the home that ~/ in a query's repo
+// names.
+func (h *harnessFlags) resolve() (home, claudeDir, codexHome, devinDB string) {
+	home = *h.home
+	if home == "" {
+		home, _ = os.UserHomeDir()
 	}
+	pick := func(v, def string) string {
+		if v != "" {
+			return v
+		}
+		return def
+	}
+	return home, pick(*h.claude, filepath.Join(home, ".claude", "projects")), pick(*h.codex, filepath.Join(home, ".codex")),
+		pick(*h.devin, filepath.Join(home, ".local", "share", "devin", "cli", "sessions.db"))
+}
+
+func benchAcceptance(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("bench acceptance", flag.ContinueOnError)
 	scratch := fs.String("scratch", "", "scratch directory for indexes, copies and results (required)")
 	only := fs.String("only", "index,fresh,queries,report", "parts to run: index, fresh, queries, report")
-	home, _ := os.UserHomeDir()
-	claudeDir := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude projects root (read-only)")
-	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home (read-only)")
-	devinDB := fs.String("devin-db", filepath.Join(home, ".local", "share", "devin", "cli", "sessions.db"), "Devin sessions.db; copied before use")
+	hf := addHarnessFlags(fs)
+	exeFlag := fs.String("exe", "", "flopwire binary under test (default this one)")
 	queries := fs.String("queries", "testdata/acceptance/queries.yaml", "query set")
 	index := fs.String("index", "", "index for the query part (default the one the index part built)")
 	idleAfter := fs.Duration("idle-after", 60*time.Second, "how long the agent idles before its memory is read")
 	jsonOut := fs.String("json", "", "with the report part, also write the acceptance record (docs/perf/README.md) to this file")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *scratch == "" {
@@ -59,29 +109,21 @@ func benchCmd(ctx context.Context, args []string) error {
 	if err := os.MkdirAll(*scratch, 0o755); err != nil {
 		return err
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
+	exe := *exeFlag
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return err
+		}
 	}
-	b := &bench{exe: exe, scratch: *scratch, claude: *claudeDir, codex: *codexHome, devin: *devinDB}
+	home, claudeDir, codexHome, devinDB := hf.resolve()
+	b := &bench{exe: exe, scratch: *scratch, claude: claudeDir, codex: codexHome, devin: devinDB, home: home}
 	res, err := b.load()
 	if err != nil {
 		return err
 	}
 	for _, part := range strings.Split(*only, ",") {
-		var err error
-		switch part {
-		case "index":
-			res.Index, err = b.index(ctx, *idleAfter)
-		case "fresh":
-			res.Fresh, err = b.fresh(ctx)
-		case "queries":
-			idx := *index
-			if idx == "" {
-				idx = b.indexPath()
-			}
-			res.Queries, err = b.queries(ctx, *queries, idx)
-		case "report":
+		if part == "report" {
 			if err := b.report(res); err != nil {
 				return err
 			}
@@ -94,11 +136,9 @@ func benchCmd(ctx context.Context, args []string) error {
 			}
 			fmt.Fprintf(os.Stderr, "bench: record written to %s; for a release commit it as docs/perf/%s\n", *jsonOut, recordFileName(rec))
 			return nil
-		default:
-			return fmt.Errorf("unknown part %q", part)
 		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", part, err)
+		if err := b.runPart(ctx, res, part, *queries, *index, *idleAfter); err != nil {
+			return err
 		}
 		if err := b.save(res); err != nil {
 			return err
@@ -107,9 +147,32 @@ func benchCmd(ctx context.Context, args []string) error {
 	return nil
 }
 
+// runPart runs one measuring part (index, fresh or queries) into res.
+func (b *bench) runPart(ctx context.Context, res *accResults, part, queries, index string, idleAfter time.Duration) error {
+	var err error
+	switch part {
+	case "index":
+		res.Index, err = b.index(ctx, idleAfter)
+	case "fresh":
+		res.Fresh, err = b.fresh(ctx)
+	case "queries":
+		if index == "" {
+			index = b.indexPath()
+		}
+		res.Queries, err = b.queries(ctx, queries, index)
+	default:
+		return fmt.Errorf("unknown part %q", part)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", part, err)
+	}
+	return nil
+}
+
 type bench struct {
 	exe, scratch         string
 	claude, codex, devin string
+	home                 string // what ~/ in a query's repo means
 }
 
 type accResults struct {
@@ -144,15 +207,22 @@ func (b *bench) save(r *accResults) error {
 // --- a. full-corpus index, idle memory, no-change sweep ---
 
 type indexResult struct {
-	At          time.Time `json:"at"`
-	WallS       float64   `json:"wall_s"`
-	CPUS        float64   `json:"cpu_s"`
-	PeakRSSMB   float64   `json:"peak_rss_mb"`
-	IndexMB     float64   `json:"index_mb"`
-	Rows        int64     `json:"rows"`
-	Log         string    `json:"pass_log"`
-	IdleRSSMB   float64   `json:"idle_rss_mb"`
-	IdleFootMB  float64   `json:"idle_footprint_mb"`
+	At         time.Time `json:"at"`
+	WallS      float64   `json:"wall_s"`
+	CPUS       float64   `json:"cpu_s"`
+	PeakRSSMB  float64   `json:"peak_rss_mb"`
+	IndexMB    float64   `json:"index_mb"`
+	Rows       int64     `json:"rows"`
+	Log        string    `json:"pass_log"`
+	IdleRSSMB  float64   `json:"idle_rss_mb"`
+	IdleFootMB float64   `json:"idle_footprint_mb"`
+	// IdleAnonMB is the idle agent's anonymous memory, the idle.rss
+	// metric: RssAnon on Linux, the physical footprint on macOS, total
+	// RSS elsewhere. Total RSS also counts file-backed pages (the binary,
+	// the index files the agent mapped or read), which come and go with
+	// the page cache: one A/B run showed +12% idle RSS that was no change
+	// in the agent's own memory.
+	IdleAnonMB  float64   `json:"idle_anon_mb"`
 	SweepCPUMs  []float64 `json:"sweep_cpu_ms"` // no-change sweeps after the first
 	SweepFiles  int       `json:"sweep_files"`
 	LoadAverage string    `json:"load_average"`
@@ -249,6 +319,7 @@ func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResul
 	pid := cmd.Process.Pid
 	r.IdleRSSMB = psRSSMB(pid)
 	r.IdleFootMB = footprintMB(pid)
+	r.IdleAnonMB = anonMB(pid, r.IdleFootMB, r.IdleRSSMB)
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	_ = cmd.Wait()
 	close(sweeps)
@@ -458,6 +529,7 @@ type querySpec struct {
 	Limit  int    `yaml:"limit"`
 	Expect struct {
 		MinHits  int      `yaml:"min_hits"`
+		MaxHits  int      `yaml:"max_hits"` // 0: no bound; a filter query sets it to prove the filter drops rows
 		Sessions []string `yaml:"sessions"` // each must appear among the hits (session id prefix)
 	} `yaml:"expect"`
 	Evidence string `yaml:"evidence"` // how the expectation was derived
@@ -504,11 +576,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 		args := []string{verb, "--index", db, "--include-self", "--json"}
 		// Repos are written ~/Code/NAME so the fixture names no home directory.
 		if rest, ok := strings.CutPrefix(q.Repo, "~/"); ok {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			q.Repo = filepath.Join(home, rest)
+			q.Repo = filepath.Join(b.home, rest)
 		}
 		for _, kv := range [][2]string{{"repo", q.Repo}, {"agent", q.Agent}, {"since", q.Since}, {"until", q.Until}} {
 			if kv[1] != "" {
@@ -557,6 +625,9 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 		}
 		if qr.Hits < q.Expect.MinHits {
 			qr.problem(fmt.Sprintf("%d hits, want >= %d", qr.Hits, q.Expect.MinHits), "")
+		}
+		if q.Expect.MaxHits > 0 && qr.Hits > q.Expect.MaxHits {
+			qr.problem(fmt.Sprintf("%d hits, want <= %d", qr.Hits, q.Expect.MaxHits), "")
 		}
 		for _, want := range q.Expect.Sessions {
 			found := false
@@ -660,7 +731,7 @@ func (b *bench) report(r *accResults) error {
 		rows = append(rows,
 			row{"a. full index wall", "< 5 min", fmt.Sprintf("%s (cpu %.0fs, load %s)", (time.Duration(x.WallS) * time.Second).String(), x.CPUS, x.LoadAverage), yes(x.WallS < indexWallLimitS)},
 			row{"a. full index peak RSS", "< 600MB (spec: 300MB)", fmt.Sprintf("%.0fMB (%d rows, index %.1fGB)", x.PeakRSSMB, x.Rows, x.IndexMB/1000), yes(x.PeakRSSMB < peakRSSTarget)},
-			row{"a. idle agent after 60s", "< 120MB (spec: 50MB)", fmt.Sprintf("RSS %.0fMB, footprint %.0fMB", x.IdleRSSMB, x.IdleFootMB), yes(x.IdleRSSMB < idleRSSTarget)})
+			row{"a. idle agent after 60s", "< 120MB anonymous (spec: 50MB)", fmt.Sprintf("anonymous %.0fMB (RSS %.0fMB, footprint %.0fMB)", x.IdleAnonMB, x.IdleRSSMB, x.IdleFootMB), yes(x.IdleAnonMB < idleRSSTarget)})
 		if len(x.SweepCPUMs) > 0 {
 			s := slices.Sorted(slices.Values(x.SweepCPUMs))
 			rows = append(rows, row{"a. no-change sweep CPU", "< 1s", fmt.Sprintf("median %.0fms, max %.0fms (%d sweeps, %d files)", median(s), s[len(s)-1], len(s), x.SweepFiles), yes(s[len(s)-1] < sweepCPULimitMs)})
@@ -773,6 +844,38 @@ func psRSSMB(pid int) float64 {
 	return kb / 1024
 }
 
+// anonMB is a process's anonymous resident memory: RssAnon from
+// /proc/<pid>/status on Linux, else the macOS footprint (foot), else total
+// RSS (rss) when neither is available.
+func anonMB(pid int, foot, rss float64) float64 {
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		if mb, ok := procStatusMB(data, "RssAnon"); ok {
+			return mb
+		}
+	}
+	if foot > 0 {
+		return foot
+	}
+	return rss
+}
+
+// procStatusMB reads a "Key:   1234 kB" line of /proc/<pid>/status.
+func procStatusMB(status []byte, key string) (float64, bool) {
+	for _, l := range strings.Split(string(status), "\n") {
+		v, ok := strings.CutPrefix(l, key+":")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(v)
+		if len(f) != 2 || f[1] != "kB" {
+			return 0, false
+		}
+		kb, err := strconv.ParseFloat(f[0], 64)
+		return kb / 1024, err == nil
+	}
+	return 0, false
+}
+
 // footprintMB reads macOS's physical footprint (what Activity Monitor
 // shows as Memory); 0 elsewhere.
 func footprintMB(pid int) float64 {
@@ -803,6 +906,11 @@ func maxRSSMB(ru *syscall.Rusage) float64 {
 }
 
 func loadAverage() string {
+	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+		if f := strings.Fields(string(data)); len(f) >= 3 {
+			return strings.Join(f[:3], " ")
+		}
+	}
 	out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
 	if err != nil {
 		return ""

@@ -53,12 +53,25 @@ type sink struct {
 	kept map[uuid.UUID]struct{}
 	// dirty marks the conversations whose rows a flush replaced. Their
 	// digests are recounted once, when the parse completes, not per batch.
-	dirty      map[string]bool
+	dirty map[string]bool
+	// held marks the sessions whose natural-key locks the flush's
+	// transaction holds (lockSession); nil outside a flush.
+	held map[string]bool
+	// parentless marks the sessions a committed flush found stored
+	// without a parent and given none: later flushes need not lock a
+	// parent for them (lockFlushSQL). Only another source writing the
+	// same session can give it a parent meanwhile; refreshDigest then
+	// locks that parent late, as before lockFlushSQL.
+	parentless map[string]bool
 	msgs       []*transcript.Message
 	tombstoned bool // some session of this source is deleted
 	written    int
 	gate       *gate           // the admin path rules; nil when there are none
 	tagged     map[string]bool // Codex sessions whose <cwd> tag this parse has recorded
+	// maskRevision is the redacted_lines_revision of the catalog the parse
+	// reads through. masksMoved is set when a write found it stale.
+	maskRevision int64
+	masksMoved   bool
 }
 
 func newSink(ctx context.Context, pool *pgxpool.Pool, src source) *sink {
@@ -105,7 +118,12 @@ func (s *sink) flush() error {
 			return err
 		}
 	}
+	defer func() { s.held = nil }()
+	var learned map[string]bool // sessions found with (false) or without a parent
 	err := pgx.BeginTxFunc(s.ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.checkMasks(tx); err != nil {
+			return err
+		}
 		sessions := map[string]bool{}
 		for id := range s.convs {
 			sessions[id] = true
@@ -118,6 +136,44 @@ func (s *sink) flush() error {
 			ids = append(ids, id)
 		}
 		slices.Sort(ids) // lock order
+		// The session locks first, then the stored conversations with
+		// their parents in store.LockConversationsSQL's order: a
+		// subagent's digest refresh updates its parent's count, and a
+		// hide or deletion of the parent's tree locks the parent and its
+		// subagents in that order. The upserts then hold every row they
+		// lock already. Sessions an earlier flush of this parse found
+		// without a parent need no such lock.
+		s.held = map[string]bool{}
+		var parents []string
+		for _, id := range ids {
+			if err := s.lockSession(tx, id, true); err != nil {
+				return err
+			}
+			if c := s.convs[id]; c != nil && c.ParentSessionID != "" && c.ParentSessionID != id {
+				parents = append(parents, c.ParentSessionID)
+			}
+		}
+		learned = nil
+		if len(parents) > 0 || slices.ContainsFunc(ids, func(id string) bool { return !s.parentless[id] }) {
+			rows, err := tx.Query(s.ctx, lockFlushSQL, s.src.deviceID, s.src.agent, ids, parents)
+			if err != nil {
+				return err
+			}
+			stored := map[string]bool{}
+			var session string
+			var parented bool
+			if _, err := pgx.ForEachRow(rows, []any{&session, &parented}, func() error {
+				stored[session] = parented
+				return nil
+			}); err != nil {
+				return err
+			}
+			learned = map[string]bool{}
+			for _, id := range ids {
+				c := s.convs[id]
+				learned[id] = !stored[id] && (c == nil || c.ParentSessionID == "" || c.ParentSessionID == id)
+			}
+		}
 		for _, id := range ids {
 			if _, err := s.conversation(tx, id, true); err != nil {
 				return err
@@ -149,7 +205,11 @@ func (s *sink) flush() error {
 			if s.dirty[conv] {
 				mode = digestFold // counted once at the end (dirtyConversations)
 			}
-			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode); err != nil {
+			var last time.Time
+			if c := s.convs[id]; c != nil {
+				last = c.LastActivityAt
+			}
+			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode, last); err != nil {
 				return err
 			}
 		}
@@ -158,11 +218,45 @@ func (s *sink) flush() error {
 	if err != nil {
 		return err
 	}
+	if learned != nil && s.parentless == nil {
+		s.parentless = map[string]bool{}
+	}
+	for id, none := range learned {
+		s.parentless[id] = none
+	}
 	s.written += len(s.msgs)
 	s.msgs = s.msgs[:0]
 	clear(s.convs)
 	clear(s.replaced)
 	clear(s.repeated)
+	return nil
+}
+
+// checkMasks shares the redacted-lines lock until tx ends, then checks
+// that no line was redacted since the parse loaded its catalog: rows
+// written from a stale catalog could hold a redacted line unmasked. The
+// two statements go in one round trip; the second reads after the lock.
+func (s *sink) checkMasks(tx pgx.Tx) error {
+	b := &pgx.Batch{}
+	b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
+	b.Queue(`SELECT revision FROM redacted_lines_revision WHERE singleton`)
+	br := tx.SendBatch(s.ctx, b)
+	if _, err := br.Exec(); err != nil {
+		br.Close()
+		return err
+	}
+	var rev int64
+	if err := br.QueryRow().Scan(&rev); err != nil {
+		br.Close()
+		return err
+	}
+	if err := br.Close(); err != nil {
+		return err
+	}
+	if rev != s.maskRevision {
+		s.masksMoved = true
+		return errMasksMoved
+	}
 	return nil
 }
 
@@ -223,16 +317,7 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	if c != nil && create && c.ParentSessionID != sessionID {
 		parent = c.ParentSessionID
 	}
-	lock := func(session string) error {
-		_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(s.src.userID, s.src.agent, session))
-		return err
-	}
-	if parent != "" { // a deletion locks the parent before its subagents
-		if err := lock(parent); err != nil {
-			return "", err
-		}
-	}
-	if err := lock(sessionID); err != nil {
+	if err := s.lockSession(tx, sessionID, create); err != nil {
 		return "", err
 	}
 	var dead bool
@@ -288,9 +373,15 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	if branches == nil {
 		branches = []string{}
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,last_activity_at,
+	// The upsert writes the cold columns; conversations_skip_noop drops
+	// it when they are as stored, and the row is then not returned (but
+	// still locked), so the second branch returns the stored id: it reads
+	// the snapshot from before the statement, which holds the stored row
+	// when the upsert skipped it. The hot last activity goes to
+	// conversation_activity with the digest (flush, refreshDigest).
+	err = tx.QueryRow(ctx, `WITH up AS (INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,
 			parent_native_session_id,spawned_by_native_id,depth,extra,hidden_at,hidden_rule,hidden_rules_version,hidden_root,hidden_by,other_cwds,branches)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,$16,$17,CASE WHEN $15::timestamptz IS NULL THEN NULL ELSE $1::uuid END,NULLIF($18,'')::uuid,$19::text[],$20)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::timestamptz,$15,$16,CASE WHEN $14::timestamptz IS NULL THEN NULL ELSE $1::uuid END,NULLIF($17,'')::uuid,$18::text[],$19)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET source_id=excluded.source_id,
 			cwd=COALESCE(excluded.cwd,conversations.cwd),
 			other_cwds=(SELECT COALESCE(array_agg(d ORDER BY o),'{}') FROM (SELECT d,min(o) o
@@ -298,7 +389,6 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 				WHERE d IS NOT NULL AND d IS DISTINCT FROM COALESCE(excluded.cwd,conversations.cwd) GROUP BY d) x),
 			title=COALESCE(excluded.title,conversations.title),
 			started_at=COALESCE(excluded.started_at,conversations.started_at),
-			last_activity_at=GREATEST(excluded.last_activity_at,conversations.last_activity_at),
 			parent_native_session_id=COALESCE(excluded.parent_native_session_id,conversations.parent_native_session_id),
 			spawned_by_native_id=COALESCE(excluded.spawned_by_native_id,conversations.spawned_by_native_id),
 			depth=GREATEST(excluded.depth,conversations.depth), extra=conversations.extra||excluded.extra,
@@ -308,9 +398,11 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 			hidden_rules_version=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_rules_version ELSE conversations.hidden_rules_version END,
 			hidden_by=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_by ELSE conversations.hidden_by END,
 			hidden_at=COALESCE(conversations.hidden_at,excluded.hidden_at)
-		RETURNING id::text, $15::timestamptz IS NOT NULL AND hidden_at=$15::timestamptz`,
+		RETURNING id, $14::timestamptz IS NOT NULL AND hidden_at=$14::timestamptz AS hid)
+	SELECT id::text,hid FROM up UNION ALL
+		SELECT id::text,false FROM conversations WHERE device_id=$5 AND agent=$3 AND session_id=$4 AND NOT EXISTS (SELECT 1 FROM up)`,
 		uuid.NewString(), s.src.id, s.src.agent, sessionID, s.src.deviceID, s.src.userID, nullStr(c.Cwd), nullStr(clean(c.Title)),
-		nullTime(c.StartedAt), nullTime(c.LastActivityAt), nullStr(c.ParentSessionID), nullStr(c.SpawnedByToolCallID), c.Depth, extra,
+		nullTime(c.StartedAt), nullStr(c.ParentSessionID), nullStr(c.SpawnedByToolCallID), c.Depth, extra,
 		hideAt, nullStr(hideRule), hiddenVersion(hideAt, hideVersion), hideBy, otherCwds(c), branches).Scan(&id, &newlyHidden)
 	if err != nil {
 		return "", err
@@ -328,6 +420,38 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	s.convIDs[sessionID] = id
 	return id, nil
 }
+
+// lockSession takes the session's natural-key lock (store
+// ConversationLockKey), after its parent's when the pending record names
+// one and create is set: a deletion locks the parent before its
+// subagents. A session the flush locked already (held) is skipped.
+func (s *sink) lockSession(tx pgx.Tx, sessionID string, create bool) error {
+	if s.held[sessionID] {
+		return nil
+	}
+	keys := []string{sessionID}
+	if c := s.convs[sessionID]; c != nil && create && c.ParentSessionID != "" && c.ParentSessionID != sessionID {
+		keys = []string{c.ParentSessionID, sessionID}
+	}
+	for _, k := range keys {
+		if _, err := tx.Exec(s.ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(s.src.userID, s.src.agent, k)); err != nil {
+			return err
+		}
+	}
+	if s.held != nil {
+		s.held[sessionID] = true
+	}
+	return nil
+}
+
+// lockFlushSQL locks the stored conversations of sessions $3 on device $1
+// and agent $2, their stored parents, and the parents $4 the pending
+// records name, in store.LockConversationsSQL's order, and returns whether
+// each has a stored parent. NO KEY UPDATE is the lock the upsert and the
+// parent count update take.
+const lockFlushSQL = `SELECT session_id,parent_native_session_id IS NOT NULL FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=ANY($3::text[]||$4::text[]||ARRAY(
+		SELECT parent_native_session_id FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=ANY($3::text[]) AND parent_native_session_id IS NOT NULL))
+	ORDER BY session_id COLLATE "C",id FOR NO KEY UPDATE`
 
 // otherCwds is the conversation's other directories, as stored.
 func otherCwds(c *transcript.Conversation) []string {
@@ -607,10 +731,25 @@ func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search s
 
 // update queues an in-place update: metadata always, text when withText.
 func (s *sink) update(b *pgx.Batch, id string, m *transcript.Message, search string, enrichment []byte, withText bool) {
+	// first_seen_at is when the server first stored the record's raw
+	// bytes (a redaction's first-uploader rule). New text from the same
+	// byte range of the same source generation (text filled in from
+	// context, such as a persisted tool output that arrived later) of a row
+	// keyed by its native id keeps it. The bytes themselves are not pinned:
+	// a whole provisional tail replaces the tail's bytes in place in the
+	// same generation. The native id is what holds the row to its record:
+	// it comes from the record's bytes, so planting the row before the
+	// record's first upload needs that id. A row keyed by its offset (a
+	// Codex item without an id) could be planted at any offset and switched
+	// to copied bytes, so new text resets it, as it does for other bytes or
+	// a row without a byte range (a Devin row). The SET expressions read the
+	// row before the update.
 	b.Queue(`UPDATE messages SET superseded=false,superseded_by=NULL,superseded_in_generation=NULL,source_id=$2,source_generation=$3,
-			on_active_path=$4,is_error=$5,enrichment=$6,line_no=$7,byte_offset=$8,byte_len=$9,parent_native_id=$10,tool_name=$11,ts=COALESCE($12,ts),parse_attempt=$13,parser=$14,redaction_rules=$15,kind=$16,role=$17,ordinal=$18,tool_call_id=$19,locator=$20
+			on_active_path=$4,is_error=$5,enrichment=$6,line_no=$7,byte_offset=$8,byte_len=$9,parent_native_id=$10,tool_name=$11,ts=COALESCE($12,ts),parse_attempt=$13,parser=$14,redaction_rules=$15,kind=$16,role=$17,ordinal=$18,tool_call_id=$19,locator=$20,
+			first_seen_at=CASE WHEN $21::bool AND NOT COALESCE(native_id IS NOT NULL AND byte_offset=$8 AND byte_len=$9 AND source_id=$2::uuid AND source_generation=$3,false)
+				THEN now() ELSE first_seen_at END
 		WHERE id=$1`, id, s.src.id, s.src.generation, m.OnActivePath, errPtr(m), enrichment, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen),
-		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt, m.Parser, redact.RulesVersion, m.Kind.String(), nullStr(clean(m.Role)), m.Ordinal, nullStr(clean(m.ToolCallID)), nullStr(locator(m)))
+		nullStr(clean(m.ParentNativeID)), nullStr(clean(m.ToolName)), nullTime(m.TS), s.src.parseAttempt, m.Parser, redact.RulesVersion, m.Kind.String(), nullStr(clean(m.Role)), m.Ordinal, nullStr(clean(m.ToolCallID)), nullStr(locator(m)), withText)
 	if withText {
 		b.Queue(`UPDATE messages SET text=$2,text_len=$3,content_sha=$4 WHERE id=$1`, id, search, m.FullLen, m.ContentSHA[:])
 	}

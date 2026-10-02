@@ -1,0 +1,15 @@
+{
+  "name": "flopwire",
+  "description": "Search past coding-agent transcripts and message live agent sessions: the flopwire MCP tools, the flopwire hook that delivers messages, and a messaging skill. Needs the flopwire binary on PATH and the device agent running.",
+  "keywords": ["transcripts", "search", "messaging", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Flopwire",
+    "shortDescription": "Search past agent transcripts and message live agent sessions",
+    "developerName": "Flopwire",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/flopwire/flopwire"
+  }
+}

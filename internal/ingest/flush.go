@@ -203,6 +203,9 @@ func (s *Server) Flush(ctx context.Context, deviceID string, h *syncproto.FlushH
 		return nil, err
 	}
 	defer conn.Release()
+	if err := store.PinBackend(ctx, conn); err != nil {
+		return nil, err
+	}
 	f := &flush{s: s, deviceID: deviceID, h: h, conn: conn, reserved: map[syncproto.Hash]bool{}, sizes: map[syncproto.Hash]int64{}}
 	defer f.unlock()
 
@@ -433,15 +436,12 @@ func redirectChanged() *Error {
 }
 
 func (f *flush) unlock() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	locks := make([]store.AdvisoryLock, 0, len(f.locked))
 	for _, key := range f.locked {
-		var ok bool
-		if err := f.conn.QueryRow(ctx, `SELECT pg_advisory_unlock(hashtextextended($1,0))`, key).Scan(&ok); err != nil || !ok {
-			_ = f.conn.Conn().Close(ctx) // never return a connection holding a lock to the pool
-			return
-		}
+		locks = append(locks, store.AdvisoryLock{Key: key})
 	}
+	// Never return a connection holding a lock to the pool.
+	_ = store.ReleaseAdvisoryLocks(f.conn, f.s.Pool, locks...)
 }
 
 // commit applies steps 2 to 5 in the manifest transaction and returns the
@@ -464,14 +464,32 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 	var sourceID string
 	var tombstoned bool
 	var refused *string
-	err := tx.QueryRow(ctx, `INSERT INTO sources(id,device_id,agent,path,file_id,session_key,storage_kind,parser,first_seen_at,parent_path,parent_file_id,previous_path,previous_file_id)
+	// The first statement shares the redacted-lines lock until commit, in
+	// the same round trip as the source upsert. Whether this upload needs
+	// an at-rest repair (archive_redaction_work below) is then decided
+	// either after a message redaction committed (its lines are visible)
+	// or before it takes the lock (its QueueArchiveRepair sees this
+	// upload's pending parse). Taking it first keeps the order every
+	// redacted-lines writer uses: the lock before any row lock.
+	b := &pgx.Batch{}
+	b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
+	b.Queue(`INSERT INTO sources(id,device_id,agent,path,file_id,session_key,storage_kind,parser,first_seen_at,parent_path,parent_file_id,previous_path,previous_file_id)
 		VALUES($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,now(),$9,$10,$11,$12)
 		ON CONFLICT (device_id,path,file_id) DO UPDATE SET agent=excluded.agent,session_key=excluded.session_key,
 			storage_kind=excluded.storage_kind,parser=excluded.parser,parent_path=excluded.parent_path,parent_file_id=excluded.parent_file_id,
 			previous_path=COALESCE(excluded.previous_path,sources.previous_path),previous_file_id=COALESCE(excluded.previous_file_id,sources.previous_file_id)
 		RETURNING id::text, tombstoned_at IS NOT NULL, refused_rule`,
-		uuid.NewString(), f.deviceID, src.Agent, src.Path, src.FileID, src.SessionKey, kind, src.Parser, parentPath, parentFileID, prevPath, prevFileID).Scan(&sourceID, &tombstoned, &refused)
-	if err != nil {
+		uuid.NewString(), f.deviceID, src.Agent, src.Path, src.FileID, src.SessionKey, kind, src.Parser, parentPath, parentFileID, prevPath, prevFileID)
+	br := tx.SendBatch(ctx, b)
+	if _, err := br.Exec(); err != nil {
+		br.Close()
+		return nil, nil, err
+	}
+	if err := br.QueryRow().Scan(&sourceID, &tombstoned, &refused); err != nil {
+		br.Close()
+		return nil, nil, err
+	}
+	if err := br.Close(); err != nil {
 		return nil, nil, err
 	}
 	if tombstoned { // deleted or refused since the pre-check
@@ -687,6 +705,9 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 	if err := checkQuota(ctx, tx, f.deviceID); err != nil {
 		return nil, nil, err
 	}
+	// Under the shared redacted-lines lock (first statement): a redaction
+	// that committed before is visible here; one that commits later queues
+	// this source itself (QueueArchiveRepair).
 	if _, err := tx.Exec(ctx, `INSERT INTO archive_redaction_work(source_id,generation,from_offset)
  SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM redacted_lines)
  ON CONFLICT(source_id,generation) DO UPDATE SET from_offset=LEAST(archive_redaction_work.from_offset,EXCLUDED.from_offset),revision=archive_redaction_work.revision+1`, sourceID, h.Generation, repairFrom); err != nil {

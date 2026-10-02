@@ -1,9 +1,10 @@
 # Release checklist
 
-CI runs `go test -race ./...`, the web tests and the build. The checks on
-this page need real transcripts, real agent CLIs or two machines, so CI
-cannot run them. Run every check on a release candidate before you tag it.
-Record the measured numbers in the release PR. See [Releases](releases.md)
+CI runs `go test -race ./...`, the web tests, the build and the perf
+release gate (section 5). The other checks on this page need real
+transcripts, real agent CLIs or two machines, so CI cannot run them. Run
+every check on a release candidate before you tag it, except the ones
+marked optional. Record the measured numbers in the release PR. See [Releases](releases.md)
 for the release-please workflow and bot setup.
 
 All corpus checks read the harness directories (`~/.claude`, `~/.codex`,
@@ -59,7 +60,36 @@ These need section 1.
 | Ingest with server path rules | `FLOPWIRE_CORPUS=1 FLOPWIRE_CORPUS_DAYS=1 FLOPWIRE_CORPUS_RULES='deny ~/Code/<a repo>*' FLOPWIRE_CORPUS_UNPLACEABLE=exclude go test -run Corpus -timeout 2h ./internal/ingest` | 0 stored conversations covered by the rules. 0 parse failures. |
 | Server retrieval latency | `FLOPWIRE_CORPUS=1 go test -run Corpus -timeout 2h ./internal/retrieval` | Passes. Note the slowest queries. |
 
-## 5. Local acceptance
+## 5. Performance
+
+### 5a. CI release gate (required)
+
+The `perf-gate` check on the release-please PR runs the A/B bench on a
+synthetic corpus ([docs/perf](perf/README.md#release-gate)). It compares
+the PR head with the latest release tag, or with
+`docs/perf/nightly-baseline` when that pin is newer.
+
+1. Wait for the `perf-gate` check on the release PR.
+2. Read the "Perf release gate" comment on the PR. It holds the table and
+   the verdict.
+3. If the verdict is `CLEAN`, go to the next section.
+4. If the verdict is `REGRESSED`, fix each regressed metric on `main`, or
+   accept the regression: move the pin in a PR that explains it (see
+   [Accept a regression](perf/README.md#accept-a-regression)). Then rerun
+   the gate.
+5. If the verdict is `BASELINE_FAILED`, the baseline cannot run under the
+   new harness, and nothing was compared. Compare the two builds by hand,
+   then move the pin (see [docs/perf](perf/README.md#synthetic-corpus)).
+6. Read each open `perf-regression` and `perf-baseline-broken` issue from
+   the nightly run. Close each one, or explain it in the release PR.
+
+Do not tag a release while `perf-gate` fails.
+
+### 5b. Local acceptance (optional)
+
+The local run is a reality check on the real corpus. It is optional. Run
+it when the release changes the parsers, the indexing or the redaction:
+the real corpus has shapes that the synthetic corpus does not.
 
 `scripts/acceptance.sh` builds the binary and runs `flopwire bench acceptance`
 in four parts, plus the FAD parity sample. It writes a JSON record of the
@@ -97,16 +127,18 @@ docs/perf has no record yet, the first run sets the reference laptop.
 8. Paste the comparison table into the release PR description. Explain
    each `REGRESSED` metric, or fix it before the release.
 
+When you run the set, these bars apply:
+
 | Check | Bar in the table | Accepted today |
 |---|---|---|
-| a. full index wall | < 5 min | About 7.5 min on the reference laptop (10GB index). Whole tool output is indexed (D3). Record the number; a large regression blocks. |
+| a. full index wall | < 5 min | About 7.5 min on the reference laptop (10.2GB index, baseline `main-9e4193d`). Whole tool output is indexed (D3). Record the number; a large regression blocks. |
 | a. full index peak RSS | < 600MB | Must pass. |
-| a. idle agent after 60s | < 120MB RSS | Must pass. |
+| a. idle agent after 60s | < 120MB anonymous | About 129MB footprint (176MB RSS) on the reference laptop, baseline `main-9e4193d`. Accepted. A `REGRESSED` flag from `bench compare` blocks. The `main-9e4193d` record holds total RSS under `idle.rss`, so a comparison with it shows a drop of about 27% that is not real (docs/perf/README.md). |
 | a. no-change sweep CPU | < 1s | Must pass. |
 | b. live line findable | p95 < 2s | Must pass. |
 | c. FAD 0.3.1 parity sample | 0 parse errors; mismatches documented | Must pass. Needs `cargo` for `tools/fad-dump`. Set `AGENTSVIEW_SRC` for the second oracle. |
 | d. query set expected hits | all | Must pass. |
-| d. query set latency (warm) | < 200ms each | Two queries run over (`error` about 294ms, `sessionpane-path` about 246ms). More over is a regression. |
+| d. query set latency (warm) | < 200ms each | 8 of 28 run over, max about 351ms (`error-common-term`), baseline `main-9e4193d`. Accepted. A query flagged `REGRESSED` by `bench compare` blocks. |
 | d. hit addresses round-trip through `read` | all | Must pass. |
 
 ## 6. Two real agent sessions

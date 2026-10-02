@@ -89,7 +89,7 @@ func TestMCPConcurrencyCancellationAndLongLines(t *testing.T) {
 		t.Fatalf("ping while a call runs: %s", l)
 	}
 	send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"flopwire_sessions","arguments":{}}}`)
-	if l := next(); !strings.Contains(l, `"id":3`) || !strings.Contains(l, "no sessions") {
+	if l := next(); !strings.Contains(l, `"id":3`) || !strings.Contains(l, `"text":"{\"kind\":\"sessions\",\"sessions\":[],\"has_more\":false}"`) || strings.Contains(l, "structuredContent") {
 		t.Fatalf("second call while the first runs: %s", l)
 	}
 	send(strings.Repeat("x", 5<<20))
@@ -115,15 +115,20 @@ func TestMCPConcurrencyCancellationAndLongLines(t *testing.T) {
 	}
 }
 
-// Every tool says it only reads (so a client may run it unasked and in
-// parallel), and every argument is described in the schema itself: a
-// client may drop the server instructions. An unknown argument's error
-// lists the ones the tool takes.
+// Every tool but flopwire_send says it only reads (so a client may run it
+// unasked and in parallel); send says it writes to other people's
+// sessions and is not idempotent. Every argument is described in the
+// schema itself: a client may drop the server instructions. An unknown
+// argument's error lists the ones the tool takes.
 func TestMCPToolSchemasSelfDescribing(t *testing.T) {
 	for _, tl := range mcpTools() {
 		tm := tl.(map[string]any)
 		ann := tm["annotations"].(map[string]any)
-		if ann["readOnlyHint"] != true || ann["openWorldHint"] != false || ann["destructiveHint"] != false || tm["title"] == "" {
+		if tm["name"] == "flopwire_send" {
+			if ann["readOnlyHint"] != false || ann["openWorldHint"] != true || ann["destructiveHint"] != false || ann["idempotentHint"] != false || tm["title"] == "" {
+				t.Errorf("%s annotations: %v", tm["name"], ann)
+			}
+		} else if ann["readOnlyHint"] != true || ann["openWorldHint"] != false || ann["destructiveHint"] != false || tm["title"] == "" {
 			t.Errorf("%s annotations: %v", tm["name"], ann)
 		}
 		for k, v := range tm["inputSchema"].(map[string]any)["properties"].(map[string]any) {

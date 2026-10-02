@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -78,7 +79,7 @@ type fileStamp struct {
 }
 
 func stampOf(path string) fileStamp {
-	fi, err := os.Stat(path)
+	fi, err := fsprobe.Stat(path)
 	if err != nil {
 		return fileStamp{}
 	}
@@ -163,7 +164,7 @@ func (a *Agent) buildPolicy() pathpolicy.Policy {
 	pol.Admin = parse(a.adminRaw.Rules, "server")
 	user := slices.Clone(a.cfg.UserRuleList)
 	if a.cfg.UserRules != "" {
-		if b, err := os.ReadFile(a.cfg.UserRules); err == nil {
+		if b, err := fsprobe.ReadFile(a.cfg.UserRules); err == nil {
 			user = append(user, strings.Split(string(b), "\n")...)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			a.log.Error("agent: path rules", "file", a.cfg.UserRules, "err", err)
@@ -249,9 +250,9 @@ func foldPaths(p string) []string {
 		}
 		var next []string
 		for _, d := range cur {
-			ents, err := os.ReadDir(d)
+			ents, err := fsprobe.ReadDir(d)
 			if err != nil {
-				if _, err := os.Lstat(filepath.Join(d, seg)); err == nil {
+				if _, err := fsprobe.Lstat(filepath.Join(d, seg)); err == nil {
 					next = append(next, filepath.Join(d, seg))
 				}
 				continue
@@ -290,7 +291,7 @@ func (a *Agent) readAdminCache() AdminPolicy {
 	if a.cfg.AdminRulesCache == "" {
 		return AdminPolicy{}
 	}
-	b, err := os.ReadFile(a.cfg.AdminRulesCache)
+	b, err := fsprobe.ReadFile(a.cfg.AdminRulesCache)
 	if err != nil {
 		return AdminPolicy{}
 	}
@@ -391,7 +392,7 @@ func (a *Agent) reresolve() {
 	for _, e := range list {
 		r, done := byCwd[e.p.pl.Cwd]
 		if !done {
-			if fi, err := os.Stat(e.p.pl.Cwd); err == nil && fi.IsDir() {
+			if fi, err := fsprobe.Stat(e.p.pl.Cwd); err == nil && fi.IsDir() {
 				r = res{a.resolve(e.p.pl.Cwd, ""), true}
 			}
 			byCwd[e.p.pl.Cwd] = r

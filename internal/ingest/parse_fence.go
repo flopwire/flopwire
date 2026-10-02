@@ -56,5 +56,10 @@ func (q *Queue) parseFenced(ctx context.Context, sourceID string, extra ...strin
 			return errParseBusy
 		}
 	}
-	return q.parseSource(ctx, sourceID)
+	for attempt := 1; ; attempt++ {
+		err := q.parseSource(ctx, sourceID)
+		if !errors.Is(err, errMasksMoved) || attempt == maskAttempts {
+			return err
+		}
+	}
 }

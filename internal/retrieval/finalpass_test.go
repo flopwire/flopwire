@@ -86,7 +86,7 @@ func TestFinalRedactHiddenCopiesRestorePurge(t *testing.T) {
 	if n := s.rowsWith("BLUEFALCON"); n != 0 {
 		t.Fatalf("%d rows (hidden included) hold the codename", n)
 	}
-	if n := s.count(`SELECT count(*) FROM conversations WHERE strpos(COALESCE(digest::text,''),'BLUEFALCON')>0 OR strpos(COALESCE(title,''),'BLUEFALCON')>0`); n != 0 {
+	if n := s.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE strpos(COALESCE(a.digest::text,''),'BLUEFALCON')>0 OR strpos(COALESCE(c.title,''),'BLUEFALCON')>0`); n != 0 {
 		t.Fatalf("%d titles or digests hold the codename", n)
 	}
 	if s.archiveHas("BLUEFALCON") {
@@ -204,7 +204,7 @@ func TestFinalDigestTitleAfterRedactionRewriteReparse(t *testing.T) {
 			if n := s.rowsWith(needle); n != 0 {
 				t.Fatalf("%s: %d rows hold %q", when, n, needle)
 			}
-			if n := s.count(`SELECT count(*) FROM conversations WHERE strpos(COALESCE(digest::text,''),$1)>0 OR strpos(COALESCE(title,''),$1)>0`, needle); n != 0 {
+			if n := s.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE strpos(COALESCE(a.digest::text,''),$1)>0 OR strpos(COALESCE(c.title,''),$1)>0`, needle); n != 0 {
 				t.Fatalf("%s: %d titles or digests hold %q", when, n, needle)
 			}
 		}

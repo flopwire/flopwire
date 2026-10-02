@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -25,7 +26,7 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	if t.parser == nil {
 		return false, nil // a loaded placeholder not listed by discovery yet
 	}
-	f, err := os.Open(t.path)
+	f, err := fsprobe.Open(t.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil // the next full pass retires it
 	} else if err != nil {
@@ -262,7 +263,7 @@ func (a *Agent) sourceFor(ctx context.Context, t *target, id transcript.Identity
 		if t.src.SessionKey == "" || st.Source.SessionKey != t.src.SessionKey {
 			continue
 		}
-		if _, err := os.Stat(st.Source.Path); !errors.Is(err, os.ErrNotExist) {
+		if _, err := fsprobe.Stat(st.Source.Path); !errors.Is(err, os.ErrNotExist) {
 			continue // the old path still exists: not a move
 		}
 		if err := a.store.MoveSource(ctx, st.ID, t.path); err != nil {

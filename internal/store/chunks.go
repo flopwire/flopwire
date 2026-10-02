@@ -75,11 +75,14 @@ func (p *Postgres) reconcileChunk(ctx context.Context, hash []byte) (bool, error
 		return false, err
 	}
 	defer conn.Release()
+	if err = PinBackend(ctx, conn); err != nil {
+		return false, err
+	}
 	key := ChunkLockKey(hash)
 	if _, err = conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1,0))`, key); err != nil {
 		return false, err
 	}
-	defer unlockSession(conn, `SELECT pg_advisory_unlock(hashtextextended($1,0))`, key)
+	defer func() { _ = ReleaseAdvisoryLocks(conn, p.pool, AdvisoryLock{Key: key}) }()
 	target := hex.EncodeToString(hash)
 	var objectKey string
 	proceed := false

@@ -54,6 +54,8 @@ type Config struct {
 	// Retrieval serves search, find, context, conversation and raw; nil
 	// answers 501.
 	Retrieval Retrieval
+	// Bus serves the message bus (internal/bus); nil answers 501.
+	Bus Bus
 	// Now is the clock for credential lifetimes; nil is time.Now. Tests
 	// move it to check expiry.
 	Now func() time.Time
@@ -93,6 +95,7 @@ type API struct {
 	parse           ParseStatus
 	retrieval       Retrieval
 	retrievalSlots  chan struct{}
+	bus             Bus
 	clock           func() time.Time
 }
 
@@ -127,7 +130,7 @@ func New(s store.Store, cfg Config) *API {
 		cfg.Now = time.Now
 	}
 	return &API{store: s, log: cfg.Logger, trustedProxies: proxies, sync: cfg.Sync, parse: cfg.Parse, clock: cfg.Now,
-		retrieval: cfg.Retrieval, retrievalSlots: make(chan struct{}, RetrievalConcurrency),
+		retrieval: cfg.Retrieval, bus: cfg.Bus, retrievalSlots: make(chan struct{}, RetrievalConcurrency),
 		ipLimiter: newTokenBuckets(cfg.AuthRate), identityLimiter: newTokenBuckets(cfg.AuthRate)}
 }
 
@@ -155,6 +158,7 @@ func (a *API) Handler(reg *prometheus.Registry) http.Handler {
 		r.Post(syncproto.PathHas, a.syncDevice)
 		r.Post(syncproto.PathFlush, a.syncDevice)
 		a.retrievalRoutes(r)
+		a.busRoutes(r)
 		r.Delete("/v1/conversations/{id}", a.memberOnly(a.deleteOwnConversation))
 		r.Post("/v1/conversations/withhold", a.withholdOnly(a.withholdOwnSession))
 		r.Get("/v1/deletions/{id}", a.memberOnly(a.getOwnDeletion))

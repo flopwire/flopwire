@@ -100,6 +100,14 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 		}
 		return err
 	}
+	// The owner's redactions, read on the writer: a redaction records its
+	// tombstones in its own write request, so every batch the writer runs
+	// after it is masked, and every batch before it is masked by it.
+	w.s.tombs.maskTitles(b.Conversations)
+	if len(b.prep) != len(b.Messages) {
+		b.prep = prepareAll(b.Messages)
+	}
+	w.s.tombs.mask(b.Messages, b.prep)
 	convs := map[string]int64{}
 	for _, c := range b.Conversations {
 		if c.Agent == "" {
@@ -120,9 +128,6 @@ func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
 	byConv := map[int64][]*transcript.Message{}  // every row written: folded into the digest
 	counted := map[int64][]*transcript.Message{} // new rows: added to the digest's counts
 	replaced := map[int64]bool{}                 // a counted attribute of an existing row changed
-	if len(b.prep) != len(b.Messages) {
-		b.prep = prepareAll(b.Messages)
-	}
 	for i, m := range b.Messages {
 		convID, ok := convs[m.SessionID]
 		if !ok {
@@ -666,7 +671,13 @@ func (w *writeTx) queueFTS() ([]*ftsWork, error) {
 		}
 	}
 	for _, wk := range works {
-		wk.seq = seq
+		wk.seq, wk.scrub = seq, w.scrub
+	}
+	if w.scrub {
+		// Durable, so Open compacts a shard that stopped before it did.
+		if _, err := w.exec(`INSERT INTO meta (key, value) VALUES ('fts_scrub_seq', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, strconv.FormatInt(seq, 10)); err != nil {
+			return nil, err
+		}
 	}
 	return works, nil
 }
@@ -746,8 +757,10 @@ func (s *Store) SetActivePath(ctx context.Context, agent transcript.Agent, sessi
 		if err != nil {
 			return err
 		}
-		n, err = r.RowsAffected()
-		return err
+		if n, err = r.RowsAffected(); err != nil || n == 0 {
+			return err
+		}
+		return w.recountSession(agent, sessionID)
 	})
 	return n, err
 }
@@ -769,17 +782,23 @@ func (s *Store) SupersedeSession(ctx context.Context, agent transcript.Agent, se
 		if n, err = r.RowsAffected(); err != nil || n == 0 {
 			return err
 		}
-		row, err := w.queryRow(`SELECT id FROM conversations WHERE device_id = ? AND agent = ? AND session_id = ?`, w.s.opts.DeviceID, string(agent), sessionID)
-		if err != nil {
-			return err
-		}
-		var conv int64
-		if err := row.Scan(&conv); err != nil {
-			return err
-		}
-		return w.recountDigests([]int64{conv})
+		return w.recountSession(agent, sessionID)
 	})
 	return n, err
+}
+
+// recountSession recounts the digest of this device's conversation of a
+// session.
+func (w *writeTx) recountSession(agent transcript.Agent, sessionID string) error {
+	row, err := w.queryRow(`SELECT id FROM conversations WHERE device_id = ? AND agent = ? AND session_id = ?`, w.s.opts.DeviceID, string(agent), sessionID)
+	if err != nil {
+		return err
+	}
+	var conv int64
+	if err := row.Scan(&conv); err != nil {
+		return err
+	}
+	return w.recountDigests([]int64{conv})
 }
 
 // TombstoneConversation records that a session vanished from its source
@@ -799,8 +818,10 @@ func (s *Store) TombstoneConversation(ctx context.Context, agent transcript.Agen
 			}
 			return err
 		}
-		_, err = w.exec(`UPDATE messages SET superseded = 1, superseded_in_generation = ? WHERE conversation_id = ? AND superseded = 0`, gen, id)
-		return err
+		if _, err = w.exec(`UPDATE messages SET superseded = 1, superseded_in_generation = ? WHERE conversation_id = ? AND superseded = 0`, gen, id); err != nil {
+			return err
+		}
+		return w.recountDigests([]int64{id})
 	})
 }
 

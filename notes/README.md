@@ -12,6 +12,9 @@ disagree, the code and `punch-list.md` win.
 | [`local-search/ftsidx.py`](local-search/ftsidx.py) | Prototype FTS5 sidecar used to measure the local index before the Go build. |
 | [`local-search/shape.py`](local-search/shape.py) | Byte accounting over sampled transcripts, used to size the text caps. |
 | [`message-bus/README.md`](message-bus/README.md) | Verified ways to deliver a message into a running Claude Code or Codex session (spec section 9). Not built yet. |
+| [`message-bus/plan.md`](message-bus/plan.md) | The v1 message bus design and build plan: decisions B1–B8, the agent interface and syntax, hook delivery, per-harness packaging, build sequence. Supersedes spec section 9. Not built yet. |
+| [`message-bus/probes-2026-10-01.md`](message-bus/probes-2026-10-01.md) | Live tests behind the plan: hook delivery on Claude Code, Codex and Devin, the opencode plugin, Claude cloud and Devin cloud. |
+| [`message-bus/exchange-capture/README.md`](message-bus/exchange-capture/README.md) | A real Claude Code ↔ Codex exchange (own user, local-only): `sessions`, `peers`, `send`, both hook deliveries, the reply and `inbox`, captured for the homepage fixtures (#55), with timeline, findings and the substitutions made. |
 | [`message-bus/cc_send.py`](message-bus/cc_send.py), [`message-bus/codex_rpc.py`](message-bus/codex_rpc.py) | The probe scripts behind the message-bus note. |
 | [`launch-readiness/README.md`](launch-readiness/README.md) | Where the CASS-era launch-gate work landed on the fresh schema. |
 | [`launch-readiness/punch-list.md`](launch-readiness/punch-list.md) | The P0/P1/P2 launch gate carried over from the CASS era. The spec and `punch-list.md` override it. |

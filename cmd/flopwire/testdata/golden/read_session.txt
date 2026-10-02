@@ -1,4 +1,4 @@
-# claude  0b7e2c1a-0000-4000-8000-000000000001  /tmp/oracle-alpha  on main  device local  2026-09-23 10:00Z to 2026-09-23 10:00Z  9 msgs  "why does the login test flake?"
+# 0b7e2c1a-0000-4000-8000-000000000001 agent=claude repo=/tmp/oracle-alpha branch=main device=local start=2026-09-23T10:00Z active=2026-09-23T10:00Z msgs=9 title="why does the login test flake?"
 >> 0b7e2c1a-0000-4000-8000-000000000001/966656  2026-09-23 10:00Z  user
      1  why does the login test flake?
    0b7e2c1a-0000-4000-8000-000000000001/2375680  2026-09-23 10:00Z  thinking

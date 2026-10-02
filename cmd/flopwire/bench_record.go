@@ -129,7 +129,7 @@ func newAccRecord(r *accResults, oracles []oracleReport, build buildRecord, mach
 		rec.Metrics = append(rec.Metrics,
 			newMetric("index.wall", x.WallS, "s", indexWallLimitS),
 			newMetric("index.peak_rss", x.PeakRSSMB, "MB", peakRSSTarget),
-			newMetric("idle.rss", x.IdleRSSMB, "MB", idleRSSTarget))
+			newMetric("idle.rss", x.IdleAnonMB, "MB", idleRSSTarget)) // anonymous memory; see indexResult.IdleAnonMB
 		if len(x.SweepCPUMs) > 0 {
 			rec.Metrics = append(rec.Metrics, newMetric("sweep.cpu_max", slices.Max(x.SweepCPUMs), "ms", sweepCPULimitMs))
 		}

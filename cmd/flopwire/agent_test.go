@@ -18,6 +18,8 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -171,6 +173,35 @@ func TestAgentStatusShowsServerRefusals(t *testing.T) {
 	}
 }
 
+// The message bus state shows in `agent status`, with the inbox counts.
+func TestAgentStatusShowsBus(t *testing.T) {
+	for _, c := range []struct {
+		st   devicebus.Status
+		want []string
+	}{
+		{devicebus.Status{State: devicebus.StateConnected, Sessions: 3, Pending: 2, Unacked: 1, Held: 4, HeldSenders: []busproto.HeldSender{
+			{User: "alex@example.test", UserID: "u1", Count: 3, Oldest: time.Date(2026, 10, 2, 9, 0, 0, 0, time.Local)},
+			{User: "sam@example.test", UserID: "u2", Count: 1, Oldest: time.Date(2026, 10, 2, 10, 0, 0, 0, time.Local)}}},
+			[]string{"messaging: connected; 3 live sessions reported", "messages: 2 pending delivery, 1 receipts unsent, 4 held for your acceptance",
+				"  held from alex@example.test: 3 messages, oldest 2026-10-02 09:00:00\n  held from sam@example.test: 1 message, oldest 2026-10-02 10:00:00\n",
+				"flopwire accepts --text in a terminal"}},
+		{devicebus.Status{State: devicebus.StateBackoff, LastError: "connection refused", RetryAt: time.Now()},
+			[]string{"messaging: server unreachable, retry at", "connection refused"}},
+		{devicebus.Status{State: devicebus.StateStopped, LastError: "the server refused this device's credential: run flopwire login"},
+			[]string{"messaging: stopped: the server refused this device's credential"}},
+		{devicebus.Status{State: devicebus.StateLocal, Sessions: 2}, []string{"messaging: local (no server: between this device's sessions); 2 live sessions"}},
+	} {
+		var b strings.Builder
+		st := c.st
+		printAgentStatus(&b, agent.Response{Bus: &st})
+		for _, want := range c.want {
+			if !strings.Contains(b.String(), want) {
+				t.Fatalf("missing %q in:\n%s", want, b.String())
+			}
+		}
+	}
+}
+
 func TestAgentStatusShowsPlacements(t *testing.T) {
 	var b strings.Builder
 	printAgentStatus(&b, agent.Response{Placements: map[string]int{localindex.PlacedByCwd: 12, localindex.PlacedByBranch: 3, localindex.PlacedByNone: 1}})
@@ -283,4 +314,55 @@ func TestWriteHidden(t *testing.T) {
 			t.Errorf("preview %q lacks %q", out, want)
 		}
 	}
+}
+
+// A local inbox that cannot be opened turns messaging off; the agent
+// still runs (indexing and upload never wait on messaging).
+func TestAgentRunsWithDamagedInbox(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
+	if err := os.WriteFile(filepath.Join(dir, "bus.db"), []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	sock := filepath.Join(shortSockDir(t), "a.sock")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--no-sync"})
+		done <- err
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("agent stopped: %v", err)
+		default:
+		}
+		if r, err := agent.Call(ctx, sock, agent.Request{Op: "status"}); err == nil {
+			if r.Bus != nil {
+				t.Fatalf("messaging on with a damaged inbox: %+v", r.Bus)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("agent never answered")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
+// shortSockDir is a directory short enough for a unix socket path.
+func shortSockDir(t *testing.T) string {
+	d, err := os.MkdirTemp("/tmp", "fws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
 }

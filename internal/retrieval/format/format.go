@@ -224,8 +224,8 @@ func List(s string) []string {
 	return out
 }
 
-// ParseTime accepts RFC 3339, a date, the UTC minute hits print
-// ("2026-09-23 10:00Z"), or a duration before now (Go durations, plus Nd
+// ParseTime accepts RFC 3339, a date, the UTC minute hits and headers
+// print ("2026-09-23 10:00Z", "2026-09-23T10:00Z"), or a duration before now (Go durations, plus Nd
 // for days and Nw for weeks).
 func ParseTime(s string, now time.Time) (time.Time, error) {
 	if d, err := time.ParseDuration(s); err == nil {
@@ -244,6 +244,9 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 		return t, nil
 	}
 	if t, err := time.Parse(stampLayout, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(isoStampLayout, s); err == nil {
 		return t, nil
 	}
 	t, err := time.Parse(time.RFC3339Nano, s)
@@ -696,4 +699,18 @@ type RedactResult struct {
 	Tails     int    `json:"tails"`
 	Fallbacks int    `json:"fallbacks,omitempty"`
 	JobID     string `json:"job_id,omitempty"`
+	// Skipped lists other users' byte-identical copies left unredacted:
+	// they stored the record first, so only an admin may redact them.
+	Skipped []SkippedCopies `json:"skipped,omitempty"`
+	// SkippedHidden counts such copies in sources whose raw evidence an
+	// admin path rule hid: they are not described.
+	SkippedHidden int `json:"skipped_hidden,omitempty"`
+}
+
+// SkippedCopies are the rows of one source a redaction left out.
+type SkippedCopies struct {
+	SourceID string `json:"source_id"`
+	User     string `json:"user"`
+	Device   string `json:"device"`
+	Messages int    `json:"messages"`
 }

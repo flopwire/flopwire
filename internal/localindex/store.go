@@ -17,11 +17,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver (pure Go)
@@ -85,6 +87,11 @@ type Options struct {
 	// watermarks of the lost transaction are gone together.
 	DeferCommit   bool
 	OnCommitError func(error)
+	// RebuildIndex drops the index's own tables and FTS shards, as for a
+	// schema change, and starts empty (the indexer then parses every
+	// transcript again). Placements, devicesync's tables and the
+	// redaction sidecar are kept.
+	RebuildIndex bool
 	// SyncOnly keeps only the agent's bookkeeping (sources, watermarks,
 	// conversations, companions, placements): no message rows and no FTS
 	// shards (ModeSyncOnly). The mode is stored in the index; opening it in
@@ -111,17 +118,25 @@ type Store struct {
 	shards  []*ftsShard // fts_tok, then the fts_tri parts
 	tri     []*ftsShard // the fts_tri parts
 	lastSeq int64       // highest fts_queue sequence handed to the shards (writer only)
+	// mainScrubTries: checkpoints left to truncate the main WAL after a
+	// redaction (writer only).
+	mainScrubTries int
 
 	readOnly bool
 	tombs    *tombstones // local message redactions (writing stores)
-	lock     *os.File    // the index lock (writing stores)
-	keepLock bool        // LockFile handed the lock to the caller
+	// reconcileDue: a transaction that may have held redaction masks was
+	// lost; the writer applies the sidecar again first thing (redact.go).
+	reconcileDue     atomic.Bool
+	reconcileFailing atomic.Bool // the last reconcile failed (logged once)
+	lock             *os.File    // the index lock (writing stores)
+	keepLock         bool        // LockFile handed the lock to the caller
 }
 
 type writeReq struct {
 	ctx  context.Context
 	fn   func(*writeTx) error
 	done chan error
+	wait bool // answer at commit, with its error, even with DeferCommit
 }
 
 // ErrClosed is returned by writes after Close.
@@ -201,10 +216,15 @@ func Open(path string, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// sqliteDriver is the database/sql driver of the write and shard
+// sqliteDriver is the database/sql driver of the write, shard and read
 // connections. Tests set it to perfguard.SQLiteDriver, which wraps
 // "sqlite" to count statements and pages on the connections a test claims.
 var sqliteDriver = "sqlite"
+
+// UseDriver sets the database/sql driver of stores opened from now on. Tests
+// in other packages call it from init with perfguard.SQLiteDriver to count
+// the statements a store runs.
+func UseDriver(name string) { sqliteDriver = name }
 
 func openWriter(path string, opts Options) (*Store, error) {
 	wdb, err := sql.Open(sqliteDriver, dsn(path, false, opts.WriteCacheMB, false))
@@ -218,7 +238,7 @@ func openWriter(path string, opts Options) (*Store, error) {
 	if opts.SyncOnly {
 		mode = ModeSyncOnly
 	}
-	details, rebuilt, err := migrate(wdb, Details{Tok: opts.TokDetail, Tri: opts.TriDetail, TriParts: opts.TriParts}, mode)
+	details, rebuilt, err := migrate(wdb, Details{Tok: opts.TokDetail, Tri: opts.TriDetail, TriParts: opts.TriParts}, mode, opts.RebuildIndex)
 	if err != nil {
 		wdb.Close()
 		return nil, fmt.Errorf("localindex: migrate: %w", err)
@@ -271,6 +291,11 @@ func openWriter(path string, opts Options) (*Store, error) {
 		wdb.Close()
 		return nil, fmt.Errorf("localindex: replay FTS queue: %w", err)
 	}
+	if err := s.scheduleScrubs(context.Background()); err != nil {
+		s.closeShards()
+		wdb.Close()
+		return nil, fmt.Errorf("localindex: FTS compaction: %w", err)
+	}
 	if err := s.loadTombstones(); err != nil {
 		s.closeShards()
 		wdb.Close()
@@ -281,6 +306,19 @@ func openWriter(path string, opts Options) (*Store, error) {
 	s.rdb.SetMaxIdleConns(opts.ReadConns)
 	s.wg.Add(1)
 	go s.writer()
+	// Redactions the sidecar holds and the rows may not reflect (a lost
+	// transaction, a sidecar beside a new database).
+	// It is the writer's first request, before Open returns, so no
+	// redaction (which builds messages_sha) can run ahead of it.
+	if err := s.writeWait(context.Background(), func(w *writeTx) error {
+		if err := w.dropUnusedSHAIndex(); err != nil {
+			return err
+		}
+		return w.reconcile()
+	}); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("localindex: apply redactions: %w; see %s", err, RecoveryDoc)
+	}
 	return s, nil
 }
 
@@ -457,7 +495,16 @@ func (t *txRun) full() bool {
 	return t.barrier || time.Since(t.started) >= commitMaxAge || t.w.fts.bytes >= 2*commitFTSSize
 }
 
+// run runs r, after a reconcile when one is due (a lost transaction or a
+// failed request may have held a redaction's row masks).
 func (t *txRun) run(r writeReq) {
+	if t.w.s.reconcileDue.Swap(false) {
+		t.runOne(t.w.s.reconcileRequest())
+	}
+	t.runOne(r)
+}
+
+func (t *txRun) runOne(r writeReq) {
 	if r.fn == nil { // Sync barrier
 		t.barrier = true
 		t.waiting = append(t.waiting, r)
@@ -496,10 +543,11 @@ func (t *txRun) run(r writeReq) {
 		r.done <- err
 		return
 	}
-	if t.w.s.opts.DeferCommit {
+	if t.w.s.opts.DeferCommit && !r.wait {
 		r.done <- nil
 	} else {
 		t.waiting = append(t.waiting, r)
+		t.barrier = t.barrier || r.wait
 	}
 }
 
@@ -508,6 +556,9 @@ func (t *txRun) commit() {
 	defer w.closeStmts()
 	w.ctx = context.Background()
 	works, err := w.queueFTS()
+	if err == nil && testHookCommit != nil {
+		err = testHookCommit()
+	}
 	if err == nil {
 		err = w.tx.Commit()
 	} else {
@@ -518,6 +569,11 @@ func (t *txRun) commit() {
 			sh.submit(works[i])
 		}
 		s.lastSeq = works[0].seq
+	}
+	if err != nil {
+		// The lost transaction may have held a redaction's row masks
+		// whose tombstones are in the sidecar already.
+		s.reconcileDue.Store(true)
 	}
 	if err != nil && s.opts.DeferCommit {
 		s.commitFailed(err)
@@ -531,10 +587,51 @@ func (t *txRun) commit() {
 			}
 		}
 	}
+	if w.scrub || s.mainScrubTries > 0 {
+		s.scrubMain(w.scrub)
+	}
 	for _, r := range t.waiting {
 		r.done <- err
 	}
 }
+
+// scrubMain ends a redaction's transaction on the main database: it turns
+// secure_delete off again and truncates the WAL, whose frames hold the
+// pages from before the redaction. Readers can hold the WAL; the
+// checkpoint then waits briefly and is tried again after the next
+// commits, at most scrubCheckpointTries times (Close checkpoints too).
+func (s *Store) scrubMain(redacted bool) {
+	ctx := context.Background()
+	if redacted {
+		s.mainScrubTries = scrubCheckpointTries
+		if _, err := s.wdb.ExecContext(ctx, `PRAGMA secure_delete = OFF`); err != nil {
+			slog.Warn("localindex: secure_delete off", "err", err)
+		}
+	}
+	s.mainScrubTries--
+	err := func() error {
+		if _, err := s.wdb.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, scrubCheckpointWait)); err != nil {
+			return err
+		}
+		defer s.wdb.ExecContext(ctx, `PRAGMA busy_timeout = 10000`) //nolint:errcheck // the next statement fails the same way
+		var busy, logPages, ckpt int64
+		if err := s.wdb.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logPages, &ckpt); err != nil {
+			return err
+		}
+		if busy != 0 {
+			return errors.New("readers hold the WAL")
+		}
+		return nil
+	}()
+	if err == nil {
+		s.mainScrubTries = 0
+	} else if s.mainScrubTries == 0 {
+		slog.Warn("localindex: truncating the WAL after a redaction failed", "err", err)
+	}
+}
+
+// testHookCommit, when set, fails a commit with its error (tests).
+var testHookCommit func() error
 
 // commitFailed reports a lost deferred transaction: requests already
 // answered were rolled back, rows and watermarks together, so the index is
@@ -571,13 +668,24 @@ func (s *Store) Sync(ctx context.Context) error {
 
 // write runs fn in one transaction on the writer goroutine.
 func (s *Store) write(ctx context.Context, fn func(*writeTx) error) error {
+	return s.send(ctx, writeReq{ctx: ctx, fn: fn, done: make(chan error, 1)})
+}
+
+// writeWait is write answered once fn's own transaction commits, with the
+// commit's error, also with DeferCommit; the transaction commits as soon
+// as fn ran.
+func (s *Store) writeWait(ctx context.Context, fn func(*writeTx) error) error {
+	return s.send(ctx, writeReq{ctx: ctx, fn: fn, done: make(chan error, 1), wait: true})
+}
+
+func (s *Store) send(ctx context.Context, r writeReq) error {
+	fn := r.fn
 	if s.readOnly {
 		if fn == nil {
 			return nil // Sync: nothing of ours to wait for
 		}
 		return ErrReadOnly
 	}
-	r := writeReq{ctx: ctx, fn: fn, done: make(chan error, 1)}
 	select {
 	case s.reqs <- r:
 	case <-s.quit:
@@ -595,6 +703,7 @@ type writeTx struct {
 	ctx   context.Context
 	stmts map[string]*sql.Stmt
 	fts   ftsPending
+	scrub bool // a redaction masked rows: compact the FTS shards after commit
 }
 
 func (w *writeTx) stmt(q string) (*sql.Stmt, error) {

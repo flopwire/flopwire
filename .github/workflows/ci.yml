@@ -9,8 +9,18 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Go tests split across shards balanced by package duration
+  # (tools/ci-shard, scripts/ci-test-durations.json).
+  go-test:
+    name: go-test (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
+    # A shard takes about 5 min; a stuck step must not hold the run for the
+    # 6 h default.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     services:
       postgres:
         image: postgres:17.6-bookworm
@@ -35,6 +45,74 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.6"
+          cache: false
+      # One cache per shard: setup-go's shared key would keep whichever
+      # job saved first, without the -race build of the other shards.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-test-${{ runner.os }}-shard${{ matrix.shard }}-${{ hashFiles('go.sum') }}
+      # MinIO is a step, not a service: services cannot pass `server /data`.
+      # Same pinned image as compose.yaml.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 127.0.0.1:9000:9000 \
+            -e MINIO_ROOT_USER=flopwire -e MINIO_ROOT_PASSWORD=flopwire-ci-secret \
+            cgr.dev/chainguard/minio@sha256:71674988a1c7ddd5724928633199152b11e4ddefd6c6ce2d60772ff4a8f22ca9 server /data
+          for _ in $(seq 60); do
+            curl -fsS http://127.0.0.1:9000/minio/health/ready && exit 0
+            sleep 1
+          done
+          docker logs minio
+          exit 1
+      # The backup round trip needs pg_dump/pg_restore >= the server major (17);
+      # the runner image ships 16.
+      # apt.postgresql.org can stall; bound each attempt and retry.
+      - name: Install PostgreSQL 17 client
+        # 3 attempts x (2 x 150 s + 10 s) fits under 16 min.
+        timeout-minutes: 16
+        run: |
+          for attempt in 1 2 3; do
+            # Finish any install a killed attempt left half-configured.
+            sudo dpkg --configure -a || true
+            if sudo timeout 150 /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null &&
+              sudo timeout 150 apt-get install -y -q --no-install-recommends postgresql-client-17 >/dev/null; then
+              echo /usr/lib/postgresql/17/bin >>"$GITHUB_PATH"
+              exit 0
+            fi
+            echo "::warning::PostgreSQL 17 client install attempt $attempt failed"
+            sleep 10
+          done
+          exit 1
+      - name: Pick this shard's packages
+        run: |
+          go run ./tools/ci-shard -shards ${{ strategy.job-total }} -index ${{ matrix.shard }} >"$RUNNER_TEMP/packages"
+          cat "$RUNNER_TEMP/packages"
+          test -s "$RUNNER_TEMP/packages"
+      - name: Go tests
+        run: |
+          # One package path per line, no spaces: word splitting is intended.
+          # shellcheck disable=SC2046
+          scripts/ci-go-test.sh -race $(cat "$RUNNER_TEMP/packages")
+      # Feeds the coverage check in `test` and refreshes of the duration file.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-test-${{ matrix.shard }}
+          path: ${{ runner.temp }}/go-test.json
+          retention-days: 14
+          if-no-files-found: error
+
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
           cache: true
       - uses: pnpm/action-setup@v4
         with:
@@ -44,26 +122,6 @@ jobs:
           node-version: "24"
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-      # MinIO is a step, not a service: services cannot pass `server /data`.
-      # Same pinned image as compose.yaml.
-      - name: Start MinIO
-        run: |
-          docker run -d --name minio -p 127.0.0.1:9000:9000 \
-            -e MINIO_ROOT_USER=flopwire -e MINIO_ROOT_PASSWORD=flopwire-ci-secret \
-            cgr.dev/chainguard/minio@sha256:71674988a1c7ddd5724928633199152b11e4ddefd6c6ce2d60772ff4a8f22ca9 server /data
-          for i in $(seq 60); do
-            curl -fsS http://127.0.0.1:9000/minio/health/ready && exit 0
-            sleep 1
-          done
-          docker logs minio
-          exit 1
-      # The backup round trip needs pg_dump/pg_restore >= the server major (17);
-      # the runner image ships 16.
-      - name: Install PostgreSQL 17 client
-        run: |
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
-          sudo apt-get install -y -q --no-install-recommends postgresql-client-17 >/dev/null
-          echo /usr/lib/postgresql/17/bin >>"$GITHUB_PATH"
       - run: pnpm --dir web install --frozen-lockfile
       # macOS is the main agent platform but CI runs Linux: vet both, so the
       # darwin-only files (kqueue watcher, file identity, caller detection)
@@ -72,11 +130,14 @@ jobs:
         run: |
           GOOS=linux go vet ./...
           GOOS=darwin go vet ./...
-      - name: Go tests
-        run: scripts/ci-go-test.sh -race ./...
+      # The go-test shards run with -race, under which TestPackageInitCost
+      # skips its dependency caps. Run the init guards once without -race.
+      - name: Init cost guards (no -race)
+        run: go test -count=1 -run '^(TestPackageInitCost|TestInitAndVersionRunNoProgram)$' -v ./cmd/flopwire
       - run: pnpm --dir web test
       - run: pnpm --dir web build
       - run: scripts/validate-release-tag_test.sh
+      - run: scripts/perf-baseline_test.sh
       - name: Build the image with the release version
         env:
           FLOPWIRE_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
@@ -88,3 +149,30 @@ jobs:
         env:
           FLOPWIRE_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
         run: scripts/validate-fresh-compose.sh flopwire:test linux/amd64 "$FLOPWIRE_BUILD_VERSION"
+
+  # The required check on main. It passes only when every shard and the
+  # other checks passed and the shards together ran each package once.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [go-test, checks]
+    if: always()
+    steps:
+      - name: Require every job to pass
+        env:
+          GO_TEST: ${{ needs.go-test.result }}
+          CHECKS: ${{ needs.checks.result }}
+        run: |
+          echo "go-test: $GO_TEST, checks: $CHECKS"
+          test "$GO_TEST" = success && test "$CHECKS" = success
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-test-*
+          path: ${{ runner.temp }}/shards
+      - name: Every package ran in exactly one shard
+        run: go run ./tools/ci-shard -verify "$RUNNER_TEMP"/shards/*/go-test.json

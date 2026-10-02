@@ -21,6 +21,7 @@ permissions:
 jobs:
   verify-source-tag:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:

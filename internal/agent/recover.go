@@ -47,6 +47,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 )
 
@@ -70,7 +71,7 @@ func needsRecovery(p placed) bool {
 	if p.pl.Cwd == "" {
 		return p.pl.Remote != ""
 	}
-	_, err := os.Stat(p.pl.Cwd)
+	_, err := fsprobe.Stat(p.pl.Cwd)
 	return errors.Is(err, os.ErrNotExist)
 }
 
@@ -314,7 +315,7 @@ func newRepoCache(ctx context.Context, mains map[string]bool) *repoCache {
 // add makes the main checkout m a candidate when it exists and is not one
 // already known under another path.
 func (rc *repoCache) add(m string) {
-	fi, err := os.Stat(m)
+	fi, err := fsprobe.Stat(m)
 	if err != nil || !fi.IsDir() {
 		return
 	}
@@ -391,11 +392,11 @@ func (rc *repoCache) branchNames(repo string) map[string]bool {
 		}
 	}
 	common := filepath.Join(repo, ".git")
-	if fi, err := os.Stat(common); err != nil || !fi.IsDir() {
+	if fi, err := fsprobe.Stat(common); err != nil || !fi.IsDir() {
 		common = repo // a bare repository
 	}
 	logs := []string{filepath.Join(common, "logs", "HEAD")}
-	if wts, err := os.ReadDir(filepath.Join(common, "worktrees")); err == nil {
+	if wts, err := fsprobe.ReadDir(filepath.Join(common, "worktrees")); err == nil {
 		for _, w := range wts {
 			logs = append(logs, filepath.Join(common, "worktrees", w.Name(), "logs", "HEAD"))
 		}
@@ -409,7 +410,7 @@ func (rc *repoCache) branchNames(repo string) map[string]bool {
 // reflogBranches adds the X and Y of every "checkout: moving from X to Y"
 // in a reflog file.
 func reflogBranches(path string, names map[string]bool) {
-	f, err := os.Open(path)
+	f, err := fsprobe.Open(path)
 	if err != nil {
 		return
 	}
@@ -492,7 +493,7 @@ func scanSignals(path string) signals {
 	if path == "" {
 		return s
 	}
-	f, err := os.Open(path)
+	f, err := fsprobe.Open(path)
 	if err != nil {
 		return s
 	}
@@ -566,14 +567,14 @@ func (a *Agent) buildWtIndex(ctx context.Context, rc *repoCache, all []placeEntr
 		}
 		ok, seen := live[cwd]
 		if !seen {
-			fi, err := os.Stat(cwd)
+			fi, err := fsprobe.Stat(cwd)
 			ok = err == nil && fi.IsDir()
 			live[cwd] = ok
 		}
 		if !ok {
 			continue
 		}
-		fi, err := os.Stat(e.path)
+		fi, err := fsprobe.Stat(e.path)
 		if err != nil {
 			continue
 		}
@@ -627,7 +628,7 @@ func (w *wtIndex) lookup(cwd string) map[string]bool {
 	p := physicalPath(cwd)
 	top := ""
 	for dir := p; ; {
-		if _, err := os.Stat(dir); err == nil {
+		if _, err := fsprobe.Stat(dir); err == nil {
 			break
 		}
 		if r := w.byPath[dir]; len(r) > 0 {
@@ -674,7 +675,7 @@ var (
 // and returns each one's -C directory and path argument. Text in JSON
 // strings is escaped, so a quote or a backslash ends a command.
 func scanWorktreeAdds(path string, br *bufio.Reader) []wtAdd {
-	f, err := os.Open(path)
+	f, err := fsprobe.Open(path)
 	if err != nil {
 		return nil
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/flopwire/flopwire/internal/api"
 	"github.com/flopwire/flopwire/internal/auth"
 	backupsvc "github.com/flopwire/flopwire/internal/backup"
+	"github.com/flopwire/flopwire/internal/bus"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/ingest"
@@ -41,7 +42,9 @@ var version = "dev"
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "flopwire:", err)
+		if !errors.Is(err, errReported) { // already written (JSON on stderr)
+			fmt.Fprintln(os.Stderr, "flopwire:", err)
+		}
 		os.Exit(1)
 	}
 }
@@ -93,12 +96,20 @@ func run(parent context.Context, args []string) error {
 		return toolCmd(ctx, "grep", args[1:])
 	case "search", "sessions", "read":
 		return toolCmd(ctx, args[0], args[1:])
+	case "peers", "send", "inbox":
+		return busMain(ctx, args[0], args[1:])
+	case "accept", "revoke", "accepts":
+		return acceptMain(ctx, args[0], args[1:])
 	case "raw":
 		return raw(ctx, args[1:])
 	case "mcp":
 		return mcp(ctx, args[1:])
 	case "agent":
 		return agentCmd(ctx, args[1:])
+	case "hook":
+		return hookMain(ctx, args[1:])
+	case "setup":
+		return setupMain(ctx, args[1:])
 	case "bench":
 		return benchCmd(ctx, args[1:])
 	case "redact":
@@ -107,8 +118,10 @@ func run(parent context.Context, args []string) error {
 		return usage()
 	}
 }
-func usage() error {
-	fmt.Fprintln(os.Stderr, `Usage: flopwire <command>
+
+// usageText lists every command; the plugin test checks hook commands
+// against it.
+const usageText = `Usage: flopwire <command>
 
   serve       run the API and admin service
   healthcheck probe a server readiness endpoint
@@ -135,15 +148,30 @@ func usage() error {
   search      ranked search for fuzzy questions
   sessions    list sessions, newest first
   read        read a message or session at an address that grep, search or sessions print
-  mcp         serve grep, search, sessions and read over MCP stdio
-              (these read the local index; --server queries the team server;
-              flopwire <tool> --help shows examples)
+  peers       list live agent sessions you can message
+  send        message another agent session, or @user's next session
+  inbox       this session's messages, received and sent
+  accepts     who may message your agents, and messages held until you accept
+              their sender (a person at a terminal only, like accept and revoke)
+  accept      accept messages from a person's agents (asks you to confirm)
+  revoke      stop accepting a person's messages; undelivered ones are held again
+  mcp         serve grep, search, sessions, read, peers, send and inbox over
+              MCP stdio (the first four read the local index; --server
+              queries the team server; the last three go through the device
+              agent; flopwire <tool> --help shows examples)
   diagnostics inspect extraction reports (--server, --source ID, --json)
   raw         plumbing: archived bytes of a source by provenance
   redact      hide a message (or some of its lines) on the server and in the local index
+  hook        what harness hooks run: prints messages for this session into it,
+              and asks the device agent to index the transcript now
+  setup       install Flopwire into Claude Code through its own plugin commands
+              (--check reports, --remove uninstalls)
   agent       run the device agent (agent run) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
-  version     print version`)
+  version     print version`
+
+func usage() error {
+	fmt.Fprintln(os.Stderr, usageText)
 	return errors.New("command required")
 }
 
@@ -198,14 +226,17 @@ func serve(ctx context.Context, args []string) error {
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
 	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
+	messageBus := &bus.Store{Pool: pool}
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
 		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
 		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
+		Bus:               messageBus,
 		TrustedProxyCIDRs: envList("FLOPWIRE_TRUSTED_PROXY_CIDRS"),
 		AuthRate:          api.Rate{Burst: envInt("FLOPWIRE_AUTH_RATE_BURST", 10), Refill: envDuration("FLOPWIRE_AUTH_RATE_REFILL", time.Minute)}})
 	go runDeletionWorker(ctx, durableStore, slog.Default())
 	go runCredentialSweeper(ctx, durableStore, slog.Default())
 	go runChunkReconciler(ctx, durableStore, slog.Default())
+	go runBusSweeper(ctx, messageBus, slog.Default())
 	apiHandler := app.Handler(reg)
 	root := http.NewServeMux()
 	root.Handle("/v1/", apiHandler)
@@ -237,6 +268,7 @@ func backupCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	output := fs.String("output", "", "new or empty backup directory")
 	encrypted := fs.Bool("encrypted-destination", false, "acknowledge the backup destination is encrypted")
+	allowRepair := fs.Bool("allow-pending-redaction-repair", false, "take the backup even while message redactions still repair archived bytes (the backup may hold redacted text)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -247,7 +279,7 @@ func backupCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	manifest, createErr := backupsvc.Create(ctx, mustEnv("DATABASE_URL"), objects, env("S3_BUCKET", "flopwire"), *output, *encrypted)
+	manifest, createErr := backupsvc.Create(ctx, mustEnv("DATABASE_URL"), objects, env("S3_BUCKET", "flopwire"), *output, backupsvc.Options{EncryptedDestination: *encrypted, AllowPendingRedactionRepair: *allowRepair})
 	pool, err := pgxpool.New(ctx, mustEnv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("record backup status: %w", err)
@@ -314,6 +346,26 @@ func runCredentialSweeper(ctx context.Context, s interface {
 			log.Error("credential sweep", "err", err)
 		case out != (domain.CredentialSweep{}):
 			log.Info("credential sweep", "expired", out.Expired, "idle", out.Idle, "ephemeral_devices_swept", out.Swept)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// runBusSweeper expires undelivered messages and drops stale presence.
+func runBusSweeper(ctx context.Context, s *bus.Store, log *slog.Logger) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		n, err := s.Sweep(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.Error("message bus sweep", "err", err)
+		case n > 0:
+			log.Info("message bus sweep", "expired", n)
 		}
 		select {
 		case <-ctx.Done():

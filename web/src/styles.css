@@ -804,3 +804,50 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+.held-group + .held-group {
+  margin-top: 8px;
+}
+.held-messages {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0 0 0 46px;
+  display: grid;
+  gap: 12px;
+}
+.held-messages li {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.held-preview {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.accept-panel {
+  margin: 0 0 16px;
+  border-color: #9a5b0b;
+}
+.accept-panel h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.accept-panel p {
+  max-width: 72ch;
+  margin: 0 0 12px;
+  line-height: 1.55;
+}
+.accept-statement {
+  font-weight: 600;
+}
+.messaging-outcome {
+  margin: 0 0 24px;
+}
+@media (max-width: 760px) {
+  .held-messages {
+    padding-left: 0;
+  }
+}

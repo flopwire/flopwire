@@ -39,7 +39,10 @@ type ArchiveRewrite struct {
 	chunks []rewriteChunk
 	tails  []rewriteTail
 	conn   *pgxpool.Conn
+	pool   *pgxpool.Pool
 	locked []string
+	// reserved is the replacements this plan put as 'uploading'.
+	reserved [][]byte
 }
 
 type ArchiveRewriteResult struct {
@@ -61,7 +64,7 @@ func PrepareArchiveRewrite(ctx context.Context, pool *pgxpool.Pool, objects Obje
 		spans []redact.Span
 	}
 	fixes := map[syncproto.Hash]*fix{}
-	plan := &ArchiveRewrite{}
+	plan := &ArchiveRewrite{pool: pool}
 	for _, m := range masks {
 		g := m.Generation
 		for _, c := range g.Entries {
@@ -93,6 +96,10 @@ func PrepareArchiveRewrite(ctx context.Context, pool *pgxpool.Pool, objects Obje
 			return nil, err
 		}
 		plan.conn = conn
+		if err := store.PinBackend(ctx, conn); err != nil {
+			conn.Release()
+			return nil, err
+		}
 		var got bool
 		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock_shared($1)`, store.PurgeLockID).Scan(&got); err != nil {
 			conn.Release()
@@ -244,21 +251,27 @@ func (p *ArchiveRewrite) WithTx(ctx context.Context, fn func(pgx.Tx) error) erro
 
 // Close releases the object-write fences even after an abandoned plan.
 // Reserved objects then remain in the existing orphan ledger for cleanup.
+// A replacement that was never installed may hold a line a newer catalog
+// redacts (the plan was derived from an older one), so it is due for
+// cleanup at once rather than after the upload grace; the chunk lock held
+// here means no upload owns the reservation meanwhile. Installed ones are
+// 'committed' and stay.
 func (p *ArchiveRewrite) Close() {
 	if p.conn == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	if len(p.reserved) > 0 {
+		// Best effort: on failure the reconciler still finds them after
+		// the upload grace.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _ = p.conn.Exec(ctx, `UPDATE chunks SET cleanup_after=now(),updated_at=now() WHERE hash=ANY($1) AND state='uploading'`, p.reserved)
+		cancel()
+	}
+	locks := []store.AdvisoryLock{{ID: store.PurgeLockID, Shared: true}}
 	for _, key := range p.locked {
-		if _, err := p.conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended($1,0))`, key); err != nil {
-			_ = p.conn.Conn().Close(ctx)
-			break
-		}
+		locks = append(locks, store.AdvisoryLock{Key: key})
 	}
-	if _, err := p.conn.Exec(ctx, `SELECT pg_advisory_unlock_shared($1)`, store.PurgeLockID); err != nil {
-		_ = p.conn.Conn().Close(ctx)
-	}
+	_ = store.ReleaseAdvisoryLocks(p.conn, p.pool, locks...)
 	p.conn.Release()
 	p.conn = nil
 }
@@ -315,6 +328,7 @@ func (p *ArchiveRewrite) reserveReplacement(ctx context.Context, objects Objects
 	if tag.RowsAffected() != 1 {
 		return nu, 0, ErrArchiveChanged
 	}
+	p.reserved = append(p.reserved, bytes.Clone(nu[:]))
 	if err := objects.Put(ctx, ChunkKey(nu), z); err != nil {
 		return nu, 0, err
 	}

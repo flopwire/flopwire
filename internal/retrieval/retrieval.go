@@ -119,6 +119,27 @@ func (q *query) sql() string {
 // path rule change (D18).
 const visible = `(SELECT * FROM conversations WHERE hidden_at IS NULL)`
 
+// listed is visible with each conversation's hot fields
+// (conversation_activity: last_activity_at, digest, digest_stale), for
+// the queries that list or describe conversations (convCols). aid is the
+// id as the activity row holds it: a keyset bound on
+// (last_activity_at, aid) is an index condition on
+// conversation_activity_idx, one on (last_activity_at, id) is not (the
+// planner does not carry a range on id across the join). Visibility is
+// NOT a.hidden, which mirrors c.hidden_at (002_ingest.sql): it matches
+// that index's predicate, so a page walks visible conversations only.
+// Testing c.hidden_at as well would make the planner multiply two
+// selectivities that are one, underestimate the visible rows and, with
+// many hidden, hash-join a scan of every conversation.
+const listed = `(SELECT c.*,a.conversation_id AS aid,a.last_activity_at,a.digest,a.digest_stale FROM conversations c
+	JOIN conversation_activity a ON a.conversation_id=c.id WHERE NOT a.hidden)`
+
+// lastActivity is conversation c's last activity where c is a plain
+// conversations row (a message's conversation in from).
+func lastActivity(c string) string {
+	return `(SELECT a.last_activity_at FROM conversation_activity a WHERE a.conversation_id=` + c + `.id)`
+}
+
 // from joins a message to what its filters and output need.
 const from = `messages m JOIN ` + visible + ` c ON c.id=m.conversation_id JOIN devices d ON d.id=c.device_id
 	JOIN users u ON u.id=c.user_id LEFT JOIN sources s ON s.id=m.source_id`
@@ -217,7 +238,7 @@ func convFilters(q *query, f format.Filters) {
 		q.where("EXISTS (SELECT 1 FROM unnest(c.branches) b WHERE b ILIKE " + q.arg(format.BranchMatch(f.Branch)) + ")")
 	}
 	if f.ExcludeLive {
-		q.where("COALESCE(c.last_activity_at,'-infinity') < " + q.arg(time.Now().Add(-format.LiveWindow)))
+		q.where("COALESCE(" + lastActivity("c") + ",'-infinity') < " + q.arg(time.Now().Add(-format.LiveWindow)))
 		// Sessions (and their subagents) the device reports open, while
 		// they (or the parent) wrote within the hour, as liveSQL has it.
 		q.where("NOT COALESCE(d.live_at>now()-interval '1 hour' AND " + heldOpen("d.live_sessions") + ",false)")
@@ -231,9 +252,9 @@ func convFilters(q *query, f format.Filters) {
 // the session id list ids: it is named there and wrote within the hour,
 // or its parent (on its device) is named and wrote within the hour.
 func heldOpen(ids string) string {
-	return `(c.session_id=ANY(` + ids + `) AND c.last_activity_at>now()-interval '1 hour'
+	return `(c.session_id=ANY(` + ids + `) AND ` + lastActivity("c") + `>now()-interval '1 hour'
 		OR c.parent_native_session_id=ANY(` + ids + `) AND EXISTS (SELECT 1 FROM conversations p WHERE p.device_id=c.device_id
-			AND p.session_id=c.parent_native_session_id AND p.last_activity_at>now()-interval '1 hour'))`
+			AND p.session_id=c.parent_native_session_id AND ` + lastActivity("p") + `>now()-interval '1 hour'))`
 }
 
 // excludeSessionTree is the condition leaving out a session and its
@@ -471,8 +492,18 @@ func scanMessage(row pgx.Row) (format.Message, error) {
 const convCols = `c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(c.cwd,''),COALESCE(c.repo_root,c.cwd,''),d.name,u.email,
 	c.started_at,c.last_activity_at,COALESCE(c.parent_conversation_id::text,''),COALESCE(c.spawned_by_message_id::text,''),c.depth,
 	COALESCE(pc.session_id,c.parent_native_session_id,''),
-	(SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE),
+	` + messageCount + `,
 	c.branches,c.digest,` + liveSQL
+
+// messageCount is conversation c's live message count (live rows on the
+// active path). The digest holds it per kind, maintained by every append
+// and recounted whenever rows are replaced or superseded, so reading it
+// costs the same whatever the session's length. While a parse that
+// replaced rows has not recounted yet (digest_stale), or before the first
+// digest, the rows are counted.
+const messageCount = `CASE WHEN c.digest IS NULL OR c.digest_stale
+	THEN (SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE)
+	ELSE (SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) END`
 
 // liveSQL is whether a conversation c of device d is live: active within
 // format.LiveWindow, or reported open by its device (devices.live_sessions,
@@ -497,7 +528,7 @@ func scanConv(row pgx.Row) (format.ConversationInfo, error) {
 	return c, err
 }
 
-const convFrom = visible + ` c` + convJoins
+const convFrom = listed + ` c` + convJoins
 
 // convJoins joins a conversation c to what convCols needs.
 const convJoins = ` JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id
@@ -585,14 +616,21 @@ func (s *Store) attribution(ctx context.Context, sourceID string, generation, of
 		return a, err
 	}
 	// The evidence of a hidden conversation is hidden with it.
-	var hidden bool
-	err = s.db().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations c JOIN sources s ON s.id=$1 WHERE c.hidden_at IS NOT NULL
-		AND (c.source_id IN (s.id,s.parent_source_id)
-			OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.source_id IN (s.id,s.parent_source_id))))`, sourceID).Scan(&hidden)
+	hidden, err := s.sourceHidden(ctx, sourceID)
 	if hidden {
 		return a, ErrNotFound
 	}
 	return a, err
+}
+
+// sourceHidden reports whether a source's raw evidence is hidden: some
+// conversation it (or its parent) feeds is hidden by an admin path rule.
+func (s *Store) sourceHidden(ctx context.Context, sourceID string) (bool, error) {
+	var hidden bool
+	err := s.db().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations c JOIN sources s ON s.id=$1 WHERE c.hidden_at IS NOT NULL
+		AND (c.source_id IN (s.id,s.parent_source_id)
+			OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.source_id IN (s.id,s.parent_source_id))))`, sourceID).Scan(&hidden)
+	return hidden, err
 }
 
 // fetch reads the range of a's source generation from the archive, under

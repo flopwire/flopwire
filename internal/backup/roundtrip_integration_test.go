@@ -85,10 +85,10 @@ func TestBackupVerifyRestoreRoundTrip(t *testing.T) {
 	mustExec(`INSERT INTO chunks(hash,size,stored_size,object_key,state,deletion_job_id) VALUES($1,14,14,'chunks/purged-already','deletion_pending',$2)`, gone[:], job)
 
 	dir := filepath.Join(t.TempDir(), "backup")
-	if _, err = Create(ctx, sourceURL, objects, bucket, dir, false); err == nil {
+	if _, err = Create(ctx, sourceURL, objects, bucket, dir, Options{}); err == nil {
 		t.Fatal("backup without the encrypted-destination acknowledgement succeeded")
 	}
-	manifest, err := Create(ctx, sourceURL, objects, bucket, dir, true)
+	manifest, err := Create(ctx, sourceURL, objects, bucket, dir, Options{EncryptedDestination: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -215,7 +215,7 @@ func (q *Queue) runParse(ctx context.Context, id string, parse func(context.Cont
 	if err == nil || ctx.Err() != nil {
 		return
 	}
-	if errors.Is(err, errPurgeBusy) || errors.Is(err, ErrArchiveChanged) || errors.Is(err, errParseBusy) {
+	if errors.Is(err, errPurgeBusy) || errors.Is(err, ErrArchiveChanged) || errors.Is(err, errParseBusy) || errors.Is(err, errMasksMoved) {
 		q.later(ctx, id)
 		return
 	}

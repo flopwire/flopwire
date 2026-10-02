@@ -1568,6 +1568,10 @@ func (o *ListOptions) where() (string, []any) {
 		where += " AND c.deleted_in_generation IS NULL"
 	}
 	if o.Like != "" {
+		// A leading-% LIKE cannot use an index, so a glob walks the
+		// device's conversations. Unlike the server's (trigram indexes,
+		// retrieval sessionsPage) that is one device's sessions, a few
+		// thousand rows of metadata, so no index is kept for it.
 		where += ` AND (c.session_id LIKE ?1x ESCAPE '\' OR ifnull(c.title, '') LIKE ?1x ESCAPE '\'
 			OR ifnull(c.repo_root, ifnull(c.cwd, '')) LIKE ?1x ESCAPE '\' OR ifnull(c.repo_root, ifnull(c.cwd, '')) LIKE '%/' || ?1x ESCAPE '\')`
 		where = strings.ReplaceAll(where, "?1x", "?")
@@ -1575,6 +1579,15 @@ func (o *ListOptions) where() (string, []any) {
 	}
 	return where, args
 }
+
+// messageCountSQL is conversation c's live message count (live rows on
+// the active path). The digest holds it per kind, kept exact in every
+// write transaction that adds, supersedes or moves rows (refreshDigest),
+// so reading it costs the same whatever the session's length. Before the
+// first digest the rows are counted.
+const messageCountSQL = `CASE WHEN c.digest IS NULL
+		  THEN (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id AND m.superseded = 0 AND m.on_active_path IS NOT 0)
+		  ELSE ifnull((SELECT sum(value) FROM json_each(c.digest, '$.messages')), 0) END`
 
 // ListConversations returns conversations by most recent activity.
 func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]ConversationRow, error) {
@@ -1597,7 +1610,7 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 	q := `SELECT c.id, c.agent, c.session_id, c.device_id, ifnull(c.cwd, ''), ifnull(c.repo_root, ''), ifnull(c.title, ''),
 		c.started_at, c.last_activity_at, ifnull(c.parent_conversation_id, 0), ifnull(c.parent_session_id, ''),
 		ifnull(c.spawned_by_message_id, 0), c.depth, c.deleted_in_generation IS NOT NULL, ifnull(s.path, ''),
-		(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id AND m.superseded = 0 AND m.on_active_path IS NOT 0),
+		` + messageCountSQL + `,
 		ifnull(c.branches, ''), ifnull(c.digest, '')
 		FROM conversations c LEFT JOIN sources s ON s.id = c.source_id
 		WHERE ` + where + ` ORDER BY ` + order + ` LIMIT ?`

@@ -419,7 +419,8 @@ func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filt
 // sessionsPage is the query for limit sessions after the cursor key
 // after (nil: from the start), in order of last activity, undated
 // sessions last, ties by id. The keyset walks
-// conversations_activity_idx: dated sessions after the key, then undated
+// conversation_activity_idx, which holds visible conversations only
+// (joining each entry to its conversation): dated sessions after the key, then undated
 // ones, each branch stopping at limit, so a page reads at most 2·limit rows
 // however many sessions there are (unless a filter rejects most of
 // them). Devices and users join inside the page only when a filter needs
@@ -461,7 +462,7 @@ func sessionsPage(glob string, f format.Filters, oldest bool, after *format.Sess
 		a := q.arg(like)
 		q.where(fmt.Sprintf("(c.session_id ILIKE %[1]s OR COALESCE(c.title,'') ILIKE %[1]s OR COALESCE(c.repo_root,c.cwd,'') ILIKE %[1]s OR COALESCE(c.repo_root,c.cwd,'') ILIKE '%%/' || %[1]s)", a))
 	}
-	page := `SELECT c.* FROM ` + visible + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql()
+	page := `SELECT c.* FROM ` + listed + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql()
 	cmp, dir := "<", " DESC"
 	if oldest {
 		cmp, dir = ">", ""
@@ -470,15 +471,15 @@ func sessionsPage(glob string, f format.Filters, oldest bool, after *format.Sess
 	var parts []string
 	undated := page + ` AND c.last_activity_at IS NULL`
 	if after != nil && after.Undated {
-		undated += ` AND c.id` + cmp + q.arg(after.ID) + `::uuid`
+		undated += ` AND c.aid` + cmp + q.arg(after.ID) + `::uuid`
 	} else {
 		dated := page + ` AND c.last_activity_at IS NOT NULL`
 		if after != nil {
-			dated += ` AND (c.last_activity_at,c.id)` + cmp + `(` + q.arg(after.Time()) + `::timestamptz,` + q.arg(after.ID) + `::uuid)`
+			dated += ` AND (c.last_activity_at,c.aid)` + cmp + `(` + q.arg(after.Time()) + `::timestamptz,` + q.arg(after.ID) + `::uuid)`
 		}
-		parts = append(parts, `(`+dated+` ORDER BY c.last_activity_at`+dir+`,c.id`+dir+lim+`)`)
+		parts = append(parts, `(`+dated+` ORDER BY c.last_activity_at`+dir+`,c.aid`+dir+lim+`)`)
 	}
-	parts = append(parts, `(`+undated+` ORDER BY c.id`+dir+lim+`)`)
+	parts = append(parts, `(`+undated+` ORDER BY c.last_activity_at`+dir+`,c.aid`+dir+lim+`)`)
 	// The branches are ordered explicitly before the page's LIMIT: Append
 	// happens to emit them in order, but nothing promises that (a Parallel
 	// Append need not), and the LIMIT would then drop dated rows. The sort
@@ -673,12 +674,27 @@ func (s *Store) locateAddress(ctx context.Context, deviceID, address, owner stri
 	if err != nil {
 		return "", 0, false, err
 	}
-	err = one(`SELECT m.id::text FROM messages m JOIN `+addressConversations+` c ON c.id=m.conversation_id WHERE c.session_id=$3
-		ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, sid)
+	err = one(firstLive(addressConversations+` c`, `c.session_id=$3`), sid)
+	if errors.Is(err, ErrNotFound) {
+		err = one(`SELECT m.id::text FROM messages m JOIN `+addressConversations+` c ON c.id=m.conversation_id WHERE c.session_id=$3
+			ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, sid)
+	}
 	if errors.Is(err, ErrNotFound) {
 		err = fmt.Errorf("%w: session %s has no messages", ErrNotFound, sid)
 	}
 	return id, 0, true, err
+}
+
+// firstLive selects the first live row on the active path of the
+// conversations convs (a FROM item aliased c) matching where: the
+// shallowest conversation's lowest ordinal. Each conversation's first
+// row comes from messages_default_filter_idx in ordinal order, so the
+// session's length does not matter. A session with no such row needs
+// the full order over all its rows (superseded, off the active path).
+func firstLive(convs, where string) string {
+	return `SELECT m.id::text FROM ` + convs + ` CROSS JOIN LATERAL (SELECT mm.id,mm.ordinal FROM messages mm
+		WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE ORDER BY mm.ordinal,mm.id LIMIT 1) m
+		WHERE ` + where + ` ORDER BY c.depth,m.ordinal,m.id LIMIT 1`
 }
 
 // locateSelf finds the first message of the caller's own session: the
@@ -688,8 +704,11 @@ func (s *Store) locateSelf(ctx context.Context, owner, session string) (string, 
 		return "", fmt.Errorf("%w: read self needs the calling user", ErrBadRequest)
 	}
 	var id string
-	err := s.db().QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN `+visible+` c ON c.id=m.conversation_id WHERE c.session_id=$1 AND c.user_id=$2
-		ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, session, owner).Scan(&id)
+	err := s.db().QueryRow(ctx, firstLive(visible+` c`, `c.session_id=$1 AND c.user_id=$2`), session, owner).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.db().QueryRow(ctx, `SELECT m.id::text FROM messages m JOIN `+visible+` c ON c.id=m.conversation_id WHERE c.session_id=$1 AND c.user_id=$2
+			ORDER BY m.superseded, m.on_active_path IS FALSE, c.depth, m.ordinal, m.id LIMIT 1`, session, owner).Scan(&id)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("%w: your session %s is not indexed yet", ErrNotFound, session)
 	}
@@ -731,7 +750,7 @@ func (s *Store) readAt(ctx context.Context, deviceID string, rq format.ReadQuery
 		after = sessionAfter
 	}
 	if before < 0 || after < 0 || before > maxContext || after > maxContext {
-		return nil, fmt.Errorf("%w: before and after must be between 0 and %d", ErrBadRequest, maxContext)
+		return nil, fmt.Errorf("%w: messages before and after must each be between 0 and %d", ErrBadRequest, maxContext)
 	}
 	var conv string
 	var ord int64

@@ -29,6 +29,7 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"unicode/utf8"
 )
 
 // Match is one masked region of a scanned buffer.
@@ -206,6 +207,12 @@ func escAt(b []byte, i int) (int, int) {
 		if hi < len(b) && b[hi] == 'u' {
 			hi = min(len(b), hi+5)
 		} else if hi < len(b) {
+			hi++
+		}
+		// A truncated escape (\u before non-hex text) may end inside a
+		// multibyte character; stop at the next character boundary so the
+		// mask never leaves half a character behind.
+		for hi < len(b) && !utf8.RuneStart(b[hi]) {
 			hi++
 		}
 		if lo < i && i < hi {

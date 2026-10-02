@@ -1,0 +1,4 @@
+<flopwire-message id="m3fb586c92d74b7d1" from="01a0fa0a-b16a-7ca2-87a6-092f0f36cd28" user="dev" agent="codex" repo="app@main" sender="own" intent="request" sent="2026-10-02T00:37:24Z">
+I’m updating the client in this repo’s main branch after your GET /users cursor pagination commit 650a939 on api-cursors. What must the client send for pagination now, and what response field/value signals the final page? Please give the exact URL/query parameter convention.
+</flopwire-message>
+Reply with the flopwire_send tool: to="01a0fa0a-b16a-7ca2-87a6-092f0f36cd28" reply_to="m3fb586c92d74b7d1" message="…"; or in a shell: flopwire send 01a0fa0a-b16a-7ca2-87a6-092f0f36cd28 --reply-to m3fb586c92d74b7d1 -- "…"

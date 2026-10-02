@@ -29,6 +29,8 @@ Decided 2026-09-30. Goal: a PR that adds a quadratic loop, a full-table rescan, 
 
 Out of scope for round 1: web bundle budgets (admin-only console), HTTP load tests, nightly hosted benchmarks.
 
+Nightly hosted benchmark: added 2026-10-01 as an A/B run on a synthetic corpus (`.github/workflows/perf-nightly.yml`, docs/perf/README.md). It is the primary drift signal; the laptop run stays the pre-release check on the real corpus.
+
 ## Known violations the guards will catch
 
 | # | Path | Problem | Guard |

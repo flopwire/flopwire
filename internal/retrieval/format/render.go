@@ -60,14 +60,29 @@ func (s Style) read(addr string) string {
 	return "flopwire read " + addr
 }
 
-// more is the hint for messages beyond the ones read shows: the address
-// to go on from and the direction.
-func (s Style) more(addr, dir string) string {
+// More is the call that reads n whole messages before or after (dir) the
+// message at addr.
+func (s Style) More(addr, dir string, n int) string {
 	if s.MCP {
-		return fmt.Sprintf("flopwire_read address=%s %s=10", addr, dir)
+		return fmt.Sprintf("flopwire_read address=%s messages_%s=%d", addr, dir, n)
 	}
-	flag := map[string]string{"before": "-B", "after": "-A"}[dir]
-	return fmt.Sprintf("flopwire read %s %s 10", addr, flag)
+	return fmt.Sprintf("flopwire read %s --messages-%s %d", addr, dir, n)
+}
+
+// moreLine is read's hint line for one side (dir) of the messages it
+// shows. When the budget left out some of the fetched neighbours on that
+// side, it says how many it shows of how many and gives the call that
+// reads the rest from the last one shown.
+func (s Style) moreLine(addr, dir string, shown, fetched int) string {
+	label := map[string]string{"before": "earlier", "after": "later"}[dir]
+	if shown < fetched {
+		return s.cutLine(label, addr, dir, shown, fetched, fetched-shown)
+	}
+	return fmt.Sprintf("   [%s messages: %s]\n", label, s.More(addr, dir, 10))
+}
+
+func (s Style) cutLine(label, addr, dir string, shown, fetched, rest int) string {
+	return fmt.Sprintf("   [%s messages: showing %d of %d messages %s; %snext: %s]\n", label, shown, fetched, dir, budgetNote(s), s.More(addr, dir, rest))
 }
 
 // cursor is the argument that reads the next sessions page.
@@ -243,8 +258,7 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 				e.printf("%s:%d\n", s.Address, s.Hits)
 				return
 			}
-			e.printf("%s  %s  %s  %s  %d %s  %s\n", s.Address, s.Agent, stamp(s.LastActivityAt), Clean(repoAt(s.Repo, s.Branches)), s.Hits,
-				plural(s.Hits, "hit", "hits"), quoteTitle(s.Title))
+			e.printf("%s\n", sessionLine(s))
 		})
 		if err != nil {
 			return err
@@ -388,11 +402,41 @@ func WriteSearch(w io.Writer, p *Page, st Style) error {
 	return e.err
 }
 
-func quoteTitle(t string) string {
+// titleField is the title: field, cut to 100 bytes; "" when there is
+// no title.
+func titleField(t string) string {
 	if t == "" {
-		return "-"
+		return ""
 	}
-	return strconv.Quote(oneLine(ClipAround(t, 0, 100)))
+	return quotedField("title", ClipAround(t, 0, 100))
+}
+
+// sessionLine is grep -l's line for a session with matches: its labeled
+// address, agent, last match time, repo, branch, hit count and title.
+func sessionLine(s *ConversationInfo) string {
+	parts := []string{sessionValue(sessionID(s)), field("agent", s.Agent)}
+	if s.LastActivityAt != nil {
+		parts = append(parts, field("active", isoStamp(s.LastActivityAt)))
+	}
+	if s.Repo != "" {
+		parts = append(parts, field("repo", repoName(s.Repo)))
+	}
+	if b := branchLabel(s.Branches); b != "" {
+		parts = append(parts, field("branch", b))
+	}
+	parts = append(parts, field("hits", strconv.Itoa(s.Hits)))
+	if t := titleField(s.Title); t != "" {
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, fieldSep)
+}
+
+// isoStampLayout is how a header prints a time: UTC to the minute, one
+// token; since and until accept it back.
+const isoStampLayout = "2006-01-02T15:04Z"
+
+func isoStamp(t *time.Time) string {
+	return t.UTC().Format(isoStampLayout)
 }
 
 // WriteSessions renders a sessions page: one line per session with its
@@ -405,13 +449,13 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 	now := st.now()
 	lines, err := units(st, len(s.Sessions), func(e *errWriter, i int) {
 		c := &s.Sessions[i]
-		sub := ""
+		extra := []string{field("msgs", strconv.Itoa(c.Messages))}
 		if c.ParentSession != "" {
-			sub = "  sub of " + c.ParentSession
+			extra = append(extra, field("parent", c.ParentSession))
 		} else if c.Depth > 0 {
-			sub = "  subagent"
+			extra = append(extra, field("parent", "unknown"))
 		}
-		e.printf("%s%s\n", summary(c, now, fmt.Sprintf("%d msgs", c.Messages)), sub)
+		e.printf("%s\n", summary(c, now, extra...))
 		if c.Digest != nil && c.Digest.Last != "" {
 			e.printf("    last: %s\n", quoteClip(c.Digest.Last, 170))
 		}
@@ -446,32 +490,7 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 // the hints name the address to go on from.
 func WriteRead(w io.Writer, cx *Context, st Style) error {
 	e := &errWriter{w: w}
-	c := cx.Conversation
-	head := []string{c.Agent, c.SessionID}
-	if c.Repo != "" {
-		head = append(head, Clean(c.Repo))
-	} else if c.Cwd != "" {
-		head = append(head, Clean(c.Cwd))
-	}
-	if b := branchLabel(c.Branches); b != "" {
-		head = append(head, "on "+Clean(b))
-	}
-	if c.Device != "" {
-		head = append(head, "device "+Clean(c.Device))
-	}
-	if c.User != "" {
-		head = append(head, "user "+Clean(c.User))
-	}
-	if c.ParentSession != "" {
-		head = append(head, "sub of "+c.ParentSession)
-	}
-	if c.StartedAt != nil || c.LastActivityAt != nil {
-		head = append(head, stamp(c.StartedAt)+" to "+stamp(c.LastActivityAt))
-	}
-	if c.Messages > 0 {
-		head = append(head, fmt.Sprintf("%d msgs", c.Messages))
-	}
-	header := fmt.Sprintf("# %s  %s\n", strings.Join(head, "  "), quoteTitle(c.Title))
+	header := "# " + readHeader(&cx.Conversation) + "\n"
 	e.printf("%s", header)
 	if cx.Outline != nil || cx.OutlineMore {
 		return writeOutline(e, cx, st, len(header))
@@ -481,11 +500,11 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 	// neighbours what the focus leaves.
 	room := 0
 	if st.Budget > 0 {
-		hint := 0
+		hint, n := 0, len(cx.Messages)
 		for i := range cx.Messages {
-			hint = max(hint, len(st.more(cx.Messages[i].Address, "before")))
+			hint = max(hint, len(st.cutLine("earlier", cx.Messages[i].Address, "before", n, n, n)))
 		}
-		room = max(st.Budget-len(header)-2*(hint+len("   [earlier messages: ]\n")), 1)
+		room = max(st.Budget-len(header)-2*hint, 1)
 	}
 	blocks := make([]string, len(cx.Messages))
 	at := 0
@@ -520,15 +539,52 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 		}
 	}
 	if len(blocks) > 0 && (cx.MoreBefore || lo > 0) {
-		e.printf("   [earlier messages: %s]\n", st.more(cx.Messages[lo].Address, "before"))
+		e.printf("%s", st.moreLine(cx.Messages[lo].Address, "before", at-lo, at))
 	}
 	for i := lo; i <= hi && i < len(blocks); i++ {
 		e.printf("%s", blocks[i])
 	}
 	if len(blocks) > 0 && (cx.MoreAfter || hi < len(blocks)-1) {
-		e.printf("   [later messages: %s]\n", st.more(cx.Messages[hi].Address, "after"))
+		e.printf("%s", st.moreLine(cx.Messages[hi].Address, "after", hi-at, len(blocks)-1-at))
 	}
 	return e.err
+}
+
+// readHeader is read's header line as labeled fields (see field): the
+// full session id, agent, repo (or cwd), branch, device, user, parent,
+// first and last activity (UTC), message count and, last, the title.
+func readHeader(c *ConversationInfo) string {
+	head := []string{sessionValue(c.SessionID), field("agent", c.Agent)}
+	if c.Repo != "" {
+		head = append(head, field("repo", c.Repo))
+	} else if c.Cwd != "" {
+		head = append(head, field("cwd", c.Cwd))
+	}
+	if b := branchLabel(c.Branches); b != "" {
+		head = append(head, field("branch", b))
+	}
+	if c.Device != "" {
+		head = append(head, field("device", c.Device))
+	}
+	if c.User != "" {
+		head = append(head, field("user", c.User))
+	}
+	if c.ParentSession != "" {
+		head = append(head, field("parent", c.ParentSession))
+	}
+	if c.StartedAt != nil {
+		head = append(head, field("start", isoStamp(c.StartedAt)))
+	}
+	if c.LastActivityAt != nil {
+		head = append(head, field("active", isoStamp(c.LastActivityAt)))
+	}
+	if c.Messages > 0 {
+		head = append(head, field("msgs", strconv.Itoa(c.Messages)))
+	}
+	if t := titleField(c.Title); t != "" {
+		head = append(head, t)
+	}
+	return strings.Join(head, fieldSep)
 }
 
 // readMessage renders one message of read's answer. room > 0 bounds the
@@ -634,19 +690,22 @@ func (g *grouper) open(e *errWriter, h *Hit) bool {
 	g.cur = h.SessionID
 	switch c := g.info[h.SessionID]; {
 	case g.seen[h.SessionID]:
-		e.printf("## %s\n", sessionOf(h.Address))
+		e.printf("## %s\n", sessionValue(hitSession(h)))
 	case c != nil:
 		e.printf("%s\n", header(c, g.now))
 	default:
-		parts := []string{sessionOf(h.Address)}
+		parts := []string{sessionValue(hitSession(h))}
 		if h.User != "" {
-			parts = append(parts, Clean(h.User))
+			parts = append(parts, field("who", h.User))
 		}
-		parts = append(parts, h.Agent)
+		parts = append(parts, field("agent", h.Agent))
 		if h.Repo != "" {
-			parts = append(parts, Clean(repoAt(h.Repo, h.Branches)))
+			parts = append(parts, field("repo", repoName(h.Repo)))
 		}
-		e.printf("## %s\n", strings.Join(parts, "  "))
+		if b := branchLabel(h.Branches); b != "" {
+			parts = append(parts, field("branch", b))
+		}
+		e.printf("## %s\n", strings.Join(parts, fieldSep))
 	}
 	g.seen[h.SessionID] = true
 	return true

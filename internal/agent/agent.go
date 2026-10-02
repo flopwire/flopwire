@@ -39,9 +39,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
+	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
@@ -103,6 +106,15 @@ type Config struct {
 	// holds nothing of it; the owed deletion is retried until then
 	// (placements.withhold).
 	Withhold func(context.Context, localindex.Withhold) error
+
+	// Bus is the message bus (devicebus): the agent gives it presence and
+	// session lookups, runs it with Run, and answers the control socket's
+	// pending, held, send, peers and inbox requests with it. nil: no
+	// messaging.
+	Bus *devicebus.Bus
+	// Console is the web console page where the user reviews held
+	// messages ("" without a server); the held notice names it.
+	Console string
 }
 
 func (c *Config) defaults() {
@@ -191,6 +203,9 @@ type Agent struct {
 	discovered     chan struct{}
 	discoveredOnce sync.Once
 
+	// starts: SessionStart hooks given the standing instruction (hookbus.go).
+	starts starts
+
 	// Path rules (policy.go, placement.go). pol, devinModes, places and
 	// folders are guarded by mu; polMu serializes loading and applying
 	// rules.
@@ -218,6 +233,15 @@ type Agent struct {
 	adminAt      time.Time // last admin fetch
 
 	stats Stats
+
+	// Process checks and the clock for presence (presence.go); tests
+	// replace them.
+	pidAlive  func(pid int) bool
+	procStart func(pid int) (time.Time, bool)
+	procName  func(pid int) string
+	now       func() time.Time
+	rollouts  rolloutState // Codex busy or idle, by rollout
+	turns     hookTurns    // busy or idle from hook events, by session
 }
 
 // Stats counts the agent's work since start.
@@ -235,7 +259,8 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		codex:   &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
 		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
-		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{}}
+		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
+		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, now: time.Now}
 	a.idle = sync.NewCond(&a.mu)
 	if cfg.DevinDB != "-" {
 		a.devin.path = cfg.DevinDB
@@ -258,6 +283,9 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		SetBound(func(devicesync.SourceSpec) (int64, bool))
 	}); ok {
 		b.SetBound(a.uploadBound)
+	}
+	if cfg.Bus != nil {
+		cfg.Bus.SetSources(a.BusPresence, a.BusKnown)
 	}
 	return a
 }
@@ -311,6 +339,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.mu.Unlock()
 	defer a.bgWG.Wait()
 	a.kickWithholds(ctx) // owed from before a restart
+	if a.cfg.Bus != nil {
+		// Messaging runs beside indexing; a failing server only makes it
+		// back off (devicebus.Run).
+		a.bgWG.Add(1)
+		go func() {
+			defer a.bgWG.Done()
+			_ = a.cfg.Bus.Run(ctx)
+		}()
+	}
 	var wg sync.WaitGroup
 	a.startWorkers(ctx, &wg)
 	defer wg.Wait()
@@ -318,11 +355,19 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	w := newWatcher(a.log)
 	defer w.close()
+	// Watch before the first pass lists anything: a file created after the
+	// listing but before its directory was watched would wait for the next
+	// sweep. The pass then makes more directories worth watching (session
+	// directories of hot transcripts); watchNew lists those as it adds them.
+	a.rewatch(w)
 	if err := a.sweep(ctx); err != nil {
 		a.log.Error("agent: sweep", "err", err)
 	}
 	a.markDiscovered() // also when the pass failed: flushes fall back to discoverDir
-	a.rewatch(w)
+	if testHookAfterFirstPass != nil {
+		testHookAfterFirstPass()
+	}
+	a.watchNew(ctx, w, "")
 	recovered := make(chan struct{}, 1)
 	a.maybeRecover(ctx, recovered, false)
 
@@ -342,12 +387,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-settle:
 			a.shrinkIfIdle(ctx)
 		case <-sweep.C:
-			if err := a.sweep(ctx); err != nil {
-				a.log.Error("agent: sweep", "err", err)
-			}
-			a.rewatch(w)
-			a.maybeRecover(ctx, recovered, false)
-			a.shrinkIfIdle(ctx)
+			a.periodicSweep(ctx, w, recovered)
 		case <-recovered:
 			// Placements settled or changed: index and offer what waited.
 			if err := a.sweep(ctx); err != nil {
@@ -369,6 +409,20 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.dirEvent(ctx, ev, w)
 		}
 	}
+}
+
+// periodicSweep is Run's sweep tick: a full pass, a listing of each
+// directory it made worth watching, the recovery pass when due, and a
+// memory trim when idle. Over unchanged files it stats each tracked file
+// and lists each transcript directory once, and opens no file and runs no
+// per-file query (TestNoChangeSweepScales).
+func (a *Agent) periodicSweep(ctx context.Context, w *watcher, recovered chan<- struct{}) {
+	if err := a.sweep(ctx); err != nil {
+		a.log.Error("agent: sweep", "err", err)
+	}
+	a.watchNew(ctx, w, "")
+	a.maybeRecover(ctx, recovered, false)
+	a.shrinkIfIdle(ctx)
 }
 
 // load reads the gate state of every indexed source, so a restart parses
@@ -477,7 +531,7 @@ func (a *Agent) merge(ctx context.Context, f *found, full bool) int {
 	}
 	sts := make([]statted, 0, len(list))
 	for _, t := range list {
-		fi, err := os.Stat(t.path)
+		fi, err := fsprobe.Stat(t.path)
 		if err != nil {
 			continue // gone; the next full pass retires it
 		}
@@ -562,6 +616,13 @@ func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urg
 	}
 	if t.seen != (transcript.Identity{}) && id != t.seen {
 		t.hotUntil = now.Add(a.cfg.HotWindow) // changed after we knew it
+	} else if t.seen == (transcript.Identity{}) {
+		// Not indexed yet: hot as it will be once indexed (seen.CTime), so
+		// the rewatch right after this pass watches its session directory
+		// instead of the one after the next pass.
+		if until := time.Unix(0, id.CTime).Add(a.cfg.HotWindow); until.After(t.hotUntil) {
+			t.hotUntil = until
+		}
 	}
 	a.enqueueLocked(t, urgent)
 	return true
@@ -732,7 +793,7 @@ func (a *Agent) dirEvent(ctx context.Context, ev watchEvent, w *watcher) {
 	if ev.modify {
 		return
 	}
-	if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+	if fi, err := fsprobe.Stat(p); err == nil && !fi.IsDir() {
 		p = filepath.Dir(p)
 	}
 	a.scanDir(ctx, p, w)
@@ -770,20 +831,41 @@ func (a *Agent) scanDir(ctx context.Context, dir string, w *watcher) {
 	}
 	// New directories may need watching: a new session file, or a hot
 	// session's subagents/ or tool-results/ directory, which usually appears
-	// empty and gets its first file a moment later. Watch first, then list
-	// what was created in them before the watch existed; otherwise those
-	// files wait for the next sweep.
-	for _, d := range a.rewatch(w) {
-		if d != dir {
-			if f, ok := a.discoverDir(d); ok && f != nil {
-				a.mergeUrgent(ctx, f)
-			}
+	// empty and gets its first file a moment later.
+	a.watchNew(ctx, w, dir)
+}
+
+// watchNew rewatches, then lists each newly watched directory other than
+// skip (just listed by the caller): a file created there after the last
+// listing but before the watch existed raised no event, and would
+// otherwise wait for the next sweep. Watch first, then list.
+func (a *Agent) watchNew(ctx context.Context, w *watcher, skip string) {
+	added := a.rewatch(w)
+	listed := map[string]bool{}
+	for _, d := range added {
+		if d == skip {
+			continue
+		}
+		// A Claude directory lists its whole project: once per project.
+		key := d
+		if rel, ok := under(a.cfg.ClaudeProjects, d); ok {
+			key = filepath.Join(a.cfg.ClaudeProjects, firstElem(rel))
+		}
+		if listed[key] {
+			continue
+		}
+		listed[key] = true
+		if f, ok := a.discoverDir(d); ok && f != nil {
+			a.mergeUrgent(ctx, f)
 		}
 	}
 }
 
 // testHookAfterRootSweep runs between scanDir's full pass and its rewatch.
 var testHookAfterRootSweep func()
+
+// testHookAfterFirstPass runs between Run's first pass and its watchNew.
+var testHookAfterFirstPass func()
 
 // mergeUrgent is merge for a partial pass: no retirement, urgent queue.
 func (a *Agent) mergeUrgent(ctx context.Context, f *found) {
@@ -852,7 +934,7 @@ func (a *Agent) lookup(path, session string) *target {
 		if t := a.targets[path]; t != nil {
 			return t
 		}
-		if r, err := filepath.EvalSymlinks(path); err == nil {
+		if r, err := fsprobe.EvalSymlinks(path); err == nil {
 			if t := a.targets[r]; t != nil {
 				return t
 			}

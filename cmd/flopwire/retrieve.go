@@ -50,6 +50,21 @@ type retriever struct {
 	close func() error
 	// instructions replace mcpInstructions when set (a sync-only device).
 	instructions string
+	// busSocket is the device agent's control socket for the message bus
+	// tools; "" is the default beside the client config.
+	busSocket string
+}
+
+// whoCalls is the calling session: the one an MCP request's _meta names
+// (Codex), else what the detector finds.
+func (r *retriever) whoCalls(ctx context.Context) (local.Caller, bool) {
+	if c, ok := metaCaller(ctx); ok {
+		return c, true
+	}
+	if r.caller == nil {
+		return local.Caller{}, false
+	}
+	return r.caller(ctx)
 }
 
 // openRetriever opens the local index at indexPath, or the server client
@@ -68,8 +83,26 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		indexPath = local.IndexPath()
 	}
 	if _, err := os.Stat(indexPath); err != nil {
-		return nil, fmt.Errorf("no local index at %s (run the device agent, set FLOPWIRE_INDEX, or pass --server)", indexPath)
+		return nil, &noIndexError{path: indexPath}
 	}
+	lb, err := openLocalBackend(indexPath)
+	if err != nil {
+		return nil, err
+	}
+	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close}, nil
+}
+
+// noIndexError: the local index does not exist yet, because the device
+// agent has never run on this machine (or FLOPWIRE_INDEX points elsewhere).
+type noIndexError struct{ path string }
+
+func (e *noIndexError) Error() string {
+	return fmt.Sprintf("no local index at %s (run the device agent, set FLOPWIRE_INDEX, or pass --server)", e.path)
+}
+
+// openLocalBackend opens the local index read-only, with the server client
+// for raw reads of files that are gone when a server is configured.
+func openLocalBackend(indexPath string) (*local.Backend, error) {
 	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -78,7 +111,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	if c, err := serverClient(); err == nil && c.Server != "" {
 		lb.Remote = c
 	}
-	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: s.Close}, nil
+	return lb, nil
 }
 
 func serverClient() (client.HTTP, error) {
@@ -100,7 +133,8 @@ const (
 )
 
 // flagDef is one option. Verbs is the set of tools that take it: g grep,
-// s search, l sessions (list), r read.
+// s search, l sessions (list), r read; the message bus verbs p peers, m
+// send (message), i inbox.
 type flagDef struct {
 	long  string
 	short byte
@@ -120,27 +154,29 @@ var flagDefs = []flagDef{
 	{"count", 'c', fBool, "g"},
 	{"line-number", 'n', fBool, "g"}, // accepted, a no-op: lines are always numbered
 	{"recursive", 'r', fBool, "g"},   // accepted, a no-op
-	{"after-context", 'A', fInt, "gr"},
-	{"before-context", 'B', fInt, "gr"},
-	{"context", 'C', fInt, "gr"},
+	{"after-context", 'A', fInt, "g"},
+	{"before-context", 'B', fInt, "g"},
+	{"context", 'C', fInt, "g"},
+	{"messages-before", 0, fInt, "r"},
+	{"messages-after", 0, fInt, "r"},
 	{"max-count", 'm', fInt, "g"},
-	{"limit", 0, fInt, "gslr"},
+	{"limit", 0, fInt, "gslrpi"},
 	{"offset", 0, fInt, "gs"},
-	{"cursor", 0, fString, "lr"},
+	{"cursor", 0, fString, "lri"},
 	{"sort", 0, fString, "gsl"},
 	{"no-heading", 0, fBool, "gs"},
 	{"timeout", 0, fString, "gs"},
-	{"agent", 0, fString, "gsl"},
-	{"repo", 0, fString, "gsl"},
+	{"agent", 0, fString, "gslp"},
+	{"repo", 0, fString, "gslpm"},
 	{"kind", 0, fString, "gs"},
 	{"exclude-kind", 0, fString, "gs"},
 	{"tool", 0, fString, "gs"},
-	{"session", 0, fString, "gs"},
+	{"session", 0, fString, "gsp"},
 	{"branch", 0, fString, "gsl"},
 	{"since", 0, fString, "gsl"},
 	{"until", 0, fString, "gsl"},
 	{"device", 0, fString, "gsl"},
-	{"user", 0, fString, "gsl"},
+	{"user", 0, fString, "gslp"},
 	{"exclude-subagents", 0, fBool, "gsl"},
 	{"exclude-live", 0, fBool, "gsl"},
 	{"include-superseded", 0, fBool, "gsr"},
@@ -150,11 +186,19 @@ var flagDefs = []flagDef{
 	{"line-offset", 0, fInt, "r"},
 	{"raw", 0, fBool, "r"},
 	{"outline", 0, fBool, "r"},
-	{"json", 0, fBool, "gslr"},
-	{"max-bytes", 0, fInt, "gslr"},
+	{"detail", 0, fBool, "l"},
+	{"json", 0, fBool, "gslrpmi"},
+	{"max-bytes", 0, fInt, "gslrpmi"},
 	{"server", 0, fBool, "gslr"},
 	{"index", 0, fString, "gslr"},
-	{"help", 'h', fBool, "gslr"},
+	{"help", 'h', fBool, "gslrpmi"},
+	{"intent", 0, fString, "m"},
+	{"reply-to", 0, fString, "m"},
+	{"ref", 0, fList, "m"},
+	{"sent", 0, fBool, "i"},
+	{"thread", 0, fString, "i"},
+	{"socket", 0, fString, "pmi"},
+	{"text", 0, fBool, "gslrpmi"},
 }
 
 // filterKeys are the flags that become format.Filters.
@@ -195,6 +239,12 @@ func verbLetter(verb string) byte {
 		return 's'
 	case "sessions":
 		return 'l'
+	case "peers":
+		return 'p'
+	case "send":
+		return 'm'
+	case "inbox":
+		return 'i'
 	}
 	return 'r'
 }
@@ -289,8 +339,17 @@ func parseArgs(verb string, args []string) (*opts, error) {
 	return o, nil
 }
 
+// readLineFlags are grep's line-context flags, which read does not take:
+// read's neighbours are whole messages.
+var readLineFlags = map[string]string{"-A": "--messages-after N", "--after-context": "--messages-after N",
+	"-B": "--messages-before N", "--before-context": "--messages-before N",
+	"-C": "--messages-before N --messages-after N", "--context": "--messages-before N --messages-after N"}
+
 // unknownFlag is one line naming the nearest flag the tool takes.
 func unknownFlag(verb, flag string) error {
+	if fix, ok := readLineFlags[flag]; ok && verb == "read" {
+		return fmt.Errorf("read: %s is grep's line context; read counts whole messages, not lines: use %s (a tool call and its result are two messages; --line-offset N for lines of the focus)", flag, fix)
+	}
 	name := strings.TrimLeft(flag, "-")
 	v := verbLetter(verb)
 	best, bestD := "", 1<<30
@@ -387,13 +446,13 @@ const (
 // caller asked for its own rows, named a session already, or is a human
 // at a terminal, and returns the note naming what it left out.
 func (r *retriever) excludeSelf(ctx context.Context, f *format.Filters, includeSelf bool, p selfPolicy) string {
-	if includeSelf || f.ExcludeSession != "" || f.Session != "" || r.caller == nil {
+	if includeSelf || f.ExcludeSession != "" || f.Session != "" {
 		return ""
 	}
 	if p == selfCLI && term.IsTerminal(int(os.Stdin.Fd())) {
 		return ""
 	}
-	c, ok := r.caller(ctx)
+	c, ok := r.whoCalls(ctx)
 	if !ok {
 		return ""
 	}
@@ -408,10 +467,8 @@ func (r *retriever) excludeSelf(ctx context.Context, f *format.Filters, includeS
 // self resolves "self" (--session self, read self) to the calling
 // agent's session, found by exact evidence only (D4).
 func (r *retriever) self(ctx context.Context, p selfPolicy) (string, error) {
-	if r.caller != nil {
-		if c, ok := r.caller(ctx); ok {
-			return c.SessionID, nil
-		}
+	if c, ok := r.whoCalls(ctx); ok {
+		return c.SessionID, nil
 	}
 	how := "set FLOPWIRE_SESSION_ID to your session id"
 	if p == selfMCP {
@@ -487,7 +544,19 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		f.Live = r.liveIDs()
 	}
 	st.Flat = o.on["no-heading"]
-	asJSON := o.on["json"]
+	asJSON := jsonMode(o)
+	// emit writes the answer: the readable text, the --json form (grep,
+	// search and read on the CLI: indented, as before), or compact JSON
+	// within the budget (sessions, and every tool over MCP).
+	emit := func(full any, bounded func() any, text func() error) error {
+		switch {
+		case !asJSON:
+			return text()
+		case st.MCP || o.verb == "sessions":
+			return writeOut(w, bounded())
+		}
+		return writeJSON(w, full)
+	}
 	switch o.verb {
 	case "grep":
 		spec := grep.Spec{Patterns: append([]string{}, o.list["regexp"]...), Fixed: o.on["fixed-strings"], IgnoreCase: o.on["ignore-case"],
@@ -535,10 +604,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		if asJSON {
-			return writeJSON(w, page)
-		}
-		return format.WriteGrep(w, page, q.Mode, st)
+		return emit(page, func() any { return boundPage("grep", page, q.Mode, st.Budget, st.MCP) }, func() error { return format.WriteGrep(w, page, q.Mode, st) })
 	case "search":
 		if len(o.pos) == 0 {
 			return badArg(errors.New("search needs a QUERY (flopwire search --help)"))
@@ -557,10 +623,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		if asJSON {
-			return writeJSON(w, page)
-		}
-		return format.WriteSearch(w, page, st)
+		return emit(page, func() any { return boundPage("search", page, "", st.Budget, st.MCP) }, func() error { return format.WriteSearch(w, page, st) })
 	case "sessions":
 		if len(o.pos) > 1 {
 			return badArg(fmt.Errorf("sessions takes one GLOB; got %q", strings.Join(o.pos, " ")))
@@ -580,10 +643,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(infos...)
 		out.Excluded = note
-		if asJSON {
-			return writeJSON(w, out)
-		}
-		return format.WriteSessions(w, out, st)
+		return emit(out, func() any { return boundSessions(out, st.Budget, st.MCP, o.on["detail"]) }, func() error { return format.WriteSessions(w, out, st) })
 	case "read":
 		if len(o.pos) != 1 {
 			return badArg(errors.New("read needs one ADDRESS: SESSION/ORDINAL[:LINE], SESSION, a message id, or /path/file.jsonl:LINE"))
@@ -612,18 +672,17 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			if err != nil {
 				return err
 			}
-			return writeRaw(w, data, asJSON)
+			return writeRaw(w, data, o.on["json"])
 		}
 		q := format.ReadQuery{Address: o.pos[0], Outline: o.on["outline"], Cursor: o.vals["cursor"], Limit: f.Limit, Self: self}
 		if (q.Cursor != "" || q.Limit > 0) && !q.Outline {
-			return badArg(errors.New("--cursor and --limit page an outline; add --outline, or use -A/-B to step through messages"))
+			step := "--messages-before/--messages-after"
+			if st.MCP {
+				step = "messages_before/messages_after"
+			}
+			return badArg(fmt.Errorf("--cursor and --limit page an outline; add --outline, or use %s to step through messages", step))
 		}
-		c, err := o.int("context")
-		if err != nil {
-			return badArg(err)
-		}
-		q.Before, q.After = c, c
-		for name, dst := range map[string]*int{"before-context": &q.Before, "after-context": &q.After, "max-chars": &q.MaxChars, "line-offset": &q.LineOffset} {
+		for name, dst := range map[string]*int{"messages-before": &q.Before, "messages-after": &q.After, "max-chars": &q.MaxChars, "line-offset": &q.LineOffset} {
 			if _, ok := o.vals[name]; ok {
 				if *dst, err = o.int(name); err != nil {
 					return badArg(err)
@@ -638,10 +697,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			return err
 		}
 		r.markLive(&cx.Conversation)
-		if asJSON {
-			return writeJSON(w, cx)
-		}
-		return format.WriteRead(w, cx, st)
+		return emit(cx, func() any { return boundRead(cx, st.Budget, st.MCP) }, func() error { return format.WriteRead(w, cx, st) })
 	}
 	return fmt.Errorf("unknown tool %q", o.verb)
 }
@@ -698,18 +754,44 @@ func cliStyle(o *opts) (format.Style, error) {
 }
 
 // toolCmd is the CLI entry of a tool: parse, print help, open, run.
+// In JSON mode (sessions by default, any verb with --json) a failure is
+// one JSON object on stderr, as the message bus verbs print it, and the
+// command exits 1.
 func toolCmd(ctx context.Context, verb string, args []string) error {
+	return toolCmdIO(ctx, verb, args, os.Stdout, os.Stderr)
+}
+
+func toolCmdIO(ctx context.Context, verb string, args []string, stdout, stderr io.Writer) error {
 	o, err := parseArgs(verb, args)
+	asJSON := false
 	if err != nil {
-		return err
+		asJSON, err = jsonModeArgs(verb, args), badArg(err)
+	} else {
+		asJSON = jsonMode(o)
+		err = runToolCmd(ctx, verb, o, stdout, stderr, asJSON)
 	}
-	if o.on["help"] {
-		fmt.Print(toolHelp[verb])
+	if err == nil {
 		return nil
 	}
+	if !asJSON {
+		return errors.New(shortError(err))
+	}
+	if werr := writeErrorJSON(stderr, retrievalErr(verb, err, false)); werr != nil {
+		return errors.New(shortError(err))
+	}
+	return errReported
+}
+
+func runToolCmd(ctx context.Context, verb string, o *opts, stdout, stderr io.Writer, asJSON bool) error {
+	if o.on["help"] {
+		_, err := io.WriteString(stdout, toolHelp[verb])
+		return err
+	}
 	if len(o.pos) == 0 && len(o.list["regexp"]) == 0 && verb != "sessions" {
-		fmt.Fprint(os.Stderr, toolHelp[verb])
-		return fmt.Errorf("%s: missing argument", verb)
+		if !asJSON {
+			fmt.Fprint(stderr, toolHelp[verb])
+		}
+		return badArg(fmt.Errorf("%s: missing argument", verb))
 	}
 	r, err := openRetriever(o.on["server"], o.vals["index"])
 	if err != nil {
@@ -720,10 +802,7 @@ func toolCmd(ctx context.Context, verb string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := runTool(ctx, r, o, os.Stdout, st, selfCLI); err != nil {
-		return errors.New(shortError(err))
-	}
-	return nil
+	return runTool(ctx, r, o, stdout, st, selfCLI)
 }
 
 // raw is plumbing: the archived bytes of a source generation range, by
@@ -786,15 +865,15 @@ var toolHelp = map[string]string{
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
   flopwire grep -l flaky --repo flopwire --agent codex  sessions with matches
 
-Hits group under a header per session, newest first; the address for flopwire read is
-SESSION/ORDINAL:LINE:  ## SESSION who agent live|ended DATE repo@branch "intent" N files PR
-                       ORDINAL:LINE kind/tool: text
---no-heading: one line per hit, SESSION/ORDINAL:LINE: [agent kind time repo@branch] text.
+Hits group under a header per session: its id, then key=value fields (a value with a space,
+quote or = is a JSON string), newest first; the address for read is SESSION/ORDINAL:LINE.
+  ## SESSION agent=claude ended=2026-09-23 repo=api branch=main failed=1 intent="..."
+  ORDINAL:LINE kind/tool: text        (--no-heading: SESSION/ORDINAL:LINE: [attribution] text)
 Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a match spans
          lines of one message)  (-n, -r accepted)
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
          --limit N (20)  --offset N  --sort newest|oldest|relevance  --no-heading  --json
-         --timeout 30s (max 60s)  --max-bytes N (whole hits within N bytes)
+         (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
 Filters  --agent claude,codex,devin  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since 7d
          --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
          --exclude-subagents  --exclude-live  --include-superseded  --include-branches
@@ -811,52 +890,53 @@ out (a human at a terminal sees all); --session self searches only it.
   flopwire search '"exponential backoff" retry' --repo flopwire   quoted phrases must match
   flopwire search papercut --agent codex --since 30d --sort newest
 
-Hits are grouped under one header per session (as grep's), best first:
+Hits are grouped under one labeled header per session (as grep's), best first:
   ORDINAL:LINE kind/tool: snippet
 The address for flopwire read is SESSION/ORDINAL:LINE. When no message has every word,
 it ranks messages with any of them (common words dropped) and says so. Identical texts
 show once, "+N copies".
 
 Output   --limit N (20)  --offset N  --sort relevance|newest|oldest  --no-heading  --json
-         --timeout 30s (max 60s)  --max-bytes N (whole hits within N bytes)
+         (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
 Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since  --until  --kind
          --exclude-kind  --tool  --session SESSION|self  --exclude-subagents  --exclude-live
          --include-superseded  --include-branches  --include-self  --device  --user
 Times    --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339 (UTC)
 Source   the local index; --server for the team server; --index PATH
 `,
-	"sessions": `flopwire sessions — list sessions, newest activity first, like a glob over transcripts
+	"sessions": `flopwire sessions — list sessions, newest activity first, as JSON (--text: readable)
 
   flopwire sessions                         the latest sessions
   flopwire sessions 'flopwire*' --since 7d    by repo name, title or session id
   flopwire sessions --agent codex --repo . --branch 'feat/*'
 
-Each session prints its short digest, then its last reply:
-  SESSION  user@device  agent  live, 4m ago | ended DATE  repo@branch  N msgs  "intent"
-    N files  PR #N +M  N commits  ✗N (failed tool calls)
-      last: "..."
-(on one line up to "✗N"). Pass SESSION to flopwire read --outline for its full digest
-and skeleton, or as --session to grep and search inside it. A bare GLOB word matches
-anywhere (*word*). --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or
-RFC 3339; times are UTC.
+JSON: {"kind":"sessions","sessions":[{"session_id":FULL ID,"address","agent","user","repo",
+"branches","live","last_activity_at","messages","title","intent","parent_session",
+"commits","files","failed"}…],"has_more":bool,"next_cursor":C}. --detail: every
+field and the whole digest. has_more: pass next_cursor as --cursor. --text: one row each:
+  SESSION agent=claude ended=2026-09-23 repo=api branch=main msgs=24 intent="..."
+Pass session_id to flopwire read --outline (digest and skeleton), as --session to grep and
+search, or to flopwire peers --session (is it live?). A bare GLOB word matches anywhere.
+--since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339; times are UTC.
 
-Output   --limit N (20)  --cursor C (from the footer)  --sort newest|oldest  --json
-         --max-bytes N
+Output   --limit N (20)  --cursor C (next_cursor)  --sort newest|oldest  --detail  --text
+         --max-bytes N  (--json: the default)
 Filters  --agent  --repo .|NAME|/PATH|GLOB  --branch NAME|GLOB  --since/--until (last
          activity)  --exclude-subagents  --exclude-live  --include-self  --device  --user
+Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example"}}; exit 1
 Source   the local index; --server for the team server; --index PATH
 `,
 	"read": `flopwire read — read a message (and its neighbours) at an address from grep, search or sessions
 
   flopwire read 0b7e2c1a/28672:14          a message, from line 14's neighbourhood
-  flopwire read 0b7e2c1a/28672 -B 2 -A 2   with two messages either side
+  flopwire read 0b7e2c1a/28672 --messages-before 2 --messages-after 2   two messages either side
   flopwire read 0b7e2c1a --outline         the session's digest and skeleton
 
 ADDRESS is SESSION/ORDINAL[:LINE], SESSION (any unique prefix of the id), a message
-id, /path/to/transcript.jsonl:LINE, or self (the calling agent's session). The header
-gives the session's repo, branch, time span (UTC) and message count. The focus text
-prints with line numbers; long text is cut at --max-chars and says how to read on.
---max-bytes N keeps the focus and the nearest neighbours within N bytes.
+id, /path/to/transcript.jsonl:LINE, or self (the calling agent's session). The header is
+grep's form: # FULL_ID agent=A repo=PATH branch=B start=T active=T msgs=N title="..."
+(times UTC). The focus prints with line numbers; long text is cut at --max-chars and says
+how to read on. --max-bytes N keeps the focus and nearest neighbours, and says what it cut.
 
 --outline prints the session's digest (intent, repos, branches, duration, messages by
 kind, subagents, commands, failed calls, tools, files edited, PRs, commits, issues,
@@ -864,9 +944,10 @@ tokens, last reply) and its skeleton: every prompt, every tool call as tool(args
 failed calls and spawned subagents marked, no tool output. --limit (200) sets the page
 size; the footer prints the --cursor that reads on.
 
-Output   -B N / -A N / -C N messages before/after  --max-chars N (4000; neighbours
-         get a quarter)  --line-offset N (first line of the focus)  --raw (the
-         transcript record's bytes)  --outline [--cursor C --limit N]  --json
+Messages --messages-before N / --messages-after N: whole messages before/after the focus, in
+         conversation order; a tool call and its result are two messages (SESSION: 20 after)
+Output   --max-chars N (4000; neighbours get a quarter)  --line-offset N (first line of the
+         focus)  --raw (the record's bytes)  --outline [--cursor C --limit N]  --json (--text)
 Rows     --include-superseded  --include-branches
 Source   the local index; --server for the team server; --index PATH
 `,

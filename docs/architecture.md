@@ -20,6 +20,8 @@ spec and this page differ, this page describes the code.
 | S3 (MinIO in Compose) | server | `internal/ingest/objects.go` | Content-addressed chunk objects, each a zstd frame of the chunk (addressed by the BLAKE3 of the uncompressed bytes). The raw evidence. |
 | Retrieval | device and server | `internal/retrieval` (`local`, `regexq`, `grep`, `format`) | grep, search, sessions and read over the local index or Postgres. |
 | CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | The four tools. Local by default; `--server` for team search. |
+| Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. The CLI and MCP tools are in `cmd/flopwire/bus.go`; `flopwire hook` (`cmd/flopwire/hook.go`, rendering in `internal/busrender`) delivers. |
+| Message bus (device) | each developer machine | `internal/devicebus`, `internal/agent/presence.go`, `internal/client/bus.go` | Local inbox (`bus.db`), presence, the long poll, claims and receipts; routing between the device's own sessions with no server. |
 | Web console | browser | `web/`, served at `/` by `internal/webapp` | Admin only: health, people and devices, policy, archive (deletion), audit. No corpus search. |
 | Backup | server host | `internal/backup` | Coordinated Postgres dump plus chunk copy, verify, restore. |
 
@@ -288,14 +290,71 @@ Decision D4. An agent searching the index would find its own call within a
 second. `grep`, `search` and `sessions` leave out the calling session and
 its subagents when detection finds it by exact evidence, first match wins:
 
-1. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
-2. An ancestor process's Claude Code session file, `~/.claude/sessions/<pid>.json`.
-3. An ancestor `codex` process holding exactly one rollout file open.
-4. `CLAUDE_CODE_SESSION_ID`.
+1. Over MCP, the Codex thread id in the call's `_meta` (`threadId`, or
+   `thread_id` in `x-codex-turn-metadata`). Codex starts MCP servers with
+   an empty environment, so this is its only exact evidence.
+2. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
+3. An ancestor process's Claude Code session file, `~/.claude/sessions/<pid>.json`.
+4. An ancestor process whose pid exactly one Devin
+   `session_locks/<session>.lock` names.
+5. An ancestor `codex` process: `CODEX_THREAD_ID` (set for its shell
+   commands), else exactly one rollout file it holds open.
+6. `CLAUDE_CODE_SESSION_ID`, or `CODEX_THREAD_ID`, when the walk found no
+   harness; neither when both are set.
+
+The message bus commands use the same detection to name the sending
+session. `send` and `inbox` refuse to run without one.
 
 MCP calls always apply it. The CLI applies it only when stdin is not a
 terminal. The output names the excluded session. `--include-self` turns it
 off. Code: `internal/retrieval/local/caller.go`.
+
+## Message bus
+
+Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
+server, the device agent, and the `peers`, `send` and `inbox` commands and
+MCP tools are built; the hook that delivers messages into a session is
+not. The commands reach the server only through the device agent's control
+socket. Routes and wire types are in `internal/busproto`.
+
+- **Presence.** Each device holds one long poll (`POST /v1/bus/poll`, up to
+  25 s). The request carries every live session on the device (id, agent,
+  repo, branch, busy) and replaces what the server held. A session is live
+  for 75 s after the poll that reported it. A session id that is another
+  person's, uploaded or in their presence, is not recorded.
+- **Send.** The sending session must be live on the calling device or
+  uploaded from it. `to` is a session id prefix (4+ characters, unique) or
+  `@user`. The server sets the envelope (session, person, agent, repo,
+  `own` or `teammate`, thread, time), redacts the body (4,000-byte cap) and
+  sets a 24-hour expiry. A message from another person is held until the
+  recipient accepts the sender (`/v1/bus/accepts`, login session only).
+- **Limits.** A reply to a `done` message, more than 8 messages per thread
+  per hour, 30 sends per session per hour (120 per device and 300 per
+  person), the same body to the same recipient within 10 minutes, and 50
+  undelivered messages per recipient are refused. A refused message is stored as `refused`.
+- **Delivery.** The poll answers the device's whole deliverable set:
+  messages to its sessions, and `@user` messages it may claim. A claim is
+  atomic. An ack sets `delivered_at`. `read_at` is not set yet.
+- **Audit.** Send, claim, ack, accept and revoke commit with their audit
+  event (`bus.send`, `bus.claim`, `bus.deliver`, `bus.accept`,
+  `bus.revoke`). Peers, inbox and polls that return messages are audited
+  like other reads. Bodies are never in the audit log.
+- **Expiry.** A sweep each minute marks undelivered messages past their
+  expiry `expired` and drops presence a day old. The recipient's inbox
+  lists an expired message from another person only while the recipient
+  accepts that person, so a held message never reaches it.
+- **Device agent** (`internal/devicebus`). Presence is what `sessions`
+  prints as live, cross-checked with the harness registries (Claude session
+  files, Codex writer locks, Devin session locks; read, never locked), with
+  busy from the Claude session file or the Codex rollout's last task
+  event. Sessions the path rules keep off the server are not reported. The
+  agent re-polls when presence changes. Each answer reconciles a local
+  inbox (`bus.db` beside the client config, its own SQLite file so a hook
+  never waits on the index writer); offered `@user` messages are claimed
+  for one session; receipts go in batches. A hook's `pending` request on
+  the control socket reads only that inbox. With no server, sends between
+  the device's own sessions go straight into it, with the same envelope
+  and limits.
 
 ## Trust boundaries
 
@@ -310,6 +369,12 @@ off. Code: `internal/retrieval/local/caller.go`.
   at rest by flopwire.
 - Every member reads the whole corpus. Every hit and raw read carries its
   user, device, harness, session and repo (D10).
+- Accepting a message sender, revoking one, and reading held messages
+  need the person's own login session, never a device token; accepting
+  also needs the person's password, so an agent that reads the saved
+  session cannot accept for its human. An accepted sender's agents can direct the
+  recipient's agents within each session's permissions; the
+  information-only rule for their messages is guidance to the model.
 - Retrieval and admin reads are audited with the query and result ids.
   Security-sensitive operations fail closed when audit fails.
 - Message rows and indexes are derived and can be rebuilt; S3 chunks and

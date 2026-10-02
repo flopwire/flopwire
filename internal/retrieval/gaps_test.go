@@ -42,7 +42,7 @@ func TestServerDigestsBranchesSortOutlineLive(t *testing.T) {
 		t.Fatalf("digest: %+v", top)
 	}
 	var codexDigest string
-	if err := s.pool.QueryRow(ctx, `SELECT digest::text FROM conversations WHERE session_id=$1`, held).Scan(&codexDigest); err != nil ||
+	if err := s.pool.QueryRow(ctx, `SELECT a.digest::text FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.session_id=$1`, held).Scan(&codexDigest); err != nil ||
 		!strings.Contains(codexDigest, `"files_edited": ["internal/api/server.go", "internal/api/health.go"]`) {
 		t.Fatalf("codex digest: %s %v", codexDigest, err)
 	}
@@ -122,10 +122,10 @@ func TestServerDigestsBranchesSortOutlineLive(t *testing.T) {
 	// Live: the device reported the held session. Active 30 minutes ago,
 	// it is live by the report; another session active 5 minutes ago is
 	// live by recency.
-	if _, err := s.pool.Exec(ctx, `UPDATE conversations SET last_activity_at=now()-interval '30 minutes' WHERE session_id=$1`, held); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE conversation_activity a SET last_activity_at=now()-interval '30 minutes' FROM conversations c WHERE c.id=a.conversation_id AND c.session_id=$1`, held); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE conversations SET last_activity_at=now()-interval '5 minutes' WHERE session_id='019a0000-0000-7000-8000-0000000000a2'`); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE conversation_activity a SET last_activity_at=now()-interval '5 minutes' FROM conversations c WHERE c.id=a.conversation_id AND c.session_id='019a0000-0000-7000-8000-0000000000a2'`); err != nil {
 		t.Fatal(err)
 	}
 	all, err := c.Sessions(ctx, "", "", format.Filters{Limit: 100})
@@ -195,7 +195,7 @@ func TestServerSelfLiveBranchRules(t *testing.T) {
 	}
 
 	// Reported open but idle for two hours: neither live nor left out.
-	if _, err := s.pool.Exec(ctx, `UPDATE conversations SET last_activity_at=now()-interval '2 hours' WHERE session_id=$1`, held); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE conversation_activity a SET last_activity_at=now()-interval '2 hours' FROM conversations c WHERE c.id=a.conversation_id AND c.session_id=$1`, held); err != nil {
 		t.Fatal(err)
 	}
 	listed := func(f format.Filters) *format.ConversationInfo {

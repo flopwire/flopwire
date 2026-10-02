@@ -96,8 +96,12 @@ const (
 	DefaultMaxPersisted = 16 << 20
 	// maxOversized bounds an oversized line read whole for decoding.
 	maxOversized = 256 << 20
-	titleRunes   = 100
+	titleRunes   = TitleRunes
 )
+
+// TitleRunes is where a title taken from the first prompt's first line is
+// cut (local redactions mask titles cut there).
+const TitleRunes = 100
 
 // Stats counts what a parser skipped. Safe for concurrent use.
 type Stats struct {

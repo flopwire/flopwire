@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "flopwire": {
+      "command": "flopwire",
+      "args": ["mcp"],
+      "env_vars": ["FLOPWIRE_CONFIG", "FLOPWIRE_INDEX", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"]
+    }
+  }
+}
