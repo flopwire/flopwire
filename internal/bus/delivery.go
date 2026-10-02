@@ -419,7 +419,7 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 		if p.Title == "" {
 			p.Title = r.uploadedTitle
 		}
-		if r.disabled || r.revoked || r.hidden || p.Session == q.Session || !repoMatches(q.Repo, p.Repo) || !userMatches(q.User, p) || (q.Agent != "" && !strings.EqualFold(q.Agent, p.Agent)) {
+		if r.disabled || r.revoked || r.hidden || p.Session == q.Session || !RepoMatches(q.Repo, q.Roots, p.Repo) || !userMatches(q.User, p) || (q.Agent != "" && !strings.EqualFold(q.Agent, p.Agent)) {
 			continue
 		}
 		p.Own = p.UserID == c.UserID

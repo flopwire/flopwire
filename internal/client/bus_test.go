@@ -47,8 +47,8 @@ func TestBusErrors(t *testing.T) {
 	if _, err := b.Ack(ctx, busproto.AckRequest{IDs: []string{"m1"}}); !errors.As(err, &ae) || ae.StatusCode != 501 {
 		t.Fatalf("ack 501: %v", err)
 	}
-	out, err := b.Peers(ctx, busproto.PeersQuery{Session: "s0", Repo: "api"})
-	if err != nil || len(out.Peers) != 1 || !out.Peers[0].Busy || gotQuery != "repo=api&session=s0" {
+	out, err := b.Peers(ctx, busproto.PeersQuery{Session: "s0", Repo: "api", Roots: []string{"/src/api", "/src/api-x"}})
+	if err != nil || len(out.Peers) != 1 || !out.Peers[0].Busy || gotQuery != "repo=api&repo_root=%2Fsrc%2Fapi&repo_root=%2Fsrc%2Fapi-x&session=s0" {
 		t.Fatalf("peers: %+v %v %q", out, err, gotQuery)
 	}
 }

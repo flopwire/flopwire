@@ -52,6 +52,9 @@ func (b Bus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersRe
 	v := url.Values{}
 	set(v, "session", q.Session)
 	set(v, "repo", q.Repo)
+	if len(q.Roots) > 0 {
+		v["repo_root"] = q.Roots
+	}
 	set(v, "user", q.User)
 	set(v, "agent", q.Agent)
 	var out busproto.PeersResponse

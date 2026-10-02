@@ -305,19 +305,24 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	}
 	q := busproto.PeersQuery{Repo: a.Repo, User: strings.TrimPrefix(a.User, "@"), Agent: a.Agent}
 	if q.Repo != "" {
-		q.Repo = local.ResolveRepo(q.Repo)
+		// Expanded here: only this device can read its git files and its
+		// local index's placements. A name keeps matching by name.
+		var err error
+		if q.Repo, q.Roots, err = local.ExpandRepo(local.ResolveRepo(q.Repo), localRepoDirs(ctx, local.IndexPath()), true); err != nil {
+			return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
+		}
 	}
 	self, known := c.caller(ctx)
 	q.Session = self.SessionID
 	resp, err := c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	var be *busproto.Error
-	localRepo := ""
+	localRepo, localRoots := "", []string(nil)
 	if err != nil && known && errors.As(err, &be) && be.Code == busproto.CodeSessionNotOnDevice {
 		// The agent has not seen this session yet, or a path rule keeps it
 		// off the server: ask without naming it and leave it out here. The
 		// repo filter runs here too: --repo . names the session's own repo,
 		// which may be the withheld one.
-		q.Session, localRepo, q.Repo = "", q.Repo, ""
+		q.Session, localRepo, localRoots, q.Repo, q.Roots = "", q.Repo, q.Roots, "", nil
 		resp, err = c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	}
 	if err != nil {
@@ -326,7 +331,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	peers := []busproto.Peer{}
 	if resp.Peers != nil {
 		for _, p := range resp.Peers.Peers {
-			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) || !repoMatches(localRepo, p.Repo) {
+			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) || !bus.RepoMatches(localRepo, localRoots, p.Repo) {
 				continue
 			}
 			p.SeenAt = p.SeenAt.UTC() // every time printed is UTC
@@ -356,20 +361,6 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		out.Hint = fmt.Sprintf("%d of %d shown (output budget of %d bytes); narrow with %s", len(out.Peers), out.Total, st.Budget, st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session"))
 	}
 	return st.emit(w, out, func() error { return writePeers(w, out, a, st) })
-}
-
-// repoMatches is the server's peers repo filter (internal/bus): an
-// absolute path matches that root and everything under it, anything else
-// the repo name; "" matches all.
-func repoMatches(filter, repo string) bool {
-	if filter == "" {
-		return true
-	}
-	if strings.HasPrefix(filter, "/") {
-		f := strings.TrimRight(filter, "/")
-		return repo == f || strings.HasPrefix(repo, f+"/")
-	}
-	return bus.RepoName(repo) == bus.RepoName(filter)
 }
 
 // shortUser is how a person prints: the local part of their email, which
