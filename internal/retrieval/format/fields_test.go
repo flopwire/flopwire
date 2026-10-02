@@ -140,7 +140,7 @@ func TestLabeledHeadersSplitUnambiguously(t *testing.T) {
 		t.Fatalf("header: %q", h)
 	}
 	check("grep header", strings.TrimPrefix(h, "## "), []string{"session", "who", "agent", "ended", "repo", "branch", "commits", "failed", "intent"},
-		map[string]string{"session": "aaaa1111", "who": "a b@x.test@lap top", "repo": "my repo: x", "branch": "feat/ünï", "ended": "2026-09-29", "intent": wantIntent})
+		map[string]string{"session": c.SessionID, "who": "a b@x.test@lap top", "repo": "my repo: x", "branch": "feat/ünï", "ended": "2026-09-29", "intent": wantIntent})
 
 	var b strings.Builder
 	if err := WriteSessions(&b, &Sessions{Sessions: []ConversationInfo{c}}, Style{Now: func() time.Time { return now }}); err != nil {

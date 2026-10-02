@@ -399,7 +399,7 @@ func titleField(t string) string {
 // sessionLine is grep -l's line for a session with matches: its labeled
 // address, agent, last match time, repo, branch, hit count and title.
 func sessionLine(s *ConversationInfo) string {
-	parts := []string{sessionValue(s.Address), field("agent", s.Agent)}
+	parts := []string{sessionValue(sessionID(s)), field("agent", s.Agent)}
 	if s.LastActivityAt != nil {
 		parts = append(parts, field("active", isoStamp(s.LastActivityAt)))
 	}
@@ -675,11 +675,11 @@ func (g *grouper) open(e *errWriter, h *Hit) bool {
 	g.cur = h.SessionID
 	switch c := g.info[h.SessionID]; {
 	case g.seen[h.SessionID]:
-		e.printf("## %s\n", sessionValue(sessionOf(h.Address)))
+		e.printf("## %s\n", sessionValue(hitSession(h)))
 	case c != nil:
 		e.printf("%s\n", header(c, g.now))
 	default:
-		parts := []string{sessionValue(sessionOf(h.Address))}
+		parts := []string{sessionValue(hitSession(h))}
 		if h.User != "" {
 			parts = append(parts, field("who", h.User))
 		}

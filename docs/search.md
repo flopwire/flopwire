@@ -45,15 +45,15 @@ Output, newest message first, grouped under one header line per session
 (rg's `--heading` layout):
 
 ```
-## 0b7e2c1a agent=claude ended=2026-09-23 repo=alpha branch=main files=2 pr=#43 commits=1 failed=1 intent="why does the login test flake?"
+## 0b7e2c1a-0000-4000-8000-000000000001 agent=claude ended=2026-09-23 repo=alpha branch=main files=2 pr=#43 commits=1 failed=1 intent="why does the login test flake?"
 16302080-1- tests/login.test.ts:14: expected 200, received 401
 16302080:2 tool_result/Bash error: exit code 1
 [3 hits in 3 sessions]
 ```
 
 - The header is the session's short digest (see [Session digests](#session-digests))
-  (see [Header lines](#header-lines)): the session's address (its
-  shortest unique id prefix), then:
+  (see [Header lines](#header-lines)): the full session id (the
+  SESSION of a hit's address), then:
 
   | Key | Value |
   |---|---|
@@ -67,7 +67,7 @@ Output, newest message first, grouped under one header line per session
   Fields without a value are left out. The header stays within about 260
   bytes: long names are cut, then the intent, then `who`, `repo` and
   `branch` go. A session indexed so recently that it has no digest yet
-  gets the address, `who`, `agent`, the time, `repo` and `branch` only.
+  gets the session id, `who`, `agent`, the time, `repo` and `branch` only.
 - Under the header, a matching line is `ORDINAL:LINE kind/tool: text` on
   a message's first matching line and `ORDINAL:LINE: text` on the others.
   A context line is `ORDINAL-LINE- text`. The address for `read` is
@@ -174,7 +174,7 @@ line grep's header uses with `msgs` and `parent`, then its last reply. Its foote
 next: --cursor 1788220800000000.ID]`, or `end of list`.
 
 ```
-01a0d550 agent=codex ended=2026-09-24 repo=pandora branch=main msgs=151 files=9 pr=#110 commits=1 failed=3 intent="scope a proper fix for…"
+01a0d550-6c1e-7a52-9d0e-3f4b2a1c9e77 agent=codex ended=2026-09-24 repo=pandora branch=main msgs=151 files=9 pr=#110 commits=1 failed=3 intent="scope a proper fix for…"
     last: "One loose end: local rollout. The daemon still uses 3d446be…"
 ```
 

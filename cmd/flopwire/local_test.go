@@ -223,6 +223,26 @@ func mcpResponses(t *testing.T, out string) map[int]mcpResp {
 	return got
 }
 
+// sameMessage reports whether two message addresses name the same
+// message: the same ordinal in sessions one of whose ids is a prefix of
+// the other's (headers print the full session id, read the shortest
+// unique prefix).
+func sameMessage(a, b string) bool {
+	sa, oa, _ := strings.Cut(a, "/")
+	sb, ob, _ := strings.Cut(b, "/")
+	return oa == ob && (strings.HasPrefix(sa, sb) || strings.HasPrefix(sb, sa))
+}
+
+// focusIs reports whether read's text answer focuses the message at addr.
+func focusIs(out, addr string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		if f, ok := strings.CutPrefix(l, ">> "); ok && sameMessage(strings.Fields(f)[0], addr) {
+			return true
+		}
+	}
+	return false
+}
+
 // Every address grep, search and sessions print (text and JSON, CLI and
 // MCP) round-trips through read: a message address reads that message
 // with the addressed line marked, a session address reads the session.
@@ -340,7 +360,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "# "+a.session+" ") {
 				t.Errorf("read %s: no focus in that session:\n%s", target, out)
 			}
-		case !strings.Contains(out, ">> "+a.msg+"  "):
+		case !focusIs(out, a.msg):
 			t.Errorf("read %s: focus is not that message:\n%s", target, out)
 		case a.line != "" && !regexp.MustCompile(`(?m)^>\s*`+a.line+`  `).MatchString(out):
 			t.Errorf("read %s: line %s not marked:\n%s", target, a.line, out)
@@ -353,7 +373,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		}
 		if a.msg != "" {
 			for _, m := range cx.Messages {
-				if m.ID == cx.Focus && m.Address != a.msg {
+				if m.ID == cx.Focus && !sameMessage(m.Address, a.msg) {
 					t.Errorf("read --json %s: focus address %s", target, m.Address)
 				}
 			}

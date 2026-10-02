@@ -168,7 +168,7 @@ flopwire read 0b7e2c1a/28672:14 -B 2                                  # an addre
 ```
 
 - `grep`, `search` and `read` print text (`--json` for JSON). Hits group
-  under a header per session, such as `## 0b7e2c1a agent=claude
+  under a header per session, such as `## 0b7e2c1a-0000-4000-8000-000000000001 agent=claude
   ended=2026-09-23 repo=api branch=main intent="…"`; a value with a space
   is a JSON string.
 - `sessions` prints compact JSON, a brief row per session with its full

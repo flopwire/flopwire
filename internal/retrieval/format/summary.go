@@ -188,7 +188,7 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 	}
 	tail := outcome(c.Digest)
 	build := func(w string, where []string, intent bool) string {
-		parts := []string{sessionValue(c.Address)}
+		parts := []string{sessionValue(sessionID(c))}
 		if w != "" {
 			parts = append(parts, w)
 		}
@@ -242,6 +242,23 @@ func sessionValue(v string) string {
 		return jsonQuote(oneLine(v))
 	}
 	return v
+}
+
+// sessionID is the id a header leads with: the full session id (an
+// address prefix unique today may not be tomorrow), else the address.
+func sessionID(c *ConversationInfo) string {
+	if c.SessionID != "" {
+		return c.SessionID
+	}
+	return c.Address
+}
+
+// hitSession is the id a header opening h's session leads with.
+func hitSession(h *Hit) string {
+	if h.SessionID != "" {
+		return h.SessionID
+	}
+	return sessionOf(h.Address)
 }
 
 // field is one key=value field of a header line.
