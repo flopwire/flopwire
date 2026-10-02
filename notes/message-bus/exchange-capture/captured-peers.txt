@@ -1,0 +1,3 @@
+b5dd812f  dev  claude  live busy  app-api@api-cursors  "You are the API agent for this repository (current branch: api-cursors). Do thes…"
+01a0fa0a  dev  codex  live idle  t  "Reply with just: ok"
+[2 live sessions (2 yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]
