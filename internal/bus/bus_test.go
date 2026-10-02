@@ -1112,8 +1112,8 @@ func TestPollAnswersAtOnceOnANewGeneration(t *testing.T) {
 	}
 }
 
-// Revoking re-holds an @user message a device claimed but did not deliver,
-// and undoes the claim; accepting again offers it to be claimed again.
+// Revoking re-holds an @user message a device claimed but did not deliver:
+// the device drops it. Accepting again returns it to that device's claim.
 func TestRevokeReholdsClaimedMessage(t *testing.T) {
 	tm := newTeam(t)
 	alexLogin := busproto.Caller{UserID: tm.alex}
@@ -1133,15 +1133,12 @@ func TestRevokeReholdsClaimedMessage(t *testing.T) {
 	if got := tm.present(tm.alexMac, api); len(got.Messages) != 0 || len(got.Claimable) != 0 {
 		t.Fatalf("re-held claimed message still offered: %+v", got)
 	}
-	if ack, err := tm.s.Ack(context.Background(), tm.alexMac, busproto.AckRequest{IDs: []string{out.ID}}); err != nil || len(ack.Rejected) != 1 {
-		t.Fatalf("ack of a re-held message: %+v %v", ack, err)
-	}
 	if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
 		t.Fatal(err)
 	}
 	got := tm.present(tm.alexMac, api)
-	if len(got.Claimable) != 1 || got.Claimable[0].Message.ID != out.ID {
-		t.Fatalf("released message not claimable again: %+v", got)
+	if len(got.Messages) != 1 || got.Messages[0].ID != out.ID || got.Messages[0].ToSession != "a-api-4444" || tm.state(out.ID) != "claimed" {
+		t.Fatalf("released message not back with its claim: %+v %s", got, tm.state(out.ID))
 	}
 }
 
@@ -1182,5 +1179,55 @@ func TestHeldListsPreviewsBySender(t *testing.T) {
 	}
 	if out, _ := tm.s.Held(context.Background(), tm.alex); len(out.Senders) != 1 || out.Senders[0].User != "sam@example.test" {
 		t.Fatalf("after accept %+v", out)
+	}
+}
+
+// A revoke that lands after a hook printed a claimed @user message, but
+// before the device's receipt reached the server, must not deliver that
+// message a second time: the late receipt is taken (the message was
+// delivered), and a later accept never offers it to another device.
+func TestRevokeAfterAPrintedClaimDeliversOnce(t *testing.T) {
+	for _, receiptFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "receipt before the accept", false: "receipt after the accept"}[receiptFirst], func(t *testing.T) {
+			tm := newTeam(t)
+			alexLinux := tm.device(tm.alex)
+			alexLogin := busproto.Caller{UserID: tm.alex}
+			if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+				t.Fatal(err)
+			}
+			out := tm.mustSend(tm.garyMac, "g-web-2222", "@alex", "to a person", func(r *busproto.SendRequest) { r.Repo = "api" })
+			api := live("a-api-4444", "claude", "/Users/alex/code/api", false)
+			lin := live("a-lin-5555", "codex", "/home/alex/api", false)
+			tm.present(tm.alexMac, api)
+			tm.present(alexLinux, lin)
+			if _, err := tm.s.Claim(context.Background(), tm.alexMac, busproto.ClaimRequest{MessageID: out.ID, SessionID: "a-api-4444"}); err != nil {
+				t.Fatal(err)
+			}
+			// The mac's hook prints it; the revoke lands before the receipt.
+			if _, err := tm.s.Revoke(context.Background(), alexLogin, "gary"); err != nil {
+				t.Fatal(err)
+			}
+			ack := func() {
+				t.Helper()
+				if ack, err := tm.s.Ack(context.Background(), tm.alexMac, busproto.AckRequest{IDs: []string{out.ID}}); err != nil || len(ack.Acked) != 1 {
+					t.Fatalf("receipt of the printed message: %+v %v", ack, err)
+				}
+			}
+			if receiptFirst {
+				ack()
+			}
+			if _, err := tm.s.Accept(context.Background(), alexLogin, "gary"); err != nil {
+				t.Fatal(err)
+			}
+			if got := tm.present(alexLinux, lin); len(got.Claimable) != 0 || len(got.Messages) != 0 {
+				t.Fatalf("the printed message is offered to another device: %+v", got)
+			}
+			if !receiptFirst {
+				ack()
+			}
+			if st := tm.state(out.ID); st != "delivered" {
+				t.Fatalf("state %s, want delivered", st)
+			}
+		})
 	}
 }

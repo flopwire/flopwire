@@ -307,10 +307,11 @@ func (s *Store) readEnvelope(ctx context.Context, q querier, id string, out *bus
 }
 
 // AckSQL marks delivered those of the messages $1 to the person $2 that
-// the device $3 holds: claimed by it, or queued to a session on it.
+// the device $3 holds: claimed by it (also when a revoke held the claimed
+// message again after its hook printed it), or queued to a session on it.
 const AckSQL = `UPDATE bus_messages m SET state='delivered',delivered_at=$4
 	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND (
-		(m.state='claimed' AND m.claimed_device=$3)
+		(m.state IN ('claimed','held') AND m.claimed_device=$3)
 		OR (m.state='queued' AND m.addressed='session' AND (
 			EXISTS(SELECT 1 FROM bus_presence p WHERE p.device_id=$3 AND p.agent=m.to_agent AND p.session_id=m.to_session)
 			OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=$3 AND c.agent=m.to_agent AND c.session_id=m.to_session))))
@@ -612,17 +613,18 @@ func (s *Store) Held(ctx context.Context, userID string) (busproto.HeldResponse,
 
 // Acceptance and sweep statements.
 const (
-	// releaseHeldSQL queues the held messages from $2 to $1 that expire
-	// after $3, with a new seq so the recipient's poll wakes.
-	releaseHeldSQL = `UPDATE bus_messages SET state='queued',seq=nextval('bus_messages_seq')
+	// releaseHeldSQL releases the held messages from $2 to $1 that expire
+	// after $3, with a new seq so the recipient's poll wakes: queued, or
+	// claimed again by the device that claimed one before a revoke (its
+	// hook may have printed it, so no other device may take it).
+	releaseHeldSQL = `UPDATE bus_messages SET state=CASE WHEN claimed_device IS NULL THEN 'queued' ELSE 'claimed' END,seq=nextval('bus_messages_seq')
 		WHERE to_user=$1 AND from_user=$2 AND state='held' AND expires_at>$3`
 	// reholdSQL holds the undelivered messages from $2 to $1 again: queued
-	// ones, and @user ones a device claimed but no hook printed yet. A
-	// claim is undone, so an accept later offers the message again.
-	reholdSQL = `UPDATE bus_messages SET state='held',
-		to_session=CASE WHEN addressed='user' THEN NULL ELSE to_session END,
-		to_agent=CASE WHEN addressed='user' THEN NULL ELSE to_agent END,
-		claimed_by=NULL,claimed_device=NULL,claimed_at=NULL
+	// ones, and @user ones a device claimed and has not acknowledged. The
+	// claim is kept: that device's hook may have printed the message
+	// before the revoke landed, so its late receipt is taken (AckSQL) and
+	// an accept returns the message to that device, never to another.
+	reholdSQL = `UPDATE bus_messages SET state='held'
 		WHERE to_user=$1 AND from_user=$2 AND state IN ('queued','claimed')`
 	// expireSQL expires a batch of undelivered messages past $1.
 	expireSQL = `UPDATE bus_messages SET state='expired' WHERE id IN (
