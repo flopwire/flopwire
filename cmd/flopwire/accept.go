@@ -12,8 +12,12 @@ package main
 //     device or minted token on these routes);
 //   - have no MCP tool.
 //
-// accept states what accepting means and waits for the word "accept"
-// typed on the terminal. revoke is one step. Without a server every
+// Those stop an agent that runs the CLI, not one that reads the saved
+// session from the config file (any process of the OS user can) and calls
+// the server itself, or that runs the CLI under a pseudo-terminal. So
+// accept also needs the person's password: accept states what accepting
+// means, then reads the password from the terminal without echo, and the
+// server checks it (busproto.CodePasswordRequired). revoke is one step. Without a server every
 // session on the device is the same person's, so nothing is ever held.
 //
 // Output follows the bus verbs (issue #55): compact JSON by default,
@@ -21,7 +25,6 @@ package main
 // stderr with exit status 1.
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -60,15 +63,20 @@ const (
 // acceptIO is where the accept verbs read and write, and how they learn
 // whether a person is at the terminal; tests replace it.
 type acceptIO struct {
-	in       io.Reader // the typed confirmation
-	out      io.Writer // the answer
+	password func() (string, error) // reads the password typed at the prompt
+	out      io.Writer              // the answer
 	errOut   io.Writer // the statement and prompt, and JSON errors
 	terminal func() bool
 	load     func() (client.Config, error)
 }
 
 func acceptMain(ctx context.Context, verb string, args []string) error {
-	return acceptCmd(ctx, verb, args, acceptIO{in: os.Stdin, out: os.Stdout, errOut: os.Stderr,
+	return acceptCmd(ctx, verb, args, acceptIO{out: os.Stdout, errOut: os.Stderr,
+		password: func() (string, error) {
+			b, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			return string(b), err
+		},
 		terminal: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }, load: client.Load})
 }
 
@@ -189,6 +197,9 @@ func (s acceptSession) call(ctx context.Context, method, path string, in, out an
 		return loginRequired(s.console)
 	case ae.StatusCode == http.StatusNotImplemented:
 		return &busErr{Code: codeServerError, Status: ae.StatusCode, Detail: "this server has no message bus", Fix: "ask your administrator to upgrade the server"}
+	case ae.Code == busproto.CodePasswordRequired:
+		return &busErr{Code: ae.Code, Status: ae.StatusCode, Refused: true, Detail: "not accepted: the password was not correct",
+			Fix: "run it again and type your own Flopwire password, or use the web console at " + s.console, Example: "flopwire accept alex@example.com"}
 	case ae.Code == busproto.CodeUnknownRecipient:
 		return &busErr{Code: ae.Code, Status: ae.StatusCode, Refused: true, Detail: ae.Detail, Fix: "name a member by email", Example: "flopwire accepts --text"}
 	case ae.Code == busproto.CodeAmbiguousRecipient:
@@ -302,19 +313,19 @@ func (s acceptSession) accept(ctx context.Context, sender string, io_ acceptIO, 
 			b.WriteString("\n")
 		}
 	}
-	fmt.Fprintf(&b, "Accept messages from %s? Type accept to confirm: ", busproto.Preview(sender))
+	fmt.Fprintf(&b, "To accept messages from %s, type your Flopwire password (it is not shown; nothing typed cancels): ", busproto.Preview(sender))
 	if _, err := io.WriteString(io_.errOut, b.String()); err != nil {
 		return err
 	}
-	line, err := bufio.NewReader(io_.in).ReadString('\n')
-	if strings.TrimSpace(line) != "accept" {
-		if err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		return &busErr{Code: codeNotConfirmed, Detail: "not accepted: the confirmation was not the word accept", Example: acceptUsage("accept")}
+	password, err := io_.password()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if password == "" {
+		return &busErr{Code: codeNotConfirmed, Detail: "not accepted: no password was typed", Example: acceptUsage("accept")}
 	}
 	var out busproto.AcceptResponse
-	if err := s.call(ctx, "POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: sender}, &out); err != nil {
+	if err := s.call(ctx, "POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: sender, Password: password}, &out); err != nil {
 		return err
 	}
 	r := acceptJSON{Kind: "accept", AcceptResponse: out}

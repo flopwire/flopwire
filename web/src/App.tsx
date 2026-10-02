@@ -1556,8 +1556,16 @@ function MessagingRoute({ token }: { token: string }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [acceptError, setAcceptError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
+  // Opening or closing the accept panel starts it empty.
+  const confirm = (id: string | null) => {
+    setConfirming(id);
+    setPassword("");
+    setAcceptError("");
+  };
   const refresh = useCallback(async () => {
     try {
       const [h, a] = await Promise.all([
@@ -1576,22 +1584,34 @@ function MessagingRoute({ token }: { token: string }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+  // Accepting needs the person's password as well as the session: the
+  // session `flopwire login` saves on a device can be read by an agent of
+  // the same OS user, the password cannot.
   async function accept(group: HeldGroup) {
     setBusy(group.user_id);
     setOutcome("");
+    setAcceptError("");
+    const typed = password;
+    setPassword("");
     try {
       const out = await request<AcceptResult>("/v1/bus/accepts", token, {
         method: "POST",
-        body: JSON.stringify({ sender: group.user_id }),
+        body: JSON.stringify({ sender: group.user_id, password: typed }),
       });
       const n = out.released ?? 0;
       setOutcome(
         `Accepted ${out.user}. ${n} held ${plural(n, "message was", "messages were")} released to your sessions; their agents' next messages arrive without being held.`,
       );
-      setConfirming(null);
+      confirm(null);
       await refresh();
     } catch (reason) {
-      setError(message(reason));
+      if (reason instanceof APIError && reason.status === 403)
+        setAcceptError(
+          "Not accepted: the password was not correct. Type your own Flopwire password.",
+        );
+      else if (reason instanceof APIError && reason.status === 429)
+        setAcceptError("Too many attempts. Wait a minute, then try again.");
+      else setError(message(reason));
     } finally {
       setBusy(null);
     }
@@ -1665,7 +1685,7 @@ function MessagingRoute({ token }: { token: string }) {
                     <button
                       className="button secondary"
                       disabled={busy !== null}
-                      onClick={() => setConfirming(group.user_id)}
+                      onClick={() => confirm(group.user_id)}
                     >
                       Review and accept
                     </button>
@@ -1687,10 +1707,14 @@ function MessagingRoute({ token }: { token: string }) {
                 )}
               </ul>
               {confirming === group.user_id && (
-                <div
+                <form
                   className="action-panel accept-panel"
                   role="region"
                   aria-label={`Accept ${group.user}`}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void accept(group);
+                  }}
                 >
                   <h3>Accept messages from {group.user}?</h3>
                   <p className="accept-statement">{ACCEPT_STATEMENT}</p>
@@ -1700,25 +1724,38 @@ function MessagingRoute({ token }: { token: string }) {
                     sessions now. Revoking later holds undelivered messages
                     again; it cannot recall one a session already received.
                   </p>
+                  <Field
+                    label="Your password, to confirm it is you"
+                    type="password"
+                    value={password}
+                    onChange={setPassword}
+                    autoComplete="current-password"
+                  />
+                  {acceptError && (
+                    <div className="error" role="alert">
+                      {acceptError}
+                    </div>
+                  )}
                   <div className="button-row">
                     <button
+                      type="submit"
                       className="button primary"
-                      disabled={busy !== null}
-                      onClick={() => void accept(group)}
+                      disabled={busy !== null || password === ""}
                     >
                       {busy === group.user_id
                         ? "Accepting…"
                         : `Accept ${group.user}`}
                     </button>
                     <button
+                      type="button"
                       className="button secondary"
                       disabled={busy !== null}
-                      onClick={() => setConfirming(null)}
+                      onClick={() => confirm(null)}
                     >
                       Cancel
                     </button>
                   </div>
-                </div>
+                </form>
               )}
             </div>
           ))

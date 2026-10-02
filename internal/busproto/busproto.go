@@ -154,6 +154,7 @@ const (
 	CodeSessionNotOnDevice = "session_not_on_device"
 	CodeDeviceRequired     = "bus_device_required"
 	CodeLoginRequired      = "login_session_required"
+	CodePasswordRequired   = "password_required" // 403: accept needs the person's password
 	CodeNotFound           = "not_found"
 	CodeAlreadyClaimed     = "already_claimed"
 	CodeNotEligible        = "not_eligible"
@@ -416,9 +417,13 @@ type InboxResponse struct {
 }
 
 // AcceptRequest is POST /v1/bus/accepts: accept messages from Sender (an
-// email, its local part, a name or a user id).
+// email, its local part, a name or a user id). Password is the person's
+// own, typed by them: a login session alone does not accept, because the
+// one `flopwire login` saves can be read by any process of the person's
+// OS user, an agent included (CodePasswordRequired).
 type AcceptRequest struct {
-	Sender string `json:"sender"`
+	Sender   string `json:"sender"`
+	Password string `json:"password,omitempty"`
 }
 
 // Accepted is one sender the person accepts.

@@ -78,6 +78,8 @@ function server(state: { held: unknown[]; accepted: unknown[]; heldStatus?: numb
       if (url === "/v1/bus/accepts" && method === "GET")
         return json({ accepted: state.accepted, held: [] });
       if (url === "/v1/bus/accepts" && method === "POST") {
+        if (JSON.parse(String(init?.body)).password !== "the right password")
+          return json({ code: "password_required", detail: "accepting a sender needs your password" }, 403);
         state.held = [];
         state.accepted = [{ user: "gary@example.test", user_id: gary, accepted_at: now }];
         return json({ user: "gary@example.test", user_id: gary, accepted: true, released: 3 });
@@ -125,7 +127,7 @@ describe("messaging page", () => {
     expect(calls.map((c) => c.url).sort()).toEqual(["/v1/bus/accepts", "/v1/bus/held"]);
   });
 
-  it("accepts a sender only after stating what accepting means", async () => {
+  it("accepts a sender only after stating what accepting means, with the person's password", async () => {
     const calls = server({ held: [heldGroup], accepted: [] });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
@@ -136,10 +138,24 @@ describe("messaging page", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("region", { name: "Accept gary@example.test" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Review and accept" }));
-    fireEvent.click(screen.getByRole("button", { name: "Accept gary@example.test" }));
+    const button = screen.getByRole("button", { name: "Accept gary@example.test" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    const field = screen.getByLabelText(/Your password/) as HTMLInputElement;
+    expect(field.type).toBe("password");
+    // A wrong password: refused in the panel; the lists stay.
+    fireEvent.change(field, { target: { value: "guess" } });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain("the password was not correct");
+    expect(screen.getByText("gary@example.test")).toBeTruthy();
+    expect(field.value).toBe("");
+    fireEvent.change(field, { target: { value: "the right password" } });
+    fireEvent.click(button);
     await screen.findByText(/Accepted gary@example.test. 3 held messages were released/);
-    const post = calls.find((c) => c.method === "POST");
-    expect(post && JSON.parse(post.body ?? "{}")).toEqual({ sender: gary });
+    const posts = calls.filter((c) => c.method === "POST").map((c) => JSON.parse(c.body ?? "{}"));
+    expect(posts).toEqual([
+      { sender: gary, password: "guess" },
+      { sender: gary, password: "the right password" },
+    ]);
     await screen.findByRole("button", { name: "Revoke gary@example.test" });
     expect(screen.getByText(/No one you have not accepted has messaged your agents/)).toBeTruthy();
   });

@@ -270,7 +270,7 @@ func TestBusEndToEndServer(t *testing.T) {
 	if err != nil || !strings.HasPrefix(out, "held m") || !strings.Contains(out, " for @alex: alex has not accepted messages from you; expires ") {
 		t.Fatalf("held: %q %v", out, err)
 	}
-	apiCall(t, srv.URL, alex, "POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "gary@example.test"})
+	apiCall(t, srv.URL, alex, "POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "gary@example.test", Password: adminPassword})
 	out, err = busCLI(t, sock, e2eA, "", "send", "@alex", "--", "Second question: is the pager rota in the wiki?")
 	if err != nil || !strings.HasPrefix(out, "queued m") || !strings.Contains(out, " for @alex: no live session on e2e-api; expires ") {
 		t.Fatalf("@user send: %q %v", out, err)

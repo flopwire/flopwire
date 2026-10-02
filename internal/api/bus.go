@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/flopwire/flopwire/internal/auth"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/go-chi/chi/v5"
@@ -292,6 +293,28 @@ func (a *API) busHeld(w http.ResponseWriter, r *http.Request) {
 func (a *API) busAccept(w http.ResponseWriter, r *http.Request) {
 	var in busproto.AcceptRequest
 	if !decode(w, r, &in) {
+		return
+	}
+	// The login session is not enough: the one `flopwire login` saves is
+	// readable by every process of the person's OS user, so an agent could
+	// accept with it. The password is what only the person has. Each
+	// attempt counts against the login limits for this account, so the
+	// session gives no extra guesses.
+	p := mustPrincipal(r)
+	ipOK, idOK := admitDimensions(a.ipLimiter, "login:"+a.clientIP(r), a.identityLimiter, "login:"+hashIdentifier(p.User.Email))
+	if !ipOK || !idOK {
+		if !a.auditOK(w, r, p.User.ID, p.Credential.DeviceID, "rate_limit.reject", "request", r.URL.Path, map[string]any{"scope": "login", "client_ip": a.clientIP(r)}) {
+			return
+		}
+		w.Header().Set("Retry-After", "60")
+		problem(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
+	if in.Password == "" || !auth.CheckPassword(p.User.PasswordHash, in.Password) {
+		if !a.auditOK(w, r, p.User.ID, p.Credential.DeviceID, "authorization.failed", "request", r.URL.Path, map[string]any{"reason": busproto.CodePasswordRequired}) {
+			return
+		}
+		problemCode(w, http.StatusForbidden, busproto.CodePasswordRequired, "accepting a sender needs your password, typed by you; a login session alone is not enough")
 		return
 	}
 	out, err := a.bus.Accept(r.Context(), a.caller(r), in.Sender)

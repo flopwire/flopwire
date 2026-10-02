@@ -98,7 +98,7 @@ func testBusCredentials(t *testing.T, b busServer) {
 		body         any
 	}{
 		{"GET", busproto.PathAccepts, nil},
-		{"POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "alex"}},
+		{"POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "alex", Password: memberPassword}},
 		{"DELETE", busproto.PathAccepts + "/alex", nil},
 	} {
 		if st, code := busCall(t, c.method, b.url+c.path, b.gary.device, c.body, nil); st != 403 || code != busproto.CodeLoginRequired {
@@ -111,7 +111,7 @@ func testBusCredentials(t *testing.T, b busServer) {
 		t.Errorf("minted token poll: %d %s", st, code)
 	}
 	var acc busproto.AcceptResponse
-	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.gary.session, busproto.AcceptRequest{Sender: "alex"}, &acc); st != 200 || !acc.Accepted || acc.User != "alex@example.test" {
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.gary.session, busproto.AcceptRequest{Sender: "alex", Password: memberPassword}, &acc); st != 200 || !acc.Accepted || acc.User != "alex@example.test" {
 		t.Fatalf("accept with a login session: %d %+v", st, acc)
 	}
 	var list busproto.AcceptsResponse
@@ -156,7 +156,7 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 	alexPresence := presence("alex-2222", "codex", false)
 	var first busproto.PollResponse
 	busCall(t, "POST", b.url+busproto.PathPoll, b.alex.device, alexPresence, &first)
-	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary"}, nil); st != 200 {
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary", Password: memberPassword}, nil); st != 200 {
 		t.Fatal("accept")
 	}
 	// The accept moved alex's generation: the next poll answers at once.
@@ -264,7 +264,7 @@ func TestBusAcceptAuthorizationMatrix(t *testing.T) {
 	}{
 		{"GET", busproto.PathHeld, nil},
 		{"GET", busproto.PathAccepts, nil},
-		{"POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "gary"}},
+		{"POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "gary", Password: memberPassword}},
 		{"DELETE", busproto.PathAccepts + "/gary", nil},
 	}
 	for name, token := range refused {
@@ -284,7 +284,7 @@ func TestBusAcceptAuthorizationMatrix(t *testing.T) {
 			t.Errorf("%s held: %d %+v", name, st, held)
 		}
 	}
-	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.admin, busproto.AcceptRequest{Sender: "gary"}, nil); st != 200 {
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.admin, busproto.AcceptRequest{Sender: "gary", Password: "correct horse battery staple"}, nil); st != 200 {
 		t.Fatalf("admin accepts for themself: %d", st)
 	}
 	var acc busproto.AcceptsResponse
@@ -298,7 +298,7 @@ func TestBusAcceptAuthorizationMatrix(t *testing.T) {
 		t.Fatalf("recipient held: %d %+v", st, held)
 	}
 	var out busproto.AcceptResponse
-	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary"}, &out); st != 200 || out.Released != 1 {
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary", Password: memberPassword}, &out); st != 200 || out.Released != 1 {
 		t.Fatalf("recipient accept: %d %+v", st, out)
 	}
 	// Every read is audited with what it showed.
@@ -314,5 +314,52 @@ func TestBusAcceptAuthorizationMatrix(t *testing.T) {
 	}
 	if !found || len(auditMeta(t, b.s, "bus.accepts")) != 1 || len(auditMeta(t, b.s, "bus.accept")) != 2 {
 		t.Fatalf("audit: held %+v, accepts %d, accept %d", heldReads, len(auditMeta(t, b.s, "bus.accepts")), len(auditMeta(t, b.s, "bus.accept")))
+	}
+}
+
+// A login session alone does not accept a sender: the session saved by
+// `flopwire login` is readable by every process of the person's OS user,
+// an agent included. Accepting needs the person's password, typed by
+// them, with each attempt counted against the login rate limit.
+func TestBusAcceptNeedsThePassword(t *testing.T) {
+	b := newBusServer(t)
+	busCall(t, "POST", b.url+busproto.PathPoll, b.gary.device, presence("gary-1111", "claude", true), nil)
+	busCall(t, "POST", b.url+busproto.PathPoll, b.alex.device, presence("alex-2222", "codex", false), nil)
+	var sent busproto.SendResponse
+	if st, _ := busCall(t, "POST", b.url+busproto.PathSend, b.gary.device, busproto.SendRequest{FromSession: "gary-1111", To: "alex-2222", Body: "held"}, &sent); st != 201 || sent.State != busproto.StateHeld {
+		t.Fatalf("send %d %+v", st, sent)
+	}
+	accepted := func() int {
+		var acc busproto.AcceptsResponse
+		busCall(t, "GET", b.url+busproto.PathAccepts, b.alex.session, nil, &acc)
+		return len(acc.Accepted)
+	}
+	for name, pw := range map[string]string{"no password": "", "a wrong password": "guess"} {
+		var raw json.RawMessage
+		st, code := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary", Password: pw}, &raw)
+		if st != 403 || code != busproto.CodePasswordRequired || accepted() != 0 || strings.Contains(string(raw), "guess") {
+			t.Fatalf("%s: %d %s %s, accepted %d", name, st, code, raw, accepted())
+		}
+	}
+	var out busproto.AcceptResponse
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary", Password: memberPassword}, &out); st != 200 || out.Released != 1 || accepted() != 1 {
+		t.Fatalf("accept with the password: %d %+v", st, out)
+	}
+	// The password never reaches the audit log.
+	for _, e := range auditMeta(t, b.s, "authorization.failed") {
+		if strings.Contains(fmt.Sprint(e.Metadata), "guess") {
+			t.Fatalf("password in the audit: %+v", e.Metadata)
+		}
+	}
+	// Guessing is limited like login: the attempts share its bucket.
+	limited := false
+	for range 12 {
+		if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary", Password: "guess"}, nil); st == 429 {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("password guesses on accept are not rate limited")
 	}
 }

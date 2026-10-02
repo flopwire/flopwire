@@ -24,12 +24,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// acceptRun runs an accept verb with a terminal (or not), the typed
-// input, and cfg as the client configuration.
+// acceptRun runs an accept verb with a terminal (or not), the password
+// typed at the prompt, and cfg as the client configuration.
 func acceptRun(t *testing.T, terminal bool, cfg client.Config, cfgErr error, typed string, verb string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errOut strings.Builder
-	err = acceptCmd(t.Context(), verb, args, acceptIO{in: strings.NewReader(typed), out: &out, errOut: &errOut,
+	err = acceptCmd(t.Context(), verb, args, acceptIO{password: func() (string, error) { return strings.TrimSuffix(typed, "\n"), nil }, out: &out, errOut: &errOut,
 		terminal: func() bool { return terminal }, load: func() (client.Config, error) { return cfg, cfgErr }})
 	return out.String(), errOut.String(), err
 }
@@ -158,20 +158,26 @@ func TestAcceptVerbsAgainstTheServer(t *testing.T) {
 		t.Fatalf("accepts JSON: %s %v", out, err)
 	}
 
-	// accept states what accepting means and needs the word typed.
-	_, stderr, err := acceptRun(t, true, alex, nil, "yes\n", "accept", "gary")
+	// accept states what accepting means and needs the person's password:
+	// nothing typed cancels, and the word "accept" (or any wrong password)
+	// does not accept. The saved login session alone never does.
+	_, stderr, err := acceptRun(t, true, alex, nil, "\n", "accept", "gary")
 	if !errors.Is(err, errReported) || !strings.Contains(strings.Join(strings.Fields(stderr), " "), acceptStatement) ||
-		!strings.Contains(stderr, "gary@example.test has 1 held message") || !strings.Contains(stderr, "Type accept to confirm") {
+		!strings.Contains(stderr, "gary@example.test has 1 held message") || !strings.Contains(stderr, "type your Flopwire password") {
 		t.Fatalf("accept unconfirmed: %v\n%s", err, stderr)
 	}
 	if !strings.Contains(stderr, `"code":"`+codeNotConfirmed+`"`) {
 		t.Fatalf("unconfirmed code: %s", stderr)
 	}
+	_, stderr, err = acceptRun(t, true, alex, nil, "accept\n", "accept", "gary")
+	if !errors.Is(err, errReported) || errorCode(t, stderr) != busproto.CodePasswordRequired {
+		t.Fatalf("accept with a wrong password: %v\n%s", err, stderr)
+	}
 	var n int
 	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM bus_accepts`).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("accepted without confirmation: %d %v", n, err)
+		t.Fatalf("accepted without the password: %d %v", n, err)
 	}
-	out, _, err = acceptRun(t, true, alex, nil, "accept\n", "accept", "--text", "gary")
+	out, _, err = acceptRun(t, true, alex, nil, adminPassword+"\n", "accept", "--text", "gary")
 	if err != nil || !strings.HasPrefix(out, "accepted gary@example.test: 1 held message released to your sessions") {
 		t.Fatalf("accept: %q %v", out, err)
 	}
@@ -206,7 +212,7 @@ func TestAcceptVerbsAgainstTheServer(t *testing.T) {
 		}
 	}
 	// An unknown person is a refusal, not an accept.
-	_, stderr, err = acceptRun(t, true, alex, nil, "accept\n", "accept", "nobody@example.test")
+	_, stderr, err = acceptRun(t, true, alex, nil, adminPassword+"\n", "accept", "nobody@example.test")
 	if !errors.Is(err, errReported) || errorCode(t, stderr) != busproto.CodeUnknownRecipient {
 		t.Fatalf("unknown: %v %s", err, stderr)
 	}
@@ -331,7 +337,7 @@ func TestAcceptEndToEndCrossUser(t *testing.T) {
 	}
 
 	// 2. Alex accepts on a terminal with the login session.
-	out, _, err := acceptRun(t, true, mustLoad(t), nil, "accept\n", "accept", "--text", "gary@example.test")
+	out, _, err := acceptRun(t, true, mustLoad(t), nil, adminPassword+"\n", "accept", "--text", "gary@example.test")
 	if err != nil || !strings.HasPrefix(out, "accepted gary@example.test: 1 held message released") {
 		t.Fatalf("accept: %q %v", out, err)
 	}
