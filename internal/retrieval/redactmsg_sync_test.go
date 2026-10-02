@@ -27,7 +27,7 @@ func TestRedactMasksTitle(t *testing.T) {
 	if before == 0 {
 		t.Fatal("fixture title does not come from the prompt")
 	}
-	if n := s.count(`SELECT count(*) FROM conversations WHERE strpos(digest::text,'first line')>0`); n == 0 {
+	if n := s.count(`SELECT count(*) FROM conversation_activity WHERE strpos(digest::text,'first line')>0`); n == 0 {
 		t.Fatal("fixture digest does not hold the prompt")
 	}
 	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: addr + ":1-1", AllCopies: true}); err != nil {
@@ -39,7 +39,7 @@ func TestRedactMasksTitle(t *testing.T) {
 	if n := s.count(`SELECT count(*) FROM conversations WHERE strpos(title,'first line')>0`); n != 0 {
 		t.Fatalf("%d conversation titles still hold the redacted line", n)
 	}
-	if n := s.count(`SELECT count(*) FROM conversations WHERE strpos(digest::text,'first line')>0`); n != 0 {
+	if n := s.count(`SELECT count(*) FROM conversation_activity WHERE strpos(digest::text,'first line')>0`); n != 0 {
 		t.Fatalf("%d digests still hold the redacted line", n)
 	}
 }

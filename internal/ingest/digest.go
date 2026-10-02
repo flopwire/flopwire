@@ -30,26 +30,32 @@ const (
 // refreshDigest folds msgs, the rows a flush wrote for conversation conv,
 // into its stored digest and updates its parent's subagent count, in the
 // flush's transaction. A conversation without a digest yet is recounted.
-func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, mode digestMode) error {
+// last is the flush's last activity of conv (zero for none), written with
+// the digest when it is later than the stored one: one write of the
+// activity row per flush.
+func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, mode digestMode, last time.Time) error {
 	var (
 		prev          []byte
 		cwd, root     *string
 		title         *string
 		branches      []string
-		start, last   *time.Time
+		start, stored *time.Time
 		remote, agent string
 	)
-	if err := tx.QueryRow(ctx, `SELECT digest,cwd,repo_root,branches,started_at,last_activity_at,COALESCE(extra->'git'->>'repository_url',''),agent,title
-		FROM conversations WHERE id=$1`, conv).Scan(&prev, &cwd, &root, &branches, &start, &last, &remote, &agent, &title); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT a.digest,c.cwd,c.repo_root,c.branches,c.started_at,a.last_activity_at,COALESCE(c.extra->'git'->>'repository_url',''),c.agent,c.title
+		FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.id=$1`, conv).Scan(&prev, &cwd, &root, &branches, &start, &stored, &remote, &agent, &title); err != nil {
 		return err
 	}
 	c := digest.Conv{Title: deref(title), Cwd: deref(cwd), RepoRoot: deref(root), Remote: normalizeRemote(remote), Branches: branches}
 	if start != nil {
 		c.Started = *start
 	}
-	if last != nil {
-		c.Last = *last
+	// timestamptz keeps microseconds, as pgx sends them (truncated).
+	last = last.Truncate(time.Microsecond)
+	if stored != nil && stored.After(last) {
+		last = *stored
 	}
+	c.Last = last
 	var subagents int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM conversations k JOIN conversations c ON c.id=$1
 		WHERE k.device_id=c.device_id AND k.agent=c.agent AND k.parent_native_session_id=c.session_id AND k.id<>c.id`, conv).Scan(&subagents); err != nil {
@@ -76,15 +82,22 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 		}
 		out = digest.Append(prev, c, msgs, failed, subagents)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE conversations SET digest=$2,digest_stale=CASE $3::int WHEN 1 THEN false WHEN 2 THEN true ELSE digest_stale END WHERE id=$1`,
-		conv, out, int(mode)); err != nil {
+	// The caller holds conv's conversations row (the flush's upsert, or
+	// recountDigests' lock), which covers its activity row.
+	if _, err := tx.Exec(ctx, `UPDATE conversation_activity SET digest=$2,digest_stale=CASE $3::int WHEN 1 THEN false WHEN 2 THEN true ELSE digest_stale END,
+			last_activity_at=GREATEST(last_activity_at,$4::timestamptz) WHERE conversation_id=$1`,
+		conv, out, int(mode), nullTime(last)); err != nil {
 		return err
 	}
-	// A subagent changes its parent's count.
-	_, err := tx.Exec(ctx, `UPDATE conversations p SET digest=jsonb_set(p.digest,'{subagents}',to_jsonb((SELECT count(*) FROM conversations k
+	// A subagent changes its parent's count. The parent's conversations
+	// row is locked first, as an update of it would lock it, and then its
+	// activity row.
+	_, err := tx.Exec(ctx, `UPDATE conversation_activity a SET digest=jsonb_set(a.digest,'{subagents}',to_jsonb((SELECT count(*) FROM conversations k
 			WHERE k.device_id=p.device_id AND k.agent=p.agent AND k.parent_native_session_id=p.session_id AND k.id<>p.id)))
-		FROM conversations c WHERE c.id=$1 AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id
-			AND p.id<>c.id AND p.digest IS NOT NULL`, conv)
+		FROM (SELECT p.id,p.device_id,p.agent,p.session_id FROM conversations p JOIN conversations c ON c.id=$1
+			WHERE p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
+			FOR NO KEY UPDATE OF p) p
+		WHERE a.conversation_id=p.id AND a.digest IS NOT NULL`, conv)
 	return err
 }
 
@@ -112,7 +125,7 @@ func recountDigests(ctx context.Context, tx pgx.Tx, ids []string) error {
 		return err
 	}
 	for _, id := range locked {
-		if err := refreshDigest(ctx, tx, id, nil, digestRecount); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if err := refreshDigest(ctx, tx, id, nil, digestRecount, time.Time{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 	}

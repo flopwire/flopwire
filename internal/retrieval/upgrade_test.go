@@ -85,7 +85,8 @@ func TestPopulatedArchiveReparseUpgrade(t *testing.T) {
 	tail := []byte(jline(map[string]any{"type": "assistant", "uuid": tailNative, "sessionId": sess, "timestamp": "2026-09-30T12:00:01Z", "message": map[string]any{"role": "assistant", "content": "tail fixture " + secret}}))
 	exec(`INSERT INTO provisional_tails(source_id,generation,byte_offset,bytes,updated_at) VALUES($1,0,$2,$3,now())`, source, len(raw), tail)
 	exec(`UPDATE source_parse_state SET generation=0,cursor_offset=$2,cursor_line=1,parsed_seq=requested_seq,parsed_at=now() WHERE source_id=$1`, source, len(raw))
-	exec(`INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,digest) VALUES($1,$2,'claude',$3,$4,$5,'/w/upgrade',$6,$7)`, conv, source, sess, device, s.userID, "old title "+secret, map[string]any{"summary": secret})
+	exec(`INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title) VALUES($1,$2,'claude',$3,$4,$5,'/w/upgrade',$6)`, conv, source, sess, device, s.userID, "old title "+secret)
+	exec(`UPDATE conversation_activity SET digest=$2 WHERE conversation_id=$1`, conv, map[string]any{"summary": secret})
 	for i, id := range []string{history, live} {
 		text := fmt.Sprintf("old version %d %s", i, secret)
 		sum := sha256.Sum256([]byte(text))
@@ -153,7 +154,7 @@ func TestPopulatedArchiveReparseUpgrade(t *testing.T) {
 	if s.count(`SELECT count(*) FROM messages WHERE id=$1 AND superseded`, history) != 1 {
 		t.Fatal("history was discarded instead of masked")
 	}
-	if s.count(`SELECT count(*) FROM conversations WHERE strpos(title,$1)>0 OR strpos(digest::text,$1)>0`, secret) != 0 {
+	if s.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE strpos(c.title,$1)>0 OR strpos(a.digest::text,$1)>0`, secret) != 0 {
 		t.Fatal("upgrade left secret in summaries")
 	}
 	archived, err := s.objects.Get(ctx, ingest.ChunkKey(hash))

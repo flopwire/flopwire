@@ -116,7 +116,7 @@ func TestAtRestNonTargetByteCopyParsedBefore(t *testing.T) {
 	if res.Messages != 2 {
 		t.Errorf("redaction masked %d messages, want the target and its byte copy", res.Messages)
 	}
-	if n := s.count(`SELECT count(*) FROM conversations WHERE strpos(digest::text,'BLUEFALCON')>0 OR strpos(COALESCE(title,''),'BLUEFALCON')>0`); n != 0 {
+	if n := s.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE strpos(a.digest::text,'BLUEFALCON')>0 OR strpos(COALESCE(c.title,''),'BLUEFALCON')>0`); n != 0 {
 		t.Errorf("%d conversations keep the line in a title or digest", n)
 	}
 	s.drainRepairs(s.queue)

@@ -161,13 +161,14 @@ func TestRuleUpgradeMasksHistoricalRowsAndSummaries(t *testing.T) {
 	e.exec(`INSERT INTO messages(id,conversation_id,source_id,native_id,part,ordinal,kind,text,text_len,content_sha,version,superseded,source_generation,parser,enrichment,redaction_rules)
  SELECT gen_random_uuid(),m.conversation_id,m.source_id,m.native_id,m.part,m.ordinal,m.kind,m.text,m.text_len,m.content_sha,g+1,true,m.source_generation,m.parser,m.enrichment,'old-rules'
  FROM messages m CROSS JOIN generate_series(1,65) g WHERE m.id=$1`, message)
-	e.exec(`UPDATE conversations SET title=$2,digest=jsonb_build_object('intent',$2::text,'state',jsonb_build_object('f',$2::text)) WHERE id=$1`, conv, secret)
+	e.exec(`UPDATE conversations SET title=$2 WHERE id=$1`, conv, secret)
+	e.exec(`UPDATE conversation_activity SET digest=jsonb_build_object('intent',$2::text,'state',jsonb_build_object('f',$2::text)) WHERE conversation_id=$1`, conv, secret)
 	e.exec(`UPDATE source_parse_state SET applied_redaction_rules='old-rules' WHERE source_id=$1`, id)
 	e.drain()
 	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND (strpos(text,$2)>0 OR strpos(enrichment::text,$2)>0)`, id, secret) != 0 {
 		t.Fatal("historical version or enrichment retains secret")
 	}
-	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND (strpos(title,$2)>0 OR strpos(digest::text,$2)>0)`, conv, secret) != 0 {
+	if e.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.id=$1 AND (strpos(c.title,$2)>0 OR strpos(a.digest::text,$2)>0)`, conv, secret) != 0 {
 		t.Fatal("stored summary retains secret")
 	}
 	if e.count(`SELECT count(*) FROM messages WHERE id=$1 AND superseded`, message) != 1 {
@@ -230,7 +231,7 @@ func TestFailedReparseRecountsDigest(t *testing.T) {
 	e := newEnv(t)
 	id := refreshedSource(t, e)
 	e.exec(`UPDATE messages SET kind='tool_call',parser='claude@2.0' WHERE source_id=$1`, id)
-	e.exec(`UPDATE conversations SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
+	e.exec(`UPDATE conversation_activity SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE conversation_id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
 	e.exec(`UPDATE source_parse_state SET applied_parser='claude@2.99' WHERE source_id=$1`, id)
 	e.exec(`CREATE FUNCTION reject_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked version checkpoint'; END $$`)
 	e.exec(`CREATE TRIGGER reject_version BEFORE UPDATE ON source_parse_state FOR EACH ROW WHEN (NEW.applied_parser IS DISTINCT FROM OLD.applied_parser) EXECUTE FUNCTION reject_version()`)
@@ -240,7 +241,7 @@ func TestFailedReparseRecountsDigest(t *testing.T) {
 	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded AND kind='user'`, id) != 1 {
 		t.Fatal("test did not replace the stored row")
 	}
-	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
+	if e.count(`SELECT count(*) FROM conversation_activity WHERE conversation_id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
 		t.Fatal("failed reparse left a digest that does not match its live rows")
 	}
 }
@@ -277,7 +278,7 @@ func TestReplacingParseFoldsDigest(t *testing.T) {
 		t.Fatal("test did not replace a stored row")
 	}
 	var last string
-	if err := e.pool.QueryRow(e.ctx, `SELECT COALESCE(digest->>'last','') FROM conversations WHERE session_id=$1`, session).Scan(&last); err != nil {
+	if err := e.pool.QueryRow(e.ctx, `SELECT COALESCE(a.digest->>'last','') FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.session_id=$1`, session).Scan(&last); err != nil {
 		t.Fatal(err)
 	}
 	if last != "second answer" {
@@ -293,11 +294,11 @@ func TestCrashedReparseDigestRecountedOnRetry(t *testing.T) {
 	e := newEnv(t)
 	id := refreshedSource(t, e)
 	e.exec(`UPDATE messages SET kind='tool_call',parser='claude@2.0' WHERE source_id=$1`, id)
-	e.exec(`UPDATE conversations SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
+	e.exec(`UPDATE conversation_activity SET digest=jsonb_set(digest,'{messages}','{"tool_call":1}') WHERE conversation_id IN (SELECT conversation_id FROM messages WHERE source_id=$1)`, id)
 	e.exec(`UPDATE source_parse_state SET applied_parser='claude@2.99' WHERE source_id=$1`, id)
 	e.exec(`CREATE FUNCTION reject_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked version checkpoint'; END $$`)
 	e.exec(`CREATE TRIGGER reject_version BEFORE UPDATE ON source_parse_state FOR EACH ROW WHEN (NEW.applied_parser IS DISTINCT FROM OLD.applied_parser) EXECUTE FUNCTION reject_version()`)
-	e.exec(`CREATE TRIGGER reject_recount BEFORE UPDATE ON conversations FOR EACH ROW WHEN (NEW.digest->'messages'='{"user":1}') EXECUTE FUNCTION reject_version()`)
+	e.exec(`CREATE TRIGGER reject_recount BEFORE UPDATE ON conversation_activity FOR EACH ROW WHEN (NEW.digest->'messages'='{"user":1}') EXECUTE FUNCTION reject_version()`)
 	if err := e.queue.ParseSource(e.ctx, id); err == nil || !strings.Contains(err.Error(), "blocked version checkpoint") {
 		t.Fatalf("checkpoint failure: %v", err)
 	}
@@ -305,11 +306,11 @@ func TestCrashedReparseDigestRecountedOnRetry(t *testing.T) {
 		t.Fatal("test did not replace the stored row")
 	}
 	e.exec(`DROP TRIGGER reject_version ON source_parse_state`)
-	e.exec(`DROP TRIGGER reject_recount ON conversations`)
+	e.exec(`DROP TRIGGER reject_recount ON conversation_activity`)
 	if err := e.queue.ParseSource(e.ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if e.count(`SELECT count(*) FROM conversations WHERE id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
+	if e.count(`SELECT count(*) FROM conversation_activity WHERE conversation_id IN (SELECT conversation_id FROM messages WHERE source_id=$1) AND digest->'messages'='{"user":1}'`, id) != 1 {
 		t.Fatal("the retry left the failed parse's digest wrong")
 	}
 }
@@ -334,11 +335,11 @@ func TestRecountWaitsForConcurrentFlush(t *testing.T) {
 	}
 	defer flush.Rollback(e.ctx)
 	for _, sql := range []string{
-		`UPDATE conversations SET last_activity_at=last_activity_at WHERE id=$1`,
+		`SELECT 1 FROM conversations WHERE id=$1 FOR NO KEY UPDATE`,
 		`INSERT INTO messages(id,conversation_id,source_id,native_id,part,ordinal,kind,role,text,text_len,content_sha,source_generation,parser)
 		 SELECT gen_random_uuid(),conversation_id,source_id,'other-source-row',part,ordinal+1,kind,role,text,text_len,content_sha,source_generation,parser
 		 FROM messages WHERE conversation_id=$1 AND NOT superseded`,
-		`UPDATE conversations SET digest=jsonb_set(digest,'{messages,user}','2') WHERE id=$1`,
+		`UPDATE conversation_activity SET digest=jsonb_set(digest,'{messages,user}','2') WHERE conversation_id=$1`,
 	} {
 		if _, err := flush.Exec(e.ctx, sql, conv); err != nil {
 			t.Fatalf("%s: %v", sql, err)
@@ -358,7 +359,7 @@ func TestRecountWaitsForConcurrentFlush(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND digest->'messages'->>'user'='2'`, conv) != 1 {
+	if e.count(`SELECT count(*) FROM conversation_activity WHERE conversation_id=$1 AND digest->'messages'->>'user'='2'`, conv) != 1 {
 		t.Fatal("recount overwrote a concurrent flush's digest")
 	}
 }

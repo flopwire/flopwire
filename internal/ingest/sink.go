@@ -156,7 +156,11 @@ func (s *sink) flush() error {
 			if s.dirty[conv] {
 				mode = digestFold // counted once at the end (dirtyConversations)
 			}
-			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode); err != nil {
+			var last time.Time
+			if c := s.convs[id]; c != nil {
+				last = c.LastActivityAt
+			}
+			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode, last); err != nil {
 				return err
 			}
 		}
@@ -323,9 +327,15 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	if branches == nil {
 		branches = []string{}
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,last_activity_at,
+	// The upsert writes the cold columns; conversations_skip_noop drops
+	// it when they are as stored, and the row is then not returned (but
+	// still locked), so the second branch returns the stored id: it reads
+	// the snapshot from before the statement, which holds the stored row
+	// when the upsert skipped it. The hot last activity goes to
+	// conversation_activity with the digest (flush, refreshDigest).
+	err = tx.QueryRow(ctx, `WITH up AS (INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,
 			parent_native_session_id,spawned_by_native_id,depth,extra,hidden_at,hidden_rule,hidden_rules_version,hidden_root,hidden_by,other_cwds,branches)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,$16,$17,CASE WHEN $15::timestamptz IS NULL THEN NULL ELSE $1::uuid END,NULLIF($18,'')::uuid,$19::text[],$20)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::timestamptz,$15,$16,CASE WHEN $14::timestamptz IS NULL THEN NULL ELSE $1::uuid END,NULLIF($17,'')::uuid,$18::text[],$19)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET source_id=excluded.source_id,
 			cwd=COALESCE(excluded.cwd,conversations.cwd),
 			other_cwds=(SELECT COALESCE(array_agg(d ORDER BY o),'{}') FROM (SELECT d,min(o) o
@@ -333,7 +343,6 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 				WHERE d IS NOT NULL AND d IS DISTINCT FROM COALESCE(excluded.cwd,conversations.cwd) GROUP BY d) x),
 			title=COALESCE(excluded.title,conversations.title),
 			started_at=COALESCE(excluded.started_at,conversations.started_at),
-			last_activity_at=GREATEST(excluded.last_activity_at,conversations.last_activity_at),
 			parent_native_session_id=COALESCE(excluded.parent_native_session_id,conversations.parent_native_session_id),
 			spawned_by_native_id=COALESCE(excluded.spawned_by_native_id,conversations.spawned_by_native_id),
 			depth=GREATEST(excluded.depth,conversations.depth), extra=conversations.extra||excluded.extra,
@@ -343,9 +352,11 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 			hidden_rules_version=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_rules_version ELSE conversations.hidden_rules_version END,
 			hidden_by=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_by ELSE conversations.hidden_by END,
 			hidden_at=COALESCE(conversations.hidden_at,excluded.hidden_at)
-		RETURNING id::text, $15::timestamptz IS NOT NULL AND hidden_at=$15::timestamptz`,
+		RETURNING id, $14::timestamptz IS NOT NULL AND hidden_at=$14::timestamptz AS hid)
+	SELECT id::text,hid FROM up UNION ALL
+		SELECT id::text,false FROM conversations WHERE device_id=$5 AND agent=$3 AND session_id=$4 AND NOT EXISTS (SELECT 1 FROM up)`,
 		uuid.NewString(), s.src.id, s.src.agent, sessionID, s.src.deviceID, s.src.userID, nullStr(c.Cwd), nullStr(clean(c.Title)),
-		nullTime(c.StartedAt), nullTime(c.LastActivityAt), nullStr(c.ParentSessionID), nullStr(c.SpawnedByToolCallID), c.Depth, extra,
+		nullTime(c.StartedAt), nullStr(c.ParentSessionID), nullStr(c.SpawnedByToolCallID), c.Depth, extra,
 		hideAt, nullStr(hideRule), hiddenVersion(hideAt, hideVersion), hideBy, otherCwds(c), branches).Scan(&id, &newlyHidden)
 	if err != nil {
 		return "", err

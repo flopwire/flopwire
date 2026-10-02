@@ -88,7 +88,7 @@ func TestExtractionReportCheckpointFailureRetryAndContractUpgrade(t *testing.T) 
 		t.Fatal("same-generation reparse left absent rows live")
 	}
 	var liveRows, digestRows int
-	if err := e.pool.QueryRow(e.ctx, `SELECT (SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded),(SELECT COALESCE(sum(v::int),0) FROM conversations c,jsonb_each_text(c.digest->'messages') x(k,v) WHERE c.id IN (SELECT conversation_id FROM messages WHERE source_id=$1))`, id).Scan(&liveRows, &digestRows); err != nil || digestRows != liveRows {
+	if err := e.pool.QueryRow(e.ctx, `SELECT (SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded),(SELECT COALESCE(sum(v::int),0) FROM conversation_activity c,jsonb_each_text(c.digest->'messages') x(k,v) WHERE c.conversation_id IN (SELECT conversation_id FROM messages WHERE source_id=$1))`, id).Scan(&liveRows, &digestRows); err != nil || digestRows != liveRows {
 		t.Fatalf("replacement digest %d vs live rows %d: %v", digestRows, liveRows, err)
 	}
 	// A changed contract schedules a full reparse even without another upload.

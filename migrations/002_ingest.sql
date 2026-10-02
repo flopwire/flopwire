@@ -148,9 +148,6 @@ ALTER TABLE conversations
   ADD COLUMN hidden_root uuid,
   ADD COLUMN hidden_by uuid REFERENCES users (id);
 CREATE INDEX conversations_hidden_idx ON conversations (hidden_root) WHERE hidden_at IS NOT NULL;
--- The sessions list's keyset: visible conversations by last activity, then
--- id (internal/retrieval sessionsPage).
-CREATE INDEX conversations_activity_idx ON conversations (last_activity_at, id) WHERE hidden_at IS NULL;
 
 -- Every other working directory the session named after cwd (Claude's
 -- per-record cwd, Codex turn_context cwd and <cwd> tags), accumulated
