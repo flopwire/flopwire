@@ -2,6 +2,7 @@ package perfguard
 
 import (
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,7 +38,7 @@ func TestCountFSCountsClaimedPaths(t *testing.T) {
 	if o := c.Opened(); !slices.Equal(o, []string{filepath.Join(root, "a", "f.txt")}) {
 		t.Fatalf("opened %v", o)
 	}
-	if l := c.Listed(); !slices.Equal(l, []string{root, filepath.Join(root, "a"), filepath.Join(root, "a", "b")}) {
+	if l := c.Listed(); !maps.Equal(l, map[string]int64{root: 1, filepath.Join(root, "a"): 1, filepath.Join(root, "a", "b"): 1}) {
 		t.Fatalf("listed %v", l)
 	}
 	// A skipped directory is not listed.

@@ -122,9 +122,9 @@ func (c *FSCounter) Opened() []string {
 	return slices.Sorted(maps.Keys(c.opened))
 }
 
-// Listed returns the directories listed since the last Reset, sorted.
-func (c *FSCounter) Listed() []string {
+// Listed returns how often each directory was listed since the last Reset.
+func (c *FSCounter) Listed() map[string]int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.Sorted(maps.Keys(c.listed))
+	return maps.Clone(c.listed)
 }
