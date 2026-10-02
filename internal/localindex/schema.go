@@ -20,7 +20,7 @@ import (
 // and withhold. 9: conversations.branches and conversations.digest.
 // 10: sources.extraction_report.
 // 11: messages_tool_call and conversations_unspawned, for link resolution.
-// 12: messages_sha, for local redactions.
+// 12: messages_sha, for local redactions (now built on first use: shaIndexSQL).
 // Placements are carried across a rebuild (carryPlacements): a session
 // whose worktree is gone cannot be placed again from its transcript.
 const schemaVersion = 12
@@ -152,9 +152,6 @@ CREATE INDEX messages_tool_call ON messages (conversation_id, tool_call_id)
 -- neither reads message rows, which hold the text inline (about 1KB a row;
 -- 78k lookups there took 5s cold, against 0.06s in a covering index).
 -- Queries name them with INDEXED BY.
--- Local redactions (redact.go): every copy of a redacted text, for
--- --all-copies and for reconciling the sidecar, without a scan.
-CREATE INDEX messages_sha ON messages (content_sha);
 CREATE INDEX messages_meta ON messages (id, ts, conversation_id, superseded, on_active_path, kind);
 CREATE INDEX messages_ts ON messages (ts, id, superseded, on_active_path, kind, conversation_id);
 

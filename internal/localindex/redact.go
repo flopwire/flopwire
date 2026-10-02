@@ -47,6 +47,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/flopwire/flopwire/internal/digest"
@@ -536,8 +537,8 @@ const targetSQL = `SELECT m.id, m.conversation_id, m.text, m.content_sha, c.sess
 	FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE `
 
 // Lookups of a redaction's and a reconcile's rows, all through indexes:
-// by row id, by text hash (messages_sha), and by record within one
-// conversation.
+// by row id, by text hash (messages_sha, built on first use), and by
+// record within one conversation.
 const (
 	targetByIDSQL       = targetSQL + `m.id = ?`
 	targetBySHASQL      = targetSQL + `m.content_sha = ?`
@@ -652,6 +653,9 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 		return 0, err
 	}
 	if r.AllCopies {
+		if err := w.ensureSHAIndex(); err != nil {
+			return 0, err
+		}
 		if targets, err = w.targets(targets, seen, targetBySHASQL, addr.sha[:]); err != nil {
 			return 0, err
 		}
@@ -727,6 +731,37 @@ func (w *writeTx) redactMessage(r LocalRedaction) (int, error) {
 	// in this transaction, so if it is lost the next reconcile applies
 	// the sidecar again.
 	return n, w.recordTombstones(added)
+}
+
+// shaIndexSQL builds messages_sha, the index on messages.content_sha
+// that --all-copies finds copies through. It is not in schemaSQL: its key
+// is random, so every row written would dirty a different leaf page, and
+// each one is copied into the savepoint's sub-journal of every write
+// request (write-path CPU +48%, pages fetched per row +11%, for 60k rows).
+// Only an --all-copies redaction looks rows up by content_sha (reconcile
+// finds a tombstone's rows by session and native id), so the first one
+// builds it, inside its own request, and the index is kept from then on.
+// Building it reads the whole messages table once and holds the writer
+// meanwhile (reads go on): measured 1.3s at 200k rows (a 416MB database)
+// and 13.3s at 1.5M rows (3.3GB), against 0.3s for the same redaction
+// with the index in place. That is a one-time cost of the first
+// --all-copies redaction, which the user asked for and waits on.
+const shaIndexSQL = `CREATE INDEX IF NOT EXISTS messages_sha ON messages (content_sha)`
+
+// ensureSHAIndex builds messages_sha when the index has none yet. A
+// request that fails afterwards rolls the build back with it; the next
+// --all-copies redaction builds it again.
+func (w *writeTx) ensureSHAIndex() error {
+	var n int
+	if err := w.tx.QueryRowContext(w.ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_sha'`).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	start := time.Now()
+	if _, err := w.tx.ExecContext(w.ctx, shaIndexSQL); err != nil {
+		return fmt.Errorf("localindex: build messages_sha: %w", err)
+	}
+	slog.Info("localindex: built the copies index for --all-copies", "took", time.Since(start).Round(time.Millisecond))
+	return nil
 }
 
 // lineHashes returns the tombstone hashes and lengths of the non-blank

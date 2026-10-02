@@ -3,6 +3,7 @@ package localindex
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -77,6 +78,27 @@ func TestIndexSessionScalesLinearly(t *testing.T) {
 		data := perfguard.ClaudeTranscript(n)
 		return perfguard.MeasureSQLite(p.c, func() { p.index(t, data, transcript.Cursor{}, 1) })
 	})
+}
+
+// Indexing fetches a bounded number of SQLite pages per message: one
+// more index on messages adds a b-tree descent per row written. An index
+// with a random key (messages_sha, on content_sha) cost +48% write CPU,
+// because every row then dirties a different leaf page and each one is
+// copied into the request savepoint's sub-journal; it fetched 22.53
+// pages per message here, against 20.29 without it. Pages fetched are
+// deterministic (cache hits plus misses), so the bound is tight: an index
+// that belongs on the write path raises it, with its cost measured.
+func TestIndexPagesPerMessage(t *testing.T) {
+	const n = 4000
+	const bound = 21.3 // 20.29 measured; a new index on messages adds ~2
+	p := newPerfIndex(t)
+	data := perfguard.ClaudeTranscript(n)
+	c := perfguard.MeasureSQLite(p.c, func() { p.index(t, data, transcript.Cursor{}, 1) })
+	if per := float64(c.SQLitePages) / n; per > bound {
+		t.Errorf("indexing %d messages fetched %.2f SQLite pages per message, bound %.1f: a new index on the write path? (%s)", n, per, bound, c)
+	} else {
+		t.Logf("%.2f pages per message (bound %.1f)", per, bound)
+	}
 }
 
 // Re-parsing a session (a rewritten file, a parser upgrade) is linear in
@@ -215,11 +237,27 @@ func TestFirstLivePlan(t *testing.T) {
 }
 
 // The redaction and reconcile lookups use indexes: copies by text hash
-// (messages_sha), records within a conversation, sessions, the marker.
+// (messages_sha, which the first --all-copies redaction builds), records
+// within a conversation, sessions, the marker.
 func TestRedactionQueryPlans(t *testing.T) {
 	p := newPerfIndex(t)
 	p.index(t, perfguard.ClaudeTranscript(50), transcript.Cursor{}, 1)
 	db := p.s.DB()
+	if shaIndexExists(t, db) {
+		t.Fatal("messages_sha exists before any redaction")
+	}
+	var session string
+	var ordinal int64
+	if err := db.QueryRow(`SELECT c.session_id, m.ordinal FROM messages m JOIN conversations c ON c.id = m.conversation_id
+		WHERE m.kind = 'user' ORDER BY m.ordinal LIMIT 1`).Scan(&session, &ordinal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.s.RedactMessage(context.Background(), LocalRedaction{Session: session, Ordinal: ordinal, AllCopies: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !shaIndexExists(t, db) {
+		t.Fatal("an --all-copies redaction did not build messages_sha")
+	}
 	sha := make([]byte, 32)
 	for _, q := range []struct {
 		sql  string
@@ -272,4 +310,14 @@ func TestOpenWithReconciledRedactionsIsConstant(t *testing.T) {
 		}
 		return cost
 	})
+}
+
+// shaIndexExists reports whether the index has messages_sha.
+func shaIndexExists(t testing.TB, db *sql.DB) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_sha'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n > 0
 }
