@@ -420,6 +420,19 @@ func devinManualEntries(env *setupEnv) []string {
 			warn = append(warn, fmt.Sprintf("%s has an MCP server %q that runs flopwire mcp; the plugin provides the same tools, so remove it: devin mcp remove %s --scope %s", tildePath(m.path, env.home), n, n, m.scope))
 		}
 	}
+	// Devin also imports Claude Code's MCP servers.
+	if claude {
+		var claudeMCP []string
+		if env.home != "" {
+			claudeMCP = append(claudeMCP, filepath.Join(env.home, ".claude.json"))
+		}
+		claudeMCP = append(claudeMCP, filepath.Join(env.cwd, ".mcp.json"))
+		for _, p := range claudeMCP {
+			for _, n := range flopwireMCPServersIn(p) {
+				warn = append(warn, fmt.Sprintf("Devin imports the MCP server %q from %s, which runs flopwire mcp; the plugin provides the same tools in Devin. If Claude Code gets Flopwire from its plugin, remove that server; otherwise keep it (setup does not edit the file)", n, tildePath(p, env.home)))
+			}
+		}
+	}
 	return warn
 }
 

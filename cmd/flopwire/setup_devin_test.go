@@ -575,6 +575,7 @@ func TestSetupDevinWarnsAboutManualEntries(t *testing.T) {
 		filepath.Join(d.home, ".config", "devin", "config.json"):     `{"version":1,"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/flopwire agent flush"}]}]}}`,
 		filepath.Join(d.home, ".config", "devin", "mcp_config.json"): `{"mcpServers":{"fw":{"command":"flopwire","args":["mcp"]},"other":{"command":"node","args":["s.js"]}}}`,
 		filepath.Join(cwd, ".devin", "hooks.v1.json"):                `{"SessionStart":[{"hooks":[{"type":"command","command":"flopwire hook || true"}]}]}`,
+		filepath.Join(d.home, ".claude.json"):                        `{"mcpServers":{"flopwire":{"type":"stdio","command":"flopwire","args":["mcp"]}}}`,
 	}
 	for p, s := range files {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -601,6 +602,7 @@ func TestSetupDevinWarnsAboutManualEntries(t *testing.T) {
 		`/.devin/hooks.v1.json, which runs "flopwire hook || true" on SessionStart (SessionStart[0])`,
 		`~/.config/devin/mcp_config.json has an MCP server "fw" that runs flopwire mcp`,
 		"devin mcp remove fw --scope user",
+		`Devin imports the MCP server "flopwire" from ~/.claude.json`,
 	} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warnings lack %q:\n%s", want, w)
@@ -621,7 +623,7 @@ func TestSetupDevinWarnsAboutManualEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep, _, err = d.run("--check")
-	if err != nil || hasString(d.devin(rep).Warnings, ".claude/settings.json") {
+	if err != nil || hasString(d.devin(rep).Warnings, ".claude/settings.json") || hasString(d.devin(rep).Warnings, ".claude.json") {
 		t.Fatalf("claude import off: %v %q", err, d.devin(rep).Warnings)
 	}
 }
