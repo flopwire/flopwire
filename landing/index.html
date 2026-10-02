@@ -83,7 +83,7 @@
 18432:2 assistant: Client now preserves <mark>next_cursor</mark>.</pre></div>
           <p class="output-footer">[2 hits in 2 sessions]</p>
         </div>
-        <div id="grep-context" class="grep-context" tabindex="-1"><div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire read 0b7e2c1a/28672:14 --server -B 1</code></div><div class="read-output"><p><span class="speaker">Alex</span>Why can’t the client use the last item’s ID?</p><p><span class="speaker">Claude Code</span>The cursor includes the sort position as well as the ID. Send it back unchanged so pagination stays consistent.</p></div></div></div>
+        <div id="grep-context" class="grep-context" tabindex="-1"><div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire read 0b7e2c1a/28672:14 --server --messages-before 1</code></div><div class="read-output"><p><span class="speaker">Alex</span>Why can’t the client use the last item’s ID?</p><p><span class="speaker">Claude Code</span>The cursor includes the sort position as well as the ID. Send it back unchanged so pagination stays consistent.</p></div></div></div>
       </div>
       <p class="feature-footnote">Exact strings and regexes. Repo and time filters. Read more only when needed.</p>
     </section>
@@ -126,12 +126,13 @@
 cd flopwire
 pnpm --dir web install --frozen-lockfile
 make build
+export PATH="$PWD/bin:$PATH"
 
 # Index locally without uploading
 ./bin/flopwire agent run --no-sync
 
-# In another terminal: expose search over MCP
-./bin/flopwire mcp</code></pre><p class="terminal-note">Register the MCP command in your harness. Keep the device agent running.</p></div>
+# Install the plugin in Claude Code, Codex, and Devin
+flopwire setup</code></pre><p class="terminal-note">Setup installs the plugin through your harness. Keep Flopwire on PATH and the device agent running. In Codex, review the plugin’s hooks when prompted.</p></div>
     </section>
   </main>
   <footer><a class="brand" href="#"><svg viewBox="0 0 60 28" aria-hidden="true"><path d="M2 18C13 18 13 4 24 4s13 20 24 20c6 0 6-8 10-8"/></svg><span>flopwire</span></a><p>Connect the work between agents.</p><div><a href="https://github.com/flopwire/flopwire">GitHub ↗</a><a href="https://github.com/flopwire/flopwire/blob/main/LICENSE">Apache-2.0 ↗</a></div></footer>

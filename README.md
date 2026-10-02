@@ -29,10 +29,10 @@ secondary.
 - Return JSON by default from `peers`, `sessions`, `send` receipts, and `inbox`.
   These return named facts an agent acts on. Provide `--text` for a readable view.
 - Return plain text by default from `grep`, `search`, and `read`. Keep transcript
-  newlines and code readable. Use labeled header fields such as `session:`,
-  `user:`, and `repo:`. Provide `--json` for structured results.
-- Apply the same defaults to MCP tools. Expose JSON records through
-  `structuredContent` and `outputSchema`.
+  newlines and code readable. Lead headers with the full session ID, followed by `key=value`
+  metadata. JSON-quote values containing spaces or quotes. Put intent or title last. Provide `--json` for structured results.
+- Apply the same defaults to MCP tools. Return one plain content block per tool result,
+  containing JSON records or transcript text. Do not add structured content.
 - Use stable, named fields and preserve full session IDs. Do not require agents
   to parse positional columns, split on spaces, or guess what a title means.
 - Keep default responses lean and bounded. Return the fields needed for the
@@ -48,13 +48,11 @@ secondary.
 - Show commands with their direct responses. Label intended contracts until
   real output is captured. Document fields and when an agent should use each tool.
 
-The output split is recorded in [#55](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818).
-The message bus server (#41, #51) and device agent (#49) are merged. The
-`peers`, `send`, and `inbox` CLI adapters are in progress on `feat/bus-cli`.
-The `sessions` JSON default and labeled text headers need a follow-up PR.
-Until then, use `sessions --json`; search and read already default to text,
-with positional headers. The recipient hook is also pending: messages can
-be queued, but they do not yet appear in the recipient's session.
+The output split is recorded in [#55](https://github.com/flopwire/flopwire/issues/55),
+with implementation and capture work tracked in [#73](https://github.com/flopwire/flopwire/issues/73).
+These defaults, the messaging CLI, sender acceptance, and session hooks are implemented.
+Request receipts include `next` guidance. Messages arrive at a tool boundary or
+with the human’s next prompt; they never wake an idle session.
 
 ## Read the security boundary first
 

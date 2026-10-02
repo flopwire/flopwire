@@ -1,0 +1,4 @@
+79b2d8ef-0000-4000-8000-000000000001 agent=claude live=0m repo=app branch=api-users msgs=4 commits=1 intent="Rename user response field"
+    last: "The /users response now returns full_name instead of name."
+[1 session, end of list]
+[left out your own session 4c19e0d2-0000-4000-8000-000000000001 and its subagents; --include-self includes them]

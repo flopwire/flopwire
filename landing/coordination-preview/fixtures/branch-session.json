@@ -1,7 +1,1 @@
-{
-  "session": "79b2d8ef-0000-4000-8000-000000000001",
-  "title": "Rename user response field",
-  "commits": [
-    "a81f3c2"
-  ]
-}
+{"kind":"sessions","sessions":[{"session_id":"79b2d8ef-0000-4000-8000-000000000001","address":"79b2d8ef","agent":"claude","repo":"/work/acme/app","branches":["api-users"],"live":true,"last_activity_at":"2026-10-02T21:00:45.705Z","messages":4,"title":"Rename user response field","commits":["a81f3c2"]}],"has_more":false,"excluded":"left out your own session 4c19e0d2-0000-4000-8000-000000000001 and its subagents; --include-self includes them"}

@@ -1,65 +1,109 @@
-# Retrieval example capture
+# Homepage output captures
 
-`pagination.jsonl` is a synthetic Claude Code transcript. `grep.txt` and `read.txt` are unedited output from the retrieval CLI built at `abda135`. These preserve the original positional headers for comparison with the intended format.
+Captured with the CLI built from main `2d7b552` on 2026-10-02. Files named
+`intended-*` now contain direct CLI responses. The filenames are retained
+so existing references keep working. Homepage JSON is indented for display;
+fields and values are unchanged.
 
-To reproduce from the repository root:
+These captures use synthetic transcripts in an isolated local index and
+message bus. Both sessions belong to the same person (`sender="own"`). The
+capture script supplies presence and calls the hooks. It does not run coding
+agents or demonstrate cross-person messaging. No active user sessions receive
+messages, and no server is contacted.
 
-```sh
-go build -o /tmp/flopwire-example-cli ./cmd/flopwire
-task_capture_dir=$(mktemp -d)
-mkdir -p "$task_capture_dir/projects/acme-app" "$task_capture_dir/empty"
-cp landing/coordination-preview/fixtures/pagination.jsonl \
-  "$task_capture_dir/projects/acme-app/0b7e2c1a-0000-4000-8000-000000000001.jsonl"
-export FLOPWIRE_CONFIG="$task_capture_dir/config.json"
-export FLOPWIRE_INDEX="$task_capture_dir/index.db"
-/tmp/flopwire-example-cli agent run --once --no-sync \
-  --claude-projects "$task_capture_dir/projects" \
-  --codex-home "$task_capture_dir/empty" --devin-db -
-/tmp/flopwire-example-cli grep -F next_cursor --include-self
-/tmp/flopwire-example-cli read 0b7e2c1a/3026944:1 -B 1
-```
+The separate [recorded agent exchange](../../../notes/message-bus/exchange-capture/README.md)
+ran Claude Code and Codex for real. That exchange is also same-person. Its
+API agent used `git commit -q`, so its recorded commit list is empty. Do not
+add a commit to that historical capture or describe it as a cross-person exchange.
 
-Run in a separate shell to keep the fixture configuration isolated. No server is used. The messaging example is documented separately in `landing/agent-tools.md`.
+## Reproduce
 
-## Grep comparison
-
-`src/pagination.ts` is the synthetic source file for the comparison. Captures: `grep -n -F next_cursor src/pagination.ts` → `file-grep.txt`; `flopwire grep -n -F next_cursor --include-self` → `transcript-grep.txt`. The latter uses the index built above. The shared flags are `-n -F`; `--include-self` is specific to Flopwire.
-
-## Branch-history capture
-
-`api-change.jsonl` is a synthetic Claude transcript with a successful git commit tool result. Index it separately, using the same isolated setup as above. The earlier preview used this projection:
+From the repository root:
 
 ```sh
-flopwire sessions --repo app --branch api-users --json |
-  jq '.sessions[] | {session: .session_id, title, commits: .digest.commits}'
+go build -o /tmp/flopwire-homepage-current ./cmd/flopwire
+python3 landing/coordination-preview/fixtures/capture.py /tmp/flopwire-homepage-current
 ```
 
-Output is saved in `branch-session.json`. The underlying session has full ID `79b2d8ef-0000-4000-8000-000000000001`; retrieval also returns an `address` with a unique short form. The example uses the full native ID for the presence match. The presence check demonstrates the JSON CLI contract and uses the full ID returned by presence. It is not a captured messaging CLI run.
+The script creates a scratch directory under `/tmp`, sets isolated
+`FLOPWIRE_CONFIG` and `FLOPWIRE_INDEX` paths, and sets explicit fixture caller
+IDs. It indexes only the supplied Claude transcripts and a generated Codex
+transcript. It runs the daemon with `--no-sync`, then stops it.
 
-## JSON retrieval captures
+For presence, it retimestamps a working copy of `api-change.jsonl` to the
+capture time. A synthetic Claude registry entry marks that session busy.
+The Codex fixture has a `task_started` event. The original input fixtures
+remain unchanged. Message IDs, timestamps, local username, device name,
+and scratch paths vary between runs. Re-embed the resulting output after
+recapturing; never hand-edit those fields to match an older example.
 
-The earlier preview projected these working CLI responses with `jq`:
+## Retrieval
+
+`pagination.jsonl` supplies the pagination discussion. Captured commands:
 
 ```sh
-flopwire grep -n -F next_cursor --include-self --json |
-  jq '.hits[] | {session_id, address, lines}'
-flopwire read 0b7e2c1a/3026944:1 -B 1 --json |
-  jq '.messages[] | {address, role, text}'
+flopwire grep -F next_cursor
+flopwire grep -n -F next_cursor
+flopwire grep -l -F next_cursor
+flopwire search next_cursor
+flopwire read 0b7e2c1a-0000-4000-8000-000000000001/3026944:1 --messages-before 1
+flopwire grep -n -F next_cursor --json
+flopwire read 0b7e2c1a-0000-4000-8000-000000000001/3026944:1 --messages-before 1 --json
 ```
 
-The captures are `transcript-grep.json` and `read.json`. They use the pagination index above. Messaging examples project the existing Peer and SendResponse schemas; their CLI capture is tracked in #55.
+Text captures: `grep.txt`, `transcript-grep.txt`, `grep-files.txt`, `search.txt`,
+`read.txt`, `intended-grep.txt`, and `intended-read.txt`. JSON captures:
+`transcript-grep.json` and `read.json`. No `jq` projection is applied.
 
-## Intended interface fixtures
+Headers lead with the full session ID and use `key=value` metadata. Values
+containing spaces or quotes are JSON-quoted. Intent or title is last. Read
+context uses `--messages-before` and `--messages-after`, not `-B` or `-A`.
 
-The earlier captures above document the CLI before the output-format decision. They remain source evidence; their `jq` projections are no longer shown on the homepage.
+`src/pagination.ts` is the synthetic source file in the grep comparison.
+`file-grep.txt` contains `grep -n -F next_cursor src/pagination.ts` output.
+The shared flags are `-n -F`. Flopwire excludes the caller’s own session by default; `--include-self` includes it.
 
-The homepage now displays these direct responses:
+## Session history
 
-- `intended-sessions.json`: lean `sessions` envelope with existing `session_id`, `agent`, `title`, `branches`, and `digest.commits` fields.
-- `intended-peers.json`: presence contract using named fields and the same full session ID.
-- `intended-send.json`: queued receipt contract. It confirms queue acceptance, not delivery.
-- `intended-grep.txt` and `intended-read.txt`: readable transcript content with the intended labeled headers.
+`api-change.jsonl` includes a plain `git commit` tool call and its successful
+`[api-users a81f3c2]` result. Captured commands:
 
-These are intended contracts, not captured default CLI output. The `sessions` JSON default and labeled headers need a follow-up PR. Presence and send need captures from the messaging CLI. The recipient hook must land before capturing the reply exchange. Re-capture after those changes and compare against these fixtures. See [the output-format decision](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818).
+```sh
+flopwire sessions --repo app --branch api-users
+flopwire sessions --repo app --branch api-users --text
+```
 
-`intended-inbox.json` shows the complete lean thread contract: received answer first, sent request second, with matching `thread_id` and `reply_to`. It is not a captured CLI run. The send receipt now includes `thread_id` so the sender can read that thread directly.
+`branch-session.json` and `intended-sessions.json` contain the complete default
+JSON response. `sessions-text.txt` contains the readable alternative.
+Commit IDs are at `.sessions[].commits`. A projection, if needed for analysis,
+is `jq '.sessions[] | {session_id, title, commits}'`. Deeper digest metadata
+requires `--detail`; the homepage does not project or request it.
+
+A quiet `git commit -q` can leave the commit list empty ([#80](https://github.com/flopwire/flopwire/issues/80)).
+Read the session's outline and tool results when attribution is incomplete.
+A branch or title alone does not prove ownership.
+
+## Messaging
+
+The API session has full ID `79b2d8ef-0000-4000-8000-000000000001`.
+The client session has full ID `4c19e0d2-0000-4000-8000-000000000001`.
+The script captures `peers --repo app`, a request, recipient hook output,
+a reply, sender hook output, and the resulting inbox thread.
+
+- `intended-peers.json`: complete presence response.
+- `intended-send.json`: complete request receipt, including `next` guidance.
+- `delivered-request.json`: recipient's `PostToolUse` hook output.
+- `reply-receipt.json`: the reply receipt.
+- `delivered-reply.json`: sender's `PostToolUse` hook output.
+- `intended-inbox.json`: the complete thread, newest first.
+
+The request receipt confirms queue acceptance. The answer is a received
+message with matching `reply_to` and `thread_id`. Messages arrive at a tool
+boundary or with the human's next prompt. They never wake an idle session.
+
+Cross-person messages are held until the recipient accepts the sender on the
+console Messaging page or with `flopwire accept USER` and their password.
+This behavior is implemented, but these files do not capture it.
+
+Decisions: [#55](https://github.com/flopwire/flopwire/issues/55).
+Tracker: [#73](https://github.com/flopwire/flopwire/issues/73).

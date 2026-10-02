@@ -1,9 +1,1 @@
-{
-  "id": "m1a2b3c4d5e6f7a8",
-  "state": "queued",
-  "to": {
-    "session": "79b2d8ef-0000-4000-8000-000000000001",
-    "busy": true
-  },
-  "thread_id": "m1a2b3c4d5e6f7a8"
-}
+{"kind":"send_receipt","id":"m3ab5bd1d83d1a7bd","thread_id":"m3ab5bd1d83d1a7bd","state":"queued","to":{"session":"79b2d8ef-0000-4000-8000-000000000001","agent":"claude","user":"garybasin","user_id":"local:garybasin","repo":"/work/acme/app","branch":"api-users","live":true,"busy":true},"sender":"own","intent":"request","sent":"2026-10-02T21:00:53.123656Z","expires_at":"2026-10-03T21:00:53.123656Z","from":{"session":"4c19e0d2-0000-4000-8000-000000000001","agent":"codex"},"arrives":"next_tool_call","outcome":"sent m3ab5bd1d83d1a7bd to 79b2d8ef (garybasin claude app@api-users): busy, arrives at its next tool call","next":"The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits for your user's next prompt. Keep working, or wait briefly if you need it to continue."}

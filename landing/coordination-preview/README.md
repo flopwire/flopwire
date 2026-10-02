@@ -6,24 +6,26 @@ Two homepage directions share the same examples and output contract. Open `index
 
 A client agent notices commit `a81f3c2` changing the `/users` response on `api-users`. It searches branch history, matches the recorded commit, checks the full session ID in live presence, and contacts that session. A static sequence shows the API diff, source-session discovery, agent question/reply, and client diff. Complete history, presence, and send records sit in one expandable exchange. The visual uses short message text; the full request remains in the send command. Agent messages have speaker labels. Commands and output have separate labels. Light code artifacts share a header, inset, and diff colors with setup and the grep outcome. Shared CSS tokens keep dark terminals and request messages consistent.
 
-The preview shows intended lean responses directly, without `jq` projections:
+The preview shows complete captured CLI responses, without `jq` projections:
 
 | Commands | Default output |
 | --- | --- |
 | `sessions`, `peers`, `send` receipt, `inbox` | JSON records |
-| `grep`, `search`, `read` | Readable text with labeled metadata headers |
+| `grep`, `search`, `read` | Readable text with full-ID, `key=value` headers |
 
 The same split applies to MCP. JSON lookups offer an explicit text view; transcript commands offer JSON. The project README and [decision on #55](https://github.com/flopwire/flopwire/issues/55#issuecomment-5940281818) document the contract.
 
 ## Examples and implementation
 
-The branch-history example derives its title and commit from `fixtures/api-change.jsonl`. The commit is extracted from a successful git commit tool result. The stored title comes from the first task prompt. The displayed JSON preserves the `sessions` envelope and existing field names. Its lean default is an intended response; the `sessions` default change is pending.
+The branch-history example uses `fixtures/api-change.jsonl`, a synthetic transcript with a plain `git commit` tool call and a successful result. Its title comes from the first task prompt. Commit IDs are at `.sessions[].commits`; deeper digest metadata requires `--detail`.
 
-Presence and send panels are labeled **Contract example**. The message bus server (#41, #51) and device agent (#49) are merged. The messaging CLI is in progress on `feat/bus-cli`. The recipient hook is not built. A queued receipt does not demonstrate delivery. The final reply and code change show the intended exchange after delivery; they are not a captured live exchange. The send receipt includes `thread_id`. The tool reference shows how `--reply-to` and `inbox --thread` correlate the received answer with the original request.
+The `sessions`, `peers`, `send`, `inbox`, grep, and read examples are captured from main `2d7b552`. The isolated capture harness supplies synthetic same-person sessions and presence, sends the request and reply through the local daemon, and captures both hooks. This proves the output and delivery path, not autonomous agent behavior or cross-person messaging. The separate recorded Claude/Codex exchange is linked from the hero; it is also same-person. Its commit list is empty because the API agent used `git commit -q` ([#80](https://github.com/flopwire/flopwire/issues/80)). Do not fill in that historical capture.
 
-The grep comparison keeps shared `-n -F` flags and shows text on both sides. File output is captured from system grep. Transcript content and addresses come from the pagination fixture. Labeled headers are the intended format; installed output still uses positional headers. Re-capture after the header follow-up lands. `read` keeps transcript text and role labels visible without JSON escaping. Its client diff follows immediately, replacing the separate repeated provenance section.
+Request receipts include `next` guidance. Sender acceptance, the CLI adapters, setup, and delivery hooks are implemented. Cross-person messages wait for human acceptance through the console Messaging page or `flopwire accept USER` with a password. Messages arrive at a tool boundary or the human’s next prompt, never by waking an idle session.
 
-`fixtures/intended-*` files contain the displayed contracts. Earlier captures remain in `fixtures/` as source evidence. See its README for reproduction steps. `landing/agent-tools.md` explains title provenance, commit attribution, addresses, formats, and implementation status.
+The grep comparison retains `-n -F` and shows text on both sides. Headers lead with the full session ID and use `key=value`, JSON-quoting values containing spaces or quotes. Intent or title is last. Read uses `--messages-before` and `--messages-after`. MCP tools return one plain content block each, without structured content.
+
+`fixtures/intended-*` filenames are retained, but now contain direct captured responses. See [the capture instructions](fixtures/README.md) and reproducible `capture.py`. The agent tool reference explains title provenance, commit attribution, addresses, formats, and reply correlation. Setup uses `flopwire setup` for harness plugins and starts the daemon separately.
 
 ## Preview checks
 

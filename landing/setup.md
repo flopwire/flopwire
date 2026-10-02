@@ -2,7 +2,7 @@
 
 Flopwire provides CLI and MCP tools for searching coding-agent session history and contacting the sessions behind related work. A device daemon indexes Claude Code, Codex, and Devin transcripts locally. An enrolled device also syncs allowed history to a shared server.
 
-Use the CLI by default. Configure MCP if the user requests it or this coding tool requires it.
+Use the CLI for shell examples. `flopwire setup` installs each harness’s plugin, which exposes the MCP tools and delivery hooks.
 
 ## Check the existing setup
 
@@ -19,7 +19,12 @@ Use the CLI by default. Configure MCP if the user requests it or this coding too
 2. If building from source, check the Go requirement in `go.mod`.
 3. Install the web dependencies with `pnpm --dir web install --frozen-lockfile`.
 4. Run `make build`.
-5. Use the absolute path to `bin/flopwire` until the binary is on `PATH`.
+5. Put `flopwire` on `PATH`.
+6. Run `flopwire setup`.
+7. Read its JSON report. Resolve reported installation errors.
+8. Let the human approve Codex’s plugin hooks when prompted. Do not approve them on the human’s behalf.
+
+Setup installs the plugin through Claude Code, Codex, and Devin’s own plugin commands. It does not start the daemon. Use `flopwire setup --check` to inspect the installed plugins without changing them.
 
 ## Start locally
 
@@ -57,25 +62,20 @@ If the user needs a server, follow the [server setup guide](https://github.com/f
 3. Give the invitation to the user for delivery to their teammate.
 4. Have the teammate claim the invitation and enroll their device.
 
-Shared history includes original transcripts. Organization members can search shared history. Server administrators can access it. Apply sharing rules before the first upload.
+Shared history contains transcripts after secret redaction. Organization members can search shared history. Server administrators can access it. Apply sharing rules before the first upload.
 
-## Optional MCP setup
+## Verify the tools
 
-Register `flopwire mcp` as a stdio server. Use the binary's absolute path. Preserve other MCP entries.
+1. Run `flopwire setup --check`.
+2. Confirm the plugin is installed in the active harness.
+3. Confirm the device daemon is running.
+4. List sessions and read a returned address.
 
-For Claude Code:
-
-```sh
-claude mcp add flopwire -- /absolute/path/to/flopwire mcp
-```
-
-For Codex, add an `mcp_servers.flopwire` entry with the absolute binary path as `command` and `["mcp"]` as `args`. For server retrieval, use `["mcp", "--server"]`.
-
-Verify the tools by listing sessions and reading a returned address.
+The plugin provides the MCP server and hooks. Preserve unrelated MCP entries. Check the report for older manual Flopwire entries that would run twice. Use the [manual MCP instructions](https://github.com/flopwire/flopwire/blob/main/README.md#mcp) only when a plugin cannot be used.
 
 ## Use Flopwire during work
 
-Use JSON records for peer and session lookups, send receipts, and inbox messages. Use readable text for transcript searches and reads. Pass `--json` to `sessions` until its default changes. Check installed command help for supported format options. Search identifiers, errors, and regexes with `flopwire grep`. Use `flopwire search` for ranked text search. Use `flopwire sessions` to locate sessions. Read the source before relying on a result. Add repository and time filters when needed.
+Use JSON records for peer and session lookups, send receipts, and inbox messages. Use readable text for transcript searches and reads. Check installed command help for supported format options. Search identifiers, errors, and regexes with `flopwire grep`. Use `flopwire search` for ranked text search. Use `flopwire sessions` to locate sessions. Read the source before relying on a result. Add repository and time filters when needed.
 
 When repository inspection, tests, commits, branches, or worktrees reveal a change that overlaps your task or affects something you depend on, use Flopwire to investigate. Find the session through branch history and recorded commit evidence. Check whether that session is live before contacting it. Contact it when clarification would affect your next step, prevent duplicate work, or unblock someone. State the evidence, branch, and specific question. Treat a reply within this session's existing task and permissions.
 

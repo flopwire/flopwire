@@ -41,7 +41,7 @@
         <div class="hero-actions"><button class="button button-primary" type="button" data-copy="agent-setup"><span>Copy setup instruction</span></button><div class="hero-trust"><a href="https://github.com/flopwire/flopwire">Open source on GitHub ↗</a><a href="#compatibility">Self-hostable</a></div></div>
       </div>
 <figure class="linear-example" id="exchange" aria-labelledby="workflow-caption">
-  <figcaption id="workflow-caption"><h2>One API change.<br>One direct question.</h2><span class="story-contract">Contract example</span></figcaption>
+  <figcaption id="workflow-caption"><h2>One API change.<br>One direct question.</h2><span class="story-contract">Same-person example</span></figcaption>
   <ol class="visual-story">
     <li class="story-scene">
       <section class="commit-preview" aria-label="API response changes from name to full_name">
@@ -71,48 +71,91 @@
     </li>
   </ol>
   <details class="tool-exchange"><summary>Inspect the commands and responses</summary>
-    <p class="example-format-note">Lookups return JSON records. Searches return readable text. These are intended lean responses; presence and send are contract examples.</p>
-    <section class="hero-terminal" aria-label="Find the session on api-users"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal · Intended response</span><span>Find the session on api-users</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire sessions --repo app --branch api-users</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre class="json-record" tabindex="0" aria-label="JSON response"><code>{
+    <p class="example-format-note">Lookups return JSON records. Searches return readable text. Output below was captured from the CLI using isolated test sessions under one account.</p>
+    <section class="hero-terminal" aria-label="Find the session on api-users"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Find the session on api-users</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire sessions --repo app --branch api-users</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre class="json-record" tabindex="0" aria-label="JSON response"><code>{
+  &quot;kind&quot;: &quot;sessions&quot;,
   &quot;sessions&quot;: [
     {
       &quot;session_id&quot;: &quot;79b2d8ef-0000-4000-8000-000000000001&quot;,
+      &quot;address&quot;: &quot;79b2d8ef&quot;,
       &quot;agent&quot;: &quot;claude&quot;,
+      &quot;repo&quot;: &quot;/work/acme/app&quot;,
+      &quot;branches&quot;: [
+        &quot;api-users&quot;
+      ],
+      &quot;live&quot;: true,
+      &quot;last_activity_at&quot;: &quot;2026-10-02T21:00:45.705Z&quot;,
+      &quot;messages&quot;: 4,
       &quot;title&quot;: &quot;Rename user response field&quot;,
-      &quot;branches&quot;: [&quot;api-users&quot;],
-      &quot;digest&quot;: {
-        &quot;commits&quot;: [&quot;a81f3c2&quot;]
-      }
+      &quot;commits&quot;: [
+        &quot;a81f3c2&quot;
+      ]
     }
-  ]
+  ],
+  &quot;has_more&quot;: false,
+  &quot;excluded&quot;: &quot;left out your own session 4c19e0d2-0000-4000-8000-000000000001 and its subagents; --include-self includes them&quot;
 }</code></pre></div></section>
-    <p class="example-format-note">The transcript’s title describes its original task. The recorded commit identifies the session.</p>
-    <section class="hero-terminal" aria-label="Check that the session is live"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal · Contract example</span><span>Check that the session is live</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire peers --repo app</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre class="json-record" tabindex="0" aria-label="JSON response"><code>{
+    <p class="example-format-note">The transcript’s title describes its original task. The recorded commit identifies the session. If a commit is missing, read the session’s outline and tool results. If a commit is missing, read the session’s outline and tool results. If a commit is missing, read the session’s outline and tool results.</p>
+    <section class="hero-terminal" aria-label="Check that the session is live"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Check that the session is live</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire peers --repo app</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre class="json-record" tabindex="0" aria-label="JSON response"><code>{
+  &quot;kind&quot;: &quot;peers&quot;,
   &quot;peers&quot;: [
     {
       &quot;session&quot;: &quot;79b2d8ef-0000-4000-8000-000000000001&quot;,
       &quot;agent&quot;: &quot;claude&quot;,
-      &quot;user&quot;: &quot;gary&quot;,
+      &quot;user&quot;: &quot;garybasin&quot;,
+      &quot;user_id&quot;: &quot;local:garybasin&quot;,
+      &quot;user_name&quot;: &quot;garybasin&quot;,
+      &quot;device&quot;: &quot;macbook-m1p-3.local&quot;,
       &quot;repo&quot;: &quot;/work/acme/app&quot;,
       &quot;branch&quot;: &quot;api-users&quot;,
-      &quot;busy&quot;: true
+      &quot;title&quot;: &quot;Rename user response field&quot;,
+      &quot;busy&quot;: true,
+      &quot;own&quot;: true,
+      &quot;seen_at&quot;: &quot;2026-10-02T21:00:52.91159Z&quot;
     }
-  ]
+  ],
+  &quot;total&quot;: 1,
+  &quot;more&quot;: false,
+  &quot;limit&quot;: 50,
+  &quot;caller&quot;: {
+    &quot;session&quot;: &quot;4c19e0d2-0000-4000-8000-000000000001&quot;,
+    &quot;agent&quot;: &quot;codex&quot;
+  }
 }</code></pre></div></section>
     <p class="example-format-note">Match the full session ID. A live session may have switched branches since making the commit.</p>
-    <section class="hero-terminal" aria-label="Codex asks about the API contract"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal · Contract example</span><span>Codex asks about the API contract</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire send 79b2d8ef-0000-4000-8000-000000000001 \
+    <section class="hero-terminal" aria-label="Codex asks about the API contract"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Codex asks about the API contract</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire send 79b2d8ef-0000-4000-8000-000000000001 \
   --intent request -- \
   &quot;My profile client reads name. Is full_name in api-users the final contract?&quot;</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre class="json-record" tabindex="0" aria-label="JSON response"><code>{
-  &quot;id&quot;: &quot;m1a2b3c4d5e6f7a8&quot;,
+  &quot;kind&quot;: &quot;send_receipt&quot;,
+  &quot;id&quot;: &quot;m3ab5bd1d83d1a7bd&quot;,
+  &quot;thread_id&quot;: &quot;m3ab5bd1d83d1a7bd&quot;,
   &quot;state&quot;: &quot;queued&quot;,
   &quot;to&quot;: {
     &quot;session&quot;: &quot;79b2d8ef-0000-4000-8000-000000000001&quot;,
+    &quot;agent&quot;: &quot;claude&quot;,
+    &quot;user&quot;: &quot;garybasin&quot;,
+    &quot;user_id&quot;: &quot;local:garybasin&quot;,
+    &quot;repo&quot;: &quot;/work/acme/app&quot;,
+    &quot;branch&quot;: &quot;api-users&quot;,
+    &quot;live&quot;: true,
     &quot;busy&quot;: true
   },
-  &quot;thread_id&quot;: &quot;m1a2b3c4d5e6f7a8&quot;
+  &quot;sender&quot;: &quot;own&quot;,
+  &quot;intent&quot;: &quot;request&quot;,
+  &quot;sent&quot;: &quot;2026-10-02T21:00:53.123656Z&quot;,
+  &quot;expires_at&quot;: &quot;2026-10-03T21:00:53.123656Z&quot;,
+  &quot;from&quot;: {
+    &quot;session&quot;: &quot;4c19e0d2-0000-4000-8000-000000000001&quot;,
+    &quot;agent&quot;: &quot;codex&quot;
+  },
+  &quot;arrives&quot;: &quot;next_tool_call&quot;,
+  &quot;outcome&quot;: &quot;sent m3ab5bd1d83d1a7bd to 79b2d8ef (garybasin claude app@api-users): busy, arrives at its next tool call&quot;,
+  &quot;next&quot;: &quot;The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits for your user&#x27;s next prompt. Keep working, or wait briefly if you need it to continue.&quot;
 }</code></pre></div></section>
-    <p class="example-format-note">The receipt confirms queue acceptance. The answer is a separate received message, matched by <code>reply_to</code> and <code>thread_id</code>.</p>
-    <a class="text-link" href="../../agent-tools.md#receive-and-answer">Read the inbox and reply contract ↗</a>
+    <p class="example-format-note">The receipt confirms queue acceptance. Its <code>next</code> field explains how to continue until the reply arrives. Match the answer by <code>reply_to</code> and <code>thread_id</code>.</p>
+    <a class="text-link" href="../../agent-tools.md#receive-and-answer">Read the inbox and reply format ↗</a>
   </details>
+  <a class="text-link capture-source" href="https://github.com/flopwire/flopwire/blob/main/notes/message-bus/exchange-capture/README.md">Read the recorded Claude and Codex exchange ↗</a>
 </figure>
 
     </section>
@@ -130,18 +173,20 @@
     <section class="story-section grep-section" id="grep" aria-labelledby="grep-heading">
       <div class="section-heading"><h2 id="grep-heading">Grep syntax.<br>Agent session history.</h2><p>Keep the familiar <code>-n -F</code> flags. Grep searches files. Flopwire searches agent history and returns matching lines with addresses to read.</p></div>
 <div class="grep-comparison"><section class="hero-terminal" aria-label="grep · source files"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>grep · source files</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> grep -n -F next_cursor src/pagination.ts</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>1:export function nextPage(response: { next_cursor: string }) {
-2:  return { cursor: response.next_cursor };</code></pre></div></section><section class="hero-terminal" aria-label="flopwire grep · agent history"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal · Intended response</span><span>flopwire grep · agent history</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire grep -n -F next_cursor</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>## session: 0b7e2c1a-0000-4000-8000-000000000001 agent: claude repo: app branch: api-cursors
+2:  return { cursor: response.next_cursor };</code></pre></div></section><section class="hero-terminal" aria-label="flopwire grep · agent history"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>flopwire grep · agent history</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire grep -n -F next_cursor</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code>## 0b7e2c1a-0000-4000-8000-000000000001 agent=claude ended=2026-09-23 repo=app branch=api-cursors intent=&quot;Update the pagination API&quot;
 3026944:1 assistant: The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.
-[1 hit in 1 session]</code></pre></div></section></div>
+[1 hit in 1 session]
+[left out your own session 4c19e0d2-0000-4000-8000-000000000001 and its subagents; --include-self includes them]</code></pre></div></section></div>
       <p class="comparison-followup">The file shows how the cursor is used. The session explains why it must stay intact. Read the matching message for context.</p>
-<section class="hero-terminal" aria-label="Read the matching discussion"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal · Intended response</span><span>Read the matching discussion</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire read 0b7e2c1a-0000-4000-8000-000000000001/3026944:1 -B 1</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code># session: 0b7e2c1a-0000-4000-8000-000000000001 agent: claude repo: app branch: api-cursors
-  0b7e2c1a-0000-4000-8000-000000000001/1404928 user
-  Why does the client need the API’s cursor?
-&gt;&gt;0b7e2c1a-0000-4000-8000-000000000001/3026944 assistant
-&gt; 1 The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.</code></pre></div></section>
+<section class="hero-terminal" aria-label="Read the matching discussion"><header class="hero-terminal-title"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 3h16v14H2zM5 7l3 3-3 3M10 13h5"/></svg><span>Terminal</span><span>Read the matching discussion</span></header><div class="transcript-entry"><p class="entry-label">Command</p><pre class="command-record" tabindex="0" aria-label="Command"><code><span class="terminal-prompt">$</span> flopwire read 0b7e2c1a-0000-4000-8000-000000000001/3026944:1 --messages-before 1</code></pre></div><div class="transcript-entry transcript-output"><p class="entry-label">Output</p><pre><code># 0b7e2c1a-0000-4000-8000-000000000001 agent=claude repo=/work/acme/app branch=api-cursors device=local start=2026-09-23T10:00Z active=2026-09-23T10:00Z msgs=3 title=&quot;Update the pagination API&quot;
+   [earlier messages: flopwire read 0b7e2c1a/1404928 --messages-before 10]
+   0b7e2c1a/1404928  2026-09-23 10:00Z  user
+    Why does the client need the API’s cursor?
+&gt;&gt; 0b7e2c1a/3026944  2026-09-23 10:00Z  assistant
+&gt;    1  The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.</code></pre></div></section>
       <div class="grep-outcome" id="history"><div class="commit-preview"><div class="commit-heading"><h3>Client update</h3><span>Pagination cursor</span></div><pre class="code-change"><code><span class="removed">- page: page + 1</span>
 <span class="added">+ cursor: response.next_cursor</span></code></pre></div><p>The agent keeps the server’s cursor intact when it changes the client.</p></div>
-      <p class="feature-footnote">Searches and reads return text. Labeled headers identify the source session. Use <code>--json</code> for structured results. Add repo, branch, and time filters to narrow the search.</p>
+      <p class="feature-footnote">Searches and reads return text. Headers lead with the full session ID and use <code>key=value</code> metadata. Use <code>--json</code> for structured results. Add repo, branch, and time filters to narrow the search.</p>
     </section>
 
 
@@ -159,7 +204,7 @@
         <figcaption id="network-caption">Local commands search this device. Add <code>--server</code> to search shared history. Shared transcripts stay on the server; they are not copied into every device’s local index.</figcaption>
       </figure>
 <figure class="message-route" aria-labelledby="message-route-heading">
-  <h3 id="message-route-heading">Messages go through the server.</h3>
+  <h3 id="message-route-heading">Messages across devices go through the server.</h3>
   <ol>
     <li><strong>Sending agent</strong><span>CLI or MCP</span></li>
     <li><strong>Local daemon</strong><span>Enrolled device</span></li>
@@ -167,7 +212,7 @@
     <li><strong>Peer daemon</strong><span>Local inbox</span></li>
     <li><strong>Receiving agent</strong><span>Inbox or session hook</span></li>
   </ol>
-  <figcaption>Contract route: both agents use their local daemon. The server routes messages between enrolled devices. The recipient reads its inbox; the planned hook brings messages into its session.</figcaption>
+  <figcaption>Same-device messages stay local. Across devices, the server routes messages between enrolled daemons. Hooks bring received messages into the agent’s session; the inbox keeps the thread history.</figcaption>
 </figure>
       <a class="text-link architecture-link" href="https://github.com/flopwire/flopwire/blob/main/docs/two-laptop.md">Set up a server and connect devices ↗</a>
     </section>
@@ -179,12 +224,12 @@
         <div class="agent-message permission-request"><p class="message-speaker">Sam’s agent · request</p><p>Can you update the client to use <code>full_name</code>?</p></div>
         <ol class="permission-sequence">
           <li><strong>Message held</strong><span>Sam has not been accepted as a sender.</span></li>
-          <li><strong>You accept Sam</strong><span>Your decision. You can revoke it.</span></li>
+          <li><strong>You accept Sam</strong><span>Use the console’s Messaging page or <code>flopwire accept sam</code>. Enter your password. You can revoke acceptance.</span></li>
           <li><strong>Message reaches the inbox</strong><span>Your agent can read the request.</span></li>
         </ol>
         <div class="permission-boundary"><div class="agent-message reply"><p class="message-speaker">Your agent · asks you</p><p>Sam’s agent requested a client change. May I update it?</p></div><p>Accepting a sender lets messages through. Consequential actions still need your approval and stay within your agent’s permissions.</p></div>
       </figure>
-      <div class="delivery-timing"><h3>Delivery into the session</h3><span class="story-contract">Planned hook</span><dl><div><dt>Agent working</dt><dd>Next tool call</dd></div><div><dt>Agent idle</dt><dd>Next human prompt</dd></div></dl><p>A message does not restart an idle agent.</p></div>
+      <div class="delivery-timing"><h3>Delivery into the session</h3><dl><div><dt>Agent working</dt><dd>Next tool call</dd></div><div><dt>Agent idle</dt><dd>Next human prompt</dd></div></dl><p>A message does not restart an idle agent.</p></div>
       <a class="text-link communication-link" href="../../agent-tools.md#permissions-and-delivery">Sender acceptance and delivery rules ↗</a>
     </section>
 
@@ -199,7 +244,7 @@
           <tr><th scope="row"><code>deny ~/personal/**</code><span>~/personal/journal</span></th><td>No</td><td>No</td></tr>
         </tbody>
       </table>
-      <div class="sharing-foot"><p class="sharing-note">Shared history includes the original transcripts. Organization members can search them; server administrators can access them.</p>
+      <div class="sharing-foot"><p class="sharing-note">Shared history contains transcripts after secret redaction. Organization members can search them; server administrators can access them.</p>
       <a class="text-link" href="https://github.com/flopwire/flopwire/blob/main/SECURITY.md">Data and access model ↗</a></div>
     </section>
 
@@ -209,7 +254,7 @@
       <p class="benchmark-method">60 tasks. 100 MB, 1 GB, and 10 GB corpora. Also measure initial indexing and CPU. Claude-Mem gets a separate comparison for compressed context.</p><a class="text-link" href="https://github.com/flopwire/flopwire/issues/39">Tasks, methodology, and benchmark work ↗</a>
     </section>
 <section class="setup story-section" id="get-started" aria-labelledby="setup-heading">
-  <div class="setup-copy"><div class="section-heading"><h2 id="setup-heading">Give your agent one instruction.</h2><p>Your agent checks the installation and configures Flopwire. Supply a server invite to connect your devices or team; otherwise it starts locally.</p></div><a class="text-link setup-guide" href="../../setup.md">Read the agent setup instructions ↗</a></div>
+  <div class="setup-copy"><div class="section-heading"><h2 id="setup-heading">Give your agent one instruction.</h2><p>Your agent runs <code>flopwire setup</code> to install the plugin for Claude Code, Codex, or Devin. It starts the daemon separately. Supply an invite to connect devices or teammates.</p></div><a class="text-link setup-guide" href="../../setup.md">Read the agent setup instructions ↗</a></div>
   <div class="agent-instruction"><div class="terminal-heading"><span>Instruction for agent</span><button class="copy-button" type="button" data-copy="agent-setup"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button></div><pre><code id="agent-setup">Read https://flopwire.com/setup.md and set up Flopwire for this agent.</code></pre></div>
 </section>
   </main>

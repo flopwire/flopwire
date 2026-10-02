@@ -241,3 +241,5 @@
  .sharing-matrix th code, .sharing-matrix th span { font-size: 11px; }
  .policy-yes { gap: 3px; }
 }
+
+.capture-source { display: inline-block; margin-top: 24px; font-size: 13px; line-height: 1.7; }
