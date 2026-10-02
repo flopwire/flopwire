@@ -28,8 +28,8 @@ func TestHeaderIsBounded(t *testing.T) {
 	c := &ConversationInfo{Address: "0b7e2c1a", Agent: "claude", User: "gary@example.test", Device: "laptop", Repo: "/r",
 		Branches: []string{"feat/" + strings.Repeat("long-branch-name-", 10)}, LastActivityAt: &last, Digest: ParseDigest(b)}
 	h := header(c, last)
-	if len(h) > MaxHeader+10 || !strings.Contains(h, `intent: "refactor the upload path`) || !strings.Contains(h, " files: 25+ ") ||
-		!strings.Contains(h, " pr: #100 prs: 10+ ") || !strings.Contains(h, " failed: 7") || !strings.Contains(h, " ended: 2026-09-23 ") {
+	if len(h) > MaxHeader+10 || !strings.Contains(h, `intent="refactor the upload path`) || !strings.Contains(h, " files=25+ ") ||
+		!strings.Contains(h, " pr=#100 prs=10+ ") || !strings.Contains(h, " failed=7") || !strings.Contains(h, " ended=2026-09-23 ") {
 		t.Fatalf("header (%d bytes): %s", len(h), h)
 	}
 }
@@ -63,12 +63,12 @@ func TestGroupedLayout(t *testing.T) {
 	if err := WriteGrep(&b, p, ModeContent, st); err != nil {
 		t.Fatal(err)
 	}
-	want := `## session: aaaa1111 agent: claude live: 4m repo: flopwire branch: main files: 2 pr: #43 prs: 2 commits: 1 failed: 2 intent: "fix the flaky test"
+	want := `## aaaa1111 agent=claude live=4m repo=flopwire branch=main files=2 pr=#43 prs=2 commits=1 failed=2 intent="fix the flaky test"
 10:1 user: match aaaa1111/10
 20:3 tool_result/Bash: match aaaa1111/20
-## session: bbbb2222 agent: codex ended: 2026-09-29 repo: other
+## bbbb2222 agent=codex ended=2026-09-29 repo=other
 5:2 assistant: match bbbb2222/5
-## session: aaaa1111
+## aaaa1111
 30:1 assistant: match aaaa1111/30
 [4 hits in 2 sessions]
 `
@@ -81,7 +81,7 @@ func TestGroupedLayout(t *testing.T) {
 	if err := WriteGrep(&b, p, ModeContent, Style{Now: st.Now, Budget: 200}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(b.String(), "## session: aaaa1111 agent: claude live: 4m") || !strings.Contains(b.String(), "next: --offset") {
+	if !strings.HasPrefix(b.String(), "## aaaa1111 agent=claude live=4m") || !strings.Contains(b.String(), "next: --offset") {
 		t.Fatalf("paged grouped grep:\n%s", b.String())
 	}
 	// Search groups the same way.
@@ -89,7 +89,7 @@ func TestGroupedLayout(t *testing.T) {
 		p.Hits[i].Snippet, p.Hits[i].TextLine = "snippet", 2
 	}
 	b.Reset()
-	if err := WriteSearch(&b, p, st); err != nil || !strings.Contains(b.String(), "## session: bbbb2222 agent: codex ended: 2026-09-29 repo: other\n5:2 assistant: snippet\n") {
+	if err := WriteSearch(&b, p, st); err != nil || !strings.Contains(b.String(), "## bbbb2222 agent=codex ended=2026-09-29 repo=other\n5:2 assistant: snippet\n") {
 		t.Fatalf("grouped search: %v\n%s", err, b.String())
 	}
 }
@@ -142,7 +142,7 @@ func TestHeaderKeepsTheAddress(t *testing.T) {
 	c := &ConversationInfo{Address: addr, Agent: "claude", User: "someone.long@example-company.test", Device: "a-long-device-name",
 		Repo: "/r/some-long-repository-name", Branches: []string{"feat/" + strings.Repeat("long-branch-", 8), "main"}, LastActivityAt: &last, Digest: d}
 	h := header(c, last)
-	if !strings.HasPrefix(h, "## session: "+addr+" ") || len(h) > MaxHeader+3 || !strings.Contains(h, " failed: 1234") {
+	if !strings.HasPrefix(h, "## "+addr+" ") || len(h) > MaxHeader+3 || !strings.Contains(h, " failed=1234") {
 		t.Fatalf("header (%d bytes): %s", len(h), h)
 	}
 }

@@ -399,7 +399,7 @@ func titleField(t string) string {
 // sessionLine is grep -l's line for a session with matches: its labeled
 // address, agent, last match time, repo, branch, hit count and title.
 func sessionLine(s *ConversationInfo) string {
-	parts := []string{field("session", s.Address), field("agent", s.Agent)}
+	parts := []string{sessionValue(s.Address), field("agent", s.Agent)}
 	if s.LastActivityAt != nil {
 		parts = append(parts, field("active", isoStamp(s.LastActivityAt)))
 	}
@@ -539,7 +539,7 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 // full session id, agent, repo (or cwd), branch, device, user, parent,
 // first and last activity (UTC), message count and, last, the title.
 func readHeader(c *ConversationInfo) string {
-	head := []string{field("session", c.SessionID), field("agent", c.Agent)}
+	head := []string{sessionValue(c.SessionID), field("agent", c.Agent)}
 	if c.Repo != "" {
 		head = append(head, field("repo", c.Repo))
 	} else if c.Cwd != "" {
@@ -675,11 +675,11 @@ func (g *grouper) open(e *errWriter, h *Hit) bool {
 	g.cur = h.SessionID
 	switch c := g.info[h.SessionID]; {
 	case g.seen[h.SessionID]:
-		e.printf("## %s\n", field("session", sessionOf(h.Address)))
+		e.printf("## %s\n", sessionValue(sessionOf(h.Address)))
 	case c != nil:
 		e.printf("%s\n", header(c, g.now))
 	default:
-		parts := []string{field("session", sessionOf(h.Address))}
+		parts := []string{sessionValue(sessionOf(h.Address))}
 		if h.User != "" {
 			parts = append(parts, field("who", h.User))
 		}

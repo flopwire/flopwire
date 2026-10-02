@@ -188,7 +188,7 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 	}
 	tail := outcome(c.Digest)
 	build := func(w string, where []string, intent bool) string {
-		parts := []string{field("session", c.Address)}
+		parts := []string{sessionValue(c.Address)}
 		if w != "" {
 			parts = append(parts, w)
 		}
@@ -202,7 +202,7 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 		if intent {
 			if i := intentOf(c); i != "" {
 				line := strings.Join(parts, fieldSep)
-				if room := min(IntentShort, MaxHeader-len(line)-len(` intent: "…"`)); room >= 16 {
+				if room := min(IntentShort, MaxHeader-len(line)-len(` intent="…"`)); room >= 16 {
 					parts = append(parts, quotedField("intent", shortIntent(i, room)))
 				}
 			}
@@ -227,35 +227,46 @@ func header(c *ConversationInfo, now time.Time) string {
 	return "## " + summary(c, now)
 }
 
-// field is one labeled field of a header line, "key: value". The value
-// prints bare when it is a plain token, else quoted as a JSON string, so
-// a header splits into fields unambiguously however its values read:
-// fields are separated by one space (fieldSep), and a quoted value may
-// hold spaces, quotes or text that looks like another field. Text fields
-// (intent, title) always quote (quotedField).
+// A header line is the session id, bare, then key=value fields, one
+// space apart (fieldSep). A value prints bare when it is a plain token,
+// else as a JSON string, so a header splits unambiguously however its
+// values read: a quoted value may hold spaces, quotes or text that looks
+// like another field. Text fields (intent, title) always quote
+// (quotedField) and come last.
+
+// sessionValue is a header's first value: the session id, bare unless it
+// needs quoting.
+func sessionValue(v string) string {
+	v = Clean(v)
+	if !bareValue(v) {
+		return jsonQuote(oneLine(v))
+	}
+	return v
+}
+
+// field is one key=value field of a header line.
 func field(key, v string) string {
 	v = Clean(v)
 	if !bareValue(v) {
 		return quotedField(key, v)
 	}
-	return key + ": " + v
+	return key + "=" + v
 }
 
-// quotedField is key: "value", the value on one line (newlines as ⏎),
+// quotedField is key="value", the value on one line (newlines as ⏎),
 // control characters shown, quoted as a JSON string.
 func quotedField(key, v string) string {
-	return key + ": " + jsonQuote(oneLine(v))
+	return key + "=" + jsonQuote(oneLine(v))
 }
 
-// bareValue reports whether v can print unquoted: not empty, no space
-// (of any kind), quote, apostrophe, backslash or control character, and
-// not ending in a colon (which would read as a key).
+// bareValue reports whether v can print unquoted: not empty, and no
+// space (of any kind), quote, backslash, "=" or control character.
 func bareValue(v string) bool {
-	if v == "" || strings.HasSuffix(v, ":") {
+	if v == "" {
 		return false
 	}
 	for _, r := range v {
-		if r == '"' || r == '\\' || r == '\'' || unicode.IsSpace(r) || !unicode.IsPrint(r) {
+		if r == '"' || r == '\\' || r == '=' || unicode.IsSpace(r) || !unicode.IsPrint(r) {
 			return false
 		}
 	}
