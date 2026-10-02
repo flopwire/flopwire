@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -393,7 +394,7 @@ func TestJSONAnswerBudget(t *testing.T) {
 		ids = append(ids, m.(map[string]any)["id"].(string))
 	}
 	if !slices.Contains(ids, "m20") || len(ids) >= 41 || len(ids) < 3 || !slices.Contains(ids, "m19") || !slices.Contains(ids, "m21") ||
-		s["more_before"] != true || s["more_after"] != true || !strings.Contains(s["hint"].(string), "messages_before=10") {
+		s["more_before"] != true || s["more_after"] != true || !regexp.MustCompile(`^output budget of 24000 bytes reached; showing \d+ of 20 messages before, next: flopwire_read address=s000/\d+ messages_before=\d+; showing \d+ of 20 messages after, next: flopwire_read address=s000/\d+ messages_after=\d+$`).MatchString(s["hint"].(string)) {
 		t.Fatalf("read neighbours: %v %v %v %v", ids, s["more_before"], s["more_after"], s["hint"])
 	}
 	// A focus that alone passes the budget keeps its first lines and says

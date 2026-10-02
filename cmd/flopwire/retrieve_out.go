@@ -328,16 +328,18 @@ func boundRead(cx *format.Context, budget int, mcp bool) readJSON {
 	set()
 	cp.MoreBefore = cx.MoreBefore || lo > 0
 	cp.MoreAfter = cx.MoreAfter || hi < len(all)
-	st := format.Style{MCP: mcp}
 	if lo > 0 || hi < len(all) {
+		// Each side the budget cut: how many of the fetched neighbours
+		// show, and the call that reads the rest from the last one shown.
+		st := format.Style{MCP: mcp}
 		var hints []string
 		if lo > 0 {
-			hints = append(hints, st.More(all[lo].Address, "before", 10))
+			hints = append(hints, fmt.Sprintf("showing %d of %d messages before, next: %s", at-lo, at, st.More(all[lo].Address, "before", lo)))
 		}
 		if hi < len(all) {
-			hints = append(hints, st.More(all[hi-1].Address, "after", 10))
+			hints = append(hints, fmt.Sprintf("showing %d of %d messages after, next: %s", hi-1-at, len(all)-1-at, st.More(all[hi-1].Address, "after", len(all)-hi)))
 		}
-		out.Hint = fmt.Sprintf("output budget of %d bytes reached; more: %s", budget, strings.Join(hints, "; "))
+		out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s", budget, strings.Join(hints, "; "))
 	}
 	if len(cp.Messages) == 1 && !fitsBudget(out, room(budget)) {
 		m := cp.Messages[0]

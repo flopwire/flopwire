@@ -60,12 +60,6 @@ func (s Style) read(addr string) string {
 	return "flopwire read " + addr
 }
 
-// more is the hint for messages beyond the ones read shows: the address
-// to go on from and the direction.
-func (s Style) more(addr, dir string) string {
-	return s.More(addr, dir, 10)
-}
-
 // More is the call that reads n whole messages before or after (dir) the
 // message at addr.
 func (s Style) More(addr, dir string, n int) string {
@@ -73,6 +67,22 @@ func (s Style) More(addr, dir string, n int) string {
 		return fmt.Sprintf("flopwire_read address=%s messages_%s=%d", addr, dir, n)
 	}
 	return fmt.Sprintf("flopwire read %s --messages-%s %d", addr, dir, n)
+}
+
+// moreLine is read's hint line for one side (dir) of the messages it
+// shows. When the budget left out some of the fetched neighbours on that
+// side, it says how many it shows of how many and gives the call that
+// reads the rest from the last one shown.
+func (s Style) moreLine(addr, dir string, shown, fetched int) string {
+	label := map[string]string{"before": "earlier", "after": "later"}[dir]
+	if shown < fetched {
+		return s.cutLine(label, addr, dir, shown, fetched, fetched-shown)
+	}
+	return fmt.Sprintf("   [%s messages: %s]\n", label, s.More(addr, dir, 10))
+}
+
+func (s Style) cutLine(label, addr, dir string, shown, fetched, rest int) string {
+	return fmt.Sprintf("   [%s messages: showing %d of %d messages %s; %snext: %s]\n", label, shown, fetched, dir, budgetNote(s), s.More(addr, dir, rest))
 }
 
 // cursor is the argument that reads the next sessions page.
@@ -490,11 +500,11 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 	// neighbours what the focus leaves.
 	room := 0
 	if st.Budget > 0 {
-		hint := 0
+		hint, n := 0, len(cx.Messages)
 		for i := range cx.Messages {
-			hint = max(hint, len(st.more(cx.Messages[i].Address, "before")))
+			hint = max(hint, len(st.cutLine("earlier", cx.Messages[i].Address, "before", n, n, n)))
 		}
-		room = max(st.Budget-len(header)-2*(hint+len("   [earlier messages: ]\n")), 1)
+		room = max(st.Budget-len(header)-2*hint, 1)
 	}
 	blocks := make([]string, len(cx.Messages))
 	at := 0
@@ -529,13 +539,13 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 		}
 	}
 	if len(blocks) > 0 && (cx.MoreBefore || lo > 0) {
-		e.printf("   [earlier messages: %s]\n", st.more(cx.Messages[lo].Address, "before"))
+		e.printf("%s", st.moreLine(cx.Messages[lo].Address, "before", at-lo, at))
 	}
 	for i := lo; i <= hi && i < len(blocks); i++ {
 		e.printf("%s", blocks[i])
 	}
 	if len(blocks) > 0 && (cx.MoreAfter || hi < len(blocks)-1) {
-		e.printf("   [later messages: %s]\n", st.more(cx.Messages[hi].Address, "after"))
+		e.printf("%s", st.moreLine(cx.Messages[hi].Address, "after", hi-at, len(blocks)-1-at))
 	}
 	return e.err
 }
