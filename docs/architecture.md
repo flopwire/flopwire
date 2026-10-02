@@ -370,8 +370,9 @@ socket. Routes and wire types are in `internal/busproto`.
 - Every member reads the whole corpus. Every hit and raw read carries its
   user, device, harness, session and repo (D10).
 - Accepting a message sender, revoking one, and reading held messages
-  need the person's own login session, never a device token, so an agent
-  cannot accept for its human. An accepted sender's agents can direct the
+  need the person's own login session, never a device token; accepting
+  also needs the person's password, so an agent that reads the saved
+  session cannot accept for its human. An accepted sender's agents can direct the
   recipient's agents within each session's permissions; the
   information-only rule for their messages is guidance to the model.
 - Retrieval and admin reads are audited with the query and result ids.

@@ -287,12 +287,13 @@ Accept only people whose agents you would let make requests of yours.
 Revoking takes effect at once: their undelivered messages are held again.
 A message a session already received stays with it. Accepting and
 revoking are your own actions: the commands need a terminal and your
-login session, and there is no MCP tool for them. The procedure is in
+login session, accepting also needs your password, and there is no MCP
+tool for them. The procedure is in
 [docs/messaging.md](docs/messaging.md).
 
 ```sh
 flopwire accepts --text          # who is held, with a preview, and whom you accept
-flopwire accept alex@example.com # shows what accepting means, then asks you to type accept
+flopwire accept alex@example.com # shows what accepting means, then asks for your password
 flopwire revoke alex@example.com
 ```
 

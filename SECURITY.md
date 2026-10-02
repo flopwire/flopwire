@@ -109,11 +109,13 @@ another person's session is held until the recipient accepts that person
   console, or the CLI with the session `flopwire login` saved). A device
   token, a minted token or a service account is refused. No route accepts
   for another person, so an administrator cannot accept for a member. The
-  CLI refuses unless stdin is a terminal, and there is no MCP tool. An
-  agent that runs as the same OS user can still read the saved login
-  session from the configuration file while it is valid (24 hours), as it
-  can an administrator's: the terminal check stops an agent that calls the
-  CLI, not one that reads the file and calls the server itself.
+  CLI refuses unless stdin is a terminal, and there is no MCP tool.
+  Accepting also needs the person's password, checked by the server and
+  limited like login: an agent that runs as the same OS user can read the
+  saved login session from the configuration file (24 hours), or run the
+  CLI under a pseudo-terminal, but it does not have the password. With
+  the saved session alone such an agent can still list held previews and
+  revoke a sender; it cannot accept one.
 - Held messages are shown only to the recipient's login session, as a
   first-line preview; the whole body never leaves the server before
   acceptance. The hook tells the person about held messages through a

@@ -12,7 +12,9 @@ You need:
   in the last 24 hours.
 
 You cannot accept or revoke from an agent session. The commands need a
-terminal. There is no MCP tool for them.
+terminal. There is no MCP tool for them. Accepting also needs your
+password, so an agent that reads your saved login session cannot accept
+for you.
 
 ## Find held messages
 
@@ -45,7 +47,8 @@ The device tells you when messages are held:
 2. Find the sender under **Waiting for you**.
 3. Select **Review and accept**.
 4. Read the statement of what accepting means.
-5. Select **Accept** to accept, or **Cancel** to stop.
+5. Type your password.
+6. Select **Accept** to accept, or **Cancel** to stop.
 
 The held messages from that person go to your sessions. Their next
 messages arrive without a hold.
@@ -54,7 +57,8 @@ messages arrive without a hold.
 
 1. Run `flopwire accept EMAIL`. For example, `flopwire accept alex@example.com`.
 2. Read the statement and the held messages.
-3. Type `accept` and press Enter to accept. Type anything else to stop.
+3. Type your Flopwire password and press Enter to accept. The password
+   is not shown. Press Enter without a password to stop.
 
 ## Revoke a sender
 
@@ -79,5 +83,6 @@ To revoke in a terminal:
 | `terminal_required` | The command did not run in a terminal. | Run it yourself in a terminal, or use the web console. |
 | `login_required` | There is no valid login session. | Run `flopwire login`, then run the command again. |
 | `local_only` | No server is configured. Every session is yours, so nothing is held. | Join a team server first. |
-| `not_confirmed` | You did not type `accept`. | Run `flopwire accept EMAIL` again. |
+| `not_confirmed` | You did not type a password. | Run `flopwire accept EMAIL` again. |
+| `password_required` | The password was not correct. | Run `flopwire accept EMAIL` again and type your own password. |
 | `unknown_recipient` | No member has that name or email. | Use the member's email. |
