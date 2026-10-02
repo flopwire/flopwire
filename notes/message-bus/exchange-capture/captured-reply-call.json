@@ -1,0 +1,8 @@
+{
+  "tool": "mcp__plugin_flopwire_flopwire__flopwire_send",
+  "input": {
+    "to": "01a0fa0a-b16a-7ca2-87a6-092f0f36cd28",
+    "reply_to": "m3fb586c92d74b7d1",
+    "message": "GET /users now takes cursor?: string and limit?: number (default 50); page is removed. First page: omit cursor. Next pages: pass the previous response's next_cursor verbatim as cursor (opaque base64url of JSON {created_at,id}; don't build or parse it). Response is {users, next_cursor}; next_cursor is null on the final page; next_page no longer exists. Query form: GET /users?limit=50&cursor=<next_cursor>. Caveat: I only changed listUsers in src/api/users.ts and did not check how the HTTP layer maps query params, so the query-string form is the natural mapping of the field names, not verified."
+  }
+}
