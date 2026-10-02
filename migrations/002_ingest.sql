@@ -149,6 +149,42 @@ ALTER TABLE conversations
   ADD COLUMN hidden_by uuid REFERENCES users (id);
 CREATE INDEX conversations_hidden_idx ON conversations (hidden_root) WHERE hidden_at IS NOT NULL;
 
+-- The activity row mirrors whether its conversation is hidden, so the
+-- sessions list's keyset index leaves hidden conversations out: a page
+-- reads only visible ones, however many hidden sessions are newer than
+-- it (an admin rule can hide a busy repo's sessions for up to seven days
+-- before the purge). The triggers below keep the two equal in the same
+-- statement whoever writes hidden_at (the flush upsert, hide, restore),
+-- and a purge deletes both rows; nothing else writes hidden.
+--
+-- Lock order: the update trigger runs after the conversations row is
+-- updated, so it holds that row before it writes the activity row, as
+-- every activity writer does (001_schema.sql). An update that
+-- conversations_skip_noop suppresses (a BEFORE trigger) fires no AFTER
+-- trigger, and the WHEN clause skips an update that leaves hidden_at's
+-- nullness be: a flush still writes only the activity row.
+ALTER TABLE conversation_activity ADD COLUMN hidden boolean NOT NULL DEFAULT false;
+-- The sessions list's keyset: visible conversations by last activity,
+-- then id (internal/retrieval sessionsPage).
+CREATE INDEX conversation_activity_idx ON conversation_activity (last_activity_at, conversation_id) WHERE NOT hidden;
+
+CREATE OR REPLACE FUNCTION flopwire_conversation_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO conversation_activity (conversation_id, hidden) VALUES (NEW.id, NEW.hidden_at IS NOT NULL)
+    ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END
+$$;
+CREATE FUNCTION flopwire_conversation_hidden() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE conversation_activity SET hidden = NEW.hidden_at IS NOT NULL WHERE conversation_id = NEW.id;
+  RETURN NULL;
+END
+$$;
+CREATE TRIGGER conversations_hidden_mirror AFTER UPDATE OF hidden_at ON conversations
+  FOR EACH ROW WHEN ((OLD.hidden_at IS NULL) IS DISTINCT FROM (NEW.hidden_at IS NULL))
+  EXECUTE FUNCTION flopwire_conversation_hidden();
+
 -- Every other working directory the session named after cwd (Claude's
 -- per-record cwd, Codex turn_context cwd and <cwd> tags), accumulated
 -- across parses: the admin path rules apply the most restrictive verdict

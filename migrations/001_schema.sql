@@ -294,10 +294,8 @@ CREATE TABLE conversation_activity (
   -- has not completed (ingest refreshDigest, digestFold).
   digest_stale boolean NOT NULL DEFAULT false
 ) WITH (fillfactor = 70);
--- The sessions list's keyset: conversations by last activity, then id
--- (internal/retrieval sessionsPage). Hidden conversations are left out
--- after the join; they are purged within days of being hidden.
-CREATE INDEX conversation_activity_idx ON conversation_activity (last_activity_at, conversation_id);
+-- The sessions list's keyset index, conversation_activity_idx, is in
+-- 002_ingest.sql: it leaves hidden conversations out (D18).
 
 -- Every conversation has its activity row from the start, whoever
 -- inserts it.

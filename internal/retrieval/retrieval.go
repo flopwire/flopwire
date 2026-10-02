@@ -125,9 +125,14 @@ const visible = `(SELECT * FROM conversations WHERE hidden_at IS NULL)`
 // id as the activity row holds it: a keyset bound on
 // (last_activity_at, aid) is an index condition on
 // conversation_activity_idx, one on (last_activity_at, id) is not (the
-// planner does not carry a range on id across the join).
+// planner does not carry a range on id across the join). Visibility is
+// NOT a.hidden, which mirrors c.hidden_at (002_ingest.sql): it matches
+// that index's predicate, so a page walks visible conversations only.
+// Testing c.hidden_at as well would make the planner multiply two
+// selectivities that are one, underestimate the visible rows and, with
+// many hidden, hash-join a scan of every conversation.
 const listed = `(SELECT c.*,a.conversation_id AS aid,a.last_activity_at,a.digest,a.digest_stale FROM conversations c
-	JOIN conversation_activity a ON a.conversation_id=c.id WHERE c.hidden_at IS NULL)`
+	JOIN conversation_activity a ON a.conversation_id=c.id WHERE NOT a.hidden)`
 
 // lastActivity is conversation c's last activity where c is a plain
 // conversations row (a message's conversation in from).

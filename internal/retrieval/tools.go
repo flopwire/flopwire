@@ -419,8 +419,8 @@ func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filt
 // sessionsPage is the query for limit sessions after the cursor key
 // after (nil: from the start), in order of last activity, undated
 // sessions last, ties by id. The keyset walks
-// conversation_activity_idx (joining each entry to its visible
-// conversation): dated sessions after the key, then undated
+// conversation_activity_idx, which holds visible conversations only
+// (joining each entry to its conversation): dated sessions after the key, then undated
 // ones, each branch stopping at limit, so a page reads at most 2·limit rows
 // however many sessions there are (unless a filter rejects most of
 // them). Devices and users join inside the page only when a filter needs

@@ -63,7 +63,38 @@ func newEnvOn(t *testing.T, pool *pgxpool.Pool) *env {
 	e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'mac','darwin',$3)`, e.deviceID, e.userID, now)
 	e.exec(`INSERT INTO credentials(id,user_id,device_id,kind,token_hash,created_at) VALUES($1,$2,$3,'device',$4,$5)`, uuid.NewString(), e.userID, e.deviceID, hash, now)
 	e.start()
+	// Whatever the test did (hide, restore, extend, purge, a flush of a
+	// session a rule covers), every conversation's activity row exists
+	// and mirrors its hidden state: the sessions list reads only the
+	// mirror.
+	t.Cleanup(func() { e.checkHiddenMirror() })
 	return e
+}
+
+// checkHiddenMirror fails the test when a conversation lacks its activity
+// row or that row's hidden flag differs from hidden_at.
+func (e *env) checkHiddenMirror() {
+	e.t.Helper()
+	rows, err := e.pool.Query(e.ctx, `SELECT c.id::text,c.hidden_at IS NOT NULL,a.hidden FROM conversations c
+		LEFT JOIN conversation_activity a ON a.conversation_id=c.id WHERE a.hidden IS DISTINCT FROM (c.hidden_at IS NOT NULL)`)
+	if err != nil {
+		e.t.Errorf("hidden mirror: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var hidden bool
+		var mirror *bool
+		if err := rows.Scan(&id, &hidden, &mirror); err != nil {
+			e.t.Errorf("hidden mirror: %v", err)
+			return
+		}
+		e.t.Errorf("conversation %s: hidden %v, activity row hidden %v", id, hidden, mirror)
+	}
+	if err := rows.Err(); err != nil {
+		e.t.Errorf("hidden mirror: %v", err)
+	}
 }
 
 // start (re)starts the server process state: HTTP server, ingest server,
