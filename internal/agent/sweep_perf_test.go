@@ -290,6 +290,11 @@ func TestFileSystemCallsGoThroughProbe(t *testing.T) {
 				if im.Name != nil {
 					local = im.Name.Name
 				}
+				if local == "." && banned[path] != nil {
+					// A dot import makes os.Stat a bare Stat, which the
+					// selector check below cannot see.
+					t.Errorf("%s: dot import of %s: use fsprobe", fset.Position(im.Pos()), path)
+				}
 				imports[local] = path
 			}
 			rel := filepath.ToSlash(filepath.Clean(name))
