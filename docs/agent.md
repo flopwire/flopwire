@@ -205,10 +205,10 @@ inspection, and JSON output.
 ## Install into the harnesses
 
 `flopwire setup` installs Flopwire into the coding-agent harnesses on this
-device. It installs Claude Code's Flopwire plugin: the MCP tools, the
-hooks and a messaging skill. It runs the harness's own plugin commands. It
-never edits the harness's settings files. It does not set up Codex or
-Devin yet: connect them by hand as
+device. It installs the Flopwire plugin into Claude Code and into Codex:
+the MCP tools, the hooks and a messaging skill. It runs each harness's own
+plugin commands. It never edits the harness's settings files. It does not
+set up Devin yet: connect Devin by hand as
 [Connect the harness hooks](#connect-the-harness-hooks) shows.
 
 `flopwire setup` prints a JSON report. Add `--text` for a readable form.
@@ -221,6 +221,7 @@ The report has these parts:
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
 | `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do) and `error`. |
+| `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
 Use `--check` to report and change nothing. Use `--remove` to uninstall.
@@ -245,30 +246,92 @@ Follow these steps in order.
    Do not edit the settings file unless your user tells you to.
 8. Read `todo` in each entry of `harnesses`, and the top-level `todo`.
    Tell your user each item.
-9. Tell your user to restart their Claude Code sessions. A running session
-   loads the plugin after a restart or after `/reload-plugins`.
-10. Run `flopwire setup --check`.
-11. Confirm that the Claude Code entry has `installed: true` and
+9. If the Codex entry has a `hook_trust.need_review` list that is not
+   empty, tell your user to approve the Flopwire hooks in Codex. See
+   [Approve the Codex hooks](#approve-the-codex-hooks). Do not approve
+   them yourself, and do not edit `~/.codex/config.toml`.
+10. Tell your user to restart their Claude Code and Codex sessions. A
+    running Claude Code session loads the plugin after a restart or after
+    `/reload-plugins`. A running Codex session loads it after a restart.
+11. Run `flopwire setup --check`.
+12. Confirm that each detected harness has `installed: true` and
     `enabled: true`.
 
 Run `flopwire setup` again at any time. It updates the plugin when a
 new version exists. It changes nothing when the plugin is current.
 
+### Approve the Codex hooks
+
+Codex runs a plugin's hooks only after you approve them. `flopwire setup`
+installs the plugin but never approves its hooks for you. Until you
+approve them, Codex skips them: no message arrives in a Codex session and
+the session gets no standing instruction. The MCP tools work without the
+approval.
+
+1. Start `codex` in a terminal.
+2. Codex shows "Hooks need review".
+3. Select "Review hooks".
+4. Trust the four Flopwire hooks. They are on `SessionStart`,
+   `UserPromptSubmit`, `PostToolUse` and `Stop`, and each runs
+   `flopwire hook || true`.
+5. Run `flopwire setup --check`.
+6. Confirm that the Codex entry shows `hook_trust.trusted: 4`.
+
+You can also type `/hooks` in a running Codex session to review the hooks.
+"Trust all and continue" also trusts every other hook that waits for
+review.
+
+What you approve: each hook runs the command `flopwire hook || true` with
+a 5-second timeout, outside the Codex sandbox. `flopwire hook` reads the
+hook input, asks the device agent for this session's messages, prints
+them into the session, and asks the agent to index the transcript. `|| true`
+keeps Codex from reporting a failed hook when `flopwire` is missing or too
+old.
+
+Codex asks again only when a hook's event, matcher, command or timeout
+changes. Flopwire keeps these four values fixed, so plugin updates do not
+ask again. Codex records the approval in `~/.codex/config.toml` under
+`hooks.state`, keyed by the plugin and the hook, not by the install path.
+After `flopwire setup --remove` the approval stays there, so a later
+install does not ask again.
+
+Codex also asks before each `flopwire_send` call, because a message leaves
+the session. `codex exec` cannot ask, so the call fails there. To allow
+`flopwire_send` without a question, add this to `~/.codex/config.toml`
+yourself:
+
+```toml
+[plugins."flopwire@flopwire".mcp_servers.flopwire.tools.flopwire_send]
+approval_mode = "approve"
+```
+
+A shell command in Codex's `workspace-write` sandbox cannot reach the
+device agent, so `flopwire send` fails there with `sandbox_blocked`. Use
+the `flopwire_send` tool in Codex.
+
 ### Remove
 
 1. Run `flopwire setup --remove`.
 2. Run `flopwire setup --check`.
-3. Confirm that the Claude Code entry has `installed: false`.
-4. Restart your Claude Code sessions.
+3. Confirm that each detected harness has `installed: false`.
+4. Restart your Claude Code and Codex sessions.
 
 ### Where the plugin comes from
 
-The repository is a Claude Code plugin marketplace
-(`.claude-plugin/marketplace.json`). The plugin is in
-`plugins/claude-code/flopwire`. `flopwire setup` adds the marketplace from
-`flopwire/flopwire` on GitHub and installs `flopwire@flopwire` at user
-scope. Use `--source` or `FLOPWIRE_PLUGIN_SOURCE` to install from a local
-checkout. See the [plugin README](../plugins/claude-code/flopwire/README.md).
+The repository is a plugin marketplace for both harnesses. Claude Code
+reads `.claude-plugin/marketplace.json`; its plugin is in
+`plugins/claude-code/flopwire`. Codex reads
+`.agents/plugins/marketplace.json`; its plugin is in
+`plugins/codex/flopwire`. Both marketplaces are named `flopwire`, and both
+plugins are `flopwire@flopwire`. `flopwire setup` adds the marketplace
+from `flopwire/flopwire` on GitHub. Claude Code installs the plugin at user
+scope; Codex has only user installs. Use `--source` or
+`FLOPWIRE_PLUGIN_SOURCE` to install from a local checkout. See the
+[Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
+the [Codex plugin README](../plugins/codex/flopwire/README.md).
+
+The Codex desktop app and the IDE extension were not tested with the
+plugin.
 
 ## Connect the harness hooks
 
@@ -348,6 +411,22 @@ plugin. Do not use both: each hook would then run twice.
 
 ### Codex
 
+Run `flopwire setup`, then approve the hooks. See
+[Install into the harnesses](#install-into-the-harnesses) and
+[Approve the Codex hooks](#approve-the-codex-hooks). The plugin runs
+`flopwire hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse` and
+`Stop`, and serves the MCP tools.
+
+The plugin's `Stop` hook replaces the older
+`notify = ["flopwire", "agent", "flush"]` line: it asks the agent to index
+each finished turn. It prints nothing and never blocks or extends a turn.
+`notify` holds one command only, so the hook also leaves `notify` free for
+other tools.
+
+Use the manual configuration below only when you cannot install the
+plugin. Do not use both: each hook would then run twice.
+`flopwire setup` warns when it finds both.
+
 1. Open `~/.codex/hooks.json`. Create the file if it does not exist.
 2. Add these entries:
 
@@ -362,27 +441,20 @@ plugin. Do not use both: each hook would then run twice.
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
     ]
   }
 }
 ```
 
-3. Open `~/.codex/config.toml`.
-4. Add this line at the top level:
-
-```toml
-notify = ["flopwire", "agent", "flush"]
-```
-
-5. Start Codex in a terminal.
-6. Codex shows "Hooks need review". Approve the three hooks.
+3. Run `codex mcp add flopwire -- flopwire mcp`.
+4. Start Codex in a terminal.
+5. Codex shows "Hooks need review". Approve the four hooks.
 
 Codex runs a hook only after you approve it. It asks again when the
 event, the matcher, the command or the timeout changes.
-
-`notify` uploads the transcript at the end of each turn. Codex passes a
-JSON argument that names the thread (`thread-id`). The agent finds the
-rollout by that session id.
 
 ### Devin CLI
 

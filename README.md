@@ -135,16 +135,18 @@ where you run admin commands.
 5. Keep the agent running. On macOS, install the launchd user agent in
    `deploy/launchd/com.flopwire.agent.plist`. See
    [docs/two-laptop.md](docs/two-laptop.md#install-the-agent-as-a-launchd-user-agent).
-6. Install Flopwire into Claude Code, so uploads are immediate, messages
-   reach your sessions and the MCP tools are available:
+6. Install Flopwire into Claude Code and Codex, so uploads are immediate,
+   messages reach your sessions and the MCP tools are available:
 
    ```sh
    flopwire setup
    ```
 
-   It installs the Claude Code plugin with Claude Code's own commands and
-   reports what you must still do. Connect Codex and Devin by hand; see
-   [docs/agent.md](docs/agent.md#connect-the-harness-hooks).
+   It installs the plugin with each harness's own commands and reports
+   what you must still do. In Codex, approve the plugin's hooks once when
+   Codex shows "Hooks need review"; see
+   [docs/agent.md](docs/agent.md#approve-the-codex-hooks). Connect Devin
+   by hand; see [docs/agent.md](docs/agent.md#connect-the-harness-hooks).
 7. Check the agent:
 
    ```sh
@@ -183,14 +185,15 @@ flopwire read 0b7e2c1a/28672:14 -B 2                                  # an addre
 
 ### MCP
 
-Claude Code: run `flopwire setup`. The plugin it installs serves the MCP
-tools. Without the plugin, add the server by hand:
+Claude Code and Codex: run `flopwire setup`. The plugin it installs
+serves the MCP tools. Without the plugin, add the server by hand. Claude
+Code:
 
 ```sh
 claude mcp add --scope user flopwire -- flopwire mcp
 ```
 
-Codex, in `~/.codex/config.toml`:
+Codex without the plugin, in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.flopwire]
@@ -206,7 +209,9 @@ to `args` to query the team server.
 The messaging tools are `flopwire_peers`, `flopwire_send` and
 `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
 message. The approval line above approves it too. Remove the line to be
-asked before each call.
+asked before each call. With the Codex plugin, Codex asks before each
+`flopwire_send`; [docs/agent.md](docs/agent.md#approve-the-codex-hooks)
+shows the line that approves it.
 
 ## Messaging
 
@@ -237,8 +242,9 @@ flopwire inbox --sent                                    # what you sent, and it
 
 The `flopwire hook` command prints each message into the recipient's
 session: inside a running turn at its next tool call, or with its human's
-next prompt. A message never wakes an idle session. In Claude Code,
-`flopwire setup` installs the hooks. Connect Codex and Devin as
+next prompt. A message never wakes an idle session. In Claude Code and
+Codex, `flopwire setup` installs the hooks; Codex runs them after you
+approve them once. Connect Devin as
 [docs/agent.md](docs/agent.md#connect-the-harness-hooks) shows.
 
 ## Path rules
@@ -356,6 +362,7 @@ Merging that PR creates the version tag and GitHub source release. See
 | `internal/store`, `migrations` | Postgres persistence and the schema |
 | `internal/backup` | Backup and restore |
 | `plugins/claude-code/flopwire`, `.claude-plugin` | The Claude Code plugin and the marketplace manifest that `flopwire setup` installs from |
+| `plugins/codex/flopwire`, `.agents/plugins` | The Codex plugin and its marketplace manifest |
 | `web` | TypeScript admin console |
 | `deploy` | launchd plist, nginx example |
 | `scripts` | e2e, acceptance and release scripts |

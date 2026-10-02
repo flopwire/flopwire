@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1036,5 +1037,32 @@ func TestPeersWithheldCallerKeepsItsRepoLocal(t *testing.T) {
 		if r.Peers.Session == "" && r.Peers.Repo != "" {
 			t.Fatalf("the request without the caller's id still names a repo: %+v", r.Peers)
 		}
+	}
+}
+
+// TestBusSandboxBlockedConnect: a shell inside Codex's workspace-write
+// sandbox may not connect to the agent's socket (EPERM). That is not "the
+// agent is not running": the error says so and points to the MCP tools,
+// which run outside the sandbox. A socket the caller may not open
+// (EACCES) stands in for the sandbox here.
+func TestBusSandboxBlockedConnect(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores socket permissions")
+	}
+	asCaller(t, claudeSelf)
+	sock := filepath.Join(shortSockDir(t), "agent.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.Chmod(sock, 0); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	err = busCmd(t.Context(), "send", []string{"--socket", sock, "@a", "--", "hi"}, strings.NewReader(""), &out, &errOut)
+	e := jsonErr(t, errOut.String(), err)
+	if e.Code != codeSandboxBlocked || !strings.Contains(e.Fix, "flopwire_send") || strings.Contains(e.Detail, "not running") {
+		t.Fatalf("blocked connect: %+v", e)
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/agent"
@@ -115,6 +116,7 @@ func defaultSocket() (string, error) {
 // Error codes the CLI adds to the server's (busproto.Code*).
 const (
 	codeAgentNotRunning = "agent_not_running"
+	codeSandboxBlocked  = "sandbox_blocked"
 	codeMessagingOff    = "messaging_off"
 	codeAgentOutdated   = "agent_outdated"
 	codeAgentTimeout    = "agent_timeout"
@@ -194,6 +196,11 @@ func (c *busClient) call(ctx context.Context, req agent.Request) (agent.Response
 	}
 	msg := err.Error()
 	switch {
+	case errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES):
+		// Codex's workspace-write sandbox (macOS) refuses a shell
+		// command's connect to the socket; the MCP server is outside it.
+		return resp, &busErr{Code: codeSandboxBlocked, Detail: fmt.Sprintf("this process is not permitted to connect to the device agent's socket %s; a harness sandbox around shell commands (Codex's, for one) usually causes this", c.socket),
+			Fix: "use the flopwire_send, flopwire_peers or flopwire_inbox tool instead: the MCP server runs outside the sandbox", Example: `flopwire_send to="SESSION" message="…"`}
 	case strings.HasPrefix(msg, "agent not running"):
 		return resp, &busErr{Code: codeAgentNotRunning, Detail: fmt.Sprintf("the Flopwire device agent is not running (nothing answers on %s); messages go through it", c.socket),
 			Fix: "start it with flopwire agent run, or start the service the installer set up", Example: "flopwire agent status"}

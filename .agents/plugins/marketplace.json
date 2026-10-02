@@ -1,0 +1,20 @@
+{
+  "name": "flopwire",
+  "interface": {
+    "displayName": "Flopwire"
+  },
+  "plugins": [
+    {
+      "name": "flopwire",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex/flopwire"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

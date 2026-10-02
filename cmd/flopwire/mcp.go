@@ -31,6 +31,17 @@ func mcp(ctx context.Context, args []string) error {
 		return err
 	}
 	r, err := openRetriever(*server, *index)
+	var noIndex *noIndexError
+	if errors.As(err, &noIndex) {
+		// The device agent has not built the index yet. Serve anyway, so
+		// the harness does not mark the server failed (Claude Code then
+		// skips it for 15 minutes): the retrieval tools answer "no index
+		// yet" until the index appears, and the messaging tools, which
+		// talk to the agent, work as soon as it runs.
+		det := local.NewDetector()
+		lazy := &lazyIndexBackend{path: noIndex.path}
+		r, err = &retriever{backend: lazy, caller: det.Detect, live: det.Live, close: lazy.Close}, nil
+	}
 	if errors.Is(err, localindex.ErrSyncOnly) {
 		// Start anyway, so the client sees why: the instructions say so
 		// and every tool answers with the same error.
@@ -98,6 +109,85 @@ func (syncOnlyBackend) RawAt(context.Context, string) ([]byte, error) {
 }
 func (syncOnlyBackend) Raw(context.Context, string, int64, int64, int64) ([]byte, error) {
 	return nil, localindex.ErrSyncOnly
+}
+
+// lazyIndexBackend is the local index for an MCP server that started
+// before the index existed. Each call opens the index if it now exists;
+// until then every call fails with errNoIndexYet's text.
+type lazyIndexBackend struct {
+	path string
+	mu   sync.Mutex
+	lb   *local.Backend
+}
+
+func (b *lazyIndexBackend) open() (backend, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lb != nil {
+		return b.lb, nil
+	}
+	if _, err := os.Stat(b.path); err != nil {
+		return nil, fmt.Errorf("no index yet: start the device agent with `flopwire agent run` (it builds the index at %s), then call again; the messaging tools work once the agent runs", b.path)
+	}
+	lb, err := openLocalBackend(b.path)
+	if err != nil {
+		return nil, err
+	}
+	b.lb = lb
+	return lb, nil
+}
+
+// Close closes the index if a call opened it.
+func (b *lazyIndexBackend) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lb == nil {
+		return nil
+	}
+	return b.lb.Store.Close()
+}
+
+func (b *lazyIndexBackend) Grep(ctx context.Context, q format.GrepQuery, f format.Filters) (*format.Page, error) {
+	be, err := b.open()
+	if err != nil {
+		return nil, err
+	}
+	return be.Grep(ctx, q, f)
+}
+func (b *lazyIndexBackend) Search(ctx context.Context, q format.SearchQuery, f format.Filters) (*format.Page, error) {
+	be, err := b.open()
+	if err != nil {
+		return nil, err
+	}
+	return be.Search(ctx, q, f)
+}
+func (b *lazyIndexBackend) Sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error) {
+	be, err := b.open()
+	if err != nil {
+		return nil, err
+	}
+	return be.Sessions(ctx, glob, cursor, f)
+}
+func (b *lazyIndexBackend) Read(ctx context.Context, q format.ReadQuery, f format.Filters) (*format.Context, error) {
+	be, err := b.open()
+	if err != nil {
+		return nil, err
+	}
+	return be.Read(ctx, q, f)
+}
+func (b *lazyIndexBackend) RawAt(ctx context.Context, address string) ([]byte, error) {
+	be, err := b.open()
+	if err != nil {
+		return nil, err
+	}
+	return be.RawAt(ctx, address)
+}
+func (b *lazyIndexBackend) Raw(ctx context.Context, sourceID string, generation, offset, length int64) ([]byte, error) {
+	be, err := b.open()
+	if err != nil {
+		return nil, err
+	}
+	return be.Raw(ctx, sourceID, generation, offset, length)
 }
 
 // mcpInstructions is the server's instructions: the workflow, the address
