@@ -1033,8 +1033,8 @@ func (w *writeTx) reconciled() (int64, error) {
 // stored rows and titles (a redaction whose transaction was lost after
 // it wrote the sidecar, or a sidecar placed beside a database), then
 // advances the marker. With nothing pending it is one read of meta. Each
-// entry is found through indexes: rows by text hash, records and titles
-// by session.
+// entry is found through indexes: rows, records and titles by session and
+// native id (never by text hash: messages_sha may not exist).
 func (w *writeTx) reconcile() error {
 	if testHookReconcile != nil {
 		if err := testHookReconcile(); err != nil {
