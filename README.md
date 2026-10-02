@@ -168,11 +168,12 @@ flopwire read 0b7e2c1a/28672:14 -B 2                                  # an addre
 ```
 
 - `grep`, `search` and `read` print text (`--json` for JSON). Hits group
-  under a header of labeled fields per session, such as `## session:
-  0b7e2c1a agent: claude ended: 2026-09-23 repo: api branch: main
-  intent: "…"`; a value with a space is a JSON string.
-- `sessions` prints compact JSON with full session ids and paging fields
-  (`has_more`, `next_cursor`). `--text` prints readable rows.
+  under a header per session, such as `## 0b7e2c1a agent=claude
+  ended=2026-09-23 repo=api branch=main intent="…"`; a value with a space
+  is a JSON string.
+- `sessions` prints compact JSON, a brief row per session with its full
+  id, repo, branches and commit ids, and paging fields (`has_more`,
+  `next_cursor`). `--detail` adds the whole digest; `--text` prints rows.
 - Every hit starts with an address, `SESSION/ORDINAL:LINE`. `read` takes
   it, a unique session prefix, a message id, or `transcript.jsonl:LINE`.
 - `grep` takes RE2 regexes with smart case and the common rg flags. It
@@ -210,8 +211,8 @@ default_tools_approval_mode = "approve"
 
 The search tools are `flopwire_grep`, `flopwire_search`,
 `flopwire_sessions` and `flopwire_read`. They only read, and answer as
-the CLI does. Each also returns `structuredContent` with an
-`outputSchema`. Add `"--server"` to `args` to query the team server.
+the CLI does, as one text block. Add `"--server"` to `args` to query the
+team server.
 
 The messaging tools are `flopwire_peers`, `flopwire_send` and
 `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
@@ -235,7 +236,7 @@ flopwire inbox --sent                                    # what you sent, and it
 ```
 
 - Find the recipient in history first, then check that the session is
-  live: match `session_id` (and `digest.commits`) from `sessions` to the
+  live: match `session_id` (and `commits`) from `sessions` to the
   `session` field of `peers`. Do not choose a session by its title or
   current branch alone.
 - Address a session by its id, or a unique prefix. Address a person as

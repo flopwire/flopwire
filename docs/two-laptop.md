@@ -264,7 +264,7 @@ A hook never fails because of the agent. See `docs/agent.md` for details.
    flopwire grep --server zebra-4411
    ```
 
-   The session header's `who:` field must name the teammate's user.
+   The session header's `who=` field must name the teammate's user.
    `--json` shows the device too.
 
 4. Read the hit. Use the address the hit prints first, for example
