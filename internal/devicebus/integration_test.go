@@ -132,7 +132,7 @@ func (s *server) agent(token string, sessions ...devicebus.Session) *agentBus {
 		},
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		PresenceEvery: 50 * time.Millisecond, BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
-		AckDelay: 20 * time.Millisecond, PollWait: 2 * time.Second,
+		AckDelay: 20 * time.Millisecond, PollWait: 2 * time.Second, Lease: 500 * time.Millisecond,
 	})
 	if err != nil {
 		s.t.Fatal(err)
@@ -148,6 +148,20 @@ func (s *server) agent(token string, sessions ...devicebus.Session) *agentBus {
 	go func() { b.Run(ctx); close(done) }()
 	s.t.Cleanup(func() { cancel(); <-done; b.Close() })
 	return ab
+}
+
+// hook is what a hook does: take the session's messages, print them,
+// confirm them.
+func (b *agentBus) hook(ctx context.Context, session string) ([]busproto.Envelope, error) {
+	got, err := b.Take(ctx, session, "", devicebus.Limit{})
+	if err != nil || len(got) == 0 {
+		return got, err
+	}
+	ids := make([]string, len(got))
+	for i, e := range got {
+		ids[i] = e.ID
+	}
+	return got, b.Confirm(ctx, session, ids)
 }
 
 func live(id, agent, repo string, busy bool) devicebus.Session {
@@ -214,7 +228,7 @@ func TestDevicesOverTheServer(t *testing.T) {
 	}
 	var got []busproto.Envelope
 	waitFor(t, "the message on the desktop", func() bool {
-		got, err = desk.Pending(ctx, "g-desk-2222", "")
+		got, err = desk.hook(ctx, "g-desk-2222")
 		return err == nil && len(got) > 0
 	})
 	e := got[0]
@@ -223,7 +237,7 @@ func TestDevicesOverTheServer(t *testing.T) {
 		t.Fatalf("delivered: %+v", got)
 	}
 	waitFor(t, "the receipt", func() bool { return sentState(t, lap, "g-lap-1111", out.ID) == busproto.StateDelivered })
-	if again, _ := desk.Pending(ctx, "g-desk-2222", ""); len(again) != 0 {
+	if again, _ := desk.hook(ctx, "g-desk-2222"); len(again) != 0 {
 		t.Fatalf("delivered twice: %+v", again)
 	}
 
@@ -236,12 +250,12 @@ func TestDevicesOverTheServer(t *testing.T) {
 		h := lap.Held()
 		return len(h) == 1 && h[0].User == "alex@example.test" && h[0].Count == 1
 	})
-	if got, _ := lap.Pending(ctx, "g-lap-1111", ""); len(got) != 0 {
+	if got, _ := lap.hook(ctx, "g-lap-1111"); len(got) != 0 {
 		t.Fatalf("held message delivered: %+v", got)
 	}
 	s.post(busproto.PathAccepts, gary, busproto.AcceptRequest{Sender: "alex@example.test", Password: "a member's correct password"}, nil)
 	waitFor(t, "the released message", func() bool {
-		got, _ = lap.Pending(ctx, "g-lap-1111", "")
+		got, _ = lap.hook(ctx, "g-lap-1111")
 		return len(got) == 1 && got[0].ID == held.ID && got[0].Sender == busproto.SenderTeammate
 	})
 
@@ -255,7 +269,7 @@ func TestDevicesOverTheServer(t *testing.T) {
 		var mu sync.Mutex
 		by := map[string]int{}
 		collect := func(b *agentBus, session, name string) {
-			got, _ := b.Pending(ctx, session, "")
+			got, _ := b.hook(ctx, session)
 			mu.Lock()
 			defer mu.Unlock()
 			for _, e := range got {
@@ -282,5 +296,68 @@ func TestDevicesOverTheServer(t *testing.T) {
 	}
 	if st := lap.Status(ctx); st.State != devicebus.StateConnected || st.Sessions != 1 || st.Unacked != 0 {
 		t.Fatalf("status: %+v", st)
+	}
+}
+
+// Through the real server: delivered_at is set only after a hook confirms
+// the print, and a message no hook confirmed after MaxAttempts leases
+// becomes undelivered (unconfirmed) in the sender's inbox.
+func TestServerDeliveryNeedsConfirmation(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	gary := s.member("gary@example.test")
+	lap := s.agent(s.device(gary), live("g-lap-1111", "claude", "/src/api", true))
+	desk := s.agent(s.device(gary), live("g-desk-2222", "codex", "/home/g/api", true))
+	reported(t, lap, "g-desk-2222")
+	reported(t, desk, "g-lap-1111")
+
+	out, err := lap.Send(ctx, busproto.SendRequest{FromSession: "g-lap-1111", To: "g-desk", Body: "confirm me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []busproto.Envelope
+	waitFor(t, "the message on the desktop", func() bool {
+		got, err = desk.Take(ctx, "g-desk-2222", "", devicebus.Limit{})
+		return err == nil && len(got) > 0
+	})
+	time.Sleep(200 * time.Millisecond) // past AckDelay, inside the lease
+	if st := sentState(t, lap, "g-lap-1111", out.ID); st != busproto.StateQueued {
+		t.Fatalf("taken, not confirmed, and the sender sees %s", st)
+	}
+	if err := desk.Confirm(ctx, "g-desk-2222", []string{out.ID}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the receipt", func() bool { return sentState(t, lap, "g-lap-1111", out.ID) == busproto.StateDelivered })
+
+	// Never confirmed: offered MaxAttempts times, then undelivered.
+	lost, err := lap.Send(ctx, busproto.SendRequest{FromSession: "g-lap-1111", To: "g-desk", Body: "no hook confirms me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts []int
+	waitFor(t, "the undelivered state", func() bool {
+		if g, _ := desk.Take(ctx, "g-desk-2222", "", devicebus.Limit{}); len(g) == 1 {
+			attempts = append(attempts, g[0].Attempt)
+		}
+		return sentState(t, lap, "g-lap-1111", lost.ID) == busproto.StateUndelivered
+	})
+	if !slices.Equal(attempts, []int{1, 2, 3}) {
+		t.Fatalf("offers: %v", attempts)
+	}
+	in, err := lap.Inbox(ctx, busproto.InboxQuery{Session: "g-lap-1111", SentOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range in.Messages {
+		if m.ID == lost.ID && (m.Reason != busproto.ReasonUnconfirmed || m.DeliveredAt != nil) {
+			t.Fatalf("undelivered message: reason %q, delivered_at %v", m.Reason, m.DeliveredAt)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	if g, _ := desk.Take(ctx, "g-desk-2222", "", devicebus.Limit{}); len(g) != 0 {
+		t.Fatalf("an undelivered message was offered again: %+v", g)
+	}
+	if st := desk.Status(ctx); st.Unacked != 0 || st.Pending != 0 {
+		t.Fatalf("desk status: %+v", st)
 	}
 }

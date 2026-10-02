@@ -319,3 +319,32 @@ func TestInvisibleTagCharactersAndConfusablesEscaped(t *testing.T) {
 		t.Fatalf("not escaped as character references:\n%s", got)
 	}
 }
+
+// A message an earlier hook took and never confirmed carries
+// redelivery="true", which the standing instruction explains; a first
+// offer carries no marker. Size counts the marker.
+func TestRedeliveryMarker(t *testing.T) {
+	e := env(busproto.IntentInform, "again")
+	for _, attempt := range []int{0, 1} {
+		e.Attempt = attempt
+		if r := Render(e, nil, 0); strings.Contains(r, "redelivery") {
+			t.Fatalf("attempt %d marked:\n%s", attempt, r)
+		}
+	}
+	e.Attempt = 2
+	r := Render(e, nil, 0)
+	if !strings.Contains(r, ` intent="inform" redelivery="true" sent="`) {
+		t.Fatalf("redelivery not marked:\n%s", r)
+	}
+	if Size(e) < EncodedLen(r) {
+		t.Fatalf("Size %d under the marked render %d", Size(e), EncodedLen(r))
+	}
+	if !strings.Contains(StandingInstruction, `redelivery="true"`) {
+		t.Fatal("the standing instruction does not explain the marker")
+	}
+	w := worst("x")
+	w.Attempt = MaxRefs
+	if EncodedLen(StandingInstruction)+Size(w)+SepLen >= HookBytes-1000 {
+		t.Fatalf("worst frame with the marker leaves too little room for a body")
+	}
+}

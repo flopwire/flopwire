@@ -156,6 +156,10 @@ func TestBusEndToEndLocal(t *testing.T) {
 		resp.Messages[0].Body != "Heads-up: the list endpoint returns a cursor now.\nUse it for page 2." || resp.Messages[0].Intent != busproto.IntentRequest {
 		t.Fatalf("pending: %+v %v", resp.Messages, err)
 	}
+	// The hook printed it: it confirms, and only then is it delivered.
+	if _, err := agent.Call(t.Context(), sock, agent.Request{Op: "confirm", Session: e2eB, IDs: []string{id}}); err != nil {
+		t.Fatal(err)
+	}
 	if again, _ := agent.Call(t.Context(), sock, agent.Request{Op: "pending", Session: e2eB}); len(again.Messages) != 0 {
 		t.Fatalf("delivered twice: %+v", again.Messages)
 	}
@@ -246,6 +250,9 @@ func TestBusEndToEndServer(t *testing.T) {
 		if err == nil && len(resp.Messages) == 1 {
 			if e := resp.Messages[0]; e.ID != id || e.From != e2eA || e.User != "gary@example.test" || e.Sender != busproto.SenderOwn {
 				t.Fatalf("delivered: %+v", e)
+			}
+			if _, err := agent.Call(t.Context(), sock, agent.Request{Op: "confirm", Session: e2eB, IDs: []string{id}}); err != nil {
+				t.Fatal(err)
 			}
 			break
 		}

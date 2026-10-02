@@ -30,6 +30,7 @@ type fakeServer struct {
 	claims   []busproto.ClaimRequest
 	claimFn  func(busproto.ClaimRequest) (busproto.ClaimResponse, error)
 	acks     [][]string
+	gone     []string // undelivered reports
 	ackFn    func([]string) (busproto.AckResponse, error)
 	sends    []busproto.SendRequest
 	pollErr  error // answered at once while set
@@ -71,13 +72,16 @@ func (f *fakeServer) Claim(_ context.Context, req busproto.ClaimRequest) (buspro
 
 func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.AckResponse, error) {
 	f.mu.Lock()
-	f.acks = append(f.acks, slices.Clone(req.IDs))
+	if len(req.IDs) > 0 {
+		f.acks = append(f.acks, slices.Clone(req.IDs))
+	}
+	f.gone = append(f.gone, req.Undelivered...)
 	fn := f.ackFn
 	f.mu.Unlock()
 	if fn == nil {
-		return busproto.AckResponse{Acked: req.IDs, Rejected: []string{}}, nil
+		return busproto.AckResponse{Acked: append(slices.Clone(req.IDs), req.Undelivered...), Rejected: []string{}}, nil
 	}
-	return fn(req.IDs)
+	return fn(append(slices.Clone(req.IDs), req.Undelivered...))
 }
 
 func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
@@ -115,6 +119,12 @@ func (f *fakeServer) ackedIDs() []string {
 		out = append(out, a...)
 	}
 	return out
+}
+
+func (f *fakeServer) undeliveredIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.gone)
 }
 
 // presenceSrc is a presence the test changes.
@@ -210,6 +220,16 @@ func env(id, to string) busproto.Envelope {
 		ToUser: "gary@example.test", Addressed: "session", Seq: seq}
 }
 
+// deliver is what a hook does: take the session's messages, print them,
+// confirm them.
+func deliver(b *Bus, session, agent string, lim Limit) ([]busproto.Envelope, error) {
+	got, err := b.Take(ctx, session, agent, lim)
+	if err != nil || len(got) == 0 {
+		return got, err
+	}
+	return got, b.Confirm(ctx, session, ids(got))
+}
+
 func ids(es []busproto.Envelope) []string {
 	out := make([]string, len(es))
 	for i, e := range es {
@@ -229,7 +249,7 @@ func TestReconcile(t *testing.T) {
 	if err := b.st.reconcile(ctx, []busproto.Envelope{m1, m2, m3}, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	got, err := b.Pending(ctx, "s1", "")
+	got, err := deliver(b, "s1", "", Limit{})
 	if err != nil || !slices.Equal(ids(got), []string{"m1", "m2"}) {
 		t.Fatalf("pending s1: %v %v", ids(got), err)
 	}
@@ -241,7 +261,7 @@ func TestReconcile(t *testing.T) {
 	if err := b.st.reconcile(ctx, []busproto.Envelope{m2, m4}, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s2", ""); !slices.Equal(ids(got), []string{"m4"}) {
+	if got, _ := deliver(b, "s2", "", Limit{}); !slices.Equal(ids(got), []string{"m4"}) {
 		t.Fatalf("pending s2 after m3 left the set: %v", ids(got))
 	}
 	// m1 is listed again (held, then released): not delivered twice, and
@@ -252,10 +272,10 @@ func TestReconcile(t *testing.T) {
 	if err := b.st.reconcile(ctx, []busproto.Envelope{m1}, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); len(got) != 0 {
+	if got, _ := deliver(b, "s1", "", Limit{}); len(got) != 0 {
 		t.Fatalf("delivered message delivered again: %v", ids(got))
 	}
-	if owed, _ := b.st.owed(ctx, 10); !slices.Equal(owed, []string{"m1"}) {
+	if owed, _ := b.st.owed(ctx, "owed", 10); !slices.Equal(owed, []string{"m1"}) {
 		t.Fatalf("owed after m1 was listed again: %v", owed)
 	}
 	// A claimable id the inbox holds is kept although Messages lacks it.
@@ -266,7 +286,7 @@ func TestReconcile(t *testing.T) {
 	if err := b.st.reconcile(ctx, nil, []string{"m5"}, now); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); !slices.Equal(ids(got), []string{"m5"}) {
+	if got, _ := deliver(b, "s1", "", Limit{}); !slices.Equal(ids(got), []string{"m5"}) {
 		t.Fatalf("claimed message dropped: %v", ids(got))
 	}
 }
@@ -279,7 +299,7 @@ func TestPendingSkipsExpired(t *testing.T) {
 	if err := b.st.reconcile(ctx, []busproto.Envelope{old, env("mnew", "s1")}, nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); !slices.Equal(ids(got), []string{"mnew"}) {
+	if got, _ := deliver(b, "s1", "", Limit{}); !slices.Equal(ids(got), []string{"mnew"}) {
 		t.Fatalf("pending: %v", ids(got))
 	}
 }
@@ -303,7 +323,7 @@ func TestPendingExactlyOnceConcurrent(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for range 20 {
-				got, err := b.Pending(ctx, "s1", "claude")
+				got, err := deliver(b, "s1", "claude", Limit{})
 				if err != nil {
 					t.Error(err)
 					return
@@ -326,7 +346,7 @@ func TestPendingExactlyOnceConcurrent(t *testing.T) {
 		}
 	}()
 	wg.Wait()
-	if got, _ := b.Pending(ctx, "s1", ""); len(got) > 0 {
+	if got, _ := deliver(b, "s1", "", Limit{}); len(got) > 0 {
 		mu.Lock()
 		for _, e := range got {
 			seen[e.ID]++
@@ -355,19 +375,19 @@ func TestRestartKeepsInboxAndReceipts(t *testing.T) {
 	if err := b.st.reconcile(ctx, []busproto.Envelope{env("ma", "s1"), env("mb", "s2")}, nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); !slices.Equal(ids(got), []string{"ma"}) {
+	if got, _ := deliver(b, "s1", "", Limit{}); !slices.Equal(ids(got), []string{"ma"}) {
 		t.Fatalf("pending: %v", ids(got))
 	}
 	b.Close() // stopped before the receipt went out
 
 	p := &presenceSrc{}
 	b2 := openBus(t, path, testConfig(srv, nil), p)
-	if got, _ := b2.Pending(ctx, "s1", ""); len(got) != 0 {
+	if got, _ := deliver(b2, "s1", "", Limit{}); len(got) != 0 {
 		t.Fatalf("delivered message pending again after restart: %v", ids(got))
 	}
 	run(t, b2)
 	waitFor(t, "the receipt owed before the restart", func() bool { return slices.Contains(srv.ackedIDs(), "ma") })
-	if got, _ := b2.Pending(ctx, "s2", ""); !slices.Equal(ids(got), []string{"mb"}) {
+	if got, _ := deliver(b2, "s2", "", Limit{}); !slices.Equal(ids(got), []string{"mb"}) {
 		t.Fatalf("undelivered message lost in restart: %v", ids(got))
 	}
 }
@@ -395,7 +415,7 @@ func TestAckBatchingAndRejected(t *testing.T) {
 	if err := b.st.reconcile(ctx, all, nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); len(got) != 150 {
+	if got, _ := deliver(b, "s1", "", Limit{}); len(got) != 150 {
 		t.Fatalf("pending %d", len(got))
 	}
 	run(t, b)
@@ -411,7 +431,7 @@ func TestAckBatchingAndRejected(t *testing.T) {
 	if batches != 2 {
 		t.Errorf("%d batches for 150 receipts", batches)
 	}
-	if owed, _ := b.st.owed(ctx, 200); len(owed) != 0 {
+	if owed, _ := b.st.owed(ctx, "owed", 200); len(owed) != 0 {
 		t.Fatalf("still owed: %v", owed)
 	}
 	// A rejected id is not sent again.
@@ -473,7 +493,7 @@ func TestClaimFlow(t *testing.T) {
 		{Message: won, Sessions: []string{"gone", "here"}}, {Message: lost, Sessions: []string{"here"}}}}
 	srv.pollCh <- pollReply{resp: offer}
 	waitFor(t, "the next poll", func() bool { return srv.pollCount() == 2 })
-	if got, _ := b.Pending(ctx, "here", ""); !slices.Equal(ids(got), []string{"mwon"}) {
+	if got, _ := deliver(b, "here", "", Limit{}); !slices.Equal(ids(got), []string{"mwon"}) {
 		t.Fatalf("pending: %v", ids(got))
 	}
 	if srv.lastPoll().Cursor != 5 {
@@ -730,26 +750,26 @@ func TestSendRedactsBeforeTheServer(t *testing.T) {
 	}
 }
 
-// Requeue undoes a Pending whose caller never got the answer: the message
-// is pending again and its receipt is no longer owed.
+// Requeue undoes a Take whose caller never got the answer: the message is
+// pending again, unmarked, and owes no receipt until a hook confirms it.
 func TestRequeueWithdrawsTheReceipt(t *testing.T) {
 	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(newFakeServer(), nil), nil)
 	if err := b.st.reconcile(ctx, []busproto.Envelope{env("mq", "s1")}, nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); len(got) != 1 {
+	if got, _ := b.Take(ctx, "s1", "", Limit{}); len(got) != 1 {
 		t.Fatalf("pending: %v", ids(got))
 	}
 	if err := b.Requeue(ctx, []string{"mq"}); err != nil {
 		t.Fatal(err)
 	}
-	if owed, _ := b.st.owed(ctx, 10); len(owed) != 0 {
+	if owed, _ := b.st.owed(ctx, "owed", 10); len(owed) != 0 {
 		t.Fatalf("receipt still owed: %v", owed)
 	}
-	if got, _ := b.Pending(ctx, "s1", ""); !slices.Equal(ids(got), []string{"mq"}) {
-		t.Fatalf("pending after requeue: %v", ids(got))
+	if got, _ := deliver(b, "s1", "", Limit{}); !slices.Equal(ids(got), []string{"mq"}) || got[0].Attempt != 1 {
+		t.Fatalf("pending after requeue: %v %+v", ids(got), got)
 	}
-	if owed, _ := b.st.owed(ctx, 10); !slices.Equal(owed, []string{"mq"}) {
+	if owed, _ := b.st.owed(ctx, "owed", 10); !slices.Equal(owed, []string{"mq"}) {
 		t.Fatalf("receipt after the second take: %v", owed)
 	}
 }

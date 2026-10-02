@@ -412,7 +412,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		if refusal != nil {
 			reason = refusal.Code
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,to_key,body_sha,envelope,state,refuse_reason,created_at,expires_at)
+		_, err = tx.ExecContext(ctx, `INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,to_key,body_sha,envelope,state,reason,created_at,expires_at)
 			VALUES(?,'local',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID, seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, toKey, in.sha, string(raw), string(state), reason, ms(now), ms(e.ExpiresAt))
 		return err
@@ -479,7 +479,7 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 	}
 	// Undelivered messages to the recipient: to the session, or, for
 	// @user, those no session has taken yet.
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_key=? AND state='queued' AND expires_at>?
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_key=? AND state IN ('queued','leased') AND expires_at>?
 		AND (to_key<>'user' OR to_session='')`, toKey, ms(now)).Scan(&n); err != nil {
 		return nil, err
 	}
@@ -534,6 +534,7 @@ func (b *Bus) runLocal(ctx context.Context) {
 				b.log.Warn("devicebus: purge", "err", err)
 			}
 		case <-tick.C:
+			b.expireLeases(ctx)
 			live, err := b.sessions(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
@@ -617,7 +618,7 @@ func (b *Bus) inboxLocal(ctx context.Context, q busproto.InboxQuery) (busproto.I
 		}
 		beforeAt, beforeID = ms(t), id
 	}
-	rows, err := b.st.db.QueryContext(ctx, `SELECT envelope,state,refuse_reason,delivered_at,
+	rows, err := b.st.db.QueryContext(ctx, `SELECT envelope,state,reason,delivered_at,
 			CASE WHEN to_session=? AND (?='' OR to_agent=?) AND NOT (from_session=? AND (?='' OR from_agent=?)) THEN 'received' ELSE 'sent' END
 		FROM devbus_messages WHERE origin='local' AND (
 			(to_session=? AND (?='' OR to_agent=?) AND state<>'refused' AND NOT ?)
@@ -643,7 +644,10 @@ func (b *Bus) inboxLocal(ctx context.Context, q busproto.InboxQuery) (busproto.I
 		if err := json.Unmarshal([]byte(raw), &it.Envelope); err != nil {
 			return out, err
 		}
-		it.Direction, it.State, it.RefuseReason = dir, busproto.State(state), reason
+		if state == "leased" {
+			state = string(busproto.StateQueued) // a lease is not a delivery yet; the server shows it queued too
+		}
+		it.Direction, it.State, it.Reason = dir, busproto.State(state), reason
 		if delivered.Valid {
 			t := time.UnixMilli(delivered.Int64).UTC()
 			it.DeliveredAt = &t

@@ -9,6 +9,14 @@ package main
 //
 // On every event it also asks the device agent to index and upload this
 // transcript now (the `agent flush` request), without waiting for it.
+//
+// Delivery has two steps. The pending request leases the messages to this
+// hook; after the output is written, the hook confirms them (the confirm
+// request). A hook that dies in between (a harness timeout, a kill, a
+// broken stdout) confirms nothing, and the agent offers the messages again
+// at the session's next hook, marked redelivery="true", once the lease
+// ends (devicebus.LeaseFor). A hook older than hookLate takes nothing and
+// confirms nothing: its harness may have stopped waiting for it.
 // Messages print as Claude-format hook JSON, which all three harnesses
 // take for these events:
 //
@@ -29,9 +37,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -59,6 +69,26 @@ var (
 	// hook does not wait for the flush itself: the agent finishes it after
 	// the hook exits.
 	hookFlushBudget = 100 * time.Millisecond
+	// hookConfirmBudget bounds the confirm request. A confirmation that
+	// does not arrive leaves the lease to end: the messages are offered
+	// again, marked.
+	hookConfirmBudget = 100 * time.Millisecond
+	// hookLate is the age (since the process was created) after which a
+	// hook takes and confirms nothing. A harness that times a hook out
+	// (5 s in the Flopwire plugins) may stop reading its output without
+	// killing it: `flopwire hook || true` runs under a shell, and killing
+	// the shell leaves the hook running. Its output then reaches no model,
+	// so it must not confirm. A hook normally exits within tens of
+	// milliseconds (docs/agent.md).
+	hookLate = 3 * time.Second
+	// hookStart is when this hook started: the process's creation, else
+	// now. Tests replace it.
+	hookStart = func() time.Time {
+		if t := processStart(); !t.IsZero() {
+			return t
+		}
+		return time.Now()
+	}
 )
 
 // hookInputMax bounds the hook input read. PostToolUse carries the tool's
@@ -88,12 +118,17 @@ type hookSpecific struct {
 }
 
 func hookMain(ctx context.Context, args []string) error {
+	// A write to a closed stdout (the harness stopped reading) returns
+	// EPIPE instead of killing the process with SIGPIPE, so the hook still
+	// exits 0, and it does not confirm what it could not print.
+	signal.Ignore(syscall.SIGPIPE)
 	return hookCmd(ctx, args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 }
 
 // hookCmd runs `flopwire hook`. It always returns nil.
 func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) (err error) {
 	warn := func(format string, a ...any) { fmt.Fprintf(stderr, "flopwire hook: "+format+"\n", a...) }
+	started := hookStart()
 	defer func() {
 		if r := recover(); r != nil {
 			warn("internal error; nothing delivered")
@@ -132,8 +167,13 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	// it prints reaches a model, and its event says nothing about the
 	// running session's turn. It delivers nothing and only flushes.
 	elsewhere := harness == transcript.AgentDevin && devinHeldElsewhere(in.SessionID, getenv)
+	// A hook that starts this late (its exec waited, see hookLate) carries
+	// a stale event: a Stop may have come since. It delivers nothing, and
+	// its flush carries no event, so it cannot mark the session busy.
+	age := time.Since(started)
+	late := age+hookPendingBudget > hookLate
 	flushIn := in
-	if elsewhere {
+	if elsewhere || late {
 		flushIn.Event = ""
 	}
 	flushed := make(chan struct{})
@@ -160,6 +200,10 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	if elsewhere {
 		warn("another devin process holds this session; nothing delivered")
+		return nil
+	}
+	if late {
+		warn("started %s ago, too late to deliver; nothing delivered", age.Round(time.Millisecond))
 		return nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
@@ -192,9 +236,37 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return nil
 	}
 	if _, err := stdout.Write(buf.Bytes()); err != nil {
-		warn("could not write the output: %d messages were marked delivered", len(resp.Messages))
+		warn("could not write the output; %d messages wait for the next hook", len(resp.Messages))
+		return nil
+	}
+	if len(resp.Messages) > 0 {
+		hookConfirm(ctx, *socket, in.SessionID, resp.Messages, started, warn)
 	}
 	return nil
+}
+
+// hookConfirm tells the agent that the messages were printed. stdout is
+// unbuffered: once Write returned, the whole output is in the pipe. A hook
+// past hookLate does not confirm, and a confirmation that fails is not
+// retried: either way the lease ends and the messages come again, marked.
+func hookConfirm(ctx context.Context, socket, session string, msgs []busproto.Envelope, started time.Time, warn func(string, ...any)) {
+	if age := time.Since(started); age >= hookLate {
+		warn("printed %s after the start, too late to confirm; %d messages will be offered again", age.Round(time.Millisecond), len(msgs))
+		return
+	}
+	ids := make([]string, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	cctx, cancel := context.WithTimeout(ctx, hookConfirmBudget)
+	defer cancel()
+	if _, err := agent.Call(cctx, socket, agent.Request{Op: "confirm", Session: session, IDs: ids}); err != nil {
+		reason := hookReason(err)
+		if isTimeout(err) {
+			reason = fmt.Sprintf("no answer within %s", hookConfirmBudget)
+		}
+		warn("could not confirm the delivery (%s); %d messages will be offered again", reason, len(msgs))
+	}
 }
 
 // noticeChannel reports whether the harness shows a hook's systemMessage

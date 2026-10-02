@@ -725,7 +725,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 // --- inbox ---
 
 // inboxEntry is one message: busproto.InboxItem (the envelope, direction
-// sent or received, state, refuse_reason, delivered_at, read_at) and
+// sent or received, state, reason, delivered_at, read_at) and
 // whether it replies to an earlier message. A sent message's state is its
 // delivery only: an answer is a separate received entry whose reply_to
 // names it.
@@ -816,8 +816,8 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 	for _, m := range in.Messages {
 		var e strings.Builder
 		state := string(m.State)
-		if m.RefuseReason != "" {
-			state += " (" + m.RefuseReason + ")"
+		if m.Reason != "" {
+			state += " (" + m.Reason + ")"
 		}
 		var peer string
 		if m.Direction == "received" {
@@ -1086,7 +1086,7 @@ Socket   --socket PATH (default <config dir>/agent.sock: the device agent sends 
 JSON: {"kind":"inbox","session":FULL ID,"messages":[{"id","thread_id","reply_to","from",
 "agent","user","repo","branch","sender","intent","body","refs","sent","expires_at",
 "to_session","to_agent","to_user","addressed","direction":"sent"|"received","is_reply",
-"state","refuse_reason","delivered_at","read_at"}…],"more":bool,"next":CURSOR}.
+"state","reason","delivered_at","read_at"}…],"more":bool,"next":CURSOR}.
 direction says who wrote it. A sent message's state is its delivery (queued, held,
 claimed, delivered, read, expired, refused): delivered is not answered. An answer is a
 received message whose reply_to names yours. more=true: pass next as --cursor.

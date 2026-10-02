@@ -162,7 +162,7 @@ recipient session ◄── additionalContext ◄── flopwire hook ◄── 
 **Server.**
 - Tables: `bus_messages (id, thread_id, from_session, to_session, to_user,
   repo, intent, body, reply_to, refs, created_at, expires_at, claimed_by,
-  delivered_at, read_at, state)` and `bus_accepts (recipient_user,
+  delivered_at, read_at, state, reason)` and `bus_accepts (recipient_user,
   sender_user, created_at)`.
 - Routes: `POST /v1/bus/send`, `GET /v1/bus/peers`, `GET /v1/bus/inbox`,
   `GET /v1/bus/poll`, `POST /v1/bus/claim`, `POST /v1/bus/ack`, and
@@ -192,9 +192,31 @@ config and does both jobs.
 - `UserPromptSubmit`: anything pending.
 - `PostToolUse`: anything pending.
 - It asks the device agent over the control socket for messages for the
-  `session_id` on stdin, prints them as `additionalContext`, and reports
-  `delivered_at`. It exits 0 with no output if the agent is down or slow
-  (budget 200 ms), as `agent flush` does today.
+  `session_id` on stdin, prints them as `additionalContext`, and then
+  confirms them (#90). It exits 0 with no output if the agent is down or
+  slow (budget 200 ms), as `agent flush` does today.
+- Delivery has two steps. `pending` leases the messages to the hook
+  (local state `leased`, 10 s). The hook writes its output and then sends
+  `confirm` with the printed ids; only then is a message `delivered` and
+  its receipt owed. While a lease of the session runs, no other hook of
+  that session gets messages, so order holds across an expired lease and
+  concurrent hooks (two hook configs) get each message once.
+- An unconfirmed lease ends and the message is queued again. The next
+  hook prints it with `redelivery="true"`; the standing instruction tells
+  the model not to act again on an id it has seen. After 3 leases without
+  a confirmation the message is `undelivered` (reason `unconfirmed`) on
+  the device, the device reports it in its next ack batch, and the
+  sender's `inbox` shows it. When the pending answer cannot be written
+  (the hook left inside its budget), the agent requeues at once and the
+  lease does not count.
+- Impossible now: a message marked delivered that no hook printed (a hook
+  killed or timed out between `pending` and its print, a broken stdout).
+  Bounded: a message printed whose confirmation was lost is shown again,
+  marked, at most 3 times in all. A hook older than 3 s (from its process
+  creation) neither takes nor confirms: a harness that timed it out (the
+  plugins give 5 s) may still hold its pipe open while no model reads it,
+  and killing the `sh` of `flopwire hook || true` leaves the hook running.
+  Its messages come again, marked.
 - When a held cross-user message exists, it prints a user-visible notice,
   not model context.
 
@@ -203,7 +225,10 @@ ancestor session file; Codex by `_meta.threadId` on the MCP call or
 `CODEX_THREAD_ID`; Devin by parent pid matched to the lock file; opencode
 by the plugin's `ctx.sessionID`.
 
-**Receipts.** `delivered_at` when the hook prints the message. `read_at`
+**Receipts.** `delivered_at` when the hook confirms that it printed the
+message (not when it takes it). `undelivered` with reason `unconfirmed`
+when no hook confirmed it after 3 leases; the device reports it in the
+ack request (`undelivered` ids) and the sender sees it. `read_at`
 when the message id appears in the recipient's transcript in the archive.
 Claude Code, Codex and Devin record hook context in the transcript.
 opencode's transform hooks do not persist, so opencode has `delivered_at`

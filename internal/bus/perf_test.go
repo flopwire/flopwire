@@ -84,6 +84,8 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"clear presence", clearPresenceSQL, []any{me.DeviceID, []string{"claude"}, []string{"me-session"}}},
 		{"ack", AckSQL, []any{ids, me.UserID, me.DeviceID, now}},
 		{"acked before", ackedBeforeSQL, []any{ids, me.UserID, []string{}}},
+		{"undelivered", UndeliveredSQL, []any{ids, me.UserID, me.DeviceID, busproto.ReasonUnconfirmed}},
+		{"undelivered before", undeliveredBeforeSQL, []any{ids, me.UserID, []string{}}},
 		{"inbox", InboxSQL, []any{"me-session", me.UserID, false, "", nil, "", 51}},
 		{"inbox page", InboxSQL, []any{"me-session", me.UserID, false, "m1-0", now, "m1-0", 51}},
 		{"peers", PeersSQL, []any{live}},

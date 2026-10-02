@@ -30,6 +30,8 @@ type hookAgent struct {
 	resp  agent.Response // extra fields of the pending answer
 	delay time.Duration
 	fail  string // pending answers this error
+	// confirmFail: confirm answers this error.
+	confirmFail string
 }
 
 func newHookAgent(t *testing.T) *hookAgent {
@@ -69,6 +71,9 @@ func (f *hookAgent) serve(c net.Conn) {
 		resp.Error = f.fail
 		resp.Messages, f.msgs = f.msgs, nil
 		resp.Instruct = resp.Instruct && req.Start != ""
+	}
+	if req.Op == "confirm" && f.confirmFail != "" {
+		resp = agent.Response{Error: f.confirmFail}
 	}
 	delay := f.delay
 	f.mu.Unlock()

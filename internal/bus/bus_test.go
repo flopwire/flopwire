@@ -484,7 +484,7 @@ func TestLimits(t *testing.T) {
 			t.Fatalf("reply to done: %v", err)
 		}
 		in, _ := tm.s.Inbox(context.Background(), tm.garyLinux, busproto.InboxQuery{Session: "g-lin-3333", SentOnly: true})
-		if len(in.Messages) != 1 || in.Messages[0].State != busproto.StateRefused || in.Messages[0].RefuseReason != busproto.CodeReplyToDone {
+		if len(in.Messages) != 1 || in.Messages[0].State != busproto.StateRefused || in.Messages[0].Reason != busproto.CodeReplyToDone {
 			t.Fatalf("refused send in inbox %+v", in.Messages)
 		}
 		// A reply names a message its person sent or received.

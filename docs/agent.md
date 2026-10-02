@@ -197,7 +197,7 @@ socket and prints these parts:
 | `messaging: server unreachable, retry at T: ERR` | The poll failed. The agent retries by itself, at most 30 seconds apart. |
 | `messaging: stopped: ERR` | The server refused the credential or the certificate. Run `flopwire login`. Messaging resumes when the agent sees the new credential. |
 | `messaging: disabled: ERR` | The server has no message bus, or the credential is not an enrolled device. The agent asks again every 10 minutes. |
-| `messages: N pending delivery, N receipts unsent, N held for your acceptance` | Messages in the local inbox that no hook took yet, deliveries the server has not confirmed, and messages from people you have not accepted. |
+| `messages: N pending delivery, N receipts unsent, N held for your acceptance` | Messages in the local inbox that no hook has confirmed yet, deliveries (and undelivered reports) the server has not taken yet, and messages from people you have not accepted. |
 
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
@@ -398,10 +398,34 @@ these cases:
 - The agent is not running.
 - The agent does not answer within 200 milliseconds. The agent keeps the
   messages for the next hook.
+- The hook process started so long ago that it cannot finish asking for
+  messages within 3 seconds of its start. Its harness may have stopped
+  waiting for it. Such a hook also does not report its event to the
+  agent, because a later event may have arrived first.
 - The input is not hook JSON.
 
 It writes the reason on stderr. It never writes the environment or a
 message body there.
+
+Delivery has two steps, so a hook that is killed cannot lose a message:
+
+1. The hook asks the agent for the session's messages. The agent leases
+   them to that hook for 10 seconds. While the lease runs, no other hook
+   of the session gets messages, so the messages keep their order.
+2. The hook prints the messages. Then it confirms them to the agent. The
+   agent marks them delivered and sends the receipt to the server.
+
+If no confirmation arrives before the lease ends, the agent offers the
+messages again at the session's next hook. A harness timeout, a killed
+hook, a closed output pipe or a lost confirmation all end this way. A
+message that is offered again carries `redelivery="true"`, because the
+model may have seen it already. The hook does not confirm a print that
+ends more than 3 seconds after its start: a harness that timed the hook
+out may not have read it.
+
+After 3 leases without a confirmation, the message is `undelivered` with
+the reason `unconfirmed`. The sender's `inbox` shows this state, and the
+sender can send the message again.
 
 One call prints at most 5 messages and at most 9,000 bytes. The oldest
 messages go first. The rest wait for the next hook. A single message that
@@ -575,7 +599,9 @@ With a server configuration, the agent does these things:
   the server no longer lists is removed, unless a hook already took it.
 - It claims each message to `@you` for one live session on this device.
   It prefers a session on the message's repo, then a busy session.
-- It confirms each delivery to the server, in batches.
+- It confirms each delivery to the server, in batches, after the hook
+  confirms that it printed the message. It reports each message that
+  became `undelivered` in the same batches.
 
 Without a server configuration, or with `--no-sync`, the agent routes
 messages between the sessions on this device. To address yourself, use
@@ -620,6 +646,10 @@ Reply with the flopwire_send tool: to="0b7e2c1a-…" reply_to="m7f3a…" message
 - `sender` is `own` for a session of the same person and `teammate` for
   another person's session.
 - The reply line appears only for `intent="request"`.
+- `redelivery="true"` appears on a message that an earlier hook took and
+  never confirmed. The model may have seen it. The standing instruction
+  tells the model not to act again on a message id that is already in
+  its context.
 - A ref shows a short excerpt when the recipient's local index holds that
   message. Otherwise it shows the address alone. `flopwire read ADDRESS`
   shows the whole message.
@@ -689,8 +719,12 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    flopwire inbox --sent
    ```
 
-   Each entry has `direction` (`sent` or `received`) and `state`. The
-   state of a sent message is its delivery only. A reply is a received
+   Each entry has `direction` (`sent` or `received`) and `state`:
+   `queued`, `held`, `claimed`, `delivered`, `read`, `expired`,
+   `refused` or `undelivered`. A `refused` or `undelivered` entry also
+   has a `reason`. `undelivered` with `unconfirmed` means that hooks took
+   the message 3 times and none confirmed that it printed it. The state
+   of a sent message is its delivery only. A reply is a received
    entry whose `reply_to` names your message. To read one thread, use
    `flopwire inbox --thread ID`. When `more` is true, pass `next` as
    `--cursor`.

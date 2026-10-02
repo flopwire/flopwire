@@ -24,7 +24,7 @@ import (
 // Request is one control-socket request: a JSON object on one line.
 type Request struct {
 	// "flush", "pass", "status", "repin", "redact" or "ping"; for the
-	// message bus "pending", "held", "send", "peers" or "inbox".
+	// message bus "pending", "confirm", "held", "send", "peers" or "inbox".
 	Op      string `json:"op"`
 	Path    string `json:"path,omitempty"`    // flush: the transcript path
 	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
@@ -39,7 +39,9 @@ type Request struct {
 	AllCopies bool   `json:"all_copies,omitempty"`
 
 	// Message bus (devicebus). pending: Session and Agent (the harness,
-	// when two share an id; "" for any). send, peers, inbox: the request as
+	// when two share an id; "" for any). It leases the messages to the
+	// caller; confirm, with Session and the ids in IDs, says the caller
+	// printed them (devicebus.Bus.Confirm). send, peers, inbox: the request as
 	// the server takes it; the agent sends it to the server, or answers it
 	// on the device when no server is configured.
 	Agent string `json:"agent,omitempty"`
@@ -56,6 +58,7 @@ type Request struct {
 	Limit    int                   `json:"limit,omitempty"`
 	MaxBytes int                   `json:"max_bytes,omitempty"`
 	Start    string                `json:"start,omitempty"`
+	IDs      []string              `json:"ids,omitempty"` // confirm
 	Send     *busproto.SendRequest `json:"send,omitempty"`
 	Peers    *busproto.PeersQuery  `json:"peers,omitempty"`
 	Inbox    *busproto.InboxQuery  `json:"inbox,omitempty"`
@@ -79,7 +82,8 @@ type Response struct {
 	Redacted int `json:"redacted,omitempty"`
 
 	// Message bus. Messages (pending): the session's undelivered messages,
-	// oldest first, now marked delivered. Held (pending, held): senders
+	// oldest first, now leased to the caller; each one's Attempt above 1
+	// marks a redelivery. Held (pending, held): senders
 	// waiting for the user's acceptance, for the user-visible notice.
 	// Sent, Peers, Inbox: the answers to send, peers and inbox. BusError: a
 	// refusal with its code (and candidates or the refused message id);
@@ -215,7 +219,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
-	case req.Op == "pending", req.Op == "held", req.Op == "send", req.Op == "peers", req.Op == "inbox":
+	case req.Op == "pending", req.Op == "confirm", req.Op == "held", req.Op == "send", req.Op == "peers", req.Op == "inbox":
 		a.serveBus(ctx, req, &resp)
 	default:
 		resp.Error = "unknown op " + req.Op
@@ -229,13 +233,14 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	if werr != nil && req.Op == "pending" && len(resp.Messages) > 0 {
 		// The hook gave up before the answer (its budget ran out) and
 		// will not print these messages: queue them again for its
-		// session's next hook rather than lose them.
+		// session's next hook now, unmarked, rather than when the lease
+		// ends.
 		ids := make([]string, len(resp.Messages))
 		for i, m := range resp.Messages {
 			ids[i] = m.ID
 		}
 		if rerr := a.cfg.Bus.Requeue(ctx, ids); rerr != nil {
-			a.log.Warn("agent: messages taken by a hook that left are lost", "ids", ids, "err", rerr)
+			a.log.Warn("agent: messages taken by a hook that left wait for their lease to end", "ids", ids, "err", rerr)
 		}
 	}
 }
@@ -243,8 +248,8 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 // busCallTimeout bounds a send, peers or inbox request to the server.
 const busCallTimeout = 20 * time.Second
 
-// serveBus answers the message bus requests. pending and held read only
-// local state, so a hook never waits on the network.
+// serveBus answers the message bus requests. pending, confirm and held
+// use only local state, so a hook never waits on the network.
 func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 	b := a.cfg.Bus
 	if b == nil {
@@ -273,6 +278,8 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 			resp.Instruct = false
 		}
 		resp.Excerpts = a.refExcerpts(ctx, resp.Messages)
+	case "confirm":
+		err = b.Confirm(ctx, req.Session, req.IDs)
 	case "held":
 		resp.Held = b.Held()
 	default:

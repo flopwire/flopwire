@@ -281,6 +281,23 @@ func ask(t *testing.T, a *Agent, req Request) Response {
 	return resp
 }
 
+// hookAsk is what a hook does: ask for pending messages, print them,
+// confirm them.
+func hookAsk(t *testing.T, a *Agent, req Request) Response {
+	t.Helper()
+	r := ask(t, a, req)
+	if len(r.Messages) > 0 {
+		ids := make([]string, len(r.Messages))
+		for i, m := range r.Messages {
+			ids[i] = m.ID
+		}
+		if c := ask(t, a, Request{Op: "confirm", Session: req.Session, IDs: ids}); !c.OK {
+			t.Fatalf("confirm: %s", c.Error)
+		}
+	}
+	return r
+}
+
 // Two SessionStart hooks for one session (two hook configs, as when Devin
 // also runs .claude/settings.json) get the standing instruction once; a
 // later start of another kind (a compaction) gets it again.
@@ -326,7 +343,7 @@ func TestControlPendingBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Limit: 3})
+	r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", Limit: 3})
 	if len(r.Messages) != 3 {
 		t.Fatalf("limit 3 took %d", len(r.Messages))
 	}
@@ -338,11 +355,11 @@ func TestControlPendingBounded(t *testing.T) {
 	}
 	// Room for two messages without the instruction, one with it.
 	max := 2*one + busrender.SepLen + busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen - 1
-	r = ask(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max, Start: "startup"})
+	r = hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max, Start: "startup"})
 	if !r.Instruct || len(r.Messages) != 1 || !strings.HasPrefix(r.Messages[0].Body, "hello 3") {
 		t.Fatalf("with the instruction: instruct %v, %d messages", r.Instruct, len(r.Messages))
 	}
-	r = ask(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max})
+	r = hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max})
 	if len(r.Messages) != 2 {
 		t.Fatalf("without the instruction: %d messages", len(r.Messages))
 	}
@@ -368,7 +385,7 @@ func TestControlPendingRefExcerpts(t *testing.T) {
 	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "see", Refs: []string{ref, "zzzz9999/1"}}); err != nil {
 		t.Fatal(err)
 	}
-	r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"})
+	r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"})
 	want := strings.Join(strings.Fields(row.Text), " ")
 	if ex := r.Excerpts[ref]; ex == "" || !strings.Contains(ex, want[:min(len(want), 20)]) {
 		t.Fatalf("excerpt for %s: %q (text %q)", ref, ex, want)
@@ -382,7 +399,45 @@ func TestControlPendingRefExcerpts(t *testing.T) {
 	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "see again", Refs: []string{ref}}); err != nil {
 		t.Fatal(err)
 	}
-	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); !r.OK || len(r.Messages) != 1 || len(r.Excerpts) != 0 {
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"}); !r.OK || len(r.Messages) != 1 || len(r.Excerpts) != 0 {
 		t.Fatalf("past the budget: ok %v, %d messages, excerpts %v", r.OK, len(r.Messages), r.Excerpts)
+	}
+}
+
+// pending leases; confirm delivers. A hook that took messages and never
+// confirmed them (killed before printing) leaves them leased: the next
+// hook inside the lease gets nothing, the first after it gets them again,
+// marked as a redelivery.
+func TestControlPendingLeaseAndConfirm(t *testing.T) {
+	prev := devicebus.LeaseFor
+	devicebus.LeaseFor = 300 * time.Millisecond
+	t.Cleanup(func() { devicebus.LeaseFor = prev })
+	f, b := busFixture(t)
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "taken by a hook that dies"}); err != nil {
+		t.Fatal(err)
+	}
+	r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"})
+	if len(r.Messages) != 1 || r.Messages[0].Attempt != 1 {
+		t.Fatalf("first pending: %+v", r.Messages)
+	}
+	id := r.Messages[0].ID
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); len(r.Messages) != 0 {
+		t.Fatalf("offered twice inside the lease: %+v", r.Messages)
+	}
+	time.Sleep(devicebus.LeaseFor + 50*time.Millisecond)
+	r = hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"})
+	if len(r.Messages) != 1 || r.Messages[0].ID != id || r.Messages[0].Attempt != 2 {
+		t.Fatalf("after the lease: %+v", r.Messages)
+	}
+	time.Sleep(devicebus.LeaseFor + 50*time.Millisecond)
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); len(r.Messages) != 0 {
+		t.Fatalf("offered again after the confirmation: %+v", r.Messages)
+	}
+	in, err := b.Inbox(ctx, busproto.InboxQuery{Session: "from-1111", SentOnly: true})
+	if err != nil || len(in.Messages) != 1 || in.Messages[0].State != busproto.StateDelivered {
+		t.Fatalf("sender's inbox: %+v %v", in, err)
+	}
+	if r := ask(t, f.a, Request{Op: "confirm"}); r.OK {
+		t.Fatal("confirm without a session accepted")
 	}
 }

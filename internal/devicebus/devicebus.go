@@ -13,9 +13,18 @@
 // send to one of the device's own sessions (or to @ its user) goes
 // straight into the local inbox with the same envelope and limits.
 //
-// Either way a hook asks for its session's messages with Pending, which
-// answers from the local inbox only, never the network. Pending marks the
-// messages delivered; the receipts go to the server in batches.
+// Either way a hook asks for its session's messages with Take, which
+// answers from the local inbox only, never the network. Delivery has two
+// steps, so a hook that dies between taking and printing loses nothing:
+//
+//	queued ──Take──► leased ──Confirm──► delivered (a receipt to the server)
+//	   ▲               │
+//	   └─lease ends────┤ fewer than MaxAttempts leases: queued again, and
+//	     or Requeue    │ the next hook marks it a redelivery (Attempt > 1)
+//	                   └─ MaxAttempts leases: undelivered (reported to the
+//	                      server, shown in the sender's inbox)
+//
+// Receipts and reports go to the server in batches.
 package devicebus
 
 import (
@@ -77,7 +86,21 @@ type Config struct {
 	DisabledEvery time.Duration // while the server has no bus, how often to ask again: 10m
 	AckDelay      time.Duration // receipts wait this long to batch: 250ms
 	PollWait      time.Duration // the poll's hold; default busproto.PollWait
+	Lease         time.Duration // how long a hook has to confirm what it took; default LeaseFor
+	MaxAttempts   int           // leases before a message is undelivered; default MaxAttempts
 }
+
+// LeaseFor is how long a hook has to confirm the messages it took before
+// they are offered again: past the hook's own deadline for confirming
+// (cmd/flopwire hookLate, 3 s) and the 5 s timeout the Flopwire plugins
+// give each hook. A var so tests can shorten it.
+var LeaseFor = 10 * time.Second
+
+// MaxAttempts is how many leases a message gets. A message offered again
+// may already have been shown (the hook printed it and its confirmation was
+// lost), so each redelivery is marked, and after MaxAttempts unconfirmed
+// leases the message is undelivered: the sender sees it and can send again.
+const MaxAttempts = 3
 
 func (c *Config) defaults() {
 	if c.Logger == nil {
@@ -110,6 +133,12 @@ func (c *Config) defaults() {
 	if c.PollWait <= 0 {
 		c.PollWait = busproto.PollWait
 	}
+	if c.Lease <= 0 {
+		c.Lease = LeaseFor
+	}
+	if c.MaxAttempts <= 0 {
+		c.MaxAttempts = MaxAttempts
+	}
 }
 
 func localUser() string {
@@ -141,8 +170,9 @@ type Status struct {
 	// Sessions is how many live sessions presence reports (to the server,
 	// or locally).
 	Sessions int `json:"sessions"`
-	// Pending counts undelivered messages in the local inbox; Unacked,
-	// delivered messages whose receipt the server has not taken yet.
+	// Pending counts undelivered messages in the local inbox (queued, or
+	// leased to a hook that has not confirmed them); Unacked, deliveries
+	// and undelivered reports the server has not taken yet.
 	Pending int `json:"pending"`
 	Unacked int `json:"unacked"`
 	// Held counts messages from people the user has not accepted (B7);
@@ -224,11 +254,7 @@ func (b *Bus) Recheck() {
 	}
 }
 
-// Pending returns the session's undelivered messages and marks them
-// delivered; receipts for messages from the server are queued and sent in
-// a batch. It reads only the local inbox. Of several concurrent callers
-// for one session, each message goes to exactly one. agent narrows the
-// session when two harnesses share an id ("" matches any).
+// Pending is Take without a bound.
 func (b *Bus) Pending(ctx context.Context, session, agent string) ([]busproto.Envelope, error) {
 	return b.Take(ctx, session, agent, Limit{})
 }
@@ -248,31 +274,61 @@ type Limit struct {
 	Size func(busproto.Envelope) int
 }
 
-// Take is Pending with a bound: it marks delivered and returns the
-// session's oldest undelivered messages that fit in lim. The rest stay
-// queued for the next call, in order.
+// Take leases the session's oldest queued messages that fit in lim to the
+// caller, a hook, and returns them oldest first, each with its Attempt.
+// The caller confirms them (Confirm) once it has printed them; a lease not
+// confirmed within Config.Lease ends, and the messages are offered to the
+// session's next Take (see the package doc). It reads only the local
+// inbox. Of several concurrent callers for one session each message goes
+// to exactly one, and while one holds a lease the others get nothing, so
+// the session sees its messages in order. agent narrows the session when
+// two harnesses share an id ("" matches any).
 func (b *Bus) Take(ctx context.Context, session, agent string, lim Limit) ([]busproto.Envelope, error) {
 	if session == "" {
 		return nil, errors.New("pending: a session id is required")
 	}
-	out, err := b.st.take(ctx, session, agent, b.cfg.Now(), lim)
-	if err != nil {
-		return nil, err
-	}
-	if len(out) > 0 && !b.Local() {
-		select {
-		case b.ackWake <- struct{}{}:
-		default:
-		}
-	}
-	return out, nil
+	return b.st.take(ctx, session, agent, b.cfg.Now(), lim, b.cfg.Lease, b.cfg.MaxAttempts)
 }
 
-// Requeue undoes Pending for messages its caller never received (the
-// hook left before the answer reached it): they are undelivered again
-// and owe no receipt, so the session's next Pending returns them.
+// Confirm records that a hook of the session printed these messages
+// (taken by Take): they are delivered, and receipts for messages from the
+// server are queued and sent in a batch.
+func (b *Bus) Confirm(ctx context.Context, session string, ids []string) error {
+	if session == "" {
+		return errors.New("confirm: a session id is required")
+	}
+	n, err := b.st.confirm(ctx, session, ids, b.cfg.Now())
+	if err == nil && n > 0 && !b.Local() {
+		b.kickAcks()
+	}
+	return err
+}
+
+// Requeue undoes Take for messages its caller never received (the hook
+// left before the answer reached it): they are queued again, and the
+// lease does not count as an attempt, so the session's next Take returns
+// them unmarked.
 func (b *Bus) Requeue(ctx context.Context, ids []string) error {
 	return b.st.untake(ctx, ids)
+}
+
+// expireLeases settles the leases that ended (see store.expireLeases);
+// the loop runs it on every presence tick, so a message reaches
+// undelivered (and its sender learns it) without another hook.
+func (b *Bus) expireLeases(ctx context.Context) {
+	gone, err := expireLeases(ctx, b.st.db, b.cfg.Now(), b.cfg.Lease, b.cfg.MaxAttempts)
+	if err != nil {
+		if ctx.Err() == nil {
+			b.log.Warn("devicebus: leases", "err", err)
+		}
+		return
+	}
+	if gone > 0 {
+		b.log.Warn("devicebus: messages undelivered: no hook confirmed printing them", "count", gone, "attempts", b.cfg.MaxAttempts)
+		if !b.Local() {
+			b.kickAcks()
+		}
+	}
 }
 
 // Held returns the senders whose messages wait for the user's acceptance
