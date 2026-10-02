@@ -295,8 +295,9 @@ func TestBusEndToEndServer(t *testing.T) {
 
 // writeCommitSession writes a synthetic Claude Code session that commits
 // on branchA (a successful git commit tool call), then switches to
-// branchB; its last record is at last.
-func writeCommitSession(t *testing.T, projects, id, cwd, branchA, branchB, sha string, last time.Time) {
+// branchB; its last record is at last. Its first prompt, and so its
+// title, is prompt.
+func writeCommitSession(t *testing.T, projects, id, cwd, branchA, branchB, sha, prompt string, last time.Time) {
 	t.Helper()
 	dir := filepath.Join(projects, strings.ReplaceAll(cwd, "/", "-"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -313,7 +314,7 @@ func writeCommitSession(t *testing.T, projects, id, cwd, branchA, branchB, sha s
 			par, cwd, id, branch, typ, message, extra, p+uuid, ts(back))
 	}
 	lines := []string{
-		rec("-u1", "", branchA, "user", `{"role":"user","content":"add a cursor to the list endpoint"}`, "", 4*time.Minute),
+		rec("-u1", "", branchA, "user", `{"role":"user","content":`+string(must(json.Marshal(prompt)))+`}`, "", 4*time.Minute),
 		rec("-a1", "-u1", branchA, "assistant", `{"id":"msg_`+p+`1","type":"message","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu_`+p+`","name":"Bash","input":{"command":"git commit -am \"add cursor\""}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`, `"requestId":"req_`+p+`1",`, 3*time.Minute),
 		rec("-u2", "-a1", branchA, "user", `{"role":"user","content":[{"tool_use_id":"toolu_`+p+`","type":"tool_result","content":"[`+branchA+` `+sha+`] add cursor\n 1 file changed, 4 insertions(+)","is_error":false}]}`, `"toolUseResult":{"stdout":"[`+branchA+` `+sha+`] add cursor","stderr":"","interrupted":false},`, 3*time.Minute-time.Second),
 		rec("-u3", "-u2", branchB, "user", `{"role":"user","content":"now start the docs on `+branchB+`"}`, "", time.Minute),
@@ -340,8 +341,10 @@ func TestBusHistoryToPresence(t *testing.T) {
 		endedSH = "5d6e7f8"
 	)
 	writeClaudeSession(t, projects, e2eA, repo, "review the list endpoint")
-	writeCommitSession(t, projects, moved, repo, "feat-a", "feat-b", movedSH, time.Now().Add(-30*time.Second))
-	writeCommitSession(t, projects, ended, repo, "feat-a", "feat-a", endedSH, time.Now().Add(-3*time.Hour))
+	// A title with spaces, quotes, field look-alikes and Unicode.
+	const title = `fix "the" list endpoint — café ☕  agent: codex  session: x`
+	writeCommitSession(t, projects, moved, repo, "feat-a", "feat-b", movedSH, title, time.Now().Add(-30*time.Second))
+	writeCommitSession(t, projects, ended, repo, "feat-a", "feat-a", endedSH, "add a cursor to the list endpoint", time.Now().Add(-3*time.Hour))
 	index := filepath.Join(t.TempDir(), "index.db")
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "flopwire", "config.json"))
 	t.Setenv("FLOPWIRE_INDEX", index)
@@ -351,13 +354,15 @@ func TestBusHistoryToPresence(t *testing.T) {
 	startAgent(t, home, sock, "--no-sync")
 	waitPeer(t, sock, e2eA, moved)
 
-	// 1. History: who committed on feat-a in this repo?
+	// 1. History: who committed on feat-a in this repo? sessions answers
+	// JSON by default; the match is by field name: session_id and
+	// digest.commits.
 	r, err := openRetriever(false, index)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.close()
-	o, err := parseArgs("sessions", []string{"--repo", repo, "--branch", "feat-a", "--json"})
+	o, err := parseArgs("sessions", []string{"--repo", repo, "--branch", "feat-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,32 +370,68 @@ func TestBusHistoryToPresence(t *testing.T) {
 	if err := runTool(t.Context(), r, o, &hist, format.Style{}, selfCLI); err != nil {
 		t.Fatal(err)
 	}
-	var ss format.Sessions
-	if err := json.Unmarshal(hist.Bytes(), &ss); err != nil {
-		t.Fatal(err)
+	type histSession struct {
+		SessionID string   `json:"session_id"`
+		Title     string   `json:"title"`
+		Branches  []string `json:"branches"`
+		Live      bool     `json:"live"`
+		Digest    struct {
+			Commits []string `json:"commits"`
+		} `json:"digest"`
 	}
-	byID := map[string]format.ConversationInfo{}
-	for _, c := range ss.Sessions {
-		byID[c.SessionID] = c
+	var hj struct {
+		Kind     string        `json:"kind"`
+		Sessions []histSession `json:"sessions"`
+		HasMore  *bool         `json:"has_more"`
 	}
-	m, e := byID[moved], byID[ended]
-	if m.SessionID == "" || e.SessionID == "" || len(byID) != 2 {
+	if err := json.Unmarshal(hist.Bytes(), &hj); err != nil || hj.Kind != "sessions" || hj.HasMore == nil || *hj.HasMore {
+		t.Fatalf("history is not the sessions JSON: %v\n%s", err, hist.String())
+	}
+	bySHA := func(sha string) histSession {
+		for _, c := range hj.Sessions {
+			if slices.Contains(c.Digest.Commits, sha) {
+				return c
+			}
+		}
+		t.Fatalf("no session in history committed %s:\n%s", sha, hist.String())
+		return histSession{}
+	}
+	m, e := bySHA(movedSH), bySHA(endedSH)
+	if len(hj.Sessions) != 2 || m.SessionID != moved || e.SessionID != ended {
 		t.Fatalf("history on feat-a: %s", hist.String())
 	}
-	if m.Digest == nil || !slices.Contains(m.Digest.Commits, movedSH) || !slices.Equal(m.Branches, []string{"feat-a", "feat-b"}) || !m.Live {
+	if m.Title != title || !slices.Equal(m.Branches, []string{"feat-a", "feat-b"}) || !m.Live {
 		t.Fatalf("moved session in history: %+v", m)
 	}
-	if e.Digest == nil || !slices.Contains(e.Digest.Commits, endedSH) || e.Live {
+	if e.Live {
 		t.Fatalf("ended session in history: %+v", e)
 	}
+	// The MCP tool answers the same JSON by default.
+	text, err := mcpCall(t.Context(), r, "flopwire_sessions", map[string]any{"repo": repo, "branch": "feat-a"})
+	var mj struct {
+		Sessions []histSession `json:"sessions"`
+	}
+	if err != nil || json.Unmarshal([]byte(text), &mj) != nil || len(mj.Sessions) != 2 || !slices.ContainsFunc(mj.Sessions, func(c histSession) bool {
+		return c.SessionID == moved && slices.Contains(c.Digest.Commits, movedSH) && c.Title == title
+	}) {
+		t.Fatalf("flopwire_sessions: %s %v", text, err)
+	}
 
-	// 2. Presence: the same full id is live, on its current branch.
+	// 2. Presence: peers answers JSON by default; the session field of its
+	// row is the same full id, live, on its current branch.
 	out, stderr, err := busJSON(t, sock, e2eA, "peers", "--session", m.SessionID)
-	var pj peersJSON
+	var pj struct {
+		Peers []struct {
+			Session string `json:"session"`
+			Branch  string `json:"branch"`
+			Repo    string `json:"repo"`
+			Title   string `json:"title"`
+		} `json:"peers"`
+	}
 	if err != nil || json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 {
 		t.Fatalf("peers --session %s: %q %q %v", moved, out, stderr, err)
 	}
-	if p := pj.Peers[0]; p.Session != moved || p.Branch != "feat-b" || p.Repo != repo {
+	if p := pj.Peers[0]; p.Session != m.SessionID || p.Branch != "feat-b" || p.Repo != repo || p.Title != m.Title {
 		t.Fatalf("presence row: %+v", p)
 	}
 	// A peer filter by its branch from history would miss it: the
@@ -421,6 +462,13 @@ func TestBusHistoryToPresence(t *testing.T) {
 }
 
 // busJSON runs a bus verb in the default JSON mode as session.
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 func busJSON(t *testing.T, sock, session string, args ...string) (string, string, error) {
 	t.Helper()
 	asCaller(t, &local.Caller{Agent: transcript.AgentClaude, SessionID: session, Rule: "test"})
