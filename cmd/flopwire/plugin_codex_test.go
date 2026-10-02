@@ -139,17 +139,29 @@ func TestCodexPluginHooksWithoutBinary(t *testing.T) {
 	testHooksWithoutBinary(t, filepath.Join(codexPluginDir, "hooks", "hooks.json"))
 }
 
+// codexMCPEnvVars are the variables that choose where flopwire finds its
+// config (and so the agent's socket) and its index. Codex starts an MCP
+// server with only HOME, PATH, USER and a few more, so without env_vars a
+// user who sets one of these gets an MCP server that looks in another
+// place than the agent and the hooks: agent_not_running and "no index
+// yet" for good.
+var codexMCPEnvVars = []string{"FLOPWIRE_CONFIG", "FLOPWIRE_INDEX", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"}
+
 func TestCodexPluginMCP(t *testing.T) {
 	var m struct {
 		MCPServers map[string]struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			EnvVars []string `json:"env_vars"`
 		} `json:"mcpServers"`
 	}
 	readJSONFile(t, filepath.Join(codexPluginDir, ".mcp.json"), &m)
 	s, ok := m.MCPServers["flopwire"]
 	if len(m.MCPServers) != 1 || !ok || s.Command != "flopwire" || !slices.Equal(s.Args, []string{"mcp"}) {
 		t.Fatalf(".mcp.json: want one server flopwire = flopwire mcp; got %+v", m)
+	}
+	if got := slices.Sorted(slices.Values(s.EnvVars)); !slices.Equal(got, codexMCPEnvVars) {
+		t.Errorf(".mcp.json env_vars %q, want %q: Codex passes an MCP server no other variables", got, codexMCPEnvVars)
 	}
 }
 
