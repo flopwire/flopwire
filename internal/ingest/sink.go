@@ -53,7 +53,16 @@ type sink struct {
 	kept map[uuid.UUID]struct{}
 	// dirty marks the conversations whose rows a flush replaced. Their
 	// digests are recounted once, when the parse completes, not per batch.
-	dirty      map[string]bool
+	dirty map[string]bool
+	// held marks the sessions whose natural-key locks the flush's
+	// transaction holds (lockSession); nil outside a flush.
+	held map[string]bool
+	// parentless marks the sessions a committed flush found stored
+	// without a parent and given none: later flushes need not lock a
+	// parent for them (lockFlushSQL). Only another source writing the
+	// same session can give it a parent meanwhile; refreshDigest then
+	// locks that parent late, as before lockFlushSQL.
+	parentless map[string]bool
 	msgs       []*transcript.Message
 	tombstoned bool // some session of this source is deleted
 	written    int
@@ -109,6 +118,8 @@ func (s *sink) flush() error {
 			return err
 		}
 	}
+	defer func() { s.held = nil }()
+	var learned map[string]bool // sessions found with (false) or without a parent
 	err := pgx.BeginTxFunc(s.ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if err := s.checkMasks(tx); err != nil {
 			return err
@@ -125,6 +136,44 @@ func (s *sink) flush() error {
 			ids = append(ids, id)
 		}
 		slices.Sort(ids) // lock order
+		// The session locks first, then the stored conversations with
+		// their parents in store.LockConversationsSQL's order: a
+		// subagent's digest refresh updates its parent's count, and a
+		// hide or deletion of the parent's tree locks the parent and its
+		// subagents in that order. The upserts then hold every row they
+		// lock already. Sessions an earlier flush of this parse found
+		// without a parent need no such lock.
+		s.held = map[string]bool{}
+		var parents []string
+		for _, id := range ids {
+			if err := s.lockSession(tx, id, true); err != nil {
+				return err
+			}
+			if c := s.convs[id]; c != nil && c.ParentSessionID != "" && c.ParentSessionID != id {
+				parents = append(parents, c.ParentSessionID)
+			}
+		}
+		learned = nil
+		if len(parents) > 0 || slices.ContainsFunc(ids, func(id string) bool { return !s.parentless[id] }) {
+			rows, err := tx.Query(s.ctx, lockFlushSQL, s.src.deviceID, s.src.agent, ids, parents)
+			if err != nil {
+				return err
+			}
+			stored := map[string]bool{}
+			var session string
+			var parented bool
+			if _, err := pgx.ForEachRow(rows, []any{&session, &parented}, func() error {
+				stored[session] = parented
+				return nil
+			}); err != nil {
+				return err
+			}
+			learned = map[string]bool{}
+			for _, id := range ids {
+				c := s.convs[id]
+				learned[id] = !stored[id] && (c == nil || c.ParentSessionID == "" || c.ParentSessionID == id)
+			}
+		}
 		for _, id := range ids {
 			if _, err := s.conversation(tx, id, true); err != nil {
 				return err
@@ -168,6 +217,12 @@ func (s *sink) flush() error {
 	})
 	if err != nil {
 		return err
+	}
+	if learned != nil && s.parentless == nil {
+		s.parentless = map[string]bool{}
+	}
+	for id, none := range learned {
+		s.parentless[id] = none
 	}
 	s.written += len(s.msgs)
 	s.msgs = s.msgs[:0]
@@ -262,16 +317,7 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	if c != nil && create && c.ParentSessionID != sessionID {
 		parent = c.ParentSessionID
 	}
-	lock := func(session string) error {
-		_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(s.src.userID, s.src.agent, session))
-		return err
-	}
-	if parent != "" { // a deletion locks the parent before its subagents
-		if err := lock(parent); err != nil {
-			return "", err
-		}
-	}
-	if err := lock(sessionID); err != nil {
+	if err := s.lockSession(tx, sessionID, create); err != nil {
 		return "", err
 	}
 	var dead bool
@@ -374,6 +420,38 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	s.convIDs[sessionID] = id
 	return id, nil
 }
+
+// lockSession takes the session's natural-key lock (store
+// ConversationLockKey), after its parent's when the pending record names
+// one and create is set: a deletion locks the parent before its
+// subagents. A session the flush locked already (held) is skipped.
+func (s *sink) lockSession(tx pgx.Tx, sessionID string, create bool) error {
+	if s.held[sessionID] {
+		return nil
+	}
+	keys := []string{sessionID}
+	if c := s.convs[sessionID]; c != nil && create && c.ParentSessionID != "" && c.ParentSessionID != sessionID {
+		keys = []string{c.ParentSessionID, sessionID}
+	}
+	for _, k := range keys {
+		if _, err := tx.Exec(s.ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(s.src.userID, s.src.agent, k)); err != nil {
+			return err
+		}
+	}
+	if s.held != nil {
+		s.held[sessionID] = true
+	}
+	return nil
+}
+
+// lockFlushSQL locks the stored conversations of sessions $3 on device $1
+// and agent $2, their stored parents, and the parents $4 the pending
+// records name, in store.LockConversationsSQL's order, and returns whether
+// each has a stored parent. NO KEY UPDATE is the lock the upsert and the
+// parent count update take.
+const lockFlushSQL = `SELECT session_id,parent_native_session_id IS NOT NULL FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=ANY($3::text[]||$4::text[]||ARRAY(
+		SELECT parent_native_session_id FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=ANY($3::text[]) AND parent_native_session_id IS NOT NULL))
+	ORDER BY session_id COLLATE "C",id FOR NO KEY UPDATE`
 
 // otherCwds is the conversation's other directories, as stored.
 func otherCwds(c *transcript.Conversation) []string {
