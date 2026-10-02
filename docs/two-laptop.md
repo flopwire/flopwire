@@ -271,7 +271,7 @@ A hook never fails because of the agent. See `docs/agent.md` for details.
    `0b7e2c1a/28672:1`:
 
    ```sh
-   flopwire read --server 0b7e2c1a/28672:1 -B 2
+   flopwire read --server 0b7e2c1a/28672:1 --messages-before 2
    ```
 
 5. On laptop A, run the same search with `--device laptop-b` for a
