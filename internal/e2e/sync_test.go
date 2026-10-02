@@ -134,7 +134,7 @@ func TestTwoDeviceSync(t *testing.T) {
 			t.Fatalf("device 2 sees %d hits of device 1's line (all hits %+v)", len(got), hits)
 		}
 		// Widen the hit from device 2: context over device 1's rows.
-		out, err := d2.cli("read", "--server", "--json", "-B", "2", "-A", "0", hits[0].MessageID)
+		out, err := d2.cli("read", "--server", "--json", "--messages-before", "2", "--messages-after", "0", hits[0].MessageID)
 		if err != nil {
 			t.Fatal(err)
 		}

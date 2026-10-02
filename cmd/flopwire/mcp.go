@@ -198,7 +198,7 @@ Workflow: flopwire_grep for exact strings and regexes (like rg: error text, iden
 
 Layout: grep and search group hits under one header per session: "## SESSION agent=claude ended=DATE (or live=4m) repo=NAME branch=B commits=N failed=N intent=\"...\""; a value with a space, quote or = is a JSON string. Under it each hit is "ORDINAL:LINE kind/tool: text"; its address for flopwire_read is SESSION/ORDINAL:LINE. no_heading=true prints one line per hit with the full address instead. flopwire_read's header has the same form. flopwire_read address=SESSION outline=true shows a session's digest and skeleton (every prompt, every tool call as tool(args)) without tool output: read it before reading messages one by one.
 
-Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its start), a message id, a transcript /path.jsonl:LINE, or "self" (your own session). Ordinals are stable ids, not positions: use before/after to step through a session.
+Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its start), a message id, a transcript /path.jsonl:LINE, or "self" (your own session). Ordinals are stable ids, not positions: use messages_before/messages_after to step through a session.
 
 grep, search and read answer text (format="json": compact JSON); flopwire_sessions answers JSON (format="text": rows). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note, never an error. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
 
@@ -326,17 +326,17 @@ func mcpTools() []any {
 			map[string]any{"query": prop("string", "words and \"quoted phrases\"")}, "query"),
 		mcpTool("flopwire_sessions", "List sessions", `List past coding-agent sessions, newest activity first, filtered by repo, branch, agent, time or a glob, as JSON: {"kind":"sessions","sessions":[{"session_id" (full),"agent","user","repo","branches","live","last_activity_at","messages","title","commits","files","failed",…}],"has_more","next_cursor"}; detail=true adds the whole digest. Use it to see who worked where, when and on what. Pass session_id to flopwire_read with outline=true for its digest and skeleton, as session= to flopwire_grep and flopwire_search to search inside it, or to flopwire_peers session= to see whether it is live. has_more=true: pass next_cursor as cursor; a session active again during a walk moves (newest first it may be skipped, oldest first shown twice).`, "sessions",
 			map[string]any{"glob": prop("string", "matches session id, title, repo or cwd; * and ?; a bare word matches anywhere")}),
-		mcpTool("flopwire_read", "Read a message", "Read the message at an address that flopwire_grep, flopwire_search or flopwire_sessions printed, with its neighbours in conversation order. The header is # FULL_ID agent=A repo=PATH branch=B start=T active=T msgs=N title=\"…\". The focus text is numbered by line; long text is cut at max_chars and says which line_offset reads on; the hints name the before/after call for more messages. outline=true instead shows the session's digest and skeleton: every prompt, every tool call as tool(args) with failed calls and spawned subagents marked, no tool output; limit sets the page size and the footer prints the cursor that reads on.", "read",
+		mcpTool("flopwire_read", "Read a message", "Read the message at an address that flopwire_grep, flopwire_search or flopwire_sessions printed, with its neighbours in conversation order. The header is # FULL_ID agent=A repo=PATH branch=B start=T active=T msgs=N title=\"…\". The focus text is numbered by line; long text is cut at max_chars and says which line_offset reads on; the hints name the messages_before/messages_after call for more messages. outline=true instead shows the session's digest and skeleton: every prompt, every tool call as tool(args) with failed calls and spawned subagents marked, no tool output; limit sets the page size and the footer prints the cursor that reads on.", "read",
 			map[string]any{
-				"address":     prop("string", "SESSION/ORDINAL[:LINE], SESSION, a message id, or /path/transcript.jsonl:LINE"),
-				"before":      prop("integer", "messages before (default 0)"),
-				"after":       prop("integer", "messages after (default 0; a SESSION address shows 20 messages)"),
-				"max_chars":   prop("integer", "bytes of the focus text (default 4000, at most 24000; neighbours get a quarter)"),
-				"line_offset": prop("integer", "first line of the focus text to show"),
-				"raw":         prop("boolean", "the transcript record's raw bytes instead, whatever format says"),
-				"outline":     prop("boolean", "the session's digest and skeleton (prompts and tool calls, no output) instead of messages"),
-				"cursor":      prop("string", "outline: where the next page starts; the footer prints it"),
-				"limit":       prop("integer", "outline: entries per page (default 200, max 2000)"),
+				"address":         prop("string", "SESSION/ORDINAL[:LINE], SESSION, a message id, or /path/transcript.jsonl:LINE"),
+				"messages_before": prop("integer", "whole messages before the focus, in conversation order; a tool call and its result are two messages (default 0)"),
+				"messages_after":  prop("integer", "whole messages after the focus, in conversation order; a tool call and its result are two messages (default 0; a SESSION address shows 20)"),
+				"max_chars":       prop("integer", "bytes of the focus text (default 4000, at most 24000; neighbours get a quarter)"),
+				"line_offset":     prop("integer", "first line of the focus text to show"),
+				"raw":             prop("boolean", "the transcript record's raw bytes instead, whatever format says"),
+				"outline":         prop("boolean", "the session's digest and skeleton (prompts and tool calls, no output) instead of messages"),
+				"cursor":          prop("string", "outline: where the next page starts; the footer prints it"),
+				"limit":           prop("integer", "outline: entries per page (default 200, max 2000)"),
 			}, "address"),
 	}, mcpBusTools()...)
 }
@@ -348,8 +348,11 @@ var mcpVerbs = map[string]string{"flopwire_grep": "grep", "flopwire_search": "se
 var mcpArgNames = map[string]map[string]string{
 	"grep": {"fixed_strings": "fixed-strings", "ignore_case": "ignore-case", "case_sensitive": "case-sensitive", "word": "word-regexp",
 		"before": "before-context", "after": "after-context", "context": "context", "max_per_session": "max-count"},
-	"read": {"before": "before-context", "after": "after-context"},
 }
+
+// readLineArgs are grep's line-context arguments, which flopwire_read
+// does not take: its neighbours are whole messages.
+var readLineArgs = map[string]bool{"before": true, "after": true, "context": true}
 
 // mcpOpts turns MCP arguments into the options the CLI parses, so both
 // run the same code.
@@ -394,6 +397,9 @@ func mcpOpts(name string, args map[string]any) (*opts, bool, error) {
 				return nil, false, fmt.Errorf("output_mode: want content, sessions or count, not %q", s)
 			}
 			continue
+		}
+		if verb == "read" && readLineArgs[k] {
+			return nil, false, fmt.Errorf("%s: unknown argument %q; use messages_before and messages_after, which count whole messages, not lines (a tool call and its result are two messages; line_offset for lines of the focus)", name, k)
 		}
 		opt := strings.ReplaceAll(k, "_", "-")
 		if m, ok := mcpArgNames[verb][k]; ok {

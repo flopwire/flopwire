@@ -81,7 +81,7 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"sessions_text", nil, []string{"sessions", "--text"}},
 		{"sessions_glob", nil, []string{"sessions", "flak", "--agent", "claude"}},
 		{"read_session", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000001", "--max-chars", "400"}},
-		{"read_path", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "-B", "1", "-A", "1"}},
+		{"read_path", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "--messages-before", "1", "--messages-after", "1"}},
 		{"raw_provenance", nil, []string{"raw", "1", "1", "236", "344"}},
 		{"grep_flat", nil, []string{"grep", "retr", "--limit", "3", "--no-heading"}},
 		{"grep_only_matching", nil, []string{"grep", "-o", `retr\w*`, "--limit", "3"}},
@@ -100,7 +100,7 @@ func TestLocalCLIGolden(t *testing.T) {
 		// TestSessionsJSONKeepsMainFields compares field for field.
 		{"grep_files_json", nil, []string{"grep", "-l", "retr", "--json"}},
 		{"search_json", nil, []string{"search", "exponential backoff", "--limit", "3", "--json"}},
-		{"read_json", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "-B", "1", "-A", "1", "--json"}},
+		{"read_json", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "--messages-before", "1", "--messages-after", "1", "--json"}},
 		{"read_outline_json", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline", "--json"}},
 		{"sessions_json", nil, []string{"sessions", "--branch", "fix/*", "--json", "--detail"}},
 	}

@@ -216,7 +216,7 @@ a few KB.
 
 ```sh
 flopwire read 0b7e2c1a/28672:14
-flopwire read 0b7e2c1a/28672 -B 2 -A 2
+flopwire read 0b7e2c1a/28672 --messages-before 2 --messages-after 2
 flopwire read 0b7e2c1a
 ```
 
@@ -229,8 +229,17 @@ flopwire read 0b7e2c1a
 - `--max-chars` (default 4000) bounds the focus text. Neighbours get a
   quarter of it. Cut text says which lines it shows and how to read on
   with `--line-offset`.
-- `-B/-A/-C N` add neighbouring messages. A session address shows its
-  first 20 messages.
+- `--messages-before N` and `--messages-after N` (MCP `messages_before`
+  and `messages_after`) add whole messages before and after the focus, in
+  conversation order. A tool call and its result are two messages. A
+  session address shows its first 20 messages. `read` has no line
+  context: `-A`, `-B`, `-C` and their long forms are usage errors that
+  name these flags. Use `--line-offset` for lines inside the focus.
+- Under the output budget (MCP, or `--max-bytes`), `read` keeps the focus
+  and the nearest neighbours. When it leaves out neighbours it fetched,
+  the hint says so and gives the call that reads the rest:
+  `[later messages: showing 2 of 150 messages after; output budget of
+  24000 bytes reached; next: flopwire_read address=X messages_after=148]`.
 - `--outline` prints the session's full digest, then its skeleton: every
   user prompt (trimmed to one line, with its time), and every tool call
   as `tool(args summary)` on an indented line with its address. A failed

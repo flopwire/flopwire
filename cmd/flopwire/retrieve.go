@@ -154,9 +154,11 @@ var flagDefs = []flagDef{
 	{"count", 'c', fBool, "g"},
 	{"line-number", 'n', fBool, "g"}, // accepted, a no-op: lines are always numbered
 	{"recursive", 'r', fBool, "g"},   // accepted, a no-op
-	{"after-context", 'A', fInt, "gr"},
-	{"before-context", 'B', fInt, "gr"},
-	{"context", 'C', fInt, "gr"},
+	{"after-context", 'A', fInt, "g"},
+	{"before-context", 'B', fInt, "g"},
+	{"context", 'C', fInt, "g"},
+	{"messages-before", 0, fInt, "r"},
+	{"messages-after", 0, fInt, "r"},
 	{"max-count", 'm', fInt, "g"},
 	{"limit", 0, fInt, "gslrpi"},
 	{"offset", 0, fInt, "gs"},
@@ -337,8 +339,17 @@ func parseArgs(verb string, args []string) (*opts, error) {
 	return o, nil
 }
 
+// readLineFlags are grep's line-context flags, which read does not take:
+// read's neighbours are whole messages.
+var readLineFlags = map[string]string{"-A": "--messages-after N", "--after-context": "--messages-after N",
+	"-B": "--messages-before N", "--before-context": "--messages-before N",
+	"-C": "--messages-before N --messages-after N", "--context": "--messages-before N --messages-after N"}
+
 // unknownFlag is one line naming the nearest flag the tool takes.
 func unknownFlag(verb, flag string) error {
+	if fix, ok := readLineFlags[flag]; ok && verb == "read" {
+		return fmt.Errorf("read: %s is grep's line context; read counts whole messages, not lines: use %s (a tool call and its result are two messages; --line-offset N for lines of the focus)", flag, fix)
+	}
 	name := strings.TrimLeft(flag, "-")
 	v := verbLetter(verb)
 	best, bestD := "", 1<<30
@@ -665,14 +676,13 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		q := format.ReadQuery{Address: o.pos[0], Outline: o.on["outline"], Cursor: o.vals["cursor"], Limit: f.Limit, Self: self}
 		if (q.Cursor != "" || q.Limit > 0) && !q.Outline {
-			return badArg(errors.New("--cursor and --limit page an outline; add --outline, or use -A/-B to step through messages"))
+			step := "--messages-before/--messages-after"
+			if st.MCP {
+				step = "messages_before/messages_after"
+			}
+			return badArg(fmt.Errorf("--cursor and --limit page an outline; add --outline, or use %s to step through messages", step))
 		}
-		c, err := o.int("context")
-		if err != nil {
-			return badArg(err)
-		}
-		q.Before, q.After = c, c
-		for name, dst := range map[string]*int{"before-context": &q.Before, "after-context": &q.After, "max-chars": &q.MaxChars, "line-offset": &q.LineOffset} {
+		for name, dst := range map[string]*int{"messages-before": &q.Before, "messages-after": &q.After, "max-chars": &q.MaxChars, "line-offset": &q.LineOffset} {
 			if _, ok := o.vals[name]; ok {
 				if *dst, err = o.int(name); err != nil {
 					return badArg(err)
@@ -919,15 +929,14 @@ Source   the local index; --server for the team server; --index PATH
 	"read": `flopwire read — read a message (and its neighbours) at an address from grep, search or sessions
 
   flopwire read 0b7e2c1a/28672:14          a message, from line 14's neighbourhood
-  flopwire read 0b7e2c1a/28672 -B 2 -A 2   with two messages either side
+  flopwire read 0b7e2c1a/28672 --messages-before 2 --messages-after 2   two messages either side
   flopwire read 0b7e2c1a --outline         the session's digest and skeleton
 
 ADDRESS is SESSION/ORDINAL[:LINE], SESSION (any unique prefix of the id), a message
 id, /path/to/transcript.jsonl:LINE, or self (the calling agent's session). The header is
 grep's form: # FULL_ID agent=A repo=PATH branch=B start=T active=T msgs=N title="..."
-(times UTC). The focus text
-prints with line numbers; long text is cut at --max-chars and says how to read on.
---max-bytes N keeps the focus and the nearest neighbours within N bytes.
+(times UTC). The focus prints with line numbers; long text is cut at --max-chars and says
+how to read on. --max-bytes N keeps the focus and nearest neighbours, and says what it cut.
 
 --outline prints the session's digest (intent, repos, branches, duration, messages by
 kind, subagents, commands, failed calls, tools, files edited, PRs, commits, issues,
@@ -935,9 +944,10 @@ tokens, last reply) and its skeleton: every prompt, every tool call as tool(args
 failed calls and spawned subagents marked, no tool output. --limit (200) sets the page
 size; the footer prints the --cursor that reads on.
 
-Output   -B N / -A N / -C N messages before/after  --max-chars N (4000; neighbours
-         get a quarter)  --line-offset N (first line of the focus)  --raw (the
-         transcript record's bytes)  --outline [--cursor C --limit N]  --json  (--text)
+Messages --messages-before N / --messages-after N: whole messages before/after the focus, in
+         conversation order; a tool call and its result are two messages (SESSION: 20 after)
+Output   --max-chars N (4000; neighbours get a quarter)  --line-offset N (first line of the
+         focus)  --raw (the record's bytes)  --outline [--cursor C --limit N]  --json (--text)
 Rows     --include-superseded  --include-branches
 Source   the local index; --server for the team server; --index PATH
 `,

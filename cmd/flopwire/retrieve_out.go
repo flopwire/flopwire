@@ -328,21 +328,18 @@ func boundRead(cx *format.Context, budget int, mcp bool) readJSON {
 	set()
 	cp.MoreBefore = cx.MoreBefore || lo > 0
 	cp.MoreAfter = cx.MoreAfter || hi < len(all)
-	more := func(addr, dir, flag string) string {
-		if mcp {
-			return fmt.Sprintf("flopwire_read address=%s %s=10", addr, dir)
-		}
-		return fmt.Sprintf("flopwire read %s %s 10", addr, flag)
-	}
 	if lo > 0 || hi < len(all) {
+		// Each side the budget cut: how many of the fetched neighbours
+		// show, and the call that reads the rest from the last one shown.
+		st := format.Style{MCP: mcp}
 		var hints []string
 		if lo > 0 {
-			hints = append(hints, more(all[lo].Address, "before", "-B"))
+			hints = append(hints, fmt.Sprintf("showing %d of %d messages before, next: %s", at-lo, at, st.More(all[lo].Address, "before", lo)))
 		}
 		if hi < len(all) {
-			hints = append(hints, more(all[hi-1].Address, "after", "-A"))
+			hints = append(hints, fmt.Sprintf("showing %d of %d messages after, next: %s", hi-1-at, len(all)-1-at, st.More(all[hi-1].Address, "after", len(all)-hi)))
 		}
-		out.Hint = fmt.Sprintf("output budget of %d bytes reached; more: %s", budget, strings.Join(hints, "; "))
+		out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s", budget, strings.Join(hints, "; "))
 	}
 	if len(cp.Messages) == 1 && !fitsBudget(out, room(budget)) {
 		m := cp.Messages[0]
@@ -394,7 +391,7 @@ func retrievalErr(verb string, err error, mcp bool) *busErr {
 		"grep":     {"flopwire grep 'exit status 1' --since 7d", `flopwire_grep pattern="exit status 1" since="7d"`},
 		"search":   {"flopwire search exponential backoff", `flopwire_search query="exponential backoff"`},
 		"sessions": {"flopwire sessions --repo . --branch 'feat/*'", `flopwire_sessions repo="." branch="feat/*"`},
-		"read":     {"flopwire read 0b7e2c1a/28672 -A 2", `flopwire_read address="0b7e2c1a/28672" after=2`},
+		"read":     {"flopwire read 0b7e2c1a/28672 --messages-after 2", `flopwire_read address="0b7e2c1a/28672" messages_after=2`},
 	}[verb]
 	example := ex[0]
 	help := "flopwire " + verb + " --help"

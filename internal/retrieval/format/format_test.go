@@ -257,13 +257,13 @@ func TestReadBudgetKeepsFocus(t *testing.T) {
 		cx.Messages = append(cx.Messages, Message{ID: fmt.Sprintf("m%d", i), Address: fmt.Sprintf("sess/%d", i), Kind: "assistant", Text: strings.Repeat("z", 400)})
 	}
 	var b strings.Builder
-	if err := WriteRead(&b, cx, Style{MCP: true, Budget: 1500}); err != nil {
+	if err := WriteRead(&b, cx, Style{MCP: true, Budget: 1700}); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
 	if !strings.Contains(out, ">> sess/5") || strings.Contains(out, "sess/0 ") || strings.Contains(out, "sess/10 ") ||
-		!regexp.MustCompile(`\[earlier messages: flopwire_read address=sess/[34] before=10\]`).MatchString(out) ||
-		!regexp.MustCompile(`\[later messages: flopwire_read address=sess/[67] after=10\]`).MatchString(out) || strings.Contains(out, "sess/0\n") {
+		!regexp.MustCompile(`\[earlier messages: showing [12] of 5 messages before; output budget of 1700 bytes reached; next: flopwire_read address=sess/([34]) messages_before=([34])\]`).MatchString(out) ||
+		!regexp.MustCompile(`\[later messages: showing [12] of 5 messages after; output budget of 1700 bytes reached; next: flopwire_read address=sess/([67]) messages_after=([34])\]`).MatchString(out) || strings.Contains(out, "sess/0\n") {
 		t.Fatalf("read under a budget:\n%s", out)
 	}
 }
@@ -308,5 +308,63 @@ func TestReadBudgetCountsLinePrefixes(t *testing.T) {
 		if next != to+1 || !strings.Contains(out, fmt.Sprintf("%5d  ", to)) {
 			t.Fatalf("%s: shows to %d, reads on at %d", c.name, to, next)
 		}
+	}
+}
+
+// When the budget leaves out neighbours read fetched, the hint says how
+// many it shows of how many and gives the exact call that reads the rest
+// from the last one shown (agent-ux §7: 2 of 150 came back silently).
+func TestReadBudgetSaysNeighboursCut(t *testing.T) {
+	cx := &Context{Focus: "m0", Conversation: ConversationInfo{Agent: "codex", SessionID: "sess", Messages: 151}, MoreAfter: true}
+	for i := range 151 {
+		n := 400
+		if i == 0 {
+			n = 20000 // a long system prompt first
+		}
+		cx.Messages = append(cx.Messages, Message{ID: fmt.Sprintf("m%d", i), Address: fmt.Sprintf("sess/%d", i), Kind: "assistant", Text: strings.Repeat("z", n)})
+	}
+	for _, c := range []struct {
+		st   Style
+		want string
+	}{
+		{Style{MCP: true, Budget: MaxOutput}, `\[later messages: showing (\d+) of 150 messages after; output budget of 24000 bytes reached; next: flopwire_read address=sess/(\d+) messages_after=(\d+)\]\n$`},
+		{Style{Budget: MaxOutput}, `\[later messages: showing (\d+) of 150 messages after; output budget of 24000 bytes reached; next: flopwire read sess/(\d+) --messages-after (\d+)\]\n$`},
+	} {
+		var b strings.Builder
+		if err := WriteRead(&b, cx, c.st); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		m := regexp.MustCompile(c.want).FindStringSubmatch(out)
+		if m == nil || len(out) > MaxOutput {
+			t.Fatalf("cut neighbours (%d bytes):\n%s", len(out), out[max(len(out)-400, 0):])
+		}
+		shown, _ := strconv.Atoi(m[1])
+		last, _ := strconv.Atoi(m[2])
+		rest, _ := strconv.Atoi(m[3])
+		if shown < 1 || shown >= 150 || last != shown || rest != 150-shown || strings.Count(out, "\n   sess/") != shown || strings.Contains(out, "earlier messages") {
+			t.Fatalf("shown %d, last sess/%d, rest %d:\n%s", shown, last, rest, out[max(len(out)-400, 0):])
+		}
+	}
+	// Both sides cut: each says so.
+	cx.Focus = "m75"
+	cx.Messages[0].Text = "short"
+	var b strings.Builder
+	if err := WriteRead(&b, cx, Style{MCP: true, Budget: 6000}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !regexp.MustCompile(`^# .*\n   \[earlier messages: showing (\d+) of 75 messages before; output budget of 6000 bytes reached; next: flopwire_read address=sess/\d+ messages_before=\d+\]\n`).MatchString(out) ||
+		!regexp.MustCompile(`\[later messages: showing \d+ of 75 messages after; output budget of 6000 bytes reached; next: flopwire_read address=sess/\d+ messages_after=\d+\]\n$`).MatchString(out) || len(out) > 6000 {
+		t.Fatalf("both sides cut (%d bytes):\n%s", len(out), out)
+	}
+	// Nothing cut: the plain hint, no count.
+	cx.Messages = cx.Messages[70:81]
+	b.Reset()
+	if err := WriteRead(&b, cx, Style{MCP: true, Budget: MaxOutput}); err != nil {
+		t.Fatal(err)
+	}
+	if out := b.String(); !strings.Contains(out, "   [later messages: flopwire_read address=sess/80 messages_after=10]\n") || strings.Contains(out, "showing") {
+		t.Fatalf("nothing cut:\n%s", out)
 	}
 }
