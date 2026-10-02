@@ -117,6 +117,9 @@ func fakeCodex(args []string) int {
 		slices.Sort(ids)
 		for _, id := range ids {
 			_, mk, _ := strings.Cut(id, "@")
+			if !slices.ContainsFunc(st.Marketplaces, func(m fakeCodexMarketplace) bool { return m.Name == mk }) {
+				continue // Codex lists plugins by marketplace
+			}
 			inst = append(inst, map[string]any{"pluginId": id, "marketplaceName": mk, "version": "local", "installed": true, "enabled": st.Plugins[id]})
 		}
 		return out(map[string]any{"installed": inst, "available": []any{}})
@@ -218,7 +221,12 @@ func fakeCodexAppServer(st fakeCodexState, logCall func(string)) int {
 		case "config/read":
 			layers := st.Layers
 			if layers == nil {
-				layers = json.RawMessage("[]")
+				// The user layer holds the installed plugins.
+				plugins := map[string]any{}
+				for id, on := range st.Plugins {
+					plugins[id] = map[string]any{"enabled": on}
+				}
+				layers = mustJSON([]any{map[string]any{"name": map[string]any{"type": "user", "file": "/home/u/.codex/config.toml"}, "config": map[string]any{"plugins": plugins}}})
 			}
 			res = map[string]any{"config": map[string]any{}, "layers": layers}
 		default:
@@ -779,5 +787,34 @@ func TestCodexRPCTimeoutHolds(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("want a timeout; got %v", err)
+	}
+}
+
+// TestSetupCodexOrphanedPlugin: after the flopwire marketplace is removed
+// (codex plugin marketplace remove, as setup's own foreign-marketplace
+// warning suggests), Codex keeps loading the plugin from its config and
+// cache, and its hooks still run, but codex plugin list no longer shows it.
+// --check must not call that "not installed" without a word, and --remove
+// must uninstall it.
+func TestSetupCodexOrphanedPlugin(t *testing.T) {
+	c := newCodexFixture(t, false)
+	c.setCodex(fakeCodexState{Available: "rev1", Plugins: map[string]bool{codexPlugin: true}})
+	rep, _, err := c.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := c.codex(rep); !hasString(h.Warnings, "Codex still loads flopwire@flopwire") || len(mutating(c.codexCalls())) != 0 {
+		t.Fatalf("--check with an orphaned plugin: %+v", h)
+	}
+	rep, _, err = c.run("--remove")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := c.codex(rep)
+	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin remove flopwire@flopwire --json"}) || !slices.Equal(h.Done, []string{"uninstalled flopwire@flopwire"}) {
+		t.Fatalf("--remove with an orphaned plugin: calls %q, %+v", got, h)
+	}
+	if st := c.getCodex(); len(st.Plugins) != 0 {
+		t.Fatalf("--remove left %+v", st.Plugins)
 	}
 }

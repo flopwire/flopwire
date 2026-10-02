@@ -395,6 +395,15 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 		return fail(err)
 	}
 	installed := findCodexPlugin(list)
+	// Codex keeps loading a plugin whose marketplace was removed (its
+	// config entry and cache stay), and its hooks and MCP server still
+	// run, but plugin list no longer shows it. Ask Codex's config.
+	orphan := false
+	if installed == nil && mode != setupInstall {
+		if _, cfg, err := codexAsk(ctx, path, env.cwd); err == nil {
+			orphan = codexUserConfigHasPlugin(cfg)
+		}
+	}
 
 	switch mode {
 	case setupInstall:
@@ -450,12 +459,13 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 			}
 		}
 	case setupRemove:
-		if installed != nil {
+		if installed != nil || orphan {
 			var res json.RawMessage
 			if err := c.json(ctx, &res, "plugin", "remove", codexPlugin, "--json"); err != nil {
 				return fail(err)
 			}
 			r.Done = append(r.Done, "uninstalled "+codexPlugin)
+			orphan = false
 		}
 		if mkt != nil && !foreign {
 			// Keep the marketplace while any other plugin from it is
@@ -501,6 +511,8 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 		return fail(fmt.Errorf("codex plugin list does not show %s after the install", codexPlugin))
 	case mode == setupRemove && r.Installed:
 		return fail(fmt.Errorf("codex plugin list still shows %s", codexPlugin))
+	case mode == setupCheck && orphan:
+		r.Warnings = append(r.Warnings, "Codex still loads "+codexPlugin+" (its hooks and MCP server) from its plugin cache, but no configured marketplace offers it any more, so codex plugin list does not show it; run flopwire setup to install it again, or flopwire setup --remove to uninstall it")
 	case mode == setupCheck && !r.Installed:
 		r.Todo = append(r.Todo, "install the plugin: flopwire setup")
 	}
@@ -555,6 +567,30 @@ func codexTrust(r *harnessReport, hooks []codexHook) {
 	if len(t.Disabled) > 0 {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("you disabled the Flopwire hooks for %s in Codex (/hooks); messages do not arrive through those events", strings.Join(t.Disabled, ", ")))
 	}
+}
+
+// codexUserConfigHasPlugin reports whether Codex's user config (from
+// config/read) still installs the plugin.
+func codexUserConfigHasPlugin(cfg json.RawMessage) bool {
+	var cr struct {
+		Layers []struct {
+			Name struct {
+				Type string `json:"type"`
+			} `json:"name"`
+			Config struct {
+				Plugins map[string]json.RawMessage `json:"plugins"`
+			} `json:"config"`
+		} `json:"layers"`
+	}
+	if json.Unmarshal(cfg, &cr) != nil {
+		return false
+	}
+	for _, l := range cr.Layers {
+		if _, ok := l.Config.Plugins[codexPlugin]; ok && l.Name.Type == "user" {
+			return true
+		}
+	}
+	return false
 }
 
 // codexManualEntries returns a warning for each older manual Flopwire entry
