@@ -207,15 +207,22 @@ func (b *bench) save(r *accResults) error {
 // --- a. full-corpus index, idle memory, no-change sweep ---
 
 type indexResult struct {
-	At          time.Time `json:"at"`
-	WallS       float64   `json:"wall_s"`
-	CPUS        float64   `json:"cpu_s"`
-	PeakRSSMB   float64   `json:"peak_rss_mb"`
-	IndexMB     float64   `json:"index_mb"`
-	Rows        int64     `json:"rows"`
-	Log         string    `json:"pass_log"`
-	IdleRSSMB   float64   `json:"idle_rss_mb"`
-	IdleFootMB  float64   `json:"idle_footprint_mb"`
+	At         time.Time `json:"at"`
+	WallS      float64   `json:"wall_s"`
+	CPUS       float64   `json:"cpu_s"`
+	PeakRSSMB  float64   `json:"peak_rss_mb"`
+	IndexMB    float64   `json:"index_mb"`
+	Rows       int64     `json:"rows"`
+	Log        string    `json:"pass_log"`
+	IdleRSSMB  float64   `json:"idle_rss_mb"`
+	IdleFootMB float64   `json:"idle_footprint_mb"`
+	// IdleAnonMB is the idle agent's anonymous memory, the idle.rss
+	// metric: RssAnon on Linux, the physical footprint on macOS, total
+	// RSS elsewhere. Total RSS also counts file-backed pages (the binary,
+	// the index files the agent mapped or read), which come and go with
+	// the page cache: one A/B run showed +12% idle RSS that was no change
+	// in the agent's own memory.
+	IdleAnonMB  float64   `json:"idle_anon_mb"`
 	SweepCPUMs  []float64 `json:"sweep_cpu_ms"` // no-change sweeps after the first
 	SweepFiles  int       `json:"sweep_files"`
 	LoadAverage string    `json:"load_average"`
@@ -312,6 +319,7 @@ func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResul
 	pid := cmd.Process.Pid
 	r.IdleRSSMB = psRSSMB(pid)
 	r.IdleFootMB = footprintMB(pid)
+	r.IdleAnonMB = anonMB(pid, r.IdleFootMB, r.IdleRSSMB)
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	_ = cmd.Wait()
 	close(sweeps)
@@ -723,7 +731,7 @@ func (b *bench) report(r *accResults) error {
 		rows = append(rows,
 			row{"a. full index wall", "< 5 min", fmt.Sprintf("%s (cpu %.0fs, load %s)", (time.Duration(x.WallS) * time.Second).String(), x.CPUS, x.LoadAverage), yes(x.WallS < indexWallLimitS)},
 			row{"a. full index peak RSS", "< 600MB (spec: 300MB)", fmt.Sprintf("%.0fMB (%d rows, index %.1fGB)", x.PeakRSSMB, x.Rows, x.IndexMB/1000), yes(x.PeakRSSMB < peakRSSTarget)},
-			row{"a. idle agent after 60s", "< 120MB (spec: 50MB)", fmt.Sprintf("RSS %.0fMB, footprint %.0fMB", x.IdleRSSMB, x.IdleFootMB), yes(x.IdleRSSMB < idleRSSTarget)})
+			row{"a. idle agent after 60s", "< 120MB anonymous (spec: 50MB)", fmt.Sprintf("anonymous %.0fMB (RSS %.0fMB, footprint %.0fMB)", x.IdleAnonMB, x.IdleRSSMB, x.IdleFootMB), yes(x.IdleAnonMB < idleRSSTarget)})
 		if len(x.SweepCPUMs) > 0 {
 			s := slices.Sorted(slices.Values(x.SweepCPUMs))
 			rows = append(rows, row{"a. no-change sweep CPU", "< 1s", fmt.Sprintf("median %.0fms, max %.0fms (%d sweeps, %d files)", median(s), s[len(s)-1], len(s), x.SweepFiles), yes(s[len(s)-1] < sweepCPULimitMs)})
@@ -834,6 +842,38 @@ func psRSSMB(pid int) float64 {
 	}
 	kb, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 	return kb / 1024
+}
+
+// anonMB is a process's anonymous resident memory: RssAnon from
+// /proc/<pid>/status on Linux, else the macOS footprint (foot), else total
+// RSS (rss) when neither is available.
+func anonMB(pid int, foot, rss float64) float64 {
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		if mb, ok := procStatusMB(data, "RssAnon"); ok {
+			return mb
+		}
+	}
+	if foot > 0 {
+		return foot
+	}
+	return rss
+}
+
+// procStatusMB reads a "Key:   1234 kB" line of /proc/<pid>/status.
+func procStatusMB(status []byte, key string) (float64, bool) {
+	for _, l := range strings.Split(string(status), "\n") {
+		v, ok := strings.CutPrefix(l, key+":")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(v)
+		if len(f) != 2 || f[1] != "kB" {
+			return 0, false
+		}
+		kb, err := strconv.ParseFloat(f[0], 64)
+		return kb / 1024, err == nil
+	}
+	return 0, false
 }
 
 // footprintMB reads macOS's physical footprint (what Activity Monitor
