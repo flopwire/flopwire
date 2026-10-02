@@ -604,3 +604,82 @@ func TestFirstLivePlanIndexed(t *testing.T) {
 	perfguard.AssertIndexedPlan(t, s.Pool, firstLive(addressConversations+` c`, `c.session_id=$3`), "", false, sid)
 	perfguard.AssertIndexedPlan(t, s.Pool, firstLive(visible+` c`, `c.session_id=$1 AND c.user_id=$2`), sid, owner)
 }
+
+// hideNewest hides the newest 80% of a perfCorpus's sessions (i > n/5),
+// as an admin path rule over a busy repo would: every one of them is
+// newer than the first page of visible sessions.
+func hideNewest(t testing.TB, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`UPDATE conversations SET hidden_at=now(),hidden_rule='perf',hidden_root=id
+		 WHERE id IN (SELECT md5('c'||i)::uuid FROM generate_series($1::int/5+1,$1::int) i)`, []any{n}},
+		{`VACUUM ANALYZE`, nil},
+	} {
+		if _, err := pool.Exec(context.Background(), q.sql, q.args...); err != nil {
+			t.Fatalf("%s: %v", q.sql, err)
+		}
+	}
+}
+
+// One page of sessions costs the same however many hidden sessions are
+// newer than it: the keyset index leaves hidden sessions out, so the page
+// never reads them. Rows and sequential pages are gated by AssertScaling;
+// blocks (heap and index buffers) are gated here too, since a walk over
+// hidden index entries shows in buffers first.
+func TestSessionsPageHiddenScalingConstant(t *testing.T) {
+	for _, oldest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "newest", true: "oldest"}[oldest], func(t *testing.T) {
+			costs := map[int]perfguard.Cost{}
+			var hidden []string
+			perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+				s, counter := perfCorpus(t, n, 4)
+				hideNewest(t, s.Pool, n)
+				c := perfguard.Measure(t, s.Pool, counter, func() {
+					out, err := s.Sessions(context.Background(), "", "", format.Filters{Limit: 20, Sort: map[bool]string{false: format.SortNewest, true: format.SortOldest}[oldest]})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if n >= 100 && len(out.Sessions) != 20 {
+						t.Fatalf("page of %d sessions at n=%d, want 20", len(out.Sessions), n)
+					}
+					hidden = hidden[:0]
+					for _, c := range out.Sessions {
+						hidden = append(hidden, c.ID)
+					}
+				})
+				var listedHidden int
+				if err := s.Pool.QueryRow(context.Background(), `SELECT count(*) FROM conversations WHERE id::text=ANY($1) AND hidden_at IS NOT NULL`, hidden).Scan(&listedHidden); err != nil || listedHidden > 0 {
+					t.Fatalf("listed %d hidden sessions at n=%d (%v)", listedHidden, n, err)
+				}
+				costs[n] = c
+				return c
+			})
+			small, large, base := costs[500].Total().Blocks(), costs[4000].Total().Blocks(), costs[1].Total().Blocks()
+			if r := float64(large-base) / float64(max(small-base, 16)); r > perfguard.Constant.Bound(8) {
+				t.Errorf("blocks grow %.2fx from n=500 (%d) to n=4000 (%d), base %d: want <= %.1fx", r, small, large, base, perfguard.Constant.Bound(8))
+			}
+			t.Logf("blocks: base %d, n=500 %d, n=4000 %d", base, small, large)
+		})
+	}
+}
+
+// With most sessions hidden, both keyset branches still walk the
+// activity index, whose predicate leaves hidden sessions out.
+func TestSessionsHiddenPlanIndexed(t *testing.T) {
+	s, _ := perfCorpus(t, 200, 1)
+	hideNewest(t, s.Pool, 200)
+	for _, oldest := range []bool{false, true} {
+		sql, args := sessionsPage("", format.Filters{}, oldest, nil, 21)
+		perfguard.AssertIndexedPlanExcept(t, s.Pool, []string{"users", "devices"}, sql, args...)
+		plan, err := perfguard.Explain(s.Pool, sql, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(plan, "conversation_activity_idx"); n < 2 {
+			t.Errorf("oldest=%v: %d branches on conversation_activity_idx, want 2\nplan:\n%s", oldest, n, plan)
+		}
+	}
+}
