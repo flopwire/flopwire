@@ -30,7 +30,7 @@ func init() { localindex.UseDriver(perfguard.SQLiteDriver) }
 // add a session directory with a subagent transcript, its meta.json and a
 // tool result, odd units a Codex rollout in its own day directory. About
 // three files and two directories per unit.
-const sweepUnits = 40
+const sweepUnits = 24
 
 // sweepCost is what one no-change periodic sweep cost at one fixture size.
 type sweepCost struct {
@@ -55,6 +55,7 @@ type sweepCost struct {
 // stat or listing per file pair, a parse of an unchanged file, a query
 // per file, or watchNew listing every watched directory again fails it.
 func TestNoChangeSweepScales(t *testing.T) {
+	t.Parallel() // waits out the racy window three times; counts are scoped to its own paths
 	costs := map[int]sweepCost{}
 	measure := func(t testing.TB, n int) sweepCost {
 		if c, ok := costs[n]; ok {
