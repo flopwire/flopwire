@@ -43,8 +43,11 @@ import (
 //
 // codex@3: the conversation lists every working directory the session
 // named (turn_context cwd, <cwd> tags) in OtherCwds, for path rules.
+//
+// codex@4: rows unchanged; bumped so every rollout is re-parsed and its
+// digest re-folded with the commit evidence of issue #80.
 const (
-	RowParser = "codex@3.0"
+	RowParser = "codex@4.0"
 	Name      = RowParser + "+" + EventsVersion
 )
 

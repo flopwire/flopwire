@@ -44,7 +44,8 @@ func TestReparseVersionsAndCheckpoint(t *testing.T) {
 	if err := e.pool.QueryRow(e.ctx, `SELECT parse_attempt,ordinal FROM messages WHERE source_id=$1 LIMIT 1`, id).Scan(&attempt, &ordinal); err != nil {
 		t.Fatal(err)
 	}
-	e.exec(`UPDATE source_parse_state SET applied_parser='claude@3.99',extraction_report=jsonb_set(extraction_report,'{contract}',to_jsonb(replace(extraction_report->>'contract','claude@3/','claude@3.99/'))) WHERE source_id=$1`, id)
+	major := transcript.ReparseKey(claude.ParserName) // claude@N
+	e.exec(`UPDATE source_parse_state SET applied_parser=$2||'.99',extraction_report=jsonb_set(extraction_report,'{contract}',to_jsonb(replace(extraction_report->>'contract',$2||'/',$2||'.99/'))) WHERE source_id=$1`, id, major)
 	e.drain()
 	if e.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND parse_attempt=$2`, id, attempt) != 1 {
 		t.Fatal("minor change reparsed unchanged source")
@@ -459,5 +460,52 @@ func TestParseFenceReleasedOnReturn(t *testing.T) {
 	}
 	if probed != 2 {
 		t.Fatalf("probed %d fence closes, want 2", probed)
+	}
+}
+
+// Issue #80: the server re-folds the digest from every row when a
+// source's parser major is stale, so digests an older fold stored gain
+// the commit evidence (here, a git commit -q whose sha a later git log
+// shows).
+func TestMajorReparseRefoldsDigest(t *testing.T) {
+	e := newEnv(t)
+	path := filepath.Join(t.TempDir(), "0b7e2c1a-0000-4000-8000-0000000000c2.jsonl")
+	line := func(n int, typ, msg string) string {
+		return fmt.Sprintf(`{"type":"%s","uuid":"q-%d","sessionId":"0b7e2c1a-0000-4000-8000-0000000000c2","cwd":"/tmp/q","gitBranch":"api-cursors","timestamp":"2026-10-02T00:36:%02dZ","message":%s}`+"\n", typ, n, n, msg)
+	}
+	use := func(id, cmd string) string {
+		return fmt.Sprintf(`{"id":"msg_%s","role":"assistant","content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":%q}}]}`, id, id, cmd)
+	}
+	res := func(id, out string) string {
+		return fmt.Sprintf(`{"role":"user","content":[{"tool_use_id":"%s","type":"tool_result","content":%q}]}`, id, out)
+	}
+	appendFile(t, path, line(1, "user", `{"role":"user","content":"commit the cursor change"}`)+
+		line(2, "assistant", use("toolu_q1", `git commit -q -m "Switch GET /users to cursor pagination"`))+line(3, "user", res("toolu_q1", ""))+
+		line(4, "assistant", use("toolu_q2", "git rev-parse --short HEAD"))+line(5, "user", res("toolu_q2", "650a939\n")))
+	sp := devicesync.SourceSpec{Path: path, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"}
+	sync1(t, e.syncer(devicesync.Config{SealAfter: -1}), sp)
+	e.drain()
+	digestOf := func() string {
+		t.Helper()
+		var d string
+		if err := e.pool.QueryRow(e.ctx, `SELECT a.digest::text FROM conversation_activity a JOIN conversations c ON c.id=a.conversation_id
+			WHERE c.session_id='0b7e2c1a-0000-4000-8000-0000000000c2'`).Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if d := digestOf(); !strings.Contains(d, `"commits": ["650a939"]`) {
+		t.Fatalf("fresh digest: %s", d)
+	}
+	// As the previous release stored it: rows and stamps of the previous
+	// major, a digest whose fold saw no commit.
+	prev := "claude@3"
+	major := transcript.ReparseKey(claude.ParserName)
+	e.exec(`UPDATE conversation_activity SET digest='{"intent":"commit the cursor change"}'::jsonb`)
+	e.exec(`UPDATE messages SET parser=$1||'.0'`, prev)
+	e.exec(`UPDATE source_parse_state SET applied_parser=$1||'.0',extraction_report=jsonb_set(extraction_report,'{contract}',to_jsonb(replace(extraction_report->>'contract',$2||'/',$1||'/')))`, prev, major)
+	e.drain()
+	if d := digestOf(); !strings.Contains(d, `"commits": ["650a939"]`) || strings.Contains(d, "commits_no_sha") {
+		t.Fatalf("digest after the re-parse: %s", d)
 	}
 }
