@@ -24,8 +24,9 @@ const LiveCap = time.Hour
 //   - Claude: <claude config dir>/sessions/<pid>.json of a running pid
 //     (the same files the caller detector reads); the last write is the
 //     later of the transcript's mtime and the file's updatedAt.
-//   - Devin: session_locks/<session>.lock beside sessions.db, holding a
-//     running pid.
+//   - Devin: session_locks/<session>.lock beside sessions.db, holding the
+//     pid of a running process named devin (lock files outlive their
+//     sessions, and the OS reuses their pids).
 //   - Codex, with codex set: a rollout a process named codex holds open
 //     (one lsof call); its mtime is the last write.
 //
@@ -94,7 +95,7 @@ func (d *Detector) Live(codex bool) map[string]time.Time {
 		if err != nil {
 			continue
 		}
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 && alive(pid) {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 && alive(pid) && d.isDevin(pid) {
 			add(strings.TrimSuffix(filepath.Base(f), ".lock"), time.Time{})
 		}
 	}
@@ -119,6 +120,32 @@ func (d *Detector) Live(codex bool) map[string]time.Time {
 		}
 	}
 	return out
+}
+
+// isDevin reports whether pid runs a program named devin. Without a process
+// table to ask (d.Proc nil), it takes the pid alone.
+func (d *Detector) isDevin(pid int) bool {
+	if d.Proc == nil {
+		return true
+	}
+	_, name, ok := d.Proc(pid)
+	return ok && IsDevinProcess(name)
+}
+
+// IsDevinProcess reports whether a process name is Devin CLI's (devin, or
+// a path ending in it).
+func IsDevinProcess(name string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(name)), "devin")
+}
+
+// ProcName is the name of the program pid runs, or "" when the process
+// table does not have it.
+func ProcName(pid int) string {
+	_, name, ok := procInfo(pid)
+	if !ok {
+		return ""
+	}
+	return name
 }
 
 // MarkLive sets Live on a conversation: active within format.LiveWindow of

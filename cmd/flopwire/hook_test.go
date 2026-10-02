@@ -246,19 +246,21 @@ func waitFlush(t *testing.T, fa *hookAgent, n int) []agent.Request {
 // Claude and Codex, the session for Devin, which has no transcript file.
 func TestHookFlushes(t *testing.T) {
 	for _, c := range []struct {
-		in         string
-		env        map[string]string
-		path, sess string
+		in                string
+		env               map[string]string
+		path, sess, event string
 	}{
-		{claudeIn(evPostToolUse), nil, claudeTranscript, claudeSID},
-		{codexIn("Stop"), nil, codexTranscript, codexSID},
-		{devinIn(evPostToolUse), devinEnv, "", devinSID},
+		{claudeIn(evPostToolUse), nil, claudeTranscript, claudeSID, evPostToolUse},
+		{codexIn("Stop"), nil, codexTranscript, codexSID, "Stop"},
+		{devinIn(evPostToolUse), devinEnv, "", devinSID, evPostToolUse},
+		{devinIn("Stop"), devinEnv, "", devinSID, "Stop"},
 	} {
 		fa := newHookAgent(t)
 		runHook(t, fa.sock, c.in, c.env)
 		f := waitFlush(t, fa, 1)
-		if f[0].Path != c.path || f[0].Session != c.sess {
-			t.Fatalf("flush %+v, want %q %q", f[0], c.path, c.sess)
+		// The event is the agent's busy or idle signal for the session.
+		if f[0].Path != c.path || f[0].Session != c.sess || f[0].Event != c.event {
+			t.Fatalf("flush %+v, want %q %q %q", f[0], c.path, c.sess, c.event)
 		}
 	}
 }

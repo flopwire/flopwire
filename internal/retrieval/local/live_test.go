@@ -58,6 +58,17 @@ func TestLiveSessions(t *testing.T) {
 	if got := d.Live(false); len(got) != 2 {
 		t.Fatalf("without codex: %v", got)
 	}
+	// With a process table: a Devin lock counts only when its pid runs
+	// devin; a reused pid (here a shell) does not keep the session live.
+	d.Proc = func(pid int) (int, string, bool) { return 1, "/bin/zsh", true }
+	if _, ok := d.Live(false)["able-kangaroo"]; ok {
+		t.Fatal("a Devin lock naming a pid that is not devin counted")
+	}
+	d.Proc = func(pid int) (int, string, bool) { return 1, "devin", true }
+	if _, ok := d.Live(false)["able-kangaroo"]; !ok {
+		t.Fatal("a Devin lock naming a running devin did not count")
+	}
+	d.Proc = nil
 
 	// MarkLive: recent activity, or held open and written within the cap.
 	ago := func(d time.Duration) *time.Time { x := now.Add(-d); return &x }

@@ -213,7 +213,7 @@ func firstLine(s string, n int) string {
 // answer, and the hook must not wait on indexing. A Devin session has no
 // transcript file; the agent finds it by session id.
 func hookFlush(ctx context.Context, socket string, in hookInput, harness transcript.Agent) {
-	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID}
+	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID, Event: in.Event}
 	if harness == transcript.AgentDevin {
 		req.Path = ""
 	}

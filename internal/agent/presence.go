@@ -16,8 +16,11 @@ package agent
 //     starting. A lock left by a killed Codex stays until LiveCap passes
 //     without a write. Busy or idle is the rollout's last task event:
 //     task_started (busy), task_complete or turn_aborted (idle).
-//   - Devin: session_locks/<session>.lock names a running pid. Devin
-//     sessions are reported idle: no read-only signal says a turn runs.
+//   - Devin: session_locks/<session>.lock names a running process named
+//     devin. Lock files outlive their sessions, so a Devin session is live
+//     only on that evidence, however recently it wrote. Busy or idle is the
+//     session's last hook event (hookTurns): Devin's store has no
+//     read-only signal that a turn runs.
 //
 // A session the path rules keep off the server is marked Withheld: the
 // poll does not report it (devicebus).
@@ -97,7 +100,7 @@ func (a *Agent) registries() harnessLive {
 			if err != nil {
 				continue
 			}
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 && a.pidAlive(pid) {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 && a.pidAlive(pid) && local.IsDevinProcess(a.procName(pid)) {
 				add(strings.TrimSuffix(filepath.Base(f), ".lock"), time.Time{})
 			}
 		}
@@ -257,6 +260,11 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 	var out []devicebus.Session
 	rollouts := map[string]bool{}
 	for _, s := range all {
+		if transcript.Agent(s.Agent) == transcript.AgentDevin {
+			if _, held := reg.at[s.SessionID]; !held {
+				continue // its lock is gone or names no running devin: ended
+			}
+		}
 		last := s.LastActive
 		info := format.ConversationInfo{SessionID: s.SessionID, LastActivityAt: &last}
 		local.MarkLive(&info, reg.at, now)
@@ -279,6 +287,8 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			if t := paths[key]; t != nil {
 				out[i].Busy = a.rollouts.busy(t.path, rollouts)
 			}
+		case transcript.AgentDevin:
+			out[i].Busy = a.hookBusy(s.SessionID)
 		}
 	}
 	return out, nil

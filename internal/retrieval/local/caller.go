@@ -114,7 +114,7 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 		}
 		// A lock counts only when its pid is a devin process now: stale
 		// locks name pids the OS has since given to other processes.
-		if strings.Contains(strings.ToLower(filepath.Base(name)), "devin") {
+		if IsDevinProcess(name) {
 			if devin == nil {
 				devin = devinLocks(filepath.Join(filepath.Dir(devinDB), "session_locks"))
 			}
