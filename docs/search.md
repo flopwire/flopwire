@@ -213,7 +213,7 @@ flopwire read 0b7e2c1a
 ```
 
 - The header is labeled fields: `# session: FULL ID agent: claude
-  repo: /src/api  branch: main  device: mac  user: U  parent: P  start:
+  repo: /src/api branch: main device: mac user: U parent: P start:
   2026-09-23T10:00Z active: 2026-09-23T11:02Z msgs: 42 title: "…"`.
   `cwd` stands in for `repo` outside a repo. Times are UTC.
 - The focus message prints with line numbers. The addressed line is
