@@ -633,7 +633,7 @@ func readCall(cmds []shellCmd) (callGit, bool) {
 		if g.printed && !c.printed {
 			c.printed, c.pwhere = true, g.pwhere
 		}
-		if g.reveal != "" && (k == len(cmds)-1 || g.reveal == revPush) {
+		if g.reveal != "" && (k == len(cmds)-1 || g.reveal == revPush) && (g.reveal != revLog || len(cmds) == 1) {
 			self, use := g.self, true
 			switch {
 			case g.self:

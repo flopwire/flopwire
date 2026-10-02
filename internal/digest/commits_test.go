@@ -406,3 +406,20 @@ func TestPendingCallsDoNotBlockLaterOnes(t *testing.T) {
 		t.Fatalf("commits %v, %d pending", d.Commits, len(d.State.Pending))
 	}
 }
+
+// A multi-entry git log after other commands of a Codex script: its first
+// entry may not start the call's output, so it shows nothing.
+func TestCodexScriptLogAfterOtherCommands(t *testing.T) {
+	commit := msg(10, transcript.KindToolCall, "exec", "c1", "script")
+	commit.Enrichment = map[string]any{"commands": []map[string]any{{"cmd": "git commit -q -m x", "cwd": "/r", "exit_code": 0}}}
+	cres := msg(11, transcript.KindToolResult, "exec", "c1", "Script completed\nOutput:\n"+`{"chunk_id":"a","exit_code":0,"output":""}`)
+	log := msg(20, transcript.KindToolCall, "exec", "c2", "script")
+	log.Enrichment = map[string]any{"commands": []map[string]any{{"cmd": "git rev-parse HEAD~3", "cwd": "/r", "exit_code": 0},
+		{"cmd": "git log --oneline -5", "cwd": "/r", "exit_code": 0}}}
+	lres := msg(21, transcript.KindToolResult, "exec", "c2", "Script completed\nOutput:\n"+`{"chunk_id":"b","exit_code":0,"output":"1f2e3d4 old\n"}`+"\n"+
+		`{"chunk_id":"c","exit_code":0,"output":"650a939 x\n1f2e3d4 old\n"}`)
+	d := Parse(Fold(nil, repoConv, []*transcript.Message{commit, cres, log, lres}))
+	if len(d.Commits) != 0 || fmt.Sprint(subjects(d.CommitsNoSHA)) != "[x]" {
+		t.Fatalf("commits %v, without sha %+v", d.Commits, d.CommitsNoSHA)
+	}
+}
