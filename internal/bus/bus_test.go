@@ -1144,3 +1144,43 @@ func TestRevokeReholdsClaimedMessage(t *testing.T) {
 		t.Fatalf("released message not claimable again: %+v", got)
 	}
 }
+
+// The held list groups a person's held messages by sender, newest first,
+// with previews only: the first line, without control or format
+// characters, cut to PreviewRunes. Other people's held messages and
+// messages not held are not listed.
+func TestHeldListsPreviewsBySender(t *testing.T) {
+	tm := newTeam(t)
+	sam := tm.user("sam")
+	samMac := tm.device(sam)
+	tm.present(samMac, live("s-api-5555", "codex", "/Users/sam/api", true))
+	first := tm.mustSend(tm.garyMac, "g-api-1111", "a-api", "\n  Please rerun the migration‮ evil\x1b[2J\nsecond line stays on the server")
+	tm.advance(time.Second)
+	long := tm.mustSend(tm.garyMac, "g-api-1111", "@alex", strings.Repeat("x", 300))
+	tm.mustSend(samMac, "s-api-5555", "a-api", "from sam")
+	tm.mustSend(tm.alexMac, "a-api-4444", "g-api", "alex to gary: held for gary, not alex")
+	out, err := tm.s.Held(context.Background(), tm.alex)
+	if err != nil || len(out.Senders) != 2 {
+		t.Fatalf("held %+v %v", out, err)
+	}
+	g := out.Senders[0]
+	if g.User != "gary@example.test" || g.UserName != "Gary" || g.Count != 2 || len(g.Messages) != 2 || g.More != 0 {
+		t.Fatalf("gary's group %+v", g)
+	}
+	if m := g.Messages[0]; m.ID != long.ID || m.Preview != strings.Repeat("x", busproto.PreviewRunes)+"…" || m.Bytes != 300 || m.Addressed != "user" {
+		t.Fatalf("newest first, cut: %+v", m)
+	}
+	if m := g.Messages[1]; m.ID != first.ID || m.Preview != "Please rerun the migration evil[2J" || m.Repo != "api" || m.Branch != "main" || m.Agent != "claude" || m.Session != "g-api-1111" {
+		t.Fatalf("preview %+v", m)
+	}
+	if out.Senders[1].User != "sam@example.test" || out.Senders[1].Count != 1 {
+		t.Fatalf("sam's group %+v", out.Senders[1])
+	}
+	// Accepting gary takes his messages off the list.
+	if _, err := tm.s.Accept(context.Background(), busproto.Caller{UserID: tm.alex}, "gary"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := tm.s.Held(context.Background(), tm.alex); len(out.Senders) != 1 || out.Senders[0].User != "sam@example.test" {
+		t.Fatalf("after accept %+v", out)
+	}
+}

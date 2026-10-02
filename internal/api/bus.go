@@ -27,6 +27,7 @@ type Bus interface {
 	Accepts(ctx context.Context, userID string) (busproto.AcceptsResponse, error)
 	Accept(ctx context.Context, c busproto.Caller, sender string) (busproto.AcceptResponse, error)
 	Revoke(ctx context.Context, c busproto.Caller, sender string) (busproto.AcceptResponse, error)
+	Held(ctx context.Context, userID string) (busproto.HeldResponse, error)
 }
 
 func (a *API) busRoutes(r chi.Router) {
@@ -41,6 +42,10 @@ func (a *API) busRoutes(r chi.Router) {
 	r.Get(busproto.PathAccepts, a.busLogin(a.busAccepts))
 	r.Post(busproto.PathAccepts, a.busLogin(a.busAccept))
 	r.Delete(busproto.PathAccepts+"/{user}", a.busLogin(a.busRevoke))
+	// The held list shows what unaccepted senders wrote: the person's own
+	// login session only. No route takes another person: an administrator
+	// cannot review or accept for a member.
+	r.Get(busproto.PathHeld, a.busLogin(a.busHeld))
 }
 
 // busDevice admits a person's enrolled device credential: the device whose
@@ -240,10 +245,45 @@ func (a *API) busInbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// busAccepts lists whom the person accepts and who is held; the audit
+// keeps the senders listed.
 func (a *API) busAccepts(w http.ResponseWriter, r *http.Request) {
-	out, err := a.bus.Accepts(r.Context(), mustPrincipal(r).User.ID)
+	c := a.caller(r)
+	out, err := a.bus.Accepts(r.Context(), c.UserID)
 	if err != nil {
 		a.busFailed(w, r, err)
+		return
+	}
+	accepted := make([]string, len(out.Accepted))
+	for i, v := range out.Accepted {
+		accepted[i] = v.UserID
+	}
+	held := make([]string, len(out.Held))
+	for i, v := range out.Held {
+		held[i] = v.UserID
+	}
+	if !a.auditOK(w, r, c.UserID, c.DeviceID, "bus.accepts", "user", c.UserID, map[string]any{"accepted": accepted, "held_senders": held}) {
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// busHeld lists the person's held messages with previews; the audit keeps
+// the message ids shown, like an inbox read.
+func (a *API) busHeld(w http.ResponseWriter, r *http.Request) {
+	c := a.caller(r)
+	out, err := a.bus.Held(r.Context(), c.UserID)
+	if err != nil {
+		a.busFailed(w, r, err)
+		return
+	}
+	ids := []string{}
+	for _, g := range out.Senders {
+		for _, m := range g.Messages {
+			ids = append(ids, m.ID)
+		}
+	}
+	if !a.auditOK(w, r, c.UserID, c.DeviceID, "bus.held", "user", c.UserID, map[string]any{"result_ids": ids}) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

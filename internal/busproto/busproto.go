@@ -4,7 +4,8 @@
 //
 // Every route authenticates with a person's enrolled device credential
 // ("Authorization: Bearer <token>"), except the accept routes, which need
-// that person's login session. The server takes the device and user from
+// that person's login session, and the held list, which shows previews of
+// messages the person has not accepted and so must never reach an agent. The server takes the device and user from
 // the credential, never from the request.
 //
 //	POST   /v1/bus/send             SendRequest  -> SendResponse
@@ -16,6 +17,7 @@
 //	GET    /v1/bus/accepts          -> AcceptsResponse (login session)
 //	POST   /v1/bus/accepts          AcceptRequest -> AcceptResponse (login session)
 //	DELETE /v1/bus/accepts/{user}   -> AcceptResponse (login session)
+//	GET    /v1/bus/held             -> HeldResponse (login session)
 //
 // A failure is a problem document (Error) with a stable Code.
 //
@@ -49,6 +51,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -59,6 +63,7 @@ const (
 	PathPeers   = "/v1/bus/peers"
 	PathInbox   = "/v1/bus/inbox"
 	PathAccepts = "/v1/bus/accepts" // DELETE PathAccepts + "/" + user to revoke
+	PathHeld    = "/v1/bus/held"
 )
 
 const (
@@ -439,6 +444,76 @@ type AcceptResponse struct {
 	Accepted bool   `json:"accepted"`
 	Released int    `json:"released,omitempty"`
 	Reheld   int    `json:"reheld,omitempty"`
+}
+
+// HeldMessage is one held message as its recipient's human reviews it
+// before accepting the sender. It carries a preview, never the body: the
+// first line, cut to PreviewRunes, with control and format characters
+// removed. The preview is text another person's agent wrote; a client
+// shows it as inert text.
+type HeldMessage struct {
+	ID string `json:"id"`
+	// Agent, Repo (the repo name, not its path) and Branch describe the
+	// sending session.
+	Agent     string    `json:"agent"`
+	Session   string    `json:"session"`
+	Repo      string    `json:"repo,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	Intent    Intent    `json:"intent"`
+	Addressed string    `json:"addressed"` // session or user
+	Preview   string    `json:"preview"`
+	Bytes     int       `json:"bytes"` // the whole body's length
+	Refs      int       `json:"refs,omitempty"`
+	Sent      time.Time `json:"sent"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// HeldGroup is one sender's held messages, newest first, at most
+// HeldPerSender of them; More counts the rest.
+type HeldGroup struct {
+	HeldSender
+	UserName string        `json:"user_name,omitempty"`
+	Newest   time.Time     `json:"newest"`
+	Messages []HeldMessage `json:"messages"`
+	More     int           `json:"more,omitempty"`
+}
+
+// HeldResponse is GET /v1/bus/held: the person's held messages by sender.
+type HeldResponse struct {
+	Senders []HeldGroup `json:"senders"`
+}
+
+const (
+	// PreviewRunes bounds a held message's preview.
+	PreviewRunes = 200
+	// HeldPerSender bounds the previews listed per sender.
+	HeldPerSender = 20
+)
+
+// Preview is the first non-blank line of body, without control or format
+// characters (which could reorder or hide text), cut to PreviewRunes.
+func Preview(body string) string {
+	line := ""
+	for l := range strings.SplitSeq(body, "\n") {
+		if strings.TrimSpace(l) != "" {
+			line = l
+			break
+		}
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.TrimSpace(line) {
+		if r == utf8.RuneError || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		if n == PreviewRunes {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // Caller is the authenticated device (or, for accepts, person) a server

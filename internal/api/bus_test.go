@@ -238,3 +238,81 @@ func testBusSendPollAck(t *testing.T, b busServer) {
 }
 
 func jsonString(t *testing.T, v any) string { return string(mustJSON(t, v)) }
+
+// The held list and the accept routes, by credential: only a person's own
+// login session reads or changes their acceptances, and no route names
+// another person, so another member and an administrator see and change
+// only their own.
+func TestBusAcceptAuthorizationMatrix(t *testing.T) {
+	b := newBusServer(t)
+	busCall(t, "POST", b.url+busproto.PathPoll, b.gary.device, presence("gary-1111", "claude", true), nil)
+	busCall(t, "POST", b.url+busproto.PathPoll, b.alex.device, presence("alex-2222", "codex", false), nil)
+	var sent busproto.SendResponse
+	if st, _ := busCall(t, "POST", b.url+busproto.PathSend, b.gary.device, busproto.SendRequest{FromSession: "gary-1111", To: "alex-2222", Body: "secret plan: rotate the keys"}, &sent); st != 201 || sent.State != busproto.StateHeld {
+		t.Fatalf("send %d %+v", st, sent)
+	}
+	_, minted := mint(t, b.url, b.alex.session, map[string]any{"label": "ci", "scopes": []string{"upload", "read"}})
+	svc := postJSON(t, b.url+"/v1/admin/service-accounts", map[string]string{"name": "collector"}, bearer(b.admin))
+	refused := map[string]string{
+		"recipient's device token": b.alex.device,
+		"minted token":             minted["token"].(string),
+		"service account":          svc["token"].(string),
+	}
+	routes := []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", busproto.PathHeld, nil},
+		{"GET", busproto.PathAccepts, nil},
+		{"POST", busproto.PathAccepts, busproto.AcceptRequest{Sender: "gary"}},
+		{"DELETE", busproto.PathAccepts + "/gary", nil},
+	}
+	for name, token := range refused {
+		for _, r := range routes {
+			var raw json.RawMessage
+			st, code := busCall(t, r.method, b.url+r.path, token, r.body, &raw)
+			if st != 403 || (code != busproto.CodeLoginRequired && code != "") || strings.Contains(string(raw), "secret plan") {
+				t.Errorf("%s %s %s: %d %s %s", name, r.method, r.path, st, code, raw)
+			}
+		}
+	}
+	// Another member and an administrator see their own (empty) held list,
+	// never alex's, and their accept changes only their own acceptances.
+	for name, token := range map[string]string{"another member": b.gary.session, "administrator": b.admin} {
+		var held busproto.HeldResponse
+		if st, _ := busCall(t, "GET", b.url+busproto.PathHeld, token, nil, &held); st != 200 || len(held.Senders) != 0 {
+			t.Errorf("%s held: %d %+v", name, st, held)
+		}
+	}
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.admin, busproto.AcceptRequest{Sender: "gary"}, nil); st != 200 {
+		t.Fatalf("admin accepts for themself: %d", st)
+	}
+	var acc busproto.AcceptsResponse
+	if busCall(t, "GET", b.url+busproto.PathAccepts, b.alex.session, nil, &acc); len(acc.Accepted) != 0 || len(acc.Held) != 1 {
+		t.Fatalf("the admin's accept changed alex's: %+v", acc)
+	}
+	// The recipient's own login session sees the preview, and accepts.
+	var held busproto.HeldResponse
+	if st, _ := busCall(t, "GET", b.url+busproto.PathHeld, b.alex.session, nil, &held); st != 200 || len(held.Senders) != 1 ||
+		held.Senders[0].User != "gary@example.test" || held.Senders[0].Messages[0].ID != sent.ID || held.Senders[0].Messages[0].Preview != "secret plan: rotate the keys" {
+		t.Fatalf("recipient held: %d %+v", st, held)
+	}
+	var out busproto.AcceptResponse
+	if st, _ := busCall(t, "POST", b.url+busproto.PathAccepts, b.alex.session, busproto.AcceptRequest{Sender: "gary"}, &out); st != 200 || out.Released != 1 {
+		t.Fatalf("recipient accept: %d %+v", st, out)
+	}
+	// Every read is audited with what it showed.
+	heldReads := auditMeta(t, b.s, "bus.held")
+	if len(heldReads) != 3 {
+		t.Fatalf("bus.held audited %d times", len(heldReads))
+	}
+	found := false
+	for _, e := range heldReads {
+		if ids, _ := e.Metadata["result_ids"].([]any); len(ids) == 1 && ids[0] == sent.ID {
+			found = true
+		}
+	}
+	if !found || len(auditMeta(t, b.s, "bus.accepts")) != 1 || len(auditMeta(t, b.s, "bus.accept")) != 2 {
+		t.Fatalf("audit: held %+v, accepts %d, accept %d", heldReads, len(auditMeta(t, b.s, "bus.accepts")), len(auditMeta(t, b.s, "bus.accept")))
+	}
+}

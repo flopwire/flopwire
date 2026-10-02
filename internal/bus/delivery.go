@@ -547,6 +547,69 @@ func (s *Store) Accepts(ctx context.Context, userID string) (busproto.AcceptsRes
 	return out, err
 }
 
+// HeldListSQL is the person $1's held messages expiring after $2, newest
+// first, with enough of each to decide on its sender: the sending session
+// and the body's head (Held cuts it to a preview; the whole body never
+// leaves the server). Bounded: a sender's held messages count against no
+// limit of the recipient's, so their number is not.
+const HeldListSQL = `SELECT m.id,m.from_user::text,(SELECT email FROM users WHERE id=m.from_user),(SELECT name FROM users WHERE id=m.from_user),
+		m.from_agent,m.from_session,m.from_repo,m.from_branch,m.intent,m.addressed,left(m.body,2000),octet_length(m.body),cardinality(m.refs),m.created_at,m.expires_at
+	FROM bus_messages m WHERE m.to_user=$1 AND m.state='held' AND m.expires_at>$2 ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`
+
+// Held lists the person's held messages by sender (B7), for their human to
+// review before accepting: previews only, at most HeldPerSender each. It
+// serves a login session only (internal/api): an agent must never read
+// what a sender its human has not accepted wrote.
+func (s *Store) Held(ctx context.Context, userID string) (busproto.HeldResponse, error) {
+	out := busproto.HeldResponse{Senders: []busproto.HeldGroup{}}
+	now := s.now()
+	summary, err := held(ctx, s.Pool, userID, now)
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.Pool.Query(ctx, HeldListSQL, userID, now)
+	if err != nil {
+		return out, err
+	}
+	type row struct {
+		busproto.HeldMessage
+		userID, user, name, head string
+	}
+	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var v row
+		var intent string
+		err := r.Scan(&v.ID, &v.userID, &v.user, &v.name, &v.Agent, &v.Session, &v.Repo, &v.Branch, &intent, &v.Addressed, &v.head, &v.Bytes, &v.Refs, &v.Sent, &v.ExpiresAt)
+		v.Intent, v.Repo, v.Preview = busproto.Intent(intent), RepoName(v.Repo), busproto.Preview(v.head)
+		return v, err
+	})
+	if err != nil {
+		return out, err
+	}
+	index := map[string]int{}
+	for _, h := range summary {
+		index[h.UserID] = len(out.Senders)
+		out.Senders = append(out.Senders, busproto.HeldGroup{HeldSender: h, Messages: []busproto.HeldMessage{}})
+	}
+	for _, v := range all {
+		i, ok := index[v.userID]
+		if !ok {
+			continue // held after the summary was read; the next read lists it
+		}
+		g := &out.Senders[i]
+		g.UserName = v.name
+		if v.Sent.After(g.Newest) {
+			g.Newest = v.Sent
+		}
+		if len(g.Messages) < busproto.HeldPerSender {
+			g.Messages = append(g.Messages, v.HeldMessage)
+		}
+	}
+	for i := range out.Senders {
+		out.Senders[i].More = max(0, out.Senders[i].Count-len(out.Senders[i].Messages))
+	}
+	return out, nil
+}
+
 // Acceptance and sweep statements.
 const (
 	// releaseHeldSQL queues the held messages from $2 to $1 that expire
