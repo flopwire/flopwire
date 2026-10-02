@@ -163,10 +163,16 @@ Add `--server` to query the team server.
 ```sh
 flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, like rg
 flopwire search 'how did we handle income verification?'              # ranked, BM25
-flopwire sessions 'api*' --since 7d                                   # newest first
+flopwire sessions 'api*' --since 7d                                   # newest first, JSON
 flopwire read 0b7e2c1a/28672:14 -B 2                                  # an address a result printed
 ```
 
+- `grep`, `search` and `read` print text (`--json` for JSON). Hits group
+  under a header of labeled fields per session, such as `## session:
+  0b7e2c1a agent: claude ended: 2026-09-23 repo: api branch: main
+  intent: "…"`; a value with a space is a JSON string.
+- `sessions` prints compact JSON with full session ids and paging fields
+  (`has_more`, `next_cursor`). `--text` prints readable rows.
 - Every hit starts with an address, `SESSION/ORDINAL:LINE`. `read` takes
   it, a unique session prefix, a message id, or `transcript.jsonl:LINE`.
 - `grep` takes RE2 regexes with smart case and the common rg flags. It
@@ -203,8 +209,9 @@ default_tools_approval_mode = "approve"
 ```
 
 The search tools are `flopwire_grep`, `flopwire_search`,
-`flopwire_sessions` and `flopwire_read`. They only read. Add `"--server"`
-to `args` to query the team server.
+`flopwire_sessions` and `flopwire_read`. They only read, and answer as
+the CLI does. Each also returns `structuredContent` with an
+`outputSchema`. Add `"--server"` to `args` to query the team server.
 
 The messaging tools are `flopwire_peers`, `flopwire_send` and
 `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
@@ -220,7 +227,7 @@ CLI and in MCP. They go through the device agent, which must run. They
 print compact JSON by default. Add `--text` for a readable form.
 
 ```sh
-flopwire sessions --repo . --branch feat/cursor --json   # who made the change (history)
+flopwire sessions --repo . --branch feat/cursor          # who made the change (history)
 flopwire peers --session 4c19e0d2                        # is that session live now?
 flopwire send 4c19e0d2 -- "Heads-up: the list endpoint returns a cursor now."
 flopwire send @alex --intent request -- "Can you rebase api on main?"
@@ -228,7 +235,9 @@ flopwire inbox --sent                                    # what you sent, and it
 ```
 
 - Find the recipient in history first, then check that the session is
-  live. Do not choose a session by its title or current branch alone.
+  live: match `session_id` (and `digest.commits`) from `sessions` to the
+  `session` field of `peers`. Do not choose a session by its title or
+  current branch alone.
 - Address a session by its id, or a unique prefix. Address a person as
   `@user`.
 - `send` prints a receipt. The `arrives` field says when the message

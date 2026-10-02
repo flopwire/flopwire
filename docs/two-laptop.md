@@ -264,8 +264,8 @@ A hook never fails because of the agent. See `docs/agent.md` for details.
    flopwire grep --server zebra-4411
    ```
 
-   The hit's bracket must name the teammate's user. `--json` shows the
-   device too.
+   The session header's `who:` field must name the teammate's user.
+   `--json` shows the device too.
 
 4. Read the hit. Use the address the hit prints first, for example
    `0b7e2c1a/28672:1`:

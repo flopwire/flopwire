@@ -10,8 +10,8 @@ Messaging and retrieval work together: find the session in history first, then c
 ## Find the session
 
 1. Repository evidence: use `git log`, `git blame` or the PR to find the commit, branch and files that matter.
-2. Session history: `flopwire_sessions repo=R branch=B` lists the sessions on that branch. Confirm the one that made the change with `flopwire_read address=SESSION outline=true` (its commits and edited files) or `flopwire_grep` for the commit hash or a path.
-3. Live presence: `flopwire_peers session=FULL_ID` for that exact id. Never choose by a peer's title or current branch.
+2. Session history: `flopwire_sessions repo=R branch=B` lists the sessions on that branch as JSON. Match the commit hash against each session's `digest.commits` and take its `session_id` (the full id). When the digest is not enough, confirm with `flopwire_read address=SESSION outline=true` (its commits and edited files) or `flopwire_grep` for the commit hash or a path.
+3. Live presence: `flopwire_peers session=FULL_ID` for that exact id; its `session` field is the same id. Never choose by a peer's title or current branch.
 4. Contact: `flopwire_send to=FULL_ID`. If the session is no longer live, send to `@user` instead (their live session on the repo, else their next one), or tell your user.
 
 ## Write the message

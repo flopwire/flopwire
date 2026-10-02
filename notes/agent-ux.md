@@ -72,7 +72,7 @@ Each rule carries its source. "Derived" marks my own inference.
    - shorten the ordinal (base-36);
    - keep it as is, since agents never did arithmetic on it in these runs.
 6. **Cursor instead of offset** for grep and search (MCP `nextCursor`). Offsets re-run the scan from the newest row each page. A cursor carrying (ts, id) would make page 2 cheap and stable under appends.
-7. **structuredContent + outputSchema** for MCP. `format=json` is currently text holding JSON and has no budget.
+7. **structuredContent + outputSchema** for MCP. `format=json` is currently text holding JSON and has no budget. Done on 2026-10-01 (§6).
 8. **Search totals and zero-hit terms.** Search prints no total. The any-term retry could also name the terms that match nothing (`zzqxv: 0 messages`), which is the strongest "not in the corpus" signal.
 9. **A session address reads from the first message,** which for Codex is often a large system or developer prompt. Focusing the first user message would save a `line_offset` or `after` round trip.
 10. **CLI budget for humans.** Piped CLI output is now budgeted like an agent's. A human exporting with `> file` gets the footer hint, or uses `--json`. If that is unwelcome, add `--max-output 0`.
@@ -95,3 +95,27 @@ Tasks:
 | t5 | correct "not in transcripts", no hallucination; 9 calls | correct; 7 calls; the any-term note shown first | correct; 6 calls |
 
 No run hallucinated. Truncation hid no answer. The remaining waste is reading whole sessions to learn what they were about (proposals 1 and 2) and unindexed `.` greps used as an outline (proposal 2).
+
+## 6. Output format (2026-10-01, issue #64)
+
+The decision on #55: record-shaped answers are JSON by default, text-shaped answers stay text.
+
+- **sessions answers JSON by default,** on the CLI and in `flopwire_sessions`, like `peers`, `send` and `inbox`. The object is main's `--json` with `kind: "sessions"`, `has_more` always present and a `hint`; `session_id` is the full id. `--text` (`format: "text"`) prints the labeled rows.
+- **grep, search and read stay text.** Their payload is transcript text and code, which JSON escapes. CLI `--json` is byte-for-byte unchanged (golden files captured from main).
+- **Labeled headers.** The per-session header, the `sessions --text` row, the `grep -l` row and read's header are `key: value` fields one space apart. A value with a space, quote, apostrophe, backslash or control character, an empty one, or one ending in `:` prints as a JSON string; `intent` and `title` always do, and come last. One regex splits a header: `([a-z_]+): ("(?:[^"\\]|\\.)*"|\S+)`. Header times are `2026-09-23T10:00Z`, which `--since` accepts.
+- **Hit lines keep rg's shape** (`ORDINAL:LINE kind/tool: text`). Nothing positional in them is ambiguous: the ordinal and line are digits, and the kind label ends at the first `: `. The opt-in `--no-heading` bracket is unchanged.
+- **structuredContent.** Every MCP tool declares an `outputSchema` and returns its answer as `structuredContent`, bounded at 24,000 bytes in whole hits, sessions, messages or outline entries, with the next offset or cursor after the last one kept. `format: "json"` returns that same object as text.
+- **Errors in JSON mode** are one JSON object on stderr (`{"kind":"error","error":{"code","detail","fix","example"}}`), exit 1; over MCP the `isError` text is that object.
+
+Cost, oracle fixtures (bytes of the default output, before → after):
+
+| Query | Before | After |
+|---|---|---|
+| grep, search (seven queries) | 5010 | 5640 (+13%; +37 bytes a session header) |
+| `grep -l retr` | 590 | 755 (+28%) |
+| read (three queries) | 3795 | 3918 (+3%) |
+| `sessions` (11 sessions) | 2645 text | 8827 JSON (+234%; about 800 bytes a session, most of it the digest) |
+| `sessions --text` | 2645 | 3085 (+17%) |
+
+Two spaces between fields cost 5731 bytes on the same grep and search queries; one space is what shipped. `key=value` (logfmt) would save about 7 more bytes a header (about +10%); `key: value` was kept for readability. The sessions JSON cost is the digest (`tools`, `messages`, `tokens`, `repos`): a lighter default is a follow-up.
+
