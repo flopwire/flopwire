@@ -5,6 +5,7 @@
  * FIRST VIEWPORT: Health state and Collector → Archive → Index → Retrieval relay lead.
  * FORM: Ref Log Control Plane, health-first relay staging, seed 48d693fe.
  */
+import brandMark from "../../landing/assets/brand-mark.svg";
 import {
   FormEvent,
   ReactNode,
@@ -1562,11 +1563,7 @@ function Page({
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-mark" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-      </span>
+      <img className="brand-mark" src={brandMark} width="22" height="32" alt="" />
       <span>flopwire</span>
     </div>
   );
