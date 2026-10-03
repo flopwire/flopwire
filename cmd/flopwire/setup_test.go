@@ -957,3 +957,87 @@ func TestSetupReportsTheLocalIndex(t *testing.T) {
 		t.Fatalf("indexed: got %+v, todo %q", rep.Index, rep.Todo)
 	}
 }
+
+// TestSetupComparesPluginAndBinary: a plugin that runs a command the
+// flopwire on PATH does not know (an older binary) gets a warning naming
+// the command, both versions and the fix; so does a plugin whose release
+// version is newer than the binary's. A binary that knows every command
+// the plugin runs gets none.
+func TestSetupComparesPluginAndBinary(t *testing.T) {
+	f := newSetupFixture(t, true)
+	pluginDir := filepath.Join(f.repo, "plugins", "claude-code", "flopwire")
+	installed := func(version string) {
+		f.setState(fakeClaudeState{
+			Available:    version,
+			Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+			Plugins:      []claudePluginEntry{{ID: claudePlugin, Version: version, Scope: "user", Enabled: true, InstallPath: pluginDir}},
+		})
+	}
+	mismatch := func(rep setupReport) string {
+		var w []string
+		for _, x := range f.claude(rep).Warnings {
+			if strings.HasPrefix(x, "the plugin ") {
+				w = append(w, x)
+			}
+		}
+		return strings.Join(w, "\n")
+	}
+
+	// This binary knows every command the plugin runs.
+	installed("aaaaaaaaaaaa")
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := mismatch(rep); w != "" || rep.Flopwire.Version != version {
+		t.Fatalf("matching binary: version %q, warnings:\n%s", rep.Flopwire.Version, w)
+	}
+
+	// An older flopwire on PATH: it knows mcp but not hook.
+	fw := filepath.Join(f.dir, "bin", "flopwire")
+	if err := os.Remove(fw); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$1\" in\nversion) echo v0.1.0 ;;\n*) printf 'Usage: flopwire <command>\\n\\n  mcp         serve tools\\n  agent       run the agent\\n  version     print version\\n' >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(fw, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err = f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := mismatch(rep)
+	if rep.Flopwire.Version != "v0.1.0" || !strings.Contains(w, "the plugin (version aaaaaaaaaaaa) runs flopwire hook, which "+fw+" (version v0.1.0) does not know") || !strings.Contains(w, "Fix: install a flopwire built from the same commit as the plugin or newer") {
+		t.Fatalf("binary without hook: version %q, warnings:\n%s", rep.Flopwire.Version, w)
+	}
+	if strings.Contains(w, "flopwire mcp") {
+		t.Errorf("warned about mcp, which the binary knows:\n%s", w)
+	}
+
+	// Release versions: a plugin newer than the binary.
+	installed("0.2.0")
+	rep, _, _ = f.run("--check")
+	if w := mismatch(rep); !strings.Contains(w, "the plugin is version 0.2.0 but "+fw+" is version v0.1.0") || !strings.Contains(w, "install flopwire 0.2.0 or newer") {
+		t.Fatalf("plugin newer than binary:\n%s", w)
+	}
+}
+
+func TestCompareSemver(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		cmp  int
+		ok   bool
+	}{
+		{"0.2.0", "v0.1.9", 1, true},
+		{"v1.0.0", "1.0.0", 0, true},
+		{"0.9.0", "0.10.0", -1, true},
+		{"1.2.3-rc.1", "1.2.3", 0, true},
+		{"aaaaaaaaaaaa", "v0.1.0", 0, false},
+		{"0.1.0", "dev", 0, false},
+		{"unknown", "unknown", 0, false},
+	} {
+		if cmp, ok := compareSemver(c.a, c.b); cmp != c.cmp || ok != c.ok {
+			t.Errorf("compareSemver(%q, %q) = %d, %v; want %d, %v", c.a, c.b, cmp, ok, c.cmp, c.ok)
+		}
+	}
+}

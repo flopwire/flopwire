@@ -32,15 +32,7 @@ func readJSONFile(t *testing.T, p string, v any) {
 }
 
 // subcommands are the commands usageText lists.
-func subcommands() map[string]bool {
-	m := map[string]bool{}
-	for _, l := range strings.Split(usageText, "\n") {
-		if f := strings.Fields(l); len(f) > 1 && strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "    ") {
-			m[f[0]] = true
-		}
-	}
-	return m
-}
+func subcommands() map[string]bool { return usageCommands(usageText) }
 
 func TestClaudeMarketplaceManifest(t *testing.T) {
 	var mkt struct {

@@ -8,11 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,8 +96,32 @@ type setupReport struct {
 }
 
 type setupBinary struct {
-	Path string `json:"path,omitempty"`
-	Note string `json:"note,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Version string `json:"version,omitempty"`
+	Note    string `json:"note,omitempty"`
+	// commands are the commands the binary on PATH knows, from its usage;
+	// nil when unknown.
+	commands map[string]bool
+}
+
+// pathBinary describes the flopwire on PATH, which the plugins run: this
+// binary's own version and commands, else what that binary prints.
+func pathBinary(ctx context.Context, env *setupEnv, path string) setupBinary {
+	b := setupBinary{Path: path}
+	if self, err := os.Executable(); err == nil && samePath(self, path) {
+		b.Version, b.commands = version, usageCommands(usageText)
+		return b
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if out, _, err := env.run(ctx, path, "version"); err == nil {
+		b.Version = strings.TrimSpace(string(out))
+	}
+	// An unknown command prints the usage on stderr and exits 1.
+	if _, errb, _ := env.run(ctx, path, "help"); bytes.Contains(errb, []byte("Usage: flopwire")) {
+		b.commands = usageCommands(string(errb))
+	}
+	return b
 }
 
 type setupAgent struct {
@@ -200,6 +226,8 @@ type setupEnv struct {
 	run func(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 	// lookPath finds a harness binary.
 	lookPath func(string) (string, error)
+	// binary is the flopwire on PATH, which the plugins run.
+	binary *setupBinary
 }
 
 // setupHarness is one harness setup knows. To add a harness, append an
@@ -331,11 +359,12 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			rep.Todo = append(rep.Todo, "put the flopwire binary on PATH (for example in ~/.local/bin), then restart your agent sessions")
 		}
 	} else {
-		rep.Flopwire.Path = p
+		rep.Flopwire = pathBinary(ctx, env, p)
 		if self, err := os.Executable(); err == nil && !samePath(self, p) {
 			rep.Flopwire.Note = fmt.Sprintf("the plugin runs %s, not this binary (%s)", p, self)
 		}
 	}
+	env.binary = &rep.Flopwire
 	rep.Agent.Socket, _ = defaultSocket()
 	if rep.Agent.Socket != "" {
 		c, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -436,6 +465,7 @@ type claudePluginEntry struct {
 	Scope       string `json:"scope"`
 	Enabled     bool   `json:"enabled"`
 	ProjectPath string `json:"projectPath"`
+	InstallPath string `json:"installPath"`
 	// Errors are load errors and Notes are warnings, as strings. Claude
 	// Code (2.1.287, 2.1.288) prints each only when it has some, so an
 	// empty list is no field; errorDetails and noteDetails carry the same
@@ -725,9 +755,118 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 		r.Todo = append(r.Todo, "restart running Claude Code sessions, or run /reload-plugins in each, to apply the change")
 	}
 	if r.Installed {
+		r.Warnings = append(r.Warnings, pluginBinaryMismatch(env.binary, r.Version, installed.InstallPath)...)
 		r.Warnings = append(r.Warnings, claudeManualEntries(env)...)
 	}
 	return r
+}
+
+// pluginCommandRe matches a plugin hook command that runs flopwire and
+// captures the command it runs: `flopwire hook || …` gives hook.
+var pluginCommandRe = regexp.MustCompile(`^\s*(?:\S*/)?flopwire\s+([a-z][a-z-]*)`)
+
+// pluginCommands are the flopwire commands an installed plugin runs: its
+// hooks (hooks/hooks.json) and its MCP server (.mcp.json), sorted.
+func pluginCommands(dir string) []string {
+	set := map[string]bool{}
+	var hf struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string   `json:"command"`
+				Args    []string `json:"args"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "hooks", "hooks.json")); err == nil && json.Unmarshal(raw, &hf) == nil {
+		for _, groups := range hf.Hooks {
+			for _, g := range groups {
+				for _, h := range g.Hooks {
+					if m := pluginCommandRe.FindStringSubmatch(strings.Join(append([]string{h.Command}, h.Args...), " ")); m != nil {
+						set[m[1]] = true
+					}
+				}
+			}
+		}
+	}
+	var mj struct {
+		MCPServers claudeMCPServers `json:"mcpServers"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, ".mcp.json")); err == nil && json.Unmarshal(raw, &mj) == nil {
+		for _, s := range mj.MCPServers {
+			if filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0 {
+				set[s.Args[0]] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
+// semverRe matches a release version: v1.2.3 or 1.2.3, with an optional
+// pre-release or build suffix that the comparison ignores.
+var semverRe = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$`)
+
+// compareSemver compares two release versions; ok is false unless both
+// are release versions.
+func compareSemver(a, b string) (cmp int, ok bool) {
+	ma, mb := semverRe.FindStringSubmatch(a), semverRe.FindStringSubmatch(b)
+	if ma == nil || mb == nil {
+		return 0, false
+	}
+	for i := 1; i <= 3; i++ {
+		x, _ := strconv.Atoi(ma[i])
+		y, _ := strconv.Atoi(mb[i])
+		if c := cmpInt(x, y); c != 0 {
+			return c, true
+		}
+	}
+	return 0, true
+}
+
+func cmpInt(x, y int) int {
+	switch {
+	case x < y:
+		return -1
+	case x > y:
+		return 1
+	}
+	return 0
+}
+
+// pluginBinaryMismatch compares the installed plugin with the flopwire on
+// PATH, which it runs. The plugin's hooks run `flopwire hook || …` and its
+// MCP server `flopwire mcp`: a binary without one of those commands
+// delivers nothing or serves no tools. When both carry release versions
+// (a plugin without a version in its manifest is versioned by commit),
+// setup also names a version mismatch.
+func pluginBinaryMismatch(bin *setupBinary, pluginVersion, installPath string) []string {
+	if bin == nil || bin.Path == "" {
+		return nil
+	}
+	binVersion := bin.Version
+	if binVersion == "" {
+		binVersion = "unknown"
+	}
+	fix := "install a flopwire built from the same commit as the plugin or newer (git pull, then make build in a checkout of github.com/flopwire/flopwire) and put it on PATH in place of " + bin.Path + ", then restart your agent sessions"
+	var warn []string
+	if bin.commands != nil && installPath != "" {
+		var missing []string
+		for _, c := range pluginCommands(installPath) {
+			if !bin.commands[c] {
+				missing = append(missing, "flopwire "+c)
+			}
+		}
+		if len(missing) > 0 {
+			warn = append(warn, fmt.Sprintf("the plugin (version %s) runs %s, which %s (version %s) does not know: its hooks deliver nothing and its tools fail. Fix: %s", pluginVersion, strings.Join(missing, ", "), bin.Path, binVersion, fix))
+		}
+	}
+	switch c, ok := compareSemver(pluginVersion, bin.Version); {
+	case !ok || c == 0:
+	case c > 0:
+		warn = append(warn, fmt.Sprintf("the plugin is version %s but %s is version %s: a plugin newer than the binary can run commands the binary lacks. Fix: install flopwire %s or newer on PATH, then restart your agent sessions", pluginVersion, bin.Path, bin.Version, pluginVersion))
+	default:
+		warn = append(warn, fmt.Sprintf("the plugin is version %s but %s is version %s. Fix: run flopwire setup to update the plugin", pluginVersion, bin.Path, bin.Version))
+	}
+	return warn
 }
 
 // manualHookRe matches a hook that runs flopwire's hook or flush command.
