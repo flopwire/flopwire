@@ -50,7 +50,7 @@ var binaryExt = map[string]bool{
 // newline); companion files are redacted whole unless binary.
 func ModeFor(storageKind, p string) Mode {
 	switch storageKind {
-	case "jsonl_append", "json_doc", "sqlite":
+	case "cass_export", "jsonl_append", "json_doc", "sqlite":
 		return Lines
 	}
 	if binaryExt[strings.ToLower(path.Ext(p))] {

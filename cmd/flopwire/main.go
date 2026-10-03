@@ -55,6 +55,8 @@ func run(parent context.Context, args []string) error {
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	switch args[0] {
+	case "import":
+		return importCommand(ctx, args[1:], os.Stdout)
 	case "diagnostics":
 		return diagnosticsCommand(ctx, args[1:], os.Stdout)
 	case "version":
@@ -125,6 +127,7 @@ func run(parent context.Context, args []string) error {
 // against it.
 const usageText = `Usage: flopwire <command>
 
+  import      recover selected CASS history and upload verified exports
   serve       run the API and admin service
   healthcheck probe a server readiness endpoint
   fingerprint print the server's self-signed certificate pin (on the server host)

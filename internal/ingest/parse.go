@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/cassimport"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/store"
@@ -146,11 +147,15 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	}
 	// A store export (Devin, opencode) is one session's rows, re-read whole
 	// on every upload.
-	isExport := j.src.agent == string(transcript.AgentDevin) || j.src.agent == string(transcript.AgentOpencode)
+	isExport := j.src.agent == string(transcript.AgentDevin) || j.src.agent == string(transcript.AgentOpencode) || j.kind == string(cassimport.StorageKind)
 	contract := serverExtractionContract(j.src.agent)
 	version := serverParserVersion(j.src.agent)
+	if j.kind == string(cassimport.StorageKind) {
+		contract = ""
+		version = cassimport.Name
+	}
 	versionChanged := j.appliedParser == nil || transcript.ReparseKey(*j.appliedParser) != transcript.ReparseKey(version) || j.appliedRules == nil || *j.appliedRules != redact.RulesVersion
-	full := g.Generation != j.cursorGen || j.reparse || versionChanged || (contract != "" && (j.extraction == nil || j.extraction.Contract != contract || j.extraction.Generation != g.Generation || j.extraction.Offset != j.cursor.Offset || j.extraction.LineNo != j.cursor.LineNo || j.extraction.Report.Validate() != nil))
+	full := j.kind == string(cassimport.StorageKind) || g.Generation != j.cursorGen || j.reparse || versionChanged || (contract != "" && (j.extraction == nil || j.extraction.Contract != contract || j.extraction.Generation != g.Generation || j.extraction.Offset != j.cursor.Offset || j.extraction.LineNo != j.cursor.LineNo || j.extraction.Report.Validate() != nil))
 	if full {
 		j.cursor = transcript.Cursor{} // a new generation is parsed whole; a store's cursor spans exports
 	}
@@ -208,21 +213,25 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	originalOffset := j.cursor.Offset
 	var next transcript.Cursor
 	var result transcript.ParseResult
-	switch transcript.Agent(j.src.agent) {
-	case transcript.AgentClaude:
-		p := &claude.Parser{FS: &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}, Caps: uncapped}
-		result, err = p.ParseWithReport(ctx, in, j.cursor, sink)
-		next = result.Cursor
-	case transcript.AgentCodex:
-		archive := &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}
-		result, err = (&codex.Parser{Caps: uncapped, OpenRollout: archive.openRollout}).ParseWithReport(ctx, in, j.cursor, sink)
-		next = result.Cursor
-	case transcript.AgentDevin:
-		next, err = parseDevinExport(ctx, in, j, sink)
-	case transcript.AgentOpencode:
-		next, err = parseOpencodeExport(ctx, in, j, sink)
-	default:
-		return q.done(ctx, j, g.Generation) // archived, no parser
+	if j.kind == string(cassimport.StorageKind) {
+		next, err = cassimport.Parse(ctx, in, sink)
+	} else {
+		switch transcript.Agent(j.src.agent) {
+		case transcript.AgentClaude:
+			p := &claude.Parser{FS: &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}, Caps: uncapped}
+			result, err = p.ParseWithReport(ctx, in, j.cursor, sink)
+			next = result.Cursor
+		case transcript.AgentCodex:
+			archive := &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}
+			result, err = (&codex.Parser{Caps: uncapped, OpenRollout: archive.openRollout}).ParseWithReport(ctx, in, j.cursor, sink)
+			next = result.Cursor
+		case transcript.AgentDevin:
+			next, err = parseDevinExport(ctx, in, j, sink)
+		case transcript.AgentOpencode:
+			next, err = parseOpencodeExport(ctx, in, j, sink)
+		default:
+			return q.done(ctx, j, g.Generation) // archived, no parser
+		}
 	}
 	if err == nil {
 		err = sink.flush()
