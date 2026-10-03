@@ -215,7 +215,7 @@ The report has these parts:
 
 | Field | Means |
 |---|---|
-| `ok` | `false` when a harness command failed. The exit status is then 1. |
+| `ok` | `false` when every detected harness failed. The exit status is then 1. A harness that fails while another succeeds has an `error` in its entry, and `ok` stays `true`. With no harness detected, `ok` is `true`. |
 | `flopwire.path` | The `flopwire` binary that the plugin runs. Empty when `flopwire` is not on `PATH`. |
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
@@ -238,8 +238,8 @@ Follow these steps in order.
    with `flopwire agent run` and keep it running. Do not start it
    yourself.
 5. Run `flopwire setup`.
-6. If `ok` is `false`, read `error` in each entry of `harnesses`. Report
-   each error to your user. Stop.
+6. Read `error` in each entry of `harnesses`. Report each error to your
+   user. If `ok` is `false`, stop.
 7. Read `warnings` in each entry of `harnesses`. Each warning names an
    older manual entry that now runs twice. Show each warning to your user.
    Do not edit the settings file unless your user tells you to.
@@ -363,6 +363,10 @@ directory, so edits apply in the next session.
   repository. setup refuses a `--source owner/repo#ref` for Devin. Use a
   local checkout of that ref.
 - Devin shows the plugin's skill as `/flopwire:messaging`.
+- Every `devin plugins` command needs a Devin login. When you are not
+  logged in, setup reports `not logged in to Devin` in the Devin entry and
+  continues with the other harnesses. Run `devin auth login`, then run
+  setup again.
 
 Devin reads hooks from Claude Code's settings files, but not from Claude
 Code's plugins. The Claude Code plugin and the Devin plugin therefore never

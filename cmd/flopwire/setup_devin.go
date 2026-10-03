@@ -5,12 +5,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 )
+
+// errDevinLoggedOut is a `devin plugins` command refused because the user
+// is not logged in to Devin: every plugins command needs a login.
+var errDevinLoggedOut = errors.New("not logged in to Devin (devin plugins needs a login)")
+
+// devinLoggedOut reports whether a failed `devin plugins` command printed
+// Devin's login error: "You must be logged in to manage plugins".
+func devinLoggedOut(out, errb []byte) bool {
+	const msg = "You must be logged in"
+	return bytes.Contains(errb, []byte(msg)) || bytes.Contains(out, []byte(msg))
+}
 
 // --- Devin CLI ---
 //
@@ -144,6 +156,9 @@ func (c devinCLI) info(ctx context.Context) (*devinPluginInfo, error) {
 		if bytes.Contains(errb, []byte("is not installed")) || bytes.Contains(out, []byte("is not installed")) {
 			return nil, nil
 		}
+		if devinLoggedOut(out, errb) {
+			return nil, errDevinLoggedOut
+		}
 		return nil, commandError(c.path, args, out, errb, err)
 	}
 	info, ok := parseDevinPluginInfo(out)
@@ -235,6 +250,16 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 	r.Marketplace = src
 	c := devinCLI{env: env, path: path}
 	installed, err := c.info(ctx)
+	if errors.Is(err, errDevinLoggedOut) {
+		// Devin is not set up on this machine; report it and let setup
+		// carry on with the other harnesses.
+		again := "flopwire setup"
+		if env.mode != setupInstall {
+			again += " --" + env.mode
+		}
+		r.Todo = append(r.Todo, "log in to Devin: devin auth login, then run "+again+" again")
+		return fail(err)
+	}
 	if err != nil {
 		return fail(err)
 	}

@@ -73,7 +73,9 @@ JSON: {"kind":"setup","mode","ok","flopwire":{"path","note"},"agent":{"running",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","hook_trust":{"hooks","trusted",
 "need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only.
-Exit 1 when a harness command failed.
+A harness that fails is reported with "error" and setup carries on with
+the others. ok is false, and setup exits 1, only when every detected harness
+failed. A logged-out Devin reports "not logged in to Devin".
 `
 
 // setupReport is what setup prints.
@@ -295,13 +297,21 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			rep.Todo = append(rep.Todo, "optional: no server is configured, so messages go only between this device's sessions; flopwire claim and flopwire enroll join a team")
 		}
 	}
+	// A failed harness is reported in its entry. The run fails only when
+	// every detected harness failed, so one harness the user does not use
+	// (a logged-out Devin) does not fail setup for the others.
+	detected, failed := 0, 0
 	for _, h := range setupHarnesses {
 		r := h.apply(ctx, env)
-		if r.Error != "" {
-			rep.OK = false
+		if r.Detected {
+			detected++
+			if r.Error != "" {
+				failed++
+			}
 		}
 		rep.Harnesses = append(rep.Harnesses, r)
 	}
+	rep.OK = detected == 0 || failed < detected
 	return rep
 }
 

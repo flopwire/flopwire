@@ -26,6 +26,9 @@ type fakeDevinState struct {
 	Fail map[string]string `json:"fail,omitempty"`
 	// DropHooks leaves the plugin's hooks out of what Devin loads.
 	DropHooks bool `json:"drop_hooks,omitempty"`
+	// LoggedOut makes every plugins command fail as a logged-out Devin
+	// 3000.11.1 does.
+	LoggedOut bool `json:"logged_out,omitempty"`
 }
 
 type fakeDevinPlugin struct {
@@ -61,6 +64,10 @@ func fakeDevin(args []string) int {
 		return 2
 	}
 	verb := args[1]
+	if st.LoggedOut {
+		fmt.Fprintln(os.Stderr, "Error: You must be logged in to manage plugins. Run `devin auth login` first.")
+		return 1
+	}
 	if msg, ok := st.Fail[verb]; ok {
 		fmt.Fprintln(os.Stderr, "Error: "+msg)
 		return 1
@@ -724,4 +731,50 @@ func TestSameDevinSource(t *testing.T) {
 			t.Errorf("sameDevinSource(%q, %q) = %v", c.have, c.want, got)
 		}
 	}
+}
+
+// TestSetupDevinLoggedOut: a logged-out Devin is reported as not logged in
+// and does not fail the run while another harness succeeds. setup exits
+// non-zero only when every detected harness failed.
+func TestSetupDevinLoggedOut(t *testing.T) {
+	for _, mode := range [][]string{nil, {"--check"}, {"--remove"}} {
+		t.Run(fmt.Sprintf("with claude %v", mode), func(t *testing.T) {
+			d := newDevinFixture(t, true)
+			d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
+			rep, _, err := d.run(mode...)
+			if err != nil || !rep.OK {
+				t.Fatalf("Claude Code worked, so setup must succeed; got %v ok=%v", err, rep.OK)
+			}
+			h := d.devin(rep)
+			if !h.Detected || h.Installed || !strings.Contains(h.Error, "not logged in") || !hasString(h.Todo, "devin auth login") {
+				t.Fatalf("devin: %+v", h)
+			}
+			if c := d.claude(rep); c.Error != "" {
+				t.Fatalf("claude: %+v", c)
+			}
+			if got := d.devinCalls(); len(got) != 0 {
+				t.Fatalf("logged out: setup ran %q", got)
+			}
+		})
+	}
+	t.Run("devin only", func(t *testing.T) {
+		d := newDevinFixture(t, false)
+		d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
+		_, out, err := d.run("--text")
+		if !errors.Is(err, errReported) {
+			t.Fatalf("the only detected harness failed: want errReported; got %v", err)
+		}
+		if !strings.Contains(out, "  error: not logged in to Devin") || !strings.Contains(out, "  todo: log in to Devin: devin auth login") {
+			t.Fatalf("--text:\n%s", out)
+		}
+	})
+	t.Run("every harness failed", func(t *testing.T) {
+		d := newDevinFixture(t, true)
+		d.setState(fakeClaudeState{Available: "a", Fail: map[string]string{"install": "network down"}})
+		d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
+		rep, _, err := d.run()
+		if !errors.Is(err, errReported) || rep.OK {
+			t.Fatalf("every detected harness failed: want errReported; got %v ok=%v", err, rep.OK)
+		}
+	})
 }
