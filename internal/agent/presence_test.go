@@ -549,3 +549,37 @@ func TestBusTitleRedactsBeforeTheCut(t *testing.T) {
 		t.Fatalf("short title: %q", got)
 	}
 }
+
+// A repo a bus request names is withheld when the path rules withhold
+// its path, or, by name, when every session of the device on it is
+// withheld (devicebus reposNotWithheld, issue #71).
+func TestBusRepoWithheld(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local /tmp/oracle-alpha"}
+	f.a = New(f.store, f.cfg)
+	f.once()
+	for repo, want := range map[string]bool{
+		"/tmp/oracle-alpha":     true,
+		"/tmp/oracle-alpha/":    true,
+		"/tmp/oracle-alpha/src": true,
+		"oracle-alpha":          true,
+		"/tmp/oracle-beta":      false,
+		"oracle-beta":           false,
+		"no-such-repo":          false,
+		"oracle-*":              false,
+		"oracle_alpha":          false, // LIKE's _ is escaped
+	} {
+		got, err := f.a.BusRepoWithheld(ctx, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s: withheld %v, want %v", repo, got, want)
+		}
+	}
+	f = newFixture(t, "-")
+	f.once()
+	if got, err := f.a.BusRepoWithheld(ctx, "/tmp/oracle-alpha"); got || err != nil {
+		t.Fatalf("no rules: %v %v", got, err)
+	}
+}

@@ -35,6 +35,11 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	if err := b.namesNoWithheld(ctx, req); err != nil {
 		return busproto.SendResponse{}, err
 	}
+	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
+		if err := b.reposNotWithheld(ctx, req.Repo); err != nil {
+			return busproto.SendResponse{}, err
+		}
+	}
 	// The body and refs pass the device redactor before they leave the
 	// machine (plan §4 "Redaction"), as transcript text does. Masks keep
 	// the length, so the server's cap and duplicate check see the same
@@ -131,6 +136,32 @@ func (b *Bus) namesNoWithheld(ctx context.Context, req busproto.SendRequest) err
 	return nil
 }
 
+// reposNotWithheld refuses a request naming a repo the path rules keep
+// off the server (Config.RepoWithheld): the request would tell the server
+// its path or name (issue #71). "" and "*" name none.
+func (b *Bus) reposNotWithheld(ctx context.Context, repos ...string) error {
+	b.mu.Lock()
+	withheld := b.cfg.RepoWithheld
+	b.mu.Unlock()
+	if withheld == nil {
+		return nil
+	}
+	for _, r := range repos {
+		r = strings.TrimSpace(r)
+		if r == "" || r == "*" {
+			continue
+		}
+		w, err := withheld(ctx, r)
+		if err != nil {
+			return err
+		}
+		if w {
+			return fail(http.StatusForbidden, busproto.CodeWithheldRepo, "repo %q is kept off the server by a path rule; nothing about it may reach the team server", r)
+		}
+	}
+	return nil
+}
+
 // redactSend masks secrets in a send's body and refs in place and counts
 // them by rule.
 func redactSend(req *busproto.SendRequest) map[string]int {
@@ -160,6 +191,9 @@ func (b *Bus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersR
 		return b.peersLocal(ctx, q)
 	}
 	if err := b.notWithheld(ctx, q.Session, ""); err != nil {
+		return busproto.PeersResponse{}, err
+	}
+	if err := b.reposNotWithheld(ctx, append([]string{q.Repo}, q.Roots...)...); err != nil {
 		return busproto.PeersResponse{}, err
 	}
 	srv, _ := b.cfg.Connect()

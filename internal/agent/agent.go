@@ -289,7 +289,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 	}
 	if cfg.Bus != nil {
 		cfg.Bus.SetSources(a.BusPresence, a.BusKnown)
-		cfg.Bus.SetWithheld(a.BusWithheld)
+		cfg.Bus.SetWithheld(a.BusWithheld, a.BusRepoWithheld)
 	}
 	return a
 }

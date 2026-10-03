@@ -559,6 +559,52 @@ func notSessionIDRune(r rune) bool {
 	return !(r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
 }
 
+// BusRepoWithheld reports whether a repo a bus request names may not
+// reach the server (devicebus Config.RepoWithheld, issue #71). An
+// absolute path is decided as a session placed there would be. A name is
+// withheld when the device has sessions on a repo by that name and every
+// one is withheld: the name tells the server nothing the device's other
+// sessions do not. A glob, or a name no session has, names nothing.
+func (a *Agent) BusRepoWithheld(ctx context.Context, repo string) (bool, error) {
+	pv := a.policy()
+	repo = strings.TrimRight(strings.TrimSpace(repo), "/")
+	if pv.pol.Empty() || repo == "" || strings.ContainsAny(repo, "*?[") {
+		return false, nil
+	}
+	if filepath.IsAbs(repo) {
+		pl := a.resolve(repo, "")
+		return a.decideOne(pv.pol, placed{pl: pl, how: cwdHow(pl)}).Mode != pathpolicy.Allow, nil
+	}
+	rows, err := a.store.DB().QueryContext(ctx, `SELECT agent, session_id, COALESCE(repo_root, cwd, '') FROM conversations
+		WHERE depth = 0 AND deleted_in_generation IS NULL AND (COALESCE(repo_root, cwd, '') = ? OR COALESCE(repo_root, cwd, '') LIKE ? ESCAPE '\')`,
+		repo, "%/"+strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(repo))
+	if err != nil {
+		return false, err
+	}
+	var keys []placeKey
+	for rows.Next() {
+		var agent, session, root string
+		if err := rows.Scan(&agent, &session, &root); err != nil {
+			rows.Close()
+			return false, err
+		}
+		if filepath.Base(strings.TrimRight(root, "/")) == repo {
+			keys = append(keys, placeKey{transcript.Agent(agent), session})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(keys) == 0 {
+		return false, err
+	}
+	paths := a.transcriptsBySession()
+	for _, k := range keys {
+		if a.reportable(ctx, k, paths[k]) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // BusRoot is the top-level session a subagent's session belongs to, or
 // session itself (issue #107). A subagent is not a session a message can
 // be addressed to: peers lists top-level sessions only, and its hooks

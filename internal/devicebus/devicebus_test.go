@@ -37,6 +37,7 @@ type fakeServer struct {
 	reads    []busproto.ReadReceipt          // read receipts taken
 	readFn   func(busproto.ReadReceipt) bool // takes a read receipt; nil: all
 	sends    []busproto.SendRequest
+	peers    []busproto.PeersQuery
 	pollErr  error // answered at once while set
 	answered chan struct{}
 }
@@ -121,7 +122,10 @@ func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto
 	return busproto.SendResponse{ID: "msent", State: busproto.StateQueued}, nil
 }
 
-func (f *fakeServer) Peers(context.Context, busproto.PeersQuery) (busproto.PeersResponse, error) {
+func (f *fakeServer) Peers(_ context.Context, q busproto.PeersQuery) (busproto.PeersResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.peers = append(f.peers, q)
 	return busproto.PeersResponse{}, nil
 }
 
@@ -889,7 +893,7 @@ func TestSendNamingWithheldSessionRefused(t *testing.T) {
 			return secret, nil
 		}
 		return "", nil
-	})
+	}, nil)
 	for _, req := range []busproto.SendRequest{
 		{FromSession: "open-1", To: "@alex", Body: "see the ref", Refs: []string{"4c19e0d2/12", "5ec2e7aa/28672"}},
 		{FromSession: "open-1", To: "@alex", Body: "see the ref", Refs: []string{"/home/g/.claude/projects/-src-client/" + secret + ".jsonl:3"}},
@@ -950,5 +954,59 @@ func TestSendDropsControlCharacters(t *testing.T) {
 	in, err := lb.Inbox(ctx, busproto.InboxQuery{Session: "open-2"})
 	if err != nil || len(in.Messages) != 1 || in.Messages[0].Body != "xy\nz" {
 		t.Fatalf("local inbox: %+v %v", in, err)
+	}
+}
+
+// An @user send's repo, and a peers filter or any of its roots, that the
+// path rules keep off the server is refused on the device before any
+// request: the server would learn the repo's path or name (issue #71).
+func TestRequestNamingWithheldRepoRefused(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	var asked []string
+	b.SetWithheld(nil, func(_ context.Context, repo string) (bool, error) {
+		asked = append(asked, repo)
+		return repo == "/src/client" || repo == "client", nil
+	})
+	refused := func(what string, err error) {
+		t.Helper()
+		var be *busproto.Error
+		if !errors.As(err, &be) || be.Code != busproto.CodeWithheldRepo || be.Status != http.StatusForbidden || !strings.Contains(be.Detail, "path rule") {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	for _, repo := range []string{"/src/client", "client"} {
+		_, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "hi", Repo: repo})
+		refused("send repo "+repo, err)
+		_, err = b.Peers(ctx, busproto.PeersQuery{Session: "open-1", Repo: repo})
+		refused("peers repo "+repo, err)
+	}
+	_, err := b.Peers(ctx, busproto.PeersQuery{Session: "open-1", Repo: "api", Roots: []string{"/src/api", "/src/client"}})
+	refused("peers root", err)
+	srv.mu.Lock()
+	sends, peers := len(srv.sends), len(srv.peers)
+	srv.mu.Unlock()
+	if sends != 0 || peers != 0 {
+		t.Fatalf("server got %d sends and %d peers queries naming a withheld repo", sends, peers)
+	}
+	// Other repos, "*" and none go through; a session recipient's repo is
+	// not checked (the server ignores it).
+	asked = nil
+	for _, req := range []busproto.SendRequest{
+		{FromSession: "open-1", To: "@alex", Body: "a", Repo: "/src/api"},
+		{FromSession: "open-1", To: "@alex", Body: "b", Repo: "*"},
+		{FromSession: "open-1", To: "@alex", Body: "c"},
+	} {
+		if _, err := b.Send(ctx, req); err != nil {
+			t.Fatalf("send %+v: %v", req, err)
+		}
+	}
+	if _, err := b.Peers(ctx, busproto.PeersQuery{Session: "open-1", Repo: "api", Roots: []string{"/src/api"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asked, []string{"/src/api", "api", "/src/api"}) {
+		t.Fatalf("checked %q", asked)
 	}
 }

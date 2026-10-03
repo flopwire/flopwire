@@ -296,6 +296,8 @@ func TestSendRefusals(t *testing.T) {
 			[]string{"refused (session_not_on_device)", "its transcripts stay on this device"}},
 		{busproto.Error{Status: 403, Code: busproto.CodeWithheldSession, Detail: `ref "5ec2e7aa/3" names session 5ec2e7aa-1, which a path rule keeps off the server; nothing about it may reach the team server`},
 			[]string{"refused (withheld_session): ref \"5ec2e7aa/3\"", "Fix: send it without that ref", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
+		{busproto.Error{Status: 403, Code: busproto.CodeWithheldRepo, Detail: `repo "/src/client" is kept off the server by a path rule; nothing about it may reach the team server`},
+			[]string{"refused (withheld_repo): repo \"/src/client\"", "Fix: leave out --repo", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 400, Code: busproto.CodeBadRequest, Detail: "a ref is an archive address of at most 512 bytes"},
 			[]string{"refused (bad_request): a ref is", "Fix: check the arguments", `Example: flopwire send 0b7e2c1a -- "Heads-up`}},
 	} {
@@ -636,6 +638,19 @@ func TestMCPPeersAndInbox(t *testing.T) {
 	}
 	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_peers, flopwire_read") {
 		t.Fatalf("unknown tool: %v", err)
+	}
+}
+
+// peers --repo naming a repo the path rules keep off the server is
+// refused with what to do instead.
+func TestPeersWithheldRepoRefused(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(agent.Request) agent.Response {
+		return refused(busproto.Error{Status: 403, Code: busproto.CodeWithheldRepo, Detail: `repo "client" is kept off the server by a path rule; nothing about it may reach the team server`})
+	})
+	_, err := cli(t, fa, "", "peers", "--repo", "client")
+	if err == nil || !strings.Contains(err.Error(), "refused (withheld_repo)") || !strings.Contains(err.Error(), "Fix: leave out --repo") {
+		t.Fatalf("peers: %v", err)
 	}
 }
 
