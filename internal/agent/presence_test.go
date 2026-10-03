@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -283,5 +285,136 @@ func TestKnownWithheldByPathRule(t *testing.T) {
 	}
 	if withheld == 0 || open == 0 {
 		t.Fatalf("withheld %d, open %d", withheld, open)
+	}
+}
+
+// endedFixture is presence with a local bus on the test's clock.
+func endedFixture(t *testing.T) (*fixture, *time.Time) {
+	t.Helper()
+	devinPath, _ := buildDevin(t)
+	f := newFixture(t, devinPath)
+	clock := new(time.Time)
+	b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger, Now: func() time.Time { return *clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	f.cfg.Bus = b
+	f.a = New(f.store, f.cfg)
+	f.once()
+	return f, clock
+}
+
+// present is presence at a time on both clocks: is the session live?
+func (f *fixture) present(clock *time.Time, at time.Time, id string) bool {
+	f.t.Helper()
+	*clock = at
+	_, ok := f.presence(at)[id]
+	return ok
+}
+
+// An ended session drops out of presence at once, however recently it
+// wrote (#82): a Claude session file of a dead process, a released Codex
+// writer lock, a Devin lock of a dead pid, a SessionEnd hook; a Claude
+// session file that is gone ends it a second later. Idleness does not.
+func TestPresenceEndedSessions(t *testing.T) {
+	f, clock := endedFixture(t)
+	alive := map[int]bool{}
+	started := map[int]time.Time{}
+	f.a.pidAlive = func(pid int) bool { return alive[pid] }
+	f.a.procName = func(int) string { return "devin" }
+	f.a.procStart = func(pid int) (time.Time, bool) { t, ok := started[pid]; return t, ok }
+	cl, cx, dv := f.pick("claude"), f.pick("codex"), f.pick("devin")
+
+	// Claude: held by a running process, written a minute ago; killed (its
+	// file stays, naming a dead pid): ended at the next read.
+	at := cl.last.Add(time.Minute)
+	sessions := filepath.Join(f.home, ".claude", "sessions")
+	start := cl.last.Add(-time.Hour).UTC().Truncate(time.Second)
+	file := filepath.Join(sessions, "4242.json")
+	writeFile(t, file, fmt.Sprintf(`{"pid":4242,"sessionId":%q,"status":"idle","procStart":%q}`, cl.id, start.Format(time.ANSIC)))
+	alive[4242], started[4242] = true, start
+	if !f.present(clock, at, cl.id) {
+		t.Fatal("held Claude session not live")
+	}
+	// Idle for 50 minutes, still held: live.
+	if !f.present(clock, cl.last.Add(50*time.Minute), cl.id) {
+		t.Fatal("an idle held session ended")
+	}
+	alive[4242] = false
+	if f.present(clock, at.Add(time.Second), cl.id) {
+		t.Fatal("a killed Claude session is live")
+	}
+	// Resumed by a new process: live again. (The dead process's file goes:
+	// left there, it would end the session at once when the new process
+	// exits, which is the next case.)
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(sessions, "4343.json"), fmt.Sprintf(`{"pid":4343,"sessionId":%q,"status":"idle","procStart":%q}`, cl.id, at.Add(2*time.Second).UTC().Format(time.ANSIC)))
+	alive[4343], started[4343] = true, at.Add(2*time.Second).UTC().Truncate(time.Second)
+	if !f.present(clock, at.Add(3*time.Second), cl.id) {
+		t.Fatal("a resumed Claude session is not live")
+	}
+	// A clean exit removes the file: ended a second later.
+	if err := os.Remove(filepath.Join(sessions, "4343.json")); err != nil {
+		t.Fatal(err)
+	}
+	if !f.present(clock, at.Add(4*time.Second), cl.id) {
+		t.Fatal("ended at the first read without its file")
+	}
+	if f.present(clock, at.Add(6*time.Second), cl.id) {
+		t.Fatal("a Claude session whose file is gone is live")
+	}
+
+	// Codex: the writer's flock, not the file.
+	locks := filepath.Join(f.home, ".codex", "thread-writer-locks")
+	writeFile(t, filepath.Join(locks, ".coordination.lock"), "")
+	lockPath := filepath.Join(locks, cx.id+".lock")
+	writeFile(t, lockPath, "")
+	w, err := os.Open(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Flock(int(w.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	at = cx.last.Add(30 * time.Minute)
+	if !f.present(clock, at, cx.id) {
+		t.Fatal("a Codex session whose writer holds the lock is not live")
+	}
+	w.Close() // the writer exits; the file stays
+	if f.present(clock, at.Add(time.Second), cx.id) || f.present(clock, cx.last.Add(time.Minute), cx.id) {
+		t.Fatal("a Codex session whose writer is gone is live")
+	}
+	if fi, err := os.Stat(lockPath); err != nil || fi.Size() != 0 {
+		t.Fatalf("the lock file changed: %v", err)
+	}
+
+	// Devin: a SessionEnd hook ends it while its devin still runs; a later
+	// hook of it (a resume) revives it.
+	writeFile(t, filepath.Join(filepath.Dir(f.cfg.DevinDB), "session_locks", dv.id+".lock"), "5151\n")
+	alive[5151], started[5151] = true, dv.last.Add(-time.Hour)
+	at = dv.last.Add(time.Minute)
+	if !f.present(clock, at, dv.id) {
+		t.Fatal("held Devin session not live")
+	}
+	if r := ask(t, f.a, Request{Op: "flush", Session: dv.id, Agent: "devin", Event: "SessionEnd", HookStart: at.UnixMilli()}); !r.OK && r.Error == "" {
+		t.Fatal(r.Error)
+	}
+	if f.present(clock, at.Add(time.Second), dv.id) {
+		t.Fatal("live after its SessionEnd hook")
+	}
+	ask(t, f.a, Request{Op: "flush", Session: dv.id, Event: "Stop", HookStart: at.Add(-time.Second).UnixMilli()})
+	if f.present(clock, at.Add(2*time.Second), dv.id) {
+		t.Fatal("a Stop hook from before the end revived the session")
+	}
+	ask(t, f.a, Request{Op: "flush", Session: dv.id, Event: "UserPromptSubmit", HookStart: at.Add(time.Minute).UnixMilli()})
+	if !f.present(clock, at.Add(time.Minute+time.Second), dv.id) {
+		t.Fatal("a hook after the end did not revive the session")
+	}
+	alive[5151] = false
+	if f.present(clock, at.Add(2*time.Minute), dv.id) {
+		t.Fatal("a Devin session of a dead pid is live")
 	}
 }

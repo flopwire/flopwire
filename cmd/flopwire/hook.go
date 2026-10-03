@@ -3,16 +3,21 @@ package main
 // `flopwire hook` is the one command harness hooks run (Claude Code, Codex,
 // Devin CLI). It reads the hook's JSON on stdin and, by hook_event_name:
 //
-//	SessionStart                   the standing instruction, plus pending messages
-//	UserPromptSubmit, PostToolUse  pending messages
-//	anything else (Stop, …)        nothing printed
+//	SessionStart, UserPromptSubmit,  pending messages, after the standing
+//	PostToolUse                      instruction while the session is owed it
+//	SessionEnd                       nothing printed; the session ended
+//	anything else (Stop, …)          nothing printed
 //
 // On every event it also asks the device agent to index and upload this
-// transcript now (the `agent flush` request), without waiting for it.
+// transcript now (the `agent flush` request), without waiting for it. The
+// flush carries the event and the hook's start: the agent's busy or idle
+// signal, and SessionEnd ends the session (its messages become
+// undelivered, reason session_ended).
 //
-// Delivery has two steps. The pending request leases the messages to this
-// hook; after the output is written, the hook confirms them (the confirm
-// request). A hook that dies in between (a harness timeout, a kill, a
+// Delivery has two steps. The pending request leases the messages (and
+// the standing instruction, which a session is owed until a hook confirms
+// it) to this hook; after the output is written, the hook confirms them
+// (the confirm request). A hook that dies in between (a harness timeout, a kill, a
 // broken stdout) confirms nothing, and the agent offers the messages again
 // at the session's next hook, marked redelivery="true", once the lease
 // ends (devicebus.LeaseFor). A hook older than hookLate takes nothing and
@@ -58,6 +63,7 @@ const (
 	evSessionStart     = "SessionStart"
 	evUserPromptSubmit = "UserPromptSubmit"
 	evPostToolUse      = "PostToolUse"
+	evSessionEnd       = "SessionEnd"
 )
 
 var (
@@ -173,13 +179,20 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	age := time.Since(started)
 	late := age+hookPendingBudget > hookLate
 	flushIn := in
-	if elsewhere || late {
+	// A late SessionEnd keeps its event: the session ended whenever its
+	// hook ran, and the hook's start time tells the agent when.
+	if elsewhere || late && in.Event != evSessionEnd {
+		flushIn.Event = ""
+	}
+	// The SessionEnd of a second Claude process on the session (`claude -p
+	// -r ID` while another process runs ID) does not end it.
+	if in.Event == evSessionEnd && harness == transcript.AgentClaude && claudeHeldElsewhere(in.SessionID, getenv) {
 		flushIn.Event = ""
 	}
 	flushed := make(chan struct{})
 	go func() {
 		defer close(flushed)
-		hookFlush(ctx, *socket, flushIn, harness)
+		hookFlush(ctx, *socket, flushIn, harness, started)
 	}()
 	defer func() { <-flushed }()
 
@@ -192,7 +205,7 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	case evUserPromptSubmit, evPostToolUse:
 	default:
-		return nil // Stop, PreToolUse (Devin does not show its context), …: flush only
+		return nil // Stop, SessionEnd, PreToolUse (Devin does not show its context), …: flush only
 	}
 	if in.SessionID == "" {
 		warn("the input names no session_id; nothing delivered")
@@ -210,7 +223,7 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	defer cancel()
 	notice := in.Event == evUserPromptSubmit && noticeChannel(harness)
 	resp, err := agent.Call(pctx, *socket, agent.Request{Op: "pending", Session: in.SessionID,
-		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, Start: start, Notice: notice})
+		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, Start: start, Notice: notice, HookStart: started.UnixMilli()})
 	if err != nil {
 		warn("%s; nothing delivered", hookReason(err))
 		return nil
@@ -239,19 +252,25 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		warn("could not write the output; %d messages wait for the next hook", len(resp.Messages))
 		return nil
 	}
-	if len(resp.Messages) > 0 {
-		hookConfirm(ctx, *socket, in.SessionID, resp.Messages, started, warn)
+	instructed := resp.Instruct && out.HookSpecificOutput.AdditionalContext != ""
+	if len(resp.Messages) > 0 || instructed {
+		hookConfirm(ctx, *socket, in.SessionID, resp.Messages, instructed, started, warn)
 	}
 	return nil
 }
 
-// hookConfirm tells the agent that the messages were printed. stdout is
-// unbuffered: once Write returned, the whole output is in the pipe. A hook
-// past hookLate does not confirm, and a confirmation that fails is not
-// retried: either way the lease ends and the messages come again, marked.
-func hookConfirm(ctx context.Context, socket, session string, msgs []busproto.Envelope, started time.Time, warn func(string, ...any)) {
+// hookConfirm tells the agent that the messages, and the standing
+// instruction when instructed, were printed. stdout is unbuffered: once
+// Write returned, the whole output is in the pipe. A hook past hookLate
+// does not confirm, and a confirmation that fails is not retried: either
+// way the lease ends and they come again (messages marked).
+func hookConfirm(ctx context.Context, socket, session string, msgs []busproto.Envelope, instructed bool, started time.Time, warn func(string, ...any)) {
+	what := fmt.Sprintf("%d messages", len(msgs))
+	if instructed {
+		what += " and the standing instruction"
+	}
 	if age := time.Since(started); age >= hookLate {
-		warn("printed %s after the start, too late to confirm; %d messages will be offered again", age.Round(time.Millisecond), len(msgs))
+		warn("printed %s after the start, too late to confirm; %s will be offered again", age.Round(time.Millisecond), what)
 		return
 	}
 	ids := make([]string, len(msgs))
@@ -260,12 +279,12 @@ func hookConfirm(ctx context.Context, socket, session string, msgs []busproto.En
 	}
 	cctx, cancel := context.WithTimeout(ctx, hookConfirmBudget)
 	defer cancel()
-	if _, err := agent.Call(cctx, socket, agent.Request{Op: "confirm", Session: session, IDs: ids}); err != nil {
+	if _, err := agent.Call(cctx, socket, agent.Request{Op: "confirm", Session: session, IDs: ids, Instruction: instructed}); err != nil {
 		reason := hookReason(err)
 		if isTimeout(err) {
 			reason = fmt.Sprintf("no answer within %s", hookConfirmBudget)
 		}
-		warn("could not confirm the delivery (%s); %d messages will be offered again", reason, len(msgs))
+		warn("could not confirm the delivery (%s); %s will be offered again", reason, what)
 	}
 }
 
@@ -347,8 +366,8 @@ func firstLine(s string, n int) string {
 // leaves: the agent indexes and uploads it whether or not anyone reads its
 // answer, and the hook must not wait on indexing. A Devin session has no
 // transcript file; the agent finds it by session id.
-func hookFlush(ctx context.Context, socket string, in hookInput, harness transcript.Agent) {
-	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID, Event: in.Event}
+func hookFlush(ctx context.Context, socket string, in hookInput, harness transcript.Agent, started time.Time) {
+	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID, Event: in.Event, Agent: string(harness), HookStart: started.UnixMilli()}
 	if harness == transcript.AgentDevin {
 		req.Path = ""
 	}
@@ -384,6 +403,19 @@ func devinHeldElsewhere(session string, getenv func(string) string) bool {
 		db = filepath.Join(d.Home, ".local", "share", "devin", "cli", "sessions.db")
 	}
 	return d.DevinHeldElsewhere(db, session)
+}
+
+// claudeHeldElsewhere reports whether another running Claude Code process
+// holds the session (local.Detector.ClaudeHeldElsewhere), in the config
+// directory Claude Code names for hooks (CLAUDE_CONFIG_DIR, else
+// ~/.claude).
+func claudeHeldElsewhere(session string, getenv func(string) string) bool {
+	d := local.NewDetector()
+	dir := getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		dir = filepath.Join(d.Home, ".claude")
+	}
+	return d.ClaudeHeldElsewhere(dir, session)
 }
 
 var codexRollout = regexp.MustCompile(`(^|/)rollout-[^/]*\.jsonl$`)

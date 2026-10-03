@@ -17,6 +17,7 @@ import (
 	"github.com/flopwire/flopwire/internal/api"
 	"github.com/flopwire/flopwire/internal/bus"
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/busrender"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/pgtest"
@@ -326,7 +327,9 @@ func TestAcceptEndToEndCrossUser(t *testing.T) {
 	}
 	o := hook(evUserPromptSubmit)
 	noModelMention(o, "held")
-	if o.HookSpecificOutput.AdditionalContext != "" || !strings.Contains(o.SystemMessage, "1 message from gary@example.test (1) is held until you accept the sender") ||
+	// The model gets the session's standing instruction (its first hook)
+	// and nothing about the held message.
+	if o.HookSpecificOutput.AdditionalContext != busrender.StandingInstruction || !strings.Contains(o.SystemMessage, "1 message from gary@example.test (1) is held until you accept the sender") ||
 		!strings.Contains(o.SystemMessage, s.url+"/#messages") {
 		t.Fatalf("held notice %+v", o)
 	}

@@ -8,52 +8,39 @@ import (
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
 
-// startWindow is how long a SessionStart for one session and source counts
-// as the same start: two hook configs that both run `flopwire hook` fire
-// within milliseconds of each other, while a real second start (a resume,
-// a compaction) is far later.
-const startWindow = 10 * time.Second
-
-// starts records the SessionStart hooks that took the standing
-// instruction, by session and source.
-type starts struct {
-	mu sync.Mutex
-	at map[string]time.Time
+// hookStart is when the hook that sent req started (its HookStart), else
+// now.
+func hookStart(req Request, now time.Time) time.Time {
+	if req.HookStart > 0 {
+		return time.UnixMilli(req.HookStart)
+	}
+	return now
 }
 
-// claimStart reports whether this SessionStart hook is the first for the
-// session and source within startWindow, and records it.
-func (a *Agent) claimStart(session, source string) bool {
-	s := &a.starts
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.at == nil {
-		s.at = map[string]time.Time{}
+// hookLifecycle tells the bus what a hook event says about its session's
+// life: SessionEnd ends it (devicebus.Bus.End); any other event of a hook
+// that started after a recorded end means it was resumed (Revive). The
+// hook's own start time decides, not the request's arrival: a Stop hook
+// of a `claude -p` can reach the agent after its SessionEnd.
+func (a *Agent) hookLifecycle(ctx context.Context, req Request) {
+	if a.cfg.Bus == nil || req.Session == "" {
+		return
 	}
-	now := time.Now()
-	for k, t := range s.at {
-		if now.Sub(t) >= startWindow {
-			delete(s.at, k)
-		}
+	at := hookStart(req, a.now())
+	var err error
+	switch req.Event {
+	case "SessionEnd":
+		err = a.cfg.Bus.End(ctx, devicebus.Ref{Agent: req.Agent, Session: req.Session}, at)
+	case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop":
+		err = a.cfg.Bus.Revive(ctx, req.Session, at)
 	}
-	k := session + "\x00" + source
-	if _, ok := s.at[k]; ok {
-		return false
+	if err != nil {
+		a.log.Warn("agent: session end", "session", req.Session, "event", req.Event, "err", err)
 	}
-	s.at[k] = now
-	return true
-}
-
-// releaseStart undoes claimStart when the hook never got the answer, so
-// the other hook (or the next start) prints the instruction.
-func (a *Agent) releaseStart(session, source string) {
-	s := &a.starts
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.at, session+"\x00"+source)
 }
 
 // hookBusyCap bounds how long a session counts as busy after the hook

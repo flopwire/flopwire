@@ -31,6 +31,7 @@ type fakeServer struct {
 	claimFn  func(busproto.ClaimRequest) (busproto.ClaimResponse, error)
 	acks     [][]string
 	gone     []string // undelivered reports
+	ended    []string // session_ended reports
 	ackFn    func([]string) (busproto.AckResponse, error)
 	sends    []busproto.SendRequest
 	pollErr  error // answered at once while set
@@ -76,12 +77,14 @@ func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.A
 		f.acks = append(f.acks, slices.Clone(req.IDs))
 	}
 	f.gone = append(f.gone, req.Undelivered...)
+	f.ended = append(f.ended, req.SessionEnded...)
 	fn := f.ackFn
 	f.mu.Unlock()
+	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded)
 	if fn == nil {
-		return busproto.AckResponse{Acked: append(slices.Clone(req.IDs), req.Undelivered...), Rejected: []string{}}, nil
+		return busproto.AckResponse{Acked: all, Rejected: []string{}}, nil
 	}
-	return fn(append(slices.Clone(req.IDs), req.Undelivered...))
+	return fn(all)
 }
 
 func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
@@ -119,6 +122,12 @@ func (f *fakeServer) ackedIDs() []string {
 		out = append(out, a...)
 	}
 	return out
+}
+
+func (f *fakeServer) endedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.ended)
 }
 
 func (f *fakeServer) undeliveredIDs() []string {
@@ -392,8 +401,30 @@ func TestRestartKeepsInboxAndReceipts(t *testing.T) {
 	}
 }
 
+// drainAcks runs the receipt batcher's sends (sendAcks) until nothing is
+// owed, as runAcks does after a kick, without its timers. It returns the
+// number of batches sent.
+func drainAcks(t *testing.T, b *Bus) int {
+	t.Helper()
+	for batches := 0; ; batches++ {
+		n, err := b.sendAcks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			return batches
+		}
+		if batches > 100 {
+			t.Fatal("receipts never settle")
+		}
+	}
+}
+
 // Receipts go in batches of at most busproto.MaxAck; rejected ids are not
-// sent again.
+// sent again. The batcher is driven directly (drainAcks): no timers, so
+// the server's view and the inbox are read only after each batch settled
+// (issue #104: the fake server counted a batch before the inbox recorded
+// its answer).
 func TestAckBatchingAndRejected(t *testing.T) {
 	srv := newFakeServer()
 	srv.ackFn = func(ids []string) (busproto.AckResponse, error) {
@@ -418,25 +449,26 @@ func TestAckBatchingAndRejected(t *testing.T) {
 	if got, _ := deliver(b, "s1", "", Limit{}); len(got) != 150 {
 		t.Fatalf("pending %d", len(got))
 	}
-	run(t, b)
-	waitFor(t, "every receipt", func() bool { return len(srv.ackedIDs()) == 150 })
+	if n := drainAcks(t, b); n != 2 {
+		t.Errorf("%d batches for 150 receipts", n)
+	}
+	if got := len(srv.ackedIDs()); got != 150 {
+		t.Fatalf("%d receipts sent", got)
+	}
 	srv.mu.Lock()
-	batches := len(srv.acks)
 	for _, a := range srv.acks {
 		if len(a) > busproto.MaxAck {
 			t.Errorf("a batch of %d ids", len(a))
 		}
 	}
 	srv.mu.Unlock()
-	if batches != 2 {
-		t.Errorf("%d batches for 150 receipts", batches)
-	}
 	if owed, _ := b.st.owed(ctx, "owed", 200); len(owed) != 0 {
 		t.Fatalf("still owed: %v", owed)
 	}
 	// A rejected id is not sent again.
-	b.kickAcks()
-	time.Sleep(50 * time.Millisecond)
+	if n := drainAcks(t, b); n != 0 {
+		t.Fatalf("%d more batches after every receipt settled", n)
+	}
 	n := 0
 	for _, id := range srv.ackedIDs() {
 		if id == "m007" {

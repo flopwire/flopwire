@@ -30,18 +30,24 @@ type Request struct {
 	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
 	// Event (flush from `flopwire hook`): the hook event that sent it. The
 	// agent keeps the session's last one as its busy or idle state
-	// (hookTurns).
+	// (hookTurns); SessionEnd ends the session, and any other event of a
+	// hook that started after an end resumes it (hookLifecycle).
 	Event string `json:"event,omitempty"`
-	Index string `json:"index,omitempty"` // pass: the index the caller means; refused if it is not this agent's
+	// HookStart (flush, pending): when the asking hook process started,
+	// unix ms.
+	HookStart int64  `json:"hook_start,omitempty"`
+	Index     string `json:"index,omitempty"` // pass: the index the caller means; refused if it is not this agent's
 	// redact: the message address (ADDRESS[:L1-L2]) and whether every
 	// identical copy goes too (notes/redaction.md).
 	Address   string `json:"address,omitempty"`
 	AllCopies bool   `json:"all_copies,omitempty"`
 
 	// Message bus (devicebus). pending: Session and Agent (the harness,
-	// when two share an id; "" for any). It leases the messages to the
-	// caller; confirm, with Session and the ids in IDs, says the caller
-	// printed them (devicebus.Bus.Confirm). send, peers, inbox: the request as
+	// when two share an id; "" for any). It leases the messages, and the
+	// standing instruction when the session is owed it, to the caller;
+	// confirm, with Session, the ids in IDs and Instruction, says the
+	// caller printed them (devicebus.Bus.Confirm, ConfirmInstruction).
+	// flush: Agent is the hook's harness, when it knows. send, peers, inbox: the request as
 	// the server takes it; the agent sends it to the server, or answers it
 	// on the device when no server is configured.
 	Agent string `json:"agent,omitempty"`
@@ -49,19 +55,21 @@ type Request struct {
 	// busrender.Size (JSON-encoded bytes); the rest stay queued for the
 	// next call. Start is set
 	// by a SessionStart hook (its source: startup, resume, clear,
-	// compact): the answer's Instruct then says whether to print the
-	// standing instruction.
+	// compact): a source other than startup renews a confirmed standing
+	// instruction (devicebus instruct.go).
 	// Notice (pending): the caller can show the user a notice the model
 	// does not see; the answer's Notice then names the held senders due
 	// one (devicebus.HeldNotice).
-	Notice   bool                  `json:"notice,omitempty"`
-	Limit    int                   `json:"limit,omitempty"`
-	MaxBytes int                   `json:"max_bytes,omitempty"`
-	Start    string                `json:"start,omitempty"`
-	IDs      []string              `json:"ids,omitempty"` // confirm
-	Send     *busproto.SendRequest `json:"send,omitempty"`
-	Peers    *busproto.PeersQuery  `json:"peers,omitempty"`
-	Inbox    *busproto.InboxQuery  `json:"inbox,omitempty"`
+	Notice   bool     `json:"notice,omitempty"`
+	Limit    int      `json:"limit,omitempty"`
+	MaxBytes int      `json:"max_bytes,omitempty"`
+	Start    string   `json:"start,omitempty"`
+	IDs      []string `json:"ids,omitempty"` // confirm
+	// Instruction (confirm): the standing instruction was printed too.
+	Instruction bool                  `json:"instruction,omitempty"`
+	Send        *busproto.SendRequest `json:"send,omitempty"`
+	Peers       *busproto.PeersQuery  `json:"peers,omitempty"`
+	Inbox       *busproto.InboxQuery  `json:"inbox,omitempty"`
 }
 
 // Response answers a Request.
@@ -100,10 +108,12 @@ type Response struct {
 	Inbox    *busproto.InboxResponse `json:"inbox,omitempty"`
 	BusError *busproto.Error         `json:"bus_error,omitempty"`
 	Bus      *devicebus.Status       `json:"bus,omitempty"`
-	// Instruct (pending with Start): print the standing instruction. Only
-	// the first SessionStart hook for a session and source within
-	// startWindow gets it, so a session whose harness runs two hook
-	// configs (Devin runs .claude/settings.json hooks too) sees it once.
+	// Instruct (pending): print the standing instruction before the
+	// messages, then confirm it. The session is owed it until a hook
+	// confirms it, and it is leased to one hook at a time, so a session
+	// whose harness runs two hook configs (Devin runs
+	// .claude/settings.json hooks too) sees it once, and a session whose
+	// SessionStart hook was killed gets it at its next hook.
 	Instruct bool `json:"instruct,omitempty"`
 	// Excerpts (pending) maps a ref address in Messages to a short excerpt
 	// from the local index; an address it cannot find is left out.
@@ -214,6 +224,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		}
 	case req.Op == "flush":
 		a.noteHookEvent(req.Session, req.Event)
+		a.hookLifecycle(ctx, req)
 		resp.Path, err = a.FlushPath(ctx, req.Path, req.Session)
 		resp.OK = err == nil
 		if err != nil {
@@ -228,7 +239,11 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	c.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	_, werr := c.Write(append(b, '\n'))
 	if werr != nil && req.Op == "pending" && resp.Instruct {
-		a.releaseStart(req.Session, req.Start)
+		// The hook gave up before the answer: the instruction is owed as
+		// before, for the session's next hook.
+		if rerr := a.cfg.Bus.ReturnInstruction(ctx, req.Session); rerr != nil {
+			a.log.Warn("agent: the instruction taken by a hook that left waits for its lease to end", "session", req.Session, "err", rerr)
+		}
 	}
 	if werr != nil && req.Op == "pending" && len(resp.Messages) > 0 {
 		// The hook gave up before the answer (its budget ran out) and
@@ -260,26 +275,21 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 	switch req.Op {
 	case "pending":
 		lim := devicebus.Limit{Count: req.Limit, Bytes: req.MaxBytes, Sep: busrender.SepLen, Size: busrender.Size}
-		if req.Start != "" && req.Session != "" {
-			resp.Instruct = a.claimStart(req.Session, req.Start)
-			if resp.Instruct && lim.Bytes > 0 {
-				lim.Bytes = max(1, lim.Bytes-busrender.EncodedLen(busrender.StandingInstruction)-busrender.SepLen)
-			}
-		}
-		resp.Messages, err = b.Take(ctx, req.Session, req.Agent, lim)
+		ins := &devicebus.Instruction{Source: req.Start, HookStart: hookStart(req, a.now()),
+			Bytes: busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen}
+		resp.Instruct, resp.Messages, err = b.TakeWith(ctx, req.Session, req.Agent, lim, ins)
 		resp.Held = b.Held()
 		if req.Notice {
 			if resp.Notice, _ = b.HeldNotice(ctx); len(resp.Notice) > 0 {
 				resp.Console = a.cfg.Console
 			}
 		}
-		if err != nil && resp.Instruct {
-			a.releaseStart(req.Session, req.Start)
-			resp.Instruct = false
-		}
 		resp.Excerpts = a.refExcerpts(ctx, resp.Messages)
 	case "confirm":
 		err = b.Confirm(ctx, req.Session, req.IDs)
+		if err == nil && req.Instruction {
+			err = b.ConfirmInstruction(ctx, req.Session)
+		}
 	case "held":
 		resp.Held = b.Held()
 	default:

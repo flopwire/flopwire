@@ -70,7 +70,6 @@ func (f *hookAgent) serve(c net.Conn) {
 		resp.OK = f.fail == ""
 		resp.Error = f.fail
 		resp.Messages, f.msgs = f.msgs, nil
-		resp.Instruct = resp.Instruct && req.Start != ""
 	}
 	if req.Op == "confirm" && f.confirmFail != "" {
 		resp = agent.Response{Error: f.confirmFail}
@@ -179,8 +178,9 @@ func decodeHook(t *testing.T, out string) hookOutput {
 }
 
 // Each delivering event prints the Claude-format hook JSON with its own
-// event name, for every harness's input shape; SessionStart adds the
-// standing instruction.
+// event name, for every harness's input shape, with the standing
+// instruction first when the agent says the session is owed it (at any
+// of these events: a SessionStart hook may have been killed, #101).
 func TestHookEventsPerHarness(t *testing.T) {
 	inputs := map[string]struct {
 		in  func(string) string
@@ -203,8 +203,8 @@ func TestHookEventsPerHarness(t *testing.T) {
 			if o.HookSpecificOutput.HookEventName != ev || !strings.Contains(ctxt, `<flopwire-message id="m1" `) || !strings.Contains(ctxt, "pagination changed") {
 				t.Fatalf("%s %s: %s", name, ev, out)
 			}
-			if hasInstr := strings.HasPrefix(ctxt, busrender.StandingInstruction); hasInstr != (ev == evSessionStart) {
-				t.Fatalf("%s %s: instruction printed %v", name, ev, hasInstr)
+			if !strings.HasPrefix(ctxt, busrender.StandingInstruction) {
+				t.Fatalf("%s %s: the instruction is not first", name, ev)
 			}
 			if errOut != "" {
 				t.Fatalf("%s %s: stderr %q", name, ev, errOut)
@@ -213,8 +213,11 @@ func TestHookEventsPerHarness(t *testing.T) {
 			if len(p) != 1 || p[0].Limit != busrender.HookMessages || p[0].MaxBytes != busrender.HookBytes || p[0].Agent != "" {
 				t.Fatalf("%s %s: pending requests %+v", name, ev, p)
 			}
-			if (p[0].Start != "") != (ev == evSessionStart) {
-				t.Fatalf("%s %s: start %q", name, ev, p[0].Start)
+			if (p[0].Start != "") != (ev == evSessionStart) || p[0].HookStart == 0 {
+				t.Fatalf("%s %s: start %q, hook start %d", name, ev, p[0].Start, p[0].HookStart)
+			}
+			if c := fa.requests("confirm"); len(c) != 1 || !c[0].Instruction || len(c[0].IDs) != 1 {
+				t.Fatalf("%s %s: confirm %+v", name, ev, c)
 			}
 			if !strings.HasSuffix(out, "\n") || !strings.Contains(out, "<flopwire-message") {
 				t.Fatalf("%s %s: output not one plain JSON line: %q", name, ev, out)
@@ -248,6 +251,86 @@ func waitFlush(t *testing.T, fa *hookAgent, n int) []agent.Request {
 			t.Fatalf("flush requests: %d, want %d", len(fa.requests("flush")), n)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The standing instruction alone (no message) is confirmed too; a hook
+// that printed no instruction does not confirm one.
+func TestHookConfirmsTheInstruction(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Instruct = true
+	out, _ := runHook(t, fa.sock, claudeIn(evUserPromptSubmit), nil)
+	if ctxt := decodeHook(t, out).HookSpecificOutput.AdditionalContext; ctxt != busrender.StandingInstruction {
+		t.Fatalf("output: %q", out)
+	}
+	if c := fa.requests("confirm"); len(c) != 1 || !c[0].Instruction || len(c[0].IDs) != 0 || c[0].Session != claudeSID {
+		t.Fatalf("confirm: %+v", c)
+	}
+	fa = newHookAgent(t)
+	fa.msgs = []busproto.Envelope{testEnvelope("m1", "x", busproto.IntentInform)}
+	runHook(t, fa.sock, claudeIn(evPostToolUse), nil)
+	if c := fa.requests("confirm"); len(c) != 1 || c[0].Instruction {
+		t.Fatalf("confirm without an instruction: %+v", c)
+	}
+}
+
+// SessionEnd prints nothing and only flushes, with its event, harness and
+// start time: the agent ends the session. A SessionEnd hook that starts
+// late (its exec waited) still carries its event.
+func TestHookSessionEnd(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		fa := newHookAgent(t)
+		fa.msgs = []busproto.Envelope{testEnvelope("m1", "x", busproto.IntentInform)}
+		if late {
+			prev := hookStart
+			hookStart = func() time.Time { return time.Now().Add(-10 * time.Second) }
+			t.Cleanup(func() { hookStart = prev })
+		}
+		out, _ := runHook(t, fa.sock, claudeIn(evSessionEnd), nil)
+		if out != "" || len(fa.requests("pending")) != 0 {
+			t.Fatalf("late %v: out %q, pending %v", late, out, fa.requests("pending"))
+		}
+		f := waitFlush(t, fa, 1)
+		if f[0].Event != evSessionEnd || f[0].Session != claudeSID || f[0].Agent != "claude" || f[0].HookStart == 0 {
+			t.Fatalf("late %v: flush %+v", late, f[0])
+		}
+	}
+}
+
+// `claude -p -r ID` on a session another Claude process runs reuses the
+// session id and runs a SessionEnd hook with it when it exits (live,
+// Claude Code 2.1.288), while the other process keeps running the
+// session. That SessionEnd must not end the session: its flush carries no
+// event. The holder's own SessionEnd still does.
+func TestHookSessionEndOfASecondProcess(t *testing.T) {
+	cfg := t.TempDir()
+	os.MkdirAll(filepath.Join(cfg, "sessions"), 0o755)
+	holder := exec.Command("sleep", "30") // the process running the session; not an ancestor of the hook
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Process.Kill(); holder.Wait() })
+	file := func(pid int) string { return filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json") }
+	write := func(pid int) {
+		b, _ := json.Marshal(map[string]any{"pid": pid, "sessionId": claudeSID, "status": "busy"})
+		os.WriteFile(file(pid), b, 0o644)
+	}
+	env := map[string]string{"CLAUDE_CONFIG_DIR": cfg}
+
+	write(holder.Process.Pid)
+	fa := newHookAgent(t)
+	runHook(t, fa.sock, claudeIn(evSessionEnd), env)
+	if f := waitFlush(t, fa, 1); f[0].Event != "" {
+		t.Fatalf("the SessionEnd of a second process ended a session another process runs: %+v", f[0])
+	}
+
+	// The holder is this hook's ancestor: its own SessionEnd.
+	os.Remove(file(holder.Process.Pid))
+	write(os.Getppid())
+	fa = newHookAgent(t)
+	runHook(t, fa.sock, claudeIn(evSessionEnd), env)
+	if f := waitFlush(t, fa, 1); f[0].Event != evSessionEnd {
+		t.Fatalf("the holder's own SessionEnd: %+v", f[0])
 	}
 }
 

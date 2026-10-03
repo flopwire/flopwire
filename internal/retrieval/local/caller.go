@@ -202,6 +202,53 @@ func (d *Detector) DevinHeldElsewhere(devinDB, session string) bool {
 	return true
 }
 
+// ClaudeHeldElsewhere reports whether a Claude Code session file
+// (<claudeDir>/sessions/<pid>.json) names the session and a running
+// process that is not d.Pid or one of its ancestors: another process runs
+// the session. `claude -p -r ID` on a session another process runs reuses
+// the id and runs a SessionEnd hook with it when it exits, while the other
+// process keeps running the session (live, Claude Code 2.1.288). When the
+// process table cannot tell, it reports false.
+func (d *Detector) ClaudeHeldElsewhere(claudeDir, session string) bool {
+	if d.Proc == nil || session == "" {
+		return false
+	}
+	files, _ := filepath.Glob(filepath.Join(claudeDir, "sessions", "*.json"))
+	for _, f := range files {
+		holder, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json"))
+		if err != nil || holder <= 1 || claudeSessionFile(f) != session {
+			continue
+		}
+		if _, _, ok := d.Proc(holder); !ok {
+			continue // a killed process's file
+		}
+		if !d.ancestor(holder) {
+			return true
+		}
+	}
+	return false
+}
+
+// ancestor reports whether pid is d.Pid or one of its ancestors (eight
+// levels), as far as the process table tells.
+func (d *Detector) ancestor(pid int) bool {
+	p := d.Pid
+	for range 8 {
+		if p <= 1 {
+			return false
+		}
+		if p == pid {
+			return true
+		}
+		ppid, _, ok := d.Proc(p)
+		if !ok {
+			return false
+		}
+		p = ppid
+	}
+	return false
+}
+
 // devinLocks maps each pid a Devin session lock names to the sessions
 // naming it. The files are only read.
 func devinLocks(dir string) map[int][]string {

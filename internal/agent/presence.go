@@ -11,16 +11,24 @@ package agent
 //   - Claude Code: <claude config dir>/sessions/<pid>.json whose pid runs
 //     and started when procStart says (a reused pid does not count). Its
 //     status "busy" means a turn is running.
-//   - Codex: thread-writer-locks/<thread>.lock exists. The file is only
-//     looked at, never locked: a try-lock can break a writer that is
-//     starting. A lock left by a killed Codex stays until LiveCap passes
-//     without a write. Busy or idle is the rollout's last task event:
-//     task_started (busy), task_complete or turn_aborted (idle).
+//   - Codex: a running Codex holds the flock on
+//     thread-writer-locks/<thread>.lock (codexWriter probes it as Codex's
+//     own cleanup does, under its coordination lock). The file outlives
+//     the writer; a released lock is not held. When the probe cannot tell,
+//     the file's existence counts, as before. Busy or idle is the
+//     rollout's last task event: task_started (busy), task_complete or
+//     turn_aborted (idle).
 //   - Devin: session_locks/<session>.lock names a running process named
 //     devin. Lock files outlive their sessions, so a Devin session is live
 //     only on that evidence, however recently it wrote. Busy or idle is the
 //     session's last hook event (hookTurns): Devin's store has no
 //     read-only signal that a turn runs.
+//
+// A session that ended is not live (devicebus.Observe, End): its
+// registry entry names a process that is gone (a Claude session file of a
+// dead or reused pid, a released Codex writer lock, a Devin lock of a dead
+// or non-devin pid), an entry it had is missing for a second, or its
+// SessionEnd hook ran. Idleness never ends a session.
 //
 // A session the path rules keep off the server is marked Withheld: the
 // poll does not report it (devicebus).
@@ -29,6 +37,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strconv"
@@ -46,10 +55,12 @@ import (
 
 // harnessLive is what the harness registries say: sessions held open, with
 // the last write the registry knows (zero: unknown, MarkLive then uses the
-// transcript's), and the Claude sessions running a turn.
+// transcript's), the Claude sessions running a turn, and the evidence of
+// which sessions ended (reg, for devicebus.Observe).
 type harnessLive struct {
 	at   map[string]time.Time
 	busy map[string]bool
+	reg  devicebus.Registry
 }
 
 // procStartLayout is Claude Code's procStart: ps's lstart in UTC.
@@ -57,16 +68,24 @@ const procStartLayout = time.ANSIC
 
 // registries reads the harness registries.
 func (a *Agent) registries() harnessLive {
-	h := harnessLive{at: map[string]time.Time{}, busy: map[string]bool{}}
+	h := harnessLive{at: map[string]time.Time{}, busy: map[string]bool{},
+		reg: devicebus.Registry{Held: map[devicebus.Ref]devicebus.Holder{}, Read: map[string]bool{}}}
 	add := func(id string, at time.Time) {
 		if prev, ok := h.at[id]; !ok || at.After(prev) {
 			h.at[id] = at
 		}
 	}
-	files, _ := fsprobe.Glob(filepath.Join(filepath.Dir(a.cfg.ClaudeProjects), "sessions", "*.json"))
+	dirRead := func(dir string) bool {
+		fi, err := fsprobe.Stat(dir)
+		return err == nil && fi.IsDir()
+	}
+	claude := string(transcript.AgentClaude)
+	sessions := filepath.Join(filepath.Dir(a.cfg.ClaudeProjects), "sessions")
+	h.reg.Read[claude] = dirRead(sessions)
+	files, _ := fsprobe.Glob(filepath.Join(sessions, "*.json"))
 	for _, f := range files {
 		pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json"))
-		if err != nil || pid <= 1 || !a.pidAlive(pid) {
+		if err != nil || pid <= 1 {
 			continue
 		}
 		b, err := fsprobe.ReadFile(f)
@@ -79,7 +98,14 @@ func (a *Agent) registries() harnessLive {
 			ProcStart string `json:"procStart"`
 			UpdatedAt int64  `json:"updatedAt"`
 		}
-		if json.Unmarshal(b, &v) != nil || v.SessionID == "" || !a.sameProcess(pid, v.ProcStart) {
+		if json.Unmarshal(b, &v) != nil || v.SessionID == "" {
+			continue
+		}
+		ref := devicebus.Ref{Agent: claude, Session: v.SessionID}
+		if !a.pidAlive(pid) || !a.sameProcess(pid, v.ProcStart) {
+			// The file of a process that is gone (killed: a clean exit
+			// removes it), or of a pid now reused.
+			h.reg.Gone = append(h.reg.Gone, ref)
 			continue
 		}
 		var at time.Time
@@ -88,20 +114,55 @@ func (a *Agent) registries() harnessLive {
 		}
 		add(v.SessionID, at)
 		h.busy[v.SessionID] = h.busy[v.SessionID] || v.Status == "busy"
+		started, _ := a.procStart(pid)
+		h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d:%s", pid, v.ProcStart), Start: started}
 	}
-	locks, _ := fsprobe.Glob(filepath.Join(a.cfg.CodexHome, "thread-writer-locks", "*.lock"))
+	codex := string(transcript.AgentCodex)
+	writers := filepath.Join(a.cfg.CodexHome, "thread-writer-locks")
+	h.reg.Read[codex] = dirRead(writers)
+	locks, _ := fsprobe.Glob(filepath.Join(writers, "*.lock"))
 	for _, f := range locks {
-		add(strings.TrimSuffix(filepath.Base(f), ".lock"), time.Time{})
+		id := strings.TrimSuffix(filepath.Base(f), ".lock")
+		if id == "" || strings.HasPrefix(id, ".") {
+			continue // .coordination.lock
+		}
+		ref := devicebus.Ref{Agent: codex, Session: id}
+		switch a.codexWriter(f) {
+		case codexHeld:
+			add(id, time.Time{})
+			h.reg.Held[ref] = devicebus.Holder{ID: "lock"}
+		case codexReleased:
+			h.reg.Gone = append(h.reg.Gone, ref)
+		default:
+			// Unknown this time: live as the file's existence says, and
+			// neither held nor ended for Observe.
+			add(id, time.Time{})
+			h.reg.Unknown = append(h.reg.Unknown, ref)
+		}
 	}
 	if a.devin.path != "" {
-		locks, _ := fsprobe.Glob(filepath.Join(filepath.Dir(a.devin.path), "session_locks", "*.lock"))
+		devin := string(transcript.AgentDevin)
+		dir := filepath.Join(filepath.Dir(a.devin.path), "session_locks")
+		h.reg.Read[devin] = dirRead(dir)
+		locks, _ := fsprobe.Glob(filepath.Join(dir, "*.lock"))
 		for _, f := range locks {
+			id := strings.TrimSuffix(filepath.Base(f), ".lock")
+			ref := devicebus.Ref{Agent: devin, Session: id}
 			b, err := fsprobe.ReadFile(f)
 			if err != nil {
+				h.reg.Unknown = append(h.reg.Unknown, ref)
 				continue
 			}
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 && a.pidAlive(pid) && local.IsDevinProcess(a.procName(pid)) {
-				add(strings.TrimSuffix(filepath.Base(f), ".lock"), time.Time{})
+			pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+			switch {
+			case err != nil || pid <= 1:
+				h.reg.Unknown = append(h.reg.Unknown, ref)
+			case a.pidAlive(pid) && local.IsDevinProcess(a.procName(pid)):
+				add(id, time.Time{})
+				started, _ := a.procStart(pid)
+				h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", pid), Start: started}
+			default:
+				h.reg.Gone = append(h.reg.Gone, ref) // a dead pid, or reused by another program
 			}
 		}
 	}
@@ -256,10 +317,23 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		return nil, err
 	}
 	reg := a.registries()
+	// The bus records what the registries say and answers which sessions
+	// ended (a dead or missing entry, a SessionEnd hook); they are not
+	// live, however recently they wrote. Without an answer none is left
+	// out: presence must not empty on a read error.
+	var ended map[devicebus.Ref]bool
+	if a.cfg.Bus != nil {
+		if ended, err = a.cfg.Bus.Observe(ctx, reg.reg); err != nil {
+			a.log.Warn("agent: ended sessions", "err", err)
+		}
+	}
 	paths := a.transcriptsBySession()
 	var out []devicebus.Session
 	rollouts := map[string]bool{}
 	for _, s := range all {
+		if ended[devicebus.Ref{Agent: s.Agent, Session: s.SessionID}] {
+			continue
+		}
 		if transcript.Agent(s.Agent) == transcript.AgentDevin {
 			if _, held := reg.at[s.SessionID]; !held {
 				continue // its lock is gone or names no running devin: ended

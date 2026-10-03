@@ -44,6 +44,9 @@ func (b *Bus) sessions(ctx context.Context) ([]Session, error) {
 	b.mu.Lock()
 	b.presence = presenceCache{at: b.cfg.Now(), all: all}
 	b.mu.Unlock()
+	if err := b.st.noteLive(ctx, all, b.cfg.Now()); err != nil && ctx.Err() == nil {
+		b.log.Warn("devicebus: presence", "err", err)
+	}
 	return all, nil
 }
 
@@ -180,13 +183,16 @@ func (b *Bus) runServer(ctx context.Context) {
 		case <-wait:
 		case <-tick.C:
 			b.expireLeases(ctx)
+			// Presence is read on every tick: reading it is what notices a
+			// session that ended (the agent's presence calls Observe).
+			all, err := b.sessions(ctx)
+			b.settleEnded(ctx)
 			// A session started, ended, or turned busy or idle: the server
 			// records presence when a poll starts, so start another. Its
 			// cursor is reset: a message already older than the cursor
 			// that the new presence makes deliverable (a session newly
 			// reported) would otherwise wait for the poll to time out.
 			if inflight && b.cfg.Now().Sub(started) >= time.Second {
-				all, err := b.sessions(ctx)
 				if err == nil && !slices.Equal(serverPresence(all), sent) {
 					cancel()
 					cursor = 0
@@ -381,9 +387,9 @@ func (b *Bus) kickAcks() {
 	}
 }
 
-// runAcks sends delivery receipts and undelivered reports in batches of
-// up to busproto.MaxAck ids, retrying with backoff. A rejected id is not deliverable by this device;
-// it is not sent again.
+// runAcks sends delivery receipts and undelivered reports in batches
+// (sendAcks), retrying with backoff. A rejected id is not deliverable by
+// this device; it is not sent again.
 func (b *Bus) runAcks(ctx context.Context) {
 	var backoff time.Duration
 	for {
@@ -399,24 +405,7 @@ func (b *Bus) runAcks(ctx context.Context) {
 		case <-time.After(b.cfg.AckDelay):
 		}
 		for {
-			ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
-			var gone []string
-			if err == nil && len(ids) < busproto.MaxAck {
-				gone, err = b.st.owed(ctx, "report", busproto.MaxAck-len(ids))
-			}
-			if err != nil || len(ids)+len(gone) == 0 {
-				if err != nil && ctx.Err() == nil {
-					b.log.Warn("devicebus: receipts", "err", err)
-				}
-				break
-			}
-			srv, _ := b.cfg.Connect()
-			actx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone})
-			cancel()
-			if err == nil {
-				err = b.st.acked(ctx, resp.Acked, resp.Rejected)
-			}
+			n, err := b.sendAcks(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -432,9 +421,44 @@ func (b *Bus) runAcks(ctx context.Context) {
 				continue
 			}
 			backoff = 0
-			if len(resp.Rejected) > 0 {
-				b.log.Info("devicebus: receipts rejected (delivered elsewhere, held again or expired)", "ids", resp.Rejected)
+			if n == 0 {
+				break
 			}
 		}
 	}
+}
+
+// sendAcks sends one batch of what the server is owed: delivery receipts
+// first, then undelivered reports, at most busproto.MaxAck ids in all, and
+// records the answer. It returns how many ids it sent (0: nothing owed).
+func (b *Bus) sendAcks(ctx context.Context) (int, error) {
+	ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
+	var gone, ended []string
+	if err == nil && len(ids) < busproto.MaxAck {
+		gone, ended, err = b.st.reports(ctx, busproto.MaxAck-len(ids))
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			b.log.Warn("devicebus: receipts", "err", err)
+		}
+		return 0, nil // the store failed; the next kick tries again
+	}
+	n := len(ids) + len(gone) + len(ended)
+	if n == 0 {
+		return 0, nil
+	}
+	srv, _ := b.cfg.Connect()
+	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended})
+	cancel()
+	if err == nil {
+		err = b.st.acked(ctx, resp.Acked, resp.Rejected)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(resp.Rejected) > 0 {
+		b.log.Info("devicebus: receipts rejected (delivered elsewhere, held again or expired)", "ids", resp.Rejected)
+	}
+	return n, nil
 }

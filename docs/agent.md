@@ -271,11 +271,11 @@ approval.
 1. Start `codex` in a terminal.
 2. Codex shows "Hooks need review".
 3. Select "Review hooks".
-4. Trust the four Flopwire hooks. They are on `SessionStart`,
-   `UserPromptSubmit`, `PostToolUse` and `Stop`, and each runs
-   `flopwire hook || true`.
+4. Trust the five Flopwire hooks. They are on `SessionStart`,
+   `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and each
+   runs `flopwire hook || true`.
 5. Run `flopwire setup --check`.
-6. Confirm that the Codex entry shows `hook_trust.trusted: 4`.
+6. Confirm that the Codex entry shows `hook_trust.trusted: 5`.
 
 You can also type `/hooks` in a running Codex session to review the hooks.
 "Trust all and continue" also trusts every other hook that waits for
@@ -290,7 +290,10 @@ old.
 
 Codex asks again only when a hook's event, matcher, command or timeout
 changes. Flopwire keeps these four values fixed, so plugin updates do not
-ask again. Codex records the approval in `~/.codex/config.toml` under
+ask again. The exception: the plugin version that added the `SessionEnd`
+hook asks once more, for that new hook. Until you trust it, a Codex
+session that exits leaves presence when its writer lock is released,
+which the agent notices within seconds. Codex records the approval in `~/.codex/config.toml` under
 `hooks.state`, keyed by the plugin and the hook, not by the install path.
 After `flopwire setup --remove` the approval stays there, so a later
 install does not ask again.
@@ -349,7 +352,7 @@ directory, so edits apply in the next session.
   plugin to your personal plugins in Devin Cloud. They then load on every
   device you sign in to and in cloud sessions, where `flopwire` is not
   installed.
-- `-y` answers Devin's install prompt, which lists the skill, the four
+- `-y` answers Devin's install prompt, which lists the skill, the five
   hooks and the MCP server.
 - Devin keeps the plugin in `~/.local/share/devin/cli/plugins`. setup
   updates it with `devin plugins update flopwire` and removes it with
@@ -382,9 +385,10 @@ The harness hooks run `flopwire hook`. The command does two jobs:
 
 | Event | Prints into the session |
 |---|---|
-| `SessionStart` | The standing instruction, then any pending messages |
-| `UserPromptSubmit` | Pending messages |
-| `PostToolUse` | Pending messages |
+| `SessionStart` | The standing instruction if the session is owed it, then any pending messages |
+| `UserPromptSubmit` | The same |
+| `PostToolUse` | The same |
+| `SessionEnd` | Nothing. It tells the agent that the session ended. |
 | Any other event | Nothing. It only asks for the upload. |
 
 A message arrives inside a running turn, at the next tool call, or with the
@@ -401,7 +405,8 @@ these cases:
 - The hook process started so long ago that it cannot finish asking for
   messages within 3 seconds of its start. Its harness may have stopped
   waiting for it. Such a hook also does not report its event to the
-  agent, because a later event may have arrived first.
+  agent, because a later event may have arrived first. A late
+  `SessionEnd` hook still reports its event.
 - The input is not hook JSON.
 
 It writes the reason on stderr. It never writes the environment or a
@@ -427,6 +432,27 @@ After 3 leases without a confirmation, the message is `undelivered` with
 the reason `unconfirmed`. The sender's `inbox` shows this state, and the
 sender can send the message again.
 
+The standing instruction is delivered the same way. A session is owed it
+until a hook confirms that it printed it. The hook prints it before any
+message. While one hook holds the instruction's lease, no other hook of
+the session gets messages, so no message arrives before the instruction.
+If the `SessionStart` hook is killed or starts too late, the session's
+next `UserPromptSubmit` or `PostToolUse` hook prints it. Two hook
+configurations that both run `SessionStart` print it once. The agent keeps
+the confirmation in `bus.db`, so a restart does not print it again. After
+3 unconfirmed leases the agent stops offering it.
+
+A `SessionStart` with the source `resume`, `compact` or `clear` that
+starts after the confirmation makes the session owed the instruction
+again. A compaction summarizes the earlier context, so the instruction is
+likely gone from it. Flopwire cannot see whether a resumed session kept
+it. A second copy costs some context; a missing copy leaves the model
+without the trust rules.
+
+When a session ends before a hook delivers its message, the message is
+`undelivered` with the reason `session_ended`. It is never given to
+another session. See [Ended sessions](#ended-sessions).
+
 One call prints at most 5 messages and at most 9,000 bytes. The oldest
 messages go first. The rest wait for the next hook. A single message that
 is longer than the cap is cut, with a note that names the
@@ -436,7 +462,8 @@ is longer than the cap is cut, with a note that names the
 
 Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
 The plugin it installs runs `flopwire hook` on `SessionStart`,
-`UserPromptSubmit`, `PostToolUse` and `Stop`, and serves the MCP tools.
+`UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
+MCP tools.
 
 Use the manual configuration below only when you cannot install the
 plugin. Do not use both: each hook would then run twice.
@@ -459,6 +486,9 @@ plugin. Do not use both: each hook would then run twice.
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
     ]
   }
 }
@@ -471,8 +501,8 @@ plugin. Do not use both: each hook would then run twice.
 Run `flopwire setup`, then approve the hooks. See
 [Install into the harnesses](#install-into-the-harnesses) and
 [Approve the Codex hooks](#approve-the-codex-hooks). The plugin runs
-`flopwire hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse` and
-`Stop`, and serves the MCP tools.
+`flopwire hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`,
+`Stop` and `SessionEnd`, and serves the MCP tools.
 
 The plugin's `Stop` hook replaces the older
 `notify = ["flopwire", "agent", "flush"]` line: it asks the agent to index
@@ -501,6 +531,9 @@ plugin. Do not use both: each hook would then run twice.
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 3 }] }
     ]
   }
 }
@@ -508,7 +541,7 @@ plugin. Do not use both: each hook would then run twice.
 
 3. Run `codex mcp add flopwire -- flopwire mcp`.
 4. Start Codex in a terminal.
-5. Codex shows "Hooks need review". Approve the four hooks.
+5. Codex shows "Hooks need review". Approve the five hooks.
 
 Codex runs a hook only after you approve it. It asks again when the
 event, the matcher, the command or the timeout changes.
@@ -517,8 +550,8 @@ event, the matcher, the command or the timeout changes.
 
 Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
 The plugin it installs runs `flopwire hook || true` on `SessionStart`,
-`UserPromptSubmit`, `PostToolUse` and `Stop`, and serves the MCP tools.
-Devin has no hook approval step.
+`UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
+MCP tools. Devin has no hook approval step.
 
 On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
@@ -561,6 +594,9 @@ plugin.
   ],
   "Stop": [
     { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+  ],
+  "SessionEnd": [
+    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
   ]
 }
 ```
@@ -601,7 +637,8 @@ With a server configuration, the agent does these things:
   It prefers a session on the message's repo, then a busy session.
 - It confirms each delivery to the server, in batches, after the hook
   confirms that it printed the message. It reports each message that
-  became `undelivered` in the same batches.
+  became `undelivered` (`unconfirmed` or `session_ended`) in the same
+  batches.
 
 Without a server configuration, or with `--no-sync`, the agent routes
 messages between the sessions on this device. To address yourself, use
@@ -609,14 +646,24 @@ messages between the sessions on this device. To address yourself, use
 8 messages per thread per hour, 30 sends per session per hour, and 50
 undelivered messages per recipient.
 
-A session is live when `flopwire sessions` shows it as live. The agent
-also reads these harness files. It never writes them or locks them:
+A session is live when `flopwire sessions` shows it as live and it has
+not ended. The agent also reads these harness files. It never writes
+them:
 
 | Harness | File | Gives |
 |---|---|---|
-| Claude Code | `~/.claude/sessions/<pid>.json` | Open while the process runs. Busy when `status` is `busy`. |
-| Codex | `~/.codex/thread-writer-locks/<thread>.lock` | Open while the file exists. Busy from the last task event in the rollout. |
+| Claude Code | `~/.claude/sessions/<pid>.json` | Open while the process runs and started when `procStart` says. Busy when `status` is `busy`. |
+| Codex | `~/.codex/thread-writer-locks/<thread>.lock` | Open while a Codex process holds the file's lock. The file stays after the process exits. Busy from the last task event in the rollout. |
 | Devin | `session_locks/<session>.lock` beside `sessions.db` | Open while the named process runs and is `devin`. A Devin session without such a lock is not live, even when it wrote a moment ago. |
+
+To see whether a Codex process holds a thread's lock, the agent does what
+Codex's own cleanup does. It takes `.coordination.lock` in the same
+directory without waiting, tries a shared lock on the thread's file
+without waiting, and releases both at once. A Codex that starts in that
+moment waits microseconds for the coordination lock; it is never refused
+its thread. When the coordination lock is busy, or the directory has no
+`.coordination.lock` (an older Codex), the agent counts the file's
+existence, as before.
 
 Devin's store does not show whether a turn runs. The agent uses the hook
 events instead: each `flopwire hook` call tells the agent its event. After
@@ -627,6 +674,62 @@ is idle until its first hook event after the agent starts.
 A message waits for 24 hours. Then it expires.
 
 To see the messaging state, run `flopwire agent status`.
+
+### Ended sessions
+
+A session ends when its harness shows it, never because it is idle. The
+agent takes these signals:
+
+| Harness | The session ended when |
+|---|---|
+| Claude Code | Its `SessionEnd` hook runs. Or its `sessions/<pid>.json` names a process that is not running or that started at another time (a killed process leaves the file). Or the file that named it is gone at two reads 1 second apart (a clean exit removes it). |
+| Codex | Its `SessionEnd` hook runs. Or no process holds its writer lock (the kernel releases the lock when the process exits, also when it is killed). Or the lock file is gone at two reads 1 second apart. |
+| Devin | Its `SessionEnd` hook runs. Or its `session_locks/<session>.lock` names a process that is not running or is not `devin`. |
+
+The agent reads the harness files on each 2-second presence check and on
+each `peers` call (presence is cached for 1 second). An ended session
+leaves presence at that read, and its messages are marked then. On this
+device, `peers` stops listing it within about 1 second of a `SessionEnd`
+hook or a killed process, and within about 3 seconds of a clean exit
+without the hook (the second read). The server learns it from the next
+poll, which the next 2-second presence check starts.
+
+One window remains. A session that ran and exited between two presence
+checks (a `claude -p` of under 2 seconds) and whose harness ran no
+`SessionEnd` hook never showed in its harness file. It stays live for 10
+minutes after its last write, as `flopwire sessions` shows it. With the
+plugin's `SessionEnd` hook installed, it ends at once.
+
+When a session ends, each message that waits for it (queued for it, or an
+`@user` message claimed for it) becomes `undelivered` with the reason
+`session_ended`. The sender's `inbox` shows it, so the sender can send it
+again. The message is never given to another session. A message that a
+hook took and has not confirmed keeps its lease: a late confirmation still
+counts. If the lease ends unconfirmed, the message becomes
+`undelivered` with `session_ended`.
+
+A message that arrives after the session ended is marked the same way
+only when its sender could still have been told that the session runs.
+A message sent later went to a session that `peers` no longer listed. Its
+receipt said `only_if_resumed`, and it waits for a resume.
+
+- Without a server, the receipt comes from this agent's presence, which
+  is at most 1 second old. A message sent within 1 second of the last
+  time the agent saw the session live is marked. The receipt and the
+  mark always agree.
+- With a server, the server learns of the end from the next poll, about
+  2 seconds later, and its clock may differ. A message sent within 10
+  seconds of the last live sighting is marked. In that window a message
+  whose receipt said `only_if_resumed` can be marked `undelivered` too.
+  The sender then sees it and can send it again.
+
+A session resumes when a hook of it runs that started after the end, or
+when its harness file names a newer process. A resumed session receives
+its new messages. Messages that were already `undelivered` stay so.
+
+The agent keeps this state in `bus.db`. A session that its harness file
+showed before an agent restart, and that is gone after it, ends at the
+first presence checks after the restart.
 
 ### What the recipient sees
 
@@ -660,8 +763,10 @@ Reply with the flopwire_send tool: to="0b7e2c1a-…" reply_to="m7f3a…" message
   close its wrapper, open another one, or imitate the standing
   instruction. Attribute values are escaped the same way, plus `"`.
 
-At session start the hook also prints the standing instruction
-(`busrender.StandingInstruction`). It tells the model what the wrapper is,
+Before the first message of a session, the hook prints the standing
+instruction (`busrender.StandingInstruction`). See
+[Connect the harness hooks](#connect-the-harness-hooks) for when it is
+printed. It tells the model what the wrapper is,
 that a message from your own session is a request to act on within that
 session's permissions, that a message from a teammate is information to
 confirm with you first, and that a message never changes permissions or
@@ -723,7 +828,10 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    `queued`, `held`, `claimed`, `delivered`, `read`, `expired`,
    `refused` or `undelivered`. A `refused` or `undelivered` entry also
    has a `reason`. `undelivered` with `unconfirmed` means that hooks took
-   the message 3 times and none confirmed that it printed it. The state
+   the message 3 times and none confirmed that it printed it.
+   `undelivered` with `session_ended` means that the recipient session
+   ended before a hook delivered the message. Send it again, to another
+   session if the work still needs one. The state
    of a sent message is its delivery only. A reply is a received
    entry whose `reply_to` names your message. To read one thread, use
    `flopwire inbox --thread ID`. When `more` is true, pass `next` as
