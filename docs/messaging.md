@@ -102,7 +102,7 @@ shows the time, for example `read 2026-10-02 14:03Z`.
 | Claude Code | A `hook_additional_context` attachment | Yes |
 | Codex | A developer message of kind `hooks.additional_context` | Yes |
 | Devin CLI | A `system` message that starts with the hook's output | Yes |
-| opencode | Not kept | No. Messages stay `delivered`. |
+| opencode | A text part with `metadata.flopwire` that the plugin stored ([opencode.md](opencode.md)) | Yes |
 
 A message stays `delivered` in these cases:
 

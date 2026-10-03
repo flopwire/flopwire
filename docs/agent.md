@@ -212,7 +212,9 @@ inspection, and JSON output.
 device. It installs the Flopwire plugin into Claude Code, Codex and Devin
 CLI: the MCP tools, the hooks and a messaging skill. It runs each harness's
 own plugin commands. It never edits the harness's settings files, and it
-writes no Devin config file.
+writes no Devin config file. For opencode, which loads every file in its
+plugin directory, it writes the one plugin file there
+([opencode.md](opencode.md)).
 
 `flopwire setup` prints a JSON report. Add `--text` for a readable form.
 The report has these parts:
@@ -254,7 +256,7 @@ Follow these steps in order.
    empty, tell your user to approve the Flopwire hooks in Codex. See
    [Approve the Codex hooks](#approve-the-codex-hooks). Do not approve
    them yourself, and do not edit `~/.codex/config.toml`.
-10. Tell your user to restart their Claude Code, Codex and Devin
+10. Tell your user to restart their Claude Code, Codex, Devin and opencode
     sessions. A running Claude Code session loads the plugin after a
     restart or after `/reload-plugins`. A running Codex or Devin session
     loads it after a restart.
@@ -355,7 +357,7 @@ a sandboxed shell command. See [Codex and git commits](#codex-and-git-commits).
 1. Run `flopwire setup --remove`.
 2. Run `flopwire setup --check`.
 3. Confirm that each detected harness has `installed: false`.
-4. Restart your Claude Code, Codex and Devin sessions.
+4. Restart your Claude Code, Codex, Devin and opencode sessions.
 
 `--remove` removes only what setup installed. It does not remove a Devin
 plugin that you installed without `--local`, or a plugin from another
@@ -692,6 +694,12 @@ plugin.
 Do not add `flopwire hook` to `PreToolUse`. Devin does not show that
 event's output to the model, and the messages would be lost.
 
+### opencode
+
+Run `flopwire setup`. It installs one plugin file into opencode's global
+plugin directory. The plugin delivers messages, serves the tools and keeps
+presence. See [opencode.md](opencode.md).
+
 ### Manual flush
 
 Run `flopwire agent flush --path <transcript>` or
@@ -951,11 +959,10 @@ refuses the request before anything leaves the device.
 
 ### Known limits
 
-- Only Claude Code, Codex and Devin CLI sessions send and receive.
-  opencode (#62) is not supported. Claude Code cloud sessions and Devin
-  cloud sessions only receive, while they run a turn. See
-  [docs/cloud.md](cloud.md).
-- opencode has no read receipts.
+- Only Claude Code, Codex, Devin CLI and opencode sessions send and
+  receive. Claude Code cloud sessions and Devin cloud sessions only
+  receive, while they run a turn. See [docs/cloud.md](cloud.md). For
+  opencode, see [opencode.md](opencode.md#known-limits).
 - A Devin hook finds a subagent's tool call in Devin's session store. If
   the hook cannot read the store, it delivers messages only at a prompt.
   It writes the cause to stderr.

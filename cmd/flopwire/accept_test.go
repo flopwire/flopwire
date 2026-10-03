@@ -476,7 +476,7 @@ func TestAcceptVerbsPrintNoSenderControlCharacters(t *testing.T) {
 // The command list names every harness setup installs into, and says that
 // accept asks for the password.
 func TestUsageTextSetupAndAccept(t *testing.T) {
-	for _, want := range []string{"into Claude Code, Codex and Devin CLI", "accept messages from a person's agents (asks for your password)"} {
+	for _, want := range []string{"into Claude Code, Codex, Devin CLI and opencode", "accept messages from a person's agents (asks for your password)"} {
 		if !strings.Contains(usageText, want) {
 			t.Errorf("usage text lacks %q", want)
 		}

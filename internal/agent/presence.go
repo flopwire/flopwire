@@ -23,6 +23,13 @@ package agent
 //     only on that evidence, however recently it wrote. Busy or idle is the
 //     session's last hook event (hookTurns): Devin's store has no
 //     read-only signal that a turn runs.
+//   - opencode: the Flopwire plugin keeps <config dir>/opencode/<pid>.json
+//     per opencode process, naming the process's start and its top-level
+//     sessions (never a subagent's). A file whose pid runs a process named
+//     opencode that started by then holds its sessions; any other file's
+//     sessions ended. While the plugin is installed (the directory
+//     exists), an opencode session is live only on that evidence. Busy or
+//     idle is the session's last plugin event (hookTurns).
 //
 // A session that ended is not live (devicebus.Observe, End): its
 // registry entry names a process that is gone (a Claude session file of a
@@ -173,7 +180,60 @@ func (a *Agent) registries() harnessLive {
 			}
 		}
 	}
+	if dir := a.cfg.OpencodeRegistry; dir != "" && a.opencode.path != "" {
+		oc := string(transcript.AgentOpencode)
+		h.reg.Read[oc] = dirRead(dir)
+		files, _ := fsprobe.Glob(filepath.Join(dir, "*.json"))
+		for _, f := range files {
+			pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json"))
+			if err != nil || pid <= 1 {
+				continue
+			}
+			b, err := fsprobe.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			var v struct {
+				Started  int64    `json:"started"` // unix ms
+				Sessions []string `json:"sessions"`
+			}
+			if json.Unmarshal(b, &v) != nil {
+				continue
+			}
+			alive := a.pidAlive(pid) && local.IsOpencodeProcess(a.procName(pid)) && a.startedAt(pid, v.Started)
+			for _, id := range v.Sessions {
+				if id == "" {
+					continue
+				}
+				ref := devicebus.Ref{Agent: oc, Session: id}
+				if !alive {
+					h.reg.Gone = append(h.reg.Gone, ref) // a dead pid, or reused by another program
+					continue
+				}
+				add(id, time.Time{})
+				h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", pid), Start: time.UnixMilli(v.Started)}
+			}
+		}
+	}
 	return h
+}
+
+// startedAt reports whether pid is the process that wrote a registry
+// file recording unix ms as its start: it started no later than that
+// (within 2s). The plugin records performance.timeOrigin, which in
+// opencode's TUI is its worker's start, later than the process's by an
+// unbounded delay; a process that reused the pid started after the
+// writer ended, so after ms. A platform that cannot tell, or a file
+// without the time, takes the pid alone.
+func (a *Agent) startedAt(pid int, ms int64) bool {
+	if ms <= 0 {
+		return true
+	}
+	started, ok := a.procStart(pid)
+	if !ok {
+		return true
+	}
+	return started.Sub(time.UnixMilli(ms)) < 2*time.Second
 }
 
 // sameProcess reports whether pid is the process a Claude session file
@@ -346,6 +406,11 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 				continue // its lock is gone or names no running devin: ended
 			}
 		}
+		if transcript.Agent(s.Agent) == transcript.AgentOpencode && reg.reg.Read[string(transcript.AgentOpencode)] {
+			if _, held := reg.at[s.SessionID]; !held {
+				continue // no running opencode with the plugin holds it
+			}
+		}
 		last := s.LastActive
 		info := format.ConversationInfo{SessionID: s.SessionID, LastActivityAt: &last}
 		local.MarkLive(&info, reg.at, now)
@@ -371,7 +436,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			if t := paths[key]; t != nil {
 				out[i].Busy = a.rollouts.busy(t.path, rollouts)
 			}
-		case transcript.AgentDevin:
+		case transcript.AgentDevin, transcript.AgentOpencode:
 			out[i].Busy = a.hookBusy(s.SessionID)
 		}
 	}

@@ -198,9 +198,9 @@ func verdictMidTurn(entries []tapEntry, session, id, marker, reply string, sentA
 }
 
 // subagentWindow is when a subagent ran, from the tap log: SubagentStart
-// to SubagentStop (Claude Code, Codex), or the run_subagent call's
-// PreToolUse to its PostToolUse (Devin, whose subagent hooks carry no
-// agent id). Zero when none ran.
+// to SubagentStop (Claude Code, Codex), or the run_subagent (Devin, whose
+// subagent hooks carry no agent id) or task (opencode) call's PreToolUse
+// to its PostToolUse. Zero when none ran.
 type subagentWindow struct {
 	start, end   int64
 	startE, endE tapEntry
@@ -212,8 +212,8 @@ func findSubagent(entries []tapEntry, session string) (w subagentWindow, ok bool
 		if e.Session != session {
 			continue
 		}
-		isStart := e.Event == "SubagentStart" || (e.Event == "PreToolUse" && e.Tool == "run_subagent")
-		isEnd := e.Event == "SubagentStop" || (e.Event == evPostToolUse && e.Tool == "run_subagent")
+		isStart := e.Event == "SubagentStart" || (e.Event == "PreToolUse" && (e.Tool == "run_subagent" || e.Tool == "task"))
+		isEnd := e.Event == "SubagentStop" || (e.Event == evPostToolUse && (e.Tool == "run_subagent" || e.Tool == "task"))
 		switch {
 		case !started && isStart:
 			started, w.start, w.startE = true, e.At, e
