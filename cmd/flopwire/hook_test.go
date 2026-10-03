@@ -188,8 +188,8 @@ func TestHookEventsPerHarness(t *testing.T) {
 	}{
 		"claude":               {claudeIn, map[string]string{"CLAUDECODE": "1"}},
 		"codex":                {codexIn, map[string]string{"CODEX_THREAD_ID": codexSID}},
-		"devin":                {devinIn, devinEnv},
-		"devin-claude-config":  {claudeIn, devinEnv}, // Devin running a hook from .claude/settings.json
+		"devin":                {devinIn, devinHookEnv(t)},
+		"devin-claude-config":  {claudeIn, devinHookEnv(t)}, // Devin running a hook from .claude/settings.json
 		"claude-no-env-at-all": {claudeIn, nil},
 	}
 	for name, h := range inputs {
@@ -198,6 +198,9 @@ func TestHookEventsPerHarness(t *testing.T) {
 			fa.resp.Instruct = true
 			fa.msgs = []busproto.Envelope{testEnvelope("m1", "pagination changed", busproto.IntentInform)}
 			out, errOut := runHook(t, fa.sock, h.in(ev), h.env)
+			if out == "" {
+				t.Fatalf("%s %s: nothing printed (stderr %q)", name, ev, errOut)
+			}
 			o := decodeHook(t, out)
 			ctxt := o.HookSpecificOutput.AdditionalContext
 			if o.HookSpecificOutput.HookEventName != ev || !strings.Contains(ctxt, `<flopwire-message id="m1" `) || !strings.Contains(ctxt, "pagination changed") {
@@ -337,6 +340,7 @@ func TestHookSessionEndOfASecondProcess(t *testing.T) {
 // The hook still triggers the flush `agent flush` does: the transcript for
 // Claude and Codex, the session for Devin, which has no transcript file.
 func TestHookFlushes(t *testing.T) {
+	devinEnv := devinHookEnv(t)
 	for _, c := range []struct {
 		in                string
 		env               map[string]string
@@ -395,6 +399,7 @@ func TestHookDevinSessionHeldByAnotherProcess(t *testing.T) {
 	env := map[string]string{}
 	maps.Copy(env, devinEnv)
 	env["CHISEL_SESSION_DB"] = db
+	writeDevinStore(t, db, "exec:call_1")
 
 	for _, ev := range []string{evSessionStart, evUserPromptSubmit, evPostToolUse} {
 		fa := newHookAgent(t)
@@ -574,8 +579,8 @@ func TestHookHeldNoticeIsForThePersonOnly(t *testing.T) {
 	}{
 		"claude":              {claudeIn, map[string]string{"CLAUDECODE": "1"}, true},
 		"codex":               {codexIn, map[string]string{"CODEX_THREAD_ID": codexSID}, true},
-		"devin":               {devinIn, devinEnv, false},
-		"devin-claude-config": {claudeIn, devinEnv, false},
+		"devin":               {devinIn, devinHookEnv(t), false},
+		"devin-claude-config": {claudeIn, devinHookEnv(t), false},
 	}
 	for name, c := range cases {
 		for _, ev := range []string{evSessionStart, evUserPromptSubmit, evPostToolUse} {
