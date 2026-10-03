@@ -549,13 +549,21 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 // issue #102): a path, or a name or owner/name the placements know, as
 // --server --repo resolves it (local.ExpandRepo). A repository with no
 // remote, or one the device does not know, keeps the repo as it is; a
-// name that fits two repositories is an error.
+// name that fits two repositories is an error. With a server, a remote
+// goes only when the path rules let every checkout and remote of the
+// repository reach it (local.ServerRepo, as peers --repo has it).
 func (a *Agent) BusRepoKey(ctx context.Context, repo string) (string, error) {
 	dirs, err := a.store.RepoDirs(ctx)
 	if err != nil {
 		return "", err
 	}
-	_, _, remotes, err := local.ExpandRepo(repo, dirs, true)
+	var remotes []string
+	if a.cfg.Bus != nil && a.cfg.Bus.Local() {
+		_, _, remotes, err = local.ExpandRepo(repo, dirs, true)
+	} else {
+		pol := a.policy().pol
+		_, _, remotes, err = local.ServerRepo(repo, dirs, func(pl pathpolicy.Placement) bool { return Uploads(pol, pl) })
+	}
 	if err != nil {
 		return "", errors.New(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "))
 	}
