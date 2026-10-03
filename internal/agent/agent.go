@@ -43,13 +43,13 @@ import (
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
-	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
+	"github.com/flopwire/flopwire/internal/transcript/opencode"
 )
 
 // Sync is the part of devicesync.Scheduler the agent drives. Every call
@@ -67,6 +67,7 @@ type Config struct {
 	ClaudeProjects string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
 	CodexHome      string // default codex.Home() (CODEX_HOME or ~/.codex)
 	DevinDB        string // default devin.DefaultPath; "-" disables Devin
+	OpencodeDB     string // default opencode.DefaultPath; "-" disables opencode
 
 	Sweep      time.Duration // full sweep interval; default 45s
 	FastLane   time.Duration // hot-file and Devin re-stat interval; default 500ms
@@ -127,6 +128,9 @@ func (c *Config) defaults() {
 	}
 	if c.DevinDB == "" {
 		c.DevinDB = devin.DefaultPath(home)
+	}
+	if c.OpencodeDB == "" {
+		c.OpencodeDB = opencode.DefaultPath(home)
 	}
 	if c.Sweep <= 0 {
 		c.Sweep = 45 * time.Second
@@ -192,13 +196,14 @@ type Agent struct {
 	// Run started (bgOn): a pass (Once) never waits for them (D16).
 	background queue
 	bgOn       bool
-	bgWG       sync.WaitGroup  // background work outside the workers (Devin)
+	bgWG       sync.WaitGroup  // background work outside the workers (harness stores)
 	wake       chan struct{}   // a job was queued
 	busy       int             // jobs running
 	idle       *sync.Cond      // signalled when the queue drains
 	orphanSrc  int64           // pseudo source holding orphan stubs
 	notified   map[string]bool // sources handed to sync since start
-	devin      devinState
+	devin      storeState
+	opencode   storeState
 	ticks      int // fast-lane ticks
 	// discovered is closed once the first full discovery pass merged (or
 	// Run gave up before one): a hook flush waits for it, since before it
@@ -206,11 +211,10 @@ type Agent struct {
 	discovered     chan struct{}
 	discoveredOnce sync.Once
 
-	// Path rules (policy.go, placement.go). pol, devinModes, places and
-	// folders are guarded by mu; polMu serializes loading and applying
+	// Path rules (policy.go, placement.go). pol, the stores' modes, places
+	// and folders are guarded by mu; polMu serializes loading and applying
 	// rules.
 	pol        *policyView
-	devinModes map[string]pathpolicy.Mode
 	places     map[placeKey]placed // stored placements
 	placesOK   bool                // places holds what the index stored
 	folders    map[string]string   // decoded Claude project folders
@@ -265,8 +269,12 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
 		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, codexWriter: codexWriter, now: time.Now}
 	a.idle = sync.NewCond(&a.mu)
+	a.devin.h, a.opencode.h = devinHarness, opencodeHarness
 	if cfg.DevinDB != "-" {
 		a.devin.path = cfg.DevinDB
+	}
+	if cfg.OpencodeDB != "-" {
+		a.opencode.path = cfg.OpencodeDB
 	}
 	// The sync scheduler uploads what an earlier run queued as soon as it
 	// runs: check it against the rules on disk and the stored placements
@@ -446,10 +454,12 @@ func (a *Agent) load(ctx context.Context) error {
 	}
 	for _, st := range srcs {
 		if st.Source.StorageKind == transcript.StorageSQLite {
-			if st.Source.Path == a.devin.path {
-				a.devin.sourceID = st.ID
-				if st.Watermark != nil {
-					a.devin.indexedWith = st.Source.Parser
+			for _, d := range a.stores() {
+				if st.Source.Path == d.path && st.Source.Agent == d.h.agent {
+					d.sourceID = st.ID
+					if st.Watermark != nil {
+						d.indexedWith = st.Source.Parser
+					}
 				}
 			}
 			continue
@@ -471,7 +481,7 @@ func (a *Agent) load(ctx context.Context) error {
 }
 
 // sweep runs a full discovery pass, queues every file whose gate moved and
-// polls Devin.
+// polls the harness stores.
 func (a *Agent) sweep(ctx context.Context) error {
 	t0, cpu0 := time.Now(), cpuTime()
 	a.refreshPolicy(ctx, false)
@@ -481,7 +491,7 @@ func (a *Agent) sweep(ctx context.Context) error {
 	}
 	queued := a.merge(ctx, f, true)
 	a.stats.Sweeps.Add(1)
-	a.pollDevin(ctx, false, false)
+	a.pollStores(ctx, false, false)
 	a.log.Debug("agent: sweep", "files", len(f.targets), "queued", queued, "wall", time.Since(t0), "cpu", cpuTime()-cpu0)
 	return nil
 }
@@ -774,7 +784,7 @@ func (a *Agent) fastLane(ctx context.Context) {
 	for _, t := range hot {
 		a.gate(t, now, true)
 	}
-	a.pollDevin(ctx, false, false)
+	a.pollStores(ctx, false, false)
 }
 
 // warmEvery is how many fast-lane ticks pass between re-stats of warm files.
@@ -805,9 +815,11 @@ func (a *Agent) dirEvent(ctx context.Context, ev watchEvent, w *watcher) {
 
 // scanDir lists what a directory may have gained and gates it.
 func (a *Agent) scanDir(ctx context.Context, dir string, w *watcher) {
-	if a.devin.path != "" && dir == filepath.Dir(a.devin.path) {
-		a.pollDevin(ctx, false, false)
-		return
+	for _, d := range a.stores() {
+		if dir == filepath.Dir(d.path) {
+			a.pollStore(ctx, d, false, false)
+			return
+		}
 	}
 	f, ok := a.discoverDir(dir)
 	if !ok {
@@ -1000,7 +1012,9 @@ func (a *Agent) ResetGates() {
 	for _, t := range a.targets {
 		t.seen, t.seenAt = transcript.Identity{}, 0
 	}
-	a.devin.db, a.devin.wal = transcript.Identity{}, transcript.Identity{}
+	for _, d := range a.stores() {
+		d.db, d.wal = transcript.Identity{}, transcript.Identity{}
+	}
 	a.log.Error("agent: index commit failed; re-checking every source at the next sweep")
 }
 

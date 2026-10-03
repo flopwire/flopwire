@@ -542,15 +542,16 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 			return t.src.SessionKey, nil
 		}
 	}
-	if a.devin.path != "" {
-		a.loadDevinModes(ctx, pv)
+	for _, d := range a.stores() {
+		a.loadStoreModes(ctx, d, pv)
 		a.mu.Lock()
-		defer a.mu.Unlock()
-		for session, m := range a.devinModes {
+		for session, m := range d.modes {
 			if names(session) && m != pathpolicy.Allow {
+				a.mu.Unlock()
 				return session, nil
 			}
 		}
+		a.mu.Unlock()
 	}
 	return "", nil
 }
@@ -698,8 +699,10 @@ func (a *Agent) transcriptsBySession() map[placeKey]*target {
 // reportable reports whether the path rules let the session reach the
 // server. A session not placed yet is not reported.
 func (a *Agent) reportable(ctx context.Context, key placeKey, t *target) bool {
-	if key.agent == transcript.AgentDevin {
-		return a.devin.path != "" && a.devinMode(ctx, key.session) == pathpolicy.Allow
+	if d := a.storeOf(key.agent); d != nil {
+		return a.storeMode(ctx, d, key.session) == pathpolicy.Allow
+	} else if key.agent == transcript.AgentDevin || key.agent == transcript.AgentOpencode {
+		return false // a store this device does not read
 	}
 	return t != nil && a.uploadable(t)
 }

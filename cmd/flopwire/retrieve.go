@@ -917,7 +917,7 @@ func flagsOf(verb string) []string {
 // toolHelp is each tool's help: three examples first, then every flag, on
 // one screen.
 var toolHelp = map[string]string{
-	"grep": `flopwire grep — regex search over coding-agent transcripts (Claude Code, Codex, Devin), like rg
+	"grep": `flopwire grep — regex search over coding-agent transcripts (Claude Code, Codex, Devin, opencode), like rg
 
   flopwire grep 'upload\.test.*timeout'               RE2 regex; smart case
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
@@ -932,7 +932,7 @@ Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a matc
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
          --limit N (20)  --offset N  --sort newest|oldest|relevance  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
-Filters  --agent claude,codex,devin  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since 7d
+Filters  --agent claude,codex,devin,opencode  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since 7d
          --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
          --exclude-subagents  --exclude-live  --include-superseded  --include-branches
          --include-self  --device D  --user U

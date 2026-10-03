@@ -16,6 +16,8 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
+	"github.com/flopwire/flopwire/internal/transcript/opencode"
+	"github.com/flopwire/flopwire/internal/transcript/opencode/opencodetest"
 )
 
 // fixture is a copy of testdata/oracle/home plus a Devin store built from
@@ -25,6 +27,9 @@ type fixture struct {
 	transcripts   []devicesync.SourceSpec // Claude and Codex transcripts
 	companions    []devicesync.SourceSpec
 	devinSessions []string
+
+	opencodeDB       string
+	opencodeSessions []string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -74,10 +79,36 @@ func newFixture(t *testing.T) *fixture {
 	if f.devinSessions, err = devin.ListSessions(context.Background(), f.devinDB); err != nil {
 		t.Fatal(err)
 	}
+	f.opencodeDB = seedOpencode(t, f.home)
+	if f.opencodeSessions, err = opencode.ListSessions(context.Background(), f.opencodeDB); err != nil {
+		t.Fatal(err)
+	}
 	if len(f.transcripts) < 10 || len(f.companions) < 4 || len(f.devinSessions) < 2 {
 		t.Fatalf("fixture: %d transcripts, %d companions, %d devin sessions", len(f.transcripts), len(f.companions), len(f.devinSessions))
 	}
 	return f
+}
+
+// seedOpencode writes a synthetic opencode store under home: a session
+// with a tool call that spawned a subagent session.
+func seedOpencode(t *testing.T, home string) string {
+	oc := opencodetest.New(t, home)
+	const parent, child = "ses_synthetic0000000000000P", "ses_synthetic0000000000000C"
+	t0 := opencodetest.T0
+	oc.Session(parent, "", "/work/oc", "Map the widget", t0)
+	oc.Prompt(parent, t0, "map the widget package")
+	msg := opencodetest.ID("msg", t0+1000, 1)
+	oc.Message(msg, parent, t0+1000, `{"role":"assistant","path":{"cwd":"/work/oc","root":"/work/oc"}}`)
+	oc.Part(opencodetest.ID("prt", t0+1001, 1), msg, parent, t0+1001, `{"type":"text","text":"Delegating the exploration."}`)
+	oc.Part(opencodetest.ID("prt", t0+1002, 1), msg, parent, t0+1002, `{"type":"tool","tool":"task","callID":"call_t","state":{"status":"completed","input":{"prompt":"explore"},"output":"widget has 3 files","metadata":{"sessionId":"`+child+`"}}}`)
+	oc.Session(child, parent, "/work/oc", "Explore widget (@explore subagent)", t0+1003)
+	oc.Prompt(child, t0+1003, "explore the widget package")
+	return oc.Path
+}
+
+func opencodeSpec(db, session string) devicesync.SourceSpec {
+	return devicesync.SourceSpec{Path: opencode.ExportPath(db, session), Agent: transcript.AgentOpencode,
+		StorageKind: transcript.StorageSQLite, Parser: opencode.ExportFormat, Export: true}
 }
 
 func devinSpec(db, session string) devicesync.SourceSpec {
@@ -102,6 +133,15 @@ func (f *fixture) syncAll(t *testing.T, sy *devicesync.Syncer) {
 		}
 		if err := sy.SyncExport(ctx, devinSpec(f.devinDB, id), data); err != nil {
 			t.Fatalf("sync devin %s: %v", id, err)
+		}
+	}
+	for _, id := range f.opencodeSessions {
+		data, err := opencode.Export(ctx, f.opencodeDB, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sy.SyncExport(ctx, opencodeSpec(f.opencodeDB, id), data); err != nil {
+			t.Fatalf("sync opencode %s: %v", id, err)
 		}
 	}
 }
@@ -146,6 +186,11 @@ func (f *fixture) want(t *testing.T) map[string][]string {
 		t.Fatal(err)
 	}
 	add("devin", c)
+	c = &transcript.Collector{}
+	if _, err := (&opencode.Parser{Caps: uncapped}).Parse(ctx, transcript.Input{Source: &transcript.Source{Path: f.opencodeDB}}, transcript.Cursor{}, c); err != nil {
+		t.Fatal(err)
+	}
+	add("opencode", c)
 	for k := range out {
 		slices.Sort(out[k])
 	}
@@ -224,6 +269,10 @@ func TestDeviceSyncEndToEnd(t *testing.T) {
 	}
 	if n := e.count(`SELECT count(*) FROM messages WHERE NOT superseded AND enrichment ? 'persisted_output'`); n == 0 {
 		t.Fatal("no row filled from tool-results/")
+	}
+	// opencode: the subagent links to its parent's task call.
+	if n := e.count(`SELECT count(*) FROM conversations WHERE agent='opencode' AND depth>0 AND spawned_by_message_id IS NOT NULL`); n != 1 {
+		t.Fatalf("opencode subagents with a spawning call: %d", n)
 	}
 	// Devin: on_active_path from main_chain_id.
 	if n := e.count(`SELECT count(*) FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.agent='devin' AND m.on_active_path = false`); n == 0 {

@@ -232,7 +232,7 @@ type indexResult struct {
 
 func (b *bench) agentArgs(db string, extra ...string) []string {
 	return append([]string{"agent", "run", "--no-sync", "--db", db, "--claude-projects", b.claude, "--codex-home", b.codex,
-		"--devin-db", filepath.Join(b.scratch, "devin", "sessions.db")}, extra...)
+		"--devin-db", filepath.Join(b.scratch, "devin", "sessions.db"), "--opencode-db", "-"}, extra...)
 }
 
 func (b *bench) agentEnv() []string {
@@ -401,7 +401,7 @@ func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(rctx, b.exe, "agent", "run", "--no-sync", "--db", db, "--claude-projects", filepath.Join(dir, "projects"),
-		"--codex-home", filepath.Join(dir, "nocodex"), "--devin-db", "-", "--socket", filepath.Join(dir, "agent.sock"))
+		"--codex-home", filepath.Join(dir, "nocodex"), "--devin-db", "-", "--opencode-db", "-", "--socket", filepath.Join(dir, "agent.sock"))
 	cmd.Env = b.agentEnv()
 	var logBuf bytes.Buffer
 	cmd.Stderr = &logBuf

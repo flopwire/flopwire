@@ -360,7 +360,9 @@ func (a *Agent) setPolicy(ctx context.Context, pol pathpolicy.Policy) {
 		a.log.Info("agent: path rules in force", "admin", len(pol.Admin), "user", len(pol.User),
 			"unplaceable", pathpolicy.UnplaceableName(pol.Unplaceable))
 	}
-	a.devin.dirty.Store(true)
+	for _, d := range a.stores() {
+		d.dirty.Store(true)
+	}
 	a.enforce(ctx, pol)
 }
 
@@ -379,19 +381,25 @@ func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) {
 		t.modeGen = 0
 	}
 	clear(a.notified)
-	a.devinModes = nil
+	for _, d := range a.stores() {
+		d.modes = nil
+	}
 	a.mu.Unlock()
-	// Devin sessions too: the next poll hands every session over again.
-	a.devin.mu.Lock()
-	a.devin.synced = false
-	a.devin.mu.Unlock()
-	a.devin.dirty.Store(true)
+	// Store sessions too: the next poll hands every session over again.
+	for _, d := range a.stores() {
+		d.mu.Lock()
+		d.synced = false
+		d.mu.Unlock()
+		d.dirty.Store(true)
+	}
 	if err := a.purgeDenied(ctx); err != nil && ctx.Err() == nil {
 		a.stats.Errors.Add(1)
 		a.log.Error("agent: purging sessions a deny rule covers", "err", err)
 	}
-	if err := a.devinResync(ctx); err != nil && ctx.Err() == nil {
-		a.log.Warn("agent: devin after a path rules change", "err", err)
+	for _, d := range a.stores() {
+		if err := a.storeResync(ctx, d); err != nil && ctx.Err() == nil {
+			a.log.Warn("agent: store after a path rules change", "agent", d.h.agent, "err", err)
+		}
 	}
 }
 
@@ -447,23 +455,22 @@ func (a *Agent) reresolve() {
 	}
 }
 
-// devinResync re-reads Devin's store from the start when a session the
+// storeResync re-reads a harness store from the start when a session the
 // rules allow is missing from the index: a deny rule kept it out before,
 // and the parser's cursor already counts it as read.
-func (a *Agent) devinResync(ctx context.Context) error {
-	d := &a.devin
+func (a *Agent) storeResync(ctx context.Context, d *storeState) error {
 	d.mu.Lock()
 	sourceID := d.sourceID
 	d.mu.Unlock()
 	if d.path == "" || sourceID == 0 {
 		return nil
 	}
-	cwds, err := devinCwds(ctx, d.path)
+	cwds, err := d.h.cwds(ctx, d.path)
 	if err != nil {
 		return err
 	}
 	have := map[string]bool{}
-	rows, err := a.store.DB().QueryContext(ctx, `SELECT session_id FROM conversations WHERE agent = ?`, string(transcript.AgentDevin))
+	rows, err := a.store.DB().QueryContext(ctx, `SELECT session_id FROM conversations WHERE agent = ?`, string(d.h.agent))
 	if err != nil {
 		return err
 	}
@@ -481,7 +488,7 @@ func (a *Agent) devinResync(ctx context.Context) error {
 	}
 	pv := a.policy()
 	for s, cwd := range cwds {
-		if !have[s] && a.devinDecide(pv, s, cwd).Mode != pathpolicy.Deny {
+		if !have[s] && a.storeDecide(d, pv, s, cwd).Mode != pathpolicy.Deny {
 			d.mu.Lock()
 			defer d.mu.Unlock()
 			if err := a.store.SaveWatermark(ctx, sourceID, transcript.Watermark{}, nil); err != nil {
@@ -494,10 +501,10 @@ func (a *Agent) devinResync(ctx context.Context) error {
 	return nil
 }
 
-// devinDecide applies the rules to a Devin session, placed by the
-// working directory Devin recorded (stored the first time).
-func (a *Agent) devinDecide(pv *policyView, session, cwd string) pathpolicy.Decision {
-	key := placeKey{transcript.AgentDevin, session}
+// storeDecide applies the rules to a store session, placed by the
+// working directory its harness recorded (stored the first time).
+func (a *Agent) storeDecide(d *storeState, pv *policyView, session, cwd string) pathpolicy.Decision {
+	key := placeKey{d.h.agent, session}
 	if !filepath.IsAbs(cwd) {
 		cwd = "" // "." or garbage names nothing
 	}
@@ -631,42 +638,42 @@ func (a *Agent) uploadable(t *target) bool {
 	return known && m == pathpolicy.Allow
 }
 
-// devinMode is the verdict for one Devin session.
-func (a *Agent) devinMode(ctx context.Context, session string) pathpolicy.Mode {
+// storeMode is the verdict for one store session.
+func (a *Agent) storeMode(ctx context.Context, d *storeState, session string) pathpolicy.Mode {
 	pv := a.policy()
 	if pv.pol.Empty() {
 		return pathpolicy.Allow
 	}
 	a.mu.Lock()
-	m, ok := a.devinModes[session]
+	m, ok := d.modes[session]
 	a.mu.Unlock()
 	if ok {
 		return m
 	}
-	a.loadDevinModes(ctx, pv)
+	a.loadStoreModes(ctx, d, pv)
 	a.mu.Lock()
-	m, ok = a.devinModes[session]
+	m, ok = d.modes[session]
 	a.mu.Unlock()
-	if !ok { // no sessions row: no directory
-		m = a.devinDecide(pv, session, "").Mode
+	if !ok { // no session row: no directory
+		m = a.storeDecide(d, pv, session, "").Mode
 	}
 	return m
 }
 
-// loadDevinModes reads every Devin session's working directory and caches
-// the verdicts.
-func (a *Agent) loadDevinModes(ctx context.Context, pv *policyView) {
-	cwds, err := devinCwds(ctx, a.devin.path)
+// loadStoreModes reads every session's working directory in a store and
+// caches the verdicts.
+func (a *Agent) loadStoreModes(ctx context.Context, d *storeState, pv *policyView) {
+	cwds, err := d.h.cwds(ctx, d.path)
 	if err != nil {
-		a.log.Debug("agent: devin session directories", "err", err)
+		a.log.Debug("agent: store session directories", "agent", d.h.agent, "err", err)
 	}
 	modes := make(map[string]pathpolicy.Mode, len(cwds))
 	for s, cwd := range cwds {
-		modes[s] = a.devinDecide(pv, s, cwd).Mode
+		modes[s] = a.storeDecide(d, pv, s, cwd).Mode
 	}
 	a.mu.Lock()
 	if a.pol.gen == pv.gen {
-		a.devinModes = modes
+		d.modes = modes
 	}
 	a.mu.Unlock()
 }
@@ -683,11 +690,11 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	if !loaded {
 		return false // placing it now could replace a stored placement with a weaker one
 	}
-	if spec.Agent == transcript.AgentDevin && spec.Export {
-		if p, ok := a.storedPlace(placeKey{transcript.AgentDevin, spec.SessionKey}); ok && !settled(a.policy().pol, p) {
+	if d := a.storeOf(spec.Agent); d != nil && spec.Export {
+		if p, ok := a.storedPlace(placeKey{spec.Agent, spec.SessionKey}); ok && !settled(a.policy().pol, p) {
 			return false // a deleted worktree the recovery pass has not looked at
 		}
-		return a.devinMode(context.Background(), spec.SessionKey) == pathpolicy.Allow
+		return a.storeMode(context.Background(), d, spec.SessionKey) == pathpolicy.Allow
 	}
 	a.mu.Lock()
 	t := a.targets[spec.Path]
@@ -820,7 +827,9 @@ func (a *Agent) purge(ctx context.Context, todo []purgeConv) error {
 			return err
 		}
 		if kind == string(transcript.StorageSQLite) {
-			a.devin.dirty.Store(true)
+			for _, d := range a.stores() {
+				d.dirty.Store(true)
+			}
 		}
 	}
 	if err := a.store.Sync(ctx); err != nil {

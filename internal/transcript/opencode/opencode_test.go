@@ -3,87 +3,37 @@ package opencode
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/opencode/opencodetest"
 )
 
-// schema is the opencode 1.18.30 DDL of the tables the parser reads.
-const schema = "CREATE TABLE `session` (`id` text PRIMARY KEY, `project_id` text NOT NULL, `workspace_id` text, `parent_id` text," +
-	" `slug` text NOT NULL, `directory` text NOT NULL, `path` text, `title` text NOT NULL, `version` text NOT NULL, `share_url` text," +
-	" `summary_additions` integer, `summary_deletions` integer, `summary_files` integer, `summary_diffs` text, `metadata` text," +
-	" `cost` real DEFAULT 0 NOT NULL, `tokens_input` integer DEFAULT 0 NOT NULL, `tokens_output` integer DEFAULT 0 NOT NULL," +
-	" `tokens_reasoning` integer DEFAULT 0 NOT NULL, `tokens_cache_read` integer DEFAULT 0 NOT NULL, `tokens_cache_write` integer DEFAULT 0 NOT NULL," +
-	" `revert` text, `permission` text, `agent` text, `model` text, `time_created` integer NOT NULL, `time_updated` integer NOT NULL," +
-	" `time_compacting` integer, `time_archived` integer);\n" +
-	"CREATE TABLE `message` (`id` text PRIMARY KEY, `session_id` text NOT NULL, `time_created` integer NOT NULL, `time_updated` integer NOT NULL, `data` text NOT NULL);\n" +
-	"CREATE TABLE `part` (`id` text PRIMARY KEY, `message_id` text NOT NULL, `session_id` text NOT NULL, `time_created` integer NOT NULL, `time_updated` integer NOT NULL, `data` text NOT NULL);\n" +
-	"CREATE INDEX `message_session_time_created_id_idx` ON `message` (`session_id`,`time_created`,`id`);\n" +
-	"CREATE INDEX `part_message_id_id_idx` ON `part` (`message_id`,`id`);\n" +
-	"CREATE INDEX `part_session_idx` ON `part` (`session_id`);\n"
+const t0 = opencodetest.T0
 
-// t0 is the fixture clock: 2026-10-03, epoch milliseconds.
-const t0 = int64(1791000000000)
-
-// oid makes an opencode ascending id for millisecond ms and counter c.
-func oid(prefix string, ms int64, c int) string {
-	v := uint64(ms*4096+int64(c)) & (1<<48 - 1)
-	return fmt.Sprintf("%s_%012xSYNTHETICxxxxx", prefix, v)
-}
+var oid = opencodetest.ID
 
 type fixture struct {
-	t    *testing.T
+	*opencodetest.Store
 	path string
-	db   *sql.DB
 }
 
 func newFixture(t *testing.T) *fixture {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "opencode.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	f := &fixture{t: t, path: path, db: db}
-	f.exec(schema)
-	return f
+	s := opencodetest.New(t, "")
+	return &fixture{Store: s, path: s.Path}
 }
 
-func (f *fixture) exec(q string, args ...any) {
-	f.t.Helper()
-	if _, err := f.db.Exec(q, args...); err != nil {
-		f.t.Fatalf("%s: %v", q, err)
-	}
-}
-
+func (f *fixture) exec(q string, args ...any) { f.Exec(q, args...) }
 func (f *fixture) session(id, parent, dir, title string, at int64) {
-	var p any
-	if parent != "" {
-		p = parent
-	}
-	f.exec(`INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, agent, model, time_created, time_updated)
-		VALUES (?, 'prj_synthetic', ?, 'calm-otter', ?, ?, '1.18.30', 'build', '{"id":"big-pickle","providerID":"opencode","variant":"default"}', ?, ?)`,
-		id, p, dir, title, at, at)
+	f.Session(id, parent, dir, title, at)
 }
-
 func (f *fixture) message(id, session string, at int64, data string) {
-	f.exec(`INSERT INTO message VALUES (?, ?, ?, ?, ?)`, id, session, at, at, data)
+	f.Message(id, session, at, data)
 }
-
-func (f *fixture) part(id, msg, session string, at int64, data string) {
-	f.exec(`INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)`, id, msg, session, at, at, data)
-}
-
-func (f *fixture) updatePart(id string, at int64, data string) {
-	f.exec(`UPDATE part SET data = ?, time_updated = ? WHERE id = ?`, data, at, id)
-}
+func (f *fixture) part(id, msg, session string, at int64, d string) { f.Part(id, msg, session, at, d) }
+func (f *fixture) updatePart(id string, at int64, data string)      { f.UpdatePart(id, at, data) }
 
 func parse(t *testing.T, path string, cur transcript.Cursor) (*transcript.Collector, transcript.Cursor) {
 	t.Helper()
