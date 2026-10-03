@@ -170,7 +170,7 @@ func (s *store) observe(ctx context.Context, r Registry, now time.Time, debounce
 			// running).
 			if _, err := tx.ExecContext(ctx, `INSERT INTO devbus_sessions(agent,session_id,ended_at,ended_by) VALUES(?,?,?,'registry')
 				ON CONFLICT(agent,session_id) DO UPDATE SET holder='', missing_since=NULL, ended_holder='',
-					ended_at=COALESCE(ended_at,excluded.ended_at), ended_by=CASE WHEN ended_at IS NULL THEN 'registry' ELSE ended_by END`,
+					ended_at=COALESCE(ended_at,excluded.ended_at), ended_by='registry'`,
 				ref.Agent, ref.Session, ms(now)); err != nil {
 				return err
 			}
@@ -204,7 +204,7 @@ func (s *store) observe(ctx context.Context, r Registry, now time.Time, debounce
 			q, args := `UPDATE devbus_sessions SET missing_since=? WHERE agent=? AND session_id=?`, []any{ms(now), m.ref.Agent, m.ref.Session}
 			if m.since.Valid && now.Sub(time.UnixMilli(m.since.Int64)) >= debounce {
 				q, args = `UPDATE devbus_sessions SET holder='', missing_since=NULL, ended_holder='',
-					ended_at=COALESCE(ended_at,?), ended_by=CASE WHEN ended_at IS NULL THEN 'registry' ELSE ended_by END
+					ended_at=COALESCE(ended_at,?), ended_by='registry'
 					WHERE agent=? AND session_id=?`, []any{ms(now), m.ref.Agent, m.ref.Session}
 			} else if m.since.Valid {
 				continue

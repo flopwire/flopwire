@@ -282,3 +282,31 @@ func TestEndedAcrossARestart(t *testing.T) {
 		t.Fatal("a session held before the restart and gone after it did not end")
 	}
 }
+
+// A registry that knows no process start (a Codex writer lock): after a
+// SessionEnd hook the exiting process still holds the lock, which is not
+// a resume; once the registry showed the lock released, the next writer
+// holding it is.
+func TestSessionEndWithALockRegistry(t *testing.T) {
+	lb := newLocalBus(t)
+	lock := func() Registry {
+		r := held()
+		r.Held[refA] = Holder{ID: "lock"}
+		return r
+	}
+	if err := lb.End(ctx, refA, lb.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	lb.advance(time.Second)
+	if ended := observe(t, lb.Bus, lock()); !ended[refA] {
+		t.Fatal("the exiting writer's lock revived the session")
+	}
+	lb.advance(time.Second)
+	if ended := observe(t, lb.Bus, held().gone(refA)); !ended[refA] {
+		t.Fatal("released lock")
+	}
+	lb.advance(time.Minute)
+	if ended := observe(t, lb.Bus, lock()); ended[refA] {
+		t.Fatal("a resumed writer did not revive the session")
+	}
+}

@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS devbus_sessions (
   missing_since INTEGER,                    -- held before, and its registry entry missing since
   live_at       INTEGER,                    -- last seen live in presence
   ended_at      INTEGER,                    -- ended: unix ms; NULL while not ended
-  ended_by      TEXT NOT NULL DEFAULT '',   -- registry or hook
+  ended_by      TEXT NOT NULL DEFAULT '',   -- hook; registry once its registry showed it gone (any process holding it later is a resume)
   ended_holder  TEXT NOT NULL DEFAULT '',   -- the holder when it ended, while it still holds it
   PRIMARY KEY (agent, session_id)
 );
