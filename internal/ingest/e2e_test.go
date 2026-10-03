@@ -287,4 +287,26 @@ func TestDeviceSyncEndToEnd(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM messages WHERE version>1 AND enrichment ? 'persisted_output' IS NOT TRUE`); n != 0 {
 		t.Fatalf("%d spurious versions after a no-op re-parse", n)
 	}
+
+	// The stale-parse query compares opencode sources with opencode's
+	// parser ($7): fresh ones are not picked, an older major version is.
+	if next, err := e.queue.nextRefresh(e.ctx); err != nil || next != "" {
+		t.Fatalf("fresh sources picked for refresh: %q %v", next, err)
+	}
+	var oc string
+	if err := e.pool.QueryRow(e.ctx, `SELECT id::text FROM sources WHERE agent='opencode' ORDER BY path LIMIT 1`).Scan(&oc); err != nil {
+		t.Fatal(err)
+	}
+	e.exec(`UPDATE source_parse_state SET applied_parser='opencode@0.9' WHERE source_id=$1`, oc)
+	if next, err := e.queue.nextRefresh(e.ctx); err != nil || next != oc {
+		t.Fatalf("stale opencode source: picked %q, want %q (%v)", next, oc, err)
+	}
+	var conv string
+	if err := e.pool.QueryRow(e.ctx, `SELECT conversation_id::text FROM messages WHERE source_id=$1 LIMIT 1`, oc).Scan(&conv); err != nil {
+		t.Fatal(err)
+	}
+	e.queue.RefreshSession(e.ctx, conv)
+	if n := e.count(`SELECT count(*) FROM source_parse_state WHERE source_id=$1 AND refresh_requested_at IS NOT NULL`, oc); n != 1 {
+		t.Fatal("a read of a stale opencode session did not prioritize its refresh")
+	}
 }
