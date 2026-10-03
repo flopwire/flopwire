@@ -73,11 +73,11 @@ func TestWrapperIDs(t *testing.T) {
 		t.Fatalf("ids %v", got)
 	}
 	for _, s := range []string{
-		`see <flopwire-message id="m1"> in the log`,     // mid-line
-		"<flopwire-message id=\"m1\nx\">",               // unterminated
-		`<flopwire-message id="m 1">`,                   // not an id
-		`<flopwire-message id="">`,                      // empty
-		`<flopwire-message from="x" id="m1">`,           // not the hook's attribute order
+		`see <flopwire-message id="m1"> in the log`, // mid-line
+		"<flopwire-message id=\"m1\nx\">",           // unterminated
+		`<flopwire-message id="m 1">`,               // not an id
+		`<flopwire-message id="">`,                  // empty
+		`<flopwire-message from="x" id="m1">`,       // not the hook's attribute order
 		"<flopwire-message>\nsee the wrapper\n</flopwire-message>",
 	} {
 		if got := wrapperIDs(s); len(got) != 0 {

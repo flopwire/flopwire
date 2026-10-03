@@ -142,9 +142,9 @@ const (
 	// the recipient session's transcript as hook context (ReadReceipt).
 	// It says the text entered the session's context, not that the model
 	// acted on it.
-	StateRead State = "read"
-	StateExpired   State = "expired"
-	StateRefused   State = "refused"
+	StateRead    State = "read"
+	StateExpired State = "expired"
+	StateRefused State = "refused"
 	// StateUndelivered: the message will not be delivered; Reason says
 	// why (ReasonUnconfirmed). The sender can send it again.
 	StateUndelivered State = "undelivered"

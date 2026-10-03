@@ -72,8 +72,8 @@ func TestReadNeedsTheRecipientsSighting(t *testing.T) {
 	queued, _ := lb.send(t, "aaaa1111", "bbbb", "never taken")
 	now := lb.now
 	err := lb.MarkRead(ctx, []Read{
-		{Session: "aaaa2222", Agent: "codex", ID: taken.ID, At: now},  // another session
-		{Session: "bbbb3333", Agent: "codex", ID: taken.ID, At: now},  // another harness
+		{Session: "aaaa2222", Agent: "codex", ID: taken.ID, At: now},   // another session
+		{Session: "bbbb3333", Agent: "codex", ID: taken.ID, At: now},   // another harness
 		{Session: "bbbb3333", Agent: "claude", ID: queued.ID, At: now}, // no hook took it
 		{Session: "bbbb3333", Agent: "claude", ID: "mnope", At: now},
 	})
