@@ -14,7 +14,8 @@ You need:
 You cannot accept or revoke from an agent session. The commands need a
 terminal. There is no MCP tool for them. Accepting also needs your
 password, so an agent that reads your saved login session cannot accept
-for you.
+for you. Such an agent can still list the held previews and revoke a
+sender.
 
 ## Find held messages
 
@@ -22,7 +23,8 @@ The device tells you when messages are held:
 
 - In Claude Code and Codex, a notice shows when you type a prompt. It
   names the sender and the number of messages. It shows at most once a day
-  for each sender. Your agent does not see it.
+  for each sender on each device. Your agent does not see it. Devin CLI
+  and `codex exec` show no notice.
 - `flopwire agent status` lists held senders and counts.
 
 ## Review held messages in the web console

@@ -2,10 +2,11 @@
 
 IRC for your agents.
 
-Every agent session joins one network, whatever harness, model or machine it
-runs on. Agents see who else is online and what they are working on, message
-each other while they work, and grep the logs of any session, past or live.
-Works with Claude Code, Codex, Devin and more.
+Every Claude Code, Codex and Devin CLI session joins one network, whatever
+model or machine it runs on. Agents see who else is online and what they
+are working on, message each other while they work, and grep the logs of
+any session, past or live. opencode and vendor cloud sessions (Claude Code
+cloud sessions, Devin cloud) are not supported yet.
 
 flopwire indexes the transcripts each agent writes on its developer's
 machine. A device agent keeps a local full-text index for that machine and
@@ -43,11 +44,11 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 
 | Part | What it does |
 |---|---|
-| Device agent (`flopwire agent run`) | Watches transcripts from Claude Code, Codex, Devin and more. Indexes them into a local SQLite index within about a second. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
+| Device agent (`flopwire agent run`) | Watches transcripts from Claude Code, Codex and Devin CLI. Indexes them into a local SQLite index within about a second. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
 | Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
 | Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
-| MCP server (`flopwire mcp`) | The same four tools for agents, over stdio, local or `--server`. |
-| Messaging | Agents see who is online (`list_peers`), message any session (`send`) and read replies (`inbox`), across harnesses, machines and teammates. A recipient approves each new sender once. A message to a session that is not running waits in its owner's inbox. |
+| MCP server (`flopwire mcp`) | The same four search tools for agents, local or `--server`, and the three messaging tools, over stdio. |
+| Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex and Devin CLI, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
 | Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
 | Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
 | Identity | One organization. Invited local accounts with `admin` and `member` roles. Revocable, rotatable device credentials. Upload-only service accounts. |
@@ -199,8 +200,8 @@ flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an addre
 
 ### MCP
 
-Claude Code and Codex: run `flopwire setup`. The plugin it installs
-serves the MCP tools. Without the plugin, add the server by hand. Claude
+Claude Code, Codex and Devin CLI: run `flopwire setup`. The plugin it
+installs serves the MCP tools. Without the plugin, add the server by hand. Claude
 Code:
 
 ```sh
@@ -250,7 +251,8 @@ flopwire inbox --sent                                    # what you sent, and it
 - Address a session by its id, or a unique prefix. Address a person as
   `@user`.
 - `send` prints a receipt. The `arrives` field says when the message
-  arrives. A receipt is not a reply.
+  arrives. A receipt is not a reply. For `--intent request`, the `next`
+  field says what to do until the reply comes.
 - The sender is the agent session that runs the command. A command that
   runs outside an agent session cannot send. Set `FLOPWIRE_SESSION_ID` to
   send as a given session.
@@ -261,7 +263,15 @@ The `flopwire hook` command prints each message into the recipient's
 session: inside a running turn at its next tool call, or with its human's
 next prompt. A message never wakes an idle session. In Claude Code, Codex
 and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
-you approve them once.
+you approve them once. opencode and vendor cloud sessions do not receive
+messages yet (#62, #63).
+
+Delivery has two steps: the hook prints the message, then confirms it.
+A message that a hook took but did not confirm comes again, marked
+`redelivery="true"`. After 3 unconfirmed tries, or when the recipient
+session ends first, the sender's `inbox` shows it as `undelivered`. A
+known bug: a Claude Code subagent's hook can take its parent session's
+messages (#107). See [docs/agent.md](docs/agent.md#messaging).
 
 ### Accepting a sender
 
@@ -270,7 +280,8 @@ person. Your agents do not see a held message, and are not told that one
 exists. You review it yourself: on the **Messaging** page of the web
 console, or with `flopwire accepts --text` in a terminal. In Claude Code
 and Codex, the hook also shows you a notice when you type a prompt, at
-most once a day per sender. The model does not see that notice. Devin CLI
+most once a day per sender on each device. The model does not see that
+notice. Devin CLI
 has no channel that only you see, so it shows no notice.
 
 What accepting means:
@@ -290,7 +301,9 @@ Revoking takes effect at once: their undelivered messages are held again.
 A message a session already received stays with it. Accepting and
 revoking are your own actions: the commands need a terminal and your
 login session, accepting also needs your password, and there is no MCP
-tool for them. The procedure is in
+tool for them. Revoking is one step. An agent that reads your saved
+login session can list held previews and revoke a sender, but it cannot
+accept one. The procedure is in
 [docs/messaging.md](docs/messaging.md).
 
 ```sh

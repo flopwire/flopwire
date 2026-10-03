@@ -88,6 +88,10 @@ func acceptCmd(ctx context.Context, verb string, args []string, io_ acceptIO) er
 	st := busStyle{JSON: true}
 	err := fs.Parse(args)
 	st.JSON = !*text
+	if errors.Is(err, flag.ErrHelp) {
+		_, err = io.WriteString(io_.out, acceptHelp[verb])
+		return err
+	}
 	if err == nil {
 		err = runAccept(ctx, verb, fs.Args(), io_, st)
 	} else {
@@ -100,6 +104,36 @@ func acceptCmd(ctx context.Context, verb string, args []string, io_ acceptIO) er
 		return err
 	}
 	return errReported
+}
+
+// acceptHelp is each verb's --help text.
+var acceptHelp = map[string]string{
+	"accepts": `flopwire accepts — who may message your agents, and messages held until you accept their sender
+
+  flopwire accepts --text   held messages by sender (first-line previews) and the people you accept
+
+A person at a terminal only: it needs a terminal and the login session flopwire login
+saved (24 hours). There is no MCP tool. JSON by default; --text: readable.
+`,
+	"accept": `flopwire accept — accept messages from a person's agents
+
+  flopwire accept alex@example.com
+
+Prints what accepting means and that person's held messages, then asks for your
+Flopwire password (not echoed); Enter with no password stops. Accepting lets the
+person's agents message all of your agent sessions; your agents may act on their
+requests within each session's permissions. Needs a terminal and the login session
+flopwire login saved. There is no MCP tool. JSON by default; --text: readable.
+`,
+	"revoke": `flopwire revoke — stop accepting a person's messages
+
+  flopwire revoke alex@example.com
+
+One step, at once: their undelivered messages are held again, and their next ones
+are held until you accept them again. A message a session already received stays.
+Needs a terminal and the login session flopwire login saved. JSON by default;
+--text: readable.
+`,
 }
 
 func acceptUsage(verb string) string {

@@ -71,6 +71,29 @@ func TestAcceptVerbsRequireATerminal(t *testing.T) {
 	}
 }
 
+// --help prints the verb's help on stdout and exits 0, with or without a
+// terminal, and never calls the server.
+func TestAcceptVerbsHelp(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	cfg := client.Config{Server: srv.URL, SessionToken: "session-token", DeviceID: "d1"}
+	for _, verb := range []string{"accepts", "accept", "revoke"} {
+		for _, terminal := range []bool{true, false} {
+			stdout, stderr, err := acceptRun(t, terminal, cfg, nil, "", verb, "--help")
+			if err != nil || stderr != "" || !strings.HasPrefix(stdout, "flopwire "+verb+" — ") || !strings.Contains(stdout, "  flopwire "+verb) {
+				t.Fatalf("%s --help (terminal %v): %v %q %q", verb, terminal, err, stdout, stderr)
+			}
+		}
+	}
+	if out, _, _ := acceptRun(t, true, cfg, nil, "", "accept", "--help"); !strings.Contains(out, "password") {
+		t.Fatalf("accept --help does not say it asks for the password: %q", out)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("--help called the server %d times", hits.Load())
+	}
+}
+
 // With no server there is one person, so nothing to accept.
 func TestAcceptVerbsLocalOnly(t *testing.T) {
 	out, _, err := acceptRun(t, true, client.Config{}, os.ErrNotExist, "", "accepts", "--text")
@@ -446,6 +469,16 @@ func TestAcceptVerbsPrintNoSenderControlCharacters(t *testing.T) {
 			if strings.Contains(out+stderr, bad) {
 				t.Fatalf("%v printed %q:\n%q\n%q", c, bad, out, stderr)
 			}
+		}
+	}
+}
+
+// The command list names every harness setup installs into, and says that
+// accept asks for the password.
+func TestUsageTextSetupAndAccept(t *testing.T) {
+	for _, want := range []string{"into Claude Code, Codex and Devin CLI", "accept messages from a person's agents (asks for your password)"} {
+		if !strings.Contains(usageText, want) {
+			t.Errorf("usage text lacks %q", want)
 		}
 	}
 }

@@ -83,7 +83,7 @@
 18432:2 assistant: Client now preserves <mark>next_cursor</mark>.</pre></div>
           <p class="output-footer">[2 hits in 2 sessions]</p>
         </div>
-        <div id="grep-context" class="grep-context" tabindex="-1"><div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire read 0b7e2c1a/28672:14 --server -B 1</code></div><div class="read-output"><p><span class="speaker">Alex</span>Why can’t the client use the last item’s ID?</p><p><span class="speaker">Claude Code</span>The cursor includes the sort position as well as the ID. Send it back unchanged so pagination stays consistent.</p></div></div></div>
+        <div id="grep-context" class="grep-context" tabindex="-1"><div class="query-bar"><span class="prompt" aria-hidden="true">$</span><code>flopwire read 0b7e2c1a/28672:14 --server --messages-before 1</code></div><div class="read-output"><p><span class="speaker">Alex</span>Why can’t the client use the last item’s ID?</p><p><span class="speaker">Claude Code</span>The cursor includes the sort position as well as the ID. Send it back unchanged so pagination stays consistent.</p></div></div></div>
       </div>
       <p class="feature-footnote">Exact strings and regexes. Repo and time filters. Read more only when needed.</p>
     </section>
@@ -100,8 +100,8 @@
     <section class="story-section environment-section" id="compatibility" aria-labelledby="environment-heading">
       <div class="section-heading"><h2 id="environment-heading">Start locally. Add your team.</h2><p>Search your own sessions without a server. Connect a team server to find work across teammates, harnesses, and machines.</p></div>
       <div class="environment-row"><div><svg class="environment-icon" aria-hidden="true"><use href="#i-laptop"/></svg><h3>Your laptop</h3><p>Index and search locally.</p></div><span class="environment-wire" aria-hidden="true"></span><div><svg class="environment-icon" aria-hidden="true"><use href="#i-cloud"/></svg><h3>Your team server</h3><p>Share across people and machines.</p></div></div>
-      <div class="environment-foot"><p class="harness-line">Session history: <strong>Claude Code</strong><span>·</span><strong>Codex</strong><span>·</span><strong>Devin</strong><span>·</span>and more</p>
-      <p class="integration-note">Live messaging reaches any session on the network, on laptops and on your own cloud VMs.</p></div>
+      <div class="environment-foot"><p class="harness-line">Session history: <strong>Claude Code</strong><span>·</span><strong>Codex</strong><span>·</span><strong>Devin</strong></p>
+      <p class="integration-note">Live messaging reaches running Claude Code, Codex and Devin CLI sessions on every enrolled machine: laptops and your own cloud VMs.</p></div>
     </section>
 
     <section class="story-section" id="sharing" aria-labelledby="sharing-heading">

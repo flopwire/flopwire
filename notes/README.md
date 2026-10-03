@@ -11,13 +11,17 @@ disagree, the code and `punch-list.md` win.
 | [`local-search/README.md`](local-search/README.md) | The retrieval redesign spec: capture, data model, device agent, sync, server, search, operations. The rationale behind the architecture. |
 | [`local-search/ftsidx.py`](local-search/ftsidx.py) | Prototype FTS5 sidecar used to measure the local index before the Go build. |
 | [`local-search/shape.py`](local-search/shape.py) | Byte accounting over sampled transcripts, used to size the text caps. |
-| [`message-bus/README.md`](message-bus/README.md) | Verified ways to deliver a message into a running Claude Code or Codex session (spec section 9). Not built yet. |
-| [`message-bus/plan.md`](message-bus/plan.md) | The v1 message bus design and build plan: decisions B1–B8, the agent interface and syntax, hook delivery, per-harness packaging, build sequence. Supersedes spec section 9. Not built yet. |
+| [`message-bus/README.md`](message-bus/README.md) | Ways to push a message into a running Claude Code or Codex session (inbox socket, `codex queue`), verified 2026-09-28. Not used in v1, which delivers through hooks; kept for a later opt-in wake. |
+| [`message-bus/plan.md`](message-bus/plan.md) | The v1 message bus design and build plan: decisions B1–B8, the agent interface and syntax, hook delivery, per-harness packaging, build sequence with PR numbers, and an "As built" section (2026-10-03) on where the build diverged. Built except opencode and vendor cloud. Supersedes spec section 9. |
 | [`message-bus/probes-2026-10-01.md`](message-bus/probes-2026-10-01.md) | Live tests behind the plan: hook delivery on Claude Code, Codex and Devin, the opencode plugin, Claude cloud and Devin cloud. |
-| [`message-bus/exchange-capture/README.md`](message-bus/exchange-capture/README.md) | A real Claude Code ↔ Codex exchange (own user, local-only): `sessions`, `peers`, `send`, both hook deliveries, the reply and `inbox`, captured for the homepage fixtures (#55), with timeline, findings and the substitutions made. |
+| [`message-bus/exchange-capture/README.md`](message-bus/exchange-capture/README.md) | A real Claude Code ↔ Codex exchange (own user, local-only): `sessions`, `peers`, `send`, both hook deliveries, the reply and `inbox`, captured for the homepage fixtures (#55), with timeline, findings and the substitutions made. Findings 1 (quiet commits) and 2 (`--repo` across worktrees) were fixed later in #103 and #100. |
 | [`message-bus/cc_send.py`](message-bus/cc_send.py), [`message-bus/codex_rpc.py`](message-bus/codex_rpc.py) | The probe scripts behind the message-bus note. |
 | [`launch-readiness/README.md`](launch-readiness/README.md) | Where the CASS-era launch-gate work landed on the fresh schema. |
 | [`launch-readiness/punch-list.md`](launch-readiness/punch-list.md) | The P0/P1/P2 launch gate carried over from the CASS era. The spec and `punch-list.md` override it. |
 | [`launch-readiness/state-machine-walks.md`](launch-readiness/state-machine-walks.md) | Concrete-state walks for deletion, backup and restore, quotas and collection. |
+| [`agent-ux.md`](agent-ux.md) | The agent UX review of the retrieval tools and MCP server (2026-09-30), with later dated evaluations such as read's `messages_before`/`messages_after`. |
+| [`redaction.md`](redaction.md) | What is redacted, where, and how masks keep byte addresses stable. |
+| [`reparse.md`](reparse.md) | Versioned reparse on the server: parser versions, staleness and the background worker. |
+| [`perf-guards.md`](perf-guards.md) | The CI performance guards decided 2026-09-30: query plans, scale and query-count tests. |
 | [`reference-repos.md`](reference-repos.md) | Repositories studied or ported from, with licenses and what was taken. |
 | [`mvp_scope.md`](mvp_scope.md) | Historical: the CASS-era MVP scope. The architecture it describes is gone; the product boundaries (one org, invited accounts, raw retention) still hold. |
