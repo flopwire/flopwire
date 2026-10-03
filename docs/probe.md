@@ -68,10 +68,13 @@ subagent fails the case even when the model still sees the marker.
   `--setting-sources project`. Codex and Devin run in scratch homes. The
   probe copies only their login files there (`~/.codex/auth.json`,
   `~/.local/share/devin/credentials.toml`) and deletes the copies at the
-  end. A token refresh during the run happens in the copy.
+  end. Codex refresh tokens are single use. If Codex refreshes its login
+  during the run, the probe writes the refreshed file back to
+  `~/.codex/auth.json`, but only when that file has not changed since the
+  copy. Otherwise the probe keeps your file and prints a warning.
 - Claude Code still writes its transcripts to `~/.claude/projects`, as
   any session does. The probe's sessions appear there under the scratch
-  project's name.
+  project's name, with an empty directory each in `~/.claude/session-env`.
 
 ## What it does not cover
 
