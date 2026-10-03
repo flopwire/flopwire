@@ -35,6 +35,19 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	r, err := openRetriever(*server, *index)
 	var noIndex *noIndexError
+	if err != nil && !*server && !errors.As(err, &noIndex) && !errors.Is(err, localindex.ErrSyncOnly) {
+		// The index exists but does not open: another process is creating
+		// or rebuilding it (a second flopwire mcp, or the agent), or it is
+		// damaged. Serve anyway, as below: each retrieval call opens it
+		// again and reports why it cannot.
+		path := *index
+		if path == "" {
+			path = local.IndexPath()
+		}
+		det := local.NewDetector()
+		lazy := &lazyIndexBackend{path: path}
+		r, err = &retriever{backend: lazy, caller: det.Detect, live: det.Live, close: lazy.Close}, nil
+	}
 	if errors.As(err, &noIndex) {
 		// The device agent has never run. Serve anyway, so the harness
 		// does not mark the server failed (Claude Code then skips it for

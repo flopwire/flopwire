@@ -146,3 +146,47 @@ func TestEmptyIndexHintStopsOnceIndexed(t *testing.T) {
 		t.Fatalf("after the agent indexed a transcript: hint %q", h)
 	}
 }
+
+// TestMCPStartsWhileAnotherProcessCreatesTheIndex: Claude Code starts one
+// flopwire mcp per session, so two can start at once on a device whose
+// agent never ran. The first creates the index under its lock; the second
+// finds a file whose schema is not written yet. It must still serve (a
+// harness marks a server that exits failed), and open the index once the
+// first is done.
+func TestMCPStartsWhileAnotherProcessCreatesTheIndex(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "index.db")
+	t.Setenv("FLOPWIRE_INDEX", db)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "fw", "config.json"))
+	// The index file exists, but its creator has not written the schema.
+	if err := os.WriteFile(db, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(dir, "in")
+	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}` + "\n"
+	if err := os.WriteFile(in, []byte(req), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fin, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fin.Close()
+	fout, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fout.Close()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = fin, fout
+	err = run(t.Context(), []string{"mcp"})
+	os.Stdin, os.Stdout = oldIn, oldOut
+	if err != nil {
+		t.Fatalf("mcp exited while the index was being created: %v", err)
+	}
+	out, _ := os.ReadFile(fout.Name())
+	if !strings.Contains(string(out), `"flopwire_grep"`) {
+		t.Fatalf("mcp did not list its tools:\n%s", out)
+	}
+}
