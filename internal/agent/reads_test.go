@@ -190,3 +190,23 @@ func TestReadSightingsDevin(t *testing.T) {
 		t.Fatalf("sighting %+v", r)
 	}
 }
+
+// A parse that shows the session moved into a directory a deny rule
+// covers purges what it indexed (D18): the device derives nothing from
+// that transcript, so its hook context gives no read either.
+func TestNoReadFromATranscriptTheRulesDeny(t *testing.T) {
+	f, _, _ := rulesFixture(t, "-", "deny /tmp/oracle-secret")
+	l := captureReads(f)
+	f.once()
+	l.take()
+	lines := claudeUserAt("/tmp/oracle-secret/sub", "c9000000-0000-4000-8000-0000000000r1", "now in the secret checkout") +
+		`{"type":"attachment","uuid":"rr-d1","parentUuid":"c9000000-0000-4000-8000-0000000000r1","sessionId":"` + alphaID + `","cwd":"/tmp/oracle-secret/sub","timestamp":"2026-10-02T10:00:02.000Z","attachment":{"type":"hook_additional_context","content":[` + jsonStr(hookText(false, "mdenied00000000")) + `],"hookName":"PostToolUse:Bash","hookEvent":"PostToolUse"}}` + "\n"
+	appendFile(t, f.path(alphaRel), lines)
+	f.once()
+	if n := f.count(`SELECT count(*) FROM conversations WHERE session_id = ?`, alphaID); n != 0 {
+		t.Fatalf("fixture: the session was not denied (%d conversations)", n)
+	}
+	if got := l.take(); len(got) != 0 {
+		t.Fatalf("sightings from a denied transcript: %+v", got)
+	}
+}

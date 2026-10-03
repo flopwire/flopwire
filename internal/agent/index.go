@@ -190,7 +190,6 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	if err := sink.Flush(&wm, next.State); err != nil {
 		return false, err
 	}
-	a.markRead(ctx, &sink.reads)
 	if testHookAfterFlush != nil {
 		if err := testHookAfterFlush(); err != nil {
 			return true, err
@@ -201,6 +200,10 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	denied, err := a.tighten(ctx, t, st.ID, tt)
 	if err != nil {
 		return true, err
+	}
+	if !denied {
+		// A transcript the rules now deny gives nothing, a read neither (D18).
+		a.markRead(ctx, &sink.reads)
 	}
 	a.markSeen(t, id, sampled, st.ID, indexedWith)
 	a.mu.Lock()
