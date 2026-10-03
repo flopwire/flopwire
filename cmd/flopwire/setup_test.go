@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // TestMain lets the test binary stand in for the harness CLIs: run through
@@ -258,6 +261,7 @@ func newSetupFixture(t *testing.T, withClaude bool) *setupFixture {
 	t.Setenv("HOME", f.home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(f.dir, "fw", "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(f.dir, "cache", "index.db"))
 	t.Setenv("FLOPWIRE_TOKEN", "")
 	t.Setenv(envPluginSource, "")
 	t.Setenv("FAKE_CLAUDE_STATE", f.state)
@@ -912,5 +916,44 @@ func TestSetupReadsClaudePluginListOutput(t *testing.T) {
 		if !strings.Contains(w, want) {
 			t.Errorf("warnings lack %q:\n%s", want, w)
 		}
+	}
+}
+
+// TestSetupReportsTheLocalIndex: setup says when the agent has not built
+// the local index, or has indexed nothing into it yet, so the MCP search
+// tools find nothing.
+func TestSetupReportsTheLocalIndex(t *testing.T) {
+	f := newSetupFixture(t, false)
+	db := filepath.Join(f.dir, "cache", "index.db")
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	todo := strings.Join(rep.Todo, "\n")
+	if rep.Index.State != indexMissing || rep.Index.Path != db || !strings.Contains(todo, "the local index holds no transcripts yet") {
+		t.Fatalf("no index: got %+v, todo %q", rep.Index, rep.Todo)
+	}
+	if err := createEmptyIndex(db); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, _ = f.run("--check")
+	if rep.Index.State != indexEmpty || !strings.Contains(strings.Join(rep.Todo, "\n"), "the local index holds no transcripts yet") {
+		t.Fatalf("empty index: got %+v, todo %q", rep.Index, rep.Todo)
+	}
+	_, out, _ := f.run("--check", "--text")
+	if !strings.Contains(out, "index: "+db+", no transcripts indexed yet\n") {
+		t.Fatalf("text report:\n%s", out)
+	}
+	w, err := localindex.Open(db, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.EnsureSource(t.Context(), transcript.Source{Agent: transcript.AgentClaude, Path: "/x.jsonl", StorageKind: transcript.StorageJSONLAppend, Parser: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	rep, _, _ = f.run("--check")
+	if rep.Index.State != indexIndexed || strings.Contains(strings.Join(rep.Todo, "\n"), "the local index") {
+		t.Fatalf("indexed: got %+v, todo %q", rep.Index, rep.Todo)
 	}
 }

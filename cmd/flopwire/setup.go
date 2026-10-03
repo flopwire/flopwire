@@ -18,6 +18,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/localindex"
 )
 
 // flopwire setup installs Flopwire into each coding-agent harness on this
@@ -69,10 +70,10 @@ Flags
                      Codex and Devin install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","note"},"agent":{"running",
-"socket"},"server":{"configured","url"},"harnesses":[{"harness","detected","command",
+"socket"},"server":{"configured","url"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
-"need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only.
+"need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
 A harness that fails is reported with "error"; setup carries on with the
 others, then sets ok false and exits 1. A harness setup cannot manage because
 you are not logged in to it (Devin) is reported with "skipped" instead; it
@@ -87,6 +88,7 @@ type setupReport struct {
 	Flopwire  setupBinary     `json:"flopwire"`
 	Agent     setupAgent      `json:"agent"`
 	Server    setupServer     `json:"server"`
+	Index     setupIndex      `json:"index"`
 	Harnesses []harnessReport `json:"harnesses"`
 	Todo      []string        `json:"todo"`
 }
@@ -99,6 +101,57 @@ type setupBinary struct {
 type setupAgent struct {
 	Running bool   `json:"running"`
 	Socket  string `json:"socket"`
+}
+
+// setupIndex is the local index the MCP tools read.
+type setupIndex struct {
+	Path string `json:"path,omitempty"`
+	// State is missing (the agent never ran), empty (no transcript
+	// indexed yet), indexed, sync-only or unreadable.
+	State string `json:"state"`
+	Error string `json:"error,omitempty"`
+}
+
+// Index states.
+const (
+	indexMissing    = "missing"
+	indexEmpty      = "empty"
+	indexIndexed    = "indexed"
+	indexSyncOnly   = "sync-only"
+	indexUnreadable = "unreadable"
+)
+
+// localIndexState reads, read-only, the state of the local index.
+func localIndexState(ctx context.Context) setupIndex {
+	p, err := indexPath()
+	if err != nil {
+		return setupIndex{State: indexUnreadable, Error: err.Error()}
+	}
+	ix := setupIndex{Path: p}
+	if _, err := os.Stat(p); err != nil {
+		ix.State = indexMissing
+		return ix
+	}
+	s, err := localindex.Open(p, localindex.Options{ReadOnly: true, ReadConns: 2})
+	switch {
+	case errors.Is(err, localindex.ErrSyncOnly):
+		ix.State = indexSyncOnly
+		return ix
+	case err != nil:
+		ix.State, ix.Error = indexUnreadable, err.Error()
+		return ix
+	}
+	defer s.Close()
+	ok, err := s.HasSources(ctx)
+	switch {
+	case err != nil:
+		ix.State, ix.Error = indexUnreadable, err.Error()
+	case ok:
+		ix.State = indexIndexed
+	default:
+		ix.State = indexEmpty
+	}
+	return ix
 }
 
 type setupServer struct {
@@ -293,7 +346,11 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	if cfg, err := client.Load(); err == nil {
 		rep.Server = setupServer{Configured: true, URL: cfg.Server}
 	}
+	rep.Index = localIndexState(ctx)
 	if env.mode != setupRemove {
+		if (rep.Index.State == indexMissing || rep.Index.State == indexEmpty) && !rep.Agent.Running {
+			rep.Todo = append(rep.Todo, "the local index holds no transcripts yet, so the MCP search tools find nothing: the device agent builds it on its first run (flopwire agent run)")
+		}
 		if !rep.Agent.Running {
 			rep.Todo = append(rep.Todo, "start the device agent and keep it running: flopwire agent run (messages and capture need it; see docs/agent.md)")
 		}
@@ -835,6 +892,16 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		b.WriteString("agent: running\n")
 	} else {
 		b.WriteString("agent: not running\n")
+	}
+	switch rep.Index.State {
+	case indexMissing:
+		fmt.Fprintf(&b, "index: none yet at %s (the device agent creates it)\n", rep.Index.Path)
+	case indexEmpty:
+		fmt.Fprintf(&b, "index: %s, no transcripts indexed yet\n", rep.Index.Path)
+	case indexUnreadable:
+		fmt.Fprintf(&b, "index: unreadable: %s\n", rep.Index.Error)
+	default:
+		fmt.Fprintf(&b, "index: %s (%s)\n", rep.Index.Path, rep.Index.State)
 	}
 	if rep.Server.Configured {
 		fmt.Fprintf(&b, "server: %s\n", rep.Server.URL)
