@@ -952,8 +952,9 @@ refuses the request before anything leaves the device.
 ### Known limits
 
 - Only Claude Code, Codex and Devin CLI sessions send and receive.
-  opencode (#62) and vendor cloud sessions, such as Claude Code cloud
-  sessions and Devin cloud (#63), are not supported.
+  opencode (#62) is not supported. Claude Code cloud sessions and Devin
+  cloud sessions only receive, while they run a turn. See
+  [docs/cloud.md](cloud.md).
 - opencode has no read receipts.
 - A Devin hook finds a subagent's tool call in Devin's session store. If
   the hook cannot read the store, it delivers messages only at a prompt.
