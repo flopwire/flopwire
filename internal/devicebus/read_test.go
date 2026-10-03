@@ -222,3 +222,60 @@ func TestPerfReadPlans(t *testing.T) {
 		perfguard.AssertSQLitePlan(t, b.st.db, nil, q.sql, q.args...)
 	}
 }
+
+// A redelivery (the first hook printed the message and its confirmation
+// was lost; the next hook printed it again, marked): two sightings, one
+// read_at, from the first. The first sighting came before the delivery
+// was confirmed, so read_at is the delivery's time.
+func TestReadRedeliveryKeepsTheFirstSighting(t *testing.T) {
+	lb := newLocalBus(t)
+	out, _ := lb.send(t, "aaaa1111", "bbbb", "hello")
+	if got, _ := lb.Take(ctx, "bbbb3333", "", Limit{}); len(got) != 1 || got[0].Attempt != 1 {
+		t.Fatalf("first take %+v", got)
+	}
+	first := lb.now
+	if err := lb.MarkRead(ctx, []Read{{Session: "bbbb3333", Agent: "claude", ID: out.ID, At: first}}); err != nil {
+		t.Fatal(err)
+	}
+	lb.advance(LeaseFor)
+	again, _ := lb.Take(ctx, "bbbb3333", "", Limit{})
+	if len(again) != 1 || again[0].Attempt != 2 {
+		t.Fatalf("redelivery %+v", again)
+	}
+	if err := lb.Confirm(ctx, "bbbb3333", []string{out.ID}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := lb.now
+	lb.advance(time.Second)
+	if err := lb.MarkRead(ctx, []Read{{Session: "bbbb3333", Agent: "claude", ID: out.ID, At: lb.now}}); err != nil {
+		t.Fatal(err)
+	}
+	if m := inboxItem(t, lb.Bus, "aaaa1111", out.ID); m.State != busproto.StateRead || !m.ReadAt.Equal(confirmed) {
+		t.Fatalf("redelivered: %s read_at %v, want %v", m.State, m.ReadAt, confirmed)
+	}
+}
+
+// With a server, a sighting made while the message was leased owes its
+// read receipt once the hook confirms it.
+func TestReadReceiptForASightingWhileLeased(t *testing.T) {
+	srv := newFakeServer()
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), &presenceSrc{})
+	if err := b.st.reconcile(ctx, []busproto.Envelope{env("ml1", "s1")}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Take(ctx, "s1", "", Limit{}); len(got) != 1 {
+		t.Fatal("not taken")
+	}
+	if err := b.MarkRead(ctx, []Read{{Session: "s1", Agent: "claude", ID: "ml1", At: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, b)
+	time.Sleep(50 * time.Millisecond)
+	if n := len(srv.readReceipts()); n != 0 {
+		t.Fatalf("read receipt for a leased message: %+v", srv.readReceipts())
+	}
+	if err := b.Confirm(ctx, "s1", []string{"ml1"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the read receipt", func() bool { return len(srv.readReceipts()) == 1 })
+}
