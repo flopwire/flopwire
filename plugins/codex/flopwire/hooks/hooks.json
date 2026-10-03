@@ -11,7 +11,7 @@
       { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 5 }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 5, "async": true }] }
     ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 3 }] }

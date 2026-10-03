@@ -5,7 +5,7 @@ The plugin connects Codex to Flopwire. It adds these parts:
 | Part | What it does |
 |---|---|
 | MCP server `flopwire` | Runs `flopwire mcp`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
-| Hooks | Run `flopwire hook \|\| true` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout (3 seconds for `SessionEnd`, the most Codex allows). They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
+| Hooks | Run `flopwire hook \|\| true` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout (3 seconds for `SessionEnd`, the most Codex allows). The `Stop` hook is `async`, so Codex ignores text that your shell's startup files print, unless that text starts with `{` or `[`. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
 | Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. The text is the same as in the Claude Code plugin. |
 
 ## Requirements
@@ -55,9 +55,10 @@ Codex session.
 You can also type `/hooks` in a running session.
 
 Each hook runs `flopwire hook || true` outside the Codex sandbox. Codex
-asks again only when a hook's event, matcher, command or timeout changes.
-These values stay fixed, so updates of the plugin do not ask again. The
-update that added the `SessionEnd` hook asks once, for that hook.
+asks again for a hook when its event, matcher, command, timeout, `async`
+flag, `statusMessage`, `additionalContextLimit` or position in its event's
+list changes. Flopwire changes these only when it must. A plugin update
+that changes a hook asks once more, for that hook.
 
 Codex asks before each `flopwire_send` call. `codex exec` cannot ask. To
 allow the tool without a question, add this to `~/.codex/config.toml`:
@@ -66,6 +67,15 @@ allow the tool without a question, add this to `~/.codex/config.toml`:
 [plugins."flopwire@flopwire".mcp_servers.flopwire.tools.flopwire_send]
 approval_mode = "approve"
 ```
+
+## Shell commands and git commits
+
+A shell command in Codex's default sandbox (no network access) cannot
+reach the device agent: `flopwire send` fails with `sandbox_blocked`. Use
+the `flopwire_send` tool. The same sandbox keeps `.git` read-only, so
+`git commit` fails there, also in a linked git worktree. See
+[docs/agent.md](../../../docs/agent.md#codex-and-git-commits) for what was
+verified on each OS and the workarounds.
 
 ## Update
 

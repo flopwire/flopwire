@@ -130,13 +130,14 @@ func defaultSocket() (string, error) {
 
 // Error codes the CLI adds to the server's (busproto.Code*).
 const (
-	codeAgentNotRunning = "agent_not_running"
-	codeSandboxBlocked  = "sandbox_blocked"
-	codeMessagingOff    = "messaging_off"
-	codeAgentOutdated   = "agent_outdated"
-	codeAgentTimeout    = "agent_timeout"
-	codeAgentError      = "agent_error"
-	codeNoCaller        = "no_caller"
+	codeAgentNotRunning  = "agent_not_running"
+	codeSandboxBlocked   = "sandbox_blocked"
+	codePermissionDenied = "permission_denied"
+	codeMessagingOff     = "messaging_off"
+	codeAgentOutdated    = "agent_outdated"
+	codeAgentTimeout     = "agent_timeout"
+	codeAgentError       = "agent_error"
+	codeNoCaller         = "no_caller"
 )
 
 // busErr is a failed bus command: a stable code, the cause, what to do,
@@ -210,11 +211,13 @@ func (c *busClient) call(ctx context.Context, req agent.Request) (agent.Response
 		return resp, be
 	}
 	msg := err.Error()
+	refusal := connectRefusal(err, os.Getenv)
 	switch {
-	case errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES):
-		// Codex's workspace-write sandbox (macOS) refuses a shell
-		// command's connect to the socket; the MCP server is outside it.
-		return resp, &busErr{Code: codeSandboxBlocked, Detail: fmt.Sprintf("this process is not permitted to connect to the device agent's socket %s; a harness sandbox around shell commands (Codex's, for one) usually causes this", c.socket),
+	case refusal == codePermissionDenied:
+		return resp, &busErr{Code: codePermissionDenied, Detail: fmt.Sprintf("this user may not connect to the device agent's socket %s (permission denied); the agent runs as another user, or the socket's mode was changed", c.socket),
+			Fix: "run flopwire as the user who runs the device agent, or restart the agent so it recreates its socket", Example: "ls -l " + c.socket}
+	case refusal == codeSandboxBlocked:
+		return resp, &busErr{Code: codeSandboxBlocked, Detail: fmt.Sprintf("this process is not permitted to connect to the device agent's socket %s; a harness sandbox around shell commands causes this (Codex's, when it has no network access)", c.socket),
 			Fix: "use the flopwire_send, flopwire_peers or flopwire_inbox tool instead: the MCP server runs outside the sandbox", Example: `flopwire_send to="SESSION" message="…"`}
 	case strings.HasPrefix(msg, "agent not running"):
 		return resp, &busErr{Code: codeAgentNotRunning, Detail: fmt.Sprintf("the Flopwire device agent is not running (nothing answers on %s); messages go through it", c.socket),
@@ -228,6 +231,24 @@ func (c *busClient) call(ctx context.Context, req agent.Request) (agent.Response
 		return resp, &busErr{Code: codeAgentTimeout, Detail: fmt.Sprintf("the device agent did not answer within %s; the team server may be slow or unreachable", busTimeout), Fix: "check the agent, then try again", Example: "flopwire agent status"}
 	}
 	return resp, &busErr{Code: codeAgentError, Detail: "the device agent could not complete the request: " + msg, Fix: "check the agent", Example: "flopwire agent status"}
+}
+
+// connectRefusal is the code for a connect to the agent's socket that
+// the OS refused, or "" for any other error. Codex's sandbox with the
+// network off refuses the connect with EPERM (seatbelt on macOS, seccomp
+// on Linux) and marks the shell with CODEX_SANDBOX_NETWORK_DISABLED=1,
+// and on macOS CODEX_SANDBOX=seatbelt. File modes never give EPERM on a
+// connect, so EPERM alone is a sandbox too (another harness's); a plain
+// EACCES outside a Codex sandbox is the socket's permissions.
+func connectRefusal(err error, getenv func(string) string) string {
+	eperm, eacces := errors.Is(err, syscall.EPERM), errors.Is(err, syscall.EACCES)
+	switch {
+	case !eperm && !eacces:
+		return ""
+	case eperm || getenv("CODEX_SANDBOX_NETWORK_DISABLED") != "" || getenv("CODEX_SANDBOX") != "":
+		return codeSandboxBlocked
+	}
+	return codePermissionDenied
 }
 
 // notSeenYet reports whether the agent refused the session only because it

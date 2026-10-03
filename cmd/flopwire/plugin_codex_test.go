@@ -100,12 +100,14 @@ func TestCodexPluginManifest(t *testing.T) {
 var codexHookContract = map[string]struct {
 	matcher, command string
 	timeout          int
+	async            bool
 }{
-	"SessionStart":     {"", "flopwire hook || true", 5},
-	"UserPromptSubmit": {"", "flopwire hook || true", 5},
-	"PostToolUse":      {"*", "flopwire hook || true", 5},
-	"Stop":             {"", "flopwire hook || true", 5},
-	"SessionEnd":       {"", "flopwire hook || true", 3},
+	"SessionStart":     {"", "flopwire hook || true", 5, false},
+	"UserPromptSubmit": {"", "flopwire hook || true", 5, false},
+	"PostToolUse":      {"*", "flopwire hook || true", 5, false},
+	// Async: see TestCodexStopHookSurvivesShellNoise.
+	"Stop":       {"", "flopwire hook || true", 5, true},
+	"SessionEnd": {"", "flopwire hook || true", 3, false},
 }
 
 func TestCodexPluginHooks(t *testing.T) {
@@ -130,13 +132,71 @@ func TestCodexPluginHooks(t *testing.T) {
 			t.Fatalf("%s: want one matcher group with one hook; got %+v", ev, groups)
 		}
 		g, h, want := groups[0], groups[0].Hooks[0], codexHookContract[ev]
-		if g.Matcher != want.matcher || h.Type != "command" || h.Command != want.command || h.Timeout != want.timeout || h.Async {
+		if g.Matcher != want.matcher || h.Type != "command" || h.Command != want.command || h.Timeout != want.timeout || h.Async != want.async {
 			t.Errorf("%s: matcher %q command %q timeout %d async %v; the contract is %+v", ev, g.Matcher, h.Command, h.Timeout, h.Async, want)
 		}
 		if f := strings.Fields(h.Command); len(f) < 2 || f[0] != "flopwire" || !cmds[f[1]] || f[1] != "hook" {
 			t.Errorf("%s runs %q: not flopwire hook", ev, h.Command)
 		}
 	}
+}
+
+// TestCodexStopHookSurvivesShellNoise: Codex runs a hook command through
+// the user's shell (`zsh -c`, which reads ~/.zshenv; `$SHELL -lc` when
+// it knows no shell), so whatever the shell's startup files print lands
+// on the hook's stdout ahead of flopwire hook. No hook command can take
+// it back. A synchronous Stop hook fails on any stdout that is not one
+// JSON object ("hook returned invalid stop hook JSON output",
+// codex-rs/hooks/src/events/stop.rs); an async one is checked only when
+// its stdout starts like JSON. So the plugin's Stop hook is async.
+func TestCodexStopHookSurvivesShellNoise(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	var hf struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+				Async   bool   `json:"async"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	readJSONFile(t, filepath.Join(codexPluginDir, "hooks", "hooks.json"), &hf)
+	dir := t.TempDir()
+	// A shell whose startup file prints, as Codex would run it: SHELL -c CMD.
+	noisy := filepath.Join(dir, "noisy-sh")
+	if err := os.WriteFile(noisy, []byte("#!"+sh+"\necho 'Welcome back!'\nexec "+sh+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := hf.Hooks["Stop"][0].Hooks[0]
+	cmd := exec.Command(noisy, "-c", h.Command)
+	cmd.Env = []string{"PATH=" + t.TempDir()} // no flopwire: the noise is all there is
+	cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","session_id":"s"}`)
+	out, err := cmd.Output()
+	if err != nil || len(bytes.TrimSpace(out)) == 0 {
+		t.Fatalf("the noisy shell: %v, stdout %q; want exit 0 and the noise", err, out)
+	}
+	if reason := codexStopFailure(h.Async, out); reason != "" {
+		t.Fatalf("Codex fails the Stop hook (async=%v) behind a shell that prints %q: %s", h.Async, out, reason)
+	}
+}
+
+// codexStopFailure is why Codex 0.160 fails a Stop hook that exited 0
+// with this stdout, or "" when it does not.
+func codexStopFailure(async bool, stdout []byte) string {
+	s := bytes.TrimSpace(stdout)
+	if len(s) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if json.Unmarshal(s, &obj) == nil {
+		return ""
+	}
+	if !async || s[0] == '{' || s[0] == '[' {
+		return "hook returned invalid stop hook JSON output"
+	}
+	return ""
 }
 
 func TestCodexPluginHooksWithoutBinary(t *testing.T) {

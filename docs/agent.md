@@ -283,21 +283,27 @@ review.
 
 What you approve: each hook runs the command `flopwire hook || true`
 outside the Codex sandbox. The timeout is 5 seconds, and 3 seconds for
-`SessionEnd`, the most that Codex allows for that event. `flopwire hook` reads the
+`SessionEnd`, the most that Codex allows for that event. The `Stop` hook
+is `async`: Codex does not wait for it. `flopwire hook` reads the
 hook input, asks the device agent for this session's messages, prints
 them into the session, and asks the agent to index the transcript. `|| true`
 keeps Codex from reporting a failed hook when `flopwire` is missing or too
 old.
 
-Codex asks again when a hook's event, matcher, command or timeout
-changes, and when the plugin adds, removes or reorders a hook. Flopwire
-keeps these fixed, so plugin updates do not ask again. The exception: the plugin version that added the `SessionEnd`
-hook asks once more, for that new hook. Until you trust it, a Codex
-session that exits leaves presence when its writer lock is released,
-which the agent notices within seconds. Codex records the approval in `~/.codex/config.toml` under
-`hooks.state`, keyed by the plugin and the hook, not by the install path.
-After `flopwire setup --remove` the approval stays there, so a later
-install does not ask again.
+Codex asks again for a hook when any of these change: its event, its
+matcher, its command, its timeout, its `async` flag, its `statusMessage`,
+its `additionalContextLimit`, or its position in the list of hooks for its
+event. Codex stores the approval under a key that holds the event and the
+position, and a hash of the other fields. A plugin update that adds,
+removes or reorders hooks therefore asks again for each hook that moved.
+Flopwire changes these only when it must. A plugin update that changes a
+hook asks once more, for that hook. Until you trust a new `SessionEnd`
+hook, a Codex session that exits leaves presence when its writer lock is
+released, which the agent notices within seconds. Codex records the
+approval in `~/.codex/config.toml` under `hooks.state`, keyed by the
+plugin and the hook, not by the install path. After
+`flopwire setup --remove` the approval stays there, so a later install
+does not ask again.
 
 Codex also asks before each `flopwire_send` call, because a message leaves
 the session. `codex exec` cannot ask, so the call fails there. To allow
@@ -309,9 +315,35 @@ yourself:
 approval_mode = "approve"
 ```
 
-A shell command in Codex's `workspace-write` sandbox cannot reach the
-device agent, so `flopwire send` fails there with `sandbox_blocked`. Use
-the `flopwire_send` tool in Codex.
+A shell command in Codex's sandbox reaches the device agent only when
+the sandbox has network access. By default (`workspace-write` without
+`network_access`, and `read-only`) the sandbox refuses the connect to the
+agent's socket, and `flopwire send` fails with `sandbox_blocked`. Use the
+`flopwire_send` tool in Codex: the MCP server runs outside the sandbox.
+With `sandbox_workspace_write.network_access = true` in
+`~/.codex/config.toml`, `flopwire send` in a shell command works.
+
+What was verified, with Codex 0.160.0 on 2026-10-03:
+
+| OS | Sandbox | Network off | `network_access = true` |
+|---|---|---|---|
+| macOS 26 (arm64) | Seatbelt | `connect` fails with `EPERM`; `sandbox_blocked` | `connect` works |
+| Linux (Debian 12 in Docker, arm64) | bubblewrap and seccomp | `connect` fails with `EPERM` (seccomp denies `connect`); `sandbox_blocked` | `flopwire send` reaches the agent |
+
+On macOS the check used `codex sandbox` with a test socket. On Linux it
+used `codex sandbox` and two `codex exec` runs that called `flopwire send`
+against a running `flopwire agent run`. Inside the container, bubblewrap
+needed `--security-opt seccomp=unconfined --security-opt
+apparmor=unconfined --cap-add SYS_ADMIN` to create its namespaces.
+
+`flopwire send` reports `sandbox_blocked` when the connect fails with
+`EPERM`, or with `EACCES` in a shell that Codex marks as sandboxed
+(`CODEX_SANDBOX_NETWORK_DISABLED` or `CODEX_SANDBOX` is set). A plain
+`EACCES` outside a sandbox is `permission_denied`: the socket belongs to
+another user, or its mode changed.
+
+Codex's sandbox also keeps `.git` read-only, so `git commit` fails in
+a sandboxed shell command. See [Codex and git commits](#codex-and-git-commits).
 
 ### Remove
 
@@ -512,6 +544,39 @@ each finished turn. It prints nothing and never blocks or extends a turn.
 `notify` holds one command only, so the hook also leaves `notify` free for
 other tools.
 
+The `Stop` hook is `async`. Codex runs each hook command through your
+shell: `zsh -c` reads `~/.zshenv`, `bash -c` reads the file that
+`BASH_ENV` names, and when Codex knows no shell it runs `$SHELL -lc`,
+which reads your login files. Text that these files print goes into the
+hook's output before `flopwire hook` runs. Codex fails a synchronous
+`Stop` hook whose output is not JSON, on every turn. It ignores the
+output of an async `Stop` hook unless that output starts with `{` or `[`.
+At exit, Codex drops the async `Stop` hook of the last turn; the
+`SessionEnd` hook indexes the transcript and ends the session then.
+Keep your shell startup files silent when they are not interactive:
+on the other events the printed text goes into the session as context.
+
+#### Codex and git commits
+
+Codex's `workspace-write` sandbox keeps `.git` read-only, so a sandboxed
+`git commit` fails in every checkout. In a linked git worktree, the
+worktree's `.git` file points to `<main>/.git/worktrees/<name>/`, where
+git writes `index.lock`, and the commit also writes objects and refs in
+`<main>/.git`. Adding `<main>/.git/worktrees/<name>` as a writable root
+does not help: the commit still fails. Verified with Codex 0.160.0 on
+macOS (Seatbelt) and Linux (bubblewrap).
+
+This limits which harness can be the one that commits in a setup with
+worktrees. To commit:
+
+- Commit from the main checkout, outside the Codex sandbox: in your own
+  terminal, or from a Claude Code or Devin session.
+- Or approve Codex's request to run `git commit` outside the sandbox.
+  Interactive Codex asks for it; `codex exec` cannot ask, so the commit
+  fails there.
+- Or run Codex with the sandbox off: `codex --sandbox danger-full-access`.
+  The model's commands then run without any sandbox.
+
 Use the manual configuration below only when you cannot install the
 plugin. Do not use both: each hook would then run twice.
 `flopwire setup` warns when it finds both.
@@ -532,7 +597,7 @@ plugin. Do not use both: each hook would then run twice.
       { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5, "async": true }] }
     ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 3 }] }
@@ -546,7 +611,8 @@ plugin. Do not use both: each hook would then run twice.
 5. Codex shows "Hooks need review". Approve the five hooks.
 
 Codex runs a hook only after you approve it. It asks again when the
-event, the matcher, the command or the timeout changes.
+event, the matcher, the command, the timeout, `async`, `statusMessage`,
+`additionalContextLimit` or the hook's position in the list changes.
 
 ### Devin CLI
 
