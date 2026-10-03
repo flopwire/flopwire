@@ -401,6 +401,22 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	return rep
 }
 
+// claudeProjectDir is the project Claude Code keys a session in dir by:
+// the nearest directory from dir up that holds .git (a repository or
+// worktree root), else dir.
+func claudeProjectDir(dir string) string {
+	for d := dir; ; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return dir
+		}
+		d = parent
+	}
+}
+
 // realPath is p with symlinks resolved, or p when that fails.
 func realPath(p string) string {
 	if r, err := filepath.EvalSymlinks(p); err == nil {
@@ -981,6 +997,9 @@ func claudeManualMCPServers(env *setupEnv) []string {
 	for _, n := range cj.MCPServers.flopwire() {
 		warn = append(warn, fmt.Sprintf("a user MCP server %q runs flopwire mcp; the plugin provides the same tools, so remove it: claude mcp remove %s --scope user", n, n))
 	}
+	// A session here declines .mcp.json servers through its own project
+	// entry (its git root), whichever directory holds the .mcp.json.
+	declined := cj.Projects[projects[realPath(claudeProjectDir(env.cwd))]].DisabledMcpjsonServers
 	for dir := env.cwd; dir != ""; {
 		key, known := projects[realPath(dir)]
 		if p, ok := cj.Projects[key]; known && ok {
@@ -995,7 +1014,7 @@ func claudeManualMCPServers(env *setupEnv) []string {
 			}
 			if json.Unmarshal(raw, &pj) == nil {
 				for _, n := range pj.MCPServers.flopwire() {
-					if known && slices.Contains(cj.Projects[key].DisabledMcpjsonServers, n) {
+					if slices.Contains(declined, n) {
 						continue // the user turned it down: Claude Code does not run it
 					}
 					warn = append(warn, fmt.Sprintf("%s has a project MCP server %q that runs flopwire mcp; the plugin provides the same tools, so remove that entry from the file (setup does not edit it; others using the repository may still need it without the plugin)", tildePath(f, env.home), n))

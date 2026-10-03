@@ -891,6 +891,48 @@ func TestSetupWarnsAboutProjectAndLocalMCPServers(t *testing.T) {
 	}
 }
 
+// TestSetupReadsMCPJSONDeclinesFromTheSessionProject: Claude Code reads
+// every .mcp.json from the session directory up, but takes the user's
+// declines (disabledMcpjsonServers) from the session's project entry in
+// .claude.json, keyed by its git root, not from the entry of the directory
+// that holds the .mcp.json (checked against Claude Code 2.1.288).
+func TestSetupReadsMCPJSONDeclinesFromTheSessionProject(t *testing.T) {
+	f := newSetupFixture(t, true)
+	root := filepath.Join(f.dir, "cwd")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	claudeJSON := `{"projects":{
+	  "` + root + `":{"disabledMcpjsonServers":["fw-declined-here"]},
+	  "` + f.dir + `":{"disabledMcpjsonServers":["fw-declined-elsewhere"]}
+	}}`
+	files := map[string]string{
+		filepath.Join(f.home, ".claude.json"): claudeJSON,
+		filepath.Join(f.dir, ".mcp.json"):     `{"mcpServers":{"fw-declined-here":{"command":"flopwire","args":["mcp"]},"fw-declined-elsewhere":{"command":"flopwire","args":["mcp"]}}}`,
+	}
+	for p, s := range files {
+		if err := os.WriteFile(p, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, _, err := f.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(f.claude(rep).Warnings, "\n")
+	if strings.Contains(w, "fw-declined-here") {
+		t.Errorf("warned about a server the user declined in this project:\n%s", w)
+	}
+	if !strings.Contains(w, `project MCP server "fw-declined-elsewhere"`) {
+		t.Errorf("a decline in another project hid a server this project runs:\n%s", w)
+	}
+}
+
 // TestSetupReadsClaudePluginListOutput: the load errors and notes of real
 // `claude plugin list --json` output (2.1.288, sanitized) reach the report.
 func TestSetupReadsClaudePluginListOutput(t *testing.T) {
