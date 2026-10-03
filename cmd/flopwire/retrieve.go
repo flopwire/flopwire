@@ -65,7 +65,7 @@ type retriever struct {
 	// teamRepo, set for the server, expands a --repo argument on this
 	// device (local.ExpandRepo with the local index's placements), since
 	// the server cannot read this device's git files.
-	teamRepo func(ctx context.Context, repo string) (repo2 string, roots, remotes []string, err error)
+	teamRepo func(ctx context.Context, repo string) (local.Repo, error)
 }
 
 // whoCalls is the calling session: the one an MCP request's _meta names
@@ -93,7 +93,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		if indexPath == "" {
 			indexPath = local.IndexPath()
 		}
-		team := func(ctx context.Context, repo string) (string, []string, []string, error) {
+		team := func(ctx context.Context, repo string) (local.Repo, error) {
 			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
 		}
 		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team}, nil
@@ -588,9 +588,11 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		return badArg(err)
 	}
 	if r.teamRepo != nil && f.Repo != "" {
-		if f.Repo, f.RepoRoots, f.RepoRemotes, err = r.teamRepo(ctx, f.Repo); err != nil {
+		rp, err := r.teamRepo(ctx, f.Repo)
+		if err != nil {
 			return err // a format.ErrBadRequest
 		}
+		f.Repo, f.RepoRoots, f.RepoMains, f.RepoRemotes = rp.Repo, rp.Roots, rp.Mains, rp.Remotes
 	}
 	if f.Session == "self" {
 		if f.Session, err = r.self(ctx, p); err != nil {

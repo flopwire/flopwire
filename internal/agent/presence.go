@@ -427,7 +427,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			s.Title = a.busTitle(ctx, s)
 		}
 		if p, ok := a.storedPlace(key); ok {
-			s.Remote = p.pl.Remote
+			s.Remote, s.Main = p.pl.Remote, p.pl.Main
 		}
 		out = append(out, s)
 	}
@@ -538,7 +538,7 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
 		out[i].Withheld = !a.reportable(ctx, key, paths[key])
 		if p, ok := a.storedPlace(key); ok {
-			out[i].Remote = p.pl.Remote
+			out[i].Remote, out[i].Main = p.pl.Remote, p.pl.Main
 		}
 	}
 	return out, nil
@@ -557,13 +557,14 @@ func (a *Agent) BusRepoKey(ctx context.Context, repo string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var remotes []string
+	var r local.Repo
 	if a.cfg.Bus != nil && a.cfg.Bus.Local() {
-		_, _, remotes, err = local.ExpandRepo(repo, dirs, true)
+		r, err = local.ExpandRepo(repo, dirs, true)
 	} else {
 		pol := a.policy().pol
-		_, _, remotes, err = local.ServerRepo(repo, dirs, func(pl pathpolicy.Placement) bool { return Uploads(pol, pl) })
+		r, err = local.ServerRepo(repo, dirs, func(pl pathpolicy.Placement) bool { return Uploads(pol, pl) })
 	}
+	remotes := r.Remotes
 	if err != nil {
 		return "", errors.New(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "))
 	}

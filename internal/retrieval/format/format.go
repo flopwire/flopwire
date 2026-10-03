@@ -50,6 +50,14 @@ type Filters struct {
 	// session whose device placed it in a checkout of one of them
 	// matches, on any device and at any path (issue #102).
 	RepoRemotes []string `json:"repo_remote,omitempty"`
+	// RepoMains are the main checkouts of the repository Repo names, as
+	// the caller's device recorded and resolved them: a session that
+	// device placed in one matches (locally by its placement, on the
+	// server by the checkout the device uploaded with it).
+	RepoMains []string `json:"repo_checkout,omitempty"`
+	// CallerDevice is the calling device's id, which the server sets from
+	// the credential for RepoMains; it never travels.
+	CallerDevice string `json:"-"`
 	// RepoCheckouts are main checkouts the server resolved a repo name
 	// to, for a repository without a remote: a session matches when the
 	// device that uploaded it placed it in one. Set by the server only;
@@ -122,6 +130,9 @@ func (f Filters) Values() url.Values {
 	if len(f.RepoRemotes) > 0 {
 		v["repo_remote"] = append([]string(nil), f.RepoRemotes...)
 	}
+	if len(f.RepoMains) > 0 {
+		v["repo_checkout"] = append([]string(nil), f.RepoMains...)
+	}
 	set("device", f.Device)
 	set("user", f.User)
 	set("kind", strings.Join(f.Kinds, ","))
@@ -178,6 +189,17 @@ func ParseFilters(v url.Values) (Filters, error) {
 			}
 		}
 		f.RepoRemotes = append([]string(nil), remotes...)
+	}
+	if mains := v["repo_checkout"]; len(mains) > 0 {
+		if len(mains) > MaxRepoRoots {
+			return f, fmt.Errorf("repo_checkout: at most %d", MaxRepoRoots)
+		}
+		for _, m := range mains {
+			if !strings.HasPrefix(m, "/") || len(m) > 4096 {
+				return f, fmt.Errorf("repo_checkout: %q is not an absolute path", m)
+			}
+		}
+		f.RepoMains = append([]string(nil), mains...)
 	}
 	var err error
 	for _, p := range []struct {

@@ -36,9 +36,15 @@ func TestRepoMatches(t *testing.T) {
 		{"acme/web", nil, nil, "/x/y", "github.com/acme/web", true},
 		{"acme/web", nil, nil, "/x/web", "", false},
 	} {
-		if got := RepoMatches(c.filter, c.roots, c.remote, c.repo, c.rem); got != c.want {
+		if got := RepoMatches(c.filter, c.roots, nil, c.remote, c.repo, "", c.rem); got != c.want {
 			t.Errorf("RepoMatches(%q, %v, %v, %q, %q) = %v", c.filter, c.roots, c.remote, c.repo, c.rem, got)
 		}
+	}
+	// A main checkout matches a session placed in it, whatever worktree
+	// root it reports (#102 review).
+	if !RepoMatches("", nil, []string{"/src/app"}, nil, "/src/app-wt-0999", "/src/app", "") ||
+		RepoMatches("", nil, []string{"/src/app"}, nil, "/src/other", "/src/other", "") {
+		t.Fatal("mains")
 	}
 }
 

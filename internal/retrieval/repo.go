@@ -34,7 +34,16 @@ const maxRepoNameRows = 1000
 // Matching ignores case. Two uploads are one repository when they share
 // the remote, or the device and main checkout (as the device groups its
 // own placements).
+//
+// RepoMains, the main checkouts the caller's device sent, become
+// RepoCheckouts of that device: a path is one device's, so another
+// device's checkout at the same path is not the same repository.
 func (s *Store) resolveFilterRepo(ctx context.Context, f *format.Filters) error {
+	if len(f.RepoMains) > 0 && f.CallerDevice != "" {
+		for _, m := range f.RepoMains {
+			f.RepoCheckouts = append(f.RepoCheckouts, format.DeviceCheckout{Device: f.CallerDevice, Checkout: m})
+		}
+	}
 	name := strings.TrimSuffix(strings.TrimSpace(f.Repo), "/")
 	if name == "" || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "*?[") {
 		return nil

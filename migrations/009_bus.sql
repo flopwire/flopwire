@@ -20,6 +20,9 @@ CREATE TABLE bus_presence (
   -- remote is the session's normalized remote ('' for none); a repo
   -- routes and filters by it when it has one (issue #102).
   remote text NOT NULL DEFAULT '',
+  -- main is the main checkout of the session's repository ('' unknown):
+  -- a repo filter matches it without listing every worktree.
+  main text NOT NULL DEFAULT '',
   branch text NOT NULL DEFAULT '',
   title text NOT NULL DEFAULT '',
   busy boolean NOT NULL,

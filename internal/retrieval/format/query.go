@@ -7,36 +7,10 @@ import (
 // Query helpers shared by the local index and the server, so a filter or
 // a query means the same on both.
 
-// MaxRepoRoots bounds Filters.RepoRoots and Filters.RepoRemotes, so the
-// filter fits a request line.
+// MaxRepoRoots bounds Filters.RepoRoots, RepoMains and RepoRemotes, so
+// the filter fits a request line. A request past it is refused, never
+// cut.
 const MaxRepoRoots = 256
-
-// FitRoots fits a repository's checkout roots to n: a root under another
-// one adds nothing and goes first; then the last ones go, so the
-// argument's own checkouts and the live worktrees, which come first,
-// stay.
-func FitRoots(roots []string, n int) []string {
-	if len(roots) <= n {
-		return roots
-	}
-	var out []string
-	for _, r := range roots {
-		under := false
-		for _, o := range roots {
-			if o != r && strings.HasPrefix(r, strings.TrimSuffix(o, "/")+"/") {
-				under = true
-				break
-			}
-		}
-		if !under {
-			out = append(out, r)
-		}
-	}
-	if len(out) > n {
-		out = out[:n]
-	}
-	return out
-}
 
 // RepoMatch interprets a repo filter that is not a relative path (callers
 // resolve "." and "./x" to absolute paths first): an absolute path matches

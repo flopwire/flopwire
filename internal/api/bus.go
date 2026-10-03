@@ -193,9 +193,9 @@ func (a *API) busAck(w http.ResponseWriter, r *http.Request) {
 // sessions listed, as sessions.list does.
 func (a *API) busPeers(w http.ResponseWriter, r *http.Request) {
 	v := r.URL.Query()
-	q := busproto.PeersQuery{Session: v.Get("session"), Repo: v.Get("repo"), User: v.Get("user"), Agent: v.Get("agent"), Roots: v["repo_root"], Remotes: v["repo_remote"]}
-	if len(q.Roots) > format.MaxRepoRoots || len(q.Remotes) > format.MaxRepoRoots {
-		a.busFailed(w, r, &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: fmt.Sprintf("repo_root and repo_remote: at most %d each", format.MaxRepoRoots)})
+	q := busproto.PeersQuery{Session: v.Get("session"), Repo: v.Get("repo"), User: v.Get("user"), Agent: v.Get("agent"), Roots: v["repo_root"], Mains: v["repo_checkout"], Remotes: v["repo_remote"]}
+	if len(q.Roots) > format.MaxRepoRoots || len(q.Mains) > format.MaxRepoRoots || len(q.Remotes) > format.MaxRepoRoots {
+		a.busFailed(w, r, &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: fmt.Sprintf("repo_root, repo_checkout and repo_remote: at most %d each", format.MaxRepoRoots)})
 		return
 	}
 	c := a.caller(r)

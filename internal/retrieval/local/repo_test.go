@@ -241,20 +241,41 @@ func TestSymlinkPrefixes(t *testing.T) {
 	}
 }
 
-// Roots sent to the server fit format.MaxRepoRoots: nested roots go
-// first, then the last ones; the first (the argument's checkouts) stay.
-func TestWireRoots(t *testing.T) {
+// #102 review: the lists a --repo filter carries do not grow with the
+// repository's worktrees (they are matched by the main checkout and
+// remote their placements record), and a list past the request cap is an
+// error that names it, never a silent cut.
+func TestRepoListsStaySmall(t *testing.T) {
+	var dirs []localindex.RepoDir
+	for i := range 3 * format.MaxRepoRoots {
+		dirs = append(dirs, localindex.RepoDir{Dir: fmt.Sprintf("/w/web-wt-%04d", i), Main: "/w/web", Remote: "github.com/acme/web"})
+	}
+	r, err := ExpandRepo("web", dirs, true)
+	if err != nil || len(r.Roots) > 2 || !slices.Equal(r.Mains, []string{"/w/web"}) || !slices.Equal(r.Remotes, []string{"github.com/acme/web"}) {
+		t.Fatalf("--server --repo web over %d worktrees: %+v %v", len(dirs), r, err)
+	}
+	dirs = dirs[:0]
+	for i := range format.MaxRepoRoots + 1 {
+		dirs = append(dirs, localindex.RepoDir{Dir: fmt.Sprintf("/c/web-%04d", i), Main: fmt.Sprintf("/c/web-%04d", i), Remote: "github.com/acme/web"})
+	}
+	if _, err := ExpandRepo("web", dirs, true); !errors.Is(err, format.ErrBadRequest) || !strings.Contains(err.Error(), "at most 256") {
+		t.Fatalf("%d clones of one remote: %v", len(dirs), err)
+	}
+	if r, err := ExpandRepo("web", dirs, false); err != nil || len(r.Mains) != len(dirs) {
+		t.Fatalf("locally, %d clones: %d mains %v", len(dirs), len(r.Mains), err)
+	}
+	// Directories past the local query's cap are refused, not cut.
+	st, err := localindex.Open(filepath.Join(t.TempDir(), "index.db"), localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 	var roots []string
-	for i := range format.MaxRepoRoots + 10 {
-		roots = append(roots, fmt.Sprintf("/w/r%03d", i))
+	for i := range localindex.MaxRepos + 1 {
+		roots = append(roots, fmt.Sprintf("/d/%04d", i))
 	}
-	roots = append([]string{"/w/r000/sub"}, roots...)
-	got := format.FitRoots(roots, format.MaxRepoRoots)
-	if len(got) != format.MaxRepoRoots || got[0] != "/w/r000" || slices.Contains(got, "/w/r000/sub") {
-		t.Fatalf("FitRoots: %d, first %v", len(got), got[:2])
-	}
-	if short := []string{"/a", "/a/b"}; !slices.Equal(format.FitRoots(short, format.MaxRepoRoots), short) {
-		t.Fatal("a list that fits is kept as it is")
+	if _, err := (&Backend{Store: st}).Sessions(ctx, "", "", format.Filters{RepoRoots: roots}); !errors.Is(err, format.ErrBadRequest) || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("%d roots: %v", len(roots), err)
 	}
 }
 
@@ -286,9 +307,9 @@ func TestServerRepoAmbiguousNameIsAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, roots, remotes, err := ExpandRepo("app", dirs, true)
+	r, err := ExpandRepo("app", dirs, true)
 	if !errors.Is(err, format.ErrBadRequest) || !strings.Contains(err.Error(), "names 2 repositories") {
-		t.Fatalf("--server --repo app: %q %v %v %v", repo, roots, remotes, err)
+		t.Fatalf("--server --repo app: %+v %v", r, err)
 	}
 }
 
@@ -303,25 +324,32 @@ func TestServerRepoSendsRemotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := func(s string) string { return filepath.Join(w.base, s) }
+	real := func(s string) string {
+		r, err := filepath.EvalSymlinks(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
 	for _, arg := range []string{"web", "acme/web", p("web-fix")} {
-		repo, roots, remotes, err := ExpandRepo(arg, dirs, true)
-		if err != nil || !slices.Equal(remotes, []string{"github.com/acme/web"}) || !slices.Contains(roots, p("elsewhere/web2")) {
-			t.Fatalf("--server --repo %s: %q %v %v %v", arg, repo, roots, remotes, err)
+		r, err := ExpandRepo(arg, dirs, true)
+		if err != nil || !slices.Equal(r.Remotes, []string{"github.com/acme/web"}) || !slices.Contains(r.Mains, real(p("elsewhere/web2"))) || !slices.Contains(r.Mains, real(p("web"))) {
+			t.Fatalf("--server --repo %s: %+v %v", arg, r, err)
 		}
-		if !strings.HasPrefix(arg, "/") && repo != "" {
-			t.Fatalf("--server --repo %s sends the name %q", arg, repo)
+		if !strings.HasPrefix(arg, "/") && r.Repo != "" {
+			t.Fatalf("--server --repo %s sends the name %q", arg, r.Repo)
 		}
 	}
-	if repo, roots, remotes, err := ExpandRepo(p("app"), dirs, true); err != nil || len(remotes) != 0 || !slices.Contains(roots, p("app-api")) || repo != p("app") {
-		t.Fatalf("--server --repo <app>: %q %v %v %v", repo, roots, remotes, err)
+	if r, err := ExpandRepo(p("app"), dirs, true); err != nil || len(r.Remotes) != 0 || !slices.Contains(r.Mains, real(p("app"))) || r.Repo != p("app") {
+		t.Fatalf("--server --repo <app>: %+v %v", r, err)
 	}
-	if repo, roots, remotes, err := ExpandRepo("teammates-repo", dirs, true); err != nil || repo != "teammates-repo" || roots != nil || remotes != nil {
-		t.Fatalf("--server --repo teammates-repo: %q %v %v %v", repo, roots, remotes, err)
+	if r, err := ExpandRepo("teammates-repo", dirs, true); err != nil || r.Repo != "teammates-repo" || r.Roots != nil || r.Remotes != nil {
+		t.Fatalf("--server --repo teammates-repo: %+v %v", r, err)
 	}
 	// A path rule on the repository keeps its remote off the request.
 	deny := func(pl pathpolicy.Placement) bool { return pl.Remote != "github.com/acme/web" }
-	if _, _, remotes, err := ServerRepo("web", dirs, deny); err != nil || remotes != nil {
-		t.Fatalf("withheld remote: %v %v", remotes, err)
+	if r, err := ServerRepo("web", dirs, deny); err != nil || r.Remotes != nil || r.Mains != nil {
+		t.Fatalf("withheld remote: %+v %v", r, err)
 	}
 }
 
@@ -345,12 +373,12 @@ func TestRepoMainCaseInsensitive(t *testing.T) {
 	git(t, app, "init", "-q")
 	lower := filepath.Join(base, "app")
 	dirs := []localindex.RepoDir{{Dir: app, Main: app}, {Dir: lower, Main: lower}}
-	_, roots, _, err := ExpandRepo("app", dirs, false)
-	if err != nil || !slices.Contains(roots, app) || !slices.Contains(roots, lower) {
-		t.Fatalf("--repo app: %v %v", roots, err)
+	r, err := ExpandRepo("app", dirs, false)
+	if err != nil || !slices.Contains(r.Mains, app) || !slices.Contains(r.Mains, lower) {
+		t.Fatalf("--repo app: %+v %v", r, err)
 	}
-	if _, roots, _, err := ExpandRepo(lower, dirs, false); err != nil || !slices.Contains(roots, app) {
-		t.Fatalf("--repo %s: %v %v", lower, roots, err)
+	if r, err := ExpandRepo(lower, dirs, false); err != nil || !slices.Contains(r.Mains, app) {
+		t.Fatalf("--repo %s: %+v %v", lower, r, err)
 	}
 }
 
@@ -374,17 +402,17 @@ func TestRepoDeletedDirUnderDotfilesHome(t *testing.T) {
 		{Dir: home, Main: home, Remote: "github.com/me/dotfiles"},
 		{Dir: gone}, // placed with no repository: its directory was gone
 	}
-	repo, roots, _, err := ExpandRepo(gone, dirs, false)
-	if err != nil || repo != gone || slices.Contains(roots, home) || !slices.Contains(roots, gone) {
-		t.Fatalf("--repo <deleted dir under home>: %q %v %v", repo, roots, err)
+	r, err := ExpandRepo(gone, dirs, false)
+	if err != nil || r.Repo != gone || slices.Contains(r.Roots, home) || slices.Contains(r.Mains, home) || len(r.Remotes) != 0 {
+		t.Fatalf("--repo <deleted dir under home>: %+v %v", r, err)
 	}
 	// A deleted worktree is still named by a placement recorded at it,
 	// and a directory under it by the placement above it, also gone.
 	wt := filepath.Join(home, "gone-wt")
 	dirs = append(dirs, localindex.RepoDir{Dir: wt, Main: "/p/app", Remote: "github.com/acme/app"})
 	for _, arg := range []string{wt, filepath.Join(wt, "sub")} {
-		if _, roots, _, err := ExpandRepo(arg, dirs, false); err != nil || !slices.Contains(roots, "/p/app") || slices.Contains(roots, home) {
-			t.Fatalf("--repo %s: %v %v", arg, roots, err)
+		if r, err := ExpandRepo(arg, dirs, false); err != nil || !slices.Contains(r.Mains, "/p/app") || slices.Contains(r.Mains, home) {
+			t.Fatalf("--repo %s: %+v %v", arg, r, err)
 		}
 	}
 }

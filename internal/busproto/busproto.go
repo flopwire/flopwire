@@ -349,6 +349,10 @@ type PresenceSession struct {
 	// repository, "" for none: a repo filter or @user route matches it on
 	// any device and at any path (issue #102).
 	Remote string `json:"remote,omitempty"`
+	// Main is the main checkout of the session's repository as the device
+	// placed it: a repo filter matches it as it matches Repo, without
+	// listing every worktree (#102).
+	Main   string `json:"main,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	Title  string `json:"title,omitempty"`
 	// Busy: a turn is running.
@@ -479,6 +483,7 @@ type Peer struct {
 	Device   string `json:"device,omitempty"`
 	Repo     string `json:"repo,omitempty"`
 	Remote   string `json:"remote,omitempty"`
+	Main     string `json:"main,omitempty"`
 	Branch   string `json:"branch,omitempty"`
 	Title    string `json:"title,omitempty"`
 	Busy     bool   `json:"busy"`
@@ -498,6 +503,8 @@ type PeersQuery struct {
 	// caller's device expanded it (local.ExpandRepo): a session on any of
 	// them, or under one, is on that repository.
 	Roots []string
+	// Mains are its main checkouts: a session placed in one is on it.
+	Mains []string
 	// Remotes are its normalized remotes: a session whose remote is one
 	// of them is on that repository, on any device (issue #102).
 	Remotes []string

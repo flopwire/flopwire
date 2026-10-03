@@ -217,7 +217,7 @@ func (b *Bus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersR
 	if err := b.notWithheld(ctx, q.Session, ""); err != nil {
 		return busproto.PeersResponse{}, err
 	}
-	if err := b.reposNotWithheld(ctx, append(append([]string{q.Repo}, q.Roots...), q.Remotes...)...); err != nil {
+	if err := b.reposNotWithheld(ctx, append(append(append([]string{q.Repo}, q.Roots...), q.Mains...), q.Remotes...)...); err != nil {
 		return busproto.PeersResponse{}, err
 	}
 	srv, _ := b.cfg.Connect()
@@ -698,7 +698,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 	now := b.cfg.Now()
 	out := busproto.PeersResponse{Peers: []busproto.Peer{}}
 	for _, s := range append(slices.Clone(live), b.CloudSessions()...) {
-		repoOK := bus.RepoMatches(q.Repo, q.Roots, q.Remotes, s.Repo, s.Remote)
+		repoOK := bus.RepoMatches(q.Repo, q.Roots, q.Mains, q.Remotes, s.Repo, s.Main, s.Remote)
 		if s.Cloud {
 			repoOK = bus.CloudRepoMatches(q.Repo, q.Roots, s.Repo)
 		}
@@ -707,7 +707,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 			continue
 		}
 		p := busproto.Peer{Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
-			Device: host, Repo: s.Repo, Remote: s.Remote, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now}
+			Device: host, Repo: s.Repo, Remote: s.Remote, Main: s.Main, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now}
 		if s.Cloud {
 			p.Device = ""
 		}

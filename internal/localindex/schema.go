@@ -21,9 +21,10 @@ import (
 // 10: sources.extraction_report.
 // 11: messages_tool_call and conversations_unspawned, for link resolution.
 // 12: messages_sha, for local redactions (now built on first use: shaIndexSQL).
+// 13: placements_main and placements_remote, for --repo.
 // Placements are carried across a rebuild (carryPlacements): a session
 // whose worktree is gone cannot be placed again from its transcript.
-const schemaVersion = 12
+const schemaVersion = 13
 
 // Column types follow spec §4 with SQLite equivalents: integer row ids
 // (FTS5 keys on the integer rowid), times as unix milliseconds, booleans as
@@ -191,6 +192,9 @@ CREATE TABLE placements (
   withhold      TEXT,              -- a server deletion owed (a later directory tightened the verdict): "mode<TAB>rule"
   PRIMARY KEY (agent, session_id)
 ) WITHOUT ROWID;
+-- A --repo filter finds a repository's sessions by these (#102).
+CREATE INDEX placements_main ON placements (main_root) WHERE main_root IS NOT NULL;
+CREATE INDEX placements_remote ON placements (remote) WHERE remote IS NOT NULL;
 
 -- FTS changes not yet applied by every FTS shard (fts.go).
 CREATE TABLE fts_queue (
@@ -304,6 +308,13 @@ func setAsidePlacements(tx *sql.Tx) (bool, error) {
 	}
 	if _, err := tx.Exec(`DROP TABLE IF EXISTS placements_old`); err != nil {
 		return false, err
+	}
+	// Its indexes keep their names across the rename, and the new layout
+	// creates them again.
+	for _, idx := range []string{"placements_main", "placements_remote"} {
+		if _, err := tx.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
+			return false, err
+		}
 	}
 	_, err := tx.Exec(`ALTER TABLE placements RENAME TO placements_old`)
 	return err == nil, err

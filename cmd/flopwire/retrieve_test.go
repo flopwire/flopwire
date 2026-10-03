@@ -400,7 +400,8 @@ func TestReadCountsMessages(t *testing.T) {
 }
 
 // --server --repo . expands on this device: the server cannot read its
-// git files, so the request names every checkout of the repository (#81).
+// git files, so the request names the repository's main checkout, which
+// every session in one of its worktrees was uploaded with (#81, #102).
 func TestServerRepoExpandsCheckouts(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
@@ -431,7 +432,7 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 	}
 	t.Chdir(main)
 	captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
-	if len(queries) != 1 || queries[0].Get("repo") != main || !slices.Contains(queries[0]["repo_root"], wt) || !slices.Contains(queries[0]["repo_root"], main) {
+	if len(queries) != 1 || queries[0].Get("repo") != main || !slices.Contains(queries[0]["repo_checkout"], main) || !slices.Contains(queries[0]["repo_root"], main) || slices.Contains(queries[0]["repo_root"], wt) {
 		t.Fatalf("sessions --server --repo . sent %v", queries)
 	}
 }
@@ -497,15 +498,15 @@ func TestServerRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	t.Run("withheld worktrees", func(t *testing.T) {
 		os.WriteFile(rules, []byte("local "+secret+"\ndeny "+gone+"\n"), 0o600)
 		q := sent(t, main)
-		roots := q["repo_root"]
-		if slices.Contains(roots, secret) || slices.Contains(roots, gone) || !slices.Contains(roots, ok) || !slices.Contains(roots, main) {
-			t.Fatalf("roots sent from the main checkout: %v", roots)
+		roots := append(q["repo_root"], q["repo_checkout"]...)
+		if slices.Contains(roots, secret) || slices.Contains(roots, gone) || !slices.Contains(q["repo_checkout"], main) || !slices.Contains(q["repo_root"], main) {
+			t.Fatalf("sent from the main checkout: %v", q)
 		}
 	})
 	t.Run("withheld main checkout", func(t *testing.T) {
 		os.WriteFile(rules, []byte("local "+main+"\n"), 0o600)
 		q := sent(t, ok)
-		if q.Get("repo") != ok || len(q["repo_root"]) != 0 {
+		if q.Get("repo") != ok || len(q["repo_root"]) != 0 || len(q["repo_checkout"]) != 0 {
 			t.Fatalf("sent from a worktree of a withheld main checkout: %v", q)
 		}
 	})

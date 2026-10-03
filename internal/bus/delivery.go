@@ -43,7 +43,7 @@ func validPresence(in []busproto.PresenceSession) ([]busproto.PresenceSession, e
 	for _, p := range in {
 		p.SessionID, p.Agent = strings.TrimSpace(p.SessionID), strings.TrimSpace(p.Agent)
 		if p.SessionID == "" || p.Agent == "" || len(p.SessionID) > 256 || len(p.Agent) > 64 ||
-			len(p.Repo) > 4096 || len(p.Remote) > 4096 || len(p.Branch) > 1024 || len(p.Title) > 1024 {
+			len(p.Repo) > 4096 || len(p.Remote) > 4096 || len(p.Main) > 4096 || len(p.Branch) > 1024 || len(p.Title) > 1024 {
 			return nil, badRequest("each session needs session_id and agent (and bounded repo, remote, branch and title)")
 		}
 		k := [2]string{p.Agent, p.SessionID}
@@ -66,10 +66,10 @@ const (
 	ForeignSessionsSQL = `SELECT session_id FROM conversations WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2
 		UNION SELECT session_id FROM bus_presence WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2`
 	clearPresenceSQL  = `DELETE FROM bus_presence WHERE device_id=$1 AND (agent,session_id) NOT IN (SELECT * FROM unnest($2::text[],$3::text[]))`
-	upsertPresenceSQL = `INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,branch,title,busy,seen_at,remote)
-		SELECT $1,$2,a,s,r,b,t,busy,$9,rm FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::bool[],$10::text[]) AS x(a,s,r,b,t,busy,rm)
+	upsertPresenceSQL = `INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,branch,title,busy,seen_at,remote,main)
+		SELECT $1,$2,a,s,r,b,t,busy,$9,rm,mn FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::bool[],$10::text[],$11::text[]) AS x(a,s,r,b,t,busy,rm,mn)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET user_id=EXCLUDED.user_id,repo=EXCLUDED.repo,branch=EXCLUDED.branch,
-			title=EXCLUDED.title,busy=EXCLUDED.busy,seen_at=EXCLUDED.seen_at,remote=EXCLUDED.remote`
+			title=EXCLUDED.title,busy=EXCLUDED.busy,seen_at=EXCLUDED.seen_at,remote=EXCLUDED.remote,main=EXCLUDED.main`
 	// upsertCloudSQL records the person $1's cloud sessions: one row per
 	// (person, agent, session), on no device, whichever device reports it.
 	upsertCloudSQL = `INSERT INTO bus_presence(device_id,cloud,user_id,agent,session_id,repo,branch,title,busy,seen_at)
@@ -98,20 +98,20 @@ func (s *Store) heartbeat(ctx context.Context, c busproto.Caller, sessions, clou
 		if ignored, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 			return err
 		}
-		var a, sid, repo, branch, title, remote []string
+		var a, sid, repo, branch, title, remote, main []string
 		var busy []bool
 		for _, p := range sessions {
 			if slices.Contains(ignored, p.SessionID) {
 				continue
 			}
 			a, sid, repo, branch, title, busy = append(a, p.Agent), append(sid, p.SessionID), append(repo, p.Repo), append(branch, p.Branch), append(title, p.Title), append(busy, p.Busy)
-			remote = append(remote, p.Remote)
+			remote, main = append(remote, p.Remote), append(main, p.Main)
 		}
 		if _, err := tx.Exec(ctx, clearPresenceSQL, c.DeviceID, a, sid); err != nil {
 			return err
 		}
 		if len(a) > 0 {
-			if _, err := tx.Exec(ctx, upsertPresenceSQL, c.DeviceID, c.UserID, a, sid, repo, branch, title, busy, now, remote); err != nil {
+			if _, err := tx.Exec(ctx, upsertPresenceSQL, c.DeviceID, c.UserID, a, sid, repo, branch, title, busy, now, remote, main); err != nil {
 				return err
 			}
 		}
@@ -664,7 +664,7 @@ func settle(ctx context.Context, tx pgx.Tx, update, beforeSQL string, ids []stri
 const PeersSQL = `SELECT p.session_id,p.agent,p.user_id::text,
 		(SELECT email FROM users WHERE id=p.user_id),(SELECT name FROM users WHERE id=p.user_id),(SELECT disabled FROM users WHERE id=p.user_id),
 		COALESCE((SELECT name FROM devices WHERE id=p.device_id),''),COALESCE((SELECT revoked_at IS NOT NULL FROM devices WHERE id=p.device_id),false),
-		p.repo,p.remote,p.branch,p.title,
+		p.repo,p.remote,p.main,p.branch,p.title,
 		COALESCE((SELECT title FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),''),
 		COALESCE((SELECT hidden_at IS NOT NULL FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),false),
 		p.busy,p.seen_at,p.cloud
@@ -695,7 +695,7 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var p row
 		return p, r.Scan(&p.Session, &p.Agent, &p.UserID, &p.User, &p.UserName, &p.disabled, &p.Device, &p.revoked,
-			&p.Repo, &p.Remote, &p.Branch, &p.Title, &p.uploadedTitle, &p.hidden, &p.Busy, &p.SeenAt, &p.Cloud)
+			&p.Repo, &p.Remote, &p.Main, &p.Branch, &p.Title, &p.uploadedTitle, &p.hidden, &p.Busy, &p.SeenAt, &p.Cloud)
 	})
 	if err != nil {
 		return busproto.PeersResponse{}, err
@@ -707,7 +707,7 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 		if p.Title == "" {
 			p.Title = r.uploadedTitle
 		}
-		repoOK := RepoMatches(q.Repo, q.Roots, q.Remotes, p.Repo, p.Remote)
+		repoOK := RepoMatches(q.Repo, q.Roots, q.Mains, q.Remotes, p.Repo, p.Main, p.Remote)
 		if p.Cloud {
 			repoOK = CloudRepoMatches(q.Repo, q.Roots, p.Repo)
 		}

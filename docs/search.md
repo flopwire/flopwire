@@ -384,8 +384,11 @@ it. A second clone of the same remote is then the same repo.
 | A glob (`team*`) | A session whose directory, or its last element, matches |
 
 The device resolves `--repo` from its git files and from where it placed
-its sessions. It never runs git. A repository can expand to many
-checkout roots; a local query uses the first 1024.
+its sessions. It never runs git. A session matches by the main checkout
+and remote that its placement records, so the query does not list the
+repository's worktrees. Its cost does not grow with their number. A
+session that has no placement matches when its directory is under the
+argument's checkout or a main checkout of the repository.
 
 #### With `--server`
 
@@ -394,10 +397,13 @@ session in: the main checkout and the normalized remote. When the
 placement changes later (the agent finds the checkout of a deleted
 worktree), the device sends the new one.
 
-With `--server`, the device resolves `--repo` as above and sends the
-repository's remotes and checkout roots, never a name it resolved. The
-server cannot read this device's git files. The request leaves out every
-checkout that a `local` or `deny` path rule covers (see
+With `--server`, the device resolves `--repo` as above. It sends the
+repository's remotes, its main checkouts, and the argument's checkout. It
+never sends a name that it resolved. The server cannot read this device's
+git files. The server matches a main checkout only against sessions that
+the calling device uploaded. A request can carry at most 256 of each
+list. A larger list is an error, never a cut. The request leaves out
+every checkout that a `local` or `deny` path rule covers (see
 [agent.md](agent.md#keep-sessions-out-with-path-rules)), because the
 server keeps each query in its audit log. A rule on the main checkout or
 the remote covers every checkout, so then only the path that you gave is
@@ -405,9 +411,9 @@ sent, and no remote.
 
 - A repository with a remote matches every session that any device
   placed in a checkout of that remote, at any path.
-- A repository without a remote matches by path only: this device's
-  checkouts, and a session on another device that ran under the same
-  path. Two devices' checkouts of it at different paths are not told
+- A repository without a remote matches the sessions that this device
+  placed in it, and by path a session on another device that ran under
+  the argument's checkout. Two devices' checkouts of it at different paths are not told
   apart from two repositories with the same name, so they never merge.
 - A name that this device does not know (a teammate's repository) is
   resolved on the server, over what the devices uploaded, with the same

@@ -97,15 +97,21 @@ func TestServerRepoAcrossDevices(t *testing.T) {
 	// web (or its path) expands there, as the CLI does.
 	dirs := []localindex.RepoDir{{Dir: "/Users/gary/code/web", Main: "/Users/gary/code/web", Remote: "github.com/acme/web"},
 		{Dir: "/Users/gary/app", Main: "/Users/gary/app"}}
-	repo, roots, remotes, err := local.ExpandRepo("web", dirs, true)
+	var laptop, desk string
+	if err := s.Pool.QueryRow(ctx, `SELECT (SELECT id::text FROM devices WHERE name='laptop'),(SELECT id::text FROM devices WHERE name='desk')`).Scan(&laptop, &desk); err != nil {
+		t.Fatal(err)
+	}
+	r, err := local.ExpandRepo("web", dirs, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := format.Filters{Repo: repo, RepoRoots: roots, RepoRemotes: remotes}
-	// Through the wire form, as the request carries it.
+	f := format.Filters{Repo: r.Repo, RepoRoots: r.Roots, RepoMains: r.Mains, RepoRemotes: r.Remotes}
+	// Through the wire form, as the request carries it; the API sets the
+	// calling device from the credential.
 	if f, err = format.ParseFilters(f.Values()); err != nil {
 		t.Fatal(err)
 	}
+	f.CallerDevice = laptop
 	if got, err := sessionNames(t, s, f); err != nil || got != "bob-web,gary-web" {
 		t.Fatalf("sessions --server --repo web: %q %v", got, err)
 	}
@@ -120,12 +126,16 @@ func TestServerRepoAcrossDevices(t *testing.T) {
 	// A repository without a remote is matched by its checkout's path
 	// only: bob-app, another device's directory of the same name, is not
 	// gary-app's repository.
-	_, roots, remotes, err = local.ExpandRepo("app", dirs, true)
-	if err != nil || len(remotes) != 0 {
-		t.Fatal(remotes, err)
+	if r, err = local.ExpandRepo("app", dirs, true); err != nil || len(r.Remotes) != 0 {
+		t.Fatal(r, err)
 	}
-	if got, err := sessionNames(t, s, format.Filters{RepoRoots: roots}); err != nil || got != "gary-app" {
+	if got, err := sessionNames(t, s, format.Filters{RepoRoots: r.Roots, RepoMains: r.Mains, CallerDevice: laptop}); err != nil || got != "gary-app" {
 		t.Fatalf("sessions --server --repo app: %q %v", got, err)
+	}
+	// A main checkout names the calling device's checkout only, not
+	// another device's at that path.
+	if got, err := sessionNames(t, s, format.Filters{RepoMains: []string{"/Users/gary/app"}, CallerDevice: desk}); err != nil || got != "" {
+		t.Fatalf("another device's main checkout: %q %v", got, err)
 	}
 }
 

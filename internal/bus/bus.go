@@ -86,11 +86,15 @@ func RepoName(repo string) string {
 // (local.ExpandRepo), match the same way as paths, so a session in a
 // linked worktree is on its repository; remotes match a session whose
 // remote is one of them, wherever it runs (issue #102).
-func RepoMatches(filter string, roots, remotes []string, repo, remote string) bool {
-	if filter == "" && len(roots) == 0 && len(remotes) == 0 {
+//
+// mains, the main checkouts of the repository, match a session the
+// device placed in one of them (main), so the filter need not list the
+// repository's worktrees.
+func RepoMatches(filter string, roots, mains, remotes []string, repo, main, remote string) bool {
+	if filter == "" && len(roots) == 0 && len(mains) == 0 && len(remotes) == 0 {
 		return true
 	}
-	if remote != "" && slices.Contains(remotes, remote) {
+	if remote != "" && slices.Contains(remotes, remote) || main != "" && slices.Contains(mains, main) {
 		return true
 	}
 	under := func(f string) bool {
