@@ -5,7 +5,7 @@ The plugin connects Claude Code to Flopwire. It adds these parts:
 | Part | What it does |
 |---|---|
 | MCP server `flopwire` | Runs `flopwire mcp`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
-| Hooks | Run `flopwire hook \|\| true` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
+| Hooks | Run `flopwire hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
 | Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. |
 
 Devin CLI loads this plugin too. `flopwire setup` installs this directory
@@ -25,11 +25,18 @@ model uses it. `claude plugin details flopwire` shows the current numbers.
 - The device agent runs (`flopwire agent run`). Messages and capture go
   through it. See [docs/agent.md](../../../docs/agent.md).
 
-If `flopwire` is not on `PATH`, or is too old to know `flopwire hook`, the
-hooks do nothing (`|| true` keeps Claude Code from showing a hook error on
-every tool call), and the MCP server shows as failed in `/mcp`. If the agent is not
-running, the hooks print nothing and the messaging tools return
-`agent_not_running`.
+If `flopwire` is not on `PATH`, the hooks do nothing and show no error
+(otherwise Claude Code would show a hook error on every tool call), and the
+MCP server shows as failed in `/mcp`. `flopwire setup` reports the missing
+binary. If `flopwire hook` fails, for example because the binary is older
+than the plugin and has no `hook` command, each hook exits 1 and Claude
+Code shows a non-blocking hook error that says to run
+`flopwire setup --check`. That command names the commands the binary lacks
+and both versions. A hook never exits 2, so it never blocks a prompt or a
+stop. If the agent is not running, the hooks print nothing and the
+messaging tools return `agent_not_running`. If the agent has never run,
+`flopwire mcp` creates an empty index and the search tools say that
+nothing is indexed yet.
 
 ## Install
 

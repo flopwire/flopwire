@@ -629,9 +629,11 @@ event, the matcher, the command, the timeout, `async`, `statusMessage`,
 ### Devin CLI
 
 Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
-The plugin it installs runs `flopwire hook || true` on `SessionStart`,
+The plugin it installs runs `flopwire hook` on `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
-MCP tools. Devin has no hook approval step.
+MCP tools. A missing `flopwire` is silent; a `flopwire hook` that fails (a
+binary older than the plugin) exits 1 with a hint to run
+`flopwire setup --check`. Devin has no hook approval step.
 
 On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed

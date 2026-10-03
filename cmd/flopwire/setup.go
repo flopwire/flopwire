@@ -58,7 +58,9 @@ that is still needed and never approves hooks for you.
 
 The plugin runs "flopwire hook" and "flopwire mcp", so flopwire must be on
 PATH, and messaging needs the device agent (flopwire agent run). setup
-reports both and starts neither.
+reports both and starts neither. It warns when the Claude Code plugin runs
+a command the flopwire on PATH does not know (a binary older than the
+plugin), and reports whether the agent has built the local index yet.
 
 Flags
   --check            report only
@@ -71,7 +73,7 @@ Flags
                      local; project and local apply to the current directory.
                      Codex and Devin install for the user only
 
-JSON: {"kind":"setup","mode","ok","flopwire":{"path","note"},"agent":{"running",
+JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{"running",
 "socket"},"server":{"configured","url"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",

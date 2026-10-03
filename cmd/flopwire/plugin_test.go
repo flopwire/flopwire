@@ -110,15 +110,14 @@ func TestClaudePluginHooks(t *testing.T) {
 			t.Errorf("%s matcher %q: the event takes none", ev, g.Matcher)
 		}
 		h := g.Hooks[0]
-		// `|| true`: a missing or older binary must not put a hook error
-		// on every tool call (TestClaudePluginHooksWithoutBinary).
-		f := strings.Fields(strings.TrimSuffix(h.Command, " || true"))
-		if h.Type != "command" || !strings.HasSuffix(h.Command, " || true") || len(f) != 2 || f[0] != "flopwire" || len(h.Args) != 0 {
-			t.Errorf("%s: command %q %q, want the shell command `flopwire hook || true`", ev, h.Command, h.Args)
+		// A missing binary stays silent; one that fails is reported, but
+		// never with exit 2, which blocks (TestClaudePluginHooksWithoutBinary).
+		if h.Type != "command" || h.Command != claudeHookCommand || len(h.Args) != 0 {
+			t.Errorf("%s: command %q %q, want the shell command %q", ev, h.Command, h.Args, claudeHookCommand)
 			continue
 		}
-		if f[1] != "hook" || !cmds[f[1]] {
-			t.Errorf("%s runs flopwire %s: not the hook subcommand", ev, f[1])
+		if !cmds["hook"] {
+			t.Errorf("%s runs flopwire hook, which usageText does not list", ev)
 		}
 		if h.Timeout < 1 || h.Timeout > 10 {
 			t.Errorf("%s timeout %ds; the hook takes at most ~300ms, keep 1-10s", ev, h.Timeout)
@@ -126,12 +125,66 @@ func TestClaudePluginHooks(t *testing.T) {
 	}
 }
 
-// TestClaudePluginHooksWithoutBinary: with flopwire missing from PATH (or
-// an older binary without the hook command), every hook still exits 0 with
-// nothing on stdout. Claude Code shows a "hook error" notice for any other
-// exit status, which on PostToolUse means one on every tool call.
+// claudeHookCommand is the Claude Code plugin's hook command.
+const claudeHookCommand = "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }"
+
+// TestClaudePluginHooksWithoutBinary: with flopwire missing from PATH,
+// every hook exits 0 with nothing on stdout (stderr of a hook that exits 0
+// reaches only Claude Code's debug log): Claude Code shows a "hook error"
+// notice for any other exit status, which on PostToolUse means one on
+// every tool call, and setup reports the missing binary. A flopwire that
+// fails (an older binary without the hook command; flopwire hook itself
+// always exits 0) exits 1 with a hint on stderr, which Claude Code shows
+// as a non-blocking hook error: the plugin and binary do not match, and
+// delivery has stopped. No failure exits 2, which would block a prompt or
+// a stop. Nothing reaches stdout, the model's context.
 func TestClaudePluginHooksWithoutBinary(t *testing.T) {
-	testHooksWithoutBinary(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"))
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	var hf struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	readJSONFile(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"), &hf)
+	fake := func(body string) string {
+		d := t.TempDir()
+		if err := os.WriteFile(filepath.Join(d, "flopwire"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	for _, c := range []struct {
+		name, path string
+		exit       int
+		stderr     string
+	}{
+		{"missing", t.TempDir(), 0, ""},
+		{"current", fake("exit 0"), 0, ""},
+		{"older", fake("echo 'Usage: flopwire <command>' >&2; exit 1"), 1, "run: flopwire setup --check"},
+		{"crashed", fake("echo 'fatal error: concurrent map writes' >&2; exit 2"), 1, "run: flopwire setup --check"},
+	} {
+		for ev, groups := range hf.Hooks {
+			for _, g := range groups {
+				for _, h := range g.Hooks {
+					cmd := exec.Command(sh, "-c", h.Command)
+					cmd.Env = []string{"PATH=" + c.path}
+					cmd.Stdin = strings.NewReader(`{"hook_event_name":"` + ev + `","session_id":"s"}`)
+					var out, errb bytes.Buffer
+					cmd.Stdout, cmd.Stderr = &out, &errb
+					_ = cmd.Run()
+					code := cmd.ProcessState.ExitCode()
+					if code != c.exit || out.Len() != 0 || !strings.Contains(errb.String(), c.stderr) {
+						t.Errorf("%s binary, %s: exit %d, stdout %q, stderr %q; want exit %d, no stdout, stderr with %q", c.name, ev, code, out.String(), errb.String(), c.exit, c.stderr)
+					}
+				}
+			}
+		}
+	}
 }
 
 func testHooksWithoutBinary(t *testing.T, hooksFile string) {
