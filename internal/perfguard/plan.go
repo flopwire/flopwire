@@ -52,6 +52,62 @@ func AssertIndexedPlanExcept(t testing.TB, conn Beginner, allow []string, query 
 	}
 }
 
+// AssertPlanUsesIndex is AssertIndexedPlan that also requires the plan
+// to probe the named index: an Index Scan, Index Only Scan or Bitmap
+// Index Scan on it with an Index Cond. AssertIndexedPlan alone accepts
+// any Index Cond, including one on a later column of another index (a
+// condition on created_at served by (from_session, created_at), which
+// reads that whole index), so a query whose own index is missing can
+// still pass it.
+func AssertPlanUsesIndex(t testing.TB, conn Beginner, index, query string, args ...any) {
+	t.Helper()
+	AssertIndexedPlan(t, conn, query, args...)
+	plan, err := Explain(conn, query, args...)
+	if err != nil {
+		t.Fatalf("perfguard: explain: %v\nquery: %s", err, query)
+	}
+	if !slices.Contains(IndexProbes(plan), index) {
+		t.Errorf("perfguard: plan does not probe index %s (with enable_seqscan=off)\nquery: %s\nplan:\n%s", index, query, plan)
+	}
+}
+
+// IndexProbes returns the indexes a JSON plan (EXPLAIN FORMAT JSON) scans
+// with an Index Cond, including in subplans and init plans, sorted and
+// without repeats.
+func IndexProbes(plan string) []string {
+	var v any
+	if err := json.Unmarshal([]byte(plan), &v); err != nil {
+		panic(fmt.Sprintf("perfguard: bad plan json: %v", err))
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			switch x["Node Type"] {
+			case "Index Scan", "Index Only Scan", "Bitmap Index Scan":
+				if _, cond := x["Index Cond"]; cond {
+					if idx, _ := x["Index Name"].(string); idx != "" {
+						out = append(out, idx)
+					}
+				}
+			}
+			for _, k := range []string{"Plan", "Plans"} {
+				if c, ok := x[k]; ok {
+					walk(c)
+				}
+			}
+		}
+	}
+	walk(v)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // Explain returns the indented JSON plan of query under
 // enable_seqscan = off, in a transaction that is rolled back.
 func Explain(conn Beginner, query string, args ...any) (string, error) {
