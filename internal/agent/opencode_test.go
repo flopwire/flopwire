@@ -187,3 +187,44 @@ func TestPresenceOpencode(t *testing.T) {
 		t.Fatal("a session of a reused pid is live")
 	}
 }
+
+// The plugin records performance.timeOrigin as its process's start. In the
+// TUI the plugin runs in a worker that starts after the process (0.6-0.8s
+// measured on opencode 1.18.30, more on a loaded machine), so the process
+// can have started well before the recorded time; its sessions are live.
+// A pid that started after the recorded time is another process that
+// reused it.
+func TestPresenceOpencodeWorkerStart(t *testing.T) {
+	oc := opencodetest.New(t, "")
+	const a = "ses_synthetic0000000000000A"
+	t0 := opencodetest.T0
+	oc.Session(a, "", "/work/opencode-demo", "Presence", t0)
+	oc.Prompt(a, t0, "hello")
+	f := newFixture(t, "-")
+	f.cfg.OpencodeDB = oc.Path
+	f.cfg.OpencodeRegistry = filepath.Join(t.TempDir(), "opencode")
+	clock := new(time.Time)
+	bus, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger, Now: func() time.Time { return *clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bus.Close() })
+	f.cfg.Bus = bus
+	f.a = New(f.store, f.cfg)
+	f.once()
+	recorded := time.UnixMilli(t0 - 3600_000)
+	start := recorded.Add(-5 * time.Second) // the worker started 5s after the process
+	f.a.pidAlive = func(pid int) bool { return pid == 6161 }
+	f.a.procName = func(int) string { return "opencode" }
+	f.a.procStart = func(int) (time.Time, bool) { return start, true }
+	b, _ := json.Marshal(map[string]any{"pid": 6161, "started": recorded.UnixMilli(), "sessions": []string{a}})
+	writeFile(t, filepath.Join(f.cfg.OpencodeRegistry, "6161.json"), string(b))
+	at := time.UnixMilli(t0).Add(time.Minute)
+	if !f.present(clock, at, a) {
+		t.Fatal("a session of an opencode whose plugin worker started 5s after the process is not live")
+	}
+	start = recorded.Add(10 * time.Second) // a later process reused the pid
+	if f.present(clock, at.Add(time.Second), a) {
+		t.Fatal("a session of a pid that started after the plugin recorded its start is live")
+	}
+}

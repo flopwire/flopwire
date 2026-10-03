@@ -26,7 +26,7 @@ package agent
 //   - opencode: the Flopwire plugin keeps <config dir>/opencode/<pid>.json
 //     per opencode process, naming the process's start and its top-level
 //     sessions (never a subagent's). A file whose pid runs a process named
-//     opencode that started then holds its sessions; any other file's
+//     opencode that started by then holds its sessions; any other file's
 //     sessions ended. While the plugin is installed (the directory
 //     exists), an opencode session is live only on that evidence. Busy or
 //     idle is the session's last plugin event (hookTurns).
@@ -218,8 +218,13 @@ func (a *Agent) registries() harnessLive {
 	return h
 }
 
-// startedAt reports whether pid started within 2s of unix ms; a platform
-// that cannot tell, or a file without the time, takes the pid alone.
+// startedAt reports whether pid is the process that wrote a registry
+// file recording unix ms as its start: it started no later than that
+// (within 2s). The plugin records performance.timeOrigin, which in
+// opencode's TUI is its worker's start, later than the process's by an
+// unbounded delay; a process that reused the pid started after the
+// writer ended, so after ms. A platform that cannot tell, or a file
+// without the time, takes the pid alone.
 func (a *Agent) startedAt(pid int, ms int64) bool {
 	if ms <= 0 {
 		return true
@@ -228,8 +233,7 @@ func (a *Agent) startedAt(pid int, ms int64) bool {
 	if !ok {
 		return true
 	}
-	d := started.Sub(time.UnixMilli(ms))
-	return d > -2*time.Second && d < 2*time.Second
+	return started.Sub(time.UnixMilli(ms)) < 2*time.Second
 }
 
 // sameProcess reports whether pid is the process a Claude session file
