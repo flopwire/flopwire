@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -208,5 +209,36 @@ func TestNoReadFromATranscriptTheRulesDeny(t *testing.T) {
 	}
 	if got := l.take(); len(got) != 0 {
 		t.Fatalf("sightings from a denied transcript: %+v", got)
+	}
+}
+
+// A hook inside a subagent prints into the subagent's context, and its
+// transcript records it there (issue #107). Such a sighting names the
+// subagent's own session, never the parent's, so the parent's message is
+// not marked read. (The hook no longer prints into a subagent at all; this
+// keeps a wrapper that reaches one, from an older hook or a copied
+// transcript, from crediting the parent.)
+func TestReadSightingsInASubagent(t *testing.T) {
+	f := newFixture(t, "-")
+	l := captureReads(f)
+	f.once()
+	l.take()
+	sub := ".claude/projects/-tmp-oracle-alpha/" + alphaID + "/subagents/agent-a1b2c3.jsonl"
+	appendFile(t, f.path(sub), `{"type":"attachment","uuid":"rr-s1","parentUuid":"c2000000-0000-4000-8000-000000000004","isSidechain":true,"agentId":"a1b2c3","sessionId":"`+alphaID+`","cwd":"/tmp/oracle-alpha","timestamp":"2026-10-02T10:00:02.000Z","attachment":{"type":"hook_additional_context","content":[`+jsonStr(hookText(false, "msubagent000000"))+`],"hookName":"PostToolUse:Bash","hookEvent":"PostToolUse"}}`+"\n")
+	const child = "019a0000-0000-7000-8000-0000000000c7"
+	rollout := fmt.Sprintf(".codex/sessions/2026/08/10/rollout-2026-08-10T14-05-00-%s.jsonl", child)
+	if err := os.WriteFile(f.path(rollout), []byte(strings.Join([]string{
+		`{"timestamp":"2026-08-10T14:05:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"019a0000-0000-7000-8000-0000000000a2","id":"` + child + `","timestamp":"2026-08-10T14:05:00.000Z","cwd":"/tmp/oracle-gamma","originator":"codex_exec","cli_version":"0.160.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019a0000-0000-7000-8000-0000000000a2","depth":1}}},"thread_source":"subagent","parent_thread_id":"019a0000-0000-7000-8000-0000000000a2"}}`,
+		`{"timestamp":"2026-10-02T10:00:01.000Z","ordinal":1,"type":"response_item","payload":{"type":"message","id":"msg_rr_c","role":"developer","content":[{"type":"input_text","text":` + jsonStr(hookText(false, "mcodexchild0000")) + `}],"internal_chat_message_metadata_passthrough":{"turn_id":"t","content_item_kinds":["hooks.additional_context"]}}}`,
+	}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.once()
+	got := map[string]string{}
+	for _, r := range l.take() {
+		got[r.ID] = r.Session
+	}
+	if got["msubagent000000"] != "agent-a1b2c3" || got["mcodexchild0000"] != child {
+		t.Fatalf("sightings %v: want each under the subagent's own session, not %s or the Codex root", got, alphaID)
 	}
 }
