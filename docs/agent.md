@@ -341,7 +341,7 @@ the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace
-repository, Devin 3000.10.31 and later recognizes the marketplace and
+repository, Devin 3000.10.21 and later recognizes the marketplace and
 offers to install one of its plugins. Devin loads a Claude Code plugin as
 it is, so setup names the plugin's directory in the repository and
 installs `plugins/claude-code/flopwire` into Devin directly:
