@@ -92,6 +92,9 @@ func (b *Bus) End(ctx context.Context, ref Ref, at time.Time) error {
 	if err != nil {
 		return err
 	}
+	b.mu.Lock()
+	b.presence = presenceCache{} // the next presence leaves it out
+	b.mu.Unlock()
 	b.endedMarked(n)
 	return nil
 }

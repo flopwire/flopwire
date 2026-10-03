@@ -286,12 +286,12 @@ func ask(t *testing.T, a *Agent, req Request) Response {
 func hookAsk(t *testing.T, a *Agent, req Request) Response {
 	t.Helper()
 	r := ask(t, a, req)
-	if len(r.Messages) > 0 {
+	if len(r.Messages) > 0 || r.Instruct {
 		ids := make([]string, len(r.Messages))
 		for i, m := range r.Messages {
 			ids[i] = m.ID
 		}
-		if c := ask(t, a, Request{Op: "confirm", Session: req.Session, IDs: ids}); !c.OK {
+		if c := ask(t, a, Request{Op: "confirm", Session: req.Session, IDs: ids, Instruction: r.Instruct}); !c.OK {
 			t.Fatalf("confirm: %s", c.Error)
 		}
 	}
@@ -300,22 +300,51 @@ func hookAsk(t *testing.T, a *Agent, req Request) Response {
 
 // Two SessionStart hooks for one session (two hook configs, as when Devin
 // also runs .claude/settings.json) get the standing instruction once; a
-// later start of another kind (a compaction) gets it again.
+// later start of another kind (a compaction) gets it again; a prompt hook
+// of a session that had it does not.
 func TestControlPendingInstructOnce(t *testing.T) {
 	f, _ := busFixture(t)
-	r1 := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"})
-	r2 := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"})
+	r1 := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"})
+	r2 := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"})
 	if !r1.OK || !r1.Instruct || r2.Instruct {
 		t.Fatalf("instruct: first %+v, second %+v", r1, r2)
 	}
-	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "compact"}); !r.Instruct {
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "compact", HookStart: time.Now().Add(time.Second).UnixMilli()}); !r.Instruct {
 		t.Fatal("a compaction did not get the instruction again")
 	}
-	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222"}); r.Instruct {
-		t.Fatal("a prompt hook got the instruction")
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"}); r.Instruct {
+		t.Fatal("a prompt hook got the instruction again")
 	}
-	if r := ask(t, f.a, Request{Op: "pending", Session: "other-3333", Start: "startup"}); !r.Instruct {
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "other-3333", Start: "startup"}); !r.Instruct {
 		t.Fatal("another session did not get the instruction")
+	}
+}
+
+// The SessionStart hook took the instruction and was killed before it
+// printed (#101): the session's next prompt or tool hook prints it, before
+// the messages, once the lease ends; a hook inside the lease gets neither.
+func TestControlInstructionAfterAKilledSessionStart(t *testing.T) {
+	prev := devicebus.LeaseFor
+	devicebus.LeaseFor = 300 * time.Millisecond
+	t.Cleanup(func() { devicebus.LeaseFor = prev })
+	f, b := busFixture(t)
+	if r := ask(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"}); !r.Instruct {
+		t.Fatal("SessionStart did not get the instruction")
+	}
+	// Killed: no confirm. A message arrives.
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "after a killed start"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"}); r.Instruct || len(r.Messages) != 0 {
+		t.Fatalf("inside the lease: instruct %v, %d messages", r.Instruct, len(r.Messages))
+	}
+	time.Sleep(devicebus.LeaseFor + 50*time.Millisecond)
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"}); !r.Instruct || len(r.Messages) != 1 {
+		t.Fatalf("after the lease: instruct %v, %d messages", r.Instruct, len(r.Messages))
+	}
+	time.Sleep(devicebus.LeaseFor + 50*time.Millisecond)
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"}); r.Instruct {
+		t.Fatal("printed twice")
 	}
 }
 
@@ -344,8 +373,8 @@ func TestControlPendingBounded(t *testing.T) {
 		}
 	}
 	r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", Limit: 3})
-	if len(r.Messages) != 3 {
-		t.Fatalf("limit 3 took %d", len(r.Messages))
+	if len(r.Messages) != 3 || !r.Instruct {
+		t.Fatalf("limit 3 took %d (instruct %v)", len(r.Messages), r.Instruct)
 	}
 	one := busrender.Size(r.Messages[0])
 	for i := range 2 {
@@ -353,9 +382,10 @@ func TestControlPendingBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Room for two messages without the instruction, one with it.
+	// Room for two messages without the instruction, one with it (a
+	// compaction renews it).
 	max := 2*one + busrender.SepLen + busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen - 1
-	r = hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max, Start: "startup"})
+	r = hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", MaxBytes: max, Start: "compact", HookStart: time.Now().Add(time.Second).UnixMilli()})
 	if !r.Instruct || len(r.Messages) != 1 || !strings.HasPrefix(r.Messages[0].Body, "hello 3") {
 		t.Fatalf("with the instruction: instruct %v, %d messages", r.Instruct, len(r.Messages))
 	}
