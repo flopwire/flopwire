@@ -88,6 +88,20 @@ that it does not.
   `push_failed`. A push that the vendor refuses because the session is
   archived or exited makes the session's waiting messages `undelivered`
   with reason `session_ended`.
+  Flopwire takes a session as archived or exited only when the vendor
+  says so: the Claude session's own record, or Devin's error for the
+  prompt. Any other refusal counts as a failed push.
+- **Archived sessions stay addressable for a while.** With a server, a
+  session that was archived stays in `peers` and accepts messages for up
+  to about 95 seconds: up to 20 seconds until the next listing, plus the
+  75 seconds a session stays live. While a vendor's listing fails, the
+  last good listing stays in use for up to 60 seconds, so the window is
+  longer. A message sent in that window is never pushed (the session is
+  not listed again) and expires after 24 hours.
+- **A slow push can arrive twice.** A push that takes longer than about
+  13 seconds is given up and tried again. If the vendor took the first
+  one anyway (Devin keeps a prompt whose echo came late), the session gets
+  the message twice. The second copy is marked `redelivery="true"`.
 - **Read receipts.** Claude cloud: the message is `read` when the
   session's event log shows the first model output after the pushed text.
   Devin cloud: the message is `read` when the session's first output after
