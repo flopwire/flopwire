@@ -22,7 +22,8 @@ import (
 //     of HEAD in the same directory, or a git push line for the commit's
 //     branch, gives its sha. Any other command that moves HEAD (commit,
 //     merge, rebase, reset, checkout, switch, pull, am, cherry-pick,
-//     revert, gh pr checkout) closes the window first.
+//     revert, gh pr checkout, gh pr merge) closes the window first, and
+//     so does a cd that leaves the shell elsewhere.
 //   - A commit whose sha never shows is kept in CommitsNoSHA with its
 //     subject, branch and time. No sha is made up.
 //
@@ -64,6 +65,7 @@ type gitCall struct {
 	revWhere string
 	self     bool
 	logStyle string // "line" (sha first on the line) or "header" ("commit sha")
+	end      string // the directory the line ends in
 }
 
 // readGit reads the git commands of one command line. base is the
@@ -90,7 +92,13 @@ func readGit(line, base string) (gitCall, bool) {
 			where = joinDir(where, t)
 			continue
 		}
-		if w[0] == "gh" && len(w) >= 3 && w[1] == "pr" && w[2] == "checkout" {
+		if w[0] == "popd" {
+			where = "$OLDPWD" // unknown
+			continue
+		}
+		// gh pr merge --delete-branch checks out the default branch and
+		// pulls it.
+		if w[0] == "gh" && len(w) >= 3 && w[1] == "pr" && (w[2] == "checkout" || w[2] == "merge") {
 			g.mover, lastMover = true, i
 			continue
 		}
@@ -159,6 +167,7 @@ func readGit(line, base string) (gitCall, bool) {
 		}
 	}
 	g.commitLast = commitAt >= 0 && lastMover == commitAt
+	g.end = where
 	return g, true
 }
 
@@ -632,6 +641,8 @@ type callGit struct {
 	revWhere string
 	self     bool
 	revOK    int
+	// ends are each line's starting and ending directory.
+	ends [][2]string
 }
 
 // readCall reads a shell call's command lines. ok is false when one does
@@ -645,6 +656,7 @@ func readCall(cmds []shellCmd) (callGit, bool) {
 		if !ok {
 			return callGit{}, false
 		}
+		c.ends = append(c.ends, [2]string{sc.cwd, g.end})
 		known := sc.exit != nil
 		zero := known && *sc.exit == 0
 		if g.printed && !c.printed {

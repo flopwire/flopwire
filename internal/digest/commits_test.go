@@ -254,6 +254,16 @@ var commitCases = []commitCase{
 		[]string{sha1}, nil},
 	{"-q in another directory, then log in the session's", []step{{cmd: `cd /r-wt-x && git commit -q -m x`}, {cmd: `git log --oneline -1`, out: old + " older\n"}},
 		nil, nil},
+	// Claude's shell keeps the directory a cd leaves it in: the later log
+	// runs there (a nested worktree, a submodule), not in the session's.
+	{"-q, cd into a nested worktree, then log", []step{{cmd: `git commit -q -m x`}, {cmd: `cd .claude/worktrees/feat`},
+		{cmd: `git log --oneline -1`, out: old + " other work\n"}}, nil, []string{"x"}},
+	{"-q, cd somewhere && build, then log", []step{{cmd: `git commit -q -m x`}, {cmd: `cd vendor/lib && make`},
+		{cmd: `git rev-parse HEAD`, out: full + "\n"}}, nil, []string{"x"}},
+	// gh pr merge --delete-branch checks out the default branch and pulls.
+	{"-q, gh pr merge -d, then log", []step{{cmd: `git commit -q -m x`}, {cmd: `gh pr merge 43 --squash --delete-branch`,
+		out: "✓ Squashed and merged pull request o/r#43 (x)\n✓ Deleted local branch api-cursors and switched to branch main\n"},
+		{cmd: `git log --oneline -1`, out: old + " someone's merge\n"}}, nil, []string{"x"}},
 	{"dry run", []step{{cmd: `git commit --dry-run -m x`, out: "On branch api-cursors\nChanges to be committed:\n"}}, nil, nil},
 }
 

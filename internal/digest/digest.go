@@ -551,7 +551,11 @@ func (d *Digest) foldCall(m *transcript.Message) {
 				}
 			}
 		}
-		if g.mover && (st.HeadOrd == nil || m.Ordinal > *st.HeadOrd) {
+		// A shell keeps the directory a cd leaves it in (Claude's Bash
+		// does): a later command may run elsewhere, so the call closes
+		// the window as a HEAD move does.
+		away := slices.ContainsFunc(g.ends, func(e [2]string) bool { return d.abs(e[0]) != d.abs(e[1]) })
+		if (g.mover || away) && (st.HeadOrd == nil || m.Ordinal > *st.HeadOrd) {
 			st.HeadOrd = ptr(m.Ordinal)
 		}
 	}

@@ -236,8 +236,10 @@ A commit "succeeded" when the harness reports no error (exit code 0)
 and only `&&` follows the commit in its command line. A command that
 reveals HEAD must end its call's output, run in the same directory as
 the commit, and come before anything else moves HEAD: a later commit,
-merge, rebase, reset, checkout, switch, pull, am, cherry-pick, revert or
-`gh pr checkout` closes the window, and the commit stays without a hash.
+merge, rebase, reset, checkout, switch, pull, am, cherry-pick, revert,
+`gh pr checkout` or `gh pr merge` closes the window, and so does a `cd`
+that leaves the shell in another directory (Claude's shell keeps it for
+the next call); the commit then stays without a hash.
 
 Not recorded:
 
