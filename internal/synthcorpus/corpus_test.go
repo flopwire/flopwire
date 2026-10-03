@@ -1,9 +1,12 @@
 package synthcorpus
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	enchex "encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -140,5 +143,60 @@ func TestGenerateRefusesNonEmptyRoot(t *testing.T) {
 	}
 	if _, err := Generate(root, small(1)); err == nil {
 		t.Fatal("generated into a non-empty directory")
+	}
+}
+
+// TestCodexRemotePerRepo proves each synthetic repository records its own
+// git remote. --repo treats every checkout with the same normalized remote
+// as one repository (local.ExpandRepo), so one remote shared by every
+// directory made the repo-filter query match all twelve repositories and
+// broke its exact expected hit count (issue #111).
+func TestCodexRemotePerRepo(t *testing.T) {
+	root, _ := gen(t, small(1))
+	cwdsOf := map[string]map[string]bool{}
+	err := filepath.WalkDir(CodexHome(root), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(p) != ".jsonl" {
+			return err
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		line, err := bufio.NewReader(f).ReadBytes('\n')
+		if err != nil {
+			return err
+		}
+		var meta struct {
+			Payload struct {
+				Cwd string `json:"cwd"`
+				Git struct {
+					RepositoryURL string `json:"repository_url"`
+				} `json:"git"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(line, &meta); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		u, cwd := meta.Payload.Git.RepositoryURL, meta.Payload.Cwd
+		if u == "" || cwd == "" {
+			return fmt.Errorf("%s: session_meta without cwd or repository_url", p)
+		}
+		if cwdsOf[u] == nil {
+			cwdsOf[u] = map[string]bool{}
+		}
+		cwdsOf[u][cwd] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cwdsOf) == 0 {
+		t.Fatal("no Codex session_meta read")
+	}
+	for u, cwds := range cwdsOf {
+		if len(cwds) > 1 {
+			t.Errorf("remote %s is recorded by %d directories; each repository needs its own", u, len(cwds))
+		}
 	}
 }
