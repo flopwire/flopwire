@@ -30,8 +30,8 @@ import (
 	"golang.org/x/term"
 
 	"github.com/flopwire/flopwire/internal/agent"
-	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -472,12 +472,15 @@ func openBus(path string, cfg devicebus.Config) *devicebus.Bus {
 // busConnect is devicebus's Connect for the configured server: the saved
 // token and TLS pin are followed as adminRulesFrom follows them, and the
 // key changes when either does, so a bus stopped by a refused credential
-// or pin resumes after `flopwire login`.
+// or pin resumes after `flopwire login`. A call refused with 401 re-reads
+// the config under its lock and retries once when the token changed: the
+// agent's own rotation refuses the old token at its commit, before the
+// config save that names the new one (issue #110), as syncTransport does.
 func busConnect(cc client.Config, load func() (client.Config, error)) func() (devicebus.Server, string) {
 	var mu sync.Mutex
 	server, _ := client.NormalizeServer(cc.Server)
 	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
-	return func() (devicebus.Server, string) {
+	current := func() (client.Bus, string) {
 		mu.Lock()
 		defer mu.Unlock()
 		cur := cc
@@ -490,6 +493,61 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 		sum := sha256.Sum256([]byte(cur.Token + "\x00" + cur.TLSFingerprint))
 		return client.Bus{Server: cur.Server, Token: cur.Token, HTTP: hc}, hex.EncodeToString(sum[:8])
 	}
+	return func() (devicebus.Server, string) {
+		b, key := current()
+		return rotatingBus{bus: b, saved: func(ctx context.Context) (client.Bus, bool) {
+			var next client.Bus
+			if err := client.WithConfigLock(ctx, func() error { next, _ = current(); return nil }); err != nil {
+				return b, false
+			}
+			return next, next.Token != b.Token
+		}}, key
+	}
+}
+
+// rotatingBus is client.Bus with one retry when a 401 raced a rotation:
+// saved reads the config once the rotation holding its lock is done, and
+// reports whether the token changed. The server checks the credential
+// before anything else, so a refused call did nothing and a retry cannot
+// send twice.
+type rotatingBus struct {
+	bus   client.Bus
+	saved func(context.Context) (client.Bus, bool)
+}
+
+func retryRotated[Req, Resp any](ctx context.Context, r rotatingBus, req Req, call func(client.Bus, context.Context, Req) (Resp, error)) (Resp, error) {
+	out, err := call(r.bus, ctx, req)
+	if _, denied := unauthorized(err); !denied {
+		return out, err
+	}
+	if next, changed := r.saved(ctx); changed {
+		return call(next, ctx, req)
+	}
+	return out, err
+}
+
+func (r rotatingBus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	return retryRotated(ctx, r, req, client.Bus.Send)
+}
+
+func (r rotatingBus) Poll(ctx context.Context, req busproto.PollRequest) (busproto.PollResponse, error) {
+	return retryRotated(ctx, r, req, client.Bus.Poll)
+}
+
+func (r rotatingBus) Claim(ctx context.Context, req busproto.ClaimRequest) (busproto.ClaimResponse, error) {
+	return retryRotated(ctx, r, req, client.Bus.Claim)
+}
+
+func (r rotatingBus) Ack(ctx context.Context, req busproto.AckRequest) (busproto.AckResponse, error) {
+	return retryRotated(ctx, r, req, client.Bus.Ack)
+}
+
+func (r rotatingBus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersResponse, error) {
+	return retryRotated(ctx, r, q, client.Bus.Peers)
+}
+
+func (r rotatingBus) Inbox(ctx context.Context, q busproto.InboxQuery) (busproto.InboxResponse, error) {
+	return retryRotated(ctx, r, q, client.Bus.Inbox)
 }
 
 func adminRulesFrom(cc client.Config, load func() (client.Config, error)) func(context.Context) (agent.AdminPolicy, error) {
