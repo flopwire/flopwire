@@ -19,6 +19,9 @@ import (
 func TestPluginConfirmsOnlyStoredParts(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("node is not installed; CI must run this test (actions/setup-node in .github/workflows/ci.yml)")
+		}
 		t.Skip("node is not installed")
 	}
 	if runtime.GOOS == "windows" {

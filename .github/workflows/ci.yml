@@ -46,6 +46,11 @@ jobs:
         with:
           go-version: "1.26.6"
           cache: false
+      # plugins/opencode's test drives the opencode plugin with node; it
+      # fails, not skips, without node under CI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       # One cache per shard: setup-go's shared key would keep whichever
       # job saved first, without the -race build of the other shards.
       - uses: actions/cache@v4
