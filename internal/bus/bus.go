@@ -35,7 +35,11 @@ type Store struct {
 	// Now is the clock; nil is time.Now. Tests move it to check expiry
 	// and the hourly limits.
 	Now func() time.Time
-	hub hub
+	// Stopping closes when the server shuts down: a waiting poll then
+	// answers at once, as if its wait ended, so the server's shutdown
+	// grace outlasts it. Nil never closes.
+	Stopping <-chan struct{}
+	hub      hub
 }
 
 func (s *Store) now() time.Time {

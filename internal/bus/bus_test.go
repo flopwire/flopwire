@@ -797,6 +797,51 @@ func TestPollWakesOnSendAndTimesOut(t *testing.T) {
 	}
 }
 
+// On server shutdown a waiting poll answers at once with the device's
+// whole set, as a timed-out poll does, so a deploy does not cut it (#70).
+func TestPollAnswersOnShutdown(t *testing.T) {
+	tm := newTeam(t)
+	server, stop := context.WithCancel(context.Background())
+	defer stop()
+	tm.s.Stopping = server.Done()
+	lin := live("g-lin-3333", "codex", "/home/gary/api", false)
+	sent := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "before the deploy")
+	first, err := tm.s.Poll(context.Background(), tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}})
+	if err != nil || len(first.Messages) != 1 {
+		t.Fatalf("first poll %+v %v", first, err)
+	}
+	req := busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: first.Cursor, Gen: first.Gen, WaitSeconds: int(busproto.PollWait / time.Second)}
+	type result struct {
+		out busproto.PollResponse
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := tm.s.Poll(context.Background(), tm.garyLinux, req)
+		done <- result{out, err}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case r := <-done:
+		t.Fatalf("poll returned before shutdown: %+v", r)
+	default:
+	}
+	stop()
+	select {
+	case r := <-done:
+		if r.err != nil || len(r.out.Messages) != 1 || r.out.Messages[0].ID != sent.ID || r.out.Cursor != first.Cursor {
+			t.Fatalf("poll at shutdown %+v %v", r.out, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("poll still waiting after shutdown")
+	}
+	// A poll that starts during shutdown does not wait either.
+	start := time.Now()
+	if out, err := tm.s.Poll(context.Background(), tm.garyLinux, req); err != nil || len(out.Messages) != 1 || time.Since(start) > 5*time.Second {
+		t.Fatalf("poll during shutdown %+v %v after %s", out, err, time.Since(start))
+	}
+}
+
 // Accepting a sender wakes the recipient's poll with the released message.
 func TestAcceptWakesPoll(t *testing.T) {
 	tm := newTeam(t)
