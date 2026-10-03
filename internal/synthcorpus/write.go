@@ -533,7 +533,9 @@ func (w *writer) codex() error {
 	b = appendJSON(b, f.cwd)
 	b = append(b, `,"originator":"codex-tui","cli_version":"0.154.0","source":"cli","thread_source":"user","model_provider":"openai","history_mode":"paginated","git":{"commit_hash":"`...)
 	b = append(b, hex(w.r.Uint64(), 16)+hex(w.r.Uint64(), 16)+hex(w.r.Uint64(), 8)...)
-	b = append(b, `","branch":"main","repository_url":"https://example.invalid/synth.git"},"base_instructions":{"text":"`...)
+	b = append(b, `","branch":"main","repository_url":`...)
+	b = appendJSON(b, remoteOf(f.cwd))
+	b = append(b, `},"base_instructions":{"text":"`...)
 	b = w.r.prose(b, 2000+w.r.IntN(6000))
 	b = append(b, `"}`...)
 	if err := w.codexEnd(b); err != nil {
