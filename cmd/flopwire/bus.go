@@ -873,8 +873,14 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 		body := format.Clean(strings.TrimRight(strings.ReplaceAll(m.Body, "\r\n", "\n"), "\n"))
 		lines := strings.Split(body, "\n")
 		if full {
+			// An empty line is not indented: indented, a body of empty
+			// lines grew five-fold and one message passed the MCP output
+			// budget (issue #71). It cannot pass for a header either way.
 			for _, l := range lines {
-				e.WriteString("    " + l + "\n")
+				if l != "" {
+					e.WriteString("    ")
+				}
+				e.WriteString(l + "\n")
 			}
 			for _, r := range m.Refs {
 				e.WriteString("    ref: " + format.Clean(r) + "\n")

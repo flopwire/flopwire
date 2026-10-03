@@ -1089,8 +1089,13 @@ func TestInboxWorstCaseMessageFitsMCPBudget(t *testing.T) {
 		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{item}, Next: "x|m1"}}
 	})
 	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
-	for _, unit := range []string{"\x01", "\x1b", "\x7f", "\u0085", "\r", "\"", "\\", "\n", "\t", " ", "<", "é"} {
+	// "\n…x" is a body of empty lines (one character ends it, as the text
+	// form trims trailing newlines): the thread text form indents each.
+	for _, unit := range []string{"\x01", "\x1b", "\x7f", "\u0085", "\r", "\"", "\\", "\n", "\t", " ", "<", "é", "\u2028", "x\n", "\n…x"} {
 		body := devicebus.CleanText(fill(unit, busproto.MaxBodyBytes))
+		if unit == "\n…x" {
+			body = strings.Repeat("\n", busproto.MaxBodyBytes-1) + "x"
+		}
 		if body == "" {
 			continue // nothing left: refused as an empty body
 		}
