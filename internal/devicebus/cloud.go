@@ -120,49 +120,58 @@ func (b *Bus) kickPush() {
 // path rules withhold (by name) is left out: nothing about it may reach
 // the server.
 func (b *Bus) listCloud(ctx context.Context) {
+	for _, a := range b.cfg.Cloud {
+		if err := b.listOne(ctx, a); err != nil && ctx.Err() != nil {
+			return
+		}
+	}
+	b.kickPush()
+}
+
+// listOne lists one adapter's sessions and keeps the listing. A failed
+// listing keeps the last one (cloudKeep).
+func (b *Bus) listOne(ctx context.Context, a vendorcloud.Adapter) error {
 	b.mu.Lock()
 	withheld := b.cfg.RepoWithheld
 	b.mu.Unlock()
-	for _, a := range b.cfg.Cloud {
-		lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		got, err := a.List(lctx)
-		cancel()
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			// A vendor CLI without a login fails every listing: say so
-			// once, not every CloudEvery.
-			b.mu.Lock()
-			l := b.cloud[a.Agent()]
-			repeat := l.failure == err.Error()
-			l.failure = err.Error()
-			b.cloud[a.Agent()] = l
-			b.mu.Unlock()
-			if !repeat {
-				b.log.Warn("devicebus: cloud sessions cannot be listed", "agent", a.Agent(), "err", err)
-			}
+	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	got, err := a.List(lctx)
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		// A vendor CLI without a login fails every listing: say so
+		// once, not every CloudEvery.
+		b.mu.Lock()
+		l := b.cloud[a.Agent()]
+		repeat := l.failure == err.Error()
+		l.failure = err.Error()
+		b.cloud[a.Agent()] = l
+		b.mu.Unlock()
+		if !repeat {
+			b.log.Warn("devicebus: cloud sessions cannot be listed", "agent", a.Agent(), "err", err)
+		}
+		return err
+	}
+	var keep []Session
+	for _, s := range got {
+		if s.Agent != a.Agent() || s.ID == "" {
 			continue
 		}
-		var keep []Session
-		for _, s := range got {
-			if s.Agent != a.Agent() || s.ID == "" {
+		if s.Repo != "" && withheld != nil {
+			// By name: "owner/name" is no path on this device.
+			if w, err := withheld(ctx, bus.RepoName(s.Repo)); err != nil || w {
 				continue
 			}
-			if s.Repo != "" && withheld != nil {
-				// By name: "owner/name" is no path on this device.
-				if w, err := withheld(ctx, bus.RepoName(s.Repo)); err != nil || w {
-					continue
-				}
-			}
-			keep = append(keep, Session{PresenceSession: busproto.PresenceSession{SessionID: s.ID, Agent: s.Agent, Repo: s.Repo,
-				Branch: s.Branch, Title: s.Title, Busy: s.Running}, Cloud: true})
 		}
-		b.mu.Lock()
-		b.cloud[a.Agent()] = cloudList{sessions: keep, at: b.cfg.Now()}
-		b.mu.Unlock()
+		keep = append(keep, Session{PresenceSession: busproto.PresenceSession{SessionID: s.ID, Agent: s.Agent, Repo: s.Repo,
+			Branch: s.Branch, Title: s.Title, Busy: s.Running}, Cloud: true})
 	}
-	b.kickPush()
+	b.mu.Lock()
+	b.cloud[a.Agent()] = cloudList{sessions: keep, at: b.cfg.Now()}
+	b.mu.Unlock()
+	return nil
 }
 
 // runCloud lists the cloud sessions every CloudEvery and pushes what is
@@ -215,6 +224,18 @@ func (b *Bus) pushSession(ctx context.Context, a vendorcloud.Adapter, s Session,
 	ins := busrender.EncodedLen(busrender.CloudInstruction(s.Agent)) + busrender.SepLen
 	lim := Limit{Count: busrender.HookMessages, Bytes: max(1, busrender.HookBytes-ins), Sep: busrender.SepLen, Size: busrender.Size}
 	lease := b.cloudLease()
+	// The listing is up to CloudEvery old, and a push into a session
+	// whose turn ended since would start one (B3): with something to
+	// push, ask the vendor again first.
+	if n, err := b.st.queuedFor(ctx, s.SessionID, s.Agent, b.cfg.Now()); err != nil || n == 0 {
+		return err
+	}
+	if err := b.listOne(ctx, a); err != nil {
+		return err
+	}
+	if s, ok := b.cloudSession(s.SessionID, s.Agent); !ok || !s.Busy {
+		return nil
+	}
 	_, msgs, err := b.st.take(ctx, s.SessionID, s.Agent, b.cfg.Now(), lim, lease, b.cfg.MaxAttempts, nil)
 	if err != nil || len(msgs) == 0 {
 		return err
@@ -362,4 +383,12 @@ func (s *store) endCloud(ctx context.Context, session, agent string) (int64, err
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// queuedFor counts the session's messages waiting for a push.
+func (s *store) queuedFor(ctx context.Context, session, agent string, now time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE to_session=? AND to_agent=? AND state IN ('queued','leased') AND expires_at>?`,
+		session, agent, ms(now)).Scan(&n)
+	return n, err
 }

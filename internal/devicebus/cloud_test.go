@@ -271,7 +271,9 @@ func TestCloudClaimPushAndAckWithServer(t *testing.T) {
 	}
 
 	fc.mu.Lock()
-	fc.pushFn = func(string, string) (vendorcloud.Pushed, error) { return vendorcloud.Pushed{}, errors.New("vendor down") }
+	fc.pushFn = func(string, string) (vendorcloud.Pushed, error) {
+		return vendorcloud.Pushed{}, errors.New("vendor down")
+	}
 	fc.mu.Unlock()
 	m2 := env("mcloud2", "session_01srv")
 	srv.pollCh <- pollReply{resp: busproto.PollResponse{Cursor: 4, Messages: []busproto.Envelope{m}, Claimable: []busproto.Claimable{{Message: m2, Sessions: []string{"session_01srv"}, Cloud: true}}}}
@@ -308,4 +310,80 @@ func TestCloudSessionOnWithheldRepoIsNotListed(t *testing.T) {
 	if !slices.Contains(asked, "secret") {
 		t.Fatalf("the path rules were asked about %q, want the repo name", asked)
 	}
+}
+
+// A device that dies after leasing a cloud message for a push, before the
+// vendor answered, pushes it again after it restarts and the lease ends:
+// once, marked a redelivery (the vendor may have taken the first push),
+// and then it is delivered. Nothing is lost while the device returns.
+func TestCloudPushAfterDyingMidPush(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bus.db")
+	var mu sync.Mutex
+	at := time.Now()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return at }
+	cfg := testConfig(nil, nil)
+	cfg.Now = clock
+	fc := &fakeCloud{agent: "claude"}
+	fc.set(cloudSess("session_01dies", true))
+	cfg.Cloud, cfg.CloudEvery = []vendorcloud.Adapter{fc}, 30*time.Millisecond
+	p := &presenceSrc{}
+	p.set(sess("aaaa1111", "claude", "/src/api", true))
+	b1, err := Open(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b1.SetSources(p.get, func(context.Context, string) ([]Session, error) { return nil, nil })
+	b1.listCloud(ctx)
+	out, err := b1.Send(ctx, busproto.SendRequest{FromSession: "aaaa1111", To: "session_01dies", Body: "please rebase", Intent: "inform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The push's lease is taken; the device dies before the vendor answers.
+	lim := Limit{Count: busrender.HookMessages, Bytes: busrender.HookBytes, Sep: busrender.SepLen, Size: busrender.Size}
+	if _, got, err := b1.st.take(ctx, "session_01dies", "claude", clock(), lim, b1.cloudLease(), b1.cfg.MaxAttempts, nil); err != nil || len(got) != 1 {
+		t.Fatalf("take = %v, %v", got, err)
+	}
+	b1.Close()
+
+	mu.Lock()
+	at = at.Add(b1.cloudLease() + time.Second)
+	mu.Unlock()
+	b2 := openBus(t, path, cfg, p)
+	run(t, b2)
+	waitFor(t, "delivered after the restart", func() bool { return cloudSent(t, b2, "aaaa1111", out.ID).State == busproto.StateDelivered })
+	got := fc.pushed()
+	if len(got) != 1 || !strings.Contains(got[0], `redelivery="true"`) {
+		t.Fatalf("pushes after the restart = %q, want one marked a redelivery", got)
+	}
+}
+
+// The listing is up to CloudEvery old. A message due for a session the
+// listing shows running is pushed only after the vendor confirms a turn
+// still runs: a push into a session whose turn ended since would start
+// a turn (B3).
+func TestCloudPushRechecksTheTurnBeforePushing(t *testing.T) {
+	fc := &fakeCloud{agent: "claude"}
+	fc.set(cloudSess("session_01ended", true))
+	cfg := testConfig(nil, nil)
+	cfg.Cloud, cfg.CloudEvery = []vendorcloud.Adapter{fc}, time.Hour
+	p := &presenceSrc{}
+	p.set(sess("aaaa1111", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	run(t, b)
+	waitFor(t, "the cloud listing", func() bool { return len(b.CloudSessions()) == 1 })
+	fc.set(cloudSess("session_01ended", false)) // the turn ended after the listing
+	out, err := b.Send(ctx, busproto.SendRequest{FromSession: "aaaa1111", To: "session_01ended", Body: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // several ticks
+	if got := fc.pushed(); len(got) != 0 {
+		t.Fatalf("pushed into a session whose turn had ended: %d pushes", len(got))
+	}
+	if st := cloudSent(t, b, "aaaa1111", out.ID); st.State != busproto.StateQueued {
+		t.Fatalf("state = %s", st.State)
+	}
+	fc.set(cloudSess("session_01ended", true))
+	b.listCloud(ctx) // the next listing
+	waitFor(t, "the push once a turn runs", func() bool { return len(fc.pushed()) == 1 })
 }

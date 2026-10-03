@@ -62,8 +62,11 @@ that it does not.
   lists one keeps it live. With a server, a session that no device listed
   for 75 seconds leaves `peers`.
 - **Push only during a turn.** Flopwire pushes a message only while the
-  vendor reports a turn running. A push never starts a turn. A message to
-  an idle or stopped session waits in the normal queue, up to 24 hours.
+  vendor reports a turn running. Before each push, Flopwire asks the
+  vendor again whether the turn still runs. A push never starts a turn,
+  except when the turn ends in the seconds between that check and the
+  push. A message to an idle or stopped session waits in the normal
+  queue, up to 24 hours.
 - **One device pushes.** With a server, every one of your devices that
   lists the session is offered the message. One device claims it, only
   while the session runs a turn, and pushes it.
