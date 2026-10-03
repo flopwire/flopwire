@@ -533,7 +533,7 @@ plugin. Do not use both: each hook would then run twice.
       { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 3 }] }
     ]
   }
 }
