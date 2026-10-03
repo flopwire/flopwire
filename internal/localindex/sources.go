@@ -54,6 +54,16 @@ func (s *Store) SourcesByPath(ctx context.Context, path string) ([]SourceState, 
 	return out, err
 }
 
+// HasSources reports whether the index holds any source: false until the
+// agent has indexed a first transcript.
+func (s *Store) HasSources(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+		return q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sources)`).Scan(&ok)
+	})
+	return ok, err
+}
+
 // Source loads one source row by id.
 func (s *Store) Source(ctx context.Context, id int64) (SourceState, error) {
 	var st SourceState
