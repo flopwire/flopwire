@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1018,12 +1019,71 @@ func TestPeersWithheldCallerKeepsItsRepoLocal(t *testing.T) {
 	}
 }
 
-// TestBusSandboxBlockedConnect: a shell inside Codex's workspace-write
-// sandbox may not connect to the agent's socket (EPERM). That is not "the
-// agent is not running": the error says so and points to the MCP tools,
-// which run outside the sandbox. A socket the caller may not open
-// (EACCES) stands in for the sandbox here.
+// TestBusSandboxBlockedConnect: a shell inside Codex's sandbox with the
+// network off may not connect to the agent's socket. Codex marks such a
+// shell with CODEX_SANDBOX_NETWORK_DISABLED=1 (both OSes) and
+// CODEX_SANDBOX=seatbelt (macOS). That is not "the agent is not running":
+// the error says so and points to the MCP tools, which run outside the
+// sandbox. A socket the caller may not open (EACCES) stands in for the
+// sandbox's EPERM here.
 func TestBusSandboxBlockedConnect(t *testing.T) {
+	for _, env := range [][2]string{{"CODEX_SANDBOX_NETWORK_DISABLED", "1"}, {"CODEX_SANDBOX", "seatbelt"}} {
+		t.Run(env[0], func(t *testing.T) {
+			t.Setenv("CODEX_SANDBOX_NETWORK_DISABLED", "")
+			t.Setenv("CODEX_SANDBOX", "")
+			t.Setenv(env[0], env[1])
+			e := sendToUnopenableSocket(t)
+			if e.Code != codeSandboxBlocked || !strings.Contains(e.Fix, "flopwire_send") || strings.Contains(e.Detail, "not running") {
+				t.Fatalf("blocked connect: %+v", e)
+			}
+		})
+	}
+}
+
+// TestBusPermissionDeniedConnect: outside any sandbox, a socket the
+// caller may not open is a permissions problem, not sandbox_blocked: the
+// MCP tools would fail the same way.
+func TestBusPermissionDeniedConnect(t *testing.T) {
+	t.Setenv("CODEX_SANDBOX_NETWORK_DISABLED", "")
+	t.Setenv("CODEX_SANDBOX", "")
+	e := sendToUnopenableSocket(t)
+	if e.Code != codePermissionDenied || strings.Contains(e.Detail, "sandbox") || strings.Contains(e.Fix, "flopwire_send") {
+		t.Fatalf("plain EACCES: %+v", e)
+	}
+}
+
+// TestBusConnectRefusalCode: EPERM on connect comes from a sandbox
+// (seatbelt, seccomp), never from file modes, so it is sandbox_blocked
+// even without Codex's variables; EACCES is only with them.
+func TestBusConnectRefusalCode(t *testing.T) {
+	none := func(string) string { return "" }
+	codex := func(k string) string {
+		if k == "CODEX_SANDBOX_NETWORK_DISABLED" {
+			return "1"
+		}
+		return ""
+	}
+	for _, c := range []struct {
+		err    error
+		getenv func(string) string
+		want   string
+	}{
+		{syscall.EPERM, none, codeSandboxBlocked},
+		{syscall.EPERM, codex, codeSandboxBlocked},
+		{syscall.EACCES, codex, codeSandboxBlocked},
+		{syscall.EACCES, none, codePermissionDenied},
+		{errors.New("other"), codex, ""},
+	} {
+		if got := connectRefusal(c.err, c.getenv); got != c.want {
+			t.Errorf("connectRefusal(%v, sandboxed=%v) = %q, want %q", c.err, c.getenv("CODEX_SANDBOX_NETWORK_DISABLED") != "", got, c.want)
+		}
+	}
+}
+
+// sendToUnopenableSocket runs flopwire send against a listening socket
+// with mode 0 and returns its error.
+func sendToUnopenableSocket(t *testing.T) busErr {
+	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores socket permissions")
 	}
@@ -1033,14 +1093,11 @@ func TestBusSandboxBlockedConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	t.Cleanup(func() { ln.Close() })
 	if err := os.Chmod(sock, 0); err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut strings.Builder
 	err = busCmd(t.Context(), "send", []string{"--socket", sock, "@a", "--", "hi"}, strings.NewReader(""), &out, &errOut)
-	e := jsonErr(t, errOut.String(), err)
-	if e.Code != codeSandboxBlocked || !strings.Contains(e.Fix, "flopwire_send") || strings.Contains(e.Detail, "not running") {
-		t.Fatalf("blocked connect: %+v", e)
-	}
+	return jsonErr(t, errOut.String(), err)
 }
