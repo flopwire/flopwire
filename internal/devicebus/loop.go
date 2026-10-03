@@ -367,7 +367,7 @@ func claimOrder(c busproto.Claimable, all []Session) []string {
 		if !ok {
 			return false, false, time.Time{}
 		}
-		return c.Message.ToRepo != "" && bus.RepoName(s.Repo) == c.Message.ToRepo, s.Busy, s.LastActive
+		return c.Message.ToRepo != "" && bus.RepoOn(c.Message.ToRepo, s.Repo, s.Remote), s.Busy, s.LastActive
 	}
 	slices.SortStableFunc(out, func(x, y string) int {
 		xr, xb, xt := rank(x)

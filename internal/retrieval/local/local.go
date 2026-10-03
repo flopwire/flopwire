@@ -99,7 +99,7 @@ func (b *Backend) filter(ctx context.Context, f format.Filters) (localindex.Filt
 			if err != nil {
 				return out, err
 			}
-			if repo, roots, err = ExpandRepo(repo, dirs, false); err != nil {
+			if repo, roots, _, err = ExpandRepo(repo, dirs, false); err != nil {
 				return out, err
 			}
 		}
@@ -107,7 +107,7 @@ func (b *Backend) filter(ctx context.Context, f format.Filters) (localindex.Filt
 		if prefix != "" {
 			out.Repos = []string{prefix}
 		}
-		out.Repos = append(out.Repos, roots...)
+		out.Repos = format.FitRoots(append(out.Repos, roots...), localindex.MaxRepos)
 		if like != "" {
 			out.RepoLikes = []string{like}
 		}

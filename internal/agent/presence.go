@@ -44,6 +44,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -425,6 +426,9 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		if !s.Withheld {
 			s.Title = a.busTitle(ctx, s)
 		}
+		if p, ok := a.storedPlace(key); ok {
+			s.Remote = p.pl.Remote
+		}
 		out = append(out, s)
 	}
 	for i, s := range out {
@@ -533,8 +537,32 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 	for i, s := range out {
 		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
 		out[i].Withheld = !a.reportable(ctx, key, paths[key])
+		if p, ok := a.storedPlace(key); ok {
+			out[i].Remote = p.pl.Remote
+		}
 	}
 	return out, nil
+}
+
+// BusRepoKey resolves an @user send's repo to the normalized remote of
+// the repository it names on this device (devicebus Config.RepoKey,
+// issue #102): a path, or a name or owner/name the placements know, as
+// --server --repo resolves it (local.ExpandRepo). A repository with no
+// remote, or one the device does not know, keeps the repo as it is; a
+// name that fits two repositories is an error.
+func (a *Agent) BusRepoKey(ctx context.Context, repo string) (string, error) {
+	dirs, err := a.store.RepoDirs(ctx)
+	if err != nil {
+		return "", err
+	}
+	_, _, remotes, err := local.ExpandRepo(repo, dirs, true)
+	if err != nil {
+		return "", errors.New(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "))
+	}
+	if len(remotes) == 1 {
+		return remotes[0], nil
+	}
+	return repo, nil
 }
 
 // BusWithheld names a session the path rules keep off the server that ref

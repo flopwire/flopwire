@@ -187,8 +187,7 @@ func TestRepoMatchesEveryCheckout(t *testing.T) {
 		{"lib-feat", ".", libRepo},
 		{"notes", p(".lib.git"), libRepo},
 		{"notes", "lib", libRepo},
-		{"notes", ".", "plain"},       // outside git: the directory
-		{"notes", "app-api", "appwt"}, // a worktree's own name, no repository by it: the directory name, as before
+		{"notes", ".", "plain"}, // outside git: the directory
 	} {
 		t.Run(tc.cwd+" "+tc.repo, func(t *testing.T) {
 			t.Chdir(p(tc.cwd))
@@ -250,27 +249,142 @@ func TestWireRoots(t *testing.T) {
 		roots = append(roots, fmt.Sprintf("/w/r%03d", i))
 	}
 	roots = append([]string{"/w/r000/sub"}, roots...)
-	got := wireRoots(roots)
+	got := format.FitRoots(roots, format.MaxRepoRoots)
 	if len(got) != format.MaxRepoRoots || got[0] != "/w/r000" || slices.Contains(got, "/w/r000/sub") {
-		t.Fatalf("wireRoots: %d, first %v", len(got), got[:2])
+		t.Fatalf("FitRoots: %d, first %v", len(got), got[:2])
 	}
-	if short := []string{"/a", "/a/b"}; !slices.Equal(wireRoots(short), short) {
+	if short := []string{"/a", "/a/b"}; !slices.Equal(format.FitRoots(short, format.MaxRepoRoots), short) {
 		t.Fatal("a list that fits is kept as it is")
 	}
 }
 
-// For the server a bare name that fits two local repositories is not an
-// error: the server matches the name across the team, as it did before
-// --repo knew repositories, and the request carries both repositories'
-// checkouts.
-func TestServerRepoAmbiguousNameKeepsTheName(t *testing.T) {
+// #102: a name that fits no repository the device knows is an error
+// that says so. It used to fall back to matching the last element of a
+// session's directory, so "app-api" (a worktree's own name) found that
+// worktree's session, and a name could merge two unrelated directories.
+func TestRepoUnknownNameIsAnError(t *testing.T) {
+	w := newRepoWorld(t)
+	for _, name := range []string{"app-api", "notes", "nosuch"} {
+		_, err := w.sessions(t, format.Filters{Repo: name})
+		if !errors.Is(err, format.ErrBadRequest) || !strings.Contains(err.Error(), "names no repository") {
+			t.Errorf("--repo %s: %v", name, err)
+		}
+	}
+	// Its path still names the directory.
+	if got, err := w.sessions(t, format.Filters{Repo: filepath.Join(w.base, "notes")}); err != nil || got != "plain" {
+		t.Fatalf("--repo <notes path>: %q %v", got, err)
+	}
+}
+
+// #102: for the server, a name that fits two local repositories is the
+// same error as locally: the server must never merge two repositories of
+// one name. It used to send the name, which the server matched against
+// the last element of every session's directory on every device.
+func TestServerRepoAmbiguousNameIsAnError(t *testing.T) {
 	w := newRepoWorld(t)
 	dirs, err := w.b.Store.RepoDirs(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, roots, err := ExpandRepo("app", dirs, true)
-	if err != nil || repo != "app" || !slices.Contains(roots, filepath.Join(w.base, "app-api")) || !slices.Contains(roots, filepath.Join(w.base, "other", "app")) {
-		t.Fatalf("--server --repo app: %q %v %v", repo, roots, err)
+	repo, roots, remotes, err := ExpandRepo("app", dirs, true)
+	if !errors.Is(err, format.ErrBadRequest) || !strings.Contains(err.Error(), "names 2 repositories") {
+		t.Fatalf("--server --repo app: %q %v %v %v", repo, roots, remotes, err)
+	}
+}
+
+// #102: for the server, a name the device knows becomes that
+// repository's checkouts and remotes, and no name: the server matches
+// the remote on every device, at any path. A name the device does not
+// know passes through for the server to resolve.
+func TestServerRepoSendsRemotes(t *testing.T) {
+	w := newRepoWorld(t)
+	dirs, err := w.b.Store.RepoDirs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := func(s string) string { return filepath.Join(w.base, s) }
+	for _, arg := range []string{"web", "acme/web", p("web-fix")} {
+		repo, roots, remotes, err := ExpandRepo(arg, dirs, true)
+		if err != nil || !slices.Equal(remotes, []string{"github.com/acme/web"}) || !slices.Contains(roots, p("elsewhere/web2")) {
+			t.Fatalf("--server --repo %s: %q %v %v %v", arg, repo, roots, remotes, err)
+		}
+		if !strings.HasPrefix(arg, "/") && repo != "" {
+			t.Fatalf("--server --repo %s sends the name %q", arg, repo)
+		}
+	}
+	if repo, roots, remotes, err := ExpandRepo(p("app"), dirs, true); err != nil || len(remotes) != 0 || !slices.Contains(roots, p("app-api")) || repo != p("app") {
+		t.Fatalf("--server --repo <app>: %q %v %v %v", repo, roots, remotes, err)
+	}
+	if repo, roots, remotes, err := ExpandRepo("teammates-repo", dirs, true); err != nil || repo != "teammates-repo" || roots != nil || remotes != nil {
+		t.Fatalf("--server --repo teammates-repo: %q %v %v %v", repo, roots, remotes, err)
+	}
+	// A path rule on the repository keeps its remote off the request.
+	deny := func(pl pathpolicy.Placement) bool { return pl.Remote != "github.com/acme/web" }
+	if _, _, remotes, err := ServerRepo("web", dirs, deny); err != nil || remotes != nil {
+		t.Fatalf("withheld remote: %v %v", remotes, err)
+	}
+}
+
+// #102: on a case-insensitive volume (macOS by default), /p/App and
+// /p/app are one directory, so placements that spell one main checkout
+// two ways are one repository: --repo by name is not ambiguous, and by
+// either path finds both sessions. Skipped where the volume holding the
+// temporary directory compares case exactly.
+func TestRepoMainCaseInsensitive(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	base := t.TempDir()
+	app := filepath.Join(base, "App")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "app")); err != nil {
+		t.Skip("the volume compares case exactly")
+	}
+	git(t, app, "init", "-q")
+	lower := filepath.Join(base, "app")
+	dirs := []localindex.RepoDir{{Dir: app, Main: app}, {Dir: lower, Main: lower}}
+	_, roots, _, err := ExpandRepo("app", dirs, false)
+	if err != nil || !slices.Contains(roots, app) || !slices.Contains(roots, lower) {
+		t.Fatalf("--repo app: %v %v", roots, err)
+	}
+	if _, roots, _, err := ExpandRepo(lower, dirs, false); err != nil || !slices.Contains(roots, app) {
+		t.Fatalf("--repo %s: %v %v", lower, roots, err)
+	}
+}
+
+// #102: --repo with a deleted directory under a home directory that is a
+// git repository (dotfiles) names that directory, not the home
+// repository: a placement above it whose directory still exists is
+// another repository, not the deleted one's. It used to name the home
+// repository, so the filter matched every session under home.
+func TestRepoDeletedDirUnderDotfilesHome(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, home, "init", "-q")
+	git(t, home, "remote", "add", "origin", "git@github.com:me/dotfiles.git")
+	gone := filepath.Join(home, "code", "app-wt")
+	dirs := []localindex.RepoDir{
+		{Dir: home, Main: home, Remote: "github.com/me/dotfiles"},
+		{Dir: gone}, // placed with no repository: its directory was gone
+	}
+	repo, roots, _, err := ExpandRepo(gone, dirs, false)
+	if err != nil || repo != gone || slices.Contains(roots, home) || !slices.Contains(roots, gone) {
+		t.Fatalf("--repo <deleted dir under home>: %q %v %v", repo, roots, err)
+	}
+	// A deleted worktree is still named by a placement recorded at it,
+	// and a directory under it by the placement above it, also gone.
+	wt := filepath.Join(home, "gone-wt")
+	dirs = append(dirs, localindex.RepoDir{Dir: wt, Main: "/p/app", Remote: "github.com/acme/app"})
+	for _, arg := range []string{wt, filepath.Join(wt, "sub")} {
+		if _, roots, _, err := ExpandRepo(arg, dirs, false); err != nil || !slices.Contains(roots, "/p/app") || slices.Contains(roots, home) {
+			t.Fatalf("--repo %s: %v %v", arg, roots, err)
+		}
 	}
 }

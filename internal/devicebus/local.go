@@ -27,6 +27,9 @@ import (
 func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
 	cleanSend(&req)
 	if b.Local() {
+		if err := b.resolveRepo(ctx, &req); err != nil {
+			return busproto.SendResponse{}, err
+		}
 		return b.sendLocal(ctx, req)
 	}
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent); err != nil {
@@ -37,6 +40,9 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	}
 	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
 		if err := b.reposNotWithheld(ctx, req.Repo); err != nil {
+			return busproto.SendResponse{}, err
+		}
+		if err := b.resolveRepo(ctx, &req); err != nil {
 			return busproto.SendResponse{}, err
 		}
 	}
@@ -56,6 +62,24 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 	}
 	return out, err
+}
+
+// resolveRepo replaces an @user send's repo with the remote of the
+// repository it names on this device (Config.RepoKey).
+func (b *Bus) resolveRepo(ctx context.Context, req *busproto.SendRequest) error {
+	b.mu.Lock()
+	key := b.cfg.RepoKey
+	b.mu.Unlock()
+	repo := strings.TrimSpace(req.Repo)
+	if key == nil || repo == "" || repo == "*" || !strings.HasPrefix(strings.TrimSpace(req.To), "@") {
+		return nil
+	}
+	k, err := key(ctx, repo)
+	if err != nil {
+		return badRequest("%s", err.Error())
+	}
+	req.Repo = k
+	return nil
 }
 
 // cleanSend drops control characters from a send's body and refs
@@ -193,7 +217,7 @@ func (b *Bus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersR
 	if err := b.notWithheld(ctx, q.Session, ""); err != nil {
 		return busproto.PeersResponse{}, err
 	}
-	if err := b.reposNotWithheld(ctx, append([]string{q.Repo}, q.Roots...)...); err != nil {
+	if err := b.reposNotWithheld(ctx, append(append([]string{q.Repo}, q.Roots...), q.Remotes...)...); err != nil {
 		return busproto.PeersResponse{}, err
 	}
 	srv, _ := b.cfg.Connect()
@@ -344,11 +368,11 @@ func eligible(toRepo string, from busproto.Envelope, v Session, all []Session) b
 	if v.SessionID == from.From && v.Agent == from.FromAgent {
 		return false
 	}
-	if toRepo == "" || bus.RepoName(v.Repo) == toRepo {
+	if toRepo == "" || bus.RepoOn(toRepo, v.Repo, v.Remote) {
 		return true
 	}
 	for _, o := range all {
-		if bus.RepoName(o.Repo) == toRepo {
+		if bus.RepoOn(toRepo, o.Repo, o.Remote) {
 			return false
 		}
 	}
@@ -474,13 +498,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 			return out, fail(http.StatusNotFound, busproto.CodeUnknownRecipient, "no person matches %s: without a server only @%s (this device's user) can be addressed", in.to, b.cfg.User)
 		}
 		e.Addressed, toKey = "user", "user"
-		switch in.repo {
-		case "*":
-		case "":
-			e.ToRepo = bus.RepoName(from.Repo)
-		default:
-			e.ToRepo = bus.RepoName(in.repo)
-		}
+		e.ToRepo = bus.RouteRepo(in.repo, from.Repo, from.Remote)
 		out.To = busproto.Recipient{User: b.cfg.User, UserID: b.localUserID(), Repo: e.ToRepo}
 		for _, v := range live {
 			if eligible(e.ToRepo, e, v, live) {
@@ -681,7 +699,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 	now := b.cfg.Now()
 	out := busproto.PeersResponse{Peers: []busproto.Peer{}}
 	for _, s := range append(slices.Clone(live), b.CloudSessions()...) {
-		repoOK := bus.RepoMatches(q.Repo, q.Roots, s.Repo)
+		repoOK := bus.RepoMatches(q.Repo, q.Roots, q.Remotes, s.Repo, s.Remote)
 		if s.Cloud {
 			repoOK = bus.CloudRepoMatches(q.Repo, q.Roots, s.Repo)
 		}
@@ -690,7 +708,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 			continue
 		}
 		p := busproto.Peer{Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
-			Device: host, Repo: s.Repo, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now}
+			Device: host, Repo: s.Repo, Remote: s.Remote, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now}
 		if s.Cloud {
 			p.Device = ""
 		}

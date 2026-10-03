@@ -78,14 +78,18 @@ func RepoName(repo string) string {
 	return repo
 }
 
-// RepoMatches applies a peers repo filter to a session's repo root: an
-// absolute path matches that root and every directory under it; anything
-// else matches the repo name; "" matches all. roots, the checkout roots
-// the caller's device expanded the filter to (local.ExpandRepo), match
-// the same way as paths, so a session in a linked worktree is on its
-// repository.
-func RepoMatches(filter string, roots []string, repo string) bool {
-	if filter == "" && len(roots) == 0 {
+// RepoMatches applies a peers repo filter to a session's repo root and
+// remote: an absolute path matches that root and every directory under
+// it; anything else names a repo (RepoOn); "" matches all. roots, the
+// checkout roots the caller's device expanded the filter to
+// (local.ExpandRepo), match the same way as paths, so a session in a
+// linked worktree is on its repository; remotes match a session whose
+// remote is one of them, wherever it runs (issue #102).
+func RepoMatches(filter string, roots, remotes []string, repo, remote string) bool {
+	if filter == "" && len(roots) == 0 && len(remotes) == 0 {
+		return true
+	}
+	if remote != "" && slices.Contains(remotes, remote) {
 		return true
 	}
 	under := func(f string) bool {
@@ -100,7 +104,7 @@ func RepoMatches(filter string, roots []string, repo string) bool {
 	if strings.HasPrefix(filter, "/") {
 		return under(filter)
 	}
-	return filter != "" && RepoName(repo) == RepoName(filter)
+	return filter != "" && RepoOn(filter, repo, remote)
 }
 
 // CloudRepoMatches is RepoMatches for a cloud session, whose repo is the
@@ -116,6 +120,29 @@ func CloudRepoMatches(filter string, roots []string, repo string) bool {
 		}
 	}
 	return false
+}
+
+// IsRemote reports whether an @user route or repo filter is a remote
+// (host/owner/name or owner/name) rather than a name or a path.
+func IsRemote(key string) bool {
+	return strings.Contains(key, "/") && !strings.HasPrefix(key, "/")
+}
+
+// RepoOn reports whether a session at repo root repo, with remote, is on
+// the repository key names. A remote (IsRemote) matches the session's
+// remote, or its end (owner/name); a session without a remote is never
+// on one. A name matches the repository's name: its remote's last
+// element when it has a remote, else its root's last element. So two
+// repositories of one name stay apart whenever the route or filter
+// carries the remote, which the device sends when it knows one.
+func RepoOn(key, repo, remote string) bool {
+	if IsRemote(key) {
+		return remote != "" && (strings.EqualFold(remote, key) || strings.HasSuffix(strings.ToLower(remote), "/"+strings.ToLower(key)))
+	}
+	if remote != "" {
+		return RepoName(remote) == RepoName(key)
+	}
+	return RepoName(repo) == RepoName(key)
 }
 
 func inTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
@@ -142,16 +169,18 @@ func audit(ctx context.Context, tx pgx.Tx, c busproto.Caller, now time.Time, act
 type session struct {
 	id, agent, userID, user string
 	repo, branch, title     string
+	remote                  string
 	busy, live, cloud       bool
 	deviceID                string
 }
 
 // SessionOnDeviceSQL finds a session the device $1 reported live since $4
 // or uploaded: id $2, agent $3 (” for any). Live rows come first.
-const SessionOnDeviceSQL = `SELECT agent,repo,branch,title,busy,true FROM bus_presence
+const SessionOnDeviceSQL = `SELECT agent,repo,branch,title,busy,true,remote FROM bus_presence
 	WHERE device_id=$1 AND session_id=$2 AND ($3='' OR agent=$3) AND seen_at>$4
 	UNION ALL
-	SELECT agent,COALESCE(repo_root,cwd,''),COALESCE(branches[cardinality(branches)],''),COALESCE(title,''),false,false FROM conversations
+	SELECT agent,COALESCE(repo_root,cwd,''),COALESCE(branches[cardinality(branches)],''),COALESCE(title,''),false,false,
+		COALESCE((SELECT s.remote FROM sources s WHERE s.id=c.source_id),'') FROM conversations c
 	WHERE device_id=$1 AND session_id=$2 AND ($3='' OR agent=$3) AND hidden_at IS NULL`
 
 // deviceSession is the caller's session id on its own device: in its
@@ -169,7 +198,7 @@ func (s *Store) deviceSession(ctx context.Context, q querier, c busproto.Caller,
 	var found []session
 	for rows.Next() {
 		v := session{id: id, userID: c.UserID, deviceID: c.DeviceID}
-		if err := rows.Scan(&v.agent, &v.repo, &v.branch, &v.title, &v.busy, &v.live); err != nil {
+		if err := rows.Scan(&v.agent, &v.repo, &v.branch, &v.title, &v.busy, &v.live, &v.remote); err != nil {
 			return session{}, err
 		}
 		found = append(found, v)
@@ -312,11 +341,11 @@ func resolveSession(ctx context.Context, q querier, prefix string, now time.Time
 
 // UserLiveSQL is the person $1's live sessions (seen since $2), every
 // device. Cloud sessions are left out: an @user message never goes to one.
-const UserLiveSQL = `SELECT COALESCE(device_id::text,''),agent,session_id,repo,busy FROM bus_presence WHERE user_id=$1 AND seen_at>$2 AND NOT cloud`
+const UserLiveSQL = `SELECT COALESCE(device_id::text,''),agent,session_id,repo,remote,busy FROM bus_presence WHERE user_id=$1 AND seen_at>$2 AND NOT cloud`
 
 type liveSession struct {
-	device, agent, id, repo string
-	busy                    bool
+	device, agent, id, repo, remote string
+	busy                            bool
 }
 
 func userLive(ctx context.Context, q querier, userID string, now time.Time) ([]liveSession, error) {
@@ -326,24 +355,41 @@ func userLive(ctx context.Context, q querier, userID string, now time.Time) ([]l
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (liveSession, error) {
 		var v liveSession
-		return v, r.Scan(&v.device, &v.agent, &v.id, &v.repo, &v.busy)
+		return v, r.Scan(&v.device, &v.agent, &v.id, &v.repo, &v.remote, &v.busy)
 	})
 }
 
-// eligible reports whether an @user message routed to repo name toRepo may
-// go to session v: one on that repo, or any session while none of the
-// person's live sessions is on it (plan §3: the repo first, then
-// anywhere).
+// eligible reports whether an @user message routed to repo toRepo (a
+// remote, or a repo name: RepoOn) may go to session v: one on that repo,
+// or any session while none of the person's live sessions is on it
+// (plan §3: the repo first, then anywhere).
 func eligible(toRepo string, v liveSession, all []liveSession) bool {
-	if toRepo == "" || RepoName(v.repo) == toRepo {
+	if toRepo == "" || RepoOn(toRepo, v.repo, v.remote) {
 		return true
 	}
 	for _, o := range all {
-		if RepoName(o.repo) == toRepo {
+		if RepoOn(toRepo, o.repo, o.remote) {
 			return false
 		}
 	}
 	return true
+}
+
+// RouteRepo is the repo an @user message is routed by (bus_messages.to_repo):
+// for repo "" the sending session's remote, else its root's name; "*"
+// none; a remote as it is; a name or path its last element.
+func RouteRepo(repo, fromRepo, fromRemote string) string {
+	switch repo = strings.TrimSpace(repo); {
+	case repo == "*":
+		return ""
+	case repo == "" && fromRemote != "":
+		return fromRemote
+	case repo == "":
+		return RepoName(fromRepo)
+	case IsRemote(repo):
+		return strings.TrimRight(repo, "/")
+	}
+	return RepoName(repo)
 }
 
 // Send stores a message from one of the caller's sessions and reports where
@@ -404,13 +450,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 				return err
 			}
 			m.addressed, m.toUser, m.toEmail = "user", p.id, p.email
-			switch repo := strings.TrimSpace(req.Repo); repo {
-			case "*":
-			case "":
-				m.toRepo = RepoName(from.repo)
-			default:
-				m.toRepo = RepoName(repo)
-			}
+			m.toRepo = RouteRepo(req.Repo, from.repo, from.remote)
 		} else {
 			v, err := resolveSession(ctx, tx, to, now)
 			if err != nil {

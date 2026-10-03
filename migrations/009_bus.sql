@@ -17,6 +17,9 @@ CREATE TABLE bus_presence (
   -- repo is the repo root as the device placed the session; names compare
   -- by its last path element.
   repo text NOT NULL DEFAULT '',
+  -- remote is the session's normalized remote ('' for none); a repo
+  -- routes and filters by it when it has one (issue #102).
+  remote text NOT NULL DEFAULT '',
   branch text NOT NULL DEFAULT '',
   title text NOT NULL DEFAULT '',
   busy boolean NOT NULL,

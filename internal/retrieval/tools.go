@@ -49,6 +49,9 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	if err := s.resolveFilterSession(ctx, &f); err != nil {
 		return nil, err
 	}
+	if err := s.resolveFilterRepo(ctx, &f); err != nil {
+		return nil, err
+	}
 	if gq.Sort, err = format.SortFor("grep", f.Sort); err != nil {
 		return nil, err
 	}
@@ -205,6 +208,9 @@ func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filt
 		return nil, fmt.Errorf("%w: query is empty", ErrBadRequest)
 	}
 	if err := s.resolveFilterSession(ctx, &f); err != nil {
+		return nil, err
+	}
+	if err := s.resolveFilterRepo(ctx, &f); err != nil {
 		return nil, err
 	}
 	n := pageLimit(sq.Limit)
@@ -380,6 +386,9 @@ func (s *Store) Sessions(ctx context.Context, glob, cursor string, f format.Filt
 func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filters) (*format.Sessions, error) {
 	sort, err := format.SortFor("sessions", f.Sort)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveFilterRepo(ctx, &f); err != nil {
 		return nil, err
 	}
 	var after *format.SessionKey
