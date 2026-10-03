@@ -215,6 +215,20 @@ func TestHookClaudeSubagentTranscript(t *testing.T) {
 	assertTookNothing(t, "subagent transcript without agent_id", fa, out, direct)
 }
 
+// A session's own transcript can sit under a directory named subagents
+// (CLAUDE_CONFIG_DIR or a home there): it is not a subagent's, and its
+// hook delivers. Only an agent-<id>.jsonl file under subagents/ is one.
+func TestHookClaudeSubagentsDirAboveTheSession(t *testing.T) {
+	var m map[string]any
+	json.Unmarshal([]byte(claudeIn(evPostToolUse)), &m)
+	m["transcript_path"] = "/work/subagents/.claude/projects/-src-api/" + claudeSID + ".jsonl"
+	fa := newHookAgent(t)
+	pendingForParent(fa)
+	if out, _ := runHook(t, fa.sock, hookJSON(m), map[string]string{"CLAUDECODE": "1"}); !strings.Contains(out, "for the parent session") {
+		t.Fatalf("session under a subagents/ directory: %q", out)
+	}
+}
+
 // Codex runs hooks in spawned agents with the root thread's session_id,
 // the child's own rollout and agent_id (codex 0.160.0).
 func TestHookCodexSubagentTakesNothing(t *testing.T) {

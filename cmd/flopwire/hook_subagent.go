@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -65,8 +66,9 @@ func hookSubagent(ctx context.Context, in hookInput, harness transcript.Agent, g
 			return hookSub{inside: true, transcript: claudeSubagentTranscript(in)}
 		}
 		// No agent_id, but the transcript is a subagent's: a harness
-		// version that marks subagents only by their file.
-		if strings.Contains(filepath.ToSlash(in.TranscriptPath), "/subagents/") {
+		// version that marks subagents only by their file. A session's own
+		// <session>.jsonl is never agent-*, wherever its directory is.
+		if p := filepath.ToSlash(in.TranscriptPath); strings.Contains(p, "/subagents/") && strings.HasPrefix(path.Base(p), "agent-") {
 			return hookSub{inside: true, transcript: in.TranscriptPath}
 		}
 	case transcript.AgentCodex:
