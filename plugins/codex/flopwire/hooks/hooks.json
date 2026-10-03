@@ -1,5 +1,5 @@
 {
-  "description": "flopwire hook: prints the standing instruction and pending messages into the session, and asks the device agent to index the transcript",
+  "description": "flopwire hook: prints the standing instruction and pending messages into the session, tells the device agent when the session ends, and asks it to index the transcript",
   "hooks": {
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 5 }] }
@@ -12,6 +12,9 @@
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 5 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "flopwire hook || true", "timeout": 3 }] }
     ]
   }
 }

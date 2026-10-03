@@ -93,7 +93,10 @@ func TestCodexPluginManifest(t *testing.T) {
 
 // codexHookContract is the plugin's hook definition, exactly. Codex's
 // trust hash covers event, matcher, command and timeout: change any of
-// them and every user must approve the hooks again.
+// them and every user must approve the hooks again. SessionEnd is 3:
+// Codex clamps a SessionEnd timeout above 3 s and prints "clamping
+// SessionEnd hook timeout to 3s" at the start of every session
+// (codex-rs/hooks discovery.rs, 0.160.0).
 var codexHookContract = map[string]struct {
 	matcher, command string
 	timeout          int
@@ -102,6 +105,7 @@ var codexHookContract = map[string]struct {
 	"UserPromptSubmit": {"", "flopwire hook || true", 5},
 	"PostToolUse":      {"*", "flopwire hook || true", 5},
 	"Stop":             {"", "flopwire hook || true", 5},
+	"SessionEnd":       {"", "flopwire hook || true", 3},
 }
 
 func TestCodexPluginHooks(t *testing.T) {

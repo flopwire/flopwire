@@ -206,9 +206,6 @@ type Agent struct {
 	discovered     chan struct{}
 	discoveredOnce sync.Once
 
-	// starts: SessionStart hooks given the standing instruction (hookbus.go).
-	starts starts
-
 	// Path rules (policy.go, placement.go). pol, devinModes, places and
 	// folders are guarded by mu; polMu serializes loading and applying
 	// rules.
@@ -242,9 +239,11 @@ type Agent struct {
 	pidAlive  func(pid int) bool
 	procStart func(pid int) (time.Time, bool)
 	procName  func(pid int) string
-	now       func() time.Time
-	rollouts  rolloutState // Codex busy or idle, by rollout
-	turns     hookTurns    // busy or idle from hook events, by session
+	// codexWriter probes a Codex writer lock (codexlock.go); tests replace it.
+	codexWriter func(lock string) int
+	now         func() time.Time
+	rollouts    rolloutState // Codex busy or idle, by rollout
+	turns       hookTurns    // busy or idle from hook events, by session
 }
 
 // Stats counts the agent's work since start.
@@ -263,7 +262,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
-		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, now: time.Now}
+		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, codexWriter: codexWriter, now: time.Now}
 	a.idle = sync.NewCond(&a.mu)
 	if cfg.DevinDB != "-" {
 		a.devin.path = cfg.DevinDB

@@ -163,7 +163,7 @@ func fakeDevinInfo(st fakeDevinState) string {
 	}
 	raw, _ = os.ReadFile(filepath.Join(dir, ".mcp.json"))
 	_ = json.Unmarshal(raw, &mcp)
-	names := map[string]string{"SessionStart": "session_start", "UserPromptSubmit": "user_prompt", "PostToolUse": "post_tool", "Stop": "stop"}
+	names := map[string]string{"SessionStart": "session_start", "UserPromptSubmit": "user_prompt", "PostToolUse": "post_tool", "Stop": "stop", "SessionEnd": "session_end"}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Plugin: flopwire\n  source: %s\n  description: rev %s\n\nSkills\n  /flopwire:messaging - Coordinate with another live coding-agent session.\n\nAgents\n  (none)\n\nHooks\n", st.Installed.Source, st.Installed.Rev)
 	if !st.DropHooks {

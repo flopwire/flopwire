@@ -18,7 +18,14 @@ import (
 // sessions, A and B, on one repo.
 func hookE2E(t *testing.T) (sock string) {
 	t.Helper()
-	home := t.TempDir()
+	sock, _ = hookE2EHome(t)
+	return sock
+}
+
+// hookE2EHome is hookE2E, also returning the harness home it reads.
+func hookE2EHome(t *testing.T) (sock, home string) {
+	t.Helper()
+	home = t.TempDir()
 	projects := filepath.Join(home, ".claude", "projects")
 	writeClaudeSession(t, projects, e2eA, "/tmp/e2e-api", "refactor client pagination")
 	writeClaudeSession(t, projects, e2eB, "/tmp/e2e-api", "add cursor to list endpoint")
@@ -29,7 +36,7 @@ func hookE2E(t *testing.T) (sock string) {
 	sock = filepath.Join(shortSockDir(t), "a.sock")
 	startAgent(t, home, sock, "--no-sync")
 	waitPeer(t, sock, e2eA, e2eB)
-	return sock
+	return sock, home
 }
 
 func hookFor(session, event string) string {

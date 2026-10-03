@@ -536,6 +536,7 @@ func (b *Bus) runLocal(ctx context.Context) {
 		case <-tick.C:
 			b.expireLeases(ctx)
 			live, err := b.sessions(ctx)
+			b.settleEnded(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
 					b.log.Warn("devicebus: presence", "err", err)

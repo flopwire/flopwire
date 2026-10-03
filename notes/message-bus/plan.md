@@ -181,6 +181,22 @@ carries the presence heartbeat.
   already tails every transcript; busy or idle comes from the last event,
   with the harness registries as a cross-check (Claude session files, Codex
   writer locks, Devin `isLocked`).
+- Ends sessions (#67, #82) from what the harness shows, never from
+  idleness or the 15-minute busy cap: a `SessionEnd` hook; a registry
+  entry naming a process that is gone (a Claude session file of a dead or
+  reused pid, a Codex writer lock nobody holds, a Devin lock of a dead or
+  non-devin pid); an entry it had, missing at two reads 1 s apart. An
+  ended session leaves presence at once. Its queued and claimed messages
+  become `undelivered` (reason `session_ended`) and are reported in the
+  next ack batch; they are never given to another session. A message that
+  arrives later is marked too only when its sender could have been told
+  the session is live: sent within 1 s of the last live sighting without
+  a server (presence is cached 1 s, so this matches the receipt), within
+  10 s with one (the server learns the end at the next poll, on another
+  clock). A later one keeps the `only_if_resumed` receipt and waits for a
+  resume. A hook
+  that started after the end, or a newer process in the registry, resumes
+  the session. State in `bus.db` (`devbus_sessions`).
 - Claims an `@user` message for one live session with one atomic server
   call, so two devices cannot both deliver it.
 - With no server configured, routes messages between sessions on the same
@@ -188,9 +204,19 @@ carries the presence heartbeat.
 
 **Hook.** `flopwire hook` replaces `flopwire agent flush` in the hook
 config and does both jobs.
-- `SessionStart`: the standing instruction, plus anything pending.
-- `UserPromptSubmit`: anything pending.
-- `PostToolUse`: anything pending.
+- `SessionStart`, `UserPromptSubmit`, `PostToolUse`: anything pending,
+  after the standing instruction while the session is owed it.
+- `SessionEnd`: nothing printed; the flush tells the agent the session
+  ended. Claude Code, Codex and Devin all have the event. Adding it to the
+  Codex plugin made Codex ask to trust the new hook once.
+- The standing instruction is leased like a message (#101): owed until a
+  hook confirms printing it, printed before any message, and while its
+  lease is out no hook of the session gets messages. A killed or late
+  `SessionStart` hook leaves it to the next hook. A `SessionStart` with
+  source `resume`, `compact` or `clear` after the confirmation makes it
+  owed again: a compaction summarizes it away, and Flopwire cannot see
+  what a resumed context kept. The confirmation is kept per session in
+  `bus.db`, so two hook configs and an agent restart print it once.
 - It asks the device agent over the control socket for messages for the
   `session_id` on stdin, prints them as `additionalContext`, and then
   confirms them (#90). It exits 0 with no output if the agent is down or
@@ -228,7 +254,11 @@ by the plugin's `ctx.sessionID`.
 **Receipts.** `delivered_at` when the hook confirms that it printed the
 message (not when it takes it). `undelivered` with reason `unconfirmed`
 when no hook confirmed it after 3 leases; the device reports it in the
-ack request (`undelivered` ids) and the sender sees it.
+ack request (`undelivered` ids) and the sender sees it. `undelivered`
+with reason `session_ended` when its session ended first; the device
+reports it in `session_ended` ids, and the server takes the report also
+for a session already gone from the device's presence when no other
+device holds it.
 
 `read_at` (built, #65) when the message's wrapper appears in hook context
 in the recipient session's transcript: its text entered the session's

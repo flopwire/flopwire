@@ -111,6 +111,27 @@ A message stays `delivered` in these cases:
 - A path rule denies the session's transcript, so the device does not
   index it.
 
+## Resend a message that was not delivered
+
+A message waits for the session it was sent to, or for the session that
+took an `@user` message. If that session ends before a hook delivers the
+message, no other session gets it. The sender's inbox shows it as not
+delivered.
+
+1. In the sending session, run `flopwire inbox --sent --text`, or call
+   `flopwire_inbox` with `sent: true`.
+2. Find the entries with the state `undelivered`. The reason is in
+   parentheses:
+   - `session_ended`: the recipient session ended first.
+   - `unconfirmed`: hooks took the message 3 times and none confirmed
+     that it printed it.
+3. Run `flopwire peers` to find a live session for the work.
+4. Send the message again, to that session or to `@user`.
+
+A message sent to a session that `peers` no longer lists is not marked
+`undelivered`. Its receipt says `only_if_resumed`: it waits until that
+session resumes, or until it expires after 24 hours.
+
 ## Fix errors
 
 | Error code | Cause | Fix |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/busrender"
 	"github.com/flopwire/flopwire/internal/devicebus"
 )
 
@@ -26,12 +28,15 @@ func init() {
 	// The helper process of TestHookEndToEndKilledAfterTaking: take the
 	// session's messages as a hook does, then die by SIGKILL before
 	// printing anything.
+	// With a third field, a SessionStart source, it is a SessionStart hook
+	// and must have taken the standing instruction.
 	if v := os.Getenv("FLOPWIRE_TEST_TAKE_AND_DIE"); v != "" {
-		sock, session, _ := strings.Cut(v, "|")
+		sock, rest, _ := strings.Cut(v, "|")
+		session, start, _ := strings.Cut(rest, "|")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		resp, err := agent.Call(ctx, sock, agent.Request{Op: "pending", Session: session})
-		if err != nil || len(resp.Messages) == 0 {
+		resp, err := agent.Call(ctx, sock, agent.Request{Op: "pending", Session: session, Start: start, HookStart: time.Now().UnixMilli()})
+		if err != nil || len(resp.Messages) == 0 && start == "" || !resp.Instruct && start != "" {
 			os.Exit(3)
 		}
 		syscall.Kill(os.Getpid(), syscall.SIGKILL)
@@ -68,13 +73,19 @@ func TestHookConfirmsAfterPrinting(t *testing.T) {
 	if len(c) != 1 || c[0].Session != claudeSID || !slices.Equal(c[0].IDs, []string{"m1", "m2"}) {
 		t.Fatalf("confirm requests: %+v", c)
 	}
-	// Nothing pending, or only the standing instruction: no confirm.
+	// Nothing pending: no confirm.
+	fa.resp.Instruct = false
 	runHook(t, fa.sock, claudeIn(evPostToolUse), nil)
+	if c := fa.requests("confirm"); len(c) != 1 {
+		t.Fatalf("confirmed without anything printed: %+v", c)
+	}
+	// Only the standing instruction: confirmed, with no ids.
+	fa.resp.Instruct = true
 	if out, _ := runHook(t, fa.sock, claudeIn(evSessionStart), nil); !strings.Contains(out, "flopwire-instructions") {
 		t.Fatalf("instruction: %q", out)
 	}
-	if c := fa.requests("confirm"); len(c) != 1 {
-		t.Fatalf("confirmed without messages: %+v", c)
+	if c := fa.requests("confirm"); len(c) != 2 || !c[1].Instruction || len(c[1].IDs) != 0 {
+		t.Fatalf("instruction confirm: %+v", c)
 	}
 }
 
@@ -186,6 +197,8 @@ func TestHookEndToEndKilledAfterTaking(t *testing.T) {
 	}
 }
 
+var messageTag = regexp.MustCompile(`<flopwire-message [^>]*>`)
+
 // Every hook prints the message and every confirmation is lost: the
 // message comes again, marked, devicebus.MaxAttempts times in all; then it
 // is undelivered and the sender's inbox says so.
@@ -200,8 +213,10 @@ func TestHookEndToEndConfirmLost(t *testing.T) {
 	var marks []bool
 	deadline := time.Now().Add(time.Duration(devicebus.MaxAttempts+3) * devicebus.LeaseFor)
 	for time.Now().Before(deadline) {
-		if c := contextOf(t, runHooks(t, sock, hookFor(e2eB, evPostToolUse), 1)[0]); c != "" {
-			marks = append(marks, strings.Contains(c, `redelivery="true"`))
+		// The standing instruction (never confirmed either) mentions the
+		// marker; look at the message's own tag.
+		if tag := messageTag.FindString(contextOf(t, runHooks(t, sock, hookFor(e2eB, evPostToolUse), 1)[0])); tag != "" {
+			marks = append(marks, strings.Contains(tag, `redelivery="true"`))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -211,5 +226,46 @@ func TestHookEndToEndConfirmLost(t *testing.T) {
 	out, err := busCLI(t, sock, e2eA, "", "inbox", "--sent")
 	if err != nil || !strings.Contains(out, "inform  undelivered (unconfirmed)\n") {
 		t.Fatalf("sender's inbox:\n%s %v", out, err)
+	}
+}
+
+// takeAndDie runs a helper hook process that takes from the agent (as a
+// SessionStart hook with source start, when set) and dies by SIGKILL
+// before printing.
+func takeAndDie(t *testing.T, sock, session, start string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), "FLOPWIRE_TEST_TAKE_AND_DIE="+sock+"|"+session+"|"+start)
+	err := cmd.Run()
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Fatalf("helper did not take and die by SIGKILL: %v", err)
+	}
+}
+
+// A real SessionStart hook process takes the standing instruction (and the
+// queued message) from a real device agent and is killed before printing
+// (#101). The session's next hook inside the lease prints nothing; the
+// first after it prints the instruction, then the message, each once; no
+// later hook prints the instruction again.
+func TestHookEndToEndKilledSessionStart(t *testing.T) {
+	sock := leaseE2E(t)
+	if _, err := busCLI(t, sock, e2eA, "", "send", "e2e0bbbb", "--", "after a killed start"); err != nil {
+		t.Fatal(err)
+	}
+	takeAndDie(t, sock, e2eB, "startup")
+	if o := runHooks(t, sock, hookFor(e2eB, evPostToolUse), 1)[0]; o != "" {
+		t.Fatalf("printed inside the instruction's lease: %q", o)
+	}
+	time.Sleep(devicebus.LeaseFor + 100*time.Millisecond)
+	c := contextOf(t, runHooks(t, sock, hookFor(e2eB, evUserPromptSubmit), 1)[0])
+	i, j := strings.Index(c, busrender.StandingInstruction), strings.Index(c, "<flopwire-message id=")
+	if strings.Count(c, busrender.StandingInstruction) != 1 || i != 0 || j < i || strings.Count(c, "after a killed start") != 1 {
+		t.Fatalf("after the lease:\n%s", c)
+	}
+	time.Sleep(devicebus.LeaseFor + 100*time.Millisecond)
+	for _, ev := range []string{evPostToolUse, evUserPromptSubmit, evSessionStart} {
+		if o := runHooks(t, sock, hookFor(e2eB, ev), 1)[0]; o != "" {
+			t.Fatalf("%s after the confirmation printed %q", ev, o)
+		}
 	}
 }

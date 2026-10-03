@@ -31,7 +31,7 @@ type store struct {
 // schemaVersion is the inbox's PRAGMA user_version. An inbox with another
 // version is from an earlier build (pre-release: no migration) and is
 // recreated empty: messages from a server come back with the next poll.
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schema = `
 CREATE TABLE IF NOT EXISTS devbus_messages (
@@ -48,9 +48,9 @@ CREATE TABLE IF NOT EXISTS devbus_messages (
   envelope      TEXT NOT NULL,              -- busproto.Envelope JSON
   -- queued, leased (a hook took it and has not confirmed printing it),
   -- delivered (confirmed), undelivered (MaxAttempts leases, none
-  -- confirmed), refused (local)
+  -- confirmed; or its session ended first), refused (local)
   state         TEXT NOT NULL,
-  reason        TEXT NOT NULL DEFAULT '',   -- refused: the limit's code; undelivered: busproto.ReasonUnconfirmed
+  reason        TEXT NOT NULL DEFAULT '',   -- refused: the limit's code; undelivered: busproto.ReasonUnconfirmed or ReasonSessionEnded
   attempts      INTEGER NOT NULL DEFAULT 0, -- leases handed to hooks
   lease_until   INTEGER,                    -- leased: unix ms when the lease ends
   created_at    INTEGER NOT NULL,           -- unix ms
@@ -74,6 +74,31 @@ CREATE INDEX IF NOT EXISTS devbus_lease ON devbus_messages (lease_until) WHERE s
 CREATE INDEX IF NOT EXISTS devbus_from ON devbus_messages (from_session, created_at);
 CREATE INDEX IF NOT EXISTS devbus_thread ON devbus_messages (thread_id, created_at);
 CREATE INDEX IF NOT EXISTS devbus_expires ON devbus_messages (expires_at);
+-- The device's sessions as the bus tracks them (Bus.Observe, End,
+-- Revive): whether a harness registry holds each open, when it was last
+-- live, and whether and when it ended (#67, #82).
+CREATE TABLE IF NOT EXISTS devbus_sessions (
+  agent         TEXT NOT NULL,
+  session_id    TEXT NOT NULL,
+  holder        TEXT NOT NULL DEFAULT '',   -- the process a registry names as holding it open ('' none)
+  held_at       INTEGER,                    -- last seen held (unix ms)
+  missing_since INTEGER,                    -- held before, and its registry entry missing since
+  live_at       INTEGER,                    -- last seen live in presence
+  ended_at      INTEGER,                    -- ended: unix ms; NULL while not ended
+  ended_by      TEXT NOT NULL DEFAULT '',   -- hook; registry once its registry showed it gone (any process holding it later is a resume)
+  ended_holder  TEXT NOT NULL DEFAULT '',   -- the holder when it ended, while it still holds it
+  PRIMARY KEY (agent, session_id)
+);
+CREATE INDEX IF NOT EXISTS devbus_sessions_id ON devbus_sessions (session_id);
+-- The standing instruction of each session, delivered like a message
+-- (#101): leased to a hook, owed until one confirms printing it.
+CREATE TABLE IF NOT EXISTS devbus_instruct (
+  session_id    TEXT PRIMARY KEY,
+  confirmed_at  INTEGER,                    -- a hook confirmed printing it
+  lease_until   INTEGER,                    -- leased to a hook until then
+  attempts      INTEGER NOT NULL DEFAULT 0, -- leases since it was last owed
+  updated_at    INTEGER NOT NULL
+);
 -- The held-message notice (Bus.HeldNotice): when the user was last told
 -- about each sender's held messages.
 CREATE TABLE IF NOT EXISTS devbus_notices (
@@ -96,7 +121,7 @@ func openStore(path string) (*store, error) {
 		return nil, fmt.Errorf("devicebus: schema: %w", err)
 	}
 	if version != schemaVersion {
-		if _, err := db.Exec(`DROP TABLE IF EXISTS devbus_messages; DROP TABLE IF EXISTS devbus_notices;`); err != nil {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS devbus_messages; DROP TABLE IF EXISTS devbus_notices; DROP TABLE IF EXISTS devbus_sessions; DROP TABLE IF EXISTS devbus_instruct;`); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("devicebus: schema: %w", err)
 		}
@@ -149,11 +174,25 @@ func decodeEnvelopes(rows *sql.Rows) ([]busproto.Envelope, error) {
 // message newer than a leased one must not reach the session before it,
 // should that lease expire and the leased message be offered again.
 // Expired leases are settled first (expireLeases).
-func (s *store) take(ctx context.Context, session, agent string, now time.Time, lim Limit, lease time.Duration, maxAttempts int) ([]busproto.Envelope, error) {
+//
+// With ins, the standing instruction is leased too when the session is
+// owed it (takeInstruction), and its size comes off lim.Bytes.
+func (s *store) take(ctx context.Context, session, agent string, now time.Time, lim Limit, lease time.Duration, maxAttempts int, ins *Instruction) (bool, []busproto.Envelope, error) {
 	var out []busproto.Envelope
+	instruct := false
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
 		if _, err := expireLeases(ctx, tx, now, lease, maxAttempts); err != nil {
 			return err
+		}
+		if ins != nil {
+			var blocked bool
+			var err error
+			if instruct, blocked, err = takeInstruction(ctx, tx, session, ins, now, lease, maxAttempts); err != nil || blocked {
+				return err
+			}
+			if instruct && lim.Bytes > 0 {
+				lim.Bytes = max(1, lim.Bytes-ins.Bytes)
+			}
 		}
 		var leased int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE to_session=? AND (?='' OR to_agent=?) AND state='leased'`,
@@ -188,9 +227,9 @@ func (s *store) take(ctx context.Context, session, agent string, now time.Time, 
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return false, nil, err
 	}
-	return out, nil
+	return instruct, out, nil
 }
 
 // decodeLeasable decodes (envelope, attempts) rows; each envelope's
@@ -518,6 +557,17 @@ func (s *store) purge(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM devbus_messages WHERE (origin='server' AND expires_at<? AND ack NOT IN ('owed','report') AND NOT (ack='done' AND read_ack='owed'))
 		OR (origin='local' AND expires_at<?)`,
 		ms(now.Add(-serverKeep)), ms(now.Add(-localKeep)))
+	if err != nil {
+		return err
+	}
+	// A session row matters while a message to it can arrive and while its
+	// transcript could still read as live; an instruction row while the
+	// session may run (a resumed session is offered it again anyway).
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM devbus_sessions WHERE holder='' AND max(COALESCE(held_at,0),COALESCE(live_at,0),COALESCE(ended_at,0))<?`,
+		ms(now.Add(-localKeep))); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM devbus_instruct WHERE updated_at<?`, ms(now.Add(-4*localKeep)))
 	return err
 }
 
