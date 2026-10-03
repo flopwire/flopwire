@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/flopwire/flopwire/internal/devicebus"
+	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -581,5 +582,44 @@ func TestBusRepoWithheld(t *testing.T) {
 	f.once()
 	if got, err := f.a.BusRepoWithheld(ctx, "/tmp/oracle-alpha"); got || err != nil {
 		t.Fatalf("no rules: %v %v", got, err)
+	}
+}
+
+// A repo name matches a session as --repo expansion does (local.named):
+// by its checkout's name, its main checkout's name or its origin
+// (name or owner/name, any case). An allowed session in a linked
+// worktree of a repo by that name keeps the name open, and a withheld
+// repo's origin name is withheld (issue #71).
+func TestBusRepoWithheldByMainCheckoutAndRemote(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local /tmp/oracle-alpha"}
+	f.a = New(f.store, f.cfg)
+	const wt = "0b7e2c1a-0000-4000-8000-0000000000e2"
+	f.writeSession(wt, "/tmp/work/oracle-alpha-wt", claudeRecord(wt, "/tmp/work/oracle-alpha-wt", "", "hello", 1))
+	f.once()
+	place := func(session, main, remote string) {
+		t.Helper()
+		pl := localindex.Placement{Agent: transcript.AgentClaude, SessionID: session, How: localindex.PlacedByWorktree}
+		pl.Main, pl.Remote = main, remote
+		if err := f.store.SavePlacement(ctx, pl); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	place(alphaID, "/tmp/oracle-alpha", "github.com/acme/secret-svc")
+	if got, err := f.a.BusRepoWithheld(ctx, "oracle-alpha"); !got || err != nil {
+		t.Fatalf("only a withheld session on oracle-alpha: %v %v", got, err)
+	}
+	for _, name := range []string{"secret-svc", "acme/secret-svc", "Acme/Secret-Svc"} {
+		if got, err := f.a.BusRepoWithheld(ctx, name); !got || err != nil {
+			t.Errorf("%s, the withheld repo's origin: withheld %v %v", name, got, err)
+		}
+	}
+	// An allowed linked worktree of another checkout named oracle-alpha.
+	place(wt, "/tmp/work/oracle-alpha", "")
+	if got, err := f.a.BusRepoWithheld(ctx, "oracle-alpha"); got || err != nil {
+		t.Fatalf("an allowed worktree's main checkout is oracle-alpha: %v %v", got, err)
 	}
 }

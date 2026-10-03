@@ -50,6 +50,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/fsprobe"
+	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -564,7 +565,10 @@ func notSessionIDRune(r rune) bool {
 // absolute path is decided as a session placed there would be. A name is
 // withheld when the device has sessions on a repo by that name and every
 // one is withheld: the name tells the server nothing the device's other
-// sessions do not. A glob, or a name no session has, names nothing.
+// sessions do not. A session is on a repo by that name as --repo
+// expansion matches one (local.ExpandRepo): its checkout's or main
+// checkout's directory name, or its origin by name or owner/name, in any
+// case. A glob, or a name no session has, names nothing.
 func (a *Agent) BusRepoWithheld(ctx context.Context, repo string) (bool, error) {
 	pv := a.policy()
 	repo = strings.TrimRight(strings.TrimSpace(repo), "/")
@@ -593,8 +597,20 @@ func (a *Agent) BusRepoWithheld(ctx context.Context, repo string) (bool, error) 
 		}
 	}
 	rows.Close()
-	if err := rows.Err(); err != nil || len(keys) == 0 {
+	if err := rows.Err(); err != nil {
 		return false, err
+	}
+	places, err := a.store.Placements(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range places {
+		if repoNamed(p.Placement, repo) {
+			keys = append(keys, placeKey{p.Agent, p.SessionID})
+		}
+	}
+	if len(keys) == 0 {
+		return false, nil
 	}
 	paths := a.transcriptsBySession()
 	for _, k := range keys {
@@ -603,6 +619,24 @@ func (a *Agent) BusRepoWithheld(ctx context.Context, repo string) (bool, error) 
 		}
 	}
 	return true, nil
+}
+
+// repoNamed reports whether a placement is on a repo name names, as
+// local.ExpandRepo matches a name: without a slash, the directory name of
+// its checkout or main checkout or the name of its origin; with one, a
+// path suffix of its main checkout or its origin. Any case.
+func repoNamed(p pathpolicy.Placement, name string) bool {
+	lower := strings.ToLower(name)
+	if !strings.Contains(name, "/") {
+		for _, n := range []string{localindex.RepoName(p.Worktree, ""), localindex.RepoName(p.Main, ""), localindex.RepoName("", p.Remote)} {
+			if n != "" && strings.EqualFold(n, name) {
+				return true
+			}
+		}
+		return false
+	}
+	return p.Remote != "" && (strings.EqualFold(p.Remote, name) || strings.HasSuffix(strings.ToLower(p.Remote), "/"+lower)) ||
+		p.Main != "" && strings.HasSuffix(strings.ToLower(p.Main), "/"+lower)
 }
 
 // BusRoot is the top-level session a subagent's session belongs to, or
