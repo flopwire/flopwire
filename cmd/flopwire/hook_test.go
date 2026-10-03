@@ -463,10 +463,14 @@ func TestHookHarness(t *testing.T) {
 // Nothing pending: nothing at all on stdout.
 func TestHookNothingPending(t *testing.T) {
 	fa := newHookAgent(t)
-	for _, in := range []string{claudeIn(evPostToolUse), codexIn(evUserPromptSubmit), devinIn(evPostToolUse)} {
+	for _, in := range []string{claudeIn(evPostToolUse), codexIn(evUserPromptSubmit)} {
 		if out, errOut := runHook(t, fa.sock, in, nil); out != "" || errOut != "" {
 			t.Fatalf("out %q err %q", out, errOut)
 		}
+	}
+	// The Devin hook reads a synthetic store, never the device's own.
+	if out, errOut := runHook(t, fa.sock, devinIn(evPostToolUse), devinHookEnv(t)); out != "" || errOut != "" {
+		t.Fatalf("devin: out %q err %q", out, errOut)
 	}
 	fa.resp.Held = []busproto.HeldSender{{User: "sam@example.com", Count: 2}}
 	if out, _ := runHook(t, fa.sock, claudeIn(evUserPromptSubmit), nil); out != "" {
