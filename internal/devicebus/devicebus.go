@@ -284,10 +284,20 @@ type Limit struct {
 // the session sees its messages in order. agent narrows the session when
 // two harnesses share an id ("" matches any).
 func (b *Bus) Take(ctx context.Context, session, agent string, lim Limit) ([]busproto.Envelope, error) {
+	_, out, err := b.TakeWith(ctx, session, agent, lim, nil)
+	return out, err
+}
+
+// TakeWith is Take for a hook that prints the standing instruction: with
+// ins it also reports whether the caller is to print the instruction
+// (leased to it now; ConfirmInstruction once printed), and while another
+// hook holds the instruction's lease it returns nothing (see
+// instruct.go).
+func (b *Bus) TakeWith(ctx context.Context, session, agent string, lim Limit, ins *Instruction) (bool, []busproto.Envelope, error) {
 	if session == "" {
-		return nil, errors.New("pending: a session id is required")
+		return false, nil, errors.New("pending: a session id is required")
 	}
-	return b.st.take(ctx, session, agent, b.cfg.Now(), lim, b.cfg.Lease, b.cfg.MaxAttempts)
+	return b.st.take(ctx, session, agent, b.cfg.Now(), lim, b.cfg.Lease, b.cfg.MaxAttempts, ins)
 }
 
 // Confirm records that a hook of the session printed these messages

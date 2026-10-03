@@ -31,6 +31,7 @@ type fakeServer struct {
 	claimFn  func(busproto.ClaimRequest) (busproto.ClaimResponse, error)
 	acks     [][]string
 	gone     []string // undelivered reports
+	ended    []string // session_ended reports
 	ackFn    func([]string) (busproto.AckResponse, error)
 	sends    []busproto.SendRequest
 	pollErr  error // answered at once while set
@@ -76,12 +77,14 @@ func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.A
 		f.acks = append(f.acks, slices.Clone(req.IDs))
 	}
 	f.gone = append(f.gone, req.Undelivered...)
+	f.ended = append(f.ended, req.SessionEnded...)
 	fn := f.ackFn
 	f.mu.Unlock()
+	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded)
 	if fn == nil {
-		return busproto.AckResponse{Acked: append(slices.Clone(req.IDs), req.Undelivered...), Rejected: []string{}}, nil
+		return busproto.AckResponse{Acked: all, Rejected: []string{}}, nil
 	}
-	return fn(append(slices.Clone(req.IDs), req.Undelivered...))
+	return fn(all)
 }
 
 func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
@@ -119,6 +122,12 @@ func (f *fakeServer) ackedIDs() []string {
 		out = append(out, a...)
 	}
 	return out
+}
+
+func (f *fakeServer) endedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.ended)
 }
 
 func (f *fakeServer) undeliveredIDs() []string {

@@ -361,3 +361,54 @@ func TestServerDeliveryNeedsConfirmation(t *testing.T) {
 		t.Fatalf("desk status: %+v", st)
 	}
 }
+
+// Through the real server: a session that ends before a hook delivers its
+// message (its registry entry names a dead process) drops out of the
+// sender's peers, and the sender's inbox shows the message undelivered
+// with reason session_ended (#67, #82).
+func TestServerSessionEnded(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	gary := s.member("gary@example.test")
+	lap := s.agent(s.device(gary), live("g-lap-1111", "claude", "/src/api", true))
+	desk := s.agent(s.device(gary), live("g-desk-2222", "codex", "/home/g/api", false))
+	reported(t, lap, "g-desk-2222")
+	ref := devicebus.Ref{Agent: "codex", Session: "g-desk-2222"}
+	read := map[string]bool{"codex": true}
+	if _, err := desk.Observe(ctx, devicebus.Registry{Held: map[devicebus.Ref]devicebus.Holder{ref: {ID: "lock"}}, Read: read}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := lap.Send(ctx, busproto.SendRequest{FromSession: "g-lap-1111", To: "g-desk", Body: "for a session that ends first"})
+	if err != nil || !out.To.Live {
+		t.Fatalf("send: %+v %v", out, err)
+	}
+	waitFor(t, "the message on the desktop", func() bool { return desk.Status(ctx).Pending == 1 })
+
+	// The session ends: the agent's presence leaves it out, and its
+	// registry says the writer is gone.
+	desk.mu.Lock()
+	desk.sessions = nil
+	desk.mu.Unlock()
+	if _, err := desk.Observe(ctx, devicebus.Registry{Gone: []devicebus.Ref{ref}, Read: read}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "session_ended in the sender's inbox", func() bool {
+		in, err := lap.Inbox(ctx, busproto.InboxQuery{Session: "g-lap-1111", SentOnly: true})
+		if err != nil {
+			return false
+		}
+		return slices.ContainsFunc(in.Messages, func(m busproto.InboxItem) bool {
+			return m.ID == out.ID && m.State == busproto.StateUndelivered && m.Reason == busproto.ReasonSessionEnded
+		})
+	})
+	waitFor(t, "the ended session gone from peers", func() bool {
+		p, err := lap.Peers(ctx, busproto.PeersQuery{})
+		return err == nil && !slices.ContainsFunc(p.Peers, func(p busproto.Peer) bool { return p.Session == "g-desk-2222" })
+	})
+	if got, _ := desk.Take(ctx, "g-desk-2222", "", devicebus.Limit{}); len(got) != 0 {
+		t.Fatalf("taken after the end: %+v", got)
+	}
+	if st := desk.Status(ctx); st.Pending != 0 || st.Unacked != 0 {
+		t.Fatalf("desk status: %+v", st)
+	}
+}
