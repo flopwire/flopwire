@@ -18,6 +18,7 @@ import (
 // a symlink named "claude" it is fakeClaude, named "codex" fakeCodex,
 // named "devin" fakeDevin.
 func TestMain(m *testing.M) {
+	quickRaceExit()
 	switch filepath.Base(os.Args[0]) {
 	case "claude":
 		os.Exit(fakeClaude(os.Args[1:]))
@@ -27,6 +28,27 @@ func TestMain(m *testing.M) {
 		os.Exit(fakeDevin(os.Args[1:]))
 	}
 	os.Exit(m.Run())
+}
+
+// callerGORACE is GORACE as the test binary got it, before quickRaceExit.
+var callerGORACE string
+
+// quickRaceExit sets atexit_sleep_ms=0 in GORACE so the test binary's
+// child processes (the fake harnesses, helper processes) inherit it. A
+// -race binary otherwise sleeps 1 s on exit, and the setup tests run the
+// fakes hundreds of times: about 8 of the package's 10 minutes under -race.
+// The fakes read GORACE at their own start, so setting it here covers them
+// and not this process.
+func quickRaceExit() {
+	if !raceEnabled {
+		return
+	}
+	g := os.Getenv("GORACE")
+	callerGORACE = g
+	if strings.Contains(g, "atexit_sleep_ms") {
+		return
+	}
+	os.Setenv("GORACE", strings.TrimSpace(g+" atexit_sleep_ms=0"))
 }
 
 // fakeClaudeState is the fake harness's plugin state, kept in the file
@@ -300,6 +322,21 @@ func mutating(calls []string) []string {
 		m = append(m, c)
 	}
 	return m
+}
+
+// TestFakeHarnessesSkipRaceExitSleep: the fake harnesses this package's
+// tests run as child processes must not sleep 1 s on exit under -race,
+// or the package outgrows go test's 10-minute timeout.
+func TestFakeHarnessesSkipRaceExitSleep(t *testing.T) {
+	if !raceEnabled {
+		t.Skip("only -race binaries sleep on exit")
+	}
+	if strings.Contains(callerGORACE, "atexit_sleep_ms") {
+		t.Skipf("caller chose GORACE=%q", callerGORACE)
+	}
+	if g := os.Getenv("GORACE"); !strings.Contains(g, "atexit_sleep_ms=0") {
+		t.Fatalf("GORACE = %q; child test binaries will sleep 1 s on exit", g)
+	}
 }
 
 func TestSetupHarnessMissing(t *testing.T) {
