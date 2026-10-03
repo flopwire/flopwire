@@ -385,6 +385,49 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 	return out, nil
 }
 
+// BusRoot is the top-level session a subagent's session belongs to, or
+// session itself (issue #107). A subagent is not a session a message can
+// be addressed to: peers lists top-level sessions only, and its hooks
+// carry the parent's id. So a subagent sends, and reads its inbox, as its
+// session, and a reply reaches the session. Claude Code subagents already
+// call as their session (the caller rule finds the parent's process);
+// a Codex subagent's shell and MCP calls name its own thread
+// (CODEX_THREAD_ID, _meta.threadId), which the index links to its parent
+// (session_meta.source.subagent). A thread the index does not hold yet is
+// indexed first, by session id.
+func (a *Agent) BusRoot(ctx context.Context, agent, session string) string {
+	if session == "" {
+		return ""
+	}
+	root, found := a.busParent(ctx, agent, session)
+	if !found {
+		if _, err := a.FlushPath(ctx, "", session); err == nil {
+			root, _ = a.busParent(ctx, agent, session)
+		}
+	}
+	return root
+}
+
+// busParent climbs the session's parent links (at most eight) to a
+// top-level session. found reports whether the index holds the session.
+func (a *Agent) busParent(ctx context.Context, agent, session string) (root string, found bool) {
+	root = session
+	for i := range 8 {
+		var parent string
+		var depth int
+		err := a.store.DB().QueryRowContext(ctx, `SELECT depth, COALESCE(parent_session_id, '') FROM conversations
+			WHERE session_id = ? AND (? = '' OR agent = ?) AND deleted_in_generation IS NULL ORDER BY depth LIMIT 1`, root, agent, agent).Scan(&depth, &parent)
+		if err != nil {
+			return root, i > 0
+		}
+		if depth == 0 || parent == "" || parent == root {
+			return root, true
+		}
+		root = parent
+	}
+	return root, true
+}
+
 // transcriptsBySession maps each session to its main transcript.
 func (a *Agent) transcriptsBySession() map[placeKey]*target {
 	a.mu.Lock()

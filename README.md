@@ -269,9 +269,9 @@ messages yet (#62, #63).
 Delivery has two steps: the hook prints the message, then confirms it.
 A message that a hook took but did not confirm comes again, marked
 `redelivery="true"`. After 3 unconfirmed tries, or when the recipient
-session ends first, the sender's `inbox` shows it as `undelivered`. A
-known bug: a Claude Code subagent's hook can take its parent session's
-messages (#107). See [docs/agent.md](docs/agent.md#messaging).
+session ends first, the sender's `inbox` shows it as `undelivered`.
+Subagents get no messages; a subagent sends as its session. See
+[docs/agent.md](docs/agent.md#messaging).
 
 ### Accepting a sender
 

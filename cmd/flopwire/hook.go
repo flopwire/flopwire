@@ -109,6 +109,12 @@ type hookInput struct {
 	TranscriptPath string `json:"transcript_path"`
 	Source         string `json:"source"`  // SessionStart: startup, resume, clear, compact
 	TurnID         string `json:"turn_id"` // Codex
+	ToolUseID      string `json:"tool_use_id"`
+	// AgentID is set by Claude Code and Codex for a hook inside a subagent
+	// (hook_subagent.go); SubagentStart and SubagentStop also carry the
+	// subagent's transcript.
+	AgentID             string `json:"agent_id"`
+	AgentTranscriptPath string `json:"agent_transcript_path"`
 }
 
 // hookOutput is the Claude-format hook JSON. SystemMessage is shown to the
@@ -168,6 +174,11 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	harness := hookHarness(in, getenv)
+	// A hook inside a subagent carries its parent session's id (#107). A
+	// subagent is not a session a message can be addressed to: it takes
+	// nothing, and its flush indexes the subagent's transcript without an
+	// event, so it cannot mark the parent busy, idle or ended.
+	sub := hookSubagent(ctx, in, harness, getenv)
 	// A Devin hook whose session another devin process holds comes from a
 	// `devin -r` that Devin refuses after its SessionStart hooks: nothing
 	// it prints reaches a model, and its event says nothing about the
@@ -188,6 +199,12 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	// -r ID` while another process runs ID) does not end it.
 	if in.Event == evSessionEnd && harness == transcript.AgentClaude && claudeHeldElsewhere(in.SessionID, getenv) {
 		flushIn.Event = ""
+	}
+	if sub.inside {
+		flushIn.Event = ""
+		if sub.transcript != "" {
+			flushIn.TranscriptPath = sub.transcript
+		}
 	}
 	flushed := make(chan struct{})
 	go func() {
@@ -210,6 +227,12 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if in.SessionID == "" {
 		warn("the input names no session_id; nothing delivered")
 		return nil
+	}
+	if sub.inside {
+		if sub.fault != "" {
+			warn("%s", sub.fault)
+		}
+		return nil // messages go to the session itself, at its own next hook
 	}
 	if elsewhere {
 		warn("another devin process holds this session; nothing delivered")
@@ -394,15 +417,20 @@ func hookFlush(ctx context.Context, socket string, in hookInput, harness transcr
 // (CHISEL_SESSION_DB), names a running devin that is not an ancestor of
 // this hook.
 func devinHeldElsewhere(session string, getenv func(string) string) bool {
-	db := getenv("CHISEL_SESSION_DB")
-	if db == "" {
-		db = getenv("FLOPWIRE_DEVIN_DB")
-	}
 	d := local.NewDetector()
-	if db == "" {
-		db = filepath.Join(d.Home, ".local", "share", "devin", "cli", "sessions.db")
+	return d.DevinHeldElsewhere(devinStore(getenv, d.Home), session)
+}
+
+// devinStore is the sessions.db Devin names for hooks (CHISEL_SESSION_DB),
+// else FLOPWIRE_DEVIN_DB, else Devin's default under home.
+func devinStore(getenv func(string) string, home string) string {
+	if db := getenv("CHISEL_SESSION_DB"); db != "" {
+		return db
 	}
-	return d.DevinHeldElsewhere(db, session)
+	if db := getenv("FLOPWIRE_DEVIN_DB"); db != "" {
+		return db
+	}
+	return filepath.Join(home, ".local", "share", "devin", "cli", "sessions.db")
 }
 
 // claudeHeldElsewhere reports whether another running Claude Code process

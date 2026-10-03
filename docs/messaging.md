@@ -108,8 +108,6 @@ A message stays `delivered` in these cases:
 
 - The message text is only in a prompt, a reply or a tool output. An
   agent can quote or write any text there.
-- A hook showed the message inside a Claude Code subagent. The subagent's
-  transcript is a separate session.
 - A path rule denies the session's transcript, so the device does not
   index it.
 

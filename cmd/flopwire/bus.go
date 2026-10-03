@@ -82,6 +82,25 @@ type busClient struct {
 	retry time.Duration
 }
 
+// self is the calling session the bus commands act as: the caller, or,
+// when the caller is a subagent's thread (a Codex subagent names its own),
+// the session it belongs to (agent.BusRoot, issue #107). A subagent is not
+// addressable, so it sends and reads its inbox as its session, and the
+// reply reaches the session. When the agent cannot answer, the caller
+// stands: the request itself then reports the agent's state.
+func (c *busClient) self(ctx context.Context) (local.Caller, bool) {
+	s, ok := c.caller(ctx)
+	if !ok || s.SessionID == "" {
+		return s, ok
+	}
+	rctx, cancel := context.WithTimeout(ctx, busTimeout)
+	defer cancel()
+	if resp, err := agent.Call(rctx, c.socket, agent.Request{Op: "root", Session: s.SessionID, Agent: string(s.Agent)}); err == nil && resp.Root != "" {
+		s.SessionID = resp.Root
+	}
+	return s, true
+}
+
 // busTimeout bounds one request: the agent gives the server 20s.
 const busTimeout = 25 * time.Second
 
@@ -325,7 +344,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 			}
 		}
 	}
-	self, known := c.caller(ctx)
+	self, known := c.self(ctx)
 	q.Session = self.SessionID
 	resp, err := c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	var be *busproto.Error
@@ -509,7 +528,7 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 			st.cmd("flopwire send 0b7e2c1a --intent request -- TEXT", `flopwire_send to="0b7e2c1a" intent="request" message="…"`))
 		return e
 	}
-	self, ok := c.caller(ctx)
+	self, ok := c.self(ctx)
 	if !ok {
 		return errNoCaller("send", st)
 	}
@@ -756,7 +775,7 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 	if a.Limit < 0 || a.Limit > busproto.InboxMaxLimit {
 		return badUsage(fmt.Sprintf("limit: 1 to %d (default %d)", busproto.InboxMaxLimit, inboxDefaultLimit), st.cmd("flopwire inbox --limit 50", "flopwire_inbox limit=50"))
 	}
-	self, ok := c.caller(ctx)
+	self, ok := c.self(ctx)
 	if !ok {
 		return errNoCaller("inbox", st)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,18 @@ func TestMCPWithoutIndex(t *testing.T) {
 	if len(lines) != 4 {
 		t.Fatalf("mcp answered %d lines, want 4:\n%s", len(lines), out)
 	}
+	// Tool calls are answered concurrently: order the answers by id.
+	byID := make([]string, 4)
+	for _, l := range lines {
+		var r struct {
+			ID int `json:"id"`
+		}
+		if json.Unmarshal([]byte(l), &r) != nil || r.ID < 1 || r.ID > 4 || byID[r.ID-1] != "" {
+			t.Fatalf("answer without a request id 1-4: %s", l)
+		}
+		byID[r.ID-1] = l
+	}
+	lines = byID
 	if !strings.Contains(lines[0], `"serverInfo"`) {
 		t.Errorf("initialize: %s", lines[0])
 	}
