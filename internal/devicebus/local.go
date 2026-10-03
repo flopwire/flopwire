@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/flopwire/flopwire/internal/bus"
@@ -24,11 +25,20 @@ import (
 // server when one is configured, else into the local inbox. A refusal is a
 // *busproto.Error with the server's codes either way.
 func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	cleanSend(&req)
 	if b.Local() {
 		return b.sendLocal(ctx, req)
 	}
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent); err != nil {
 		return busproto.SendResponse{}, err
+	}
+	if err := b.namesNoWithheld(ctx, req); err != nil {
+		return busproto.SendResponse{}, err
+	}
+	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
+		if err := b.reposNotWithheld(ctx, req.Repo); err != nil {
+			return busproto.SendResponse{}, err
+		}
 	}
 	// The body and refs pass the device redactor before they leave the
 	// machine (plan §4 "Redaction"), as transcript text does. Masks keep
@@ -46,6 +56,110 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 	}
 	return out, err
+}
+
+// cleanSend drops control characters from a send's body and refs
+// (CleanText) before any check sees them.
+func cleanSend(req *busproto.SendRequest) {
+	req.Body = CleanText(req.Body)
+	if len(req.Refs) > 0 {
+		refs := make([]string, len(req.Refs))
+		for i, r := range req.Refs {
+			refs[i] = CleanText(r)
+		}
+		req.Refs = refs
+	}
+}
+
+// CleanText is s without control characters other than newline and tab:
+// a CRLF or a lone CR becomes a newline, and every other C0 control, DEL
+// and C1 control is dropped. JSON writes a C0 control as a six-byte \u
+// escape, so a body of them grew six-fold in an inbox answer and one
+// message could pass the MCP output budget (format.MaxOutput); what is
+// left grows at most two-fold (a quote, a backslash, a newline, a tab,
+// U+2028 and U+2029). A terminal would act on what was dropped, and no
+// message needs it.
+func CleanText(s string) string {
+	clean := true
+	for _, r := range s {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\r':
+			return '\n'
+		case r != '\n' && r != '\t' && unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// namesNoWithheld refuses a send whose recipient prefix or refs name a
+// session the path rules keep off the server: the request would tell the
+// server its id (issue #71).
+func (b *Bus) namesNoWithheld(ctx context.Context, req busproto.SendRequest) error {
+	b.mu.Lock()
+	withheld := b.cfg.Withheld
+	b.mu.Unlock()
+	if withheld == nil {
+		return nil
+	}
+	check := func(what, ref string) error {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return nil
+		}
+		id, err := withheld(ctx, ref)
+		if err != nil || id == "" {
+			return err
+		}
+		return fail(http.StatusForbidden, busproto.CodeWithheldSession, "%s %q names session %s, which a path rule keeps off the server; nothing about it may reach the team server", what, ref, id)
+	}
+	if to := strings.TrimSpace(req.To); !strings.HasPrefix(to, "@") {
+		if err := check("to", to); err != nil {
+			return err
+		}
+	}
+	for _, r := range req.Refs {
+		if err := check("ref", r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reposNotWithheld refuses a request naming a repo the path rules keep
+// off the server (Config.RepoWithheld): the request would tell the server
+// its path or name (issue #71). "" and "*" name none.
+func (b *Bus) reposNotWithheld(ctx context.Context, repos ...string) error {
+	b.mu.Lock()
+	withheld := b.cfg.RepoWithheld
+	b.mu.Unlock()
+	if withheld == nil {
+		return nil
+	}
+	for _, r := range repos {
+		r = strings.TrimSpace(r)
+		if r == "" || r == "*" {
+			continue
+		}
+		w, err := withheld(ctx, r)
+		if err != nil {
+			return err
+		}
+		if w {
+			return fail(http.StatusForbidden, busproto.CodeWithheldRepo, "repo %q is kept off the server by a path rule; nothing about it may reach the team server", r)
+		}
+	}
+	return nil
 }
 
 // redactSend masks secrets in a send's body and refs in place and counts
@@ -77,6 +191,9 @@ func (b *Bus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersR
 		return b.peersLocal(ctx, q)
 	}
 	if err := b.notWithheld(ctx, q.Session, ""); err != nil {
+		return busproto.PeersResponse{}, err
+	}
+	if err := b.reposNotWithheld(ctx, append([]string{q.Repo}, q.Roots...)...); err != nil {
 		return busproto.PeersResponse{}, err
 	}
 	srv, _ := b.cfg.Connect()

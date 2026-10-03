@@ -39,18 +39,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/fsprobe"
+	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/claude"
+	"github.com/flopwire/flopwire/internal/transcript/codex"
 )
 
 // harnessLive is what the harness registries say: sessions held open, with
@@ -350,6 +357,9 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			rollouts[t.path] = true
 		}
 		s.Withheld = !a.reportable(ctx, key, paths[key])
+		if !s.Withheld {
+			s.Title = a.busTitle(ctx, s)
+		}
 		out = append(out, s)
 	}
 	for i, s := range out {
@@ -368,6 +378,83 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 	return out, nil
 }
 
+// titleCut is where the parsers cut a title taken from a message's first
+// line (claude.TitleRunes, codex.TitleRunes).
+const titleCut = min(claude.TitleRunes, codex.TitleRunes)
+
+// titleLeading is how many of a session's first messages busTitle looks
+// through for the one its title was cut from: Codex skips injected
+// context before it.
+const titleLeading = 20
+
+type busTitleKey struct{ agent, session, title string }
+
+// busTitle is a session's title as presence reports it to the server.
+// The parsers cut a title from the first prompt's first line at titleCut
+// runes, and a cut can split a secret so the redactor no longer matches
+// what is left of it (issue #71). So a title that may be a cut is rebuilt
+// from the line it was cut from: the whole line redacted, then cut. When
+// no such line is found (the index does not hold it yet, a local
+// redaction hid it, or the title came from elsewhere), the title is
+// redacted and its last word, which may be the start of a secret, is
+// dropped. A shorter title is no cut and is returned as it is; the bus
+// redacts every title it reports (devicebus serverPresence).
+func (a *Agent) busTitle(ctx context.Context, s devicebus.Session) string {
+	if utf8.RuneCountInString(s.Title) < titleCut {
+		return s.Title
+	}
+	key := busTitleKey{s.Agent, s.SessionID, s.Title}
+	a.mu.Lock()
+	t, ok := a.busTitles[key]
+	a.mu.Unlock()
+	if ok {
+		return t
+	}
+	t = redactedCut(s.Title)
+	rows, err := a.store.LeadingMessages(ctx, s.SessionID, s.Agent, titleLeading)
+	if err != nil {
+		return t
+	}
+	for _, r := range rows {
+		line := strings.TrimSpace(r.Text)
+		if i := strings.IndexByte(line, '\n'); i >= 0 {
+			line = line[:i]
+		}
+		if cutTitle(line) == strings.TrimSpace(s.Title) {
+			masked, _ := redact.Redact([]byte(line))
+			t = cutTitle(string(masked))
+			break
+		}
+	}
+	a.mu.Lock()
+	if a.busTitles == nil || len(a.busTitles) >= 1024 {
+		a.busTitles = map[busTitleKey]string{}
+	}
+	a.busTitles[key] = t
+	a.mu.Unlock()
+	return t
+}
+
+// cutTitle cuts a first line as the parsers do.
+func cutTitle(line string) string {
+	if r := []rune(line); len(r) > titleCut {
+		line = string(r[:titleCut])
+	}
+	return strings.TrimSpace(line)
+}
+
+// redactedCut is a cut title whose line is not at hand: redacted, less its
+// last word.
+func redactedCut(title string) string {
+	masked, _ := redact.Redact([]byte(title))
+	t := strings.TrimRightFunc(string(masked), unicode.IsSpace)
+	i := strings.LastIndexFunc(t, unicode.IsSpace)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimRightFunc(t[:i], unicode.IsSpace) + " …"
+}
+
 // BusKnown lists the device's top-level sessions whose id starts with
 // prefix, live or not: what a send without a server may address, and what
 // the bus checks the path rules against for a session that is not live.
@@ -383,6 +470,173 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 		out[i].Withheld = !a.reportable(ctx, key, paths[key])
 	}
 	return out, nil
+}
+
+// BusWithheld names a session the path rules keep off the server that ref
+// would tell the server about, "" when there is none (issue #71). ref is
+// a send's archive address (SESSION/ORDINAL[:LINE], SESSION, a message id,
+// /path/file.jsonl:LINE) or its recipient, a session id prefix. A prefix
+// is checked against every transcript the agent tracks (subagents
+// included; a denied one is never indexed, so the index cannot tell) and
+// every Devin session, and any match that may not reach the server counts:
+// the prefix alone could tell the server which. A path is the transcript
+// it names. A ref is free text the server stores as it is, so whatever
+// its form, a whole session id anywhere in it names that session, and so
+// does a prefix at its start (cut at the first character no session id
+// holds, as in SESSION:LINE). A message id or anything else names none.
+func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
+	pv := a.policy()
+	if pv.pol.Empty() {
+		return "", nil
+	}
+	ref = strings.TrimSpace(ref)
+	var prefixes []string
+	if addr, err := format.ParseAddress(ref); err == nil {
+		switch addr.Kind {
+		case format.AddrPath:
+			p := addr.Path
+			if strings.HasPrefix(p, "~/") {
+				if home, err := os.UserHomeDir(); err == nil {
+					p = filepath.Join(home, p[2:])
+				}
+			}
+			a.mu.Lock()
+			t := a.targets[filepath.Clean(p)]
+			a.mu.Unlock()
+			if t != nil && t.kind == kindTranscript && !a.uploadable(t) {
+				if t.src.SessionKey != "" {
+					return t.src.SessionKey, nil
+				}
+				return p, nil
+			}
+		case format.AddrMessage:
+			prefixes = append(prefixes, addr.Session)
+		default:
+			prefixes = append(prefixes, addr.Token)
+		}
+	}
+	if i := strings.IndexFunc(ref, notSessionIDRune); i >= format.MinPrefix {
+		prefixes = append(prefixes, ref[:i])
+	}
+	names := func(session string) bool {
+		if strings.Contains(ref, session) {
+			return true
+		}
+		for _, p := range prefixes {
+			if p != "" && strings.HasPrefix(session, p) {
+				return true
+			}
+		}
+		return false
+	}
+	a.mu.Lock()
+	var match []*target
+	for _, t := range a.targets {
+		if t.kind == kindTranscript && t.src.SessionKey != "" && names(t.src.SessionKey) {
+			match = append(match, t)
+		}
+	}
+	a.mu.Unlock()
+	for _, t := range match {
+		if !a.uploadable(t) {
+			return t.src.SessionKey, nil
+		}
+	}
+	if a.devin.path != "" {
+		a.loadDevinModes(ctx, pv)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for session, m := range a.devinModes {
+			if names(session) && m != pathpolicy.Allow {
+				return session, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// notSessionIDRune reports whether r cannot be part of a session id.
+func notSessionIDRune(r rune) bool {
+	return !(r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+}
+
+// BusRepoWithheld reports whether a repo a bus request names may not
+// reach the server (devicebus Config.RepoWithheld, issue #71). An
+// absolute path is decided as a session placed there would be. A name is
+// withheld when the device has sessions on a repo by that name and every
+// one is withheld: the name tells the server nothing the device's other
+// sessions do not. A session is on a repo by that name as --repo
+// expansion matches one (local.ExpandRepo): its checkout's or main
+// checkout's directory name, or its origin by name or owner/name, in any
+// case. A glob, or a name no session has, names nothing.
+func (a *Agent) BusRepoWithheld(ctx context.Context, repo string) (bool, error) {
+	pv := a.policy()
+	repo = strings.TrimRight(strings.TrimSpace(repo), "/")
+	if pv.pol.Empty() || repo == "" || strings.ContainsAny(repo, "*?[") {
+		return false, nil
+	}
+	if filepath.IsAbs(repo) {
+		pl := a.resolve(repo, "")
+		return a.decideOne(pv.pol, placed{pl: pl, how: cwdHow(pl)}).Mode != pathpolicy.Allow, nil
+	}
+	rows, err := a.store.DB().QueryContext(ctx, `SELECT agent, session_id, COALESCE(repo_root, cwd, '') FROM conversations
+		WHERE depth = 0 AND deleted_in_generation IS NULL AND (COALESCE(repo_root, cwd, '') = ? OR COALESCE(repo_root, cwd, '') LIKE ? ESCAPE '\')`,
+		repo, "%/"+strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(repo))
+	if err != nil {
+		return false, err
+	}
+	var keys []placeKey
+	for rows.Next() {
+		var agent, session, root string
+		if err := rows.Scan(&agent, &session, &root); err != nil {
+			rows.Close()
+			return false, err
+		}
+		if filepath.Base(strings.TrimRight(root, "/")) == repo {
+			keys = append(keys, placeKey{transcript.Agent(agent), session})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	places, err := a.store.Placements(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range places {
+		if repoNamed(p.Placement, repo) {
+			keys = append(keys, placeKey{p.Agent, p.SessionID})
+		}
+	}
+	if len(keys) == 0 {
+		return false, nil
+	}
+	paths := a.transcriptsBySession()
+	for _, k := range keys {
+		if a.reportable(ctx, k, paths[k]) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// repoNamed reports whether a placement is on a repo name names, as
+// local.ExpandRepo matches a name: without a slash, the directory name of
+// its checkout or main checkout or the name of its origin; with one, a
+// path suffix of its main checkout or its origin. Any case.
+func repoNamed(p pathpolicy.Placement, name string) bool {
+	lower := strings.ToLower(name)
+	if !strings.Contains(name, "/") {
+		for _, n := range []string{localindex.RepoName(p.Worktree, ""), localindex.RepoName(p.Main, ""), localindex.RepoName("", p.Remote)} {
+			if n != "" && strings.EqualFold(n, name) {
+				return true
+			}
+		}
+		return false
+	}
+	return p.Remote != "" && (strings.EqualFold(p.Remote, name) || strings.HasSuffix(strings.ToLower(p.Remote), "/"+lower)) ||
+		p.Main != "" && strings.HasSuffix(strings.ToLower(p.Main), "/"+lower)
 }
 
 // BusRoot is the top-level session a subagent's session belongs to, or

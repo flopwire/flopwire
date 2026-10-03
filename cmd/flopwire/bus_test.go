@@ -20,6 +20,7 @@ import (
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -294,6 +295,10 @@ func TestSendRefusals(t *testing.T) {
 			[]string{"refused (not_found)", "Example: flopwire inbox lists them"}},
 		{busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session x is kept off the server by a path rule; it cannot use messaging"},
 			[]string{"refused (session_not_on_device)", "its transcripts stay on this device"}},
+		{busproto.Error{Status: 403, Code: busproto.CodeWithheldSession, Detail: `ref "5ec2e7aa/3" names session 5ec2e7aa-1, which a path rule keeps off the server; nothing about it may reach the team server`},
+			[]string{"refused (withheld_session): ref \"5ec2e7aa/3\"", "Fix: send it without that ref", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
+		{busproto.Error{Status: 403, Code: busproto.CodeWithheldRepo, Detail: `repo "/src/client" is kept off the server by a path rule; nothing about it may reach the team server`},
+			[]string{"refused (withheld_repo): repo \"/src/client\"", "Fix: leave out --repo", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 400, Code: busproto.CodeBadRequest, Detail: "a ref is an archive address of at most 512 bytes"},
 			[]string{"refused (bad_request): a ref is", "Fix: check the arguments", `Example: flopwire send 0b7e2c1a -- "Heads-up`}},
 	} {
@@ -534,14 +539,14 @@ func mcpRoundTrip(t *testing.T, r *retriever, line string) string {
 }
 
 // Codex starts MCP servers with a scrubbed environment; each tools/call
-// names its thread in _meta. That id is the sender (over the detector),
-// for one call only.
+// names its thread in _meta. When Codex launched the server, that id is
+// the sender (over the detector), for one call only.
 func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	busRetry = 10 * time.Millisecond
 	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
 		return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m03", State: busproto.StateQueued, To: busproto.Recipient{User: "a@x.test", Live: true}}}
 	})
-	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock, underCodex: true}
 	const thread = "019a0000-0000-7000-8000-0000000000cd"
 	for i, meta := range []string{
 		`{"threadId":"` + thread + `"}`,
@@ -580,6 +585,35 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	}
 }
 
+// Any MCP client can put a Codex thread id in _meta. Unless Codex launched
+// the server, it is ignored and the detector names the sender (issue #71).
+func TestMCPMetaIgnoredWithoutCodex(t *testing.T) {
+	busRetry = 10 * time.Millisecond
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m03", State: busproto.StateQueued, To: busproto.Recipient{User: "a@x.test", Live: true}}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	const thread = "019a0000-0000-7000-8000-0000000000cd"
+	for i, meta := range []string{
+		`{"threadId":"` + thread + `"}`,
+		`{"x-codex-turn-metadata":{"thread_id":"` + thread + `"}}`,
+	} {
+		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"@a","message":"hi"},"_meta":`+meta+`}}`)
+		if _, isErr, _ := mcpContent(t, resp); isErr {
+			t.Fatalf("meta %d: %s", i, resp)
+		}
+		if s := fa.requests()[i].Send; s.FromSession != selfID || s.FromAgent != "claude" {
+			t.Fatalf("meta %d: sender %+v, want the detected Claude session", i, s)
+		}
+	}
+	// Nor does a detector that finds nothing fall back to it.
+	r.caller = func(context.Context) (local.Caller, bool) { return local.Caller{}, false }
+	resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"@a","message":"hi"},"_meta":{"threadId":"`+thread+`"}}}`)
+	if text, isErr, _ := mcpContent(t, resp); !isErr || !strings.Contains(text, codeNoCaller) || len(fa.requests()) != 2 {
+		t.Fatalf("no caller: %s", text)
+	}
+}
+
 // The MCP side of peers and inbox: the same text as the CLI, with MCP
 // hints.
 func TestMCPPeersAndInbox(t *testing.T) {
@@ -605,6 +639,19 @@ func TestMCPPeersAndInbox(t *testing.T) {
 	}
 	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_peers, flopwire_read") {
 		t.Fatalf("unknown tool: %v", err)
+	}
+}
+
+// peers --repo naming a repo the path rules keep off the server is
+// refused with what to do instead.
+func TestPeersWithheldRepoRefused(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(agent.Request) agent.Response {
+		return refused(busproto.Error{Status: 403, Code: busproto.CodeWithheldRepo, Detail: `repo "client" is kept off the server by a path rule; nothing about it may reach the team server`})
+	})
+	_, err := cli(t, fa, "", "peers", "--repo", "client")
+	if err == nil || !strings.Contains(err.Error(), "refused (withheld_repo)") || !strings.Contains(err.Error(), "Fix: leave out --repo") {
+		t.Fatalf("peers: %v", err)
 	}
 }
 
@@ -1100,4 +1147,49 @@ func sendToUnopenableSocket(t *testing.T) busErr {
 	var out, errOut strings.Builder
 	err = busCmd(t.Context(), "send", []string{"--socket", sock, "@a", "--", "hi"}, strings.NewReader(""), &out, &errOut)
 	return jsonErr(t, errOut.String(), err)
+}
+
+// One message at the body and ref caps, as a send leaves the device
+// (devicebus.CleanText), fits the MCP output budget in every inbox form:
+// what survives cleaning grows at most two-fold as JSON. A body of control
+// characters grew six-fold, about 24 KB from 4,000 bytes (issue #71).
+func TestInboxWorstCaseMessageFitsMCPBudget(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fill := func(unit string, n int) string { return strings.Repeat(unit, n/len(unit)) }
+	var item busproto.InboxItem
+	fa := startFakeAgent(t, func(agent.Request) agent.Response {
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{item}, Next: "x|m1"}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	// "\n…x" is a body of empty lines (one character ends it, as the text
+	// form trims trailing newlines): the thread text form indents each.
+	for _, unit := range []string{"\x01", "\x1b", "\x7f", "\u0085", "\r", "\"", "\\", "\n", "\t", " ", "<", "é", "\u2028", "x\n", "\n…x"} {
+		body := devicebus.CleanText(fill(unit, busproto.MaxBodyBytes))
+		if unit == "\n…x" {
+			body = strings.Repeat("\n", busproto.MaxBodyBytes-1) + "x"
+		}
+		if body == "" {
+			continue // nothing left: refused as an empty body
+		}
+		var refs []string
+		for range busproto.MaxRefs {
+			refs = append(refs, devicebus.CleanText(fill(unit, busproto.MaxRefBytes)))
+		}
+		item = busproto.InboxItem{Envelope: busproto.Envelope{ID: "m0123456789abcdef", ThreadID: "m0123456789abcdef", ReplyTo: "m0123456789abcdee",
+			From: peerID, FromAgent: "codex", User: "alex@example.test", UserID: "u-2", Repo: "/src/web", Branch: "main",
+			Sender: busproto.SenderTeammate, Intent: busproto.IntentRequest, Body: body, Refs: refs, Sent: t0, ExpiresAt: t0.Add(time.Hour),
+			ToSession: selfID, ToAgent: "claude", ToUser: "gary@example.test", Addressed: "session"}, Direction: "received", State: busproto.StateRead}
+		for _, args := range []map[string]any{{}, {"thread": "m0123456789abcdef"}, {"format": "text"}, {"thread": "m0123456789abcdef", "format": "text"}} {
+			text, err := mcpCall(t.Context(), r, "flopwire_inbox", args)
+			if err != nil {
+				t.Fatalf("%q %v: %v", unit, args, err)
+			}
+			if len(text) > format.MaxOutput {
+				t.Errorf("%q %v: %d bytes, over the %d-byte budget", unit, args, len(text), format.MaxOutput)
+			}
+			if !strings.Contains(text, "m0123456789abcdef") {
+				t.Errorf("%q %v: the message is not shown: %.200s", unit, args, text)
+			}
+		}
+	}
 }

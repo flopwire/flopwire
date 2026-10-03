@@ -77,6 +77,18 @@ type Config struct {
 	// addressing without a server. The agent sets both (SetSources).
 	Presence func(context.Context) ([]Session, error)
 	Known    func(ctx context.Context, prefix string) ([]Session, error)
+	// Withheld names a session of the device that the path rules keep off
+	// the server and that ref would tell the server about: an archive
+	// address (a send's refs) or a session id prefix (its recipient). ""
+	// when there is none. The agent sets it (SetWithheld); nil checks
+	// nothing.
+	Withheld func(ctx context.Context, ref string) (string, error)
+	// RepoWithheld reports whether a repo a request names (an @user
+	// send's repo, a peers filter or one of its roots: a path or a name)
+	// is one the path rules keep off the server: a path they withhold, or
+	// a name every session of the device on it is withheld from. The agent
+	// sets it (SetWithheld); nil checks nothing.
+	RepoWithheld func(ctx context.Context, repo string) (bool, error)
 
 	// User is the device's person without a server: the name @user
 	// matches and envelopes carry. Default: the OS account name.
@@ -227,6 +239,14 @@ func (b *Bus) SetSources(presence func(context.Context) ([]Session, error), know
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cfg.Presence, b.cfg.Known = presence, known
+}
+
+// SetWithheld installs the agent's checks of the sessions and repos a
+// request names.
+func (b *Bus) SetWithheld(sessions func(context.Context, string) (string, error), repos func(context.Context, string) (bool, error)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cfg.Withheld, b.cfg.RepoWithheld = sessions, repos
 }
 
 // Local reports whether the bus routes on the device (no server).

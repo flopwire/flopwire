@@ -379,7 +379,11 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		resp, err = c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	}
 	if err != nil {
-		return asBusErr(err)
+		e := asBusErr(err)
+		if e.Code == busproto.CodeWithheldRepo {
+			e.Fix, e.Example = withheldRepoFix(st), st.cmd("flopwire peers", "flopwire_peers")
+		}
+		return e
 	}
 	peers := []busproto.Peer{}
 	if resp.Peers != nil {
@@ -687,6 +691,12 @@ func redactionCount(m map[string]int) (int, string) {
 	return n, strings.Join(rules, ", ")
 }
 
+// withheldRepoFix is the fix for a repo the path rules keep off the
+// server.
+func withheldRepoFix(st busStyle) string {
+	return "leave out " + st.cmd("--repo", "repo") + " or name another repo: a path rule keeps this repo's transcripts on this device, so not even its path or name may reach the team server"
+}
+
 // refusal turns a refused send into its code, cause, fix and a valid
 // example.
 func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr {
@@ -748,6 +758,11 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	case busproto.CodeNotFound:
 		e.Fix = "reply_to takes a message id this session sent or received"
 		e.Example = st.cmd("flopwire inbox", "flopwire_inbox") + " lists them"
+	case busproto.CodeWithheldSession:
+		e.Fix = "send it without that ref (or recipient): a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
+		e.Example = st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
+	case busproto.CodeWithheldRepo:
+		e.Fix, e.Example = withheldRepoFix(st), st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
 	case busproto.CodeSessionNotOnDevice:
 		if strings.Contains(be.Detail, "path rule") {
 			e.Fix = "messaging is not available from this session: its transcripts stay on this device, so nothing about it may reach the team server"
@@ -891,8 +906,14 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 		body := format.Clean(strings.TrimRight(strings.ReplaceAll(m.Body, "\r\n", "\n"), "\n"))
 		lines := strings.Split(body, "\n")
 		if full {
+			// An empty line is not indented: indented, a body of empty
+			// lines grew five-fold and one message passed the MCP output
+			// budget (issue #71). It cannot pass for a header either way.
 			for _, l := range lines {
-				e.WriteString("    " + l + "\n")
+				if l != "" {
+					e.WriteString("    ")
+				}
+				e.WriteString(l + "\n")
 			}
 			for _, r := range m.Refs {
 				e.WriteString("    ref: " + format.Clean(r) + "\n")

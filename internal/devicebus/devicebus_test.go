@@ -37,6 +37,7 @@ type fakeServer struct {
 	reads    []busproto.ReadReceipt          // read receipts taken
 	readFn   func(busproto.ReadReceipt) bool // takes a read receipt; nil: all
 	sends    []busproto.SendRequest
+	peers    []busproto.PeersQuery
 	pollErr  error // answered at once while set
 	answered chan struct{}
 }
@@ -121,7 +122,10 @@ func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto
 	return busproto.SendResponse{ID: "msent", State: busproto.StateQueued}, nil
 }
 
-func (f *fakeServer) Peers(context.Context, busproto.PeersQuery) (busproto.PeersResponse, error) {
+func (f *fakeServer) Peers(_ context.Context, q busproto.PeersQuery) (busproto.PeersResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.peers = append(f.peers, q)
 	return busproto.PeersResponse{}, nil
 }
 
@@ -869,5 +873,140 @@ func TestHeldNoticeOncePerSenderPerDay(t *testing.T) {
 		if err != nil || ids(got) != c.want {
 			t.Fatalf("at +%s: %q %v, want %q", c.at, ids(got), err, c.want)
 		}
+	}
+}
+
+// A send whose refs or recipient prefix name a session the path rules
+// keep off the server is refused on the device, before any request: the
+// server would learn the session's id (issue #71). The check covers every
+// ref, and a send naming no withheld session goes through.
+func TestSendNamingWithheldSessionRefused(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	const secret = "5ec2e7aa-0000-4000-8000-000000000001"
+	var asked []string
+	b.SetWithheld(func(_ context.Context, ref string) (string, error) {
+		asked = append(asked, ref)
+		if strings.HasPrefix(ref, "5ec2e7aa") || strings.HasSuffix(ref, secret+".jsonl:3") {
+			return secret, nil
+		}
+		return "", nil
+	}, nil)
+	for _, req := range []busproto.SendRequest{
+		{FromSession: "open-1", To: "@alex", Body: "see the ref", Refs: []string{"4c19e0d2/12", "5ec2e7aa/28672"}},
+		{FromSession: "open-1", To: "@alex", Body: "see the ref", Refs: []string{"/home/g/.claude/projects/-src-client/" + secret + ".jsonl:3"}},
+		{FromSession: "open-1", To: "5ec2e7aa", Body: "hello"},
+	} {
+		var be *busproto.Error
+		_, err := b.Send(ctx, req)
+		if !errors.As(err, &be) || be.Code != busproto.CodeWithheldSession || be.Status != http.StatusForbidden || !strings.Contains(be.Detail, secret) || !strings.Contains(be.Detail, "path rule") {
+			t.Fatalf("send %+v: %v", req, err)
+		}
+	}
+	srv.mu.Lock()
+	n := len(srv.sends)
+	srv.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("server got %d sends naming a withheld session", n)
+	}
+	asked = nil
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "4c19e0d2", Body: "fine", Refs: []string{"4c19e0d2/12"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asked, []string{"4c19e0d2", "4c19e0d2/12"}) {
+		t.Fatalf("checked %q", asked)
+	}
+	// An @user recipient names no session.
+	asked = nil
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "fine too"}); err != nil || len(asked) != 0 {
+		t.Fatalf("@user: %v, checked %q", err, asked)
+	}
+}
+
+// Control characters (but newline and tab) never leave the device: a body
+// of them grew six-fold as JSON (issue #71). A CR or CRLF is a newline.
+func TestSendDropsControlCharacters(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	refs := []string{"4c19e0d2/12\x1b[2J"}
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "a\x00b\x1b[31mc\x7fd\u009be\r\nf\rg\th\ni", Refs: refs}); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	got := srv.sends[0]
+	srv.mu.Unlock()
+	if got.Body != "ab[31mcde\nf\ng\th\ni" || !slices.Equal(got.Refs, []string{"4c19e0d2/12[2J"}) {
+		t.Fatalf("sent %q %q", got.Body, got.Refs)
+	}
+	if refs[0] != "4c19e0d2/12\x1b[2J" {
+		t.Fatal("the caller's refs were changed")
+	}
+	// The local inbox gets the same text.
+	lb := openBus(t, filepath.Join(t.TempDir(), "local.db"), testConfig(nil, nil), p)
+	p.set(sess("open-1", "claude", "/src/api", true), sess("open-2", "claude", "/src/api", true))
+	if _, err := lb.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "open-2", Body: "x\x07y\r\nz"}); err != nil {
+		t.Fatal(err)
+	}
+	in, err := lb.Inbox(ctx, busproto.InboxQuery{Session: "open-2"})
+	if err != nil || len(in.Messages) != 1 || in.Messages[0].Body != "xy\nz" {
+		t.Fatalf("local inbox: %+v %v", in, err)
+	}
+}
+
+// An @user send's repo, and a peers filter or any of its roots, that the
+// path rules keep off the server is refused on the device before any
+// request: the server would learn the repo's path or name (issue #71).
+func TestRequestNamingWithheldRepoRefused(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	var asked []string
+	b.SetWithheld(nil, func(_ context.Context, repo string) (bool, error) {
+		asked = append(asked, repo)
+		return repo == "/src/client" || repo == "client", nil
+	})
+	refused := func(what string, err error) {
+		t.Helper()
+		var be *busproto.Error
+		if !errors.As(err, &be) || be.Code != busproto.CodeWithheldRepo || be.Status != http.StatusForbidden || !strings.Contains(be.Detail, "path rule") {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	for _, repo := range []string{"/src/client", "client"} {
+		_, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "hi", Repo: repo})
+		refused("send repo "+repo, err)
+		_, err = b.Peers(ctx, busproto.PeersQuery{Session: "open-1", Repo: repo})
+		refused("peers repo "+repo, err)
+	}
+	_, err := b.Peers(ctx, busproto.PeersQuery{Session: "open-1", Repo: "api", Roots: []string{"/src/api", "/src/client"}})
+	refused("peers root", err)
+	srv.mu.Lock()
+	sends, peers := len(srv.sends), len(srv.peers)
+	srv.mu.Unlock()
+	if sends != 0 || peers != 0 {
+		t.Fatalf("server got %d sends and %d peers queries naming a withheld repo", sends, peers)
+	}
+	// Other repos, "*" and none go through; a session recipient's repo is
+	// not checked (the server ignores it).
+	asked = nil
+	for _, req := range []busproto.SendRequest{
+		{FromSession: "open-1", To: "@alex", Body: "a", Repo: "/src/api"},
+		{FromSession: "open-1", To: "@alex", Body: "b", Repo: "*"},
+		{FromSession: "open-1", To: "@alex", Body: "c"},
+	} {
+		if _, err := b.Send(ctx, req); err != nil {
+			t.Fatalf("send %+v: %v", req, err)
+		}
+	}
+	if _, err := b.Peers(ctx, busproto.PeersQuery{Session: "open-1", Repo: "api", Roots: []string{"/src/api"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asked, []string{"/src/api", "api", "/src/api"}) {
+		t.Fatalf("checked %q", asked)
 	}
 }

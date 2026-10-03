@@ -183,6 +183,8 @@ const (
 	CodeUnknownRecipient   = "unknown_recipient"   // 404: no session or person matches To
 	CodeAmbiguousRecipient = "ambiguous_recipient" // 409: Candidates lists the matches
 	CodeSessionNotOnDevice = "session_not_on_device"
+	CodeWithheldSession    = "withheld_session" // 403: the recipient or a ref names a session a path rule keeps off the server
+	CodeWithheldRepo       = "withheld_repo"    // 403: an @user send's repo or a peers filter names a repo a path rule keeps off the server
 	CodeDeviceRequired     = "bus_device_required"
 	CodeLoginRequired      = "login_session_required"
 	CodePasswordRequired   = "password_required" // 403: accept needs the person's password

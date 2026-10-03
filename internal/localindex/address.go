@@ -83,6 +83,15 @@ func (s *Store) FirstMessage(ctx context.Context, sessionID string) (*Row, error
 	return r, err
 }
 
+// LeadingMessages returns up to n live rows of a session's top-level
+// conversation of agent, in ordinal order: where its title was taken from.
+func (s *Store) LeadingMessages(ctx context.Context, sessionID, agent string, n int) ([]*Row, error) {
+	var out []*Row
+	err := s.stream(ctx, `SELECT `+rowCols+rowFrom+` WHERE c.session_id = ? AND c.agent = ? AND c.depth = 0 AND c.deleted_in_generation IS NULL
+		AND m.superseded = 0 ORDER BY m.ordinal, m.id LIMIT ?`, []any{sessionID, agent, n}, func(x *Row) bool { out = append(out, x); return true })
+	return out, err
+}
+
 // firstLiveSQL selects the first live row on the active path of a
 // session: the shallowest conversation's lowest ordinal, each
 // conversation's first row read from messages_default in ordinal order,

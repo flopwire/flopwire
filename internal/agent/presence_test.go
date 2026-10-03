@@ -8,10 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/flopwire/flopwire/internal/devicebus"
+	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -416,5 +419,207 @@ func TestPresenceEndedSessions(t *testing.T) {
 	alive[5151] = false
 	if f.present(clock, at.Add(2*time.Minute), dv.id) {
 		t.Fatal("a Devin session of a dead pid is live")
+	}
+}
+
+// A send's refs and recipient prefix are checked against the path rules
+// (devicebus namesNoWithheld, issue #71): an address, prefix or path of a
+// withheld session (or its subagent) names it, whether the rule keeps it
+// local or denies it (never indexed); the others name none.
+func TestBusWithheldNamesWithheldSessions(t *testing.T) {
+	for _, rule := range []string{"local /tmp/oracle-alpha", "deny /tmp/oracle-alpha"} {
+		t.Run(strings.Fields(rule)[0], func(t *testing.T) {
+			f := newFixture(t, "-")
+			f.cfg.UserRuleList = []string{rule}
+			f.a = New(f.store, f.cfg)
+			f.once()
+			var sub, open string
+			var codex []*target
+			f.a.mu.Lock()
+			for _, tg := range f.a.targets {
+				if tg.kind == kindTranscript && tg.root == alphaID {
+					sub = tg.src.SessionKey
+				}
+				if tg.kind == kindTranscript && tg.src.Agent == transcript.AgentCodex {
+					codex = append(codex, tg)
+				}
+			}
+			f.a.mu.Unlock()
+			for _, tg := range codex {
+				if f.a.uploadable(tg) {
+					open = tg.src.SessionKey
+				}
+			}
+			if sub == "" || open == "" {
+				t.Fatalf("subagent %q, open session %q", sub, open)
+			}
+			for ref, want := range map[string]bool{
+				alphaID:                 true,
+				alphaID[:8]:             true, // also orphanID's prefix: either may be meant
+				alphaID[:13] + "/3":     true,
+				alphaID + "/3:2":        true,
+				sub:                     true,
+				sub + "/1":              true,
+				f.path(alphaRel) + ":1": true,
+				"~/" + alphaRel + ":1":  true, // the fixture's home is not $HOME, but the id is in it
+				// A ref is free text: any form that carries the id (or a
+				// prefix of it at the start) names the session.
+				alphaID + ":3":      true,
+				alphaID + "/latest": true,
+				"see " + alphaID:    true,
+				alphaID[:8] + ":3":  true,
+				f.path(alphaRel):    true,
+				f.path(".claude/projects/-tmp-oracle-alpha/"+alphaID+"/tool-results/x.txt") + ":1": true,
+				open + ":3":                   false,
+				open:                          false,
+				open + "/4":                   false,
+				orphanID:                      false,
+				"not an address of a session": false,
+			} {
+				id, err := f.a.BusWithheld(ctx, ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (id != "") != want {
+					t.Fatalf("%s: withheld %q, want %v", ref, id, want)
+				}
+			}
+		})
+	}
+	// Without rules nothing is withheld.
+	f := newFixture(t, "-")
+	f.once()
+	if id, err := f.a.BusWithheld(ctx, alphaID); id != "" || err != nil {
+		t.Fatalf("no rules: %q %v", id, err)
+	}
+}
+
+// A title cut at 100 runes through a secret is redacted before the cut:
+// the redactor does not match a token's first characters alone, so
+// redacting the cut leaked them (issue #71). Presence reports the title so.
+func TestBusTitleRedactsBeforeTheCut(t *testing.T) {
+	f := newFixture(t, "-")
+	const sid = "0b7e2c1a-0000-4000-8000-0000000000e1"
+	token := "ghp_" + strings.Repeat("Ab3dEf6hIj", 4)[:36]
+	prompt := strings.Repeat("deploy ", 12) + "with " + token + " then check the logs\nsecond line"
+	if at := strings.Index(prompt, token); at >= titleCut || at+len(token) <= titleCut {
+		t.Fatalf("the token spans %d..%d, not the cut at %d", at, at+len(token), titleCut)
+	}
+	f.writeSession(sid, "/tmp/oracle-title", claudeRecord(sid, "/tmp/oracle-title", "", prompt, 1))
+	f.once()
+	known, err := f.a.BusKnown(ctx, sid)
+	if err != nil || len(known) != 1 {
+		t.Fatalf("known: %+v %v", known, err)
+	}
+	s := known[0]
+	leak := token[:titleCut-strings.Index(prompt, token)] // what the cut kept of it
+	if !strings.Contains(s.Title, leak) || utf8.RuneCountInString(s.Title) != titleCut {
+		t.Fatalf("the index's title is not the raw cut: %q", s.Title)
+	}
+	if masked, _ := redact.Redact([]byte(s.Title)); !strings.Contains(string(masked), leak) {
+		t.Fatalf("the redactor matches the cut token, so this tests nothing: %q", masked)
+	}
+	got := f.a.busTitle(ctx, s)
+	if strings.Contains(got, token[4:8]) || !strings.HasPrefix(got, "deploy deploy") || utf8.RuneCountInString(got) > titleCut {
+		t.Fatalf("bus title %q", got)
+	}
+	// Presence carries it.
+	f.a.now = func() time.Time { return time.Date(2026, 9, 23, 11, 1, 0, 0, time.UTC) }
+	all, err := f.a.BusPresence(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(all, func(p devicebus.Session) bool { return p.SessionID == sid })
+	if i < 0 || all[i].Title != got {
+		t.Fatalf("presence: %+v", all)
+	}
+	// A cut title whose line is not at hand loses its last word.
+	s.Title = strings.Repeat("word ", 19) + "ghp_Ab3dE"
+	if got := f.a.busTitle(ctx, s); got != strings.Repeat("word ", 18)+"word …" {
+		t.Fatalf("no line: %q", got)
+	}
+	// A cut with no word break left loses everything (a 150-character
+	// token cut at 100).
+	s.Title = string([]rune("ghp_" + strings.Repeat("Ab3dEf6hIj", 15))[:titleCut])
+	if got := f.a.busTitle(ctx, s); got != "" {
+		t.Fatalf("no word break: %q", got)
+	}
+	// A short title is no cut.
+	s.Title = "fix the flaky upload test"
+	if got := f.a.busTitle(ctx, s); got != s.Title {
+		t.Fatalf("short title: %q", got)
+	}
+}
+
+// A repo a bus request names is withheld when the path rules withhold
+// its path, or, by name, when every session of the device on it is
+// withheld (devicebus reposNotWithheld, issue #71).
+func TestBusRepoWithheld(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local /tmp/oracle-alpha"}
+	f.a = New(f.store, f.cfg)
+	f.once()
+	for repo, want := range map[string]bool{
+		"/tmp/oracle-alpha":     true,
+		"/tmp/oracle-alpha/":    true,
+		"/tmp/oracle-alpha/src": true,
+		"oracle-alpha":          true,
+		"/tmp/oracle-beta":      false,
+		"oracle-beta":           false,
+		"no-such-repo":          false,
+		"oracle-*":              false,
+		"oracle_alpha":          false, // LIKE's _ is escaped
+	} {
+		got, err := f.a.BusRepoWithheld(ctx, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s: withheld %v, want %v", repo, got, want)
+		}
+	}
+	f = newFixture(t, "-")
+	f.once()
+	if got, err := f.a.BusRepoWithheld(ctx, "/tmp/oracle-alpha"); got || err != nil {
+		t.Fatalf("no rules: %v %v", got, err)
+	}
+}
+
+// A repo name matches a session as --repo expansion does (local.named):
+// by its checkout's name, its main checkout's name or its origin
+// (name or owner/name, any case). An allowed session in a linked
+// worktree of a repo by that name keeps the name open, and a withheld
+// repo's origin name is withheld (issue #71).
+func TestBusRepoWithheldByMainCheckoutAndRemote(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local /tmp/oracle-alpha"}
+	f.a = New(f.store, f.cfg)
+	const wt = "0b7e2c1a-0000-4000-8000-0000000000e2"
+	f.writeSession(wt, "/tmp/work/oracle-alpha-wt", claudeRecord(wt, "/tmp/work/oracle-alpha-wt", "", "hello", 1))
+	f.once()
+	place := func(session, main, remote string) {
+		t.Helper()
+		pl := localindex.Placement{Agent: transcript.AgentClaude, SessionID: session, How: localindex.PlacedByWorktree}
+		pl.Main, pl.Remote = main, remote
+		if err := f.store.SavePlacement(ctx, pl); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	place(alphaID, "/tmp/oracle-alpha", "github.com/acme/secret-svc")
+	if got, err := f.a.BusRepoWithheld(ctx, "oracle-alpha"); !got || err != nil {
+		t.Fatalf("only a withheld session on oracle-alpha: %v %v", got, err)
+	}
+	for _, name := range []string{"secret-svc", "acme/secret-svc", "Acme/Secret-Svc"} {
+		if got, err := f.a.BusRepoWithheld(ctx, name); !got || err != nil {
+			t.Errorf("%s, the withheld repo's origin: withheld %v %v", name, got, err)
+		}
+	}
+	// An allowed linked worktree of another checkout named oracle-alpha.
+	place(wt, "/tmp/work/oracle-alpha", "")
+	if got, err := f.a.BusRepoWithheld(ctx, "oracle-alpha"); got || err != nil {
+		t.Fatalf("an allowed worktree's main checkout is oracle-alpha: %v %v", got, err)
 	}
 }

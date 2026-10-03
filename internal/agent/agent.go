@@ -236,6 +236,7 @@ type Agent struct {
 
 	// Process checks and the clock for presence (presence.go); tests
 	// replace them.
+	busTitles map[busTitleKey]string // busTitle's answers; guarded by mu
 	pidAlive  func(pid int) bool
 	procStart func(pid int) (time.Time, bool)
 	procName  func(pid int) string
@@ -288,6 +289,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 	}
 	if cfg.Bus != nil {
 		cfg.Bus.SetSources(a.BusPresence, a.BusKnown)
+		cfg.Bus.SetWithheld(a.BusWithheld, a.BusRepoWithheld)
 	}
 	return a
 }

@@ -53,6 +53,7 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	defer r.close()
 	r.caller = cachedCaller(r.caller, 10*time.Second)
+	r.underCodex = local.NewDetector().UnderCodex()
 	if r.busSocket, err = defaultSocket(); err != nil {
 		return err
 	}
@@ -659,7 +660,7 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			return
 		}
 		// Codex names the calling thread in each call's _meta.
-		cctx, cancel := context.WithCancel(withMCPMeta(ctx, p.Meta))
+		cctx, cancel := context.WithCancel(withMCPMeta(ctx, r.underCodex, p.Meta))
 		key := string(id)
 		mu.Lock()
 		running[key] = cancel
