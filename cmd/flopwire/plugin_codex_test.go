@@ -102,6 +102,7 @@ var codexHookContract = map[string]struct {
 	"UserPromptSubmit": {"", "flopwire hook || true", 5},
 	"PostToolUse":      {"*", "flopwire hook || true", 5},
 	"Stop":             {"", "flopwire hook || true", 5},
+	"SessionEnd":       {"", "flopwire hook || true", 5},
 }
 
 func TestCodexPluginHooks(t *testing.T) {

@@ -99,8 +99,9 @@ func TestClaudePluginHooks(t *testing.T) {
 		} `json:"hooks"`
 	}
 	readJSONFile(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"), &hf)
-	// #75's contract for Claude Code; never PreToolUse.
-	want := []string{"PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"}
+	// #75's contract for Claude Code, and SessionEnd (#67, #82); never
+	// PreToolUse.
+	want := []string{"PostToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"}
 	if got := slices.Sorted(maps.Keys(hf.Hooks)); !slices.Equal(got, want) {
 		t.Fatalf("hook events %q, want %q", got, want)
 	}
