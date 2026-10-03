@@ -278,8 +278,10 @@ func (c *Claude) Push(ctx context.Context, id, text string) (Pushed, error) {
 	if i := strings.IndexByte(msg, '\n'); i >= 0 {
 		msg = msg[:i]
 	}
-	low := strings.ToLower(msg)
-	if strings.Contains(low, "archived") || strings.Contains(low, "not found") {
+	// The CLI's text names no reliable cause: its first stderr line may
+	// come from a plugin hook. The session is gone only when the vendor's
+	// own record says so.
+	if c.gone(ctx, id) {
 		return Pushed{}, fmt.Errorf("%w: %s", ErrGone, msg)
 	}
 	if ctx.Err() != nil {
@@ -294,14 +296,56 @@ func (c *Claude) Push(ctx context.Context, id, text string) (Pushed, error) {
 	return Pushed{}, fmt.Errorf("vendorcloud: claude push: %s", msg)
 }
 
+// gone reports whether the vendor's record of the session says it is
+// archived or no longer exists: GET /v1/code/sessions/{id} answers 404, or
+// the session's status is "archived". Any other answer, or none, is not a
+// positive signal.
+func (c *Claude) gone(ctx context.Context, id string) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	token, err := c.token(ctx)
+	if err != nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+"/v1/code/sessions/"+url.PathEscape(claudeListID(id)), nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return true
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var v struct {
+		Status string `json:"status"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&v) != nil {
+		return false
+	}
+	return v.Status == "archived"
+}
+
 // seqNum is a sequence number the route writes as a JSON string ("92");
-// a number is taken too.
+// a number is taken too, and null or anything unreadable is -1.
 type seqNum int64
 
 func (n *seqNum) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*n = -1 // unknown: seenIn skips the event
+		return nil
+	}
 	v, err := strconv.ParseInt(strings.Trim(string(b), `"`), 10, 64)
 	if err != nil {
-		return fmt.Errorf("sequence_num %s: %w", b, err)
+		*n = -1 // unreadable: skipped, so one odd event cannot fail the page
+		return nil
 	}
 	*n = seqNum(v)
 	return nil
@@ -359,7 +403,8 @@ func (c *Claude) Seen(ctx context.Context, session string, ids []string) (map[st
 // seenIn finds, in events (any order), the user events that carry the
 // wrappers of ids and the first assistant event after each.
 func seenIn(events []claudeEvent, ids []string) map[string]time.Time {
-	asc := slices.Clone(events)
+	// An event without a usable sequence number cannot be ordered: skip it.
+	asc := slices.DeleteFunc(slices.Clone(events), func(e claudeEvent) bool { return e.Seq < 0 })
 	slices.SortFunc(asc, func(a, b claudeEvent) int { return cmp.Compare(a.Seq, b.Seq) })
 	want := map[string]bool{}
 	for _, id := range ids {

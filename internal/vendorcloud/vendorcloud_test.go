@@ -83,11 +83,34 @@ func TestClaudePush(t *testing.T) {
 		t.Fatalf("args = %q, want %q", gotArgs, want)
 	}
 
+	// The session's own record decides whether it is gone, never the
+	// CLI's text: a plugin hook's "not found" on stderr while the session
+	// is listed running is a failed push.
+	status := map[string]int{"cse_01BBBB": 200, "cse_01GONE": 404}
+	body := map[string]string{"cse_01BBBB": `{"id":"cse_01BBBB","status":"active","worker_status":"running"}`, "cse_01ARCH": `{"id":"cse_01ARCH","status":"archived"}`}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/code/sessions/")
+		if code, ok := status[id]; ok && code != 200 {
+			http.Error(w, `{"type":"error"}`, code)
+			return
+		}
+		io.WriteString(w, body[id])
+	}))
+	defer srv.Close()
+	c.BaseURL, c.Token = srv.URL, func(context.Context) (string, error) { return "tok", nil }
 	c.Run = func(context.Context, string, ...string) ([]byte, []byte, error) {
-		return nil, []byte("Error: cloud session session_01BBBB is archived\n"), errors.New("exit status 1")
+		return nil, []byte("SessionEnd hook [node x.mjs] failed: module not found\n"), errors.New("exit status 1")
 	}
-	if _, err := c.Push(context.Background(), "session_01BBBB", "x"); !errors.Is(err, ErrGone) {
-		t.Fatalf("archived: err = %v, want ErrGone", err)
+	if _, err := c.Push(context.Background(), "session_01BBBB", "x"); err == nil || errors.Is(err, ErrGone) {
+		t.Fatalf("hook stderr \"not found\" on a running session: err = %v, want a push failure", err)
+	}
+	c.Run = func(context.Context, string, ...string) ([]byte, []byte, error) {
+		return nil, []byte("Error: cloud session is archived\n"), errors.New("exit status 1")
+	}
+	for _, id := range []string{"session_01ARCH", "session_01GONE"} {
+		if _, err := c.Push(context.Background(), id, "x"); !errors.Is(err, ErrGone) {
+			t.Fatalf("%s: err = %v, want ErrGone", id, err)
+		}
 	}
 	c.Run = func(context.Context, string, ...string) ([]byte, []byte, error) {
 		return nil, []byte("Error: network unreachable\n"), errors.New("exit status 1")
@@ -119,6 +142,9 @@ func TestClaudeSeen(t *testing.T) {
 		ev(5, "user", `[{"type":"tool_result","content":"done"}]`),
 		ev(4, "user", string(pushed)),
 		ev(3, "assistant", `[{"type":"tool_use"}]`),
+		// Events without a usable sequence number are skipped, not fatal.
+		`{"sequence_num":null,"created_at":"2026-10-03T18:00:02Z","payload":{"type":"assistant","message":{"role":"assistant","content":[]}}}`,
+		`{"sequence_num":"x","created_at":"2026-10-03T18:00:01Z","payload":{"type":"system"}}`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/code/sessions/cse_01BBBB/events" || r.URL.Query().Get("sort_order") != "desc" {
