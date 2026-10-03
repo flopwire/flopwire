@@ -22,8 +22,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// sinkBatch is how many messages one write transaction carries.
-const sinkBatch = 500
+// Bound ordinary write batches by both rows and retained message text.
+// This is not a total heap limit: parser buffers, metadata, and database
+// encoding also use memory. A single larger message is written alone.
+const (
+	sinkBatch     = 500
+	sinkTextBytes = 8 << 20
+)
 
 // source is what a parse knows about the source it writes for.
 type source struct {
@@ -64,6 +69,7 @@ type sink struct {
 	// locks that parent late, as before lockFlushSQL.
 	parentless map[string]bool
 	msgs       []*transcript.Message
+	textBytes  int
 	tombstoned bool // some session of this source is deleted
 	written    int
 	gate       *gate           // the admin path rules; nil when there are none
@@ -84,8 +90,16 @@ func (s *sink) Conversation(c *transcript.Conversation) error {
 }
 
 func (s *sink) Message(m *transcript.Message) error {
+	// Flush before retaining the next message. On failure the existing
+	// batch stays intact and the caller receives the error.
+	if len(s.msgs) > 0 && len(m.Text) > sinkTextBytes-s.textBytes {
+		if err := s.flush(); err != nil {
+			return err
+		}
+	}
 	s.msgs = append(s.msgs, m)
-	if len(s.msgs) >= sinkBatch {
+	s.textBytes += len(m.Text)
+	if len(s.msgs) >= sinkBatch || s.textBytes >= sinkTextBytes {
 		return s.flush()
 	}
 	return nil
@@ -225,7 +239,9 @@ func (s *sink) flush() error {
 		s.parentless[id] = none
 	}
 	s.written += len(s.msgs)
+	clear(s.msgs) // release text retained by the reusable backing array
 	s.msgs = s.msgs[:0]
+	s.textBytes = 0
 	clear(s.convs)
 	clear(s.replaced)
 	clear(s.repeated)
