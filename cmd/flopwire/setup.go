@@ -313,6 +313,14 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	return rep
 }
 
+// realPath is p with symlinks resolved, or p when that fails.
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
 func samePath(a, b string) bool {
 	if ra, err := filepath.EvalSymlinks(a); err == nil {
 		a = ra
@@ -717,32 +725,88 @@ func claudeManualEntries(env *setupEnv) []string {
 			}
 		}
 	}
-	// A user-level MCP server added with `claude mcp add`.
+	warn = append(warn, claudeManualMCPServers(env)...)
+	return warn
+}
+
+// claudeMCPServers is a set of MCP servers as Claude Code stores them.
+type claudeMCPServers map[string]struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+}
+
+// flopwire lists, sorted, the servers that run flopwire mcp.
+func (m claudeMCPServers) flopwire() []string {
+	var names []string
+	for n, s := range m {
+		if filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0 && s.Args[0] == "mcp" {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// claudeManualMCPServers returns a warning for each MCP server outside the
+// plugin that runs flopwire mcp: user and local scope in Claude Code's
+// .claude.json, project scope in a .mcp.json. Local-scope servers and
+// .mcp.json files belong to the project directory, which is the current
+// directory or one above it (its repository root), so every directory
+// from the current one up is checked.
+func claudeManualMCPServers(env *setupEnv) []string {
+	var warn []string
 	claudeJSON := filepath.Join(env.home, ".claude.json")
 	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
 		claudeJSON = filepath.Join(d, ".claude.json")
+	} else if env.home == "" {
+		claudeJSON = ""
 	}
-	if env.home != "" || os.Getenv("CLAUDE_CONFIG_DIR") != "" {
+	var cj struct {
+		MCPServers claudeMCPServers `json:"mcpServers"`
+		Projects   map[string]struct {
+			MCPServers             claudeMCPServers `json:"mcpServers"`
+			DisabledMcpjsonServers []string         `json:"disabledMcpjsonServers"`
+		} `json:"projects"`
+	}
+	if claudeJSON != "" {
 		if raw, err := os.ReadFile(claudeJSON); err == nil {
-			var cj struct {
-				MCPServers map[string]struct {
-					Command string   `json:"command"`
-					Args    []string `json:"args"`
-				} `json:"mcpServers"`
+			_ = json.Unmarshal(raw, &cj)
+		}
+	}
+	// Claude Code keys projects by path; match through symlinks.
+	projects := map[string]string{}
+	for k := range cj.Projects {
+		projects[realPath(k)] = k
+	}
+	for _, n := range cj.MCPServers.flopwire() {
+		warn = append(warn, fmt.Sprintf("a user MCP server %q runs flopwire mcp; the plugin provides the same tools, so remove it: claude mcp remove %s --scope user", n, n))
+	}
+	for dir := env.cwd; dir != ""; {
+		key, known := projects[realPath(dir)]
+		if p, ok := cj.Projects[key]; known && ok {
+			for _, n := range p.MCPServers.flopwire() {
+				warn = append(warn, fmt.Sprintf("a local MCP server %q for %s runs flopwire mcp; the plugin provides the same tools, so remove it: cd %s && claude mcp remove %s --scope local", n, tildePath(dir, env.home), tildePath(dir, env.home), n))
 			}
-			if json.Unmarshal(raw, &cj) == nil {
-				names := make([]string, 0, len(cj.MCPServers))
-				for n, s := range cj.MCPServers {
-					if filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0 && s.Args[0] == "mcp" {
-						names = append(names, n)
+		}
+		f := filepath.Join(dir, ".mcp.json")
+		if raw, err := os.ReadFile(f); err == nil {
+			var pj struct {
+				MCPServers claudeMCPServers `json:"mcpServers"`
+			}
+			if json.Unmarshal(raw, &pj) == nil {
+				for _, n := range pj.MCPServers.flopwire() {
+					if known && slices.Contains(cj.Projects[key].DisabledMcpjsonServers, n) {
+						continue // the user turned it down: Claude Code does not run it
 					}
-				}
-				slices.Sort(names)
-				for _, n := range names {
-					warn = append(warn, fmt.Sprintf("a user MCP server %q runs flopwire mcp; the plugin provides the same tools, so remove it: claude mcp remove %s --scope user", n, n))
+					warn = append(warn, fmt.Sprintf("%s has a project MCP server %q that runs flopwire mcp; the plugin provides the same tools, so remove that entry from the file (setup does not edit it; others using the repository may still need it without the plugin)", tildePath(f, env.home), n))
 				}
 			}
 		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return warn
 }

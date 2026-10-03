@@ -834,3 +834,49 @@ func TestSetupReportsClaudeLoadErrorsAndNotes(t *testing.T) {
 		}
 	}
 }
+
+// TestSetupWarnsAboutProjectAndLocalMCPServers: a flopwire mcp server in a
+// project .mcp.json (the current directory or one above it) or at local
+// scope in .claude.json (keyed by the project directory, as Claude Code
+// 2.1.288 stores it) duplicates the plugin's server. One the user turned
+// down (disabledMcpjsonServers) does not run, so it gets no warning.
+func TestSetupWarnsAboutProjectAndLocalMCPServers(t *testing.T) {
+	f := newSetupFixture(t, true)
+	cwd := filepath.Join(f.dir, "cwd")
+	mcpJSON := func(name string) string {
+		return `{"mcpServers":{"` + name + `":{"type":"stdio","command":"flopwire","args":["mcp"],"env":{}},"other":{"command":"node","args":["s.js"]}}}`
+	}
+	claudeJSON := `{"projects":{
+	  "` + cwd + `":{"mcpServers":{"fw-local":{"type":"stdio","command":"/opt/bin/flopwire","args":["mcp","--server"],"env":{}}},"disabledMcpjsonServers":["fw-declined"],"allowedTools":[]},
+	  "/elsewhere":{"mcpServers":{"fw-other-project":{"command":"flopwire","args":["mcp"]}}}
+	}}`
+	files := map[string]string{
+		filepath.Join(f.home, ".claude.json"): claudeJSON,
+		filepath.Join(cwd, ".mcp.json"):       mcpJSON("fw-declined"),
+		filepath.Join(f.dir, ".mcp.json"):     mcpJSON("fw-repo-root"),
+	}
+	for p, s := range files {
+		if err := os.WriteFile(p, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, _, err := f.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(f.claude(rep).Warnings, "\n")
+	for _, want := range []string{
+		`a local MCP server "fw-local" for ` + cwd + ` runs flopwire mcp`,
+		"claude mcp remove fw-local --scope local",
+		filepath.Join(f.dir, ".mcp.json") + ` has a project MCP server "fw-repo-root" that runs flopwire mcp`,
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warnings lack %q:\n%s", want, w)
+		}
+	}
+	for _, not := range []string{"fw-declined", "fw-other-project", `"other"`} {
+		if strings.Contains(w, not) {
+			t.Errorf("warned about %s:\n%s", not, w)
+		}
+	}
+}
