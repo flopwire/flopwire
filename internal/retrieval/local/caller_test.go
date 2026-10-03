@@ -280,6 +280,15 @@ func TestDetectorUnderCodex(t *testing.T) {
 			t.Errorf("pid %d: under Codex %v, want %v", pid, got, want)
 		}
 	}
+	// A stale Claude Code session file whose pid the OS gave to a codex
+	// process: the process is Codex.
+	os.WriteFile(filepath.Join(home, ".claude", "sessions", "500.json"), []byte(`{"pid":500,"sessionId":"claude-gone"}`), 0o644)
+	for _, pid := range []int{100, 110, 500} {
+		d.Pid = pid
+		if !d.UnderCodex() {
+			t.Errorf("pid %d with a stale session file on its codex ancestor: not under Codex", pid)
+		}
+	}
 	d.Proc, d.Pid = nil, 100
 	if d.UnderCodex() {
 		t.Error("no process table: under Codex")

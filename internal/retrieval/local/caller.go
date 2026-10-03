@@ -187,15 +187,17 @@ func (d *Detector) UnderCodex() bool {
 		if pid <= 1 || d.Proc == nil {
 			return false
 		}
-		if claudeSessionFile(filepath.Join(claudeDir, "sessions", itoa(pid)+".json")) != "" {
-			return false
-		}
+		// The name first; a Claude Code session file outlives its process,
+		// and the OS may give its pid to a codex process.
 		ppid, name, ok := d.Proc(pid)
 		if !ok || IsDevinProcess(name) {
 			return false
 		}
 		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") {
 			return true
+		}
+		if claudeSessionFile(filepath.Join(claudeDir, "sessions", itoa(pid)+".json")) != "" {
+			return false
 		}
 		pid = ppid
 	}
