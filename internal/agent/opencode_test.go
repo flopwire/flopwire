@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -88,5 +89,39 @@ func TestReadSightingsOpencode(t *testing.T) {
 	}
 	if r := got[0]; r.Session != ses || r.Agent != "opencode" || !r.At.Equal(time.UnixMilli(t0+5000)) {
 		t.Fatalf("sighting %+v", r)
+	}
+}
+
+// "-" turns the opencode store off even when the environment names one:
+// nothing is indexed, watched or handed to sync.
+func TestOpencodeDisabled(t *testing.T) {
+	oc := opencodetest.New(t, "")
+	const ses = "ses_synthetic00000000000003"
+	oc.Session(ses, "", "/work/opencode-demo", "Off", opencodetest.T0)
+	oc.Prompt(ses, opencodetest.T0, "the disabled parrot")
+	t.Setenv(opencode.EnvDB, oc.Path)
+	f := newFixture(t, "-")
+	if f.cfg.OpencodeDB != "-" {
+		t.Fatalf("fixture opencode db = %q", f.cfg.OpencodeDB)
+	}
+	f.a = New(f.store, f.cfg)
+	f.once()
+	f.a.pollStores(ctx, true, true)
+	if err := f.store.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(`SELECT count(*) FROM conversations WHERE agent = 'opencode'`); n != 0 {
+		t.Fatalf("%d opencode conversations indexed with the store off", n)
+	}
+	if _, ok := f.rec.spec(opencode.ExportPath(oc.Path, ses)); ok {
+		t.Fatal("an opencode export was handed to sync with the store off")
+	}
+	if f.a.storeOf(transcript.AgentOpencode) != nil {
+		t.Fatal("the opencode store is polled")
+	}
+	for _, d := range f.a.watchDirs(time.Now()) {
+		if d == filepath.Dir(oc.Path) {
+			t.Fatal("the opencode directory is watched")
+		}
 	}
 }
