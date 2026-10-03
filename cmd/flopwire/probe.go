@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -94,6 +95,8 @@ type probeReport struct {
 	Dir      string         `json:"dir"`
 	Harness  []probeVersion `json:"harnesses"`
 	Results  []probeResult  `json:"results"`
+	// Skipped names a harness the probe did not run, and why.
+	Skipped []string `json:"skipped,omitempty"`
 
 	home string // the user's home directory, kept out of the notes
 }
@@ -252,6 +255,19 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 	}
 	if p.home, err = os.UserHomeDir(); err != nil {
 		return rep, err
+	}
+	if slices.Contains(harnesses, transcript.AgentCodex) {
+		if b, err := os.ReadFile(codexAuthPath(p.home)); err == nil {
+			if due, why := codexRefreshDue(b, time.Now(), codexRefreshWindow); due {
+				msg := "codex: Codex token refresh due (" + why + "); run `codex` once to refresh, then rerun the probe"
+				fmt.Fprintf(log, "probe: SKIP %s\n", msg)
+				rep.Skipped = append(rep.Skipped, msg)
+				harnesses = slices.DeleteFunc(harnesses, func(h transcript.Agent) bool { return h == transcript.AgentCodex })
+				if len(harnesses) == 0 {
+					return rep, errors.New("probe: " + msg)
+				}
+			}
+		}
 	}
 	p.claudeDir = os.Getenv("CLAUDE_CONFIG_DIR")
 	if p.claudeDir == "" {
@@ -695,11 +711,7 @@ func (r *harnessRun) setup() error {
 	case transcript.AgentClaude:
 		return write(filepath.Join(r.proj, ".claude", "settings.json"), map[string]any{"hooks": hooks})
 	case transcript.AgentCodex:
-		src := os.Getenv("CODEX_HOME")
-		if src == "" {
-			src = filepath.Join(r.p.home, ".codex")
-		}
-		l, err := copyLogin(filepath.Join(src, "auth.json"), filepath.Join(r.home, "auth.json"))
+		l, err := copyLogin(codexAuthPath(r.p.home), filepath.Join(r.home, "auth.json"))
 		if err != nil {
 			return err
 		}
@@ -724,14 +736,14 @@ func (r *harnessRun) setup() error {
 	return fmt.Errorf("unknown harness %s", r.name)
 }
 
-// removeLogin deletes the scratch copy of the login file, first handing
-// a login the harness refreshed during the run back to the user.
+// removeLogin deletes the scratch copy of the login file, and warns
+// loudly when the harness refreshed it during the run.
 func (r *harnessRun) removeLogin() {
 	if r.login == nil {
 		return
 	}
 	if err := r.login.release(); err != nil {
-		fmt.Fprintf(r.p.log, "probe: %s: %v\n", r.name, err)
+		fmt.Fprintf(r.p.log, "probe: WARNING: %s: %v\n", r.name, err)
 	}
 }
 
@@ -742,6 +754,7 @@ type loginCopy struct {
 }
 
 // copyLogin copies a harness's login file into the scratch home (0600).
+// The user's file is only read, never written.
 func copyLogin(src, dst string) (loginCopy, error) {
 	b, err := os.ReadFile(src)
 	if err != nil {
@@ -754,49 +767,93 @@ func copyLogin(src, dst string) (loginCopy, error) {
 	return l, os.WriteFile(dst, b, 0o600)
 }
 
-// release deletes the copy. A harness that refreshed its login during the
-// run wrote the new tokens to the copy, and Codex's refresh tokens are
-// single use: the user's file then holds a used refresh token, and their
-// next refresh fails (refresh_token_reused), logging them out. So a copy
-// that changed goes back to the user's file, when that file still holds
-// what was copied; if both changed, the user's file is kept and the
-// caller is told.
+// release deletes the copy. A copy that changed means the harness
+// refreshed its login during the run; Codex's refresh tokens are single
+// use, so the user's own file may now hold a used refresh token. The
+// probe never writes the user's harness files: it says so, loudly.
 func (l loginCopy) release() error {
-	defer os.Remove(l.dst)
 	now, err := os.ReadFile(l.dst)
+	_ = os.Remove(l.dst)
 	if err != nil || bytes.Equal(now, l.orig) {
 		return nil
 	}
-	cur, err := os.ReadFile(l.src)
+	return fmt.Errorf("the harness refreshed its login in the probe's copy during the run. Its refresh token is single use, so %s may now hold a used one and the next refresh may fail; if the harness then asks you to log in, run `codex login`", l.src)
+}
+
+// codexRefreshWindow is how far ahead the probe looks for a Codex token
+// refresh: a full run takes minutes; the rest is margin.
+const codexRefreshWindow = 30 * time.Minute
+
+// Codex refreshes its ChatGPT login when the access token is within 5
+// minutes of expiry, or 8 days after last_refresh (codex-rs login, 0.160).
+const (
+	codexRefreshBeforeExpiry = 5 * time.Minute
+	codexRefreshInterval     = 8 * 24 * time.Hour
+)
+
+// codexRefreshDue reports whether Codex could refresh the login in auth
+// (its auth.json) before now+window: the probe then skips Codex rather
+// than let a refresh in its copy use up the user's single-use refresh
+// token. A login with no ChatGPT tokens (an API key) never refreshes. A
+// ChatGPT login whose expiry cannot be read counts as due.
+func codexRefreshDue(auth []byte, now time.Time, window time.Duration) (bool, string) {
+	var a struct {
+		Tokens *struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"tokens"`
+		LastRefresh string `json:"last_refresh"`
+	}
+	if err := json.Unmarshal(auth, &a); err != nil {
+		return true, "auth.json is not JSON"
+	}
+	if a.Tokens == nil || a.Tokens.RefreshToken == "" {
+		return false, ""
+	}
+	until := now.Add(window)
+	last, err := time.Parse(time.RFC3339Nano, a.LastRefresh)
 	if err != nil {
-		return fmt.Errorf("the harness refreshed its login during the run, and %s cannot be read to restore it: %w; log in again", l.src, err)
+		return true, "last_refresh is missing or unreadable"
 	}
-	if !bytes.Equal(cur, l.orig) {
-		return fmt.Errorf("the harness refreshed its login during the run, and %s changed too; kept yours (log in again if it fails)", l.src)
+	if due := last.Add(codexRefreshInterval); !due.After(until) {
+		return true, fmt.Sprintf("the 8-day refresh is due at %s", due.UTC().Format(time.RFC3339))
 	}
-	target, err := filepath.EvalSymlinks(l.src)
+	exp, ok := jwtExpiry(a.Tokens.AccessToken)
+	if !ok {
+		return true, "the access token's expiry is unreadable"
+	}
+	if due := exp.Add(-codexRefreshBeforeExpiry); !due.After(until) {
+		return true, fmt.Sprintf("the access token expires at %s", exp.UTC().Format(time.RFC3339))
+	}
+	return false, ""
+}
+
+// jwtExpiry reads a JWT's exp claim without verifying it.
+func jwtExpiry(tok string) (time.Time, bool) {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return time.Time{}, false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
 	if err != nil {
-		return err
+		return time.Time{}, false
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".flopwire-probe-login-")
-	if err != nil {
-		return fmt.Errorf("restore the refreshed login to %s: %w; log in again", l.src, err)
+	var c struct {
+		Exp float64 `json:"exp"`
 	}
-	_, werr := tmp.Write(now)
-	if cerr := tmp.Close(); werr == nil {
-		werr = cerr
+	if json.Unmarshal(b, &c) != nil || c.Exp <= 0 {
+		return time.Time{}, false
 	}
-	if werr == nil {
-		werr = os.Chmod(tmp.Name(), 0o600)
+	return time.Unix(int64(c.Exp), 0), true
+}
+
+// codexAuthPath is the user's Codex login file.
+func codexAuthPath(home string) string {
+	src := os.Getenv("CODEX_HOME")
+	if src == "" {
+		src = filepath.Join(home, ".codex")
 	}
-	if werr == nil {
-		werr = os.Rename(tmp.Name(), target)
-	}
-	if werr != nil {
-		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("restore the refreshed login to %s: %w; log in again", l.src, werr)
-	}
-	return nil
+	return filepath.Join(src, "auth.json")
 }
 
 // session starts a headless session and runs its first turn, which
@@ -943,12 +1000,18 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 		case <-time.After(r.p.o.idleWait):
 		}
 		var during []tapEntry
-		for _, e := range r.tapSince(start) {
-			if e.Session == r.recv.ID() {
+		before := 0
+		all, _ := readTap(r.tap)
+		for _, e := range all {
+			switch {
+			case e.Session != r.recv.ID():
+			case e.At >= start:
 				during = append(during, e)
+			default:
+				before++ // the first turn's SessionStart, UserPromptSubmit, Stop
 			}
 		}
-		return verdictIdle(during, r.recv.TurnAt() > start, r.state(ctx, sent.ID), sent.ID, r.p.o.idleWait).result(res)
+		return verdictIdle(before, during, r.recv.TurnAt() > start, r.state(ctx, sent.ID), sent.ID, r.p.o.idleWait).result(res)
 
 	case casePromptSubmit, caseFraming:
 		intent, prompt := "inform", "Do not run any tools. "+quoteTags
@@ -1007,8 +1070,8 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 			return devinRun // Devin: a tool after run_subagent started is the subagent's
 		}
 		return r.sendDuring(tctx, res, start, m, prompt, trigger, func(entries []tapEntry, id, reply string, _ int64) verdict {
-			seen, path := r.subagentTranscript(entries, m)
-			return verdictSubagent(entries, r.recv.ID(), id, m, reply, seen, path)
+			seen, path, err := r.subagentTranscript(entries, m)
+			return verdictSubagent(entries, r.recv.ID(), id, m, reply, seen, path, err)
 		})
 
 	case caseGuardian:
@@ -1058,17 +1121,11 @@ func (r *harnessRun) sendDuring(ctx context.Context, res probeResult, start int6
 
 // subagentTranscript reports whether the subagent's own transcript holds
 // the marker: Claude Code's subagents/agent-<id>.jsonl, Codex's child
-// rollout, Devin's subagent nodes in its store.
-func (r *harnessRun) subagentTranscript(entries []tapEntry, marker string) (*bool, string) {
+// rollout, Devin's subagent nodes in its store. A transcript that cannot
+// be read is an error, never a pass.
+func (r *harnessRun) subagentTranscript(entries []tapEntry, marker string) (*bool, string, error) {
 	if r.name == transcript.AgentDevin {
-		db := filepath.Join(r.home, ".local", "share", "devin", "cli", "sessions.db")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		seen, err := devin.SubagentNodesContain(ctx, db, r.recv.ID(), marker)
-		if err != nil {
-			return nil, db
-		}
-		return &seen, db
+		return devinSubagentSeen(filepath.Join(r.home, ".local", "share", "devin", "cli", "sessions.db"), r.recv.ID(), marker)
 	}
 	path := ""
 	for _, e := range entries {
@@ -1089,14 +1146,26 @@ func (r *harnessRun) subagentTranscript(entries []tapEntry, marker string) (*boo
 		}
 	}
 	if path == "" {
-		return nil, ""
+		return nil, "", nil
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, path
+		return nil, path, err
 	}
 	seen := strings.Contains(string(b), marker)
-	return &seen, path
+	return &seen, path, nil
+}
+
+// devinSubagentSeen reads Devin's store for the marker in a subagent's
+// nodes.
+func devinSubagentSeen(db, session, marker string) (*bool, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	seen, err := devin.SubagentNodesContain(ctx, db, session, marker)
+	if err != nil {
+		return nil, db, err
+	}
+	return &seen, db, nil
 }
 
 // guardian: a Codex thread whose approvals go to the auto-review subagent
@@ -1164,6 +1233,9 @@ func writeProbeTable(w io.Writer, rep probeReport) error {
 	for _, h := range rep.Harness {
 		fmt.Fprintf(w, "  %s: %s, model %s\n", h.Name, h.Version, h.Model)
 	}
+	for _, s := range rep.Skipped {
+		fmt.Fprintf(w, "  SKIPPED %s\n", s)
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "HARNESS\tCASE\tRESULT\tEVIDENCE")
 	for _, r := range rep.Results {
@@ -1183,6 +1255,9 @@ func probeMarkdown(rep probeReport) string {
 	fmt.Fprintf(&b, "flopwire %s, %s agent.", rep.Flopwire, rep.Mode)
 	for _, h := range rep.Harness {
 		fmt.Fprintf(&b, " %s: %s, model %s.", h.Name, h.Version, h.Model)
+	}
+	for _, s := range rep.Skipped {
+		fmt.Fprintf(&b, " Skipped %s.", s)
 	}
 	b.WriteString("\n\n| Harness | Case | Result | Evidence |\n|---|---|---|---|\n")
 	esc := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "|", `\|`), "\n", " ") }

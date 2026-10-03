@@ -68,13 +68,34 @@ subagent fails the case even when the model still sees the marker.
   `--setting-sources project`. Codex and Devin run in scratch homes. The
   probe copies only their login files there (`~/.codex/auth.json`,
   `~/.local/share/devin/credentials.toml`) and deletes the copies at the
-  end. Codex refresh tokens are single use. If Codex refreshes its login
-  during the run, the probe writes the refreshed file back to
-  `~/.codex/auth.json`, but only when that file has not changed since the
-  copy. Otherwise the probe keeps your file and prints a warning.
+  end. The probe never writes your harness files, the login files
+  included.
 - Claude Code still writes its transcripts to `~/.claude/projects`, as
   any session does. The probe's sessions appear there under the scratch
   project's name, with an empty directory each in `~/.claude/session-env`.
+
+## Codex login refresh
+
+Codex refresh tokens are single use. A refresh in the probe's copy would
+use up the token that `~/.codex/auth.json` still holds, and your next
+Codex refresh would then fail. Codex refreshes when its access token is
+within 5 minutes of expiry, or 8 days after `last_refresh`.
+
+- Before it copies the login, the probe reads both times. If a refresh
+  could happen within the next 30 minutes, it skips Codex and prints
+  "Codex token refresh due; run `codex` once to refresh, then rerun the
+  probe". Do that, then run the probe again.
+- If Codex refreshes during the run anyway, the probe prints a warning.
+  If Codex later asks you to log in, run `codex login`.
+
+## Known limits
+
+- A probe killed with `SIGKILL` (or ended by `SIGHUP`) leaves the login
+  copies in its scratch directory (mode 0700). Delete the scratch
+  directory that the probe printed.
+- Without `--local`, Codex and Devin cannot run: their scratch homes are
+  outside what your running agent watches, and the probe stops with an
+  error. Use `--local`, or `--harness claude` with your running agent.
 
 ## What it does not cover
 

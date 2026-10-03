@@ -242,8 +242,10 @@ func (w subagentWindow) inside(e tapEntry) bool {
 // by a hook of the session itself after the subagent returned, never by a
 // hook inside the subagent; the subagent's transcript does not hold it;
 // the model quotes it. subSeen is whether the subagent's transcript holds
-// the marker, nil when the harness has no transcript file to check.
-func verdictSubagent(entries []tapEntry, session, id, marker, reply string, subSeen *bool, subPath string) verdict {
+// the marker, nil when the harness has no transcript file to check;
+// subErr is why the transcript could not be read, which fails the case:
+// an unread transcript proves nothing.
+func verdictSubagent(entries []tapEntry, session, id, marker, reply string, subSeen *bool, subPath string, subErr error) verdict {
 	var v verdict
 	w, ok := findSubagent(entries, session)
 	if !ok {
@@ -274,6 +276,8 @@ func verdictSubagent(entries []tapEntry, session, id, marker, reply string, subS
 		v.fact("the session's %s printed %s after %s", describe(ps[0]), id, describe(w.endE))
 	}
 	switch {
+	case subErr != nil:
+		v.fail("cannot read the subagent transcript %s: %v", subPath, subErr)
 	case subSeen == nil:
 		v.fact("no subagent transcript file to check")
 	case *subSeen:
@@ -286,9 +290,14 @@ func verdictSubagent(entries []tapEntry, session, id, marker, reply string, subS
 }
 
 // verdictIdle: a message sent to an idle session starts no turn within the
-// window and stays queued.
-func verdictIdle(during []tapEntry, harnessTurn bool, state, id string, window time.Duration) verdict {
+// window and stays queued. hooksBefore counts the session's hooks before
+// the wait: with none, the hooks are not wired, and a quiet wait proves
+// nothing.
+func verdictIdle(hooksBefore int, during []tapEntry, harnessTurn bool, state, id string, window time.Duration) verdict {
 	var v verdict
+	if hooksBefore == 0 {
+		v.fail("no hook ever ran for the session before the wait: the hooks are not wired, so a quiet wait proves nothing")
+	}
 	if len(during) > 0 {
 		v.fail("hooks ran during the wait (%s): a turn started", describeAll(during))
 	}

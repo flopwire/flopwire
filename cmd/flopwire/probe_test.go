@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -246,7 +249,7 @@ func TestVerdictSubagent(t *testing.T) {
 		at(200, "PreToolUse", tool("Bash"), agentID("a1")), at(6200, evPostToolUse, tool("Bash"), agentID("a1")),
 		at(7000, "SubagentStop", agentID("a1")), at(7100, evPostToolUse, tool("Agent"), printed(pID)), at(9000, "Stop"),
 	}
-	if v := verdictSubagent(claude, pSess, pID, pMarker, reply, boolp(false), "/x/agent-a1.jsonl"); len(v.fails) != 0 {
+	if v := verdictSubagent(claude, pSess, pID, pMarker, reply, boolp(false), "/x/agent-a1.jsonl", nil); len(v.fails) != 0 {
 		t.Fatalf("claude pass case: %v", v.fails)
 	}
 	// Devin 3000.11.1: nothing marks the subagent's hooks; the run_subagent
@@ -255,7 +258,7 @@ func TestVerdictSubagent(t *testing.T) {
 		at(0, "PreToolUse", tool("run_subagent")), at(100, "PreToolUse", tool("exec")), at(6100, evPostToolUse, tool("exec")),
 		at(6500, "Stop"), at(7000, evPostToolUse, tool("run_subagent"), printed(pID)),
 	}
-	if v := verdictSubagent(devinOK, pSess, pID, pMarker, reply, boolp(false), "sessions.db"); len(v.fails) != 0 {
+	if v := verdictSubagent(devinOK, pSess, pID, pMarker, reply, boolp(false), "sessions.db", nil); len(v.fails) != 0 {
 		t.Fatalf("devin pass case: %v", v.fails)
 	}
 	stolen := slices.Clone(devinOK)
@@ -275,7 +278,7 @@ func TestVerdictSubagent(t *testing.T) {
 		"no subagent":                 {[]tapEntry{at(0, evPostToolUse, printed(pID))}, nil, "no subagent ran"},
 		"printed twice":               {append(slices.Clone(claude), at(9500, evPostToolUse, printed(pID))), boolp(false), "printed 2 times"},
 	} {
-		v := verdictSubagent(tc.es, pSess, pID, pMarker, reply, tc.seen, "/x/agent-a1.jsonl")
+		v := verdictSubagent(tc.es, pSess, pID, pMarker, reply, tc.seen, "/x/agent-a1.jsonl", nil)
 		if !strings.Contains(strings.Join(v.fails, ";"), tc.want) {
 			t.Errorf("%s: fails %v, want %q", name, v.fails, tc.want)
 		}
@@ -283,12 +286,36 @@ func TestVerdictSubagent(t *testing.T) {
 }
 
 func TestVerdictIdle(t *testing.T) {
-	if v := verdictIdle(nil, false, "queued", pID, time.Minute); len(v.fails) != 0 {
+	if v := verdictIdle(3, nil, false, "queued", pID, time.Minute); len(v.fails) != 0 {
 		t.Fatalf("pass case: %v", v.fails)
 	}
-	v := verdictIdle([]tapEntry{at(5, evUserPromptSubmit, printed(pID))}, true, "delivered", pID, time.Minute)
+	v := verdictIdle(3, []tapEntry{at(5, evUserPromptSubmit, printed(pID))}, true, "delivered", pID, time.Minute)
 	if len(v.fails) != 3 {
 		t.Fatalf("woken session: %v", v.fails)
+	}
+}
+
+// The idle case passed for a session whose hooks never ran: a quiet wait
+// proves nothing then.
+func TestVerdictIdleNeedsHookEvidence(t *testing.T) {
+	v := verdictIdle(0, nil, false, "queued", pID, time.Minute)
+	if !strings.Contains(strings.Join(v.fails, ";"), "no hook ever ran") {
+		t.Fatalf("fails %v", v.fails)
+	}
+}
+
+// The Devin subagent case passed ("no subagent transcript file to check")
+// when Devin's store could not be read.
+func TestVerdictSubagentUnreadableTranscript(t *testing.T) {
+	seen, path, err := devinSubagentSeen(filepath.Join(t.TempDir(), "missing", "sessions.db"), "surf-feels", pMarker)
+	if err == nil || seen != nil {
+		t.Fatalf("missing store: %v %v", seen, err)
+	}
+	es := []tapEntry{at(0, "PreToolUse", tool("run_subagent")), at(100, "PreToolUse", tool("exec")),
+		at(7000, evPostToolUse, tool("run_subagent"), printed(pID))}
+	v := verdictSubagent(es, pSess, pID, pMarker, "ID "+pID+" MARKER "+pMarker, seen, path, err)
+	if !strings.Contains(strings.Join(v.fails, ";"), "cannot read the subagent transcript") {
+		t.Fatalf("fails %v", v.fails)
 	}
 }
 
@@ -492,9 +519,9 @@ func TestProbeNotesScrubbed(t *testing.T) {
 	}
 }
 
-// Codex rotates its refresh token on every refresh: a refresh in the
-// probe's copy used up the token the user's own auth.json still holds,
-// and the user's next refresh failed with refresh_token_reused.
+// The probe never writes a user harness file: a login the harness
+// refreshed in the scratch copy is deleted with the copy and reported, and
+// the user's file keeps what it held.
 func TestLoginCopyRelease(t *testing.T) {
 	d := t.TempDir()
 	src, dst := filepath.Join(d, "user", "auth.json"), filepath.Join(d, "scratch", "home", "auth.json")
@@ -502,7 +529,6 @@ func TestLoginCopyRelease(t *testing.T) {
 	write := func(p, s string) { t.Helper(); os.WriteFile(p, []byte(s), 0o600) }
 	read := func(p string) string { b, _ := os.ReadFile(p); return string(b) }
 
-	// Unchanged copy: the original is left alone.
 	write(src, "v1")
 	l, err := copyLogin(src, dst)
 	if err != nil || read(dst) != "v1" {
@@ -515,29 +541,74 @@ func TestLoginCopyRelease(t *testing.T) {
 		t.Fatalf("copy kept: %v", err)
 	}
 
-	// Refreshed in the copy: the refreshed login goes back to the user.
 	l, _ = copyLogin(src, dst)
 	write(dst, "v2-refreshed")
-	if err := l.release(); err != nil || read(src) != "v2-refreshed" {
-		t.Fatalf("refresh release: %v %q", err, read(src))
-	}
-	if fi, _ := os.Stat(src); fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v", fi.Mode())
+	err = l.release()
+	if err == nil || !strings.Contains(err.Error(), "codex login") || read(src) != "v1" {
+		t.Fatalf("refreshed copy: %v, user's file %q", err, read(src))
 	}
 	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("copy kept: %v", err)
 	}
+}
 
-	// Both changed (the user logged in again meanwhile): the user's file
-	// wins, the copy is still deleted, and the caller is told.
-	l, _ = copyLogin(src, dst)
-	write(dst, "v3-copy")
-	write(src, "v3-user")
-	if err := l.release(); err == nil || read(src) != "v3-user" {
-		t.Fatalf("conflict release: %v %q", err, read(src))
+// fakeJWT is an unsigned token with this exp claim.
+func fakeJWT(exp time.Time) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(fmt.Sprintf(`{"exp":%d,"sub":"x"}`, exp.Unix()))) + ".sig"
+}
+
+// The probe skips Codex when a refresh could happen during the run: the
+// refresh would use up the single-use refresh token the user's file holds.
+func TestCodexRefreshDue(t *testing.T) {
+	now := time.Date(2026, 10, 3, 16, 0, 0, 0, time.UTC)
+	auth := func(lastRefresh string, access string) []byte {
+		b, _ := json.Marshal(map[string]any{"auth_mode": "chatgpt", "last_refresh": lastRefresh,
+			"tokens": map[string]any{"access_token": access, "refresh_token": "rt-1", "id_token": "x"}})
+		return b
 	}
-	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("copy kept: %v", err)
+	fresh := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	for name, tc := range map[string]struct {
+		auth []byte
+		due  bool
+		why  string
+	}{
+		"fresh":                 {auth(fresh, fakeJWT(now.Add(5*24*time.Hour))), false, ""},
+		"access expires in 20m": {auth(fresh, fakeJWT(now.Add(20*time.Minute))), true, "access token expires"},
+		"access expires in 40m": {auth(fresh, fakeJWT(now.Add(40*time.Minute))), false, ""},
+		"8-day refresh in 10m":  {auth(now.Add(-8*24*time.Hour+10*time.Minute).Format(time.RFC3339Nano), fakeJWT(now.Add(5*24*time.Hour))), true, "8-day refresh"},
+		"8-day refresh past":    {auth(now.Add(-9*24*time.Hour).Format(time.RFC3339Nano), fakeJWT(now.Add(5*24*time.Hour))), true, "8-day refresh"},
+		"no last_refresh":       {auth("", fakeJWT(now.Add(5*24*time.Hour))), true, "last_refresh"},
+		"unreadable access":     {auth(fresh, "opaque"), true, "expiry is unreadable"},
+		"api key, no tokens":    {[]byte(`{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x","tokens":null}`), false, ""},
+		"not json":              {[]byte("{"), true, "not JSON"},
+	} {
+		due, why := codexRefreshDue(tc.auth, now, codexRefreshWindow)
+		if due != tc.due || !strings.Contains(why, tc.why) {
+			t.Errorf("%s: due %v (%q), want %v (%q)", name, due, why, tc.due, tc.why)
+		}
+	}
+}
+
+// A run asked only for Codex, with its refresh due, stops before touching
+// anything and says how to fix it.
+func TestRunProbeSkipsCodexWhenRefreshDue(t *testing.T) {
+	if _, err := exec.LookPath("codex"); err != nil {
+		t.Skip("codex is not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", home)
+	b, _ := json.Marshal(map[string]any{"last_refresh": time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano),
+		"tokens": map[string]any{"access_token": fakeJWT(time.Now().Add(time.Hour)), "refresh_token": "rt"}})
+	os.WriteFile(filepath.Join(home, "auth.json"), b, 0o600)
+	var log strings.Builder
+	rep, err := runProbe(t.Context(), probeOpts{harnesses: []transcript.Agent{transcript.AgentCodex}, cases: probeCases, local: true, dir: t.TempDir()}, &log)
+	if err == nil || !strings.Contains(err.Error(), "run `codex` once to refresh, then rerun the probe") || len(rep.Skipped) != 1 {
+		t.Fatalf("err %v, skipped %v", err, rep.Skipped)
+	}
+	if !strings.Contains(log.String(), "SKIP codex") {
+		t.Fatalf("log %q", log.String())
 	}
 }
 
