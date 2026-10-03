@@ -21,7 +21,7 @@ The admin status response includes `diagnostics.extraction`.
 A report records observations over consumed complete records. An incomplete
 live tail waits for its next append. An assessed source with zero issues means
 that extraction observed none. An unassessed source has no completed report.
-Devin exports and companion files do not receive JSONL extraction reports.
+Devin and opencode exports and companion files do not receive JSONL extraction reports.
 
 Each report identifies its parser contract, raw generation, consumed byte
 offset, and line number. It stores issue counts and at most eight line/byte

@@ -285,7 +285,7 @@ device's authority.
 | Claude Code 2.1.287 | `attachment` of type `hook_additional_context`, `content` one string per hook | injected, `hook_context` = the hook event |
 | Codex 0.159.3 | developer message, `content_item_kinds: ["hooks.additional_context"]` | system (role developer), `hook_context` |
 | Devin CLI 3000.11.1 | `role: "system"` node, like Devin's own system parts | system; counts only when it starts with the hook's output |
-| opencode | transform hooks do not persist; no parser | none: `delivered_at` only |
+| opencode | a user text part the plugin delivered with `promptAsync(noReply)`, `metadata.flopwire` on the part (2026-10-03, #62) | injected, `hook_context` = `flopwire-plugin` |
 
 - Only `<flopwire-message id="…"` at the start of a line in those rows
   counts. Prompts, replies and tool output never do: an agent that
@@ -305,8 +305,9 @@ device's authority.
   inter-agent bodies are encrypted in rollouts) is about Codex's own
   agent messages. It does not apply here: Codex stores hook context as
   plain text, so Codex recipients get `read_at`.
-- opencode has `delivered_at` only unless the `noReply` route below
-  works; its part metadata (`metadata.flopwire`) would then carry the id.
+- opencode: the `noReply` route below works (2026-10-03), so a message
+  the plugin delivers is stored with `metadata.flopwire` and gives
+  `read_at` like the other harnesses.
 
 **Permission.** Accept and revoke are human actions: the web console, or
 the CLI on a terminal. There is no MCP tool for them and the CLI refuses
@@ -335,8 +336,8 @@ therefore detects the harness from its input and delivers each message
 once, whichever config invoked it.
 
 On opencode, `promptAsync` with `noReply: true` stores a visible message
-with metadata and started no extra turn in a busy session. Whether it also
-leaves an idle session idle is untested. If it does, it replaces the
+with metadata and started no extra turn in a busy session. 2026-10-03: it
+also leaves an idle session idle (probes, opencode row), so it replaces the
 transform hook and gives opencode a read receipt.
 
 opencode needs a transcript parser (SQLite: `session`, `message.data`,

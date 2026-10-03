@@ -360,7 +360,7 @@ func (a *Agent) Pass(ctx context.Context) error {
 	if err := a.sweep(ctx); err != nil {
 		return err
 	}
-	a.pollDevin(ctx, true, true)
+	a.pollStores(ctx, true, true)
 	a.WaitIdle()
 	return a.store.Sync(ctx)
 }

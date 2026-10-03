@@ -161,6 +161,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
+	opencodeDB := fs.String("opencode-db", "", `opencode.db (default FLOPWIRE_OPENCODE_DB, OPENCODE_DB, or opencode.db under XDG_DATA_HOME or ~/.local/share/opencode; "-" disables)`)
 	socket := fs.String("socket", "", "control socket (default <config dir>/agent.sock)")
 	spoolCap := fs.Int64("spool-cap", 1<<30, "sync spool cap in bytes")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile")
@@ -259,7 +260,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.

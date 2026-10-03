@@ -44,7 +44,7 @@ func mcpBusTools() []any {
 				"session": prop("string", "only this session: its full id or a prefix, as history (flopwire_sessions) printed it"),
 				"repo":    prop("string", `only sessions on this repo: "." (this repo: every checkout and worktree of it), a repo name, or /abs/path`),
 				"user":    prop("string", "only this person's sessions: an email or its local part"),
-				"agent":   prop("string", "only this harness: claude, codex or devin"),
+				"agent":   prop("string", "only this harness: claude, codex, devin or opencode"),
 				"limit":   prop("integer", "sessions per answer; default 50, max 500; more=true says the list was cut"),
 			}),
 		busTool("flopwire_send", "Message another agent session",

@@ -1,7 +1,7 @@
 # Searching transcripts
 
 Flopwire gives people and agents four tools over coding-agent transcripts
-(Claude Code, Codex, Devin). The CLI and the MCP server have the same
+(Claude Code, Codex, Devin, opencode). The CLI and the MCP server have the same
 four, with the same flags and the same output. `grep`, `search` and
 `read` print text by default (`--json` for JSON). `sessions` prints JSON
 by default (`--text` for readable rows). See [Output](#output).
@@ -58,7 +58,7 @@ Output, newest message first, grouped under one header line per session
   | Key | Value |
   |---|---|
   | `who` | `user@device`, on the team server |
-  | `agent` | `claude`, `codex` or `devin` |
+  | `agent` | `claude`, `codex`, `devin` or `opencode` |
   | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
   | `repo`, `branch` | The repo's name; the branch, or `a→b` when it switched |
   | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits (with or without a sha), failed tool calls. A `+` means the digest capped the list |
@@ -343,7 +343,7 @@ kind/tool: text`.
 
 | Flag | Takes |
 |---|---|
-| `--agent` | `claude`, `codex`, `devin` (comma list) |
+| `--agent` | `claude`, `codex`, `devin`, `opencode` (comma list) |
 | `--repo` | A path (`.`, `./x`, `../x`, an absolute path), a repo name, `owner/name`, `host/owner/name`, or a glob such as `team*`. See [Which repo](#which-repo) |
 | `--branch` | A git branch the session ran on, or a glob such as `feat/*` |
 | `--since`, `--until` | `24h`, `7d`, `2w`, `2026-09-01`, or RFC 3339 |

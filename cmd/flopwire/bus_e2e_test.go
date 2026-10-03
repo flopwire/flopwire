@@ -58,7 +58,7 @@ func startAgent(t *testing.T, home, sock string, extra ...string) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := runAgent(ctx, append([]string{"--socket", sock, "--claude-projects", filepath.Join(home, ".claude", "projects"),
-			"--codex-home", filepath.Join(home, ".codex"), "--devin-db", "-", "--mem-limit", "0", "--gc-percent", "100"}, extra...))
+			"--codex-home", filepath.Join(home, ".codex"), "--devin-db", "-", "--opencode-db", "-", "--mem-limit", "0", "--gc-percent", "100"}, extra...))
 		done <- err
 	}()
 	t.Cleanup(func() { cancel(); <-done })

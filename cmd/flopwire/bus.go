@@ -278,7 +278,7 @@ func (c *busClient) callRetry(ctx context.Context, req agent.Request) (agent.Res
 // calling session.
 func errNoCaller(verb string, st busStyle) *busErr {
 	e := &busErr{Code: codeNoCaller, Detail: verb + ": cannot identify the calling session (no Claude Code session file, no Codex thread id, no Devin session lock, no FLOPWIRE_SESSION_ID), and messages always name the session they come from or belong to",
-		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex or devin) to your session's id",
+		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex, devin or opencode) to your session's id",
 		Example: "FLOPWIRE_SESSION_ID=0b7e2c1a-… FLOPWIRE_AGENT=claude flopwire " + verb + " …"}
 	if st.MCP {
 		e.Fix = "set FLOPWIRE_SESSION_ID and FLOPWIRE_AGENT in this MCP server's environment, or run flopwire " + verb + " from your shell tool instead"
@@ -1102,7 +1102,7 @@ is running, so a message arrives at its next tool call; idle: it waits for that
 session's human. more=true: the limit cut the list; hint says how to narrow it.
 --text: SESSION  user  agent  live busy|idle  repo@branch  "title"
 
-Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin
+Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin|opencode
 Output   --limit N (50, max 500)  --text  --max-bytes N (text)  (--json: the default)
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example",…}}; exit 1
 Socket   --socket PATH (default <config dir>/agent.sock: the device agent answers)

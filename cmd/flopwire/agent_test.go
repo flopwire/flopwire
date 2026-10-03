@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/agent"
-	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/domain"
@@ -350,7 +350,7 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--no-sync"})
+		_, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
 		done <- err
 	}()
 	deadline := time.Now().Add(30 * time.Second)

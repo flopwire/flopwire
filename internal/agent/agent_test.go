@@ -93,7 +93,7 @@ func newFixture(t *testing.T, devinDB string) *fixture {
 	t.Cleanup(func() { store.Close() })
 	f := &fixture{t: t, home: home, store: store, rec: newRecorder()}
 	f.cfg = Config{ClaudeProjects: filepath.Join(home, ".claude", "projects"), CodexHome: filepath.Join(home, ".codex"),
-		DevinDB: devinDB, Workers: 3, Sync: f.rec, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		DevinDB: devinDB, OpencodeDB: "-", Workers: 3, Sync: f.rec, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	f.a = New(store, f.cfg)
 	return f
 }

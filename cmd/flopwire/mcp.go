@@ -262,7 +262,7 @@ func (b *lazyIndexBackend) Raw(ctx context.Context, sourceID string, generation,
 
 // mcpInstructions is the server's instructions: the workflow, the address
 // form, how to read the output, and the filters every tool shares.
-const mcpInstructions = `Flopwire searches past coding-agent transcripts (Claude Code, Codex, Devin): prompts, replies, tool calls and their output, across sessions and repos. Use it to find what was done, decided, run or seen before.
+const mcpInstructions = `Flopwire searches past coding-agent transcripts (Claude Code, Codex, Devin, opencode): prompts, replies, tool calls and their output, across sessions and repos. Use it to find what was done, decided, run or seen before.
 
 Workflow: flopwire_grep for exact strings and regexes (like rg: error text, identifiers, commands, paths); flopwire_search for fuzzy natural-language questions; flopwire_sessions to list sessions by repo, agent or time; then flopwire_read on any address a result prints to see the full message and its neighbours. Hits are excerpts: read before you rely on one. If the hits don't answer the question, say the transcripts don't hold it rather than guess.
 
@@ -288,7 +288,7 @@ func prop(typ, desc string) map[string]any {
 // server instructions, and the schema alone must say what a value looks
 // like.
 var filterDesc = map[string]string{
-	"agent":              "claude, codex or devin; a comma list",
+	"agent":              "claude, codex, devin or opencode; a comma list",
 	"repo":               `"." (this repo: every checkout and worktree of it), /abs/path, a repo name or owner/name, or a glob like "team*"`,
 	"since":              `"7d", "24h", "2026-09-01", "2026-09-23 10:00Z" (the form hits print) or RFC 3339; times are UTC`,
 	"until":              `exclusive; same forms as since`,
