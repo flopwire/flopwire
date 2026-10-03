@@ -869,6 +869,9 @@ refuses the request before anything leaves the device.
   opencode (#62) and vendor cloud sessions, such as Claude Code cloud
   sessions and Devin cloud (#63), are not supported.
 - opencode has no read receipts.
+- A Devin hook finds a subagent's tool call in Devin's session store. If
+  the hook cannot read the store, it delivers messages only at a prompt.
+  It writes the cause to stderr.
 - Without a server, the agent applies the per-session, per-thread,
   duplicate and recipient limits. It does not apply the per-device and
   per-person ceilings of the server (#71).

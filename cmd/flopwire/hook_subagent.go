@@ -49,6 +49,10 @@ import (
 type hookSub struct {
 	inside     bool
 	transcript string
+	// fault is why the hook could not tell, when it counts as a subagent's
+	// only because the store could not be read: not normal operation, so
+	// the hook says it on stderr.
+	fault string
 }
 
 // devinStoreBudget bounds the Devin store read a hook makes.
@@ -107,7 +111,10 @@ func devinSubagent(ctx context.Context, in hookInput, getenv func(string) string
 	switch in.Event {
 	case evPostToolUse, "PreToolUse":
 		own, err := devin.OwnToolCall(ctx, db, in.SessionID, in.ToolUseID)
-		return hookSub{inside: err != nil || !own}
+		if err != nil {
+			return hookSub{inside: true, fault: "cannot read the Devin session store (" + firstLine(err.Error(), 200) + "); nothing delivered until the next prompt"}
+		}
+		return hookSub{inside: !own}
 	case "Stop":
 		running, err := devin.SubagentRunning(ctx, db, in.SessionID)
 		return hookSub{inside: err == nil && running}

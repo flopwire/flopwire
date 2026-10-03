@@ -308,9 +308,14 @@ func TestHookDevinWithoutTheStoreDeliversOnlyAtPrompts(t *testing.T) {
 	}{{evPostToolUse, false}, {evUserPromptSubmit, true}, {evSessionStart, true}} {
 		fa := newHookAgent(t)
 		pendingForParent(fa)
-		out, _ := runHook(t, fa.sock, devinIn(c.ev), env)
+		out, errOut := runHook(t, fa.sock, devinIn(c.ev), env)
 		if got := strings.Contains(out, "for the parent session"); got != c.deliver {
 			t.Fatalf("%s without a store: delivered %v, want %v (%q)", c.ev, got, c.deliver, out)
+		}
+		// Delivery stopping because the store cannot be read is a fault,
+		// not a subagent: it must say so where it can be found.
+		if !c.deliver && !strings.Contains(errOut, "session store") {
+			t.Fatalf("%s without a store: nothing on stderr says why nothing was delivered: %q", c.ev, errOut)
 		}
 	}
 	// Stop without a store keeps its event: it never delivers, and a

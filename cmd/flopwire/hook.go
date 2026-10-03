@@ -229,6 +229,9 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return nil
 	}
 	if sub.inside {
+		if sub.fault != "" {
+			warn("%s", sub.fault)
+		}
 		return nil // messages go to the session itself, at its own next hook
 	}
 	if elsewhere {
