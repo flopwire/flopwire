@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/perfguard"
 )
 
 // inboxItem is the message id in the session's inbox (sent or received).
@@ -202,4 +203,22 @@ func compareStr(a, b string) int {
 		return 1
 	}
 	return 0
+}
+
+// Performance guard (notes/perf-guards.md): a sighting finds its message
+// by primary key and the owed receipts come from their partial index, so
+// neither reads the whole inbox.
+func TestPerfReadPlans(t *testing.T) {
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(nil, nil), nil)
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{markReadSQL, []any{1, "m1", "s1", "claude"}},
+		{readAckSQL, []any{"m1"}},
+		{owedReadsSQL, []any{100}},
+		{readAckedSQL, []any{"done", "m1"}},
+	} {
+		perfguard.AssertSQLitePlan(t, b.st.db, nil, q.sql, q.args...)
+	}
 }

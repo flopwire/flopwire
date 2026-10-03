@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS devbus_messages (
 );
 CREATE INDEX IF NOT EXISTS devbus_to ON devbus_messages (to_session, state);
 CREATE INDEX IF NOT EXISTS devbus_ack ON devbus_messages (ack) WHERE ack IN ('owed', 'report');
-CREATE INDEX IF NOT EXISTS devbus_read_ack ON devbus_messages (read_at) WHERE read_ack = 'owed';
+CREATE INDEX IF NOT EXISTS devbus_read_ack ON devbus_messages (read_ack, read_at, id) WHERE read_ack = 'owed';
 CREATE INDEX IF NOT EXISTS devbus_lease ON devbus_messages (lease_until) WHERE state = 'leased';
 CREATE INDEX IF NOT EXISTS devbus_from ON devbus_messages (from_session, created_at);
 CREATE INDEX IF NOT EXISTS devbus_thread ON devbus_messages (thread_id, created_at);
@@ -416,6 +416,18 @@ func (s *store) acked(ctx context.Context, acked, rejected []string) error {
 	})
 }
 
+// The read receipt statements. Each finds its message by primary key, or
+// the owed ones by the devbus_read_ack index.
+const (
+	markReadSQL = `UPDATE devbus_messages SET read_at=max(?, COALESCE(delivered_at, 0)),
+			read_ack=CASE WHEN origin='server' AND state='delivered' THEN 'owed' ELSE read_ack END
+		WHERE id=? AND to_session=? AND to_agent=? AND attempts>0 AND state IN ('leased','queued','delivered') AND read_at IS NULL`
+	readAckSQL   = `SELECT read_ack FROM devbus_messages WHERE id=?`
+	owedReadsSQL = `SELECT id,to_session,to_agent,read_at FROM devbus_messages
+		WHERE read_ack='owed' AND ack='done' ORDER BY read_at, id LIMIT ?`
+	readAckedSQL = `UPDATE devbus_messages SET read_ack=? WHERE id=? AND read_ack='owed'`
+)
+
 // markRead records sightings of messages in their recipient session's
 // hook context: the first sets read_at, cut to [delivered_at, now]; later
 // ones change nothing. A sighting counts only for a message to that session
@@ -428,16 +440,13 @@ func (s *store) markRead(ctx context.Context, reads []Read, now time.Time) (int,
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
 		for _, r := range reads {
 			at := min(ms(r.At), ms(now))
-			res, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET read_at=max(?, COALESCE(delivered_at, 0)),
-					read_ack=CASE WHEN origin='server' AND state='delivered' THEN 'owed' ELSE read_ack END
-				WHERE id=? AND to_session=? AND to_agent=? AND attempts>0 AND state IN ('leased','queued','delivered') AND read_at IS NULL`,
-				at, r.ID, r.Session, r.Agent)
+			res, err := tx.ExecContext(ctx, markReadSQL, at, r.ID, r.Session, r.Agent)
 			if err != nil {
 				return err
 			}
 			if n, _ := res.RowsAffected(); n > 0 {
 				var ack string
-				if err := tx.QueryRowContext(ctx, `SELECT read_ack FROM devbus_messages WHERE id=?`, r.ID).Scan(&ack); err != nil {
+				if err := tx.QueryRowContext(ctx, readAckSQL, r.ID).Scan(&ack); err != nil {
 					return err
 				}
 				if ack == "owed" {
@@ -457,8 +466,7 @@ func (s *store) owedReads(ctx context.Context, n int) ([]busproto.ReadReceipt, e
 	if n <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,to_session,to_agent,read_at FROM devbus_messages
-		WHERE read_ack='owed' AND ack='done' ORDER BY read_at, id LIMIT ?`, n)
+	rows, err := s.db.QueryContext(ctx, owedReadsSQL, n)
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +493,7 @@ func (s *store) readAcked(ctx context.Context, taken, rejected []string) error {
 			to  string
 		}{{taken, "done"}, {rejected, "rejected"}} {
 			for _, id := range l.ids {
-				if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET read_ack=? WHERE id=? AND read_ack='owed'`, l.to, id); err != nil {
+				if _, err := tx.ExecContext(ctx, readAckedSQL, l.to, id); err != nil {
 					return err
 				}
 			}
