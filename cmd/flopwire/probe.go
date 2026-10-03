@@ -237,8 +237,14 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 			return rep, errors.New("probe: none of claude, codex, devin is installed")
 		}
 	}
-	if !slices.ContainsFunc(harnesses, func(h transcript.Agent) bool { return len(casesFor(h, o.cases)) > 0 }) {
-		return rep, fmt.Errorf("probe: no case of %s applies to %s", strings.Join(o.cases, ", "), joinAgents(harnesses))
+	noCase := func() error {
+		if slices.ContainsFunc(harnesses, func(h transcript.Agent) bool { return len(casesFor(h, o.cases)) > 0 }) {
+			return nil
+		}
+		return fmt.Errorf("probe: no case of %s applies to %s", strings.Join(o.cases, ", "), joinAgents(harnesses))
+	}
+	if err := noCase(); err != nil {
+		return rep, err
 	}
 	for _, h := range harnesses {
 		if _, err := exec.LookPath(probeBinary[h]); err != nil {
@@ -265,6 +271,10 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 				harnesses = slices.DeleteFunc(harnesses, func(h transcript.Agent) bool { return h == transcript.AgentCodex })
 				if len(harnesses) == 0 {
 					return rep, errors.New("probe: " + msg)
+				}
+				// What is left must still run a case, or the run proves nothing.
+				if err := noCase(); err != nil {
+					return rep, fmt.Errorf("%w (%s)", err, msg)
 				}
 			}
 		}

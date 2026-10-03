@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -667,5 +668,28 @@ func TestHarnessVersionScratchHome(t *testing.T) {
 	p.harnessVersion(t.Context(), transcript.AgentDevin)
 	if b, _ := os.ReadFile(out); !strings.Contains(string(b), "HOME="+filepath.Join(dir, "devin", "home")) {
 		t.Fatalf("devin ran with %s", b)
+	}
+}
+
+// Skipping Codex for a due refresh could leave harnesses with no case
+// that applies (claude + guardian): the run then proved nothing and
+// exited 0.
+func TestRunProbeSkipLeavesNoCase(t *testing.T) {
+	for _, bin := range []string{"claude", "codex"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skip(bin + " is not installed")
+		}
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", home)
+	b, _ := json.Marshal(map[string]any{"last_refresh": time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano),
+		"tokens": map[string]any{"access_token": fakeJWT(time.Now().Add(time.Hour)), "refresh_token": "rt"}})
+	os.WriteFile(filepath.Join(home, "auth.json"), b, 0o600)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	o := probeOpts{harnesses: []transcript.Agent{transcript.AgentClaude, transcript.AgentCodex}, cases: []string{caseGuardian}, local: true, dir: t.TempDir()}
+	if _, err := runProbe(ctx, o, io.Discard); err == nil || !strings.Contains(err.Error(), "no case") {
+		t.Fatalf("got %v", err)
 	}
 }
