@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -54,5 +55,38 @@ func TestOpencodeStore(t *testing.T) {
 	live := `SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.session_id = ? AND m.superseded = 0`
 	if n := f.count(live, ses); n != 0 {
 		t.Errorf("%d rows of the deleted session still live", n)
+	}
+}
+
+// opencode: a message the plugin delivered (part metadata flopwire.id)
+// gives a read sighting; the same wrapper typed as a prompt does not.
+func TestReadSightingsOpencode(t *testing.T) {
+	oc := opencodetest.New(t, "")
+	const ses = "ses_synthetic00000000000002"
+	t0 := opencodetest.T0
+	oc.Session(ses, "", "/work/opencode-demo", "Receipts", t0)
+	oc.Prompt(ses, t0, "hello")
+	f := newFixture(t, "-")
+	f.cfg.OpencodeDB = oc.Path
+	f.a = New(f.store, f.cfg)
+	l := captureReads(f)
+	f.once()
+	if r := l.take(); len(r) != 0 {
+		t.Fatalf("sightings before delivery: %+v", r)
+	}
+	deliver := func(ms int64, text, metadata string) {
+		msg, part := opencodetest.ID("msg", ms, 1), opencodetest.ID("prt", ms, 2)
+		oc.Message(msg, ses, ms, `{"role":"user"}`)
+		oc.Part(part, msg, ses, ms, `{"type":"text","text":`+jsonStr(text)+metadata+`}`)
+	}
+	deliver(t0+5000, hookText(false, "mhook1000000000"), `,"metadata":{"flopwire":{"id":"mhook1000000000"}}`)
+	deliver(t0+6000, hookText(false, "muser0000000000"), ``)
+	f.a.pollStore(ctx, &f.a.opencode, true, true)
+	got := l.take()
+	if !slices.Equal(readIDs(got), []string{"mhook1000000000"}) {
+		t.Fatalf("sightings %v, want the delivered one", readIDs(got))
+	}
+	if r := got[0]; r.Session != ses || r.Agent != "opencode" || !r.At.Equal(time.UnixMilli(t0+5000)) {
+		t.Fatalf("sighting %+v", r)
 	}
 }

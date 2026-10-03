@@ -384,3 +384,29 @@ func TestPathFrom(t *testing.T) {
 		}
 	}
 }
+
+// A message the Flopwire plugin delivered (part metadata flopwire.id) is
+// hook context; the same text typed as a prompt, or in a reply, is not.
+func TestDeliveredMessageIsHookContext(t *testing.T) {
+	f := newFixture(t)
+	seed(f)
+	wrapper := `<flopwire-message id=\"m1\" from=\"bo\">ping</flopwire-message>`
+	msgD, prtD := oid("msg", t0+60000, 1), oid("prt", t0+60000, 2)
+	f.message(msgD, sesA, t0+60000, `{"role":"user"}`)
+	f.part(prtD, msgD, sesA, t0+60000, `{"type":"text","text":"`+wrapper+`","metadata":{"flopwire":{"id":"m1"}}}`)
+	msgT, prtT := oid("msg", t0+61000, 1), oid("prt", t0+61000, 2)
+	f.message(msgT, sesA, t0+61000, `{"role":"user"}`)
+	f.part(prtT, msgT, sesA, t0+61000, `{"type":"text","text":"`+wrapper+`"}`)
+	prtR := oid("prt", t0+62000, 1)
+	f.part(prtR, msgA1, sesA, t0+62000, `{"type":"text","text":"`+wrapper+`","metadata":{"flopwire":{"id":"m1"}}}`)
+	c, _ := parse(t, f.path, transcript.Cursor{})
+	for _, m := range c.Messages {
+		want := m.NativeID == prtD
+		if got := transcript.HookContext(transcript.AgentOpencode, m); got != want {
+			t.Errorf("%s (%s): HookContext = %v, want %v", m.NativeID, m.Kind, got, want)
+		}
+		if m.NativeID == prtD && (m.Kind != transcript.KindInjected || m.Enrichment[transcript.EnrichHookContext] != DeliveryHook) {
+			t.Errorf("delivered row = %s %v", m.Kind, m.Enrichment)
+		}
+	}
+}

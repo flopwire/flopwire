@@ -165,15 +165,23 @@ func partMessages(p partRow, rc rowContext) []*transcript.Message {
 			break
 		}
 		kind := transcript.KindAssistant
+		delivered := md.Role == "user" && flopwireDelivery(pd.Metadata)
 		if md.Role == "user" {
 			kind = transcript.KindUser
-			if pd.Synthetic {
+			if pd.Synthetic || delivered {
 				kind = transcript.KindInjected
 			}
 		}
 		m := add(kind, 0, md.Role, pd.Text)
+		if delivered {
+			// The Flopwire plugin's promptAsync(noReply) delivery: only the
+			// plugin, not a prompt or the model, can set part metadata.
+			m.Enrichment = map[string]any{transcript.EnrichHookContext: DeliveryHook}
+		}
 		if pd.Synthetic || pd.Ignored {
-			m.Enrichment = map[string]any{}
+			if m.Enrichment == nil {
+				m.Enrichment = map[string]any{}
+			}
 			if pd.Synthetic {
 				m.Enrichment["synthetic"] = true
 			}
@@ -217,6 +225,24 @@ func partMessages(p partRow, rc rowContext) []*transcript.Message {
 		add(transcript.KindSystem, 0, md.Role, strings.TrimSpace(fmt.Sprintf("[retry %d] %s", pd.Attempt, errorText(pd.RetryErr))))
 	}
 	return out
+}
+
+// DeliveryHook is the hook_context value of a message the Flopwire plugin
+// delivered.
+const DeliveryHook = "flopwire-plugin"
+
+// flopwireDelivery reports whether part metadata carries the object the
+// Flopwire plugin sets on a message it delivers: {"flopwire": {"id": ...}}.
+func flopwireDelivery(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var md struct {
+		Flopwire *struct {
+			ID string `json:"id"`
+		} `json:"flopwire"`
+	}
+	return json.Unmarshal(raw, &md) == nil && md.Flopwire != nil && md.Flopwire.ID != ""
 }
 
 // messageError is the system row of an assistant message that ended in an

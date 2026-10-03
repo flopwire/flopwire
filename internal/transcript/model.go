@@ -168,6 +168,10 @@ const EnrichHookContext = "hook_context"
 //   - Devin CLI: a node of role system. Devin stores hook context like the
 //     parts of its own system prompt, with nothing to tell them apart, so
 //     every system row qualifies.
+//   - opencode: a user text part whose metadata the Flopwire plugin set
+//     when it delivered the message (promptAsync with noReply), a row of
+//     kind injected with EnrichHookContext. opencode's transform hooks
+//     leave nothing in the store.
 //
 // User prompts, assistant text and tool calls and results never qualify,
 // whatever their text: an agent can quote or invent anything there.
@@ -181,6 +185,9 @@ func HookContext(agent Agent, m *Message) bool {
 		return ok && m.Kind == KindSystem
 	case AgentDevin:
 		return m.Kind == KindSystem && m.Role == "system"
+	case AgentOpencode:
+		_, ok := m.Enrichment[EnrichHookContext]
+		return ok && m.Kind == KindInjected
 	}
 	return false
 }
