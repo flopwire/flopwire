@@ -232,39 +232,54 @@ func TestConcurrentHooksOneLease(t *testing.T) {
 
 // With a server, the receipt (delivered_at) goes out only after the
 // confirmation, and a message no hook confirmed is reported undelivered.
+//
+// The clock and the batcher are driven by the test (no Run, no sleeps):
+// what the server saw is read only after the inbox recorded its answer.
 func TestServerAckAfterConfirmAndUndeliveredReport(t *testing.T) {
 	srv := newFakeServer()
 	cfg := testConfig(srv, nil)
-	cfg.Lease = 30 * time.Millisecond
+	var mu sync.Mutex
+	now := time.Now()
+	cfg.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
 	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, &presenceSrc{})
-	if err := b.st.reconcile(ctx, []busproto.Envelope{env("mc", "s1"), env("mu", "s2")}, nil, time.Now()); err != nil {
+	if err := b.st.reconcile(ctx, []busproto.Envelope{env("mc", "s1"), env("mu", "s2")}, nil, now); err != nil {
 		t.Fatal(err)
 	}
-	run(t, b)
 	if got, _ := b.Take(ctx, "s1", "", Limit{}); !slices.Equal(ids(got), []string{"mc"}) {
 		t.Fatalf("take: %v", ids(got))
 	}
-	time.Sleep(10 * cfg.AckDelay)
+	drainAcks(t, b)
 	if a := srv.ackedIDs(); len(a) != 0 {
 		t.Fatalf("receipt before the confirmation: %v", a)
 	}
 	if err := b.Confirm(ctx, "s1", []string{"mc"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the receipt after the confirmation", func() bool { return slices.Equal(srv.ackedIDs(), []string{"mc"}) })
+	drainAcks(t, b)
+	if a := srv.ackedIDs(); !slices.Equal(a, []string{"mc"}) {
+		t.Fatalf("receipts after the confirmation: %v", a)
+	}
 
 	// mu: taken MaxAttempts times, never confirmed.
 	for i := range MaxAttempts {
-		waitFor(t, "the next lease", func() bool {
-			got, _ := b.Take(ctx, "s2", "", Limit{})
-			return len(got) == 1 && got[0].Attempt == i+1
-		})
+		got, _ := b.Take(ctx, "s2", "", Limit{})
+		if len(got) != 1 || got[0].Attempt != i+1 {
+			t.Fatalf("lease %d: %+v", i+1, got)
+		}
+		advance(LeaseFor)
 	}
-	waitFor(t, "the undelivered report", func() bool { return slices.Contains(srv.undeliveredIDs(), "mu") })
+	b.expireLeases(ctx) // the loop's tick
+	drainAcks(t, b)
+	if !slices.Contains(srv.undeliveredIDs(), "mu") {
+		t.Fatalf("undelivered reports: %v", srv.undeliveredIDs())
+	}
 	if slices.Contains(srv.ackedIDs(), "mu") {
 		t.Fatal("an unconfirmed message was acknowledged as delivered")
 	}
-	waitFor(t, "the report settled", func() bool { n, _ := b.st.owed(ctx, "report", 10); return len(n) == 0 })
+	if n, _ := b.st.owed(ctx, "report", 10); len(n) != 0 {
+		t.Fatalf("reports still owed: %v", n)
+	}
 }
 
 // An inbox from an earlier build (another schema version) is recreated:
