@@ -135,6 +135,7 @@ type devinSink struct {
 	*localindex.Sink
 	touched map[string]bool
 	deny    func(session, cwd string) bool // nil: no rules
+	reads   readSightings
 }
 
 func (s *devinSink) denied(session, cwd string) bool { return s.deny != nil && s.deny(session, cwd) }
@@ -152,6 +153,7 @@ func (s *devinSink) Message(m *transcript.Message) error {
 		return nil
 	}
 	s.touched[m.SessionID] = true
+	s.reads.note(m)
 	return s.Sink.Message(m)
 }
 
@@ -210,7 +212,7 @@ func (a *Agent) parseDevin(ctx context.Context, id transcript.Identity, full boo
 	if st.Watermark != nil {
 		cur.Offset = st.Watermark.Offset
 	}
-	sink := &devinSink{Sink: a.store.NewSink(ctx, st.ID, st.Generation), touched: map[string]bool{}}
+	sink := &devinSink{Sink: a.store.NewSink(ctx, st.ID, st.Generation), touched: map[string]bool{}, reads: readSightings{agent: transcript.AgentDevin}}
 	if pv := a.policy(); !pv.pol.Empty() {
 		a.loadDevinModes(ctx, pv)
 		sink.deny = func(session, cwd string) bool {
@@ -233,6 +235,7 @@ func (a *Agent) parseDevin(ctx context.Context, id transcript.Identity, full boo
 	if err := sink.Flush(&wm, next.State); err != nil {
 		return err
 	}
+	a.markRead(ctx, &sink.reads)
 	if full {
 		if _, err := a.store.SupersedeAbsent(ctx, st.ID, st.Generation); err != nil {
 			return err

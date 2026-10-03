@@ -125,7 +125,7 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	}
 	src := t.src
 	src.FileID = id.ID
-	sink := &cwdSink{Sink: a.store.NewSink(ctx, st.ID, gen)}
+	sink := &cwdSink{Sink: a.store.NewSink(ctx, st.ID, gen), reads: readSightings{agent: t.src.Agent}}
 	sink.BatchSize = a.cfg.BatchRows
 	// The watermark hashes the bytes the parser consumed (P2), so a
 	// rewrite during the parse shows up at the next Decide.
@@ -146,7 +146,7 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 			return false, err
 		}
 		change.Decision = transcript.Rewrite
-		sink = &cwdSink{Sink: a.store.NewSink(ctx, st.ID, gen)}
+		sink = &cwdSink{Sink: a.store.NewSink(ctx, st.ID, gen), reads: readSightings{agent: t.src.Agent}}
 		sink.BatchSize = a.cfg.BatchRows
 		rec, err = transcript.NewReadRecorder(f, 0)
 		if err != nil {
@@ -190,6 +190,7 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	if err := sink.Flush(&wm, next.State); err != nil {
 		return false, err
 	}
+	a.markRead(ctx, &sink.reads)
 	if testHookAfterFlush != nil {
 		if err := testHookAfterFlush(); err != nil {
 			return true, err
@@ -217,11 +218,18 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 var testHookAfterFlush func() error
 
 // cwdSink is the index sink, noting every working directory the parsed
-// conversations name (transcript.Conversation.Cwd and OtherCwds).
+// conversations name (transcript.Conversation.Cwd and OtherCwds), and the
+// Flopwire messages its hook context shows (read receipts).
 type cwdSink struct {
 	*localindex.Sink
-	cwds []string
-	seen map[string]bool
+	cwds  []string
+	seen  map[string]bool
+	reads readSightings
+}
+
+func (s *cwdSink) Message(m *transcript.Message) error {
+	s.reads.note(m)
+	return s.Sink.Message(m)
 }
 
 func (s *cwdSink) Conversation(c *transcript.Conversation) error {
