@@ -55,6 +55,10 @@ type retriever struct {
 	// busSocket is the device agent's control socket for the message bus
 	// tools; "" is the default beside the client config.
 	busSocket string
+	// underCodex: Codex launched this MCP server (local.Detector.UnderCodex),
+	// so a request's _meta names the calling Codex thread; otherwise _meta
+	// is ignored.
+	underCodex bool
 	// teamRepo, set for the server, expands a --repo argument on this
 	// device (local.ExpandRepo with the local index's placements), since
 	// the server cannot read this device's git files.
@@ -62,7 +66,7 @@ type retriever struct {
 }
 
 // whoCalls is the calling session: the one an MCP request's _meta names
-// (Codex), else what the detector finds.
+// (Codex, when it launched the server), else what the detector finds.
 func (r *retriever) whoCalls(ctx context.Context) (local.Caller, bool) {
 	if c, ok := metaCaller(ctx); ok {
 		return c, true

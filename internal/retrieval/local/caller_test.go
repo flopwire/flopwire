@@ -252,3 +252,36 @@ func TestDetectLive(t *testing.T) {
 	c, ok := d.Detect(context.Background())
 	t.Logf("caller %+v found=%v in %s", c, ok, time.Since(t0))
 }
+
+// UnderCodex: the nearest harness above the process is Codex. Claude Code
+// (its session file) or Devin first, no harness, or an unreadable process
+// table is not.
+func TestDetectorUnderCodex(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755)
+	os.WriteFile(filepath.Join(home, ".claude", "sessions", "300.json"), []byte(`{"pid":300,"sessionId":"claude-live"}`), 0o644)
+	procs := map[int]struct {
+		ppid int
+		name string
+	}{
+		100: {500, "codex"},                                     // Codex launched the server directly
+		110: {111, "sh"}, 111: {112, "npx"}, 112: {500, "node"}, // through wrappers
+		500: {300, "/opt/homebrew/bin/codex"},  // a Codex run from a Claude Code shell is still Codex
+		200: {300, "node"}, 300: {1, "claude"}, // Claude Code
+		400: {401, "sh"}, 401: {1, "devin"}, // Devin
+		600: {601, "sh"}, 601: {1, "launchd"}, // no harness
+		700: {701, "sh"}, // 701 is not in the table
+	}
+	proc := func(pid int) (int, string, bool) { p, ok := procs[pid]; return p.ppid, p.name, ok }
+	d := &Detector{Getenv: func(string) string { return "" }, Home: home, Proc: proc}
+	for pid, want := range map[int]bool{100: true, 110: true, 500: true, 200: false, 300: false, 400: false, 600: false, 700: false, 0: false} {
+		d.Pid = pid
+		if got := d.UnderCodex(); got != want {
+			t.Errorf("pid %d: under Codex %v, want %v", pid, got, want)
+		}
+	}
+	d.Proc, d.Pid = nil, 100
+	if d.UnderCodex() {
+		t.Error("no process table: under Codex")
+	}
+}

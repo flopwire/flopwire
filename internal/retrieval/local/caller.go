@@ -164,6 +164,44 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 	return Caller{}, false
 }
 
+// UnderCodex reports whether the nearest harness process above this one
+// is Codex: the ancestor walk Detect makes (at most eight levels from
+// d.Pid) meets a process named codex before any process with a Claude
+// Code session file and before any devin process. It is the evidence that
+// Codex launched an MCP server, so a request's _meta.threadId names a
+// Codex thread (cmd/flopwire mcp). It is the strongest signal there is:
+// Codex scrubs its MCP servers' environment (no CODEX_* variables), and
+// the client's name in initialize is the client's own claim, as _meta is;
+// the process tree is the OS's. An unreadable process table is not Codex.
+func (d *Detector) UnderCodex() bool {
+	env := d.Getenv
+	if env == nil {
+		env = os.Getenv
+	}
+	claudeDir := env("CLAUDE_CONFIG_DIR")
+	if claudeDir == "" {
+		claudeDir = filepath.Join(d.Home, ".claude")
+	}
+	pid := d.Pid
+	for range 8 {
+		if pid <= 1 || d.Proc == nil {
+			return false
+		}
+		if claudeSessionFile(filepath.Join(claudeDir, "sessions", itoa(pid)+".json")) != "" {
+			return false
+		}
+		ppid, name, ok := d.Proc(pid)
+		if !ok || IsDevinProcess(name) {
+			return false
+		}
+		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") {
+			return true
+		}
+		pid = ppid
+	}
+	return false
+}
+
 // DevinHeldElsewhere reports whether the Devin session's lock (in
 // session_locks beside devinDB) names a running devin process that is not
 // d.Pid or one of its ancestors: another devin process holds the session.

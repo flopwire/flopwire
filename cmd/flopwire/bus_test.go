@@ -536,14 +536,14 @@ func mcpRoundTrip(t *testing.T, r *retriever, line string) string {
 }
 
 // Codex starts MCP servers with a scrubbed environment; each tools/call
-// names its thread in _meta. That id is the sender (over the detector),
-// for one call only.
+// names its thread in _meta. When Codex launched the server, that id is
+// the sender (over the detector), for one call only.
 func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	busRetry = 10 * time.Millisecond
 	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
 		return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m03", State: busproto.StateQueued, To: busproto.Recipient{User: "a@x.test", Live: true}}}
 	})
-	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock, underCodex: true}
 	const thread = "019a0000-0000-7000-8000-0000000000cd"
 	for i, meta := range []string{
 		`{"threadId":"` + thread + `"}`,
@@ -579,6 +579,35 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`)
 	if !strings.Contains(resp, "do not poll flopwire_peers") {
 		t.Fatalf("instructions: %s", resp)
+	}
+}
+
+// Any MCP client can put a Codex thread id in _meta. Unless Codex launched
+// the server, it is ignored and the detector names the sender (issue #71).
+func TestMCPMetaIgnoredWithoutCodex(t *testing.T) {
+	busRetry = 10 * time.Millisecond
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "m03", State: busproto.StateQueued, To: busproto.Recipient{User: "a@x.test", Live: true}}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	const thread = "019a0000-0000-7000-8000-0000000000cd"
+	for i, meta := range []string{
+		`{"threadId":"` + thread + `"}`,
+		`{"x-codex-turn-metadata":{"thread_id":"` + thread + `"}}`,
+	} {
+		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"@a","message":"hi"},"_meta":`+meta+`}}`)
+		if _, isErr, _ := mcpContent(t, resp); isErr {
+			t.Fatalf("meta %d: %s", i, resp)
+		}
+		if s := fa.requests()[i].Send; s.FromSession != selfID || s.FromAgent != "claude" {
+			t.Fatalf("meta %d: sender %+v, want the detected Claude session", i, s)
+		}
+	}
+	// Nor does a detector that finds nothing fall back to it.
+	r.caller = func(context.Context) (local.Caller, bool) { return local.Caller{}, false }
+	resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"flopwire_send","arguments":{"to":"@a","message":"hi"},"_meta":{"threadId":"`+thread+`"}}}`)
+	if text, isErr, _ := mcpContent(t, resp); !isErr || !strings.Contains(text, codeNoCaller) || len(fa.requests()) != 2 {
+		t.Fatalf("no caller: %s", text)
 	}
 }
 

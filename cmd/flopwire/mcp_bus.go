@@ -228,8 +228,14 @@ func mcpToolNames() []string {
 type metaKey struct{}
 
 // withMCPMeta keeps the calling session a tools/call request's _meta
-// names, if any, for the call's context.
-func withMCPMeta(ctx context.Context, meta map[string]any) context.Context {
+// names, if any, for the call's context. Only Codex's _meta is read, and
+// only when Codex launched the server (codex, from
+// local.Detector.UnderCodex): any other MCP client could name any Codex
+// thread there (issue #71). Otherwise the detector decides.
+func withMCPMeta(ctx context.Context, codex bool, meta map[string]any) context.Context {
+	if !codex {
+		return ctx
+	}
 	if id := codexMetaThread(meta); id != "" {
 		return context.WithValue(ctx, metaKey{}, local.Caller{Agent: transcript.AgentCodex, SessionID: id, Rule: "codex-meta"})
 	}

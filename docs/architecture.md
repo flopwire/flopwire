@@ -292,7 +292,10 @@ its subagents when detection finds it by exact evidence, first match wins:
 
 1. Over MCP, the Codex thread id in the call's `_meta` (`threadId`, or
    `thread_id` in `x-codex-turn-metadata`). Codex starts MCP servers with
-   an empty environment, so this is its only exact evidence.
+   an empty environment, so this is its only exact evidence. It counts only
+   when Codex launched the server: the nearest harness among the server's
+   ancestor processes is a `codex` process. Any other client's `_meta` is
+   ignored, since it could name any Codex thread.
 2. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
 3. An ancestor process's Claude Code session file, `~/.claude/sessions/<pid>.json`.
 4. An ancestor process whose pid exactly one Devin
