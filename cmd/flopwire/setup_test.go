@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// callerGORACE is GORACE as the test binary got it, before quickRaceExit.
+var callerGORACE string
+
 // quickRaceExit sets atexit_sleep_ms=0 in GORACE so the test binary's
 // child processes (the fake harnesses, helper processes) inherit it. A
 // -race binary otherwise sleeps 1 s on exit, and the setup tests run the
@@ -41,6 +44,7 @@ func quickRaceExit() {
 		return
 	}
 	g := os.Getenv("GORACE")
+	callerGORACE = g
 	if strings.Contains(g, "atexit_sleep_ms") {
 		return
 	}
@@ -326,6 +330,9 @@ func mutating(calls []string) []string {
 func TestFakeHarnessesSkipRaceExitSleep(t *testing.T) {
 	if !raceEnabled {
 		t.Skip("only -race binaries sleep on exit")
+	}
+	if strings.Contains(callerGORACE, "atexit_sleep_ms") {
+		t.Skipf("caller chose GORACE=%q", callerGORACE)
 	}
 	if g := os.Getenv("GORACE"); !strings.Contains(g, "atexit_sleep_ms=0") {
 		t.Fatalf("GORACE = %q; child test binaries will sleep 1 s on exit", g)
