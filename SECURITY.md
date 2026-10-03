@@ -105,6 +105,14 @@ another person's session is held until the recipient accepts that person
   including one that claims to come from the recipient's own user (#77).
 - A prompt-injected agent can pass the injection to every session whose
   owner accepted its owner.
+- Vendor cloud sessions (Claude Code cloud, Devin cloud) are reached too
+  ([docs/cloud.md](docs/cloud.md)). The vendor gives pushed text to the
+  model as the account owner's own input, with no mark of where it came
+  from. The `sender` attribute and the instruction travel inside that
+  text, so the information-only rule is weaker still there. The device
+  pushes with the owner's own vendor CLI login, and reads the Claude Code
+  login's token from its credential store to list the sessions; it never
+  refreshes or stores that token.
 - Accepting and revoking need the person's own login session (the web
   console, or the CLI with the session `flopwire login` saved). A device
   token, a minted token or a service account is refused. No route accepts

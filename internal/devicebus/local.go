@@ -494,7 +494,9 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 			to = v
 		}
 	} else {
-		v, isLive, err := b.resolveLocal(ctx, in.to, live)
+		// A cloud session of the person is addressable too; an @user
+		// message never goes to one.
+		v, isLive, err := b.resolveLocal(ctx, in.to, append(slices.Clone(live), b.CloudSessions()...))
 		if err != nil {
 			return out, err
 		}
@@ -503,7 +505,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		}
 		to, toKey = v, "session:"+v.Agent+":"+v.SessionID
 		e.Addressed = "session"
-		out.To = busproto.Recipient{Session: v.SessionID, Agent: v.Agent, User: b.cfg.User, UserID: b.localUserID(), Repo: v.Repo, Branch: v.Branch, Live: isLive, Busy: isLive && v.Busy}
+		out.To = busproto.Recipient{Session: v.SessionID, Agent: v.Agent, User: b.cfg.User, UserID: b.localUserID(), Repo: v.Repo, Branch: v.Branch, Live: isLive, Busy: isLive && v.Busy, Cloud: v.Cloud}
 	}
 	e.ToSession, e.ToAgent = to.SessionID, to.Agent
 	var refusal *busproto.Error
@@ -668,8 +670,8 @@ func (b *Bus) runLocal(ctx context.Context) {
 	}
 }
 
-// peersLocal lists the device's live sessions, the calling one left out,
-// busy first.
+// peersLocal lists the device's live sessions and its person's cloud
+// sessions, the calling one left out, busy first.
 func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.PeersResponse, error) {
 	live, err := b.sessions(ctx)
 	if err != nil {
@@ -678,13 +680,21 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 	host, _ := os.Hostname()
 	now := b.cfg.Now()
 	out := busproto.PeersResponse{Peers: []busproto.Peer{}}
-	for _, s := range live {
-		if s.SessionID == q.Session || !bus.RepoMatches(q.Repo, q.Roots, s.Repo) || (q.Agent != "" && !strings.EqualFold(q.Agent, s.Agent)) ||
+	for _, s := range append(slices.Clone(live), b.CloudSessions()...) {
+		repoOK := bus.RepoMatches(q.Repo, q.Roots, s.Repo)
+		if s.Cloud {
+			repoOK = bus.CloudRepoMatches(q.Repo, q.Roots, s.Repo)
+		}
+		if s.SessionID == q.Session || !repoOK || (q.Agent != "" && !strings.EqualFold(q.Agent, s.Agent)) ||
 			(q.User != "" && !b.isLocalUser(q.User)) {
 			continue
 		}
-		out.Peers = append(out.Peers, busproto.Peer{Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
-			Device: host, Repo: s.Repo, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, SeenAt: now})
+		p := busproto.Peer{Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
+			Device: host, Repo: s.Repo, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now}
+		if s.Cloud {
+			p.Device = ""
+		}
+		out.Peers = append(out.Peers, p)
 	}
 	slices.SortFunc(out.Peers, func(a, b busproto.Peer) int {
 		if a.Busy != b.Busy {

@@ -319,7 +319,8 @@ off. Code: `internal/retrieval/local/caller.go`.
 Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
 server, the device agent, the `peers`, `send` and `inbox` commands and MCP
 tools, `flopwire hook` and the plugins for Claude Code, Codex and Devin CLI
-are built, with read receipts. opencode and vendor cloud sessions are not. The
+are built, with read receipts, and push delivery into vendor cloud sessions
+(`internal/vendorcloud`, [cloud.md](cloud.md)). opencode is not. The
 commands reach the server only through the device agent's control socket.
 Routes and wire types are in `internal/busproto`.
 
@@ -327,7 +328,11 @@ Routes and wire types are in `internal/busproto`.
   25 s). The request carries every live session on the device (id, agent,
   repo, branch, busy) and replaces what the server held. A session is live
   for 75 s after the poll that reported it. A session id that is another
-  person's, uploaded or in their presence, is not recorded.
+  person's, uploaded or in their presence, is not recorded. The poll also
+  carries the person's vendor cloud sessions that the device listed
+  (`PollRequest.Cloud`). The server keeps one row per person and session
+  for those (`bus_presence.cloud`, no device), whichever device reported
+  it last; no poll removes it.
 - **Send.** The sending session must be live on the calling device or
   uploaded from it. `to` is a session id prefix (4+ characters, unique) or
   `@user`. The server sets the envelope (session, person, agent, repo,
@@ -343,6 +348,12 @@ Routes and wire types are in `internal/busproto`.
   atomic. The device acks a message after a hook confirms that it printed
   it; the ack sets `delivered_at`. The same ack batch reports messages that
   became `undelivered` (`unconfirmed` after 3 leases, or `session_ended`).
+  A message to a cloud session is offered to every device of its owner
+  that polls. The device claims it only while the vendor reports a turn
+  running, pushes it with the vendor's CLI (`internal/vendorcloud`), and
+  acks it on the vendor's acknowledgement. Three failed pushes become
+  `undelivered` (`push_failed`). An `@user` message never goes to a cloud
+  session.
 - **Read receipts.** A delivered message is `read` once the recipient
   session's transcript shows it in hook context: its text entered the
   session's context, which says nothing about what the model did with it.

@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/vendorcloud"
 )
 
 // Server is the bus routes the device calls; client.Bus implements them.
@@ -55,7 +56,8 @@ type Server interface {
 	Inbox(context.Context, busproto.InboxQuery) (busproto.InboxResponse, error)
 }
 
-// Session is one of the device's sessions as the agent knows it.
+// Session is one of the device's sessions as the agent knows it, or one
+// of its person's vendor cloud sessions (Cloud).
 type Session struct {
 	busproto.PresenceSession
 	// Withheld: the path rules keep the session off the server, so it is
@@ -63,6 +65,9 @@ type Session struct {
 	Withheld bool
 	// LastActive is the transcript's last write.
 	LastActive time.Time
+	// Cloud: a vendor cloud session (cloud.go); Busy means the vendor
+	// reports a turn running.
+	Cloud bool
 }
 
 // Config configures a Bus. Zero fields take defaults.
@@ -93,6 +98,12 @@ type Config struct {
 	// User is the device's person without a server: the name @user
 	// matches and envelopes carry. Default: the OS account name.
 	User string
+
+	// Cloud reaches the person's vendor cloud sessions (cloud.go); nil:
+	// none.
+	Cloud []vendorcloud.Adapter
+	// CloudEvery is how often cloud sessions are listed; default 20s.
+	CloudEvery time.Duration
 
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -157,6 +168,9 @@ func (c *Config) defaults() {
 	if c.MaxAttempts <= 0 {
 		c.MaxAttempts = MaxAttempts
 	}
+	if c.CloudEvery <= 0 {
+		c.CloudEvery = 20 * time.Second
+	}
 }
 
 func localUser() string {
@@ -186,8 +200,9 @@ type Status struct {
 	RetryAt   time.Time `json:"retry_at,omitzero"`
 	LastPoll  time.Time `json:"last_poll,omitzero"` // the last answered poll
 	// Sessions is how many live sessions presence reports (to the server,
-	// or locally).
+	// or locally); Cloud, how many vendor cloud sessions the device lists.
 	Sessions int `json:"sessions"`
+	Cloud    int `json:"cloud,omitempty"`
 	// Pending counts undelivered messages in the local inbox (queued, or
 	// leased to a hook that has not confirmed them); Unacked, delivery and
 	// read receipts and undelivered reports the server has not taken yet.
@@ -213,6 +228,8 @@ type Bus struct {
 	presence presenceCache
 	recheck  chan struct{} // Recheck: re-read the saved credential now
 	ackWake  chan struct{} // a delivery owes a receipt
+	pushWake chan struct{} // a cloud message may be due
+	cloud    map[string]cloudList
 	localSeq int64
 }
 
@@ -223,7 +240,8 @@ func Open(path string, cfg Config) (*Bus, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bus{cfg: cfg, st: st, log: cfg.Logger, recheck: make(chan struct{}, 1), ackWake: make(chan struct{}, 1)}
+	b := &Bus{cfg: cfg, st: st, log: cfg.Logger, recheck: make(chan struct{}, 1), ackWake: make(chan struct{}, 1), pushWake: make(chan struct{}, 1),
+		cloud: map[string]cloudList{}}
 	b.status.State = StateConnecting
 	if cfg.Connect == nil {
 		b.status.State = StateLocal
@@ -256,16 +274,16 @@ func (b *Bus) Local() bool { return b.cfg.Connect == nil }
 // ends. It returns nil on shutdown. A failing server never stops it: it
 // backs off and retries, and nothing else in the agent waits for it.
 func (b *Bus) Run(ctx context.Context) error {
+	var wg sync.WaitGroup
+	if len(b.cfg.Cloud) > 0 {
+		wg.Go(func() { b.runCloud(ctx) })
+	}
 	if b.Local() {
 		b.runLocal(ctx)
+		wg.Wait()
 		return nil
 	}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		b.runAcks(ctx)
-	}()
+	wg.Go(func() { b.runAcks(ctx) })
 	b.runServer(ctx)
 	wg.Wait()
 	return nil
@@ -432,6 +450,7 @@ func (b *Bus) Status(ctx context.Context) Status {
 	}
 	st.HeldSenders = append([]busproto.HeldSender(nil), b.held...)
 	b.mu.Unlock()
+	st.Cloud = len(b.CloudSessions())
 	if c, err := b.st.counts(ctx, b.cfg.Now()); err == nil {
 		st.Pending, st.Unacked = c.pending, c.owed
 	}

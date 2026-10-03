@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	case "devin":
 		os.Exit(fakeDevin(os.Args[1:]))
 	}
+	// An agent a test runs never reaches the vendors' cloud sessions with
+	// the developer's own logins.
+	os.Setenv("FLOPWIRE_CLOUD", "off")
 	os.Exit(m.Run())
 }
 

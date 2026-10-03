@@ -40,7 +40,10 @@
 // old; the poll waits while nothing is newer than the cursor sent.
 //
 // A message to a session arrives in Messages on the devices that hold that
-// session. A message to @user arrives in Claimable on each of that person's
+// session. A message to a vendor cloud session (Claude cloud, Devin cloud)
+// arrives in Claimable, marked Cloud, on each of its owner's devices: the
+// device that claims it pushes it into the session while the session
+// reports a turn running (see Cloud sessions). A message to @user arrives in Claimable on each of that person's
 // devices with an eligible live session; the device claims it for one
 // session with ClaimRequest (atomic: one claim wins) and then delivers it.
 // A hook takes a message on lease and confirms it after printing it; the
@@ -51,6 +54,20 @@
 // When the device then finds a delivered message's wrapper in the hook
 // context its session's transcript recorded, it sends AckRequest.Read, which
 // sets read_at.
+//
+// # Cloud sessions
+//
+// A vendor cloud session runs on the vendor's machines and is owned by a
+// person, not a device. Each of the person's devices that can list them
+// (the vendor's CLI login) reports them in PollRequest.Cloud; the server
+// keeps one row per (person, agent, session) whichever device reported it
+// last, live for PresenceTTL like any session. Peers marks them Cloud.
+// Sending to one follows the rules of any session: own, or held until the
+// recipient accepts the sender (B7). An @user message never goes to a
+// cloud session. The device that claims a cloud message pushes it with the
+// vendor's own route (internal/vendorcloud) only while the session runs a
+// turn; a push that fails is retried, and after devicebus.MaxAttempts
+// failures reported in AckRequest.PushFailed.
 package busproto
 
 import (
@@ -166,8 +183,13 @@ const (
 	ReasonUnconfirmed = "unconfirmed"
 	// ReasonSessionEnded: the session the message was for (addressed, or
 	// claimed for an @user message) ended before a hook delivered it. It
-	// is not given to another session (#67).
+	// is not given to another session (#67). For a cloud session: its
+	// vendor reported it archived or exited when the push was tried.
 	ReasonSessionEnded = "session_ended"
+	// ReasonPushFailed: the message is for a vendor cloud session, and
+	// devicebus.MaxAttempts pushes into it failed (the vendor refused or
+	// did not answer).
+	ReasonPushFailed = "push_failed"
 )
 
 // Sender is own when both sessions belong to one person, else teammate (B4).
@@ -261,6 +283,9 @@ type Recipient struct {
 	// running a turn, so the message arrives at its next tool call.
 	Live bool `json:"live"`
 	Busy bool `json:"busy"`
+	// Cloud: the session is a vendor cloud session. It gets the message
+	// pushed while it runs a turn, and it cannot reply.
+	Cloud bool `json:"cloud,omitempty"`
 }
 
 // SendResponse is the outcome of a send that was not refused.
@@ -327,6 +352,12 @@ type PresenceSession struct {
 type PollRequest struct {
 	// Sessions is the device's whole presence; it replaces the last one.
 	Sessions []PresenceSession `json:"sessions"`
+	// Cloud is the person's vendor cloud sessions the device listed
+	// (Busy: a turn is running). They belong to the person, not the
+	// device: each is recorded for the person, and one the device leaves
+	// out stays live until PresenceTTL after the last report of any of
+	// the person's devices. At most MaxPresence.
+	Cloud []PresenceSession `json:"cloud,omitempty"`
 	// Cursor is the Cursor of the last answer (0 at start). The poll
 	// answers at once when it holds a message newer than Cursor.
 	Cursor int64 `json:"cursor"`
@@ -341,10 +372,13 @@ type PollRequest struct {
 }
 
 // Claimable is an @user message this device may claim, with the device's
-// sessions it may go to (busy sessions first).
+// sessions it may go to (busy sessions first); or, Cloud, a message to one
+// of the person's cloud sessions (Sessions holds that one), which the
+// device claims when it is about to push it.
 type Claimable struct {
 	Message  Envelope `json:"message"`
 	Sessions []string `json:"sessions"`
+	Cloud    bool     `json:"cloud,omitempty"`
 }
 
 // HeldSender counts held messages from one sender to the device's person;
@@ -372,7 +406,8 @@ type PollResponse struct {
 }
 
 // ClaimRequest is POST /v1/bus/claim: take an @user message for one live
-// session on this device.
+// session on this device, or a message to a live cloud session of the
+// device's person (SessionID is that session) for this device to push.
 type ClaimRequest struct {
 	MessageID string `json:"message_id"`
 	SessionID string `json:"session_id"`
@@ -389,12 +424,15 @@ type ClaimResponse struct {
 // confirmed them after devicebus.MaxAttempts leases) and become
 // undelivered with ReasonUnconfirmed; those in SessionEnded will not be
 // either (their session ended first) and become undelivered with
-// ReasonSessionEnded; those in Read were read. Together at most MaxAck
+// ReasonSessionEnded; those in PushFailed (cloud messages whose pushes
+// failed devicebus.MaxAttempts times) become undelivered with
+// ReasonPushFailed; those in Read were read. Together at most MaxAck
 // entries.
 type AckRequest struct {
 	IDs          []string      `json:"ids"`
 	Undelivered  []string      `json:"undelivered,omitempty"`
 	SessionEnded []string      `json:"session_ended,omitempty"`
+	PushFailed   []string      `json:"push_failed,omitempty"`
 	Read         []ReadReceipt `json:"read,omitempty"`
 }
 
@@ -426,18 +464,22 @@ type AckResponse struct {
 
 // Peer is one live session, the row `flopwire peers` prints.
 type Peer struct {
-	Session  string    `json:"session"`
-	Agent    string    `json:"agent"`
-	User     string    `json:"user"`
-	UserID   string    `json:"user_id"`
-	UserName string    `json:"user_name,omitempty"`
-	Device   string    `json:"device,omitempty"`
-	Repo     string    `json:"repo,omitempty"`
-	Branch   string    `json:"branch,omitempty"`
-	Title    string    `json:"title,omitempty"`
-	Busy     bool      `json:"busy"`
-	Own      bool      `json:"own"` // the caller's own person
-	SeenAt   time.Time `json:"seen_at"`
+	Session  string `json:"session"`
+	Agent    string `json:"agent"`
+	User     string `json:"user"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name,omitempty"`
+	Device   string `json:"device,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Busy     bool   `json:"busy"`
+	Own      bool   `json:"own"` // the caller's own person
+	// Cloud: a vendor cloud session, owned by User and on no device
+	// (Device is empty). A message is pushed into it while it is busy;
+	// it cannot reply.
+	Cloud  bool      `json:"cloud,omitempty"`
+	SeenAt time.Time `json:"seen_at"`
 }
 
 // PeersQuery is GET /v1/bus/peers: session (the calling session, left

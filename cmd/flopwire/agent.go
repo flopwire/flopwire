@@ -40,6 +40,7 @@ import (
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/vendorcloud"
 )
 
 func agentCmd(ctx context.Context, args []string) error {
@@ -298,7 +299,9 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			connect = busConnect(cc, client.Load)
 			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
 		}
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log}); b != nil {
+		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
+		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
+		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -875,6 +878,9 @@ func printBusStatus(w io.Writer, b *devicebus.Status) {
 		fmt.Fprintf(w, "messaging: %s\n", b.State)
 	}
 	fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	if b.Cloud > 0 {
+		fmt.Fprintf(w, "cloud sessions: %d listed (Claude Code cloud, Devin cloud)\n", b.Cloud)
+	}
 	for _, h := range b.HeldSenders {
 		fmt.Fprintf(w, "  held from %s: %d %s, oldest %s\n", busproto.Preview(h.User), h.Count, plural(h.Count, "message", "messages"), h.Oldest.Local().Format(time.DateTime))
 	}
