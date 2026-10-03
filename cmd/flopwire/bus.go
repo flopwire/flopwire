@@ -441,6 +441,17 @@ func repoBranch(repo, branch string) string {
 	return format.Clean(r)
 }
 
+// sessionLabel is how a session id prints in a row: its shortest prefix
+// among ids, or, for a cloud session, the whole id. Every Claude cloud id
+// starts "session_" and every Devin one "devin-", so a short prefix names
+// none of them.
+func sessionLabel(id string, cloud bool, ids []string) string {
+	if cloud {
+		return format.Clean(id)
+	}
+	return format.ShortPrefix(id, ids)
+}
+
 // quoted is s on one line, cut to about n bytes, quoted; "" stays "".
 func quoted(s string, n int) string {
 	s = strings.Join(strings.Fields(format.Clean(s)), " ")
@@ -460,13 +471,18 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 	for i, p := range out.Peers {
 		ids[i] = p.Session
 	}
-	shown, own := 0, 0
+	shown, own, cloud := 0, 0, 0
 	for _, p := range out.Peers {
 		state := "live idle"
-		if p.Busy {
+		switch {
+		case p.Cloud && p.Busy:
+			state = "cloud busy"
+		case p.Cloud:
+			state = "cloud idle"
+		case p.Busy:
 			state = "live busy"
 		}
-		fields := []string{format.ShortPrefix(p.Session, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
+		fields := []string{sessionLabel(p.Session, p.Cloud, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
 		if t := quoted(p.Title, 80); t != "" {
 			fields = append(fields, t)
 		}
@@ -478,6 +494,9 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 		shown++
 		if p.Own {
 			own++
+		}
+		if p.Cloud {
+			cloud++
 		}
 	}
 	narrow := st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session")
@@ -493,8 +512,12 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 	case shown < out.Total:
 		fmt.Fprintf(&b, "[%s]\n", out.Hint)
 	default:
-		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]\n",
-			shown, plural(shown, "session", "sessions"), own)
+		cloudNote := ""
+		if cloud > 0 {
+			cloudNote = "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply"
+		}
+		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: with its human's next prompt%s. Address one by its first column, or a person as @user]\n",
+			shown, plural(shown, "session", "sessions"), own, cloudNote)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -516,6 +539,7 @@ const (
 	arriveAccepted     = "when_accepted"   // held until the recipient's human accepts the sender
 	arriveNextSession  = "next_session"    // @user with no live session: their next session
 	arriveIfResumed    = "only_if_resumed" // a session that is not running
+	arriveWhenRunning  = "when_running"    // an idle cloud session: pushed when it next runs a turn
 )
 
 // sendJSON is send's receipt: busproto.SendResponse (id, thread_id,
@@ -601,6 +625,8 @@ func arrival(r busproto.SendResponse) string {
 		return arriveAccepted
 	case r.To.Live && r.To.Busy:
 		return arriveNextToolCall
+	case r.To.Live && r.To.Cloud:
+		return arriveWhenRunning
 	case r.To.Live:
 		return arriveNextPrompt
 	case r.To.Session != "":
@@ -620,6 +646,8 @@ const (
 	// Idle, held, queued for @user, or not running: no reply until a
 	// human acts.
 	nextNoWait = "Do not wait for the reply; tell your user you asked."
+	// A cloud session gets messages pushed and has no route back.
+	nextCloud = "No reply will come: a cloud session cannot send messages. Tell your user you asked; its human sees the answer in that session."
 )
 
 // sendNext is the receipt's next: what to do until the reply comes. Only
@@ -627,6 +655,9 @@ const (
 func sendNext(r busproto.SendResponse) string {
 	if r.Intent != busproto.IntentRequest {
 		return ""
+	}
+	if r.To.Cloud {
+		return nextCloud
 	}
 	if arrival(r) == arriveNextToolCall {
 		return nextBusy
@@ -649,6 +680,13 @@ func sendOutcome(r busproto.SendResponse) string {
 			who = fmt.Sprintf("%s (%s %s %s)", format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		}
 		line = fmt.Sprintf("held %s for %s: %s has not accepted messages from you; expires %s", r.ID, who, shortUser(to.User), expiry(r.ExpiresAt))
+	case to.Session != "" && to.Cloud:
+		head := fmt.Sprintf("sent %s to %s (%s %s cloud %s)", r.ID, sessionLabel(to.Session, true, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
+		if to.Busy {
+			line = head + ": running, pushed now and read at its next tool call; a cloud session cannot reply"
+		} else {
+			line = head + ": not running a turn, pushed when it next runs one; a cloud session cannot reply; expires " + expiry(r.ExpiresAt)
+		}
 	case to.Session != "":
 		head := fmt.Sprintf("sent %s to %s (%s %s %s)", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		switch {
@@ -1128,10 +1166,10 @@ at the next tool call, or with your human's next prompt. Never ask a peer to do
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
-"queued"|"held","to":{"session","agent","user","repo","branch","live","busy"},
+"queued"|"held","to":{"session","agent","user","repo","branch","live","busy","cloud"},
 "sender","intent","sent","expires_at","redactions","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed","outcome":TEXT,"next":TEXT (request only: what to do until the
+"only_if_resumed"|"when_running","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
 "thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",

@@ -201,6 +201,12 @@ func TestSendOutcomeLines(t *testing.T) {
 		{busproto.SendResponse{ID: "m7f41", State: busproto.StateQueued, ExpiresAt: exp, Redactions: map[string]int{"github-token": 2, "aws-key": 1},
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/src/api", Branch: "main", Live: true, Busy: true}},
 			"sent m7f41 to 4c19e0d2 (gary codex api@main): busy, arrives at its next tool call; 3 secrets masked before it left this device (aws-key, github-token)"},
+		{busproto.SendResponse{ID: "m7f42", State: busproto.StateQueued, ExpiresAt: exp,
+			To: busproto.Recipient{Session: "session_01AbCd", Agent: "claude", User: "gary@example.test", Repo: "acme/api", Branch: "claude/fix", Live: true, Busy: true, Cloud: true}},
+			"sent m7f42 to session_01AbCd (gary claude cloud api@claude/fix): running, pushed now and read at its next tool call; a cloud session cannot reply"},
+		{busproto.SendResponse{ID: "m7f43", State: busproto.StateQueued, ExpiresAt: exp,
+			To: busproto.Recipient{Session: "devin-0a1b2c3d", Agent: "devin", User: "gary@example.test", Live: true, Cloud: true}},
+			"sent m7f43 to devin-0a1b2c3d (gary devin cloud -): not running a turn, pushed when it next runs one; a cloud session cannot reply; expires 2026-10-02T14:02Z"},
 	} {
 		if got := sendOutcome(c.r); got != c.want {
 			t.Errorf("outcome\n got %s\nwant %s", got, c.want)
@@ -428,6 +434,14 @@ func TestPeersOutput(t *testing.T) {
 	if err != nil || out != want {
 		t.Fatalf("peers:\n%s\nwant:\n%s%v", out, want, err)
 	}
+	// A cloud session is marked, and the footer says what that means.
+	peers = append(peers, busproto.Peer{Session: "session_01AbCdEf", Agent: "claude", User: "gary@example.test", Repo: "acme/api", Branch: "claude/fix", Title: "cloud task", Own: true, Cloud: true})
+	out, err = cli(t, fa, "", "peers", "--text")
+	if err != nil || !strings.Contains(out, "session_01AbCdEf  gary  claude  cloud idle  api@claude/fix  \"cloud task\"\n") ||
+		!strings.Contains(out, "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply.") {
+		t.Fatalf("peers with a cloud session:\n%s%v", out, err)
+	}
+	peers = peers[:3]
 	if q := fa.requests()[0].Peers; q.Session != selfID || q.Repo != "api" || q.User != "alex" || q.Agent != "claude" {
 		t.Fatalf("query %+v", q)
 	}

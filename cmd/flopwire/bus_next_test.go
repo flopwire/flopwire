@@ -76,6 +76,7 @@ func TestSendReceiptNext(t *testing.T) {
 		{"held", "request", busproto.Recipient{User: "sam@example.test", Repo: "api", Live: true, Busy: true}, busproto.StateHeld, nextNoWait},
 		{"queued @user", "request", busproto.Recipient{User: "alex@example.test", Repo: "api"}, busproto.StateQueued, nextNoWait},
 		{"not running", "request", ended, busproto.StateQueued, nextNoWait},
+		{"cloud", "request", busproto.Recipient{Session: "session_01AbCd", Agent: "claude", User: "gary@example.test", Live: true, Busy: true, Cloud: true}, busproto.StateQueued, nextCloud},
 		{"inform", "inform", busy, busproto.StateQueued, ""},
 		{"inform by default", "", busy, busproto.StateQueued, ""},
 		{"done", "done", busy, busproto.StateQueued, ""},
