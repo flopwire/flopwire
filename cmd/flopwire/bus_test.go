@@ -19,6 +19,7 @@ import (
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -1044,5 +1045,45 @@ func TestBusSandboxBlockedConnect(t *testing.T) {
 	e := jsonErr(t, errOut.String(), err)
 	if e.Code != codeSandboxBlocked || !strings.Contains(e.Fix, "flopwire_send") || strings.Contains(e.Detail, "not running") {
 		t.Fatalf("blocked connect: %+v", e)
+	}
+}
+
+// One message at the body and ref caps, as a send leaves the device
+// (devicebus.CleanText), fits the MCP output budget in every inbox form:
+// what survives cleaning grows at most two-fold as JSON. A body of control
+// characters grew six-fold, about 24 KB from 4,000 bytes (issue #71).
+func TestInboxWorstCaseMessageFitsMCPBudget(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fill := func(unit string, n int) string { return strings.Repeat(unit, n/len(unit)) }
+	var item busproto.InboxItem
+	fa := startFakeAgent(t, func(agent.Request) agent.Response {
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{item}, Next: "x|m1"}}
+	})
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	for _, unit := range []string{"\x01", "\x1b", "\x7f", "\u0085", "\r", "\"", "\\", "\n", "\t", " ", "<", "é"} {
+		body := devicebus.CleanText(fill(unit, busproto.MaxBodyBytes))
+		if body == "" {
+			continue // nothing left: refused as an empty body
+		}
+		var refs []string
+		for range busproto.MaxRefs {
+			refs = append(refs, devicebus.CleanText(fill(unit, busproto.MaxRefBytes)))
+		}
+		item = busproto.InboxItem{Envelope: busproto.Envelope{ID: "m0123456789abcdef", ThreadID: "m0123456789abcdef", ReplyTo: "m0123456789abcdee",
+			From: peerID, FromAgent: "codex", User: "alex@example.test", UserID: "u-2", Repo: "/src/web", Branch: "main",
+			Sender: busproto.SenderTeammate, Intent: busproto.IntentRequest, Body: body, Refs: refs, Sent: t0, ExpiresAt: t0.Add(time.Hour),
+			ToSession: selfID, ToAgent: "claude", ToUser: "gary@example.test", Addressed: "session"}, Direction: "received", State: busproto.StateRead}
+		for _, args := range []map[string]any{{}, {"thread": "m0123456789abcdef"}, {"format": "text"}, {"thread": "m0123456789abcdef", "format": "text"}} {
+			text, err := mcpCall(t.Context(), r, "flopwire_inbox", args)
+			if err != nil {
+				t.Fatalf("%q %v: %v", unit, args, err)
+			}
+			if len(text) > format.MaxOutput {
+				t.Errorf("%q %v: %d bytes, over the %d-byte budget", unit, args, len(text), format.MaxOutput)
+			}
+			if !strings.Contains(text, "m0123456789abcdef") {
+				t.Errorf("%q %v: the message is not shown: %.200s", unit, args, text)
+			}
+		}
 	}
 }

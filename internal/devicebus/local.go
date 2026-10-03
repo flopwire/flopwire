@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/flopwire/flopwire/internal/bus"
@@ -24,6 +25,7 @@ import (
 // server when one is configured, else into the local inbox. A refusal is a
 // *busproto.Error with the server's codes either way.
 func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	cleanSend(&req)
 	if b.Local() {
 		return b.sendLocal(ctx, req)
 	}
@@ -49,6 +51,50 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 	}
 	return out, err
+}
+
+// cleanSend drops control characters from a send's body and refs
+// (CleanText) before any check sees them.
+func cleanSend(req *busproto.SendRequest) {
+	req.Body = CleanText(req.Body)
+	if len(req.Refs) > 0 {
+		refs := make([]string, len(req.Refs))
+		for i, r := range req.Refs {
+			refs[i] = CleanText(r)
+		}
+		req.Refs = refs
+	}
+}
+
+// CleanText is s without control characters other than newline and tab:
+// a CRLF or a lone CR becomes a newline, and every other C0 control, DEL
+// and C1 control is dropped. JSON writes a C0 control as a six-byte \u
+// escape, so a body of them grew six-fold in an inbox answer and one
+// message could pass the MCP output budget (format.MaxOutput); what is
+// left grows at most two-fold (a quote, a backslash, a newline, a tab,
+// U+2028 and U+2029). A terminal would act on what was dropped, and no
+// message needs it.
+func CleanText(s string) string {
+	clean := true
+	for _, r := range s {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\r':
+			return '\n'
+		case r != '\n' && r != '\t' && unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // namesNoWithheld refuses a send whose recipient prefix or refs name a

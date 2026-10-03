@@ -920,3 +920,35 @@ func TestSendNamingWithheldSessionRefused(t *testing.T) {
 		t.Fatalf("@user: %v, checked %q", err, asked)
 	}
 }
+
+// Control characters (but newline and tab) never leave the device: a body
+// of them grew six-fold as JSON (issue #71). A CR or CRLF is a newline.
+func TestSendDropsControlCharacters(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	refs := []string{"4c19e0d2/12\x1b[2J"}
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "a\x00b\x1b[31mc\x7fd\u009be\r\nf\rg\th\ni", Refs: refs}); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	got := srv.sends[0]
+	srv.mu.Unlock()
+	if got.Body != "ab[31mcde\nf\ng\th\ni" || !slices.Equal(got.Refs, []string{"4c19e0d2/12[2J"}) {
+		t.Fatalf("sent %q %q", got.Body, got.Refs)
+	}
+	if refs[0] != "4c19e0d2/12\x1b[2J" {
+		t.Fatal("the caller's refs were changed")
+	}
+	// The local inbox gets the same text.
+	lb := openBus(t, filepath.Join(t.TempDir(), "local.db"), testConfig(nil, nil), p)
+	p.set(sess("open-1", "claude", "/src/api", true), sess("open-2", "claude", "/src/api", true))
+	if _, err := lb.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "open-2", Body: "x\x07y\r\nz"}); err != nil {
+		t.Fatal(err)
+	}
+	in, err := lb.Inbox(ctx, busproto.InboxQuery{Session: "open-2"})
+	if err != nil || len(in.Messages) != 1 || in.Messages[0].Body != "xy\nz" {
+		t.Fatalf("local inbox: %+v %v", in, err)
+	}
+}
