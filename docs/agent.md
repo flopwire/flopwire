@@ -215,11 +215,11 @@ The report has these parts:
 
 | Field | Means |
 |---|---|
-| `ok` | `false` when a harness command failed. The exit status is then 1. |
+| `ok` | `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
 | `flopwire.path` | The `flopwire` binary that the plugin runs. Empty when `flopwire` is not on `PATH`. |
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
-| `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do) and `error`. |
+| `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
@@ -238,11 +238,12 @@ Follow these steps in order.
    with `flopwire agent run` and keep it running. Do not start it
    yourself.
 5. Run `flopwire setup`.
-6. If `ok` is `false`, read `error` in each entry of `harnesses`. Report
-   each error to your user. Stop.
-7. Read `warnings` in each entry of `harnesses`. Each warning names an
-   older manual entry that now runs twice. Show each warning to your user.
-   Do not edit the settings file unless your user tells you to.
+6. Read `error` and `skipped` in each entry of `harnesses`. Report each
+   one to your user. If `ok` is `false`, stop.
+7. Read `warnings` in each entry of `harnesses`. Show each warning to
+   your user. A warning can name an older manual entry that now runs
+   twice, or a hook that a plugin update enabled. Do not edit the settings
+   file unless your user tells you to.
 8. Read `todo` in each entry of `harnesses`, and the top-level `todo`.
    Tell your user each item.
 9. If the Codex entry has a `hook_trust.need_review` list that is not
@@ -370,9 +371,12 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
-For Devin CLI, setup uses no marketplace. Devin loads a Claude Code
-plugin as it is, so setup installs `plugins/claude-code/flopwire` into
-Devin:
+Devin CLI has no marketplace of its own: `devin plugins install` takes
+one plugin source. Given the root of a Claude Code marketplace
+repository, Devin 3000.10.21 and later recognizes the marketplace and
+offers to install one of its plugins. Devin loads a Claude Code plugin as
+it is, so setup names the plugin's directory in the repository and
+installs `plugins/claude-code/flopwire` into Devin directly:
 
 ```sh
 devin plugins install --local flopwire/flopwire#plugins/claude-code/flopwire -y
@@ -395,6 +399,14 @@ directory, so edits apply in the next session.
   repository. setup refuses a `--source owner/repo#ref` for Devin. Use a
   local checkout of that ref.
 - Devin shows the plugin's skill as `/flopwire:messaging`.
+- Every `devin plugins` command needs a Devin login. When you are not
+  logged in, setup skips Devin: the Devin entry has `skipped: not logged
+  in to Devin`, and `ok` and the exit status do not change. Run
+  `devin auth login`, then run setup again.
+- `devin plugins update` enables the hooks of a new plugin version without
+  a prompt. setup compares the plugin's hooks before and after the update.
+  It reports each hook that the update enabled in `warnings`, and each hook
+  that the update removed in `done`.
 
 Devin reads hooks from Claude Code's settings files, but not from Claude
 Code's plugins. The Claude Code plugin and the Devin plugin therefore never

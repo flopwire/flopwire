@@ -71,9 +71,12 @@ Flags
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","note"},"agent":{"running",
 "socket"},"server":{"configured","url"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
-"done":[…],"todo":[…],"warnings":[…],"error","hook_trust":{"hooks","trusted",
+"done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
 "need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only.
-Exit 1 when a harness command failed.
+A harness that fails is reported with "error"; setup carries on with the
+others, then sets ok false and exits 1. A harness setup cannot manage because
+you are not logged in to it (Devin) is reported with "skipped" instead; it
+does not change ok or the exit status.
 `
 
 // setupReport is what setup prints.
@@ -119,6 +122,9 @@ type harnessReport struct {
 	Todo           []string `json:"todo"`
 	Warnings       []string `json:"warnings"`
 	Error          string   `json:"error,omitempty"`
+	// Skipped is why setup left a detected harness alone without failing:
+	// the user is not logged in to it. It does not change ok.
+	Skipped string `json:"skipped,omitempty"`
 	// HookTrust is Codex's trust state for the plugin's hooks.
 	HookTrust *hookTrustReport `json:"hook_trust,omitempty"`
 }
@@ -295,6 +301,8 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			rep.Todo = append(rep.Todo, "optional: no server is configured, so messages go only between this device's sessions; flopwire claim and flopwire enroll join a team")
 		}
 	}
+	// A harness error fails the run; a skipped harness (not logged in)
+	// does not.
 	for _, h := range setupHarnesses {
 		r := h.apply(ctx, env)
 		if r.Error != "" {
@@ -784,7 +792,8 @@ func writeSetupText(w io.Writer, rep setupReport) {
 				state = "disabled"
 			}
 			fmt.Fprintf(&b, "  plugin: %s %s, %s scope, %s\n", h.Plugin, h.Version, h.Scope, state)
-		case h.Plugin != "":
+		case h.Plugin != "" && h.Skipped == "":
+			// A skipped harness was never asked what it has installed.
 			fmt.Fprintf(&b, "  plugin: %s not installed\n", h.Plugin)
 		}
 		if h.Marketplace != "" {
@@ -803,7 +812,10 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		for _, d := range h.Done {
 			fmt.Fprintf(&b, "  done: %s\n", d)
 		}
-		if len(h.Done) == 0 && h.Error == "" && rep.Mode != setupCheck {
+		if h.Skipped != "" {
+			fmt.Fprintf(&b, "  skipped: %s\n", h.Skipped)
+		}
+		if len(h.Done) == 0 && h.Error == "" && h.Skipped == "" && rep.Mode != setupCheck {
 			b.WriteString("  done: nothing to change\n")
 		}
 		for _, x := range h.Warnings {

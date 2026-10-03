@@ -5,12 +5,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 )
+
+// errDevinLoggedOut is a `devin plugins` command refused because the user
+// is not logged in to Devin: every plugins command needs a login.
+var errDevinLoggedOut = errors.New("not logged in to Devin (devin plugins needs a login)")
+
+// devinLoggedOut reports whether a failed `devin plugins` command printed
+// Devin's login error: "You must be logged in to manage plugins".
+func devinLoggedOut(out, errb []byte) bool {
+	const msg = "You must be logged in"
+	return bytes.Contains(errb, []byte(msg)) || bytes.Contains(out, []byte(msg))
+}
 
 // --- Devin CLI ---
 //
@@ -144,6 +156,9 @@ func (c devinCLI) info(ctx context.Context) (*devinPluginInfo, error) {
 		if bytes.Contains(errb, []byte("is not installed")) || bytes.Contains(out, []byte("is not installed")) {
 			return nil, nil
 		}
+		if devinLoggedOut(out, errb) {
+			return nil, errDevinLoggedOut
+		}
 		return nil, commandError(c.path, args, out, errb, err)
 	}
 	info, ok := parseDevinPluginInfo(out)
@@ -235,6 +250,17 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 	r.Marketplace = src
 	c := devinCLI{env: env, path: path}
 	installed, err := c.info(ctx)
+	if errors.Is(err, errDevinLoggedOut) {
+		// Devin is not set up on this machine: skip it without failing
+		// the run.
+		again := "flopwire setup"
+		if env.mode != setupInstall {
+			again += " --" + env.mode
+		}
+		r.Todo = append(r.Todo, "log in to Devin: devin auth login, then run "+again+" again")
+		r.Skipped = err.Error()
+		return r
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -291,6 +317,15 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 	}
 	if mode == setupInstall && before != nil && installed != nil && !foreign && !sameDevinInfo(before, installed) {
 		r.Done = append(r.Done, "updated the Devin plugin "+devinPlugin)
+		// Devin's update takes a new revision's hooks without asking, so
+		// name each hook the update enabled or dropped.
+		added, removed := devinHookChanges(before, installed)
+		if len(added) > 0 {
+			r.Warnings = append(r.Warnings, "the plugin update enabled new hooks in Devin: "+strings.Join(added, "; "))
+		}
+		if len(removed) > 0 {
+			r.Done = append(r.Done, "the plugin update removed hooks from Devin: "+strings.Join(removed, "; "))
+		}
 	}
 	if installed != nil {
 		r.Installed, r.Enabled, r.Scope = true, true, "user"
@@ -534,4 +569,32 @@ func flopwireMCPServersIn(path string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// devinHookChanges returns the hooks in b that are not in a, and those in
+// a that are not in b, as "on EVENT runs "COMMAND"", sorted. A command
+// that runs once more on an event counts as added.
+func devinHookChanges(a, b *devinPluginInfo) (added, removed []string) {
+	type hook struct{ event, command string }
+	count := func(info *devinPluginInfo) map[hook]int {
+		m := map[hook]int{}
+		for ev, cmds := range info.Hooks {
+			for _, c := range cmds {
+				m[hook{ev, c}]++
+			}
+		}
+		return m
+	}
+	ca, cb := count(a), count(b)
+	diff := func(x, y map[hook]int) []string {
+		var out []string
+		for h, n := range x {
+			for range n - y[h] {
+				out = append(out, fmt.Sprintf("on %s runs %q", h.event, h.command))
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	return diff(cb, ca), diff(ca, cb)
 }
