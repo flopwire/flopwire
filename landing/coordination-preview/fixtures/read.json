@@ -1,0 +1,84 @@
+{
+  "conversation": {
+    "address": "0b7e2c1a",
+    "id": "2",
+    "agent": "claude",
+    "session_id": "0b7e2c1a-0000-4000-8000-000000000001",
+    "title": "Update the pagination API",
+    "cwd": "/work/acme/app",
+    "repo": "/work/acme/app",
+    "device": "local",
+    "started_at": "2026-09-23T10:00:00Z",
+    "last_activity_at": "2026-09-23T10:00:02Z",
+    "messages": 3,
+    "branches": [
+      "api-cursors"
+    ],
+    "digest": {
+      "intent": "Update the pagination API",
+      "repos": [
+        "/work/acme/app"
+      ],
+      "branches": [
+        "api-cursors"
+      ],
+      "duration_s": 2,
+      "messages": {
+        "assistant": 1,
+        "user": 2
+      },
+      "last": "The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent."
+    }
+  },
+  "focus": "7",
+  "line": 1,
+  "messages": [
+    {
+      "address": "0b7e2c1a/1404928",
+      "id": "6",
+      "native_id": "c1000000-0000-4000-8000-000000000002#0",
+      "ordinal": 1404928,
+      "kind": "user",
+      "role": "user",
+      "ts": "2026-09-23T10:00:01Z",
+      "text": "Why does the client need the API’s cursor?",
+      "text_len": 44,
+      "lines": 1,
+      "line_from": 1,
+      "line_to": 1,
+      "version": 1,
+      "provenance": {
+        "source_id": "2",
+        "path": "/tmp/fw-site-z7efx1r9/projects/acme-app/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+        "generation": 1,
+        "line_no": 2,
+        "byte_offset": 343,
+        "byte_len": 396
+      }
+    },
+    {
+      "address": "0b7e2c1a/3026944",
+      "id": "7",
+      "native_id": "c1000000-0000-4000-8000-000000000003#0",
+      "ordinal": 3026944,
+      "kind": "assistant",
+      "role": "assistant",
+      "ts": "2026-09-23T10:00:02Z",
+      "text": "The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.",
+      "text_len": 120,
+      "lines": 1,
+      "line_from": 1,
+      "line_to": 1,
+      "version": 1,
+      "provenance": {
+        "source_id": "2",
+        "path": "/tmp/fw-site-z7efx1r9/projects/acme-app/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+        "generation": 1,
+        "line_no": 3,
+        "byte_offset": 739,
+        "byte_len": 507
+      }
+    }
+  ],
+  "more_before": true
+}

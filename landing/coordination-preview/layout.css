@@ -1,0 +1,131 @@
+/* Page rhythm shared by both visual directions. */
+:root {
+  --section-space: 80px;
+  --content-space: 32px;
+  --column-space: 48px;
+}
+.hero { padding-top: 48px; }
+.hero-intro { align-items: start; margin-bottom: 48px; }
+.hero-actions { gap: 16px; }
+.hero-trust { gap: 12px 24px; }
+.linear-example { margin-top: 0; }
+.linear-example figcaption { padding-bottom: 24px; }
+.story-section { padding-top: var(--section-space); }
+.story-section > .section-heading { margin: 0 0 var(--content-space); }
+.section-heading p { margin-top: 20px; }
+.grep-section > .section-heading,
+#sharing > .section-heading { gap: var(--column-space); }
+.grep-section > .hero-terminal { margin-top: 0; }
+.growth-steps {
+  margin-top: 0;
+  grid-template-rows: auto auto auto auto;
+  grid-auto-flow: column;
+  row-gap: 16px;
+}
+.growth-steps li {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 4;
+  gap: 16px;
+  padding: 24px 24px 0 0;
+}
+.growth-steps li + li { padding-left: 24px; }
+.growth-steps h3 { margin: 0; }
+.growth-steps li > p:first-of-type { flex: 1; }
+.growth-steps .hero-terminal { margin: 0; }
+.growth-steps .step-note { margin: 0; }
+.growth-steps .hero-terminal-title > span:last-child { flex-basis: 100%; }
+.growth-bridge { margin-top: 24px; }
+.provenance-section { gap: var(--column-space); }
+.provenance-section > .section-heading { margin-bottom: 0; }
+.provenance-demo { margin-top: var(--provenance-space, var(--content-space)); gap: var(--column-space); }
+.commit-preview .code-change { margin: 0; }
+.commit-heading { margin: 0; }
+.result-meta { margin: 0 0 12px; }
+.reason-preview blockquote { margin: 0; }
+.reason-outcome { margin-top: 16px; }
+.environment-section { margin-top: var(--section-space); padding: 40px; }
+.environment-section .section-heading { gap: var(--column-space); }
+.network-diagram { margin-top: 0; }
+.network-link > span { top: -20px; }
+.network-diagram figcaption { margin-top: 24px; }
+.architecture-link { margin-top: 16px; }
+.communication-rules { gap: var(--column-space); }
+.communication-rules strong { margin-bottom: 12px; }
+.policy-example { margin-top: 0; }
+.policy-example:before { padding-top: 16px; }
+.policy-row { gap: var(--column-space); padding: 20px 0; }
+.sharing-foot { margin-top: 24px; gap: 24px; }
+.benchmark-method { margin-top: 24px; }
+.setup { gap: var(--column-space); padding-bottom: 64px; }
+.setup-copy .section-heading { margin: 0; }
+.setup-guide { margin-top: 24px; }
+.agent-instruction pre { margin: 0; }
+.agent-instruction .copy-button { min-height: 44px; }
+footer { padding-top: 24px; padding-bottom: 32px; }
+
+/* Stack before the columns become cramped, including tablet widths. */
+@media (max-width: 1000px) {
+  :root { --section-space: 64px; --column-space: 32px; }
+  .hero-intro { grid-template-columns: 1fr; gap: 24px; }
+  .hero-copy { max-width: 70ch; }
+  .hero-description { max-width: 65ch; }
+  .growth-steps { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-flow: row; gap: 0; }
+  .growth-steps li,
+  .growth-steps li + li { display: flex; flex-direction: column; grid-row: auto; padding: 24px 0; border-left: 0; }
+  .growth-steps li + li { border-top: 1px solid var(--rule, var(--line)); }
+  .growth-steps li > p:first-of-type { flex: none; max-width: 65ch; }
+  .growth-steps .step-note { min-height: 0; }
+  .growth-steps .hero-terminal { max-width: 560px; }
+  .growth-steps .hero-terminal-title > span:last-child { flex-basis: auto; }
+  .growth-bridge { margin-top: 0; }
+  .grep-section > .section-heading,
+  #sharing > .section-heading,
+  .environment-section > .section-heading { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .grep-section > .section-heading p,
+  #sharing > .section-heading p,
+  .environment-section > .section-heading p { margin: 0; }
+  .provenance-section { display: block; }
+  .provenance-demo { display: grid; grid-template-columns: 1fr 1fr; margin-top: 32px; }
+  .setup { grid-template-columns: 1fr; gap: 24px; }
+  .setup-copy { max-width: 70ch; }
+  .agent-instruction { max-width: 720px; }
+}
+
+@media (max-width: 760px) {
+  :root { --section-space: 56px; --content-space: 24px; --column-space: 24px; }
+  .page { padding-left: 24px; padding-right: 24px; }
+  .hero { padding-top: 32px; }
+  .hero-intro { gap: 24px; margin-top: 24px; margin-bottom: 40px; }
+  .hero h1 { margin: 0; }
+  .hero-actions { margin-top: 24px; gap: 16px; }
+  .hero-intro > .hero-actions { margin-top: 0; }
+  .hero-compatibility { font-size: 13px; }
+  .hero-trust { font-size: 13px; gap: 12px 20px; }
+  .hero-trust a { min-height: 32px; }
+  .linear-example figcaption { padding-bottom: 20px; }
+  .hero-terminal { margin-top: 16px; }
+  .transcript-entry pre { font-size: 12px; line-height: 1.75; }
+  .hero-terminal-title > span:last-child { font-size: 12px; }
+  .transcript-entry .entry-label { font-size: 11px; }
+  .growth-steps .hero-terminal { max-width: none; }
+  .growth-steps .hero-terminal-title > span:last-child { flex-basis: 100%; }
+  .growth-steps li > p:first-of-type { font-size: 15px; }
+  .section-heading p { margin-top: 16px; }
+  .provenance-demo { grid-template-columns: 1fr; gap: 24px; margin-top: 24px; }
+  .environment-section { padding: 24px; }
+  .environment-section .section-heading h2 { font-size: 26px; line-height: 1.25; }
+  .network-link > span { position: static; }
+  .network-diagram figcaption { margin-top: 24px; }
+  .communication-rules { gap: 24px; }
+  .communication-rules p { font-size: 15px; }
+  .communication-rules strong { font-size: 17px; margin-bottom: 8px; }
+  .policy-row { gap: 8px; padding: 16px 0; }
+  .policy-row code { font-size: 13px; }
+  .policy-row p { font-size: 14px; }
+  .benchmark-method { margin-top: 20px; }
+  .setup { padding-bottom: 48px; }
+  .setup-guide { margin-top: 20px; }
+  .agent-instruction .terminal-heading { gap: 12px; }
+  footer { gap: 20px; }
+}
