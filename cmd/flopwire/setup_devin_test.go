@@ -745,9 +745,9 @@ func TestSameDevinSource(t *testing.T) {
 	}
 }
 
-// TestSetupDevinLoggedOut: a logged-out Devin is reported as not logged in
-// and does not fail the run while another harness succeeds. setup exits
-// non-zero only when every detected harness failed.
+// TestSetupDevinLoggedOut: a logged-out Devin is skipped, not failed: it
+// does not change ok or the exit status in any mode. Any other harness
+// error still fails the run.
 func TestSetupDevinLoggedOut(t *testing.T) {
 	for _, mode := range [][]string{nil, {"--check"}, {"--remove"}} {
 		t.Run(fmt.Sprintf("with claude %v", mode), func(t *testing.T) {
@@ -755,10 +755,10 @@ func TestSetupDevinLoggedOut(t *testing.T) {
 			d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
 			rep, _, err := d.run(mode...)
 			if err != nil || !rep.OK {
-				t.Fatalf("Claude Code worked, so setup must succeed; got %v ok=%v", err, rep.OK)
+				t.Fatalf("a logged-out Devin must not fail setup; got %v ok=%v", err, rep.OK)
 			}
 			h := d.devin(rep)
-			if !h.Detected || h.Installed || !strings.Contains(h.Error, "not logged in") || !hasString(h.Todo, "devin auth login") {
+			if !h.Detected || h.Installed || h.Error != "" || !strings.Contains(h.Skipped, "not logged in") || !hasString(h.Todo, "devin auth login") {
 				t.Fatalf("devin: %+v", h)
 			}
 			if c := d.claude(rep); c.Error != "" {
@@ -769,26 +769,45 @@ func TestSetupDevinLoggedOut(t *testing.T) {
 			}
 		})
 	}
-	t.Run("devin only", func(t *testing.T) {
-		d := newDevinFixture(t, false)
-		d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
-		_, out, err := d.run("--text")
-		if !errors.Is(err, errReported) {
-			t.Fatalf("the only detected harness failed: want errReported; got %v", err)
-		}
-		if !strings.Contains(out, "  error: not logged in to Devin") || !strings.Contains(out, "  todo: log in to Devin: devin auth login") {
-			t.Fatalf("--text:\n%s", out)
-		}
-	})
-	t.Run("every harness failed", func(t *testing.T) {
+	for _, mode := range [][]string{nil, {"--check"}, {"--remove"}} {
+		t.Run(fmt.Sprintf("devin only %v", mode), func(t *testing.T) {
+			d := newDevinFixture(t, false)
+			d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
+			_, out, err := d.run(append([]string{"--text"}, mode...)...)
+			if err != nil {
+				t.Fatalf("a logged-out Devin alone is skipped, not failed; got %v", err)
+			}
+			if !strings.Contains(out, "  skipped: not logged in to Devin") || !strings.Contains(out, "  todo: log in to Devin: devin auth login") || strings.Contains(out, "error:") || strings.Contains(out, "nothing to change") {
+				t.Fatalf("--text:\n%s", out)
+			}
+		})
+	}
+	t.Run("another harness fails", func(t *testing.T) {
 		d := newDevinFixture(t, true)
 		d.setState(fakeClaudeState{Available: "a", Fail: map[string]string{"install": "network down"}})
 		d.setDevin(fakeDevinState{Available: "rev1", LoggedOut: true})
 		rep, _, err := d.run()
 		if !errors.Is(err, errReported) || rep.OK {
-			t.Fatalf("every detected harness failed: want errReported; got %v ok=%v", err, rep.OK)
+			t.Fatalf("Claude Code failed: want errReported; got %v ok=%v", err, rep.OK)
+		}
+		if h := d.devin(rep); h.Error != "" || h.Skipped == "" {
+			t.Fatalf("devin: %+v", h)
 		}
 	})
+}
+
+// TestSetupHarnessErrorFailsRun: a real error in one harness fails the run
+// although another harness succeeded.
+func TestSetupHarnessErrorFailsRun(t *testing.T) {
+	d := newDevinFixture(t, true)
+	d.setDevin(fakeDevinState{Available: "rev1", Fail: map[string]string{"install": "network down"}})
+	rep, _, err := d.run()
+	if !errors.Is(err, errReported) || rep.OK {
+		t.Fatalf("Devin install failed: want errReported; got %v ok=%v", err, rep.OK)
+	}
+	if c := d.claude(rep); c.Error != "" || !c.Installed {
+		t.Fatalf("claude: %+v", c)
+	}
 }
 
 // TestSetupDevinUpdateReportsHookChanges: Devin's update takes a new

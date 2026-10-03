@@ -215,11 +215,11 @@ The report has these parts:
 
 | Field | Means |
 |---|---|
-| `ok` | `false` when every detected harness failed. The exit status is then 1. A harness that fails while another succeeds has an `error` in its entry, and `ok` stays `true`. With no harness detected, `ok` is `true`. |
+| `ok` | `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
 | `flopwire.path` | The `flopwire` binary that the plugin runs. Empty when `flopwire` is not on `PATH`. |
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
-| `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do) and `error`. |
+| `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
@@ -238,8 +238,8 @@ Follow these steps in order.
    with `flopwire agent run` and keep it running. Do not start it
    yourself.
 5. Run `flopwire setup`.
-6. Read `error` in each entry of `harnesses`. Report each error to your
-   user. If `ok` is `false`, stop.
+6. Read `error` and `skipped` in each entry of `harnesses`. Report each
+   one to your user. If `ok` is `false`, stop.
 7. Read `warnings` in each entry of `harnesses`. Show each warning to
    your user. A warning can name an older manual entry that now runs
    twice, or a hook that a plugin update enabled. Do not edit the settings
@@ -368,9 +368,9 @@ directory, so edits apply in the next session.
   local checkout of that ref.
 - Devin shows the plugin's skill as `/flopwire:messaging`.
 - Every `devin plugins` command needs a Devin login. When you are not
-  logged in, setup reports `not logged in to Devin` in the Devin entry and
-  continues with the other harnesses. Run `devin auth login`, then run
-  setup again.
+  logged in, setup skips Devin: the Devin entry has `skipped: not logged
+  in to Devin`, and `ok` and the exit status do not change. Run
+  `devin auth login`, then run setup again.
 - `devin plugins update` enables the hooks of a new plugin version without
   a prompt. setup compares the plugin's hooks before and after the update.
   It reports each hook that the update enabled in `warnings`, and each hook

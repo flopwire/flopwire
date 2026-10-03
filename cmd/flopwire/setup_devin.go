@@ -251,14 +251,15 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 	c := devinCLI{env: env, path: path}
 	installed, err := c.info(ctx)
 	if errors.Is(err, errDevinLoggedOut) {
-		// Devin is not set up on this machine; report it and let setup
-		// carry on with the other harnesses.
+		// Devin is not set up on this machine: skip it without failing
+		// the run.
 		again := "flopwire setup"
 		if env.mode != setupInstall {
 			again += " --" + env.mode
 		}
 		r.Todo = append(r.Todo, "log in to Devin: devin auth login, then run "+again+" again")
-		return fail(err)
+		r.Skipped = err.Error()
+		return r
 	}
 	if err != nil {
 		return fail(err)
