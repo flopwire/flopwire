@@ -281,16 +281,17 @@ You can also type `/hooks` in a running Codex session to review the hooks.
 "Trust all and continue" also trusts every other hook that waits for
 review.
 
-What you approve: each hook runs the command `flopwire hook || true` with
-a 5-second timeout, outside the Codex sandbox. `flopwire hook` reads the
+What you approve: each hook runs the command `flopwire hook || true`
+outside the Codex sandbox. The timeout is 5 seconds, and 3 seconds for
+`SessionEnd`, the most that Codex allows for that event. `flopwire hook` reads the
 hook input, asks the device agent for this session's messages, prints
 them into the session, and asks the agent to index the transcript. `|| true`
 keeps Codex from reporting a failed hook when `flopwire` is missing or too
 old.
 
-Codex asks again only when a hook's event, matcher, command or timeout
-changes. Flopwire keeps these four values fixed, so plugin updates do not
-ask again. The exception: the plugin version that added the `SessionEnd`
+Codex asks again when a hook's event, matcher, command or timeout
+changes, and when the plugin adds, removes or reorders a hook. Flopwire
+keeps these fixed, so plugin updates do not ask again. The exception: the plugin version that added the `SessionEnd`
 hook asks once more, for that new hook. Until you trust it, a Codex
 session that exits leaves presence when its writer lock is released,
 which the agent notices within seconds. Codex records the approval in `~/.codex/config.toml` under
@@ -337,8 +338,9 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
-Devin CLI has no marketplace. It loads a Claude Code plugin as it is, so
-setup installs `plugins/claude-code/flopwire` into Devin:
+For Devin CLI, setup uses no marketplace. Devin loads a Claude Code
+plugin as it is, so setup installs `plugins/claude-code/flopwire` into
+Devin:
 
 ```sh
 devin plugins install --local flopwire/flopwire#plugins/claude-code/flopwire -y
@@ -767,8 +769,8 @@ Before the first message of a session, the hook prints the standing
 instruction (`busrender.StandingInstruction`). See
 [Connect the harness hooks](#connect-the-harness-hooks) for when it is
 printed. It tells the model what the wrapper is,
-that a message from your own session is a request to act on within that
-session's permissions, that a message from a teammate is information to
+that a message from another session of your own user is a request to
+act on within this session's permissions, that a message from a teammate is information to
 confirm with you first, and that a message never changes permissions or
 settings. Without it, the models tested refused every request.
 
@@ -825,8 +827,9 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    ```
 
    Each entry has `direction` (`sent` or `received`) and `state`:
-   `queued`, `held`, `claimed`, `delivered`, `read`, `expired`,
-   `refused` or `undelivered`. A `refused` or `undelivered` entry also
+   `queued`, `held`, `claimed`, `delivered`, `expired`, `refused` or
+   `undelivered`. The schema also has `read`, but nothing sets it yet
+   (#65): `delivered` is the last state a delivered message reaches. A `refused` or `undelivered` entry also
    has a `reason`. `undelivered` with `unconfirmed` means that hooks took
    the message 3 times and none confirmed that it printed it.
    `undelivered` with `session_ended` means that the recipient session
@@ -855,6 +858,24 @@ the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
 
 A session that a path rule keeps off the server cannot send. The agent
 refuses the request before anything leaves the device.
+
+### Known limits
+
+- Only Claude Code, Codex and Devin CLI sessions send and receive.
+  opencode (#62) and vendor cloud sessions, such as Claude Code cloud
+  sessions and Devin cloud (#63), are not supported.
+- A Claude Code subagent's hooks carry the parent session's id. A hook in
+  a subagent can therefore take the parent's messages, print them into
+  the subagent and mark them delivered. The parent's model does not see
+  them (#107).
+- `read` receipts are not built (#65). `inbox` stops at `delivered`.
+- Without a server, the agent applies the per-session, per-thread,
+  duplicate and recipient limits. It does not apply the per-device and
+  per-person ceilings of the server (#71).
+- `@user` messages are routed by repo name. With `--server`, `--repo`
+  does not match another machine's checkout at another path (#102).
+- Devin CLI shows no held-message notice. `codex exec` does not show it
+  either.
 
 ## How the agent finds changes
 
