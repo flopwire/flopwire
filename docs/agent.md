@@ -1,7 +1,7 @@
 # Device agent
 
-The device agent keeps the local index current. It reads Claude Code, Codex
-and Devin transcripts. It never writes to the harness directories. When the
+The device agent keeps the local index current. It reads Claude Code, Codex,
+Devin and opencode transcripts. It never writes to the harness directories. When the
 device has a server configuration, the agent also uploads the transcripts.
 
 ## Run the agent
@@ -30,6 +30,7 @@ The agent uses these paths:
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
+| opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
 
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
@@ -70,7 +71,7 @@ crash of the agent.
 
 Local redaction does not protect the files on disk:
 
-- The harness transcripts (`~/.claude`, `~/.codex`, the Devin store) are
+- The harness transcripts (`~/.claude`, `~/.codex`, the Devin and opencode stores) are
   not changed. They still hold the text.
 - The index database keeps `content_sha`, a SHA-256 of each message's
   original text, for change detection. A person who can read the index

@@ -9,7 +9,7 @@ spec and this page differ, this page describes the code.
 
 | Component | Where it runs | Code | Role |
 |---|---|---|---|
-| Parsers | device and server | `internal/transcript/{claude,codex,devin}` | Turn harness transcripts into conversations and messages with stable ids. The same code runs on both sides. |
+| Parsers | device and server | `internal/transcript/{claude,codex,devin,opencode}` | Turn harness transcripts into conversations and messages with stable ids. The same code runs on both sides. |
 | Device agent | each developer machine | `internal/agent`, `cmd/flopwire/agent.go` | Finds changed transcripts, places each session, applies path rules, indexes locally, hands sources to sync. |
 | Local index | each developer machine | `internal/localindex` | SQLite database plus three FTS5 shard files. Derived; rebuildable from the transcripts. |
 | Sync client | each developer machine | `internal/devicesync`, `internal/syncproto` | Content-defined chunking, spool, per-source retry, upload over the pinned TLS client. |
@@ -29,6 +29,7 @@ spec and this page differ, this page describes the code.
 
 ```text
 ~/.claude/projects   ~/.codex/sessions   ~/.local/share/devin/cli/sessions.db
+        |                    |              ~/.local/share/opencode/opencode.db
         |                    |                          |
         +--------- read only, never written ------------+
                              |
@@ -41,7 +42,7 @@ spec and this page differ, this page describes the code.
           |                                   |
       deny: skip                        allow / local
                                              |
-                          parsers (claude@N, codex@N, devin@N)
+                          parsers (claude@N, codex@N, devin@N, opencode@N)
                                              |
             local index writer (one process, flock on index.db.lock)
                  index.db: sources, generations, conversations,
@@ -117,7 +118,8 @@ Row rules:
 - `on_active_path=false` marks rows off the chosen branch (Devin alternate
   copies, P1). Search leaves them out unless `--include-branches`.
 - A transcript file the harness deletes keeps its rows live and
-  searchable (D1). A deleted Devin session is still superseded.
+  searchable (D1). A deleted Devin or opencode session is still
+  superseded, and so are the rows of a turn opencode reverted.
 - Tool text is stored whole, with a safety bound of about 1MB per row
   (head, tail and error lines).
 - `user_id` and `device_id` come from the uploading credential, never
