@@ -110,6 +110,8 @@ func run(parent context.Context, args []string) error {
 		return hookMain(ctx, args[1:])
 	case "setup":
 		return setupMain(ctx, args[1:])
+	case "probe":
+		return probeMain(ctx, args[1:])
 	case "bench":
 		return benchCmd(ctx, args[1:])
 	case "redact":
@@ -166,6 +168,8 @@ const usageText = `Usage: flopwire <command>
               and asks the device agent to index the transcript now
   setup       install Flopwire into Claude Code, Codex and Devin CLI through
               each one's own plugin commands (--check reports, --remove uninstalls)
+  probe       re-run the message-bus delivery tests against the installed
+              harnesses (--local, --json, --notes; docs/probe.md)
   agent       run the device agent (agent run) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
   version     print version`

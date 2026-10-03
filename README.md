@@ -375,6 +375,7 @@ See [docs/runbook.md](docs/runbook.md#delete-a-conversation).
 | Backup and restore | [docs/runbook.md](docs/runbook.md#recover), `flopwire backup`, `flopwire backup-verify`, `flopwire restore` |
 | Two machines on a LAN | [docs/two-laptop.md](docs/two-laptop.md) |
 | Device agent, hooks, path rules | [docs/agent.md](docs/agent.md) |
+| Check message delivery after a harness release | [docs/probe.md](docs/probe.md), `flopwire probe` |
 | Pre-release manual checks | [docs/release-checklist.md](docs/release-checklist.md) |
 
 ```sh
