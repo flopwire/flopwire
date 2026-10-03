@@ -124,7 +124,7 @@ func TestMCPOnSyncOnlyIndex(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("mcp answered %d lines:\n%s", len(lines), out)
 	}
-	if !strings.Contains(lines[0], `"instructions":"This device is sync-only`) || !strings.Contains(lines[0], "--server") {
+	if !strings.Contains(lines[0], `This device is sync-only`) || !strings.Contains(lines[0], "--server") {
 		t.Errorf("instructions do not say the device is sync-only: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "this device is sync-only; use --server") || !strings.Contains(lines[1], `"isError":true`) {

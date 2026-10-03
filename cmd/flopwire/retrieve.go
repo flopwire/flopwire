@@ -1,8 +1,8 @@
 package main
 
 // The retrieval tools (spec §8): grep, sessions, read and search, the
-// same four in the CLI and over MCP (mcp.go). They read the local index by
-// default; --server queries the team server instead. Both backends answer
+// same four in the CLI and over MCP (mcp.go). They read the shared server
+// after enrollment, or the local index before enrollment. Both backends answer
 // in the shapes of internal/retrieval/format, and one renderer prints
 // them, so every surface shows the same output and every printed address
 // (SESSION/ORDINAL[:LINE]) round-trips through read.
@@ -52,6 +52,7 @@ type retriever struct {
 	close func() error
 	// instructions replace mcpInstructions when set (a sync-only device).
 	instructions string
+	scope        *format.Scope
 	// indexHint, set for the MCP server on a local index, is a note each
 	// retrieval tool adds to its answer ("" for none): the index is empty.
 	indexHint func(context.Context) string
@@ -96,7 +97,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		team := func(ctx context.Context, repo string) (string, []string, error) {
 			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
 		}
-		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team}, nil
+		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team, scope: &format.Scope{Kind: "shared", Server: c.Server}}, nil
 	}
 	if indexPath == "" {
 		indexPath = local.IndexPath()
@@ -108,7 +109,37 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close}, nil
+	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close, scope: &format.Scope{Kind: "local"}}, nil
+}
+
+// retrievalServer selects the scope once, before opening either backend.
+// Explicit index paths stay local unless --server also selects the server.
+// A bad enrollment config is an error, never an implicit local fallback.
+func retrievalServer(server, local bool, index string) (bool, error) {
+	if server && local {
+		return false, badArg(errors.New("--server and --local cannot be used together"))
+	}
+	if local || index != "" && !server {
+		return false, nil
+	}
+	if server {
+		return true, nil
+	}
+	c, err := client.Load()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("select search scope: %w (use --local to search this device)", err)
+	}
+	return c.DeviceID != "" || c.FromEnv, nil
+}
+
+func scopeNote(scope *format.Scope) string {
+	if scope.Kind == "shared" {
+		return "[scope: shared server " + scope.Server + "]"
+	}
+	return "[scope: local device]"
 }
 
 // localRepoDirs is what the local index at indexPath knows of where
@@ -242,6 +273,7 @@ var flagDefs = []flagDef{
 	{"json", 0, fBool, "gslrpmi"},
 	{"max-bytes", 0, fInt, "gslrpmi"},
 	{"server", 0, fBool, "gslr"},
+	{"local", 0, fBool, "gslr"},
 	{"index", 0, fString, "gslr"},
 	{"help", 'h', fBool, "gslrpmi"},
 	{"intent", 0, fString, "m"},
@@ -607,8 +639,25 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 	// search and read on the CLI: indented, as before), or compact JSON
 	// within the budget (sessions, and every tool over MCP).
 	emit := func(full any, bounded func() any, text func() error) error {
+		switch out := full.(type) {
+		case *format.Page:
+			out.Scope = r.scope
+		case *format.Sessions:
+			out.Scope = r.scope
+		case *format.Context:
+			out.Scope = r.scope
+		}
 		switch {
 		case !asJSON:
+			if r.scope != nil {
+				note := scopeNote(r.scope)
+				if _, err := fmt.Fprintln(w, note); err != nil {
+					return err
+				}
+				if st.Budget > 0 {
+					st.Budget = max(1, st.Budget-len(note)-1)
+				}
+			}
 			return text()
 		case st.MCP || o.verb == "sessions":
 			return writeOut(w, bounded())
@@ -851,7 +900,11 @@ func runToolCmd(ctx context.Context, verb string, o *opts, stdout, stderr io.Wri
 		}
 		return badArg(fmt.Errorf("%s: missing argument", verb))
 	}
-	r, err := openRetriever(o.on["server"], o.vals["index"])
+	server, err := retrievalServer(o.on["server"], o.on["local"], o.vals["index"])
+	if err != nil {
+		return err
+	}
+	r, err := openRetriever(server, o.vals["index"])
 	if err != nil {
 		return err
 	}
@@ -867,11 +920,13 @@ func runToolCmd(ctx context.Context, verb string, o *opts, stdout, stderr io.Wri
 // provenance (source_id generation offset length).
 func raw(ctx context.Context, args []string) error {
 	o := newOpts("raw")
-	server, index := false, ""
+	server, local, index := false, false, ""
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--server":
 			server = true
+		case a == "--local":
+			local = true
 		case a == "--index" && i+1 < len(args):
 			i++
 			index = args[i]
@@ -880,7 +935,7 @@ func raw(ctx context.Context, args []string) error {
 		}
 	}
 	if len(o.pos) != 4 {
-		return errors.New("usage: flopwire raw [--server] SOURCE_ID GENERATION OFFSET LENGTH (for a message's record: flopwire read --raw ADDRESS)")
+		return errors.New("usage: flopwire raw [--server | --local] SOURCE_ID GENERATION OFFSET LENGTH (for a message's record: flopwire read --raw ADDRESS)")
 	}
 	var n [3]int64
 	for i := range n {
@@ -888,6 +943,10 @@ func raw(ctx context.Context, args []string) error {
 		if n[i], err = strconv.ParseInt(o.pos[i+1], 10, 64); err != nil {
 			return fmt.Errorf("%s is not a number", o.pos[i+1])
 		}
+	}
+	server, err := retrievalServer(server, local, index)
+	if err != nil {
+		return err
 	}
 	r, err := openRetriever(server, index)
 	if err != nil {
@@ -936,7 +995,7 @@ Filters  --agent claude,codex,devin  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB
          --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
          --exclude-subagents  --exclude-live  --include-superseded  --include-branches
          --include-self  --device D  --user U
-Source   the local index; --server for the team server; --index PATH
+Source   shared after enrollment, local before; --local / --server; --index PATH
 Kinds    user assistant tool_call tool_result thinking system agent_message injected (hidden
          unless --kind names it). Times are UTC: 7d, 24h, 2026-09-23, '2026-09-23 10:00Z'.
 Live: active in the last 10 minutes or open in its harness. An agent's own session is left
@@ -960,7 +1019,7 @@ Filters  --agent  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since  --until 
          --exclude-kind  --tool  --session SESSION|self  --exclude-subagents  --exclude-live
          --include-superseded  --include-branches  --include-self  --device  --user
 Times    --since/--until take 7d, 24h, 2026-09-23, '2026-09-23 10:00Z' or RFC 3339 (UTC)
-Source   the local index; --server for the team server; --index PATH
+Source   shared after enrollment, local before; --local / --server; --index PATH
 `,
 	"sessions": `flopwire sessions — list sessions, newest activity first, as JSON (--text: readable)
 
@@ -982,7 +1041,7 @@ Output   --limit N (20)  --cursor C (next_cursor)  --sort newest|oldest  --detai
 Filters  --agent  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since/--until (last
          activity)  --exclude-subagents  --exclude-live  --include-self  --device  --user
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example"}}; exit 1
-Source   the local index; --server for the team server; --index PATH
+Source   shared after enrollment, local before; --local / --server; --index PATH
 `,
 	"read": `flopwire read — read a message (and its neighbours) at an address from grep, search or sessions
 
@@ -1007,6 +1066,6 @@ Messages --messages-before N / --messages-after N: whole messages before/after t
 Output   --max-chars N (4000; neighbours get a quarter)  --line-offset N (first line of the
          focus)  --raw (the record's bytes)  --outline [--cursor C --limit N]  --json (--text)
 Rows     --include-superseded  --include-branches
-Source   the local index; --server for the team server; --index PATH
+Source   shared after enrollment, local before; --local / --server; --index PATH
 `,
 }

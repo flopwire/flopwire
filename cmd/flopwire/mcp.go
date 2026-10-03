@@ -24,18 +24,23 @@ import (
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 )
 
-// mcp serves the retrieval tools over MCP stdio: the local index by
-// default, the team server with --server.
+// mcp serves the retrieval tools over MCP stdio, with the same source
+// selection as the CLI: shared after enrollment, local before enrollment.
 func mcp(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	server := fs.Bool("server", false, "query the team server instead of the local index")
+	server := fs.Bool("server", false, "query the shared server explicitly")
+	localScope := fs.Bool("local", false, "query only this device's local index")
 	index := fs.String("index", "", "local index path (default $FLOPWIRE_INDEX or the user cache dir)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	r, err := openRetriever(*server, *index)
+	shared, err := retrievalServer(*server, *localScope, *index)
+	if err != nil {
+		return err
+	}
+	r, err := openRetriever(shared, *index)
 	var noIndex *noIndexError
-	if err != nil && !*server && !errors.As(err, &noIndex) && !errors.Is(err, localindex.ErrSyncOnly) {
+	if err != nil && !shared && !errors.As(err, &noIndex) && !errors.Is(err, localindex.ErrSyncOnly) {
 		// The index exists but does not open: another process is creating
 		// or rebuilding it (a second flopwire mcp, or the agent), or it is
 		// damaged. Serve anyway, as below: each retrieval call opens it
@@ -75,6 +80,9 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if r.scope == nil {
+		r.scope = &format.Scope{Kind: "local"}
 	}
 	defer r.close()
 	if lb, ok := r.backend.(*local.Backend); ok {
@@ -476,7 +484,7 @@ func mcpOpts(name string, args map[string]any) (*opts, bool, error) {
 			opt = m
 		}
 		d, ok := lookupFlag(verb, opt, false)
-		if !ok || opt == "json" || opt == "text" || opt == "max-bytes" || opt == "server" || opt == "index" || opt == "help" || opt == "regexp" || opt == "files-with-matches" || opt == "count" {
+		if !ok || opt == "json" || opt == "text" || opt == "max-bytes" || opt == "server" || opt == "local" || opt == "index" || opt == "help" || opt == "regexp" || opt == "files-with-matches" || opt == "count" {
 			return nil, false, fmt.Errorf("%s: unknown argument %q; it takes %s", name, k, strings.Join(mcpArgs(name), ", "))
 		}
 		switch d.kind {
@@ -606,10 +614,14 @@ func mcpError(name string, err error) string {
 // mcpInstructions is r's MCP instructions: mcpInstructions unless r
 // carries its own.
 func (r *retriever) mcpInstructions() string {
+	instructions := mcpInstructions
 	if r.instructions != "" {
-		return r.instructions
+		instructions = r.instructions
 	}
-	return mcpInstructions
+	if r.scope != nil {
+		instructions = scopeNote(r.scope) + "\nSearch uses the shared server after enrollment and the local device before enrollment. Configure flopwire mcp --local to search only this device. Shared-server failures never fall back to local search.\n\n" + instructions
+	}
+	return instructions
 }
 
 func serveMCP(ctx context.Context, r *retriever, in io.Reader, out io.Writer) error {

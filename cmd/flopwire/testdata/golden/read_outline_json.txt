@@ -1,4 +1,7 @@
 {
+  "scope": {
+    "kind": "local"
+  },
   "conversation": {
     "address": "0b7e2c1a-0000-4000-8000-000000000002",
     "id": "3",

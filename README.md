@@ -47,7 +47,7 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 | Device agent (`flopwire agent run`) | Watches transcripts from Claude Code, Codex and Devin CLI. Indexes them into a local SQLite index within about a second. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
 | Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
 | Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
-| MCP server (`flopwire mcp`) | The same four search tools for agents, local or `--server`, and the three messaging tools, over stdio. |
+| MCP server (`flopwire mcp`) | The same four search tools for agents, shared after enrollment or `--local`, and the three messaging tools, over stdio. |
 | Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex and Devin CLI, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
 | Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
 | Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
@@ -164,8 +164,11 @@ Without step 3, the agent indexes locally and uploads nothing.
 
 ## Search
 
-Four tools, in the CLI and in MCP. They read the local index by default.
-Add `--server` to query the team server.
+Four tools, in the CLI and in MCP. They search the shared server after
+enrollment and the local index before enrollment. Use `--local` to search
+only this device, or `--server` to select the server explicitly. An explicit
+`--index PATH` selects a local index unless `--server` is also set.
+Results report their scope. A server failure never falls back to local search.
 
 ```sh
 flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, like rg
@@ -219,8 +222,8 @@ default_tools_approval_mode = "approve"
 
 The search tools are `flopwire_grep`, `flopwire_search`,
 `flopwire_sessions` and `flopwire_read`. They only read, and answer as
-the CLI does, as one text block. Add `"--server"` to `args` to query the
-team server.
+the CLI does, as one text block. The plugin searches the shared server
+after enrollment. Add `"--local"` to `args` to search only this device.
 
 The messaging tools are `flopwire_peers`, `flopwire_send` and
 `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a

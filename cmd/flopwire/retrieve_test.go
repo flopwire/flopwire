@@ -69,7 +69,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 	}
 	// D17: control characters from the transcript are shown, not sent to
 	// the terminal.
-	if !strings.HasPrefix(out, "## 019a0000-0000-7000 who=gary@example.test agent=codex\n491520:3 tool_result: upload.test.ts:9 timeout␛]52;c;evil␇\n") {
+	if !strings.HasPrefix(out, "[scope: shared server "+srv.URL+"]\n## 019a0000-0000-7000 who=gary@example.test agent=codex\n491520:3 tool_result: upload.test.ts:9 timeout␛]52;c;evil␇\n") {
 		t.Fatalf("grep output %q", out)
 	}
 	if err := run(t.Context(), []string{"search", "backoff"}); err == nil || !strings.Contains(err.Error(), "--server") {
