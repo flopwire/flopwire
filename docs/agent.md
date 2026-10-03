@@ -1108,7 +1108,10 @@ matches by its directory. See [search.md](search.md#which-repo).
 ### Sessions in deleted worktrees
 
 The agent can first see a session after its worktree was deleted. Then git
-cannot give its main checkout. A background pass looks for the checkout
+cannot give its main checkout. The agent does not use a repository above
+the deleted directory that still exists. For example, a home directory
+kept in git (dotfiles) is not the repository of a deleted worktree under
+it. A background pass looks for the checkout
 among the repositories the agent already knows (the main checkouts of
 other sessions). It records a main checkout only when exactly one
 repository fits these signals:
