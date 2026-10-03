@@ -10,10 +10,14 @@ package devicebus
 //
 // A message that reaches the inbox after its session ended is marked the
 // same way only when it was sent while the session could still look live
-// to its sender: within EndGrace of the last time this device saw the
-// session live. A later one was sent to a session the sender was told is
+// to its sender. A later one was sent to a session the sender was told is
 // not running ("only_if_resumed"): it stays queued for a resume, as the
-// server's receipt said.
+// receipt said. Without a server the receipt came from this device's own
+// presence, at most presenceFresh old: a message is marked when it was
+// sent within presenceFresh of the last live sighting, which matches the
+// receipt exactly. With a server the receipt came from the server's copy
+// of presence, which lags by a presence tick and a poll, on another
+// clock: EndGrace.
 
 import (
 	"context"
@@ -59,11 +63,13 @@ const (
 	// least this long after the first. A harness that rewrites its entry
 	// must not end the session.
 	EndDebounce = time.Second
-	// EndGrace: a message sent up to this long after the last time the
-	// device saw its session live is marked session_ended when the
-	// session ended. The server lists a session as live until the
-	// device's next poll after the end (a presence tick, about 2 s), and
-	// the sender's clock may differ from the device's.
+	// EndGrace: a message from the server sent up to this long after the
+	// last time the device saw its session live is marked session_ended
+	// when the session ended. The server lists a session as live until
+	// the device's next poll after the end (a presence tick, about 2 s),
+	// and the server's clock may differ from the device's. A message sent
+	// in the rest of this window was told only_if_resumed and is marked
+	// anyway: undelivered, visibly, rather than waiting for a resume.
 	EndGrace = 10 * time.Second
 	// heldRefresh: how stale held_at may get before a read of the same
 	// holder writes it again (it only dates the row for purge). Presence is
@@ -293,8 +299,8 @@ func settleEnded(ctx context.Context, x execer, now time.Time) (int64, error) {
 			ack=CASE WHEN origin='server' THEN 'report' ELSE '' END
 		WHERE state='queued' AND to_session<>'' AND expires_at>? AND EXISTS(SELECT 1 FROM devbus_sessions s
 			WHERE s.agent=devbus_messages.to_agent AND s.session_id=devbus_messages.to_session AND s.ended_at IS NOT NULL
-				AND s.live_at IS NOT NULL AND devbus_messages.created_at<=s.live_at+?)`,
-		busproto.ReasonSessionEnded, ms(now), EndGrace.Milliseconds())
+				AND s.live_at IS NOT NULL AND devbus_messages.created_at<=s.live_at+CASE WHEN devbus_messages.origin='local' THEN ? ELSE ? END)`,
+		busproto.ReasonSessionEnded, ms(now), presenceFresh.Milliseconds(), EndGrace.Milliseconds())
 	if err != nil {
 		return 0, err
 	}

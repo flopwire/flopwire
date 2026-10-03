@@ -709,10 +709,19 @@ counts. If the lease ends unconfirmed, the message becomes
 `undelivered` with `session_ended`.
 
 A message that arrives after the session ended is marked the same way
-when it was sent at most 10 seconds after the agent last saw the session
-live: its sender was told that the session runs. A message sent later
-went to a session that `peers` no longer listed. Its receipt said
-`only_if_resumed`, and it waits for a resume.
+only when its sender could still have been told that the session runs.
+A message sent later went to a session that `peers` no longer listed. Its
+receipt said `only_if_resumed`, and it waits for a resume.
+
+- Without a server, the receipt comes from this agent's presence, which
+  is at most 1 second old. A message sent within 1 second of the last
+  time the agent saw the session live is marked. The receipt and the
+  mark always agree.
+- With a server, the server learns of the end from the next poll, about
+  2 seconds later, and its clock may differ. A message sent within 10
+  seconds of the last live sighting is marked. In that window a message
+  whose receipt said `only_if_resumed` can be marked `undelivered` too.
+  The sender then sees it and can send it again.
 
 A session resumes when a hook of it runs that started after the end, or
 when its harness file names a newer process. A resumed session receives

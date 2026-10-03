@@ -1,6 +1,7 @@
 package devicebus
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -308,5 +309,36 @@ func TestSessionEndWithALockRegistry(t *testing.T) {
 	lb.advance(time.Minute)
 	if ended := observe(t, lb.Bus, lock()); ended[refA] {
 		t.Fatal("a resumed writer did not revive the session")
+	}
+}
+
+// Without a server the receipt and the mark agree: a send to a session
+// that presence still listed (within presenceFresh) is marked when the
+// session ends; a send after presence dropped it got "not running" and
+// waits for a resume.
+func TestLocalSendAfterTheEndWaitsForAResume(t *testing.T) {
+	lb := newLocalBus(t)
+	observe(t, lb.Bus, held(refB))
+	before, err := lb.send(t, "aaaa1111", "bbbb", "while presence lists it")
+	if err != nil || !before.To.Live {
+		t.Fatalf("send while live: %+v %v", before, err)
+	}
+	lb.advance(time.Second)
+	// It ended; presence no longer lists it.
+	gone := sess("bbbb3333", "claude", "/src/web", false)
+	lb.p.set(sess("aaaa1111", "claude", "/src/api", true), sess("aaaa2222", "codex", "/src/api", false))
+	lb.SetSources(lb.p.get, func(context.Context, string) ([]Session, error) { return []Session{gone}, nil })
+	observe(t, lb.Bus, held().gone(refB))
+	lb.advance(2 * time.Second)
+	after, err := lb.send(t, "aaaa1111", "bbbb3333", "after the end")
+	if err != nil || after.To.Live {
+		t.Fatalf("send after the end: %+v %v", after, err)
+	}
+	lb.settleEnded(ctx)
+	if m := sentItem(t, lb.Bus, "aaaa1111", before.ID); m.Reason != busproto.ReasonSessionEnded {
+		t.Fatalf("sent while live: %s (%s)", m.State, m.Reason)
+	}
+	if m := sentItem(t, lb.Bus, "aaaa1111", after.ID); m.State != busproto.StateQueued {
+		t.Fatalf("sent after the end (receipt: not running): %s (%s)", m.State, m.Reason)
 	}
 }

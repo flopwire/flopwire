@@ -189,9 +189,12 @@ carries the presence heartbeat.
   ended session leaves presence at once. Its queued and claimed messages
   become `undelivered` (reason `session_ended`) and are reported in the
   next ack batch; they are never given to another session. A message that
-  arrives later is marked too only when it was sent within 10 s of the
-  session's last live sighting (the sender was told it is live); a later
-  one keeps the `only_if_resumed` receipt and waits for a resume. A hook
+  arrives later is marked too only when its sender could have been told
+  the session is live: sent within 1 s of the last live sighting without
+  a server (presence is cached 1 s, so this matches the receipt), within
+  10 s with one (the server learns the end at the next poll, on another
+  clock). A later one keeps the `only_if_resumed` receipt and waits for a
+  resume. A hook
   that started after the end, or a newer process in the registry, resumes
   the session. State in `bus.db` (`devbus_sessions`).
 - Claims an `@user` message for one live session with one atomic server
