@@ -19,7 +19,7 @@ spec and this page differ, this page describes the code.
 | Postgres | server | `internal/store`, `migrations` | Identity, audit, sources, generations, chunk ledger, manifests, conversations, messages, tombstones, deletion jobs. |
 | S3 (MinIO in Compose) | server | `internal/ingest/objects.go` | Content-addressed chunk objects, each a zstd frame of the chunk (addressed by the BLAKE3 of the uncompressed bytes). The raw evidence. |
 | Retrieval | device and server | `internal/retrieval` (`local`, `regexq`, `grep`, `format`) | grep, search, sessions and read over the local index or Postgres. |
-| CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | The four tools. Local by default; `--server` for team search. |
+| CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | The four tools. Shared after enrollment; local before enrollment or with `--local`. |
 | Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. The CLI and MCP tools are in `cmd/flopwire/bus.go`; `flopwire hook` (`cmd/flopwire/hook.go`, rendering in `internal/busrender`) delivers. |
 | Message bus (device) | each developer machine | `internal/devicebus`, `internal/agent/presence.go`, `internal/client/bus.go` | Local inbox (`bus.db`), presence, the long poll, claims and receipts; routing between the device's own sessions with no server. |
 | Web console | browser | `web/`, served at `/` by `internal/webapp` | Admins: health, people and devices, policy, archive (deletion), audit. Every member: the Messaging page (held messages, accept, revoke). No corpus search. |

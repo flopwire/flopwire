@@ -1,3 +1,4 @@
+[scope: local device]
 0b7e2c1a-0000-4000-8000-000000000002 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=8 title="Exponential backoff for upload retries"
 agent-b000000000000002 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=3 title="Scan retries"
 agent-b000000000000003 agent=claude active=2026-09-23T11:00Z repo=oracle-beta branch=fix/retry hits=2 title="Nested check"

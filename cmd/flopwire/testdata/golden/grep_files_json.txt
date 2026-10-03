@@ -1,4 +1,7 @@
 {
+  "scope": {
+    "kind": "local"
+  },
   "hits": [],
   "sessions": [
     {

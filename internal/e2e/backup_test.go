@@ -96,7 +96,26 @@ func (h *harness) backupRestore(t *testing.T, r *result, d *device, needle strin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != want {
+		// The restored endpoint differs, while the archived result data
+		// must stay identical. Check the reported scope before comparing.
+		var gotPage, wantPage map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(got), &gotPage); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(want), &wantPage); err != nil {
+			t.Fatal(err)
+		}
+		var scope struct{ Kind, Server string }
+		if err := json.Unmarshal(gotPage["scope"], &scope); err != nil {
+			t.Fatal(err)
+		}
+		if scope.Kind != "shared" || scope.Server != url {
+			t.Fatalf("restored scope=%+v", scope)
+		}
+		gotPage["scope"] = wantPage["scope"]
+		gotData, _ := json.Marshal(gotPage)
+		wantData, _ := json.Marshal(wantPage)
+		if string(gotData) != string(wantData) {
 			t.Errorf("grep %v: restored server answers\n%s\nprimary answers\n%s", q, got, want)
 		}
 	}

@@ -13,8 +13,12 @@ by default (`--text` for readable rows). See [Output](#output).
 | sessions | `flopwire sessions` | `flopwire_sessions` | Listing or globbing sessions |
 | read | `flopwire read` | `flopwire_read` | Reading what an address points to |
 
-All four read the local index by default. Add `--server` to query the
-team server. `flopwire <tool> --help` shows three examples and every flag.
+All four search the shared server after enrollment and the local index
+before enrollment. Use `--local` for this device, or `--server` to select
+the server explicitly. `--index PATH` selects a local index unless
+`--server` is also set. Text answers show a scope header; JSON answers
+include `scope.kind` (`local` or `shared`) and the shared server URL.
+Server failures return an error and never switch to local search. `flopwire <tool> --help` shows three examples and every flag.
 
 ## Addresses
 
@@ -478,7 +482,8 @@ The approval line also approves `flopwire_send`, which sends messages (see
 [agent.md](agent.md#messaging)). Remove the line to be asked before each
 call.
 
-Add `--server` to the arguments to query the team server. The MCP output
+After enrollment, the MCP tools query the shared server by default. Add
+`--local` to the arguments to query only this device. The MCP output
 is the same as the CLI's: text for `flopwire_grep`, `flopwire_search` and
 `flopwire_read` (`format: "json"` for JSON), JSON for `flopwire_sessions`
 (`format: "text"` for rows). Every answer is one text block within the

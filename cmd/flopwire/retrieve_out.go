@@ -53,13 +53,14 @@ func jsonModeArgs(verb string, args []string) bool {
 // paging fields always present. has_more says sessions follow;
 // next_cursor is then the cursor that reads them.
 type sessionsJSON struct {
-	Kind     string   `json:"kind"` // "sessions"
-	Sessions any      `json:"sessions"`
-	HasMore  bool     `json:"has_more"`
-	Next     string   `json:"next_cursor,omitempty"`
-	Notes    []string `json:"notes,omitempty"`
-	Excluded string   `json:"excluded,omitempty"`
-	Hint     string   `json:"hint,omitempty"`
+	Scope    *format.Scope `json:"scope,omitempty"`
+	Kind     string        `json:"kind"` // "sessions"
+	Sessions any           `json:"sessions"`
+	HasMore  bool          `json:"has_more"`
+	Next     string        `json:"next_cursor,omitempty"`
+	Notes    []string      `json:"notes,omitempty"`
+	Excluded string        `json:"excluded,omitempty"`
+	Hint     string        `json:"hint,omitempty"`
 }
 
 // sessionBrief is a session in sessions' concise default: what an agent
@@ -128,7 +129,7 @@ func boundSessions(s *format.Sessions, budget int, mcp, detail bool) sessionsJSO
 			items[i] = brief(c)
 		}
 	}
-	out := sessionsJSON{Kind: "sessions", Sessions: items, HasMore: s.HasMore || s.Next != "", Next: s.Next, Notes: s.Notes, Excluded: s.Excluded}
+	out := sessionsJSON{Scope: s.Scope, Kind: "sessions", Sessions: items, HasMore: s.HasMore || s.Next != "", Next: s.Next, Notes: s.Notes, Excluded: s.Excluded}
 	if !fitsBudget(out, budget) && len(all) > 1 {
 		n := most(len(all), func(k int) bool {
 			c := out
