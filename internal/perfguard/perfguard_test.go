@@ -380,6 +380,14 @@ func TestAssertPlanUsesIndex(t *testing.T) {
 	if msg := r.failed(); !strings.Contains(msg, "does not probe index items_v") || !strings.Contains(msg, "items_grp_v") {
 		t.Fatalf("missing index not caught, or plan not printed: %q", msg)
 	}
+	// Naming items_grp_v does not make that plan pass: its Index Cond is
+	// on the second column, so the scan still reads the whole index.
+	r = &recorder{TB: t}
+	AssertPlanUsesIndex(r, pool, "items_grp_v", query, 3)
+	if msg := r.failed(); !strings.Contains(msg, "leading column grp") {
+		t.Fatalf("a whole-index scan of the named index not caught: %q", msg)
+	}
+	AssertPlanUsesIndex(t, pool, "items_grp_v", `SELECT count(*) FROM items WHERE grp = $1 AND v = $2`, 3, 3)
 	// With no index on v at all, the full-scan check fails too.
 	exec(t, pool, `DROP INDEX items_grp_v`)
 	r = &recorder{TB: t}
