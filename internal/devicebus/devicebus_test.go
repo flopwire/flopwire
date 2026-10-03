@@ -32,6 +32,7 @@ type fakeServer struct {
 	acks     [][]string
 	gone     []string // undelivered reports
 	ended    []string // session_ended reports
+	failed   []string // push_failed reports
 	ackFn    func([]string) (busproto.AckResponse, error)
 	ackReqs  []busproto.AckRequest
 	reads    []busproto.ReadReceipt          // read receipts taken
@@ -83,6 +84,7 @@ func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.A
 	}
 	f.gone = append(f.gone, req.Undelivered...)
 	f.ended = append(f.ended, req.SessionEnded...)
+	f.failed = append(f.failed, req.PushFailed...)
 	fn, readFn := f.ackFn, f.readFn
 	read, rejected := []string{}, []string{}
 	for _, r := range req.Read {
@@ -94,7 +96,7 @@ func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.A
 		}
 	}
 	f.mu.Unlock()
-	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded)
+	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded, req.PushFailed)
 	if len(all) == 0 {
 		return busproto.AckResponse{Acked: []string{}, Rejected: []string{}, Read: read, ReadRejected: rejected}, nil
 	}
