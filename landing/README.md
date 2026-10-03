@@ -16,7 +16,7 @@ The exchange and search results are illustrative client-side examples. They do n
 
 The page and the repository README describe live messaging, commit-to-session links and secret redaction as shipped. Before launch:
 
-- Verify messaging and commit-to-session links work end to end against the release, and that the tool names match (`list_peers`, `send`, `inbox`).
+- Verify messaging and commit-to-session links work end to end against the release, and that the tool names match (`flopwire_peers`, `flopwire_send`, `flopwire_inbox`).
 - Replace development-branch setup instructions with a verified release installation path.
 - Verify the harnesses and environments the page names.
 - Confirm the hosted offering announcement.
