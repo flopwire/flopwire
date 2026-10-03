@@ -457,6 +457,5 @@ Decisions recorded on #73 and its issues:
 
 Still open: opencode (#62), vendor cloud (#63), hook context caps and cost (#68), marker tests in CI (#69), server
 hardening (#70), device-agent hardening (#71), the server repo key
-(#102), a Claude Code subagent's hook taking its parent's messages
-(#107), the plugin follow-ups (#58, #59, #60), and a captured exchange
+(#102), the plugin follow-ups (#58, #59, #60), and a captured exchange
 for the homepage (#55, #54).

@@ -868,12 +868,7 @@ refuses the request before anything leaves the device.
 - Only Claude Code, Codex and Devin CLI sessions send and receive.
   opencode (#62) and vendor cloud sessions, such as Claude Code cloud
   sessions and Devin cloud (#63), are not supported.
-- A Claude Code subagent's hooks carry the parent session's id. A hook in
-  a subagent can therefore take the parent's messages, print them into
-  the subagent and mark them delivered. The parent's model does not see
-  them (#107).
-- opencode has no read receipts. A message that a Claude Code subagent
-  shows stays `delivered`.
+- opencode has no read receipts.
 - Without a server, the agent applies the per-session, per-thread,
   duplicate and recipient limits. It does not apply the per-device and
   per-person ceilings of the server (#71).
