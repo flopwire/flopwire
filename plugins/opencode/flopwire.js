@@ -14,7 +14,8 @@
 //     wrapper, with metadata {"flopwire": {"id"}} naming the same message
 //     (the device agent's read receipts check that the two agree).
 //     `flopwire hook` leases the messages; the plugin confirms them only
-//     once opencode stored them, so a failed delivery is offered again
+//     once opencode reports their parts stored (message.part.updated; not
+//     on promptAsync's answer), so a failed delivery is offered again
 //     rather than lost. Never into a subagent's session, and never with
 //     promptAsync without noReply, which would wake an idle session.
 //   - Puts Flopwire's standing instruction and tool guidance into every
@@ -194,29 +195,40 @@ export const Flopwire = async ({ client }) => {
     run(HOOK, JSON.stringify({ hook_event_name: "Confirm", harness: "opencode", session_id: sid, ids, instruction }), {}, HOOK_TIMEOUT)
   const pendingParts = new Map() // part id -> what to confirm once opencode stores it
 
-  // deliver takes the session's pending messages and stores them in it,
-  // then confirms them. One at a time per session.
+  // deliver takes the session's pending messages and stores them in it.
+  // One at a time per session. promptAsync answers before opencode stores
+  // the message, and a failure after that answer (an unknown agent or
+  // model) only publishes session.error: so each part gets its own id, and
+  // its message is confirmed when opencode reports the part stored
+  // (message.part.updated), never on promptAsync's answer.
   const deliver = (event, sid, extra) => {
     const prev = queues.get(sid) || Promise.resolve()
     const next = prev.then(async () => {
       const { root, out } = await hook(event, sid, extra)
       if (root !== sid || !out) return
       const msgs = messagesOf(out)
-      const ids = msgs.map((m) => m.id)
-      if (msgs.length) {
-        const body = { noReply: true, parts: msgs.map(partOf) }
-        const u = lastUser.get(sid)
-        if (u && u.agent) body.agent = u.agent
-        if (u && u.model && u.model.providerID && u.model.modelID) body.model = { providerID: u.model.providerID, modelID: u.model.modelID }
-        let ok = false
-        try {
-          const r = await client.session.promptAsync({ path: { id: sid }, body })
-          ok = !(r && r.error)
-          if (!ok) log("promptAsync:", JSON.stringify(r.error).slice(0, 300))
-        } catch (e) { log("promptAsync:", e) }
-        if (!ok) return // the lease ends and the messages come again, marked
+      if (!msgs.length) {
+        if (out.instruction) await confirm(sid, [], true)
+        return
       }
-      await confirm(sid, ids, !!out.instruction)
+      const parts = msgs.map((m, i) => {
+        const id = ascendingID("prt")
+        pendingParts.set(id, { sid, ids: [m.id], instruction: i === 0 && !!out.instruction })
+        return { id, ...partOf(m) }
+      })
+      const body = { noReply: true, parts }
+      const u = lastUser.get(sid)
+      if (u && u.agent) body.agent = u.agent
+      if (u && u.model && u.model.providerID && u.model.modelID) body.model = { providerID: u.model.providerID, modelID: u.model.modelID }
+      let ok = false
+      try {
+        const r = await client.session.promptAsync({ path: { id: sid }, body })
+        ok = !(r && r.error)
+        if (!ok) log("promptAsync:", JSON.stringify(r.error).slice(0, 300))
+      } catch (e) { log("promptAsync:", e) }
+      // Not sent: nothing will be stored, so nothing is confirmed; the
+      // lease ends and the messages come again, marked.
+      if (!ok) for (const p of parts) pendingParts.delete(p.id)
     }).catch((e) => log("deliver:", e))
     queues.set(sid, next)
     return next

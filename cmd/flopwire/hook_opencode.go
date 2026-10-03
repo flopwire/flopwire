@@ -8,10 +8,12 @@ package main
 // session, with client.session.promptAsync({noReply: true}), which stores a
 // user message (metadata.flopwire on its part) without starting a turn.
 // So the hook prints what to deliver and does not confirm it; the plugin
-// confirms with a Confirm event once promptAsync succeeded. A failed
-// promptAsync confirms nothing: the messages stay leased and are offered
-// again, marked, when the lease ends, like a hook killed before it
-// confirmed.
+// confirms with a Confirm event once opencode reports the message's part
+// stored (message.part.updated), not when promptAsync answers: it answers
+// before opencode stores the message, and a later failure is only a
+// session.error event. A message opencode never stores is never
+// confirmed: it stays leased and is offered again, marked, when the lease
+// ends, like a hook killed before it confirmed.
 //
 // Events the plugin sends, besides the hook events hookCmd knows:
 //
@@ -100,7 +102,7 @@ func opencodeHook(ctx context.Context, in hookInput, socket string, stdout io.Wr
 		if in.SessionID == "" || len(in.IDs) == 0 && !in.Instruction {
 			return
 		}
-		// The plugin confirms after promptAsync stored the message: it is in
+		// The plugin confirms after opencode stored the message: it is in
 		// the session whatever the time, so no hookLate check applies.
 		cctx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()

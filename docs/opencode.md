@@ -70,8 +70,12 @@ A message never starts a turn.
 Each message is one text part. The part's text is the message wrapper, and
 its metadata is `{"flopwire": {"id": "<message id>"}}`. opencode shows the
 part in the conversation. The plugin confirms the delivery only after
-opencode has stored the part. If `promptAsync` fails, the message stays
-leased and comes again, marked `redelivery="true"`, after the lease ends.
+opencode has stored the part: it gives each part an id and confirms the
+message when opencode reports that part stored (`message.part.updated`).
+`promptAsync` answers before opencode stores anything, so its answer does
+not count. If opencode does not store the part (`promptAsync` fails, or
+opencode refuses the message after it answered), the message stays leased
+and comes again, marked `redelivery="true"`, after the lease ends.
 
 `promptAsync` without `noReply` would start a turn in an idle session, so
 the plugin never calls it that way.
