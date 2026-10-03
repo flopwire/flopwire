@@ -297,8 +297,9 @@ device's authority.
   only on a message delivered to that session and harness of the person,
   on a session the calling device holds; others are rejected. Audited as
   `bus.read`. Without a server the device sets it in `bus.db`.
-- A message a hook shows inside a Claude Code subagent stays `delivered`:
-  the subagent's transcript is its own session.
+- A hook inside a subagent (Claude Code, Codex or Devin) delivers
+  nothing (#107), and a wrapper in a subagent's transcript is that
+  subagent's sighting, never its parent's.
 - The spec's Codex-to-Codex caveat (§9 of the local-search README:
   inter-agent bodies are encrypted in rollouts) is about Codex's own
   agent messages. It does not apply here: Codex stores hook context as

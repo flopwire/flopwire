@@ -855,6 +855,11 @@ and `inbox` stop with an error. `peers` still lists the sessions. To name
 the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
 `codex` or `devin`).
 
+A subagent is not a session, so it gets no messages. A hook that runs in
+a subagent prints nothing and takes nothing. The session's own next hook
+delivers the messages. A message that a subagent sends goes out as its
+parent session, and the reply goes to the parent session.
+
 A session that a path rule keeps off the server cannot send. The agent
 refuses the request before anything leaves the device.
 
