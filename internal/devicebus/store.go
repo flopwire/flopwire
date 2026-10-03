@@ -407,7 +407,11 @@ func (s *store) acked(ctx context.Context, acked, rejected []string) error {
 			to  string
 		}{{acked, "done"}, {rejected, "rejected"}} {
 			for _, id := range l.ids {
-				if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET ack=? WHERE id=? AND ack IN ('owed','report')`, l.to, id); err != nil {
+				// A rejected delivery can take no read receipt either (the
+				// server marks read only a message it holds as delivered).
+				if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET ack=?,
+						read_ack=CASE WHEN ?='rejected' AND read_ack='owed' THEN 'rejected' ELSE read_ack END
+					WHERE id=? AND ack IN ('owed','report')`, l.to, l.to, id); err != nil {
 					return err
 				}
 			}
@@ -420,7 +424,7 @@ func (s *store) acked(ctx context.Context, acked, rejected []string) error {
 // the owed ones by the devbus_read_ack index.
 const (
 	markReadSQL = `UPDATE devbus_messages SET read_at=max(?, COALESCE(delivered_at, 0)),
-			read_ack=CASE WHEN origin='server' AND state='delivered' THEN 'owed' ELSE read_ack END
+			read_ack=CASE WHEN origin='server' AND state='delivered' AND ack<>'rejected' THEN 'owed' ELSE read_ack END
 		WHERE id=? AND to_session=? AND to_agent=? AND attempts>0 AND state IN ('leased','queued','delivered') AND read_at IS NULL`
 	readAckSQL   = `SELECT read_ack FROM devbus_messages WHERE id=?`
 	owedReadsSQL = `SELECT id,to_session,to_agent,read_at FROM devbus_messages

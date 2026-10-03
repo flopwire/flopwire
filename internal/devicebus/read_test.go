@@ -279,3 +279,39 @@ func TestReadReceiptForASightingWhileLeased(t *testing.T) {
 	}
 	waitFor(t, "the read receipt", func() bool { return len(srv.readReceipts()) == 1 })
 }
+
+// A message whose delivery receipt the server rejected (expired, held
+// again, delivered elsewhere) can never take a read receipt: the server
+// marks read only a message it holds as delivered. A sighting of it, before
+// or after the rejection, owes nothing, so status does not count a receipt
+// that is never sent.
+func TestReadReceiptNotOwedAfterARejectedDelivery(t *testing.T) {
+	srv := newFakeServer()
+	srv.ackFn = func(ids []string) (busproto.AckResponse, error) {
+		return busproto.AckResponse{Acked: []string{}, Rejected: ids}, nil
+	}
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), &presenceSrc{})
+	if err := b.st.reconcile(ctx, []busproto.Envelope{env("mx1", "s1"), env("mx2", "s1")}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Take(ctx, "s1", "", Limit{}); len(got) != 2 {
+		t.Fatal("not taken")
+	}
+	// mx1 is seen while leased, so its receipt is owed at the confirmation.
+	if err := b.MarkRead(ctx, []Read{{Session: "s1", Agent: "claude", ID: "mx1", At: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Confirm(ctx, "s1", []string{"mx1", "mx2"}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, b)
+	waitFor(t, "the rejected delivery receipts", func() bool { return len(srv.ackedIDs()) == 2 })
+	// mx2 is seen after the rejection.
+	if err := b.MarkRead(ctx, []Read{{Session: "s1", Agent: "claude", ID: "mx2", At: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "nothing owed", func() bool { return b.Status(ctx).Unacked == 0 })
+	if n := len(srv.readReceipts()); n != 0 {
+		t.Fatalf("read receipts sent for rejected deliveries: %+v", srv.readReceipts())
+	}
+}
