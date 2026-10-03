@@ -424,7 +424,12 @@ the sending session's remote when it has one, else by its repo name.
 `--repo` on the send names the repository the same way: the device sends
 its remote when it knows one. A session is on a name when its remote's
 last element is the name, or, without a remote, its repo root's last
-element.
+element. A message routed by a remote goes to a session on that remote.
+When none is live, it goes to a session without a remote whose repo root
+has the remote's name, and then to any session. A name that the sending
+device does not know is resolved over the recipient's live sessions: one
+remote routes the message by that remote, and two repositories of that
+name refuse the send and list them.
 
 ### Live sessions
 

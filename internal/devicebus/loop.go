@@ -1,6 +1,7 @@
 package devicebus
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"math/rand/v2"
@@ -362,22 +363,19 @@ func claimOrder(c busproto.Claimable, all []Session) []string {
 		byID[s.SessionID] = s
 	}
 	out := slices.Clone(c.Sessions)
-	rank := func(id string) (onRepo, busy bool, at time.Time) {
+	rank := func(id string) (onRepo int, busy bool, at time.Time) {
 		s, ok := byID[id]
-		if !ok {
-			return false, false, time.Time{}
+		if !ok || c.Message.ToRepo == "" {
+			return 0, s.Busy, s.LastActive
 		}
-		return c.Message.ToRepo != "" && bus.RepoOn(c.Message.ToRepo, s.Repo, s.Remote), s.Busy, s.LastActive
+		return bus.RouteTier(c.Message.ToRepo, s.Repo, s.Remote), s.Busy, s.LastActive
 	}
 	slices.SortStableFunc(out, func(x, y string) int {
 		xr, xb, xt := rank(x)
 		yr, yb, yt := rank(y)
 		switch {
 		case xr != yr:
-			if xr {
-				return -1
-			}
-			return 1
+			return cmp.Compare(yr, xr)
 		case xb != yb:
 			if xb {
 				return -1

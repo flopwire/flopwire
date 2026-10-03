@@ -368,15 +368,14 @@ func eligible(toRepo string, from busproto.Envelope, v Session, all []Session) b
 	if v.SessionID == from.From && v.Agent == from.FromAgent {
 		return false
 	}
-	if toRepo == "" || bus.RepoOn(toRepo, v.Repo, v.Remote) {
+	if toRepo == "" {
 		return true
 	}
+	best := 0
 	for _, o := range all {
-		if bus.RepoOn(toRepo, o.Repo, o.Remote) {
-			return false
-		}
+		best = max(best, bus.RouteTier(toRepo, o.Repo, o.Remote))
 	}
-	return true
+	return bus.RouteTier(toRepo, v.Repo, v.Remote) >= best
 }
 
 // pickLocal chooses the session a local @user message goes to, in the

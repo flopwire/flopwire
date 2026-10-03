@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -143,6 +144,57 @@ func RepoOn(key, repo, remote string) bool {
 		return RepoName(remote) == RepoName(key)
 	}
 	return RepoName(repo) == RepoName(key)
+}
+
+// RouteTier is how closely a session at repo root repo, with remote, is
+// on the repository an @user message is routed by (toRepo, RouteRepo):
+// 2 on it (RepoOn); 1, for a route by remote, a session that reported no
+// remote and whose root has the remote's name, so a recipient whose
+// session has no remote yet, or whose checkout has none, is still
+// reached by name as before; 0 elsewhere. A message goes to the
+// sessions of the highest tier any live session has (eligible).
+func RouteTier(toRepo, repo, remote string) int {
+	switch {
+	case RepoOn(toRepo, repo, remote):
+		return 2
+	case IsRemote(toRepo) && remote == "" && RepoName(repo) == RepoName(toRepo):
+		return 1
+	}
+	return 0
+}
+
+// resolveRouteName resolves an @user send's explicit repo name (one the
+// sending device did not resolve to a remote) among the recipient's live
+// sessions: one remote is routed by that remote, and two repositories of
+// the name (two remotes, or a remote and a checkout without one) are a
+// bad request that names them, so the message never reaches the wrong
+// one. Checkouts without a remote only, or no live session on the name,
+// keep the name: nothing tells those apart.
+func resolveRouteName(name string, live []liveSession) (string, error) {
+	remotes := map[string]bool{}
+	var bare []string
+	for _, v := range live {
+		switch {
+		case !RepoOn(name, v.repo, v.remote):
+		case v.remote != "":
+			remotes[v.remote] = true
+		case !slices.Contains(bare, v.repo):
+			bare = append(bare, v.repo)
+		}
+	}
+	if len(remotes) == 1 && len(bare) == 0 {
+		for r := range remotes {
+			return r, nil
+		}
+	}
+	if len(remotes) > 0 && len(remotes)+len(bare) > 1 {
+		names := slices.Sorted(maps.Keys(remotes))
+		for _, b := range bare {
+			names = append(names, b+" (no remote)")
+		}
+		return "", badRequest("repo %q names %d repositories the recipient has live sessions in: %s; pass owner/name", name, len(names), strings.Join(names, "; "))
+	}
+	return name, nil
 }
 
 func inTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
@@ -362,17 +414,18 @@ func userLive(ctx context.Context, q querier, userID string, now time.Time) ([]l
 // eligible reports whether an @user message routed to repo toRepo (a
 // remote, or a repo name: RepoOn) may go to session v: one on that repo,
 // or any session while none of the person's live sessions is on it
-// (plan §3: the repo first, then anywhere).
+// (plan §3: the repo first, then anywhere). A session that reported no
+// remote counts for a route by remote only while none on it is live
+// (RouteTier).
 func eligible(toRepo string, v liveSession, all []liveSession) bool {
-	if toRepo == "" || RepoOn(toRepo, v.repo, v.remote) {
+	if toRepo == "" {
 		return true
 	}
+	best := 0
 	for _, o := range all {
-		if RepoOn(toRepo, o.repo, o.remote) {
-			return false
-		}
+		best = max(best, RouteTier(toRepo, o.repo, o.remote))
 	}
-	return true
+	return RouteTier(toRepo, v.repo, v.remote) >= best
 }
 
 // RouteRepo is the repo an @user message is routed by (bus_messages.to_repo):
@@ -451,6 +504,15 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 			}
 			m.addressed, m.toUser, m.toEmail = "user", p.id, p.email
 			m.toRepo = RouteRepo(req.Repo, from.repo, from.remote)
+			if r := strings.TrimSpace(req.Repo); r != "" && r != "*" && !IsRemote(r) {
+				live, err := userLive(ctx, tx, p.id, now)
+				if err != nil {
+					return err
+				}
+				if m.toRepo, err = resolveRouteName(m.toRepo, live); err != nil {
+					return err
+				}
+			}
 		} else {
 			v, err := resolveSession(ctx, tx, to, now)
 			if err != nil {
