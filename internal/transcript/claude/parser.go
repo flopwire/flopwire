@@ -17,8 +17,10 @@
 //     informational, scheduled_task_fire and model_refusal_* → system;
 //     other subtypes (turn_duration, stop_hook_summary, api_error, ...) are
 //     skipped.
-//   - attachment: only queued_command prompts typed by a person (FAD 0.3.1
-//     rule) → user. Everything else is skipped.
+//   - attachment: queued_command prompts typed by a person (FAD 0.3.1
+//     rule) → user; hook_additional_context (what hooks added to the
+//     model's context) → injected, marked transcript.EnrichHookContext.
+//     Everything else is skipped.
 //   - ai-title sets the conversation title. Every other type, known
 //     (mode, permission-mode, last-prompt, queue-operation, file-history-*,
 //     atis-latch, bridge-session, pr-link, agent-name, artifact-*,
@@ -525,6 +527,7 @@ func (r *run) extract(rec *record) {
 		r.system(rec, newRow)
 	case "attachment":
 		r.queuedCommand(rec, ts, newRow)
+		r.hookContext(rec, ts, newRow)
 	}
 }
 
@@ -698,6 +701,44 @@ func (r *run) queuedCommand(rec *record, ts time.Time, newRow rowFunc) {
 		}
 		m.Enrichment["queued_command"] = authorship
 	}
+}
+
+// hookContext keeps the context hooks added to the model's context (their
+// additionalContext): an attachment of type hook_additional_context whose
+// content holds one string per hook. It is one injected row, marked with
+// transcript.EnrichHookContext and the hook event, with the strings joined
+// by blank lines. The hooks' raw output (hook_success and the other
+// hook_* attachments) is not what the model saw and is skipped.
+func (r *run) hookContext(rec *record, ts time.Time, newRow rowFunc) {
+	a := rec.Attachment
+	if a == nil || a.Type != "hook_additional_context" || rec.IsMeta {
+		return
+	}
+	var parts []string
+	if len(a.Content) > 0 && a.Content[0] == '[' {
+		var all []json.RawMessage
+		_ = json.Unmarshal(a.Content, &all)
+		for _, v := range all {
+			var s string
+			if json.Unmarshal(v, &s) == nil && strings.TrimSpace(s) != "" {
+				parts = append(parts, s)
+			}
+		}
+	} else if len(a.Content) > 0 && a.Content[0] == '"' {
+		var s string
+		if json.Unmarshal(a.Content, &s) == nil && strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	m := newRow(transcript.KindInjected, "system", 0)
+	if ts.IsZero() {
+		m.TS = parseTime(a.Timestamp)
+	}
+	m.Enrichment[transcript.EnrichHookContext] = a.HookEvent
+	m.SetText(strings.Join(parts, "\n\n"), r.caps(transcript.KindInjected))
 }
 
 // userText adds the rows of one user text block: a user row for what the

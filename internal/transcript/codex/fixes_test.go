@@ -280,3 +280,38 @@ func TestOpenLocalRolloutRelocatesArchivedParent(t *testing.T) {
 	}
 	f.Close()
 }
+
+// Hook context (a hook's additionalContext) is a developer message whose
+// content_item_kinds include hooks.additional_context (Codex 0.159.3): a
+// system row marked as hook context. Other developer messages, and a
+// user message, an assistant message or a tool output carrying the same
+// wrapper, are not hook context.
+func TestHookAdditionalContextIsMarked(t *testing.T) {
+	w, _ := jsonString("<flopwire-message id=\"m0123456789abcdef\" from=\"s2\" sender=\"own\" intent=\"inform\" sent=\"2026-10-02T10:00:00Z\">\nhi\n</flopwire-message>")
+	lines := []string{
+		rec(0, "session_meta", `{"id":"s-hook","cwd":"/x","source":"cli"}`),
+		rec(1, "response_item", `{"type":"message","id":"msg_h","role":"developer","content":[{"type":"input_text","text":`+w+`}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","create_time":1790896660.1,"content_item_kinds":["hooks.additional_context"]}}`),
+		rec(2, "response_item", `{"type":"message","id":"msg_d","role":"developer","content":[{"type":"input_text","text":`+w+`}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["unknown"]}}`),
+		rec(3, "response_item", `{"type":"message","id":"msg_u","role":"user","content":[{"type":"input_text","text":`+w+`}]}`),
+		rec(4, "response_item", `{"type":"message","id":"msg_a","role":"assistant","content":[{"type":"output_text","text":`+w+`}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["hooks.additional_context"]}}`),
+		rec(5, "response_item", `{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"c1"}`),
+		rec(6, "response_item", `{"type":"function_call_output","call_id":"c1","output":`+w+`}`),
+	}
+	c, _ := parseLines(t, nil, "", lines, transcript.Cursor{})
+	var hooks []*transcript.Message
+	for _, m := range c.Messages {
+		if transcript.HookContext(transcript.AgentCodex, m) {
+			hooks = append(hooks, m)
+		}
+	}
+	if len(hooks) != 1 {
+		t.Fatalf("hook context rows %+v, want msg_h only: %+v", view(hooks), view(c.Messages))
+	}
+	h := hooks[0]
+	if h.NativeID != "msg_h" || h.Kind != transcript.KindSystem || h.Role != "developer" || !strings.HasPrefix(h.Text, "<flopwire-message id=") {
+		t.Fatalf("hook row %+v", h)
+	}
+	if v, ok := h.Enrichment[transcript.EnrichHookContext]; !ok || v != "" {
+		t.Fatalf("hook row enrichment %v", h.Enrichment)
+	}
+}

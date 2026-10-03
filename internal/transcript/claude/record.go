@@ -75,6 +75,8 @@ type attachment struct {
 	Origin      rawRef
 	IsMeta      bool
 	Timestamp   string
+	Content     rawRef // hook_additional_context: one string per hook
+	HookEvent   string
 }
 
 // decodeRecord fills rec from one line. It fails only when the line is not
@@ -162,6 +164,10 @@ func decodeAttachment(b []byte, flags ...*bool) *attachment {
 			a.IsMeta = isTrue(v)
 		case "timestamp":
 			a.Timestamp = str(v)
+		case "content":
+			a.Content = v
+		case "hookEvent":
+			a.HookEvent = str(v)
 		}
 	})
 	return a
@@ -312,7 +318,7 @@ func checkFieldType(k, v []byte, mismatch *bool) {
 	}
 	expected := ""
 	switch string(k) {
-	case "type", "subtype", "uuid", "parentUuid", "logicalParentUuid", "sessionId", "cwd", "gitBranch", "timestamp", "requestId", "aiTitle", "title", "id", "model", "text", "thinking", "name", "tool_use_id", "agentId", "runId", "persistedOutputPath", "commandMode":
+	case "type", "subtype", "uuid", "parentUuid", "logicalParentUuid", "sessionId", "cwd", "gitBranch", "timestamp", "requestId", "aiTitle", "title", "id", "model", "text", "thinking", "name", "tool_use_id", "agentId", "runId", "persistedOutputPath", "commandMode", "hookEvent":
 		expected = "\""
 	case "isMeta", "isCompactSummary", "isApiErrorMessage", "is_error":
 		expected = "tf"

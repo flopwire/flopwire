@@ -560,6 +560,7 @@ type row struct {
 	Window         string    `json:"w,omitempty"`
 	FromCompaction bool      `json:"fc,omitempty"`
 	Enriched       string    `json:"en,omitempty"`
+	HookContext    bool      `json:"hk,omitempty"` // a hook's additionalContext (transcript.EnrichHookContext)
 }
 
 func (w *row) setText(full string) {
@@ -628,6 +629,9 @@ func (w *row) message(sessionID string) *transcript.Message {
 	}
 	if w.Enriched != "" {
 		e["enrichment"] = w.Enriched
+	}
+	if w.HookContext {
+		e[transcript.EnrichHookContext] = "" // Codex does not record the event
 	}
 	if len(e) > 0 {
 		m.Enrichment = e
@@ -752,7 +756,7 @@ func (r *run) responseItem(ts time.Time, ord *int64, it *item) error {
 			return nil
 		}
 		w := r.newRow(messageKind(it), ts, ord, 0)
-		w.NativeID, w.Role = it.id(), it.Role
+		w.NativeID, w.Role, w.HookContext = it.id(), it.Role, it.hookContext()
 		r.setText(&w, text)
 		return r.emit(w)
 

@@ -505,3 +505,33 @@ func TestCopySwitchKeepsRowsStable(t *testing.T) {
 		t.Errorf("%d live rows, want 4", len(ords))
 	}
 }
+
+// Hook context (a hook's additionalContext) is stored as a node of role
+// system (Devin CLI 3000.11.1): a system row, which transcript.HookContext
+// takes. The same wrapper in a prompt, a reply, a tool call or a tool
+// result is not hook context.
+func TestHookContextIsASystemNode(t *testing.T) {
+	path, db := buildDB(t)
+	_, cur := parse(t, path, transcript.Cursor{})
+	w := `<flopwire-message id=\"m0123456789abcdef\" from=\"s2\" sender=\"own\" intent=\"inform\" sent=\"2026-10-02T10:00:00Z\">\nhi\n</flopwire-message>`
+	meta := `"metadata":{"is_user_input":null,"telemetry":{"source":"system","operation":"unknown"}}`
+	exec(t, db, `INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES
+		('devin-oracle-002', 3, 2, '{"message_id":"dh-1","role":"system","content":"`+w+`",`+meta+`}', 1790158003),
+		('devin-oracle-002', 4, 3, '{"message_id":"dh-2","role":"user","content":"`+w+`","metadata":{"is_user_input":true}}', 1790158004),
+		('devin-oracle-002', 5, 4, '{"message_id":"dh-3","role":"assistant","content":"`+w+`","tool_calls":[{"id":"exec:0#h","name":"exec","arguments":{"command":"`+w+`"}}]}', 1790158005),
+		('devin-oracle-002', 6, 5, '{"message_id":"dh-4","role":"tool","tool_call_id":"exec:0#h","content":"`+w+`"}', 1790158006)`)
+	exec(t, db, `UPDATE sessions SET main_chain_id = 6, last_activity_at = 1790158006 WHERE id = 'devin-oracle-002'`)
+	c, _ := parse(t, path, cur)
+	var hooks []string
+	for _, m := range c.Messages {
+		if !strings.Contains(m.Text, `flopwire-message id=`) {
+			t.Errorf("row %s lost the wrapper: %q", m.NativeID, m.Text)
+		}
+		if transcript.HookContext(transcript.AgentDevin, m) {
+			hooks = append(hooks, m.NativeID)
+		}
+	}
+	if len(c.Messages) != 5 || !slices.Equal(hooks, []string{"dh-1"}) {
+		t.Fatalf("%d rows, hook context %v; want 5 rows, dh-1 only", len(c.Messages), hooks)
+	}
+}
