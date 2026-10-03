@@ -260,6 +260,7 @@ func TestDetectorUnderCodex(t *testing.T) {
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755)
 	os.WriteFile(filepath.Join(home, ".claude", "sessions", "300.json"), []byte(`{"pid":300,"sessionId":"claude-live"}`), 0o644)
+	os.WriteFile(filepath.Join(home, ".claude", "sessions", "800.json"), []byte(`{"pid":800,"sessionId":"claude-in-codex"}`), 0o644)
 	procs := map[int]struct {
 		ppid int
 		name string
@@ -271,10 +272,13 @@ func TestDetectorUnderCodex(t *testing.T) {
 		400: {401, "sh"}, 401: {1, "devin"}, // Devin
 		600: {601, "sh"}, 601: {1, "launchd"}, // no harness
 		700: {701, "sh"}, // 701 is not in the table
+		// Claude Code (its native binary is named for its version) started
+		// from a Codex shell: Claude Code is nearer.
+		800: {801, "2.1.0"}, 801: {802, "zsh"}, 802: {1, "codex"},
 	}
 	proc := func(pid int) (int, string, bool) { p, ok := procs[pid]; return p.ppid, p.name, ok }
 	d := &Detector{Getenv: func(string) string { return "" }, Home: home, Proc: proc}
-	for pid, want := range map[int]bool{100: true, 110: true, 500: true, 200: false, 300: false, 400: false, 600: false, 700: false, 0: false} {
+	for pid, want := range map[int]bool{100: true, 110: true, 500: true, 200: false, 300: false, 400: false, 600: false, 700: false, 800: false, 0: false} {
 		d.Pid = pid
 		if got := d.UnderCodex(); got != want {
 			t.Errorf("pid %d: under Codex %v, want %v", pid, got, want)
