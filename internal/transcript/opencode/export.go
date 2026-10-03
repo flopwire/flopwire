@@ -241,3 +241,19 @@ func LoadExport(ctx context.Context, r io.Reader, sessionID, dir string) (string
 	}
 	return path, tx.Commit()
 }
+
+// SessionContains reports whether any part of the session holds s, reading
+// the store read-only. `flopwire probe` checks a subagent's session with it.
+func SessionContains(ctx context.Context, dbPath, session, s string) (bool, error) {
+	db, err := openReadOnly(dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var n int
+	err = db.QueryRowContext(ctx, `SELECT count(*) FROM part WHERE session_id = ? AND instr(data, ?) > 0`, session, s).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("opencode: search session %s: %w", session, err)
+	}
+	return n > 0, nil
+}

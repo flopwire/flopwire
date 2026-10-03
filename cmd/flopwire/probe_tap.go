@@ -27,7 +27,8 @@ import (
 // hooks/hooks.json); the tap runs the real hook for them only.
 var probeHookEvents = []string{evSessionStart, evUserPromptSubmit, evPostToolUse, "Stop", evSessionEnd}
 
-// probeObserveEvents are hooked only to log when they fire.
+// probeObserveEvents are hooked only to log when they fire (Claude Code,
+// Codex, Devin).
 var probeObserveEvents = []string{"PreToolUse", "SubagentStart", "SubagentStop"}
 
 // tapEntry is one line of a tap log.
@@ -64,10 +65,21 @@ func printedIDs(out []byte) (ids []string, instruction bool) {
 		return nil, false
 	}
 	text := o.HookSpecificOutput.AdditionalContext
+	if text == "" {
+		// The opencode plugin's form (hook_opencode.go): the instruction
+		// goes into its system prompt, not the text.
+		var oc opencodeOutput
+		if json.Unmarshal(out, &oc) == nil {
+			for _, m := range oc.Messages {
+				text += m.Text + "\n"
+			}
+			instruction = oc.Instruction
+		}
+	}
 	for _, m := range wrapperID.FindAllStringSubmatch(text, -1) {
 		ids = append(ids, m[1])
 	}
-	return ids, strings.Contains(text, "<flopwire-instructions>")
+	return ids, instruction || strings.Contains(text, "<flopwire-instructions>")
 }
 
 func probeTap(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -88,7 +100,14 @@ func probeTap(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	_ = json.Unmarshal(raw, &in)
 	e := tapEntry{At: start.UnixMilli(), Event: in.Event, Session: in.SessionID, AgentID: in.AgentID, AgentType: in.AgentType,
 		Tool: in.ToolName, ToolUseID: in.ToolUseID, Transcript: in.TranscriptPath, AgentTranscript: in.AgentTranscriptPath}
-	if slices.Contains(probeHookEvents, in.Event) {
+	if in.Harness == "opencode" && in.Event == evHello {
+		// The plugin loading: answered, never logged.
+		return hookCmd(ctx, []string{"--socket", *socket}, bytes.NewReader(raw), stdout, stderr, os.Getenv)
+	}
+	// The opencode plugin runs this tap for every event it sends; each
+	// must reach the hook (PreToolUse marks the turn busy, Confirm
+	// confirms a delivery).
+	if slices.Contains(probeHookEvents, in.Event) || in.Harness == "opencode" {
 		var out bytes.Buffer
 		_ = hookCmd(ctx, []string{"--socket", *socket}, bytes.NewReader(raw), &out, stderr, os.Getenv)
 		_, _ = stdout.Write(out.Bytes())

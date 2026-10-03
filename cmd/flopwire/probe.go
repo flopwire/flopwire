@@ -43,10 +43,12 @@ import (
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
+	"github.com/flopwire/flopwire/internal/transcript/opencode"
+	opencodeplugin "github.com/flopwire/flopwire/plugins/opencode"
 )
 
 // probeHarnesses are the harnesses the probe drives, in run order.
-var probeHarnesses = []transcript.Agent{transcript.AgentClaude, transcript.AgentCodex, transcript.AgentDevin}
+var probeHarnesses = []transcript.Agent{transcript.AgentClaude, transcript.AgentCodex, transcript.AgentDevin, transcript.AgentOpencode}
 
 // probeDefaultModel is each harness's cheapest model that follows the
 // probe's prompts (2026-10-03). --model overrides it.
@@ -54,24 +56,27 @@ var probeDefaultModel = map[transcript.Agent]string{
 	transcript.AgentClaude: "haiku",
 	transcript.AgentCodex:  "gpt-5.6-luna",
 	transcript.AgentDevin:  "swe-2-medium",
+	// opencode's free model; it needs no login.
+	transcript.AgentOpencode: "opencode/big-pickle",
 }
 
 // probeBinary is the command each harness runs as.
 var probeBinary = map[transcript.Agent]string{
-	transcript.AgentClaude: "claude",
-	transcript.AgentCodex:  "codex",
-	transcript.AgentDevin:  "devin",
+	transcript.AgentClaude:   "claude",
+	transcript.AgentCodex:    "codex",
+	transcript.AgentDevin:    "devin",
+	transcript.AgentOpencode: "opencode",
 }
 
-const probeUsage = `Usage: flopwire probe [--harness claude,codex,devin] [--case CASES] [--model M] [--local] [--json] [--notes]
+const probeUsage = `Usage: flopwire probe [--harness claude,codex,devin,opencode] [--case CASES] [--model M] [--local] [--json] [--notes]
 
 Re-runs the message-bus delivery tests against the installed harnesses, in
 a scratch project with project-scope hooks only. Each case prints PASS or
 FAIL with its evidence; the command exits non-zero on any FAIL.
 
 Cases: idle, prompt-submit, framing, mid-turn, subagent, guardian (Codex
-only). Codex and Devin run in scratch homes the running agent does not
-watch, so they need --local. See docs/probe.md.`
+only). Codex, Devin and opencode run in scratch homes the running agent
+does not watch, so they need --local. See docs/probe.md.`
 
 type probeOpts struct {
 	harnesses []transcript.Agent
@@ -154,9 +159,9 @@ func parseProbeFlags(args []string, stderr io.Writer) (probeOpts, error) {
 	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprintln(stderr, probeUsage); fs.PrintDefaults() }
-	harness := fs.String("harness", "", "comma-separated harnesses (claude, codex, devin); default every one installed")
+	harness := fs.String("harness", "", "comma-separated harnesses (claude, codex, devin, opencode); default every one installed")
 	cases := fs.String("case", "", "comma-separated cases; default all: "+strings.Join(probeCases, ","))
-	model := fs.String("model", "", "model: NAME for every chosen harness, or HARNESS=NAME,... (defaults: claude=haiku, codex=gpt-5.6-luna, devin=swe-2-medium)")
+	model := fs.String("model", "", "model: NAME for every chosen harness, or HARNESS=NAME,... (defaults: claude=haiku, codex=gpt-5.6-luna, devin=swe-2-medium, opencode=opencode/big-pickle)")
 	o := probeOpts{models: map[transcript.Agent]string{}}
 	fs.BoolVar(&o.asJSON, "json", false, "print the report as JSON")
 	fs.BoolVar(&o.notes, "notes", false, "append the run to --notes-file")
@@ -175,7 +180,7 @@ func parseProbeFlags(args []string, stderr io.Writer) (probeOpts, error) {
 	for _, h := range splitList(*harness) {
 		a := transcript.Agent(h)
 		if !slices.Contains(probeHarnesses, a) {
-			return o, fmt.Errorf("probe: unknown harness %q (claude, codex or devin)", h)
+			return o, fmt.Errorf("probe: unknown harness %q (claude, codex, devin or opencode)", h)
 		}
 		o.harnesses = append(o.harnesses, a)
 	}
@@ -234,7 +239,7 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 			}
 		}
 		if len(harnesses) == 0 {
-			return rep, errors.New("probe: none of claude, codex, devin is installed")
+			return rep, errors.New("probe: none of claude, codex, devin, opencode is installed")
 		}
 	}
 	noCase := func() error {
@@ -370,15 +375,23 @@ func joinAgents(as []transcript.Agent) string {
 }
 
 // scratchHome is the home a harness runs in: CODEX_HOME for Codex, HOME
-// for Devin; empty for Claude Code.
+// for Devin, the root of the XDG directories for opencode; empty for
+// Claude Code.
 func (p *prober) scratchHome(h transcript.Agent) string {
 	switch h {
 	case transcript.AgentCodex:
 		return filepath.Join(p.dir, "codex", "home")
 	case transcript.AgentDevin:
 		return filepath.Join(p.dir, "devin", "home")
+	case transcript.AgentOpencode:
+		return filepath.Join(p.dir, "opencode", "home")
 	}
 	return ""
+}
+
+// opencodeDB is the store of the probe's opencode sessions.
+func (p *prober) opencodeDB() string {
+	return filepath.Join(p.scratchHome(transcript.AgentOpencode), "data", "opencode", "opencode.db")
 }
 
 // harnessEnv is the environment harness h runs with, in its scratch home.
@@ -389,6 +402,16 @@ func (p *prober) harnessEnv(h transcript.Agent) []string {
 		env = append(env, "CODEX_HOME="+p.scratchHome(h))
 	case transcript.AgentDevin:
 		env = append(env, "HOME="+p.scratchHome(h))
+	case transcript.AgentOpencode:
+		// opencode reads its config (and the plugin), and writes its store,
+		// under the XDG directories. The plugin runs the tap as its hook and
+		// talks to the probe's agent.
+		home := p.scratchHome(h)
+		hook, _ := json.Marshal([]string{"probe", "tap", "--log", filepath.Join(p.dir, string(h), "tap.jsonl"), "--socket", p.sock})
+		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_DATA_HOME="+filepath.Join(home, "data"),
+			"XDG_STATE_HOME="+filepath.Join(home, "state"), "XDG_CACHE_HOME="+filepath.Join(home, "cache"),
+			"FLOPWIRE_BIN="+p.exe, "FLOPWIRE_HOOK_ARGS="+string(hook), "FLOPWIRE_SOCKET="+p.sock,
+			"FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"))
 	}
 	return env
 }
@@ -462,6 +485,7 @@ func (p *prober) startAgent(ctx context.Context) (stop func(), err error) {
 	cmd := exec.Command(p.exe, "agent", "run", "--no-sync", "--socket", p.sock, "--claude-projects", projects,
 		"--codex-home", filepath.Join(p.dir, "codex", "home"),
 		"--devin-db", filepath.Join(p.dir, "devin", "home", ".local", "share", "devin", "cli", "sessions.db"),
+		"--opencode-db", p.opencodeDB(),
 		"--sweep", "5s")
 	cmd.Env = append(probeEnv(os.Environ(), false),
 		"FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"),
@@ -520,7 +544,7 @@ func probeEnv(env []string, scratchHome bool) []string {
 		case keep[k]:
 		case k == "CLAUDECODE", k == "CLAUDE_PID", k == "CLAUDE_EFFORT",
 			strings.HasPrefix(k, "CLAUDE_CODE_"), strings.HasPrefix(k, "CLAUDE_PLUGIN_"),
-			strings.HasPrefix(k, "CODEX_"), strings.HasPrefix(k, "DEVIN_"), strings.HasPrefix(k, "CHISEL_"),
+			strings.HasPrefix(k, "CODEX_"), strings.HasPrefix(k, "DEVIN_"), strings.HasPrefix(k, "CHISEL_"), strings.HasPrefix(k, "OPENCODE"),
 			strings.HasPrefix(k, "FLOPWIRE_"):
 			continue
 		case scratchHome && (k == "HOME" || strings.HasPrefix(k, "XDG_")):
@@ -742,6 +766,31 @@ func (r *harnessRun) setup() error {
 		}
 		r.login = &l
 		return write(filepath.Join(r.proj, ".devin", "hooks.v1.json"), hooks)
+	case transcript.AgentOpencode:
+		// The plugin, in the scratch config's global plugin directory, as
+		// setup installs it; its hook is the tap (harnessEnv).
+		dir := filepath.Join(r.home, "config", "opencode", "plugins")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, opencodeplugin.FileName), opencodeplugin.Source, 0o600); err != nil {
+			return err
+		}
+		// opencode needs no login for its free models; a login the user has
+		// is copied like the other harnesses'.
+		data := os.Getenv("XDG_DATA_HOME")
+		if data == "" {
+			data = filepath.Join(r.p.home, ".local", "share")
+		}
+		if src := filepath.Join(data, "opencode", "auth.json"); func() bool { _, err := os.Stat(src); return err == nil }() {
+			l, err := copyLogin(src, filepath.Join(r.home, "data", "opencode", "auth.json"))
+			if err != nil {
+				return err
+			}
+			r.login = &l
+		}
+		return write(filepath.Join(r.proj, "opencode.json"), map[string]any{"$schema": "https://opencode.ai/config.json", "autoupdate": false,
+			"share": "disabled", "permission": map[string]any{"bash": "allow", "edit": "allow"}})
 	}
 	return fmt.Errorf("unknown harness %s", r.name)
 }
@@ -883,6 +932,8 @@ func (r *harnessRun) session(ctx context.Context, role string, codex *codexStart
 		s, err = startCodex(ctx, r.proj, r.home, r.env, errLog, o)
 	case transcript.AgentDevin:
 		s, err = startDevin(ctx, r.proj, r.env, errLog, r.model)
+	case transcript.AgentOpencode:
+		s, err = startOpencode(ctx, r.proj, r.env, errLog, r.model, r.tap)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s session: %w (see %s)", role, err, errLog)
@@ -1063,6 +1114,8 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 			how = "Spawn one subagent with the spawn_agent tool, with this task: "
 		case transcript.AgentDevin:
 			how = "Use the run_subagent tool to start one subagent with this task: "
+		case transcript.AgentOpencode:
+			how = "Use the task tool (subagent_type general) to start one subagent with this task: "
 		}
 		prompt := how + task + " Wait until the subagent has finished. Then run the shell command `echo parent-after`. Then: " + quoteTags + " Finally write SUBAGENT-SAW: and what the subagent reported."
 		devinRun := false
@@ -1070,7 +1123,7 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 			if e.Session != r.recv.ID() || e.Event != "PreToolUse" {
 				return false
 			}
-			if e.AgentID != "" { // Claude Code, Codex: the subagent's first tool
+			if e.AgentID != "" { // Claude Code, Codex, opencode: the subagent's first tool
 				return true
 			}
 			if e.Tool == "run_subagent" {
@@ -1136,6 +1189,21 @@ func (r *harnessRun) sendDuring(ctx context.Context, res probeResult, start int6
 func (r *harnessRun) subagentTranscript(entries []tapEntry, marker string) (*bool, string, error) {
 	if r.name == transcript.AgentDevin {
 		return devinSubagentSeen(filepath.Join(r.home, ".local", "share", "devin", "cli", "sessions.db"), r.recv.ID(), marker)
+	}
+	if r.name == transcript.AgentOpencode {
+		// The subagent is a child session; the plugin names it as agent_id.
+		for _, e := range entries {
+			if e.AgentID != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				seen, err := opencode.SessionContains(ctx, r.p.opencodeDB(), e.AgentID, marker)
+				if err != nil {
+					return nil, r.p.opencodeDB(), err
+				}
+				return &seen, r.p.opencodeDB() + "#" + e.AgentID, nil
+			}
+		}
+		return nil, "", nil
 	}
 	path := ""
 	for _, e := range entries {
