@@ -701,7 +701,9 @@ The agent carries messages between agent sessions
 commands and MCP tools use it. The `flopwire hook` command prints each
 message into the recipient's session. See
 [Connect the harness hooks](#connect-the-harness-hooks). A session without
-the hooks reads its messages with `flopwire inbox`.
+the hooks reads its messages with `flopwire inbox`. After a harness
+release, check that the hooks still deliver with `flopwire probe`
+([probe.md](probe.md)).
 
 With a server configuration, the agent does these things:
 

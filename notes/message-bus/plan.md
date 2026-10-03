@@ -412,7 +412,9 @@ across worktrees (#100), commits without a sha (#103), read's
 - **Undocumented surfaces:** the Claude cloud session list, and the Devin
   CLI token on REST. Both can change without notice.
 - **Harness drift.** Claude Code and Codex ship several releases a week.
-  Re-run the marker tests in CI against current versions.
+  Re-run the marker tests against current versions. (2026-10-03, #69:
+  `flopwire probe`, run by hand after a harness release, no CI schedule;
+  runs are logged in [`probe-runs.md`](probe-runs.md).)
 - **Desktop apps and IDE extensions** probably load the same hooks. Not
   tested.
 
@@ -460,7 +462,7 @@ Decisions recorded on #73 and its issues:
 - **Lost hooks (#101):** the standing instruction is leased like a
   message.
 
-Still open: opencode (#62), vendor cloud (#63), marker tests in CI (#69), server
+Still open: opencode (#62), vendor cloud (#63), server
 hardening (#70), device-agent hardening (#71), the server repo key
 (#102), the plugin follow-ups (#58, #59, #60), and a captured exchange
 for the homepage (#55, #54).
