@@ -393,11 +393,16 @@ across worktrees (#100), commits without a sha (#103), read's
   count, the web console. Not decided. (2026-10-01, #66: no notice in v1;
   the sender is told the recipient is idle.)
 - **Hook context size caps** per harness are unmeasured. The 4,000-byte
-  body cap is a guess that needs checking against each.
+  body cap is a guess that needs checking against each. (2026-10-03, #68:
+  Claude Code 10,000 characters, Codex 10,000 bytes, Devin over 1 MiB;
+  the caps stay. See [`hook-caps-2026-10-03.md`](hook-caps-2026-10-03.md).)
 - **Hook cost.** `PostToolUse` runs on every tool call. The 200 ms budget
   and the local inbox keep it cheap; measure it. (2026-10-02, #99: about
   20 ms per hook on macOS; the first exec of a new binary can stall for
   minutes on `syspolicyd`. #68 stays open for the other harnesses.)
+  (2026-10-03, #68: the pending request takes 0.5 ms median, 115 ms at
+  most; the hook's wall time is process start, which a loaded machine
+  stretches past 200 ms. The budget stays.)
 - **Plugin-loaded hooks on Claude Code** and interactive sessions were not
   probed. First acceptance test of PR 4. (2026-10-01, #76: plugin-loaded
   hooks deliver in `claude -p`; interactive sessions still untested.)
@@ -455,7 +460,7 @@ Decisions recorded on #73 and its issues:
 - **Lost hooks (#101):** the standing instruction is leased like a
   message.
 
-Still open: opencode (#62), vendor cloud (#63), hook context caps and cost (#68), marker tests in CI (#69), server
+Still open: opencode (#62), vendor cloud (#63), marker tests in CI (#69), server
 hardening (#70), device-agent hardening (#71), the server repo key
 (#102), the plugin follow-ups (#58, #59, #60), and a captured exchange
 for the homepage (#55, #54).
