@@ -197,6 +197,46 @@ func TestDevinHeldElsewhere(t *testing.T) {
 	}
 }
 
+// A Claude session is held elsewhere when a session file names it and a
+// running process that is not the asking process or one of its ancestors:
+// the SessionEnd of a `claude -p -r ID` while another process runs ID.
+func TestClaudeHeldElsewhere(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "sessions"), 0o755)
+	file := func(pid int, session string) {
+		os.WriteFile(filepath.Join(dir, "sessions", itoa(pid)+".json"), []byte(`{"pid":`+itoa(pid)+`,"sessionId":"`+session+`"}`), 0o644)
+	}
+	file(200, "live")  // claude 200 runs live
+	file(999, "ended") // a dead pid
+	// 100 (sh, the hook's parent) -> 200 (claude, the holder); 300 (sh) ->
+	// 400 (claude -p -r live, no session file).
+	procs := map[int]struct {
+		ppid int
+		name string
+	}{100: {200, "sh"}, 200: {1, "2.1.288"}, 300: {400, "sh"}, 400: {1, "2.1.288"}}
+	proc := func(pid int) (int, string, bool) { p, ok := procs[pid]; return p.ppid, p.name, ok }
+	d := &Detector{Proc: proc}
+	for _, c := range []struct {
+		pid     int
+		session string
+		want    bool
+	}{
+		{100, "live", false}, // the holder's own hook
+		{300, "live", true},  // the second process's hook
+		{300, "ended", false},
+		{300, "no-file", false},
+	} {
+		d.Pid = c.pid
+		if got := d.ClaudeHeldElsewhere(dir, c.session); got != c.want {
+			t.Errorf("pid %d session %q: %v, want %v", c.pid, c.session, got, c.want)
+		}
+	}
+	d.Proc = nil
+	if d.ClaudeHeldElsewhere(dir, "live") {
+		t.Error("held elsewhere without a process table")
+	}
+}
+
 // TestDetectLive prints what the detector finds for the process running
 // the test (run it from an agent's shell tool).
 func TestDetectLive(t *testing.T) {

@@ -184,6 +184,11 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if elsewhere || late && in.Event != evSessionEnd {
 		flushIn.Event = ""
 	}
+	// The SessionEnd of a second Claude process on the session (`claude -p
+	// -r ID` while another process runs ID) does not end it.
+	if in.Event == evSessionEnd && harness == transcript.AgentClaude && claudeHeldElsewhere(in.SessionID, getenv) {
+		flushIn.Event = ""
+	}
 	flushed := make(chan struct{})
 	go func() {
 		defer close(flushed)
@@ -398,6 +403,19 @@ func devinHeldElsewhere(session string, getenv func(string) string) bool {
 		db = filepath.Join(d.Home, ".local", "share", "devin", "cli", "sessions.db")
 	}
 	return d.DevinHeldElsewhere(db, session)
+}
+
+// claudeHeldElsewhere reports whether another running Claude Code process
+// holds the session (local.Detector.ClaudeHeldElsewhere), in the config
+// directory Claude Code names for hooks (CLAUDE_CONFIG_DIR, else
+// ~/.claude).
+func claudeHeldElsewhere(session string, getenv func(string) string) bool {
+	d := local.NewDetector()
+	dir := getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		dir = filepath.Join(d.Home, ".claude")
+	}
+	return d.ClaudeHeldElsewhere(dir, session)
 }
 
 var codexRollout = regexp.MustCompile(`(^|/)rollout-[^/]*\.jsonl$`)

@@ -297,6 +297,43 @@ func TestHookSessionEnd(t *testing.T) {
 	}
 }
 
+// `claude -p -r ID` on a session another Claude process runs reuses the
+// session id and runs a SessionEnd hook with it when it exits (live,
+// Claude Code 2.1.288), while the other process keeps running the
+// session. That SessionEnd must not end the session: its flush carries no
+// event. The holder's own SessionEnd still does.
+func TestHookSessionEndOfASecondProcess(t *testing.T) {
+	cfg := t.TempDir()
+	os.MkdirAll(filepath.Join(cfg, "sessions"), 0o755)
+	holder := exec.Command("sleep", "30") // the process running the session; not an ancestor of the hook
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Process.Kill(); holder.Wait() })
+	file := func(pid int) string { return filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json") }
+	write := func(pid int) {
+		b, _ := json.Marshal(map[string]any{"pid": pid, "sessionId": claudeSID, "status": "busy"})
+		os.WriteFile(file(pid), b, 0o644)
+	}
+	env := map[string]string{"CLAUDE_CONFIG_DIR": cfg}
+
+	write(holder.Process.Pid)
+	fa := newHookAgent(t)
+	runHook(t, fa.sock, claudeIn(evSessionEnd), env)
+	if f := waitFlush(t, fa, 1); f[0].Event != "" {
+		t.Fatalf("the SessionEnd of a second process ended a session another process runs: %+v", f[0])
+	}
+
+	// The holder is this hook's ancestor: its own SessionEnd.
+	os.Remove(file(holder.Process.Pid))
+	write(os.Getppid())
+	fa = newHookAgent(t)
+	runHook(t, fa.sock, claudeIn(evSessionEnd), env)
+	if f := waitFlush(t, fa, 1); f[0].Event != evSessionEnd {
+		t.Fatalf("the holder's own SessionEnd: %+v", f[0])
+	}
+}
+
 // The hook still triggers the flush `agent flush` does: the transcript for
 // Claude and Codex, the session for Devin, which has no transcript file.
 func TestHookFlushes(t *testing.T) {
