@@ -69,7 +69,10 @@ const (
 var (
 	// hookPendingBudget bounds the pending request (dial, ask, answer). An
 	// answer that arrives later is not read; the agent finds the closed
-	// connection and queues the messages again (agent.Requeue).
+	// connection and queues the messages again (agent.Requeue). Measured
+	// 2026-10-03 on an M1 Pro at load 40 (notes/message-bus/
+	// hook-caps-2026-10-03.md): the request takes 0.5 ms median, 19 ms
+	// p99 and 115 ms at most over 1,000 idle calls, so none ran out.
 	hookPendingBudget = 200 * time.Millisecond
 	// hookFlushBudget bounds handing the flush request to the agent. The
 	// hook does not wait for the flush itself: the agent finishes it after

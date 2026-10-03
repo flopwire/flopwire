@@ -44,12 +44,18 @@ Reply only with the flopwire_send tool (to = the message's from, reply_to = its 
 // stays well under HookBytes, so a body cut to fit always has room.
 const (
 	// HookBytes caps the context one hook call prints, measured as
-	// EncodedLen. Claude Code moves hook context over 10,000 characters
-	// to a file and shows the model only a 2,000-character preview, so
-	// the cap stays under that.
+	// EncodedLen, which is at least its UTF-8 bytes and its characters.
+	// Measured 2026-10-03 (notes/message-bus/hook-caps-2026-10-03.md),
+	// on UserPromptSubmit and PostToolUse alike: Claude Code moves
+	// context over 10,000 characters to a file and shows the model a
+	// 2 KB preview; Codex keeps the head and tail of context over 10,000
+	// bytes and drops the middle; Devin took 1 MiB whole. The cap keeps
+	// 10% under the 10,000 for harness drift.
 	HookBytes = 9000
 	// HookMessages caps the messages one hook call prints; the rest wait
-	// for the session's next hook.
+	// for the session's next hook. A request's wrapper costs about 200
+	// tokens on Claude Code and Codex (measured 2026-10-03), so five
+	// short messages add about 1,500 tokens to one tool result.
 	HookMessages = 5
 	// MaxAttrBytes cuts one attribute value; MaxRefAttrBytes a ref address.
 	MaxAttrBytes    = 256
