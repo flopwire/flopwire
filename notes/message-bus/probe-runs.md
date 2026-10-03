@@ -47,3 +47,17 @@ still no hook event (not even `PreToolUse`) fired between the review's
 start and end. The reviewer cannot take the
 session's messages, so the Codex subagent detection (#109) needs no change
 for it.
+
+## 2026-10-03 19:35Z
+
+flopwire dev, local agent. opencode: 1.18.30, model opencode/big-pickle.
+
+| Harness | Case | Result | Evidence |
+|---|---|---|---|
+| opencode | idle | PASS | no turn in 1m0s; m6071bbf66dcf0d86 still queued |
+| opencode | prompt-submit | PASS | UserPromptSubmit printed mb39e838c1770c0d3; model quoted PROBE-PROMPTSUBMIT-b03bd9 |
+| opencode | framing | PASS | model quoted id, from=ses_efcb…, intent=request and the marker |
+| opencode | mid-turn | PASS | PostToolUse bash printed mf8090986a4bfe29c, 1m34.147s before the turn's Stop; model quoted PROBE-MIDTURN-6169fe |
+| opencode | subagent | PASS | 4 hooks ran inside the subagent; the session's PostToolUse task printed mcbd57c7bfc190d49 after PostToolUse task; subagent transcript clean; model quoted PROBE-SUBAGENT-2e6880 |
+
+5 passed, 0 failed.
