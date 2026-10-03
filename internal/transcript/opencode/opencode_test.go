@@ -385,8 +385,10 @@ func TestPathFrom(t *testing.T) {
 	}
 }
 
-// A message the Flopwire plugin delivered (part metadata flopwire.id) is
-// hook context; the same text typed as a prompt, or in a reply, is not.
+// A message the Flopwire plugin delivered (part metadata flopwire.id, and
+// the part's text is that message's wrapper) is hook context; the same
+// text typed as a prompt or in a reply, or under another message's id, is
+// not.
 func TestDeliveredMessageIsHookContext(t *testing.T) {
 	f := newFixture(t)
 	seed(f)
@@ -399,6 +401,14 @@ func TestDeliveredMessageIsHookContext(t *testing.T) {
 	f.part(prtT, msgT, sesA, t0+61000, `{"type":"text","text":"`+wrapper+`"}`)
 	prtR := oid("prt", t0+62000, 1)
 	f.part(prtR, msgA1, sesA, t0+62000, `{"type":"text","text":"`+wrapper+`","metadata":{"flopwire":{"id":"m1"}}}`)
+	// Metadata naming another message than the wrapper does not count.
+	msgX, prtX := oid("msg", t0+63000, 1), oid("prt", t0+63000, 2)
+	f.message(msgX, sesA, t0+63000, `{"role":"user"}`)
+	f.part(prtX, msgX, sesA, t0+63000, `{"type":"text","text":"`+wrapper+`","metadata":{"flopwire":{"id":"m2"}}}`)
+	// Two wrappers in one part: only a part that is one message counts.
+	msgY, prtY := oid("msg", t0+64000, 1), oid("prt", t0+64000, 2)
+	f.message(msgY, sesA, t0+64000, `{"role":"user"}`)
+	f.part(prtY, msgY, sesA, t0+64000, `{"type":"text","text":"x `+wrapper+`","metadata":{"flopwire":{"id":"m1"}}}`)
 	c, _ := parse(t, f.path, transcript.Cursor{})
 	for _, m := range c.Messages {
 		want := m.NativeID == prtD

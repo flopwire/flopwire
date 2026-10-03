@@ -165,7 +165,7 @@ func partMessages(p partRow, rc rowContext) []*transcript.Message {
 			break
 		}
 		kind := transcript.KindAssistant
-		delivered := md.Role == "user" && flopwireDelivery(pd.Metadata)
+		delivered := md.Role == "user" && flopwireDelivery(pd.Metadata, pd.Text)
 		if md.Role == "user" {
 			kind = transcript.KindUser
 			if pd.Synthetic || delivered {
@@ -231,9 +231,12 @@ func partMessages(p partRow, rc rowContext) []*transcript.Message {
 // delivered.
 const DeliveryHook = "flopwire-plugin"
 
-// flopwireDelivery reports whether part metadata carries the object the
-// Flopwire plugin sets on a message it delivers: {"flopwire": {"id": ...}}.
-func flopwireDelivery(raw json.RawMessage) bool {
+// flopwireDelivery reports whether a text part is a message the Flopwire
+// plugin delivered: its metadata is {"flopwire": {"id": ID}} and its text
+// is that message's wrapper, starting `<flopwire-message id="ID"`. The plugin
+// delivers one message per part (cmd/flopwire hook_opencode.go), so a
+// read receipt can only name the message it delivered there.
+func flopwireDelivery(raw json.RawMessage, text string) bool {
 	if len(raw) == 0 {
 		return false
 	}
@@ -242,7 +245,10 @@ func flopwireDelivery(raw json.RawMessage) bool {
 			ID string `json:"id"`
 		} `json:"flopwire"`
 	}
-	return json.Unmarshal(raw, &md) == nil && md.Flopwire != nil && md.Flopwire.ID != ""
+	if json.Unmarshal(raw, &md) != nil || md.Flopwire == nil || md.Flopwire.ID == "" || strings.ContainsRune(md.Flopwire.ID, '"') {
+		return false
+	}
+	return strings.HasPrefix(text, `<flopwire-message id="`+md.Flopwire.ID+`"`)
 }
 
 // messageError is the system row of an assistant message that ended in an
