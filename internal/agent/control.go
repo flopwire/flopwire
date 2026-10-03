@@ -24,7 +24,8 @@ import (
 // Request is one control-socket request: a JSON object on one line.
 type Request struct {
 	// "flush", "pass", "status", "repin", "redact" or "ping"; for the
-	// message bus "pending", "confirm", "held", "send", "peers" or "inbox".
+	// message bus "pending", "confirm", "held", "send", "peers", "inbox" or
+	// "root" (the session a subagent's Session belongs to, BusRoot).
 	Op      string `json:"op"`
 	Path    string `json:"path,omitempty"`    // flush: the transcript path
 	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
@@ -118,6 +119,9 @@ type Response struct {
 	// Excerpts (pending) maps a ref address in Messages to a short excerpt
 	// from the local index; an address it cannot find is left out.
 	Excerpts map[string]string `json:"excerpts,omitempty"`
+	// Root (root): the session the request's session belongs to, itself
+	// when it is not a subagent.
+	Root string `json:"root,omitempty"`
 }
 
 // SocketPath is the control socket beside the client config: <dir of
@@ -230,6 +234,8 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "root":
+		resp.Root, resp.OK = a.BusRoot(ctx, req.Agent, req.Session), true
 	case req.Op == "pending", req.Op == "confirm", req.Op == "held", req.Op == "send", req.Op == "peers", req.Op == "inbox":
 		a.serveBus(ctx, req, &resp)
 	default:

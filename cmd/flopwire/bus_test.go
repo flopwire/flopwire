@@ -64,6 +64,12 @@ func startFakeAgent(t *testing.T, answer func(agent.Request) agent.Response) *fa
 				if json.Unmarshal(line, &req) != nil {
 					return
 				}
+				if req.Op == "root" {
+					// Every command first asks which session a caller belongs
+					// to (busClient.self); these callers are sessions.
+					c.Write([]byte(`{"ok":true}` + "\n"))
+					return
+				}
 				fa.mu.Lock()
 				fa.reqs = append(fa.reqs, req)
 				ans := fa.answer
