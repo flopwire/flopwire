@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
@@ -68,6 +69,10 @@ type Config struct {
 	CodexHome      string // default codex.Home() (CODEX_HOME or ~/.codex)
 	DevinDB        string // default devin.DefaultPath; "-" disables Devin
 	OpencodeDB     string // default opencode.DefaultPath; "-" disables opencode
+	// OpencodeRegistry is the directory where the Flopwire opencode plugin
+	// names each opencode process's sessions (presence.go); default
+	// <client config dir>/opencode, "-" none.
+	OpencodeRegistry string
 
 	Sweep      time.Duration // full sweep interval; default 45s
 	FastLane   time.Duration // hot-file and Devin re-stat interval; default 500ms
@@ -131,6 +136,13 @@ func (c *Config) defaults() {
 	}
 	if c.OpencodeDB == "" {
 		c.OpencodeDB = opencode.DefaultPath(home)
+	}
+	if c.OpencodeRegistry == "" {
+		if p, err := client.Path(); err == nil {
+			c.OpencodeRegistry = filepath.Join(filepath.Dir(p), "opencode")
+		}
+	} else if c.OpencodeRegistry == "-" {
+		c.OpencodeRegistry = ""
 	}
 	if c.Sweep <= 0 {
 		c.Sweep = 45 * time.Second
