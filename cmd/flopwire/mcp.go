@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,8 @@ func mcp(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	server := fs.Bool("server", false, "query the team server instead of the local index")
 	index := fs.String("index", "", "local index path (default $FLOPWIRE_INDEX or the user cache dir)")
+	call := fs.String("call", "", "run this one tool with the JSON arguments on stdin, print its answer and exit (the opencode plugin's tools)")
+	socket := fs.String("socket", "", "device agent control socket for the messaging tools (default <config dir>/agent.sock)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -82,8 +85,14 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	r.caller = cachedCaller(r.caller, 10*time.Second)
 	r.underCodex = local.NewDetector().UnderCodex()
-	if r.busSocket, err = defaultSocket(); err != nil {
-		return err
+	r.busSocket = *socket
+	if r.busSocket == "" {
+		if r.busSocket, err = defaultSocket(); err != nil {
+			return err
+		}
+	}
+	if *call != "" {
+		return mcpCallOnce(ctx, r, *call, os.Stdin, os.Stdout)
 	}
 	return serveMCP(ctx, r, os.Stdin, os.Stdout)
 }
@@ -773,4 +782,33 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 	default:
 		reply("error", map[string]any{"code": -32601, "message": "method not found: " + req.Method})
 	}
+}
+
+// mcpCallOnce runs one tool, as tools/call would, with the JSON object on
+// in as its arguments, and prints its answer. A failed call prints the
+// same text the MCP answer's isError block holds and returns
+// errReported, so the command exits 1. The opencode plugin serves the
+// MCP tools as plugin tools this way: each call runs with the calling
+// session in FLOPWIRE_SESSION_ID, which an MCP server there cannot learn.
+func mcpCallOnce(ctx context.Context, r *retriever, name string, in io.Reader, out io.Writer) error {
+	if !slices.Contains(mcpToolNames(), name) {
+		return fmt.Errorf("mcp --call: unknown tool %q (%s)", name, strings.Join(mcpToolNames(), ", "))
+	}
+	raw, err := io.ReadAll(io.LimitReader(in, 1<<20))
+	if err != nil {
+		return err
+	}
+	args := map[string]any{}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("mcp --call: the arguments are not a JSON object: %w", err)
+		}
+	}
+	text, err := mcpCall(ctx, r, name, args)
+	if err != nil {
+		fmt.Fprintln(out, mcpError(name, err))
+		return errReported
+	}
+	_, err = fmt.Fprintln(out, text)
+	return err
 }

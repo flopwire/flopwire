@@ -117,8 +117,12 @@ const (
 	inboxDefaultLimit = 20
 )
 
-// defaultSocket is the agent's control socket beside the client config.
+// defaultSocket is the agent's control socket: $FLOPWIRE_SOCKET, else
+// agent.sock beside the client config.
 func defaultSocket() (string, error) {
+	if p := os.Getenv("FLOPWIRE_SOCKET"); p != "" {
+		return p, nil
+	}
 	dir, err := configDir()
 	if err != nil {
 		return "", err

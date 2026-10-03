@@ -90,6 +90,12 @@ func hookSubagent(ctx context.Context, in hookInput, harness transcript.Agent, g
 		}
 	case transcript.AgentDevin:
 		return devinSubagent(ctx, in, getenv)
+	case transcript.AgentOpencode:
+		// The plugin names the parent session and, for a subagent's child
+		// session, its id as agent_id.
+		if in.AgentID != "" {
+			return hookSub{inside: true}
+		}
 	}
 	return hookSub{}
 }
