@@ -13,8 +13,8 @@ package opencode
 // Format: JSON lines, in order: one "session" record (absent when the
 // session has no session row), the session's messages, then its parts,
 // each in id order. A subagent's session record carries spawned_by, the
-// parent's task part read at export time, since the export holds no rows
-// of the parent. A session with no rows at all exports one "gone" record
+// parent's task part read at export time, and depth, since the export
+// holds no rows of its ancestors. A session with no rows at all exports one "gone" record
 // (never zero bytes); the parser then supersedes its rows.
 
 import (
@@ -60,6 +60,7 @@ type exportRecord struct {
 	Slug         *string `json:"slug,omitempty"`
 	TimeArchived *int64  `json:"time_archived,omitempty"`
 	SpawnedBy    *string `json:"spawned_by,omitempty"`
+	Depth        *int    `json:"depth,omitempty"` // a subagent's ancestors, read at export time
 
 	// session, message, part
 	TimeCreated *int64 `json:"time_created,omitempty"`
@@ -126,6 +127,8 @@ func Export(ctx context.Context, dbPath, sessionID string) ([]byte, error) {
 				return nil, err
 			}
 			rec.SpawnedBy = &by
+			depth := sessionDepth(sessions, s)
+			rec.Depth = &depth
 		}
 		if err := enc.Encode(&rec); err != nil {
 			return nil, err
@@ -170,10 +173,10 @@ func Export(ctx context.Context, dbPath, sessionID string) ([]byte, error) {
 }
 
 // exportSchema is the subset of the store the parser reads, plus
-// session.spawned_by.
+// session.spawned_by and session.depth.
 const exportSchema = `
 CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, version TEXT, agent TEXT,
-  model TEXT, slug TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER, spawned_by TEXT);
+  model TEXT, slug TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER, spawned_by TEXT, depth INTEGER);
 CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
   time_updated INTEGER NOT NULL, data TEXT NOT NULL);
 CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
@@ -213,9 +216,9 @@ func LoadExport(ctx context.Context, r io.Reader, sessionID, dir string) (string
 		}
 		switch rec.T {
 		case "session":
-			_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, sessionID,
+			_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, sessionID,
 				rec.ParentID, rec.Directory, rec.Title, rec.Version, rec.Agent, rec.Model, rec.Slug,
-				rec.TimeCreated, rec.TimeUpdated, rec.TimeArchived, rec.SpawnedBy)
+				rec.TimeCreated, rec.TimeUpdated, rec.TimeArchived, rec.SpawnedBy, rec.Depth)
 		case "message":
 			if rec.ID == "" || rec.Data == nil || rec.TimeCreated == nil || rec.TimeUpdated == nil {
 				continue

@@ -96,3 +96,33 @@ func TestRowBelowWatermarkIsEmitted(t *testing.T) {
 	}
 	t.Fatalf("row %s below the watermark was never emitted (%d rows)", late, len(c.Messages))
 }
+
+// A subagent of a subagent has the same depth on the server, which sees
+// only its export, as in the local parse.
+func TestNestedSubagentDepthInExport(t *testing.T) {
+	f := newFixture(t)
+	seed(f)
+	const sesC = "ses_synthetic0000000000000C"
+	f.session(sesB, sesA, cwd, "child", t0+30)
+	f.Prompt(sesB, t0+31, "explore widget.go")
+	f.session(sesC, sesB, cwd, "grandchild", t0+32)
+	f.Prompt(sesC, t0+33, "look deeper")
+	direct, _ := parse(t, f.path, transcript.Cursor{})
+	if v := conv(direct, sesC); v == nil || v.Depth != 2 {
+		t.Fatalf("local grandchild = %+v", v)
+	}
+	for _, id := range []string{sesA, sesB, sesC} {
+		b, err := Export(context.Background(), f.path, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, err := LoadExport(context.Background(), bytes.NewReader(b), id, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := parse(t, db, transcript.Cursor{})
+		if g, w := conv(got, id), conv(direct, id); g == nil || g.Depth != w.Depth {
+			t.Errorf("%s: server depth %+v, local %d", id, g, w.Depth)
+		}
+	}
+}

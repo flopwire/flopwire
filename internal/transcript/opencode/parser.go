@@ -97,6 +97,7 @@ type sessionRow struct {
 	created, updated, archived                          int64
 	spawnedBy                                           string
 	hasSpawnedBy                                        bool // the store records it (an export store)
+	depth                                               int  // recorded depth (an export store), else 0
 }
 
 func (s *sessionRow) hash() uint64 {
@@ -104,7 +105,7 @@ func (s *sessionRow) hash() uint64 {
 	fmt.Fprintf(h, "%q|%q|%q|%q|%q|%q|%q|%d|%d|%d", s.parent, s.cwd, s.title, s.version, s.agent, s.model, s.slug,
 		s.created, s.updated, s.archived)
 	if s.hasSpawnedBy {
-		fmt.Fprintf(h, "|%q", s.spawnedBy) // an export store records it on the row
+		fmt.Fprintf(h, "|%q|%d", s.spawnedBy, s.depth) // an export store records them on the row
 	}
 	return binary.BigEndian.Uint64(h.Sum(nil))
 }
@@ -143,7 +144,7 @@ func loadSessions(ctx context.Context, tx *sql.Tx) (map[string]*sessionRow, erro
 		return "NULL"
 	}
 	q := `SELECT id, ` + strings.Join([]string{col("parent_id"), col("directory"), col("title"), col("version"), col("agent"),
-		col("model"), col("slug"), col("time_created"), col("time_updated"), col("time_archived"), col("spawned_by")}, ", ") + ` FROM session`
+		col("model"), col("slug"), col("time_created"), col("time_updated"), col("time_archived"), col("spawned_by"), col("depth")}, ", ") + ` FROM session`
 	rows, err := tx.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("opencode: load sessions: %w", err)
@@ -153,13 +154,13 @@ func loadSessions(ctx context.Context, tx *sql.Tx) (map[string]*sessionRow, erro
 	for rows.Next() {
 		var s sessionRow
 		var parent, cwd, title, version, agent, model, slug, spawned sql.NullString
-		var created, updated, archived sql.NullInt64
-		if err := rows.Scan(&s.id, &parent, &cwd, &title, &version, &agent, &model, &slug, &created, &updated, &archived, &spawned); err != nil {
+		var created, updated, archived, depth sql.NullInt64
+		if err := rows.Scan(&s.id, &parent, &cwd, &title, &version, &agent, &model, &slug, &created, &updated, &archived, &spawned, &depth); err != nil {
 			return nil, fmt.Errorf("opencode: scan session: %w", err)
 		}
 		s.parent, s.cwd, s.title, s.version, s.agent, s.model, s.slug = parent.String, cwd.String, title.String, version.String, agent.String, model.String, slug.String
 		s.created, s.updated, s.archived = created.Int64, updated.Int64, archived.Int64
-		s.spawnedBy, s.hasSpawnedBy = spawned.String, cols["spawned_by"]
+		s.spawnedBy, s.hasSpawnedBy, s.depth = spawned.String, cols["spawned_by"], int(depth.Int64)
 		out[s.id] = &s
 	}
 	return out, rows.Err()
@@ -450,7 +451,10 @@ func (s *syncer) conversation(r *sessionRow) *transcript.Conversation {
 	}
 	if r.parent != "" {
 		c.SpawnedByToolCallID = r.spawnedBy
-		c.Depth = s.depth(r)
+		c.Depth = r.depth
+		if c.Depth <= 0 {
+			c.Depth = sessionDepth(s.sessions, r)
+		}
 	}
 	if r.created > 0 {
 		c.StartedAt = time.UnixMilli(r.created).UTC()
@@ -469,14 +473,14 @@ func (s *syncer) conversation(r *sessionRow) *transcript.Conversation {
 	return c
 }
 
-// depth counts a session's ancestors, through the session rows the store
-// still has.
-func (s *syncer) depth(r *sessionRow) int {
+// sessionDepth counts a session's ancestors, through the session rows the
+// store still has.
+func sessionDepth(sessions map[string]*sessionRow, r *sessionRow) int {
 	d := 0
 	for seen := map[string]bool{r.id: true}; r != nil && r.parent != "" && !seen[r.parent] && d < 64; {
 		d++
 		seen[r.parent] = true
-		r = s.sessions[r.parent]
+		r = sessions[r.parent]
 	}
 	return d
 }
