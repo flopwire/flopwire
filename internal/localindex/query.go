@@ -70,13 +70,21 @@ func (f *Filter) where() (string, []any) {
 	}
 	if len(f.Repos)+len(f.RepoLikes) > 0 {
 		// One uncorrelated subquery: SQLite evaluates it once, however
-		// many roots a repository expands to (local.ExpandRepo) and
-		// however many message rows the outer query walks.
+		// many message rows the outer query walks. The roots are one
+		// JSON array bound to one variable: a repository can expand to
+		// thousands of them (local.ExpandRepo), and one OR term or
+		// variable each passes SQLite's expression depth (1000) and
+		// variable (32766) limits. MaxRepos bounds the work.
 		var ors []string
-		for _, r := range f.Repos {
-			r = strings.TrimSuffix(r, "/")
-			ors = append(ors, "(rc.repo_root = ? OR substr(rc.repo_root, 1, ?) = ? OR rc.cwd = ? OR substr(rc.cwd, 1, ?) = ?)")
-			args = append(args, r, len(r)+1, r+"/", r, len(r)+1, r+"/")
+		if len(f.Repos) > 0 {
+			repos := make([]string, 0, min(len(f.Repos), MaxRepos))
+			for _, r := range f.Repos[:min(len(f.Repos), MaxRepos)] {
+				repos = append(repos, strings.TrimSuffix(r, "/"))
+			}
+			raw, _ := json.Marshal(repos)
+			ors = append(ors, `EXISTS (SELECT 1 FROM json_each(?) j WHERE rc.repo_root = j.value OR substr(rc.repo_root, 1, length(j.value) + 1) = j.value || '/'
+				OR rc.cwd = j.value OR substr(rc.cwd, 1, length(j.value) + 1) = j.value || '/')`)
+			args = append(args, string(raw))
 		}
 		for _, p := range f.RepoLikes {
 			ors = append(ors, `ifnull(rc.repo_root, rc.cwd) LIKE ? ESCAPE '\'`)
@@ -1652,3 +1660,8 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 	}
 	return out, rows.Err()
 }
+
+// MaxRepos bounds Filter.Repos in one query: every conversation is
+// compared with every root. Roots past it are left out; the caller puts
+// the ones that matter first (local.ExpandRepo, format.FitRoots).
+const MaxRepos = 1024
