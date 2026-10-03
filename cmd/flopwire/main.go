@@ -153,7 +153,7 @@ const usageText = `Usage: flopwire <command>
   inbox       this session's messages, received and sent
   accepts     who may message your agents, and messages held until you accept
               their sender (a person at a terminal only, like accept and revoke)
-  accept      accept messages from a person's agents (asks you to confirm)
+  accept      accept messages from a person's agents (asks for your password)
   revoke      stop accepting a person's messages; undelivered ones are held again
   mcp         serve grep, search, sessions, read, peers, send and inbox over
               MCP stdio (the first four read the local index; --server
@@ -164,8 +164,8 @@ const usageText = `Usage: flopwire <command>
   redact      hide a message (or some of its lines) on the server and in the local index
   hook        what harness hooks run: prints messages for this session into it,
               and asks the device agent to index the transcript now
-  setup       install Flopwire into Claude Code through its own plugin commands
-              (--check reports, --remove uninstalls)
+  setup       install Flopwire into Claude Code, Codex and Devin CLI through
+              each one's own plugin commands (--check reports, --remove uninstalls)
   agent       run the device agent (agent run) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
   version     print version`
