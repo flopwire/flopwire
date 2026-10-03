@@ -771,7 +771,25 @@ func enrichmentJSON(m map[string]any) []byte {
 	if err != nil {
 		return nil
 	}
-	return bytes.ReplaceAll(b, []byte(`\u0000`), nil)
+	// Remove actual JSON NUL escapes, not literal backslash-u text.
+	// Consume other escapes in pairs: in "\\u0000", the first two
+	// backslashes encode one literal backslash and must stay intact.
+	write := 0
+	for read := 0; read < len(b); {
+		if b[read] == '\\' && read+1 < len(b) {
+			if bytes.HasPrefix(b[read:], []byte(`\u0000`)) {
+				read += 6
+				continue
+			}
+			b[write], b[write+1] = b[read], b[read+1]
+			write, read = write+2, read+2
+			continue
+		}
+		b[write] = b[read]
+		write++
+		read++
+	}
+	return b[:write]
 }
 
 func sameJSON(a, b []byte) bool {
