@@ -814,7 +814,11 @@ var (
 	commitOut = regexp.MustCompile(`\[(?:detached HEAD|[^\]\s]+)(?: \([^)\n]*\))? ([0-9a-f]{7,40})\] `)
 	prCmd     = regexp.MustCompile(`\bgh\s+pr\s+(?:create|edit|merge|view|ready|comment|review|close|reopen)\b`)
 	issueCmd  = regexp.MustCompile(`\bgh\s+issue\s+(?:create|edit|view|comment|close|reopen)\b`)
-	commitCmd = regexp.MustCompile(`\bgit\b[^|;&\n]*?\bcommit\b`)
+	// commitCmd is a git commit at the start of a command, for a line
+	// that does not parse: "git" inside an argument (rg "git commit" over
+	// transcripts, which print other sessions' "[main abc1234]" lines) is
+	// no commit.
+	commitCmd = regexp.MustCompile(`(?:^|[;&|(\n])\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*git\b[^|;&\n"']*?\bcommit\b`)
 )
 
 // classify says what a shell command's output may name besides commits

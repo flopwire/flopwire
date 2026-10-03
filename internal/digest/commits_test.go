@@ -264,6 +264,18 @@ var commitCases = []commitCase{
 	{"-q, gh pr merge -d, then log", []step{{cmd: `git commit -q -m x`}, {cmd: `gh pr merge 43 --squash --delete-branch`,
 		out: "✓ Squashed and merged pull request o/r#43 (x)\n✓ Deleted local branch api-cursors and switched to branch main\n"},
 		{cmd: `git log --oneline -1`, out: old + " someone's merge\n"}}, nil, []string{"x"}},
+	{"-q after a failing command of its chain", []step{{cmd: `go test ./... && git commit -q -m x`, out: "FAIL", exit: 1},
+		{cmd: `git log --oneline -1`, out: old + " older\n"}}, nil, nil},
+	{"-q, then checkout && rev-parse in one call", []step{{cmd: `git commit -q -m x`},
+		{cmd: `git checkout main && git rev-parse HEAD`, out: full + "\n"}}, nil, []string{"x"}},
+	{"-q, then git show of an old sha", []step{{cmd: `git commit -q -m x`}, {cmd: `git show 1f2e3d4`, out: "commit 1f2e3d4\n"}},
+		nil, []string{"x"}},
+	{"git log -1 before the commit, then -q", []step{{cmd: `git log --oneline -1`, out: old + " older\n"}, {cmd: `git commit -q -m x`}},
+		nil, []string{"x"}},
+	{"rg over transcripts naming git commit", []step{{cmd: `rg -n "git commit" ~/.claude/projects`, out: `a.jsonl:3:"[main 1f2e3d4] x"` + "\n"}}, nil, nil},
+	{"rg over transcripts, a line that does not parse", []step{{cmd: `rg -n "git commit" ~/.claude/projects | grep -v don't`,
+		out: `a.jsonl:3:"[main 1f2e3d4] x"` + "\n"}}, nil, nil},
+	{"echo of a commit line", []step{{cmd: `echo "[main 1f2e3d4] x"`, out: "[main 1f2e3d4] x\n"}}, nil, nil},
 	{"dry run", []step{{cmd: `git commit --dry-run -m x`, out: "On branch api-cursors\nChanges to be committed:\n"}}, nil, nil},
 }
 
