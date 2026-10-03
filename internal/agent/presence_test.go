@@ -8,10 +8,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/flopwire/flopwire/internal/devicebus"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -479,5 +481,56 @@ func TestBusWithheldNamesWithheldSessions(t *testing.T) {
 	f.once()
 	if id, err := f.a.BusWithheld(ctx, alphaID); id != "" || err != nil {
 		t.Fatalf("no rules: %q %v", id, err)
+	}
+}
+
+// A title cut at 100 runes through a secret is redacted before the cut:
+// the redactor does not match a token's first characters alone, so
+// redacting the cut leaked them (issue #71). Presence reports the title so.
+func TestBusTitleRedactsBeforeTheCut(t *testing.T) {
+	f := newFixture(t, "-")
+	const sid = "0b7e2c1a-0000-4000-8000-0000000000e1"
+	token := "ghp_" + strings.Repeat("Ab3dEf6hIj", 4)[:36]
+	prompt := strings.Repeat("deploy ", 12) + "with " + token + " then check the logs\nsecond line"
+	if at := strings.Index(prompt, token); at >= titleCut || at+len(token) <= titleCut {
+		t.Fatalf("the token spans %d..%d, not the cut at %d", at, at+len(token), titleCut)
+	}
+	f.writeSession(sid, "/tmp/oracle-title", claudeRecord(sid, "/tmp/oracle-title", "", prompt, 1))
+	f.once()
+	known, err := f.a.BusKnown(ctx, sid)
+	if err != nil || len(known) != 1 {
+		t.Fatalf("known: %+v %v", known, err)
+	}
+	s := known[0]
+	leak := token[:titleCut-strings.Index(prompt, token)] // what the cut kept of it
+	if !strings.Contains(s.Title, leak) || utf8.RuneCountInString(s.Title) != titleCut {
+		t.Fatalf("the index's title is not the raw cut: %q", s.Title)
+	}
+	if masked, _ := redact.Redact([]byte(s.Title)); !strings.Contains(string(masked), leak) {
+		t.Fatalf("the redactor matches the cut token, so this tests nothing: %q", masked)
+	}
+	got := f.a.busTitle(ctx, s)
+	if strings.Contains(got, token[4:8]) || !strings.HasPrefix(got, "deploy deploy") || utf8.RuneCountInString(got) > titleCut {
+		t.Fatalf("bus title %q", got)
+	}
+	// Presence carries it.
+	f.a.now = func() time.Time { return time.Date(2026, 9, 23, 11, 1, 0, 0, time.UTC) }
+	all, err := f.a.BusPresence(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(all, func(p devicebus.Session) bool { return p.SessionID == sid })
+	if i < 0 || all[i].Title != got {
+		t.Fatalf("presence: %+v", all)
+	}
+	// A cut title whose line is not at hand loses its last word.
+	s.Title = strings.Repeat("word ", 19) + "ghp_Ab3dE"
+	if got := f.a.busTitle(ctx, s); got != strings.Repeat("word ", 18)+"word …" {
+		t.Fatalf("no line: %q", got)
+	}
+	// A short title is no cut.
+	s.Title = "fix the flaky upload test"
+	if got := f.a.busTitle(ctx, s); got != s.Title {
+		t.Fatalf("short title: %q", got)
 	}
 }

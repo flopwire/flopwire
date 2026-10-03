@@ -45,13 +45,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/claude"
+	"github.com/flopwire/flopwire/internal/transcript/codex"
 )
 
 // harnessLive is what the harness registries say: sessions held open, with
@@ -351,6 +356,9 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			rollouts[t.path] = true
 		}
 		s.Withheld = !a.reportable(ctx, key, paths[key])
+		if !s.Withheld {
+			s.Title = a.busTitle(ctx, s)
+		}
 		out = append(out, s)
 	}
 	for i, s := range out {
@@ -367,6 +375,83 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		}
 	}
 	return out, nil
+}
+
+// titleCut is where the parsers cut a title taken from a message's first
+// line (claude.TitleRunes, codex.TitleRunes).
+const titleCut = min(claude.TitleRunes, codex.TitleRunes)
+
+// titleLeading is how many of a session's first messages busTitle looks
+// through for the one its title was cut from: Codex skips injected
+// context before it.
+const titleLeading = 20
+
+type busTitleKey struct{ agent, session, title string }
+
+// busTitle is a session's title as presence reports it to the server.
+// The parsers cut a title from the first prompt's first line at titleCut
+// runes, and a cut can split a secret so the redactor no longer matches
+// what is left of it (issue #71). So a title that may be a cut is rebuilt
+// from the line it was cut from: the whole line redacted, then cut. When
+// no such line is found (the index does not hold it yet, a local
+// redaction hid it, or the title came from elsewhere), the title is
+// redacted and its last word, which may be the start of a secret, is
+// dropped. A shorter title is no cut and is returned as it is; the bus
+// redacts every title it reports (devicebus serverPresence).
+func (a *Agent) busTitle(ctx context.Context, s devicebus.Session) string {
+	if utf8.RuneCountInString(s.Title) < titleCut {
+		return s.Title
+	}
+	key := busTitleKey{s.Agent, s.SessionID, s.Title}
+	a.mu.Lock()
+	t, ok := a.busTitles[key]
+	a.mu.Unlock()
+	if ok {
+		return t
+	}
+	t = redactedCut(s.Title)
+	rows, err := a.store.LeadingMessages(ctx, s.SessionID, s.Agent, titleLeading)
+	if err != nil {
+		return t
+	}
+	for _, r := range rows {
+		line := strings.TrimSpace(r.Text)
+		if i := strings.IndexByte(line, '\n'); i >= 0 {
+			line = line[:i]
+		}
+		if cutTitle(line) == strings.TrimSpace(s.Title) {
+			masked, _ := redact.Redact([]byte(line))
+			t = cutTitle(string(masked))
+			break
+		}
+	}
+	a.mu.Lock()
+	if a.busTitles == nil || len(a.busTitles) >= 1024 {
+		a.busTitles = map[busTitleKey]string{}
+	}
+	a.busTitles[key] = t
+	a.mu.Unlock()
+	return t
+}
+
+// cutTitle cuts a first line as the parsers do.
+func cutTitle(line string) string {
+	if r := []rune(line); len(r) > titleCut {
+		line = string(r[:titleCut])
+	}
+	return strings.TrimSpace(line)
+}
+
+// redactedCut is a cut title whose line is not at hand: redacted, less its
+// last word.
+func redactedCut(title string) string {
+	masked, _ := redact.Redact([]byte(title))
+	t := strings.TrimRightFunc(string(masked), unicode.IsSpace)
+	i := strings.LastIndexFunc(t, unicode.IsSpace)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimRightFunc(t[:i], unicode.IsSpace) + " …"
 }
 
 // BusKnown lists the device's top-level sessions whose id starts with
