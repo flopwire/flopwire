@@ -46,7 +46,8 @@
 // A hook takes a message on lease and confirms it after printing it; the
 // device then acknowledges it with AckRequest, which sets delivered_at. A
 // message no hook confirmed after MaxAttempts leases (devicebus) is
-// reported in AckRequest.Undelivered and becomes undelivered.
+// reported in AckRequest.Undelivered and becomes undelivered; so does one
+// whose session ended before a hook delivered it (AckRequest.SessionEnded).
 package busproto
 
 import (
@@ -140,7 +141,8 @@ const (
 	StateExpired   State = "expired"
 	StateRefused   State = "refused"
 	// StateUndelivered: the message will not be delivered; Reason says
-	// why (ReasonUnconfirmed). The sender can send it again.
+	// why (ReasonUnconfirmed, ReasonSessionEnded). The sender can send it
+	// again.
 	StateUndelivered State = "undelivered"
 )
 
@@ -150,6 +152,10 @@ const (
 	// and none confirmed printing it (each was killed, timed out, or lost
 	// its confirmation).
 	ReasonUnconfirmed = "unconfirmed"
+	// ReasonSessionEnded: the session the message was for (addressed, or
+	// claimed for an @user message) ended before a hook delivered it. It
+	// is not given to another session (#67).
+	ReasonSessionEnded = "session_ended"
 )
 
 // Sender is own when both sessions belong to one person, else teammate (B4).
@@ -367,10 +373,13 @@ type ClaimResponse struct {
 // AckRequest is POST /v1/bus/ack: the messages in IDs were delivered (a
 // hook confirmed printing them); those in Undelivered will not be (no hook
 // confirmed them after devicebus.MaxAttempts leases) and become
-// undelivered with ReasonUnconfirmed. Together at most MaxAck ids.
+// undelivered with ReasonUnconfirmed; those in SessionEnded will not be
+// either (their session ended first) and become undelivered with
+// ReasonSessionEnded. Together at most MaxAck ids.
 type AckRequest struct {
-	IDs         []string `json:"ids"`
-	Undelivered []string `json:"undelivered,omitempty"`
+	IDs          []string `json:"ids"`
+	Undelivered  []string `json:"undelivered,omitempty"`
+	SessionEnded []string `json:"session_ended,omitempty"`
 }
 
 // AckResponse splits the ids of both lists. Rejected ids are not

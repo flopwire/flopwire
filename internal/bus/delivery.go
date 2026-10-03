@@ -329,25 +329,39 @@ const UndeliveredSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
 	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND ` + heldByDevice + `
 	RETURNING m.id`
 
+// EndedSQL marks undelivered (reason $4) those of the queued messages $1
+// to the person $2 whose session ended on the device $3 before a hook
+// delivered them (#67) and that no other device holds: their session is
+// not live in another device's presence nor uploaded from one. Ack first
+// runs UndeliveredSQL over the report (the messages the device holds),
+// then this over the rest: the device's report races its next poll,
+// which drops the ended session from its presence, and a session that
+// ended before it was uploaded is then on no device.
+const EndedSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
+	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND m.state='queued' AND m.addressed='session'
+		AND NOT EXISTS(SELECT 1 FROM bus_presence p WHERE (p.session_id COLLATE "C")=(m.to_session COLLATE "C") AND p.agent=m.to_agent AND p.device_id<>$3)
+		AND NOT EXISTS(SELECT 1 FROM conversations c WHERE (c.session_id COLLATE "C")=(m.to_session COLLATE "C") AND c.agent=m.to_agent AND c.device_id<>$3)
+	RETURNING m.id`
+
 // Ack records that hooks printed the messages in IDs (delivered_at), and
-// that the device gave up on those in Undelivered. Acking a message
+// that the device gave up on those in Undelivered and SessionEnded. Acking a message
 // already delivered to the person (or reporting one already undelivered)
 // is a no-op that reports it acked.
 func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequest) (busproto.AckResponse, error) {
 	out := busproto.AckResponse{Acked: []string{}, Rejected: []string{}}
-	if n := len(req.IDs) + len(req.Undelivered); n == 0 || n > busproto.MaxAck {
-		return out, badRequest("ids and undelivered: 1 to %d message ids", busproto.MaxAck)
+	if n := len(req.IDs) + len(req.Undelivered) + len(req.SessionEnded); n == 0 || n > busproto.MaxAck {
+		return out, badRequest("ids, undelivered and session_ended: 1 to %d message ids", busproto.MaxAck)
 	}
-	var ids, gone []string
+	var ids, gone, ended []string
 	for _, l := range []struct {
 		in  []string
 		out *[]string
-	}{{req.IDs, &ids}, {req.Undelivered, &gone}} {
+	}{{req.IDs, &ids}, {req.Undelivered, &gone}, {req.SessionEnded, &ended}} {
 		for _, id := range l.in {
 			if len(id) > 64 {
 				return out, badRequest("ids: a message id is at most 64 bytes")
 			}
-			if !slices.Contains(ids, id) && !slices.Contains(gone, id) {
+			if !slices.Contains(ids, id) && !slices.Contains(gone, id) && !slices.Contains(ended, id) {
 				*l.out = append(*l.out, id)
 			}
 		}
@@ -362,8 +376,29 @@ func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequ
 		if err != nil {
 			return err
 		}
-		for _, id := range append(slices.Clone(ids), gone...) {
-			if slices.Contains(acked, id) || slices.Contains(before, id) || slices.Contains(undelivered, id) || slices.Contains(already, id) {
+		endedHeld, _, err := settle(ctx, tx, UndeliveredSQL, undeliveredBeforeSQL, ended, c, busproto.ReasonSessionEnded)
+		if err != nil {
+			return err
+		}
+		rest := slices.DeleteFunc(slices.Clone(ended), func(id string) bool { return slices.Contains(endedHeld, id) })
+		endedFree, _, err := settle(ctx, tx, EndedSQL, undeliveredBeforeSQL, rest, c, busproto.ReasonSessionEnded)
+		if err != nil {
+			return err
+		}
+		endedNow := append([]string{}, slices.Concat(endedHeld, endedFree)...) // never nil: $3 of undeliveredBeforeSQL
+		var endedBefore []string
+		if len(ended) > 0 {
+			rows, err := tx.Query(ctx, undeliveredBeforeSQL, ended, c.UserID, endedNow)
+			if err != nil {
+				return err
+			}
+			if endedBefore, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+				return err
+			}
+		}
+		for _, id := range slices.Concat(ids, gone, ended) {
+			if slices.Contains(acked, id) || slices.Contains(before, id) || slices.Contains(undelivered, id) || slices.Contains(already, id) ||
+				slices.Contains(endedNow, id) || slices.Contains(endedBefore, id) {
 				out.Acked = append(out.Acked, id)
 			} else {
 				out.Rejected = append(out.Rejected, id)
@@ -372,6 +407,9 @@ func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequ
 		meta := map[string]any{"delivered": acked, "already": len(before), "rejected": out.Rejected}
 		if len(gone) > 0 {
 			meta["undelivered"] = undelivered
+		}
+		if len(ended) > 0 {
+			meta["session_ended"] = endedNow
 		}
 		return audit(ctx, tx, c, now, "bus.deliver", "bus_message", "", meta)
 	})
