@@ -479,47 +479,59 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 // included; a denied one is never indexed, so the index cannot tell) and
 // every Devin session, and any match that may not reach the server counts:
 // the prefix alone could tell the server which. A path is the transcript
-// it names. A message id or anything else matches no session id.
+// it names. A ref is free text the server stores as it is, so whatever
+// its form, a whole session id anywhere in it names that session, and so
+// does a prefix at its start (cut at the first character no session id
+// holds, as in SESSION:LINE). A message id or anything else names none.
 func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
-	addr, err := format.ParseAddress(ref)
-	if err != nil {
-		return "", nil
-	}
 	pv := a.policy()
 	if pv.pol.Empty() {
 		return "", nil
 	}
-	var prefix string
-	switch addr.Kind {
-	case format.AddrPath:
-		p := addr.Path
-		if strings.HasPrefix(p, "~/") {
-			if home, err := os.UserHomeDir(); err == nil {
-				p = filepath.Join(home, p[2:])
+	ref = strings.TrimSpace(ref)
+	var prefixes []string
+	if addr, err := format.ParseAddress(ref); err == nil {
+		switch addr.Kind {
+		case format.AddrPath:
+			p := addr.Path
+			if strings.HasPrefix(p, "~/") {
+				if home, err := os.UserHomeDir(); err == nil {
+					p = filepath.Join(home, p[2:])
+				}
 			}
-		}
-		a.mu.Lock()
-		t := a.targets[filepath.Clean(p)]
-		a.mu.Unlock()
-		if t != nil && t.kind == kindTranscript && !a.uploadable(t) {
-			if t.src.SessionKey != "" {
-				return t.src.SessionKey, nil
+			a.mu.Lock()
+			t := a.targets[filepath.Clean(p)]
+			a.mu.Unlock()
+			if t != nil && t.kind == kindTranscript && !a.uploadable(t) {
+				if t.src.SessionKey != "" {
+					return t.src.SessionKey, nil
+				}
+				return p, nil
 			}
-			return p, nil
+		case format.AddrMessage:
+			prefixes = append(prefixes, addr.Session)
+		default:
+			prefixes = append(prefixes, addr.Token)
 		}
-		return "", nil
-	case format.AddrMessage:
-		prefix = addr.Session
-	default:
-		prefix = addr.Token
 	}
-	if prefix == "" {
-		return "", nil
+	if i := strings.IndexFunc(ref, notSessionIDRune); i >= format.MinPrefix {
+		prefixes = append(prefixes, ref[:i])
+	}
+	names := func(session string) bool {
+		if strings.Contains(ref, session) {
+			return true
+		}
+		for _, p := range prefixes {
+			if p != "" && strings.HasPrefix(session, p) {
+				return true
+			}
+		}
+		return false
 	}
 	a.mu.Lock()
 	var match []*target
 	for _, t := range a.targets {
-		if t.kind == kindTranscript && t.src.SessionKey != "" && strings.HasPrefix(t.src.SessionKey, prefix) {
+		if t.kind == kindTranscript && t.src.SessionKey != "" && names(t.src.SessionKey) {
 			match = append(match, t)
 		}
 	}
@@ -534,12 +546,17 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		for session, m := range a.devinModes {
-			if strings.HasPrefix(session, prefix) && m != pathpolicy.Allow {
+			if names(session) && m != pathpolicy.Allow {
 				return session, nil
 			}
 		}
 	}
 	return "", nil
+}
+
+// notSessionIDRune reports whether r cannot be part of a session id.
+func notSessionIDRune(r rune) bool {
+	return !(r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
 }
 
 // BusRoot is the top-level session a subagent's session belongs to, or

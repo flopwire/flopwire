@@ -453,14 +453,23 @@ func TestBusWithheldNamesWithheldSessions(t *testing.T) {
 				t.Fatalf("subagent %q, open session %q", sub, open)
 			}
 			for ref, want := range map[string]bool{
-				alphaID:                       true,
-				alphaID[:8]:                   true, // also orphanID's prefix: either may be meant
-				alphaID[:13] + "/3":           true,
-				alphaID + "/3:2":              true,
-				sub:                           true,
-				sub + "/1":                    true,
-				f.path(alphaRel) + ":1":       true,
-				"~/" + alphaRel + ":1":        false, // the fixture's home is not $HOME
+				alphaID:                 true,
+				alphaID[:8]:             true, // also orphanID's prefix: either may be meant
+				alphaID[:13] + "/3":     true,
+				alphaID + "/3:2":        true,
+				sub:                     true,
+				sub + "/1":              true,
+				f.path(alphaRel) + ":1": true,
+				"~/" + alphaRel + ":1":  true, // the fixture's home is not $HOME, but the id is in it
+				// A ref is free text: any form that carries the id (or a
+				// prefix of it at the start) names the session.
+				alphaID + ":3":      true,
+				alphaID + "/latest": true,
+				"see " + alphaID:    true,
+				alphaID[:8] + ":3":  true,
+				f.path(alphaRel):    true,
+				f.path(".claude/projects/-tmp-oracle-alpha/"+alphaID+"/tool-results/x.txt") + ":1": true,
+				open + ":3":                   false,
 				open:                          false,
 				open + "/4":                   false,
 				orphanID:                      false,
