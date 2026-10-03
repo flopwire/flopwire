@@ -827,9 +827,8 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    ```
 
    Each entry has `direction` (`sent` or `received`) and `state`:
-   `queued`, `held`, `claimed`, `delivered`, `expired`, `refused` or
-   `undelivered`. The schema also has `read`, but nothing sets it yet
-   (#65): `delivered` is the last state a delivered message reaches. A `refused` or `undelivered` entry also
+   `queued`, `held`, `claimed`, `delivered`, `read`, `expired`,
+   `refused` or `undelivered`. A `refused` or `undelivered` entry also
    has a `reason`. `undelivered` with `unconfirmed` means that hooks took
    the message 3 times and none confirmed that it printed it.
    `undelivered` with `session_ended` means that the recipient session
@@ -868,7 +867,8 @@ refuses the request before anything leaves the device.
   a subagent can therefore take the parent's messages, print them into
   the subagent and mark them delivered. The parent's model does not see
   them (#107).
-- `read` receipts are not built (#65). `inbox` stops at `delivered`.
+- opencode has no read receipts. A message that a Claude Code subagent
+  shows stays `delivered`.
 - Without a server, the agent applies the per-session, per-thread,
   duplicate and recipient limits. It does not apply the per-device and
   per-person ceilings of the server (#71).

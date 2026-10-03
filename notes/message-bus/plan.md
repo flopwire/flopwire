@@ -4,8 +4,7 @@ Date: 2026-10-01. Supersedes section 9 of
 [`../local-search/README.md`](../local-search/README.md) where they differ.
 Evidence: [`README.md`](README.md) (socket and queue, 2026-09-28) and
 [`probes-2026-10-01.md`](probes-2026-10-01.md) (hooks, Devin, opencode,
-cloud). Built as of 2026-10-03 except opencode, vendor cloud and read
-receipts; where the build diverged, see section 9 and the dated notes in
+cloud). Built as of 2026-10-03 except opencode and vendor cloud; where the build diverged, see section 9 and the dated notes in
 sections 3 to 8.
 
 ## 1. Decisions
@@ -125,9 +124,9 @@ sent and their state (`queued`, `held`, `delivered`, `read`, `expired`,
 Delivery does not depend on the agent calling it.
 
 2026-10-03: the states as built are `queued`, `held`, `claimed`,
-`delivered`, `expired`, `refused` and `undelivered` (with `reason`
-`unconfirmed` or `session_ended`). `read` is in the schema but nothing
-sets it until #65 lands (PR #106).
+`delivered`, `read`, `expired`, `refused` and `undelivered` (with
+`reason` `unconfirmed` or `session_ended`). `read` means the text
+entered the recipient's context, not that it acted on it (#65, #106).
 
 ### What the recipient sees
 
@@ -383,7 +382,7 @@ Status as of 2026-10-03.
 Added during the build: the `next` hint (#95), two-step delivery (#99),
 ended sessions and the leased standing instruction (#105), `--repo`
 across worktrees (#100), commits without a sha (#103), read's
-`messages_before`/`messages_after` (#98).
+`messages_before`/`messages_after` (#98), read receipts (#106).
 
 ## 8. Open items
 
@@ -433,7 +432,7 @@ after the plan merged. Tracker #73; the merged code wins over this note.
 | Accept | console and terminal | Also needs the person's password (#97 review). Held messages show to the person as first-line previews only. The notice is a `systemMessage` on `UserPromptSubmit`, once per sender per day per device, on Claude Code and Codex; Devin has no such channel. Revoke also re-holds claimed messages. Members get the console's Messaging page. |
 | Repo | path prefix or basename | `--repo` names a repository: its main checkout and normalized remote, across worktrees and clones on the device (#100). The server stores no remote, so `--server --repo` does not match another machine's checkout at another path (#102). `@user` routing is still by repo name. |
 | Commit evidence | `[branch sha]` lines | Also `commits_no_sha` for quiet commits, resolved by a later `rev-parse`, `log`, `show` or `push` (#103). |
-| Read receipts | `read_at` at ingest | Not built (#65; PR #106 open). |
+| Read receipts | `read_at` at ingest on the server | Set by the device agent when the wrapper appears in a hook-context row of the recipient's transcript (Claude Code, Codex, Devin CLI; not opencode); sent in the ack batch; the server sets `read_at` once (#65, #106). It means the text entered the context, not that the model acted. |
 
 Decisions recorded on #73 and its issues:
 
@@ -455,8 +454,7 @@ Decisions recorded on #73 and its issues:
 - **Lost hooks (#101):** the standing instruction is leased like a
   message.
 
-Still open: opencode (#62), vendor cloud (#63), read receipts (#65),
-hook context caps and cost (#68), marker tests in CI (#69), server
+Still open: opencode (#62), vendor cloud (#63), hook context caps and cost (#68), marker tests in CI (#69), server
 hardening (#70), device-agent hardening (#71), the server repo key
 (#102), a Claude Code subagent's hook taking its parent's messages
 (#107), the plugin follow-ups (#58, #59, #60), and a captured exchange
