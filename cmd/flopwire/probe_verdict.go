@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -33,6 +34,9 @@ type probeResult struct {
 	Evidence string `json:"evidence"`
 	Message  string `json:"message_id,omitempty"`
 	Marker   string `json:"marker,omitempty"`
+
+	session string // the session the message was sent to
+	sender  string // the session that sent it
 }
 
 func (r probeResult) verdict() string {
@@ -112,6 +116,33 @@ func (v *verdict) quoted(reply, marker string) {
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// checkDeliveredOnce judges every case's message against the whole run's
+// tap log: each case reads only its own window, so a message the bus
+// delivers again on a later turn, or a second time to another session or
+// a subagent, would otherwise pass. A message printed more than once, or
+// by a hook other than its session's own, fails its case.
+func checkDeliveredOnce(results []probeResult, entries []tapEntry) []probeResult {
+	out := slices.Clone(results)
+	for i, r := range out {
+		if r.Message == "" || r.session == "" {
+			continue
+		}
+		ps := printers(entries, r.Message)
+		var why string
+		switch {
+		case len(ps) > 1:
+			why = fmt.Sprintf("%s printed %d times in the run (%s)", r.Message, len(ps), describeAll(ps))
+		case len(ps) == 1 && (ps[0].Session != r.session || ps[0].AgentID != ""):
+			why = fmt.Sprintf("%s printed by %s, not the session's own hook", r.Message, describe(ps[0]))
+		default:
+			continue
+		}
+		out[i].Pass = false
+		out[i].Evidence = why + "; " + r.Evidence
+	}
+	return out
+}
 
 // verdictPromptSubmit: a message queued before the prompt is printed by
 // the session's UserPromptSubmit hook, once, and the model quotes it.

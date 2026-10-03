@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -418,5 +420,181 @@ func TestMirrorDir(t *testing.T) {
 	mirrorDir(src, dst)
 	if b, _ := os.ReadFile(filepath.Join(dst, "s1.jsonl")); string(b) != "z\n" {
 		t.Fatalf("shrunk source %q", b)
+	}
+}
+
+// A case judges only its own window of the tap log, so a message the bus
+// re-delivers on a later turn (or to another session) passed its case.
+// The run-wide check fails it.
+func TestProbeDeliveredOnceAcrossCases(t *testing.T) {
+	reply := "ID " + pID + " MARKER " + pMarker
+	window := []tapEntry{at(0, evUserPromptSubmit, printed(pID)), at(50, "Stop")}
+	r := verdictPromptSubmit(window, pSess, pID, pMarker, reply).result(probeResult{Case: casePromptSubmit, Message: pID, session: pSess})
+	if !r.Pass {
+		t.Fatalf("window verdict: %s", r.Evidence)
+	}
+	clean := checkDeliveredOnce([]probeResult{r}, window)
+	if !clean[0].Pass || clean[0].Evidence != r.Evidence {
+		t.Fatalf("a single delivery changed the verdict: %+v", clean[0])
+	}
+	for name, tc := range map[string]struct {
+		later tapEntry
+		want  string
+	}{
+		"next turn":     {at(100, evUserPromptSubmit, printed(pID)), "printed 2 times in the run"},
+		"other session": {at(100, evPostToolUse, printed(pID), func(e *tapEntry) { e.Session = pSender }), "printed 2 times in the run"},
+		"subagent":      {at(100, evPostToolUse, printed(pID), agentID("a1")), "printed 2 times in the run"},
+	} {
+		got := checkDeliveredOnce([]probeResult{r}, append(slices.Clone(window), tc.later))
+		if got[0].Pass || !strings.Contains(got[0].Evidence, tc.want) {
+			t.Errorf("%s: %+v", name, got[0])
+		}
+	}
+	// The framing case has no hook check of its own: a single delivery by
+	// a hook of another session fails it here.
+	f := probeResult{Case: caseFraming, Pass: true, Message: pID, session: pSess, Evidence: "model quoted id"}
+	got := checkDeliveredOnce([]probeResult{f}, []tapEntry{at(0, evUserPromptSubmit, printed(pID), func(e *tapEntry) { e.Session = pSender })})
+	if got[0].Pass || !strings.Contains(got[0].Evidence, "not the session's own hook") {
+		t.Fatalf("framing delivered elsewhere: %+v", got[0])
+	}
+}
+
+// A run in which no case applies to the chosen harnesses proved nothing
+// and exited 0.
+func TestRunProbeNoApplicableCase(t *testing.T) {
+	o := probeOpts{harnesses: []transcript.Agent{transcript.AgentClaude}, cases: []string{caseGuardian}}
+	if _, err := runProbe(t.Context(), o, io.Discard); err == nil || !strings.Contains(err.Error(), "no case") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// The notes file is committed: no home path, scratch path or full session
+// id may reach it, even from a FAIL row's evidence.
+func TestProbeNotesScrubbed(t *testing.T) {
+	home, dir := "/Users/somebody", "/private/var/folders/xy/T/flopwire-probe-123"
+	rep := probeReport{Date: time.Date(2026, 10, 3, 15, 46, 0, 0, time.UTC), Flopwire: "dev", Mode: "local", Dir: dir, home: home,
+		Results: []probeResult{
+			{Harness: "claude", Case: caseSubagent, session: pSess, sender: pSender,
+				Evidence: "the subagent transcript " + home + "/.claude/projects/p/" + pSess + "/subagents/agent-a.jsonl holds PROBE-X"},
+			{Harness: "claude", Case: caseFraming, session: pSess, sender: pSender, Evidence: `from: quoted "x", want "` + pSender + `"`},
+			{Harness: "codex", Case: casePromptSubmit, Evidence: "sender session: boom (see " + dir + "/codex/sender.stderr)"},
+		}}
+	md := probeMarkdown(rep)
+	for _, bad := range []string{home, dir, pSess, pSender, "somebody"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("notes hold %q:\n%s", bad, md)
+		}
+	}
+	for _, want := range []string{"~/.claude/projects", "<scratch>/codex/sender.stderr", clip(pSender, 8)} {
+		if !strings.Contains(md, want) {
+			t.Errorf("notes lack %q:\n%s", want, md)
+		}
+	}
+}
+
+// Codex rotates its refresh token on every refresh: a refresh in the
+// probe's copy used up the token the user's own auth.json still holds,
+// and the user's next refresh failed with refresh_token_reused.
+func TestLoginCopyRelease(t *testing.T) {
+	d := t.TempDir()
+	src, dst := filepath.Join(d, "user", "auth.json"), filepath.Join(d, "scratch", "home", "auth.json")
+	os.MkdirAll(filepath.Dir(src), 0o700)
+	write := func(p, s string) { t.Helper(); os.WriteFile(p, []byte(s), 0o600) }
+	read := func(p string) string { b, _ := os.ReadFile(p); return string(b) }
+
+	// Unchanged copy: the original is left alone.
+	write(src, "v1")
+	l, err := copyLogin(src, dst)
+	if err != nil || read(dst) != "v1" {
+		t.Fatalf("copy: %v %q", err, read(dst))
+	}
+	if err := l.release(); err != nil || read(src) != "v1" {
+		t.Fatalf("unchanged release: %v %q", err, read(src))
+	}
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("copy kept: %v", err)
+	}
+
+	// Refreshed in the copy: the refreshed login goes back to the user.
+	l, _ = copyLogin(src, dst)
+	write(dst, "v2-refreshed")
+	if err := l.release(); err != nil || read(src) != "v2-refreshed" {
+		t.Fatalf("refresh release: %v %q", err, read(src))
+	}
+	if fi, _ := os.Stat(src); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("copy kept: %v", err)
+	}
+
+	// Both changed (the user logged in again meanwhile): the user's file
+	// wins, the copy is still deleted, and the caller is told.
+	l, _ = copyLogin(src, dst)
+	write(dst, "v3-copy")
+	write(src, "v3-user")
+	if err := l.release(); err == nil || read(src) != "v3-user" {
+		t.Fatalf("conflict release: %v %q", err, read(src))
+	}
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("copy kept: %v", err)
+	}
+}
+
+// A setup that failed after copying the login file returned before the
+// deferred delete was registered, leaving the copy behind.
+func TestProbeSetupFailureRemovesLogin(t *testing.T) {
+	user := t.TempDir()
+	os.WriteFile(filepath.Join(user, "auth.json"), []byte("secret"), 0o600)
+	t.Setenv("CODEX_HOME", user)
+	p := &prober{o: probeOpts{cases: []string{casePromptSubmit}}, dir: t.TempDir(), exe: "/bin/true", sock: "/nonexistent.sock", home: t.TempDir(), log: io.Discard}
+	// config.toml cannot be written: setup fails after the copy.
+	os.MkdirAll(filepath.Join(p.dir, "codex", "home", "config.toml"), 0o700)
+	res := p.runHarness(t.Context(), transcript.AgentCodex, "m")
+	if len(res) != 1 || res[0].Pass || !strings.Contains(res[0].Evidence, "setup failed") {
+		t.Fatalf("results %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir, "codex", "home", "auth.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("login copy left behind: %v", err)
+	}
+}
+
+type panicWriter struct{}
+
+func (panicWriter) Write([]byte) (int, error) { panic("boom") }
+
+// The harnesses run in goroutines: a panic in one ended the process before
+// the others deleted their login copies. It is now that harness's failure.
+func TestProbeHarnessPanicIsAFailure(t *testing.T) {
+	p := &prober{o: probeOpts{cases: []string{caseIdle, casePromptSubmit}}, dir: t.TempDir(), log: panicWriter{}}
+	res := p.runHarness(t.Context(), transcript.AgentClaude, "m")
+	if len(res) != 2 || res[0].Pass || !strings.Contains(res[0].Evidence, "panic: boom") {
+		t.Fatalf("results %+v", res)
+	}
+}
+
+// `codex --version` run with the user's environment wrote the user's
+// CODEX_HOME (tmp/arg0). It runs in the probe's scratch home.
+func TestHarnessVersionScratchHome(t *testing.T) {
+	bin, dir := t.TempDir(), t.TempDir()
+	out := filepath.Join(bin, "env.txt")
+	script := "#!/bin/sh\necho \"CODEX_HOME=$CODEX_HOME HOME=$HOME\" > '" + out + "'\necho 'codex-cli 9.9'\n"
+	for _, name := range []string{"codex", "devin"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CODEX_HOME", "/user/codex")
+	p := &prober{dir: dir, home: "/user"}
+	if v := p.harnessVersion(t.Context(), transcript.AgentCodex); v != "codex-cli 9.9" {
+		t.Fatalf("version %q", v)
+	}
+	if b, _ := os.ReadFile(out); !strings.Contains(string(b), "CODEX_HOME="+filepath.Join(dir, "codex", "home")+" ") {
+		t.Fatalf("codex ran with %s", b)
+	}
+	p.harnessVersion(t.Context(), transcript.AgentDevin)
+	if b, _ := os.ReadFile(out); !strings.Contains(string(b), "HOME="+filepath.Join(dir, "devin", "home")) {
+		t.Fatalf("devin ran with %s", b)
 	}
 }

@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -93,6 +94,8 @@ type probeReport struct {
 	Dir      string         `json:"dir"`
 	Harness  []probeVersion `json:"harnesses"`
 	Results  []probeResult  `json:"results"`
+
+	home string // the user's home directory, kept out of the notes
 }
 
 type probeVersion struct {
@@ -231,6 +234,9 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 			return rep, errors.New("probe: none of claude, codex, devin is installed")
 		}
 	}
+	if !slices.ContainsFunc(harnesses, func(h transcript.Agent) bool { return len(casesFor(h, o.cases)) > 0 }) {
+		return rep, fmt.Errorf("probe: no case of %s applies to %s", strings.Join(o.cases, ", "), joinAgents(harnesses))
+	}
 	for _, h := range harnesses {
 		if _, err := exec.LookPath(probeBinary[h]); err != nil {
 			return rep, fmt.Errorf("probe: %s is not installed", probeBinary[h])
@@ -251,6 +257,7 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 	if p.claudeDir == "" {
 		p.claudeDir = filepath.Join(p.home, ".claude")
 	}
+	rep.home = p.home
 	if err := p.makeDir(); err != nil {
 		return rep, err
 	}
@@ -270,7 +277,7 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 		if model == "" {
 			model = probeDefaultModel[h]
 		}
-		rep.Harness = append(rep.Harness, probeVersion{Name: string(h), Version: harnessVersion(ctx, h), Model: model})
+		rep.Harness = append(rep.Harness, probeVersion{Name: string(h), Version: p.harnessVersion(ctx, h), Model: model})
 		wg.Go(func() { results[i] = p.runHarness(ctx, h, model) })
 	}
 	wg.Wait()
@@ -316,11 +323,63 @@ func (l *lockedWriter) Write(b []byte) (int, error) {
 	return l.w.Write(b)
 }
 
-// harnessVersion is `<binary> --version`, first line.
-func harnessVersion(ctx context.Context, h transcript.Agent) string {
+// casesFor is the cases that apply to harness h.
+func casesFor(h transcript.Agent, cases []string) []string {
+	var out []string
+	for _, c := range cases {
+		if c == caseGuardian && h != transcript.AgentCodex {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func joinAgents(as []transcript.Agent) string {
+	s := make([]string, len(as))
+	for i, a := range as {
+		s[i] = string(a)
+	}
+	return strings.Join(s, ", ")
+}
+
+// scratchHome is the home a harness runs in: CODEX_HOME for Codex, HOME
+// for Devin; empty for Claude Code.
+func (p *prober) scratchHome(h transcript.Agent) string {
+	switch h {
+	case transcript.AgentCodex:
+		return filepath.Join(p.dir, "codex", "home")
+	case transcript.AgentDevin:
+		return filepath.Join(p.dir, "devin", "home")
+	}
+	return ""
+}
+
+// harnessEnv is the environment harness h runs with, in its scratch home.
+func (p *prober) harnessEnv(h transcript.Agent) []string {
+	env := probeEnv(os.Environ(), h == transcript.AgentDevin)
+	switch h {
+	case transcript.AgentCodex:
+		env = append(env, "CODEX_HOME="+p.scratchHome(h))
+	case transcript.AgentDevin:
+		env = append(env, "HOME="+p.scratchHome(h))
+	}
+	return env
+}
+
+// harnessVersion is `<binary> --version`, first line. It runs in the
+// scratch home: even --version makes Codex write its home (tmp/arg0).
+func (p *prober) harnessVersion(ctx context.Context, h transcript.Agent) string {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, probeBinary[h], "--version").Output()
+	if home := p.scratchHome(h); home != "" {
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			return "unknown (" + err.Error() + ")"
+		}
+	}
+	cmd := exec.CommandContext(ctx, probeBinary[h], "--version")
+	cmd.Env, cmd.Dir = p.harnessEnv(h), p.dir
+	out, err := cmd.Output()
 	if err != nil {
 		return "unknown (" + err.Error() + ")"
 	}
@@ -348,12 +407,13 @@ func (p *prober) startAgent(ctx context.Context) (stop func(), err error) {
 		return func() {}, nil
 	}
 	p.sock = filepath.Join(p.dir, "agent.sock")
+	sockDir := ""          // a short directory for the socket, removed at the end
 	if len(p.sock) > 100 { // sun_path is 104 bytes on macOS
 		d, err := os.MkdirTemp("/tmp", "fwp-")
 		if err != nil {
 			return nil, err
 		}
-		p.sock = filepath.Join(d, "a.sock")
+		sockDir, p.sock = d, filepath.Join(d, "a.sock")
 	}
 	projects := filepath.Join(p.dir, "claude", "projects")
 	if err := os.MkdirAll(projects, 0o700); err != nil {
@@ -399,6 +459,10 @@ func (p *prober) startAgent(ctx context.Context) (stop func(), err error) {
 			<-done
 		}
 		logf.Close()
+		if sockDir != "" {
+			_ = os.Remove(p.sock)
+			_ = os.Remove(sockDir)
+		}
 	}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
@@ -534,31 +598,38 @@ type harnessRun struct {
 	proj   string
 	tap    string
 	home   string // Codex: CODEX_HOME; Devin: HOME
+	login  *loginCopy
 	env    []string
 	sender probeSession
 	recv   probeSession
 }
 
-func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model string) []probeResult {
+func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model string) (results []probeResult) {
 	r := &harnessRun{p: p, name: h, model: model, root: filepath.Join(p.dir, string(h))}
 	r.proj, r.tap = filepath.Join(r.root, "project"), filepath.Join(r.root, "tap.jsonl")
 	fail := func(c, why string) []probeResult {
 		var out []probeResult
-		for _, x := range p.o.cases {
-			if x == caseGuardian && h != transcript.AgentCodex {
-				continue
-			}
+		for _, x := range casesFor(h, p.o.cases) {
 			if c == "" || c == x {
 				out = append(out, probeResult{Harness: string(h), Case: x, Evidence: "setup failed: " + why})
 			}
 		}
 		return out
 	}
+	// The harnesses run in goroutines: a panic here would end the process
+	// before the other harnesses delete their login copies. It fails this
+	// harness's cases instead (the deferred removeLogin below runs first).
+	defer func() {
+		if v := recover(); v != nil {
+			results = fail("", fmt.Sprintf("panic: %v", v))
+		}
+	}()
+	// Registered before setup, which may fail after copying the login.
+	defer r.removeLogin()
 	fmt.Fprintf(p.log, "probe: %s (%s)\n", h, model)
 	if err := r.setup(); err != nil {
 		return fail("", err.Error())
 	}
-	defer r.removeLogin()
 	var err error
 	if r.sender, err = r.session(ctx, "sender", nil); err != nil {
 		return fail("", err.Error())
@@ -570,10 +641,7 @@ func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model strin
 	defer r.recv.Close()
 	fmt.Fprintf(p.log, "probe: %s sender %s, recipient %s\n", h, r.sender.ID(), r.recv.ID())
 	var out []probeResult
-	for _, c := range p.o.cases {
-		if c == caseGuardian && h != transcript.AgentCodex {
-			continue
-		}
+	for _, c := range casesFor(h, p.o.cases) {
 		if ctx.Err() != nil {
 			break
 		}
@@ -582,7 +650,14 @@ func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model strin
 		fmt.Fprintf(p.log, "probe: %s %s %s: %s\n", h, c, res.verdict(), res.Evidence)
 		out = append(out, res)
 	}
-	return out
+	all, _ := readTap(r.tap)
+	checked := checkDeliveredOnce(out, all)
+	for i := range checked {
+		if checked[i].Pass != out[i].Pass {
+			fmt.Fprintf(p.log, "probe: %s %s %s: %s\n", h, checked[i].Case, checked[i].verdict(), checked[i].Evidence)
+		}
+	}
+	return checked
 }
 
 // setup writes the scratch project's hooks and, for Codex and Devin, the
@@ -615,61 +690,113 @@ func (r *harnessRun) setup() error {
 		b, _ := json.MarshalIndent(v, "", "  ")
 		return os.WriteFile(path, b, 0o600)
 	}
-	r.env = probeEnv(os.Environ(), r.name == transcript.AgentDevin)
+	r.env, r.home = r.p.harnessEnv(r.name), r.p.scratchHome(r.name)
 	switch r.name {
 	case transcript.AgentClaude:
 		return write(filepath.Join(r.proj, ".claude", "settings.json"), map[string]any{"hooks": hooks})
 	case transcript.AgentCodex:
-		r.home = filepath.Join(r.p.dir, "codex", "home")
 		src := os.Getenv("CODEX_HOME")
 		if src == "" {
 			src = filepath.Join(r.p.home, ".codex")
 		}
-		if err := copyLogin(filepath.Join(src, "auth.json"), filepath.Join(r.home, "auth.json")); err != nil {
+		l, err := copyLogin(filepath.Join(src, "auth.json"), filepath.Join(r.home, "auth.json"))
+		if err != nil {
 			return err
 		}
+		r.login = &l
 		cfg := fmt.Sprintf("[projects.%q]\ntrust_level = \"trusted\"\n", r.proj)
 		if err := os.WriteFile(filepath.Join(r.home, "config.toml"), []byte(cfg), 0o600); err != nil {
 			return err
 		}
-		r.env = append(r.env, "CODEX_HOME="+r.home)
 		return write(filepath.Join(r.proj, ".codex", "hooks.json"), map[string]any{"hooks": hooks})
 	case transcript.AgentDevin:
-		r.home = filepath.Join(r.p.dir, "devin", "home")
 		data := os.Getenv("XDG_DATA_HOME")
 		if data == "" {
 			data = filepath.Join(r.p.home, ".local", "share")
 		}
-		if err := copyLogin(filepath.Join(data, "devin", "credentials.toml"), filepath.Join(r.home, ".local", "share", "devin", "credentials.toml")); err != nil {
+		l, err := copyLogin(filepath.Join(data, "devin", "credentials.toml"), filepath.Join(r.home, ".local", "share", "devin", "credentials.toml"))
+		if err != nil {
 			return err
 		}
-		r.env = append(r.env, "HOME="+r.home)
+		r.login = &l
 		return write(filepath.Join(r.proj, ".devin", "hooks.v1.json"), hooks)
 	}
 	return fmt.Errorf("unknown harness %s", r.name)
 }
 
-// removeLogin deletes the scratch copy of the login file.
+// removeLogin deletes the scratch copy of the login file, first handing
+// a login the harness refreshed during the run back to the user.
 func (r *harnessRun) removeLogin() {
-	switch r.name {
-	case transcript.AgentCodex:
-		_ = os.Remove(filepath.Join(r.home, "auth.json"))
-	case transcript.AgentDevin:
-		_ = os.Remove(filepath.Join(r.home, ".local", "share", "devin", "credentials.toml"))
+	if r.login == nil {
+		return
+	}
+	if err := r.login.release(); err != nil {
+		fmt.Fprintf(r.p.log, "probe: %s: %v\n", r.name, err)
 	}
 }
 
+// loginCopy is a harness's login file copied into a scratch home.
+type loginCopy struct {
+	src, dst string
+	orig     []byte // src's content when copied
+}
+
 // copyLogin copies a harness's login file into the scratch home (0600).
-// The original is only read.
-func copyLogin(src, dst string) error {
+func copyLogin(src, dst string) (loginCopy, error) {
 	b, err := os.ReadFile(src)
 	if err != nil {
-		return fmt.Errorf("the harness login file: %w (log in first)", err)
+		return loginCopy{}, fmt.Errorf("the harness login file: %w (log in first)", err)
 	}
+	l := loginCopy{src: src, dst: dst, orig: b}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return l, err
+	}
+	return l, os.WriteFile(dst, b, 0o600)
+}
+
+// release deletes the copy. A harness that refreshed its login during the
+// run wrote the new tokens to the copy, and Codex's refresh tokens are
+// single use: the user's file then holds a used refresh token, and their
+// next refresh fails (refresh_token_reused), logging them out. So a copy
+// that changed goes back to the user's file, when that file still holds
+// what was copied; if both changed, the user's file is kept and the
+// caller is told.
+func (l loginCopy) release() error {
+	defer os.Remove(l.dst)
+	now, err := os.ReadFile(l.dst)
+	if err != nil || bytes.Equal(now, l.orig) {
+		return nil
+	}
+	cur, err := os.ReadFile(l.src)
+	if err != nil {
+		return fmt.Errorf("the harness refreshed its login during the run, and %s cannot be read to restore it: %w; log in again", l.src, err)
+	}
+	if !bytes.Equal(cur, l.orig) {
+		return fmt.Errorf("the harness refreshed its login during the run, and %s changed too; kept yours (log in again if it fails)", l.src)
+	}
+	target, err := filepath.EvalSymlinks(l.src)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, b, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".flopwire-probe-login-")
+	if err != nil {
+		return fmt.Errorf("restore the refreshed login to %s: %w; log in again", l.src, err)
+	}
+	_, werr := tmp.Write(now)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(tmp.Name(), 0o600)
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), target)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("restore the refreshed login to %s: %w; log in again", l.src, werr)
+	}
+	return nil
 }
 
 // session starts a headless session and runs its first turn, which
@@ -793,7 +920,7 @@ func (r *harnessRun) watchTap(ctx context.Context, t int64, pred func(tapEntry) 
 const quoteTags = "List every <flopwire-message> tag in your context so far, one per line, as: ID <its id attribute> MARKER <the PROBE- token in its text>. Write NONE if there is none."
 
 func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
-	res := probeResult{Harness: string(r.name), Case: c}
+	res := probeResult{Harness: string(r.name), Case: c, session: r.recv.ID(), sender: r.sender.ID()}
 	m := r.marker(c)
 	res.Marker = m
 	tctx, cancel := context.WithTimeout(ctx, r.p.o.turnWait)
@@ -982,6 +1109,7 @@ func (r *harnessRun) guardian(ctx context.Context, res probeResult, m string) pr
 	}
 	defer s.Close()
 	g := s.(*codexSession)
+	res.session = g.ID()
 	start := time.Now().UnixMilli()
 	type sendOut struct {
 		id  string
@@ -1058,8 +1186,25 @@ func probeMarkdown(rep probeReport) string {
 	}
 	b.WriteString("\n\n| Harness | Case | Result | Evidence |\n|---|---|---|---|\n")
 	esc := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "|", `\|`), "\n", " ") }
+	// The notes are committed: the scratch and home paths and full session
+	// ids (a FAIL row's evidence may hold them) are shortened.
+	var pairs []string
+	if rep.Dir != "" {
+		pairs = append(pairs, rep.Dir, "<scratch>")
+	}
+	if rep.home != "" && rep.home != "/" {
+		pairs = append(pairs, rep.home, "~")
+	}
 	for _, r := range rep.Results {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", r.Harness, r.Case, r.verdict(), esc(r.Evidence))
+		for _, id := range []string{r.session, r.sender} {
+			if len(id) > 8 {
+				pairs = append(pairs, id, clip(id, 8))
+			}
+		}
+	}
+	scrub := strings.NewReplacer(pairs...)
+	for _, r := range rep.Results {
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", r.Harness, r.Case, r.verdict(), esc(scrub.Replace(r.Evidence)))
 	}
 	fmt.Fprintf(&b, "\n%d passed, %d failed.\n", len(rep.Results)-rep.failed(), rep.failed())
 	return b.String()
