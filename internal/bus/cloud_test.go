@@ -223,3 +223,41 @@ func TestCloudPushFailedIsReported(t *testing.T) {
 		t.Fatalf("sender's inbox = %+v", in.Messages)
 	}
 }
+
+// Revoking a sender re-holds its message that a device claimed to push
+// into a cloud session: the claimer's poll stops listing it (its inbox
+// drops it) and lists the sender as held; an accept returns it to that
+// device only.
+func TestCloudClaimedMessageIsReheldOnRevoke(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	gary := busproto.Caller{UserID: tm.gary}
+	if _, err := tm.s.Accept(ctx, gary, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	cloud := cloudSession("session_01cloudR", "claude", true)
+	tm.cloudPoll(tm.garyMac, tm.garyMacSessions(), cloud)
+	m := tm.mustSend(tm.alexMac, "a-api-4444", "session_01cloudR", "from alex")
+	if _, err := tm.s.Claim(ctx, tm.garyMac, busproto.ClaimRequest{MessageID: m.ID, SessionID: "session_01cloudR"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tm.s.Revoke(ctx, gary, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	resp := tm.cloudPoll(tm.garyMac, tm.garyMacSessions(), cloud)
+	if len(resp.Messages) != 0 || len(resp.Claimable) != 0 || tm.state(m.ID) != "held" {
+		t.Fatalf("after revoke: messages %+v, claimable %+v, state %s", resp.Messages, resp.Claimable, tm.state(m.ID))
+	}
+	if len(resp.Held) != 1 || resp.Held[0].UserID != tm.alex {
+		t.Fatalf("held senders = %+v", resp.Held)
+	}
+	if _, err := tm.s.Accept(ctx, gary, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tm.cloudPoll(tm.garyLinux, nil, cloud); len(got.Messages) != 0 || len(claimableCloud(got)) != 0 {
+		t.Fatalf("after accept, another device got it: %+v", got)
+	}
+	if got := tm.cloudPoll(tm.garyMac, tm.garyMacSessions(), cloud); len(got.Messages) != 1 || got.Messages[0].ID != m.ID {
+		t.Fatalf("after accept, the claimer's poll = %+v", got.Messages)
+	}
+}
