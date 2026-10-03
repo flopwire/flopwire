@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
@@ -37,9 +38,11 @@ func TestBusConnectFollowsARotationInFlight(t *testing.T) {
 			refused := make(chan struct{})
 			var requests atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
+				n := requests.Add(1)
 				if r.Header.Get("Authorization") != "Bearer new" {
-					refusedOnce.Do(func() { close(refused) })
+					if n > 1 { // the rotation's refusal, not the plain one
+						refusedOnce.Do(func() { close(refused) })
+					}
 					w.Header().Set("Content-Type", "application/problem+json")
 					w.WriteHeader(http.StatusUnauthorized)
 					_, _ = w.Write([]byte(`{"code":"credential_rotated","detail":"credential was rotated; log in again"}`))
@@ -71,6 +74,10 @@ func TestBusConnectFollowsARotationInFlight(t *testing.T) {
 				rotated <- client.WithConfigLock(context.Background(), func() error {
 					close(locked)
 					<-refused
+					// The save lands well after the refusal: a call that
+					// re-read the config without waiting for the lock
+					// would still see the old token.
+					time.Sleep(100 * time.Millisecond)
 					next := old
 					next.Token = "new"
 					return client.Save(next)
