@@ -476,8 +476,9 @@ func revealed(kind, style, out, branch string) string {
 
 // shellOut is a shell result's output text and whether it shows a command
 // failing: a Codex exec script's JSON chunks ({"exit_code":N,"output":…})
-// are decoded, Devin's "Output from command in shell" header and "Exit
-// code: N" trailer are dropped.
+// are decoded, Codex exec_command's header ("Process exited with code
+// N") and Devin's "Output from command in shell" header and "Exit code:
+// N" trailer are dropped.
 func shellOut(text string) (string, bool) {
 	failed := false
 	if strings.Contains(text, `"exit_code":`) {
@@ -500,6 +501,22 @@ func shellOut(text string) (string, bool) {
 		}
 		if decoded {
 			return strings.Join(outs, "\n"), failed
+		}
+	}
+	if strings.HasPrefix(text, "Chunk ID: ") {
+		// Codex's unified exec_command: a header, then "Output:". The
+		// rollout never marks the result is_error; the header's exit code
+		// is the only record of a failure. A process still running when
+		// the call returned has not succeeded yet.
+		if head, body, ok := strings.Cut(text, "\nOutput:"); ok {
+			body = strings.TrimPrefix(body, "\n")
+			code, exited := "", false
+			for _, l := range strings.Split(head, "\n") {
+				if c, ok := strings.CutPrefix(l, "Process exited with code "); ok {
+					code, exited = strings.TrimSpace(c), true
+				}
+			}
+			return body, !exited || code != "0"
 		}
 	}
 	if strings.HasPrefix(text, "Output from command in shell ") {

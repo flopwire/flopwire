@@ -15,8 +15,11 @@ import (
 //
 //   - Claude: tool Bash, arguments {"command": ...}; the result is the
 //     command's output, is_error on a nonzero exit.
-//   - Codex (exec_command): arguments {"cmd": [...], "workdir": ...}; the
+//   - Codex (legacy shell): arguments {"cmd": [...], "workdir": ...}; the
 //     result is the output, is_error from the exit code.
+//   - Codex (unified exec_command): arguments {"cmd": "...", ...}; the
+//     result is a header with "Process exited with code N", then the
+//     output, never is_error.
 //   - Codex (exec script): tool exec runs a script; the commands it ran
 //     and their exit codes are in the call's enrichment, and the result
 //     holds one JSON chunk per command ({"exit_code":N,"output":"..."}),
@@ -60,6 +63,17 @@ var shapes = []shape{
 			m := msg(ord, transcript.KindToolResult, "exec_command", id, out)
 			m.IsError = exit != 0
 			return at(m, ord)
+		}},
+	// Codex's unified exec_command as rollouts record it: cmd a string,
+	// the exit code only in the output's header, never is_error.
+	{"codex-unified-exec",
+		func(ord int64, id, cmd string, exit int) *transcript.Message {
+			b, _ := json.Marshal(map[string]any{"cmd": cmd, "workdir": "/r", "yield_time_ms": 10000, "max_output_tokens": 6000})
+			return at(msg(ord, transcript.KindToolCall, "exec_command", id, string(b)), ord)
+		},
+		func(ord int64, id, out string, exit int) *transcript.Message {
+			text := fmt.Sprintf("Chunk ID: a1b2c3\nWall time: 0.0412 seconds\nProcess exited with code %d\nOriginal token count: 12\nOutput:\n%s", exit, out)
+			return at(msg(ord, transcript.KindToolResult, "exec_command", id, text), ord)
 		}},
 	{"codex-exec-script",
 		func(ord int64, id, cmd string, exit int) *transcript.Message {
@@ -420,6 +434,25 @@ func TestCodexScriptLogAfterOtherCommands(t *testing.T) {
 		`{"chunk_id":"c","exit_code":0,"output":"650a939 x\n1f2e3d4 old\n"}`)
 	d := Parse(Fold(nil, repoConv, []*transcript.Message{commit, cres, log, lres}))
 	if len(d.Commits) != 0 || fmt.Sprint(subjects(d.CommitsNoSHA)) != "[x]" {
+		t.Fatalf("commits %v, without sha %+v", d.Commits, d.CommitsNoSHA)
+	}
+}
+
+// Codex exec_command returns while a slow command (a commit whose hooks
+// run long) is still running: its success is unknown, so a later log
+// names nothing.
+func TestCodexExecStillRunningIsNoCommit(t *testing.T) {
+	sh := shapes[1]
+	for _, s := range shapes {
+		if s.name == "codex-unified-exec" {
+			sh = s
+		}
+	}
+	call := sh.call(10, "c1", `git commit -q -m x`, 0)
+	res := at(msg(11, transcript.KindToolResult, "exec_command", "c1", "Chunk ID: a1b2c3\nWall time: 10.0 seconds\nProcess running with session ID 4242\nOriginal token count: 3\nOutput:\nlint…\n"), 11)
+	log, lres := sh.call(20, "c2", `git log --oneline -1`, 0), sh.result(21, "c2", old+" older\n", 0)
+	d := Parse(Fold(nil, repoConv, []*transcript.Message{call, res, log, lres}))
+	if len(d.Commits) != 0 || len(d.CommitsNoSHA) != 0 {
 		t.Fatalf("commits %v, without sha %+v", d.Commits, d.CommitsNoSHA)
 	}
 }
