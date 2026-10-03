@@ -103,6 +103,21 @@ func RepoMatches(filter string, roots []string, repo string) bool {
 	return filter != "" && RepoName(repo) == RepoName(filter)
 }
 
+// CloudRepoMatches is RepoMatches for a cloud session, whose repo is the
+// vendor's "owner/name", not a path on any device: it matches a filter or
+// a root by the repo name.
+func CloudRepoMatches(filter string, roots []string, repo string) bool {
+	if filter == "" && len(roots) == 0 {
+		return true
+	}
+	for _, f := range append([]string{filter}, roots...) {
+		if f != "" && RepoName(f) == RepoName(repo) {
+			return true
+		}
+	}
+	return false
+}
+
 func inTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -127,7 +142,7 @@ func audit(ctx context.Context, tx pgx.Tx, c busproto.Caller, now time.Time, act
 type session struct {
 	id, agent, userID, user string
 	repo, branch, title     string
-	busy, live              bool
+	busy, live, cloud       bool
 	deviceID                string
 }
 
@@ -232,12 +247,12 @@ func resolvePerson(ctx context.Context, q querier, name string) (person, error) 
 // hidden by the path rules (peers leaves those out too).
 // Subagent transcripts and service identities' uploads are left out: no
 // hook delivers to them.
-const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true
+const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true,p.cloud
 	FROM bus_presence p JOIN users u ON u.id=p.user_id LEFT JOIN devices d ON d.id=p.device_id
 	WHERE p.session_id COLLATE "C" LIKE $1 AND p.seen_at>$2 AND (p.device_id IS NULL OR d.revoked_at IS NULL) AND NOT u.disabled AND u.identity_type='human'
 		AND NOT COALESCE((SELECT c.hidden_at IS NOT NULL FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),false)
 	UNION ALL
-	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false
+	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false,false
 	FROM conversations c JOIN users u ON u.id=c.user_id
 	WHERE c.session_id COLLATE "C" LIKE $1 AND c.hidden_at IS NULL AND c.depth=0 AND NOT u.disabled AND u.identity_type='human'
 	LIMIT 500`
@@ -258,7 +273,7 @@ func resolveSession(ctx context.Context, q querier, prefix string, now time.Time
 	}
 	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (session, error) {
 		var v session
-		return v, r.Scan(&v.id, &v.agent, &v.userID, &v.user, &v.repo, &v.branch, &v.title, &v.busy, &v.live)
+		return v, r.Scan(&v.id, &v.agent, &v.userID, &v.user, &v.repo, &v.branch, &v.title, &v.busy, &v.live, &v.cloud)
 	})
 	if err != nil {
 		return session{}, err
@@ -296,8 +311,8 @@ func resolveSession(ctx context.Context, q querier, prefix string, now time.Time
 }
 
 // UserLiveSQL is the person $1's live sessions (seen since $2), every
-// device.
-const UserLiveSQL = `SELECT COALESCE(device_id::text,''),agent,session_id,repo,busy FROM bus_presence WHERE user_id=$1 AND seen_at>$2`
+// device. Cloud sessions are left out: an @user message never goes to one.
+const UserLiveSQL = `SELECT COALESCE(device_id::text,''),agent,session_id,repo,busy FROM bus_presence WHERE user_id=$1 AND seen_at>$2 AND NOT cloud`
 
 type liveSession struct {
 	device, agent, id, repo string
@@ -405,7 +420,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 				return badRequest("a session cannot message itself")
 			}
 			m.addressed, m.toUser, m.toEmail, m.toSession, m.toAgent = "session", v.userID, v.user, v.id, v.agent
-			out.To = busproto.Recipient{Session: v.id, Agent: v.agent, User: v.user, UserID: v.userID, Repo: v.repo, Branch: v.branch, Live: v.live, Busy: v.busy}
+			out.To = busproto.Recipient{Session: v.id, Agent: v.agent, User: v.user, UserID: v.userID, Repo: v.repo, Branch: v.branch, Live: v.live, Busy: v.busy, Cloud: v.cloud}
 		}
 		if err := lockSend(ctx, tx, m); err != nil {
 			return err

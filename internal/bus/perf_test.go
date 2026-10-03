@@ -40,6 +40,7 @@ func perfFixture(t testing.TB, others int) (*pgxpool.Pool, *perfguard.Counter, b
 	run(`INSERT INTO users(id,email,name,role,identity_type,created_at) VALUES($1,'me@example.test','Me','member','human',$2)`, me.UserID, now)
 	run(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'mac','darwin',$3)`, me.DeviceID, me.UserID, now)
 	run(`INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,busy,seen_at) VALUES($1,$2,'claude','me-session','/x/api',true,$3)`, me.DeviceID, me.UserID, now)
+	run(`INSERT INTO bus_presence(device_id,cloud,user_id,agent,session_id,repo,busy,seen_at) VALUES(NULL,true,$1,'claude','session_01cloud','acme/api',true,$2)`, me.UserID, now)
 	run(`INSERT INTO users(id,email,name,role,identity_type,created_at)
 		SELECT md5('u'||i)::uuid,'u'||i||'@example.test','U'||i,'member','human',$1 FROM generate_series(1,$2) i`, now, others)
 	run(`INSERT INTO devices(id,user_id,name,platform,created_at) SELECT md5('d'||i)::uuid,md5('u'||i)::uuid,'d','linux',$1 FROM generate_series(1,$2) i`, now, others)
@@ -74,7 +75,8 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"session on device", SessionOnDeviceSQL, []any{me.DeviceID, "me-session", "", live}},
 		{"session prefix", SessionPrefixSQL, []any{"live-000001%", live}},
 		{"user live", UserLiveSQL, []any{me.UserID, live}},
-		{"deliverable", DeliverableSQL, []any{me.UserID, now, me.DeviceID}},
+		{"deliverable", DeliverableSQL, []any{me.UserID, now, me.DeviceID, live}},
+		{"cloud session", CloudSessionSQL, []any{me.UserID, "session_01cloud", "claude", live}},
 		{"held", HeldSQL, []any{me.UserID, now}},
 		{"held list", HeldListSQL, []any{me.UserID, now}},
 		{"reply to", ReplyToSQL, []any{"m1-0"}},
