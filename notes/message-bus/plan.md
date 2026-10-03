@@ -156,6 +156,7 @@ Enforced by the server, reported to the sender as a refusal:
 - At most 8 messages per thread per hour between agent sessions.
 - At most 30 sends per session per hour.
 - At most 120 sends per device and 300 per person per hour. The session id is the device's own report, so these ceilings hold a device that invents session ids.
+- A refused send counts toward these three ceilings like a sent one, so an agent looping on a refusal reaches them. A refusal by one of these three ceilings does not count: it would keep the window of a retrying session full, and one session at its ceiling would use up its device and person quota.
 - The same body to the same recipient within 10 minutes is dropped.
 - At most 50 undelivered messages per recipient session.
 

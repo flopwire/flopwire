@@ -52,6 +52,130 @@ func AssertIndexedPlanExcept(t testing.TB, conn Beginner, allow []string, query 
 	}
 }
 
+// AssertPlanUsesIndex is AssertIndexedPlan that also requires the plan
+// to probe the named index: an Index Scan, Index Only Scan or Bitmap
+// Index Scan on it with an Index Cond on its leading column. AssertIndexedPlan
+// alone accepts any Index Cond, including one on a later column of another
+// index (a condition on created_at served by (from_session, created_at),
+// which reads that whole index), so a query whose own index is missing can
+// still pass it. The leading-column requirement rejects the same whole-index
+// read of the named index itself. An index whose leading key is an
+// expression is not checked for it.
+func AssertPlanUsesIndex(t testing.TB, conn Beginner, index, query string, args ...any) {
+	t.Helper()
+	AssertIndexedPlan(t, conn, query, args...)
+	plan, err := Explain(conn, query, args...)
+	if err != nil {
+		t.Fatalf("perfguard: explain: %v\nquery: %s", err, query)
+	}
+	if !slices.Contains(IndexProbes(plan), index) {
+		t.Errorf("perfguard: plan does not probe index %s (with enable_seqscan=off)\nquery: %s\nplan:\n%s", index, query, plan)
+		return
+	}
+	lead, err := leadingColumn(conn, index)
+	if err != nil {
+		t.Fatalf("perfguard: index %s: %v", index, err)
+	}
+	if lead == "" {
+		return
+	}
+	for _, cond := range indexConds(plan, index) {
+		if strings.Contains(cond, "("+lead+" ") || strings.Contains(cond, `("`+lead+`" `) {
+			return
+		}
+	}
+	t.Errorf("perfguard: plan probes index %s without a condition on its leading column %s, which reads the whole index (with enable_seqscan=off)\nquery: %s\nplan:\n%s",
+		index, lead, query, plan)
+}
+
+// leadingColumn returns the name of the index's first key column, or ""
+// when that key is an expression.
+func leadingColumn(conn Beginner, index string) (string, error) {
+	ctx := context.Background()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var name *string
+	err = tx.QueryRow(ctx, `SELECT a.attname::text FROM pg_index i
+		LEFT JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0] AND i.indkey[0]<>0
+		WHERE i.indexrelid=$1::regclass`, index).Scan(&name)
+	if err != nil || name == nil {
+		return "", err
+	}
+	return *name, nil
+}
+
+// indexConds returns the Index Cond of each scan of the index in a JSON
+// plan.
+func indexConds(plan, index string) []string {
+	var v any
+	if err := json.Unmarshal([]byte(plan), &v); err != nil {
+		panic(fmt.Sprintf("perfguard: bad plan json: %v", err))
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			if idx, _ := x["Index Name"].(string); idx == index {
+				if c, ok := x["Index Cond"].(string); ok {
+					out = append(out, c)
+				}
+			}
+			for _, k := range []string{"Plan", "Plans"} {
+				if c, ok := x[k]; ok {
+					walk(c)
+				}
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
+// IndexProbes returns the indexes a JSON plan (EXPLAIN FORMAT JSON) scans
+// with an Index Cond, including in subplans and init plans, sorted and
+// without repeats.
+func IndexProbes(plan string) []string {
+	var v any
+	if err := json.Unmarshal([]byte(plan), &v); err != nil {
+		panic(fmt.Sprintf("perfguard: bad plan json: %v", err))
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			switch x["Node Type"] {
+			case "Index Scan", "Index Only Scan", "Bitmap Index Scan":
+				if _, cond := x["Index Cond"]; cond {
+					if idx, _ := x["Index Name"].(string); idx != "" {
+						out = append(out, idx)
+					}
+				}
+			}
+			for _, k := range []string{"Plan", "Plans"} {
+				if c, ok := x[k]; ok {
+					walk(c)
+				}
+			}
+		}
+	}
+	walk(v)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // Explain returns the indented JSON plan of query under
 // enable_seqscan = off, in a transaction that is rolled back.
 func Explain(conn Beginner, query string, args ...any) (string, error) {

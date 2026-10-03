@@ -356,6 +356,13 @@ manifest reference, with exponential backoff while object storage is down.
 5. Check `/healthz`.
 6. Run one known provenance search.
 
+The server shuts down cleanly on SIGTERM. It stops accepting connections and
+answers waiting message-bus polls at once. Then it waits up to 10 seconds for
+requests in flight to finish. The `flopwire` service in `compose.yaml` sets
+`stop_grace_period: 15s` so that Docker does not kill the server first. If you
+run the server under another supervisor, give it a stop timeout longer than
+10 seconds.
+
 Database migrations are forward-only and run in one transaction at startup.
 Before the first release, migration files are edited in place, so the server
 refuses a database made by an earlier pre-release build. Back it up and start

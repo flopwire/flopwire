@@ -519,7 +519,7 @@ func TestLimits(t *testing.T) {
 		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "31st"); code(err) != busproto.CodeSessionRate {
 			t.Fatalf("31st send: %v", err)
 		}
-		// Refused sends do not count; another session is not limited.
+		// Another session is not limited.
 		tm.mustSend(tm.garyMac, "g-web-2222", "g-lin", "other session")
 		tm.advance(time.Hour + time.Second)
 		tm.presence()
@@ -576,6 +576,7 @@ func TestLimits(t *testing.T) {
 		lin := sessions(tm.garyLinux, "l", busproto.DevicePerHour/busproto.SessionPerHour)
 		third := sessions(garyThird, "t", busproto.DevicePerHour/busproto.SessionPerHour)
 		burst(tm.garyLinux, lin, busproto.DevicePerHour)
+		// The mac's device_rate refusal does not count toward the person's.
 		burst(garyThird, third, busproto.UserPerHour-2*busproto.DevicePerHour)
 		refused(garyThird, third[len(third)-1], busproto.CodeUserRate)
 		// Another person is not limited.
@@ -584,6 +585,63 @@ func TestLimits(t *testing.T) {
 		sessions(tm.garyMac, "m", 1)
 		tm.present(tm.alexMac, to...)
 		tm.mustSend(tm.garyMac, "g-m0-0000", to[0].SessionID, "next hour")
+	})
+	// A refused attempt uses the sender's hourly quota like a sent one,
+	// so an agent looping on a refusal reaches the ceiling (#70).
+	t.Run("refused sends count toward the ceilings", func(t *testing.T) {
+		tm := newTeam(t)
+		refusedN := func(c busproto.Caller, from string, n int) {
+			t.Helper()
+			tm.mustSend(c, from, "g-lin", "loop "+from)
+			for i := 1; i < n; i++ {
+				if _, err := tm.send(c, from, "g-lin", "loop "+from); code(err) != busproto.CodeDuplicate {
+					t.Fatalf("attempt %d from %s: %v", i+1, from, err)
+				}
+			}
+		}
+		refusedN(tm.garyMac, "g-api-1111", busproto.SessionPerHour)
+		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "something new"); code(err) != busproto.CodeSessionRate {
+			t.Fatalf("after %d attempts, 1 sent: %v", busproto.SessionPerHour, err)
+		}
+		// The device ceiling counts refusals across the device's sessions.
+		tm.advance(time.Hour + time.Second)
+		tm.presence()
+		var ps []busproto.PresenceSession
+		for i := range busproto.DevicePerHour/busproto.SessionPerHour + 1 {
+			ps = append(ps, live(fmt.Sprintf("g-r%02d-0000", i), "claude", "/x/api", true))
+		}
+		tm.present(tm.garyMac, ps...)
+		for _, p := range ps[:len(ps)-1] {
+			refusedN(tm.garyMac, p.SessionID, busproto.SessionPerHour)
+		}
+		if _, err := tm.send(tm.garyMac, ps[len(ps)-1].SessionID, "g-lin", "fresh"); code(err) != busproto.CodeDeviceRate {
+			t.Fatalf("device after %d attempts: %v", busproto.DevicePerHour, err)
+		}
+		tm.advance(time.Hour + time.Second)
+		tm.presence()
+		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
+	})
+	// A refusal by a rate ceiling is not an attempt that counts: an agent
+	// retrying at its session ceiling neither keeps its own window full
+	// nor uses up its device's and person's quota (#70 review).
+	t.Run("rate refusals do not count again", func(t *testing.T) {
+		tm := newTeam(t)
+		for i := range busproto.SessionPerHour {
+			tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("n%d", i))
+		}
+		for i := range busproto.DevicePerHour {
+			tm.advance(time.Second)
+			tm.presence()
+			if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("retry %d", i)); code(err) != busproto.CodeSessionRate {
+				t.Fatalf("retry %d: %v", i, err)
+			}
+		}
+		// The device's other sessions are not limited.
+		tm.mustSend(tm.garyMac, "g-web-2222", "g-lin", "other session")
+		// An hour after its counted sends, the looping session sends again.
+		tm.advance(time.Hour - time.Duration(busproto.DevicePerHour-1)*time.Second)
+		tm.presence()
+		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
 	})
 	t.Run("duplicate", func(t *testing.T) {
 		tm := newTeam(t)
@@ -758,6 +816,51 @@ func TestPollWakesOnSendAndTimesOut(t *testing.T) {
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	if _, err := tm.s.Poll(ctx, tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: 1 << 40, Gen: 1, WaitSeconds: 20}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled poll: %v", err)
+	}
+}
+
+// On server shutdown a waiting poll answers at once with the device's
+// whole set, as a timed-out poll does, so a deploy does not cut it (#70).
+func TestPollAnswersOnShutdown(t *testing.T) {
+	tm := newTeam(t)
+	server, stop := context.WithCancel(context.Background())
+	defer stop()
+	tm.s.Stopping = server.Done()
+	lin := live("g-lin-3333", "codex", "/home/gary/api", false)
+	sent := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "before the deploy")
+	first, err := tm.s.Poll(context.Background(), tm.garyLinux, busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}})
+	if err != nil || len(first.Messages) != 1 {
+		t.Fatalf("first poll %+v %v", first, err)
+	}
+	req := busproto.PollRequest{Sessions: []busproto.PresenceSession{lin}, Cursor: first.Cursor, Gen: first.Gen, WaitSeconds: int(busproto.PollWait / time.Second)}
+	type result struct {
+		out busproto.PollResponse
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := tm.s.Poll(context.Background(), tm.garyLinux, req)
+		done <- result{out, err}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case r := <-done:
+		t.Fatalf("poll returned before shutdown: %+v", r)
+	default:
+	}
+	stop()
+	select {
+	case r := <-done:
+		if r.err != nil || len(r.out.Messages) != 1 || r.out.Messages[0].ID != sent.ID || r.out.Cursor != first.Cursor {
+			t.Fatalf("poll at shutdown %+v %v", r.out, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("poll still waiting after shutdown")
+	}
+	// A poll that starts during shutdown does not wait either.
+	start := time.Now()
+	if out, err := tm.s.Poll(context.Background(), tm.garyLinux, req); err != nil || len(out.Messages) != 1 || time.Since(start) > 5*time.Second {
+		t.Fatalf("poll during shutdown %+v %v after %s", out, err, time.Since(start))
 	}
 }
 

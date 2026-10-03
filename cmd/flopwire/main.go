@@ -226,7 +226,9 @@ func serve(ctx context.Context, args []string) error {
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
 	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
-	messageBus := &bus.Store{Pool: pool}
+	// The server's ctx ends at shutdown: a waiting poll answers then,
+	// inside the shutdown grace, instead of being cut.
+	messageBus := &bus.Store{Pool: pool, Stopping: ctx.Done()}
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
 		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
 		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
@@ -246,20 +248,37 @@ func serve(ctx context.Context, args []string) error {
 	root.Handle("/metrics", apiHandler)
 	root.Handle("/", webapp.Handler())
 	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 90 * time.Second}
+	transport.announce(os.Stderr, *addr)
+	slog.Info("flopwire server listening", "addr", *addr, "tls", transport.mode, "version", version)
+	return serveUntilDone(ctx, server, shutdownGrace, func() error {
+		if transport.config != nil {
+			return server.ListenAndServeTLS("", "")
+		}
+		return server.ListenAndServe()
+	})
+}
+
+// shutdownGrace is how long a shutdown waits for requests in flight.
+const shutdownGrace = 10 * time.Second
+
+// serveUntilDone runs listen until ctx is done, then shuts server down:
+// it stops accepting connections and waits up to grace for requests in
+// flight before it returns, so the deferred pool close and the process
+// exit do not cut them.
+func serveUntilDone(ctx context.Context, server *http.Server, grace time.Duration, listen func() error) error {
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	transport.announce(os.Stderr, *addr)
-	slog.Info("flopwire server listening", "addr", *addr, "tls", transport.mode, "version", version)
-	if transport.config != nil {
-		err = server.ListenAndServeTLS("", "")
-	} else {
-		err = server.ListenAndServe()
-	}
+	err := listen()
 	if errors.Is(err, http.ErrServerClosed) {
+		// Listen returns as Shutdown starts; Shutdown returns when the
+		// requests in flight have finished or grace has passed.
+		<-stopped
 		return nil
 	}
 	return err

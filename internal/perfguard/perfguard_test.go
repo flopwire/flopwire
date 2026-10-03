@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -359,6 +360,53 @@ func TestAssertIndexedPlan(t *testing.T) {
 		}
 	}
 	AssertIndexedPlanExcept(t, pool, []string{"items"}, `SELECT * FROM items WHERE grp = $1`, 5)
+}
+
+func TestAssertPlanUsesIndex(t *testing.T) {
+	pool, _ := itemsPool(t, 100, 0)
+	exec(t, pool, `CREATE INDEX items_grp_v ON items (grp, v)`)
+	exec(t, pool, `CREATE INDEX items_v ON items (v)`)
+	exec(t, pool, `ANALYZE items`)
+	const query = `SELECT count(*) FROM items WHERE v = $1`
+	AssertPlanUsesIndex(t, pool, "items_v", query, 3)
+
+	// Without items_v the planner serves v = $1 from items_grp_v: an
+	// Index Cond on its second column, which reads the whole index.
+	// AssertIndexedPlan accepts that plan; AssertPlanUsesIndex does not.
+	exec(t, pool, `DROP INDEX items_v`)
+	AssertIndexedPlan(t, pool, query, 3)
+	r := &recorder{TB: t}
+	AssertPlanUsesIndex(r, pool, "items_v", query, 3)
+	if msg := r.failed(); !strings.Contains(msg, "does not probe index items_v") || !strings.Contains(msg, "items_grp_v") {
+		t.Fatalf("missing index not caught, or plan not printed: %q", msg)
+	}
+	// Naming items_grp_v does not make that plan pass: its Index Cond is
+	// on the second column, so the scan still reads the whole index.
+	r = &recorder{TB: t}
+	AssertPlanUsesIndex(r, pool, "items_grp_v", query, 3)
+	if msg := r.failed(); !strings.Contains(msg, "leading column grp") {
+		t.Fatalf("a whole-index scan of the named index not caught: %q", msg)
+	}
+	AssertPlanUsesIndex(t, pool, "items_grp_v", `SELECT count(*) FROM items WHERE grp = $1 AND v = $2`, 3, 3)
+	// With no index on v at all, the full-scan check fails too.
+	exec(t, pool, `DROP INDEX items_grp_v`)
+	r = &recorder{TB: t}
+	AssertPlanUsesIndex(r, pool, "items_v", query, 3)
+	if msg := r.failed(); !strings.Contains(msg, "unbounded scan") || !strings.Contains(msg, "does not probe index items_v") {
+		t.Fatalf("unindexed query not caught: %q", msg)
+	}
+}
+
+func TestIndexProbes(t *testing.T) {
+	plan := `[{"Plan": {"Node Type": "Aggregate", "Plans": [
+	  {"Node Type": "Bitmap Heap Scan", "Relation Name": "a", "Plans": [
+	    {"Node Type": "Bitmap Index Scan", "Index Name": "a_x", "Index Cond": "(x = 1)"}]},
+	  {"Node Type": "Index Scan", "Relation Name": "b", "Index Name": "b_pkey", "Parent Relationship": "SubPlan"},
+	  {"Node Type": "Index Only Scan", "Relation Name": "c", "Index Name": "c_y", "Index Cond": "(y = 1)"},
+	  {"Node Type": "Index Scan", "Relation Name": "a", "Index Name": "a_x", "Index Cond": "(x = 2)"}]}}]`
+	if got := IndexProbes(plan); !slices.Equal(got, []string{"a_x", "c_y"}) {
+		t.Fatalf("probes %v", got)
+	}
 }
 
 func TestFullScansNestedLoopInner(t *testing.T) {

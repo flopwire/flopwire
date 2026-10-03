@@ -112,8 +112,9 @@ func (s *Store) heartbeat(ctx context.Context, c busproto.Caller, sessions []bus
 }
 
 // Poll records the device's presence and answers its deliverable set,
-// holding up to WaitSeconds while nothing is newer than the cursor. It
-// returns ctx's error when the device gives up first.
+// holding up to WaitSeconds while nothing is newer than the cursor, or
+// until the server shuts down (Stopping). It returns ctx's error when the
+// device gives up first.
 func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRequest) (busproto.PollResponse, error) {
 	sessions, err := validPresence(req.Sessions)
 	if err != nil {
@@ -146,6 +147,8 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 		select {
 		case <-woken:
 		case <-timer.C:
+			timedOut = true
+		case <-s.Stopping:
 			timedOut = true
 		case <-ctx.Done():
 			return busproto.PollResponse{}, ctx.Err()

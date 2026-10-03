@@ -2,6 +2,9 @@ package bus
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,8 +80,6 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"reply to", ReplyToSQL, []any{"m1-0"}},
 		{"duplicate", DuplicateSQL, []any{"me-session", sha, me.UserID, "session", "live-000001", now}},
 		{"session sends", SessionSendsSQL, []any{"me-session", now}},
-		{"device sends", DeviceSendsSQL, []any{me.DeviceID, now}},
-		{"user sends", UserSendsSQL, []any{me.UserID, now}},
 		{"thread sends", ThreadSendsSQL, []any{"m1-0", now}},
 		{"session pending", SessionPendingSQL, []any{"live-000001", now, me.UserID}},
 		{"user pending", UserPendingSQL, []any{me.UserID, now, me.UserID}},
@@ -103,8 +104,53 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 			perfguard.AssertIndexedPlan(t, pool, c.sql, c.args...)
 		})
 	}
+	assertSendCeilingIndexes(t, pool, me, now)
 	// The users table is a handful of rows; its lookup is not indexed.
 	perfguard.AssertIndexedPlanExcept(t, pool, []string{"users"}, UserLookupSQL, "alex")
+}
+
+// assertSendCeilingIndexes checks that the device and person ceilings
+// probe their own indexes. Either count can otherwise be served by an
+// Index Cond on created_at alone in another (x, created_at) index, which
+// reads that whole index.
+func assertSendCeilingIndexes(t testing.TB, pool *pgxpool.Pool, me busproto.Caller, now time.Time) {
+	t.Helper()
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_device_idx", DeviceSendsSQL, me.DeviceID, now)
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_user_idx", UserSendsSQL, me.UserID, now)
+}
+
+// failures records a guard's failures instead of failing the test.
+type failures struct {
+	testing.TB
+	mu  sync.Mutex
+	got []string
+}
+
+func (f *failures) Helper() {}
+
+func (f *failures) Errorf(format string, args ...any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.got = append(f.got, fmt.Sprintf(format, args...))
+}
+
+// The ceiling guards fail when their indexes are gone (#70: they passed
+// with both deleted, on a full scan of bus_messages_from_session_idx).
+func TestPerfSendCeilingGuardsCatchAMissingIndex(t *testing.T) {
+	pool, _, me, now := perfFixture(t, 16)
+	for _, idx := range []string{"bus_messages_from_device_idx", "bus_messages_from_user_idx"} {
+		if _, err := pool.Exec(context.Background(), `DROP INDEX `+idx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := &failures{TB: t}
+	assertSendCeilingIndexes(f, pool, me, now)
+	all := strings.Join(f.got, "\n")
+	for _, idx := range []string{"bus_messages_from_device_idx", "bus_messages_from_user_idx"} {
+		if !strings.Contains(all, idx) {
+			t.Errorf("no failure names %s: %q", idx, all)
+		}
+	}
 }
 
 // A device's poll reads its own person's messages and presence only.
