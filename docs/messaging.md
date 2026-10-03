@@ -76,6 +76,41 @@ To revoke in a terminal:
 
 1. Run `flopwire revoke EMAIL`.
 
+## Read receipts
+
+A sent message has the state `read` when its text entered the recipient
+session's context. `read` does not mean that the recipient acted on the
+message or will answer.
+
+The device that holds the recipient session sets the state:
+
+1. The hook prints the message into the session. The message is
+   `delivered`.
+2. The harness records the hook's output in the session's transcript.
+3. The device agent indexes the transcript. It finds the message in the
+   hook's output and records the time of that record.
+4. The message is `read`. With a server, the device sends the time to the
+   server in its next batch of receipts.
+
+`flopwire inbox` shows the state and `read_at`. With `--text`, the state
+shows the time, for example `read 2026-10-02 14:03Z`.
+
+| Harness | Where the transcript keeps hook output | Read receipts |
+|---|---|---|
+| Claude Code | A `hook_additional_context` attachment | Yes |
+| Codex | A developer message of kind `hooks.additional_context` | Yes |
+| Devin CLI | A `system` message that starts with the hook's output | Yes |
+| opencode | Not kept | No. Messages stay `delivered`. |
+
+A message stays `delivered` in these cases:
+
+- The message text is only in a prompt, a reply or a tool output. An
+  agent can quote or write any text there.
+- A hook showed the message inside a Claude Code subagent. The subagent's
+  transcript is a separate session.
+- A path rule denies the session's transcript, so the device does not
+  index it.
+
 ## Fix errors
 
 | Error code | Cause | Fix |
