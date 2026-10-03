@@ -84,6 +84,26 @@ func TestAgentFlushAgentGoneMidCall(t *testing.T) {
 	}
 }
 
+// TestAgentWaitsOutAShortLock: flopwire mcp holds the index lock for a
+// moment while it creates an empty index on a device whose agent never
+// ran. A daemon that starts then waits for it instead of failing with
+// "agent already running" naming a process that is gone.
+func TestAgentWaitsOutAShortLock(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "index.db")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	held, err := localindex.Open(db, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(300*time.Millisecond, func() { held.Close() })
+	s, err := openAgentIndex(t.Context(), db, localindex.Options{}, false, filepath.Join(dir, "a.sock"), log)
+	if err != nil {
+		t.Fatalf("daemon after a short-lived lock holder: %v", err)
+	}
+	s.Close()
+}
+
 // D12: one indexer per index. A second daemon fails fast naming the
 // holder; --once asks the running agent for a pass over the control socket
 // and waits for it; with no agent answering it waits for the lock.

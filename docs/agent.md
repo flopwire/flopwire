@@ -51,7 +51,10 @@ The agent sets a soft limit of 192MiB on Go memory (`--mem-limit`, or
 `GOMEMLIMIT`).
 
 Only one agent writes an index. A second `flopwire agent run` on the same
-index exits with `agent already running (pid N)`. `flopwire agent run --once`
+index waits 3 seconds for the lock, then exits with
+`agent already running (pid N)`. The wait covers `flopwire mcp`, which
+holds the lock for a moment when it creates an empty index on a device
+whose agent never ran. `flopwire agent run --once`
 asks the running agent for a pass over the control socket and waits for it
 to finish. If the index is locked and no agent answers yet, `--once` waits.
 The search commands open the index read-only and never take the lock.
