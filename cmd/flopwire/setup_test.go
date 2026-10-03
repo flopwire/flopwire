@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // TestMain lets the test binary stand in for the harness CLIs: run through
@@ -63,6 +66,8 @@ type fakeClaudeState struct {
 	// and exit 1.
 	Fail    map[string]string `json:"fail,omitempty"`
 	Garbage map[string]bool   `json:"garbage,omitempty"`
+	// RawList, when set, is what `plugin list --json` prints, verbatim.
+	RawList string `json:"raw_list,omitempty"`
 }
 
 // fakeClaude plays `claude plugin …` against the state file and appends
@@ -144,6 +149,10 @@ func fakeClaude(args []string) int {
 		fmt.Println(string(b))
 		return 0
 	case "list":
+		if st.RawList != "" {
+			fmt.Println(st.RawList)
+			return 0
+		}
 		b, _ := json.Marshal(st.Plugins)
 		if st.Plugins == nil {
 			b = []byte("[]")
@@ -252,6 +261,7 @@ func newSetupFixture(t *testing.T, withClaude bool) *setupFixture {
 	t.Setenv("HOME", f.home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(f.dir, "fw", "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(f.dir, "cache", "index.db"))
 	t.Setenv("FLOPWIRE_TOKEN", "")
 	t.Setenv(envPluginSource, "")
 	t.Setenv("FAKE_CLAUDE_STATE", f.state)
@@ -831,6 +841,245 @@ func TestSetupReportsClaudeLoadErrorsAndNotes(t *testing.T) {
 	for _, want := range []string{"Claude Code reports a load error: Path not found: hooks/hooks.json (hooks)", "Claude Code notes: The packages it lists were not installed"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warnings lack %q:\n%s", want, w)
+		}
+	}
+}
+
+// TestSetupWarnsAboutProjectAndLocalMCPServers: a flopwire mcp server in a
+// project .mcp.json (the current directory or one above it) or at local
+// scope in .claude.json (keyed by the project directory, as Claude Code
+// 2.1.288 stores it) duplicates the plugin's server. One the user turned
+// down (disabledMcpjsonServers) does not run, so it gets no warning.
+func TestSetupWarnsAboutProjectAndLocalMCPServers(t *testing.T) {
+	f := newSetupFixture(t, true)
+	cwd := filepath.Join(f.dir, "cwd")
+	mcpJSON := func(name string) string {
+		return `{"mcpServers":{"` + name + `":{"type":"stdio","command":"flopwire","args":["mcp"],"env":{}},"other":{"command":"node","args":["s.js"]}}}`
+	}
+	claudeJSON := `{"projects":{
+	  "` + cwd + `":{"mcpServers":{"fw-local":{"type":"stdio","command":"/opt/bin/flopwire","args":["mcp","--server"],"env":{}}},"disabledMcpjsonServers":["fw-declined"],"allowedTools":[]},
+	  "/elsewhere":{"mcpServers":{"fw-other-project":{"command":"flopwire","args":["mcp"]}}}
+	}}`
+	files := map[string]string{
+		filepath.Join(f.home, ".claude.json"): claudeJSON,
+		filepath.Join(cwd, ".mcp.json"):       mcpJSON("fw-declined"),
+		filepath.Join(f.dir, ".mcp.json"):     mcpJSON("fw-repo-root"),
+	}
+	for p, s := range files {
+		if err := os.WriteFile(p, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, _, err := f.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(f.claude(rep).Warnings, "\n")
+	for _, want := range []string{
+		`a local MCP server "fw-local" for ` + cwd + ` runs flopwire mcp`,
+		"claude mcp remove fw-local --scope local",
+		filepath.Join(f.dir, ".mcp.json") + ` has a project MCP server "fw-repo-root" that runs flopwire mcp`,
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warnings lack %q:\n%s", want, w)
+		}
+	}
+	for _, not := range []string{"fw-declined", "fw-other-project", `"other"`} {
+		if strings.Contains(w, not) {
+			t.Errorf("warned about %s:\n%s", not, w)
+		}
+	}
+}
+
+// TestSetupReadsMCPJSONDeclinesFromTheSessionProject: Claude Code reads
+// every .mcp.json from the session directory up, but takes the user's
+// declines (disabledMcpjsonServers) from the session's project entry in
+// .claude.json, keyed by its git root, not from the entry of the directory
+// that holds the .mcp.json (checked against Claude Code 2.1.288).
+func TestSetupReadsMCPJSONDeclinesFromTheSessionProject(t *testing.T) {
+	f := newSetupFixture(t, true)
+	root := filepath.Join(f.dir, "cwd")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	claudeJSON := `{"projects":{
+	  "` + root + `":{"disabledMcpjsonServers":["fw-declined-here"]},
+	  "` + f.dir + `":{"disabledMcpjsonServers":["fw-declined-elsewhere"]}
+	}}`
+	files := map[string]string{
+		filepath.Join(f.home, ".claude.json"): claudeJSON,
+		filepath.Join(f.dir, ".mcp.json"):     `{"mcpServers":{"fw-declined-here":{"command":"flopwire","args":["mcp"]},"fw-declined-elsewhere":{"command":"flopwire","args":["mcp"]}}}`,
+	}
+	for p, s := range files {
+		if err := os.WriteFile(p, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, _, err := f.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(f.claude(rep).Warnings, "\n")
+	if strings.Contains(w, "fw-declined-here") {
+		t.Errorf("warned about a server the user declined in this project:\n%s", w)
+	}
+	if !strings.Contains(w, `project MCP server "fw-declined-elsewhere"`) {
+		t.Errorf("a decline in another project hid a server this project runs:\n%s", w)
+	}
+}
+
+// TestSetupReadsClaudePluginListOutput: the load errors and notes of real
+// `claude plugin list --json` output (2.1.288, sanitized) reach the report.
+func TestSetupReadsClaudePluginListOutput(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "claude-plugin-list-2.1.288.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newSetupFixture(t, true)
+	f.setState(fakeClaudeState{
+		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+		RawList:      string(raw),
+	})
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := f.claude(rep)
+	if !h.Installed || !h.Enabled || h.Version != "0123456789ab" {
+		t.Fatalf("want the installed plugin from the listing; got %+v", h)
+	}
+	w := strings.Join(h.Warnings, "\n")
+	for _, want := range []string{"Claude Code reports a load error: Hook load failed: JSON Parse error: Expected '}'", "Claude Code notes: The packages it lists were not installed"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warnings lack %q:\n%s", want, w)
+		}
+	}
+}
+
+// TestSetupReportsTheLocalIndex: setup says when the agent has not built
+// the local index, or has indexed nothing into it yet, so the MCP search
+// tools find nothing.
+func TestSetupReportsTheLocalIndex(t *testing.T) {
+	f := newSetupFixture(t, false)
+	db := filepath.Join(f.dir, "cache", "index.db")
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	todo := strings.Join(rep.Todo, "\n")
+	if rep.Index.State != indexMissing || rep.Index.Path != db || !strings.Contains(todo, "the local index holds no transcripts yet") {
+		t.Fatalf("no index: got %+v, todo %q", rep.Index, rep.Todo)
+	}
+	if err := createEmptyIndex(db); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, _ = f.run("--check")
+	if rep.Index.State != indexEmpty || !strings.Contains(strings.Join(rep.Todo, "\n"), "the local index holds no transcripts yet") {
+		t.Fatalf("empty index: got %+v, todo %q", rep.Index, rep.Todo)
+	}
+	_, out, _ := f.run("--check", "--text")
+	if !strings.Contains(out, "index: "+db+", no transcripts indexed yet\n") {
+		t.Fatalf("text report:\n%s", out)
+	}
+	w, err := localindex.Open(db, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.EnsureSource(t.Context(), transcript.Source{Agent: transcript.AgentClaude, Path: "/x.jsonl", StorageKind: transcript.StorageJSONLAppend, Parser: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	rep, _, _ = f.run("--check")
+	if rep.Index.State != indexIndexed || strings.Contains(strings.Join(rep.Todo, "\n"), "the local index") {
+		t.Fatalf("indexed: got %+v, todo %q", rep.Index, rep.Todo)
+	}
+}
+
+// TestSetupComparesPluginAndBinary: a plugin that runs a command the
+// flopwire on PATH does not know (an older binary) gets a warning naming
+// the command, both versions and the fix; so does a plugin whose release
+// version is newer than the binary's. A binary that knows every command
+// the plugin runs gets none.
+func TestSetupComparesPluginAndBinary(t *testing.T) {
+	f := newSetupFixture(t, true)
+	pluginDir := filepath.Join(f.repo, "plugins", "claude-code", "flopwire")
+	installed := func(version string) {
+		f.setState(fakeClaudeState{
+			Available:    version,
+			Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+			Plugins:      []claudePluginEntry{{ID: claudePlugin, Version: version, Scope: "user", Enabled: true, InstallPath: pluginDir}},
+		})
+	}
+	mismatch := func(rep setupReport) string {
+		var w []string
+		for _, x := range f.claude(rep).Warnings {
+			if strings.HasPrefix(x, "the plugin ") {
+				w = append(w, x)
+			}
+		}
+		return strings.Join(w, "\n")
+	}
+
+	// This binary knows every command the plugin runs.
+	installed("aaaaaaaaaaaa")
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := mismatch(rep); w != "" || rep.Flopwire.Version != version {
+		t.Fatalf("matching binary: version %q, warnings:\n%s", rep.Flopwire.Version, w)
+	}
+
+	// An older flopwire on PATH: it knows mcp but not hook.
+	fw := filepath.Join(f.dir, "bin", "flopwire")
+	if err := os.Remove(fw); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$1\" in\nversion) echo v0.1.0 ;;\n*) printf 'Usage: flopwire <command>\\n\\n  mcp         serve tools\\n  agent       run the agent\\n  version     print version\\n' >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(fw, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err = f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := mismatch(rep)
+	if rep.Flopwire.Version != "v0.1.0" || !strings.Contains(w, "the plugin (version aaaaaaaaaaaa) runs flopwire hook, which "+fw+" (version v0.1.0) does not know") || !strings.Contains(w, "Fix: install a flopwire built from the same commit as the plugin or newer") {
+		t.Fatalf("binary without hook: version %q, warnings:\n%s", rep.Flopwire.Version, w)
+	}
+	if strings.Contains(w, "flopwire mcp") {
+		t.Errorf("warned about mcp, which the binary knows:\n%s", w)
+	}
+
+	// Release versions: a plugin newer than the binary.
+	installed("0.2.0")
+	rep, _, _ = f.run("--check")
+	if w := mismatch(rep); !strings.Contains(w, "the plugin is version 0.2.0 but "+fw+" is version v0.1.0") || !strings.Contains(w, "install flopwire 0.2.0 or newer") {
+		t.Fatalf("plugin newer than binary:\n%s", w)
+	}
+}
+
+func TestCompareSemver(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		cmp  int
+		ok   bool
+	}{
+		{"0.2.0", "v0.1.9", 1, true},
+		{"v1.0.0", "1.0.0", 0, true},
+		{"0.9.0", "0.10.0", -1, true},
+		{"1.2.3-rc.1", "1.2.3", 0, true},
+		{"aaaaaaaaaaaa", "v0.1.0", 0, false},
+		{"0.1.0", "dev", 0, false},
+		{"unknown", "unknown", 0, false},
+	} {
+		if cmp, ok := compareSemver(c.a, c.b); cmp != c.cmp || ok != c.ok {
+			t.Errorf("compareSemver(%q, %q) = %d, %v; want %d, %v", c.a, c.b, cmp, ok, c.cmp, c.ok)
 		}
 	}
 }

@@ -52,6 +52,9 @@ type retriever struct {
 	close func() error
 	// instructions replace mcpInstructions when set (a sync-only device).
 	instructions string
+	// indexHint, set for the MCP server on a local index, is a note each
+	// retrieval tool adds to its answer ("" for none): the index is empty.
+	indexHint func(context.Context) string
 	// busSocket is the device agent's control socket for the message bus
 	// tools; "" is the default beside the client config.
 	busSocket string

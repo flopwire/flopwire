@@ -174,6 +174,19 @@ const usageText = `Usage: flopwire <command>
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
   version     print version`
 
+// usageCommands are the commands a usage text lists: lines indented two
+// spaces whose first word is the command. It reads any flopwire's usage,
+// so setup can tell which commands an installed binary knows.
+func usageCommands(text string) map[string]bool {
+	m := map[string]bool{}
+	for _, l := range strings.Split(text, "\n") {
+		if f := strings.Fields(l); len(f) > 1 && strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "    ") {
+			m[f[0]] = true
+		}
+	}
+	return m
+}
+
 func usage() error {
 	fmt.Fprintln(os.Stderr, usageText)
 	return errors.New("command required")

@@ -355,14 +355,20 @@ func resolveSyncOnly(fs *flag.FlagSet, syncOnly *bool, cc client.Config, ccErr e
 	return nil
 }
 
+// agentLockGrace is how long a daemon waits for the index lock before it
+// reports another agent: longer than flopwire mcp takes to create an empty
+// index under it.
+const agentLockGrace = 3 * time.Second
+
 // openAgentIndex opens the index for writing. The index takes one writer
-// (decision D12): when another process holds it, a daemon fails fast, and
-// --once asks the running agent for a pass over the control socket and
-// waits for it, returning a nil store. A --once whose lock holder does not
+// (decision D12): when another process holds it, a daemon fails after
+// agentLockGrace, and --once asks the running agent for a pass over the
+// control socket and waits for it, returning a nil store. A --once whose lock holder does not
 // answer on the socket (a daemon still in its initial pass, or another
 // --once) waits until it answers or releases the lock.
 func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger) (*localindex.Store, error) {
 	waiting := false
+	start := time.Now()
 	for {
 		store, err := localindex.Open(dbPath, opts)
 		var locked *localindex.LockedError
@@ -370,6 +376,16 @@ func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options,
 			return store, err
 		}
 		if !once || opts.RebuildIndex {
+			// flopwire mcp holds the lock for a moment while it creates an
+			// empty index; an agent holds it for good.
+			if time.Since(start) < agentLockGrace {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(100 * time.Millisecond):
+				}
+				continue
+			}
 			return nil, fmt.Errorf("agent already running (pid %d)", locked.PID)
 		}
 		_, err = agent.Call(ctx, socket, agent.Request{Op: "pass", Index: dbPath})

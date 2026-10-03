@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -32,15 +35,37 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	r, err := openRetriever(*server, *index)
 	var noIndex *noIndexError
-	if errors.As(err, &noIndex) {
-		// The device agent has not built the index yet. Serve anyway, so
-		// the harness does not mark the server failed (Claude Code then
-		// skips it for 15 minutes): the retrieval tools answer "no index
-		// yet" until the index appears, and the messaging tools, which
-		// talk to the agent, work as soon as it runs.
+	if err != nil && !*server && !errors.As(err, &noIndex) && !errors.Is(err, localindex.ErrSyncOnly) {
+		// The index exists but does not open: another process is creating
+		// or rebuilding it (a second flopwire mcp, or the agent), or it is
+		// damaged. Serve anyway, as below: each retrieval call opens it
+		// again and reports why it cannot.
+		path := *index
+		if path == "" {
+			path = local.IndexPath()
+		}
 		det := local.NewDetector()
-		lazy := &lazyIndexBackend{path: noIndex.path}
+		lazy := &lazyIndexBackend{path: path}
 		r, err = &retriever{backend: lazy, caller: det.Detect, live: det.Live, close: lazy.Close}, nil
+	}
+	if errors.As(err, &noIndex) {
+		// The device agent has never run. Serve anyway, so the harness
+		// does not mark the server failed (Claude Code then skips it for
+		// 15 minutes): create the empty index as the agent would and
+		// serve it, so the retrieval tools answer empty with a hint until
+		// the agent fills it. The messaging tools, which talk to the
+		// agent, work as soon as it runs.
+		path := noIndex.path
+		if cerr := createEmptyIndex(path); cerr == nil {
+			r, err = openRetriever(false, path)
+		}
+		if err != nil && !errors.Is(err, localindex.ErrSyncOnly) {
+			// The agent holds the index (it is creating it now), or the
+			// create failed: open it on the first call that finds it.
+			det := local.NewDetector()
+			lazy := &lazyIndexBackend{path: path}
+			r, err = &retriever{backend: lazy, caller: det.Detect, live: det.Live, close: lazy.Close}, nil
+		}
 	}
 	if errors.Is(err, localindex.ErrSyncOnly) {
 		// Start anyway, so the client sees why: the instructions say so
@@ -52,12 +77,56 @@ func mcp(ctx context.Context, args []string) error {
 		return err
 	}
 	defer r.close()
+	if lb, ok := r.backend.(*local.Backend); ok {
+		r.indexHint = emptyIndexHint(lb.Store)
+	}
 	r.caller = cachedCaller(r.caller, 10*time.Second)
 	r.underCodex = local.NewDetector().UnderCodex()
 	if r.busSocket, err = defaultSocket(); err != nil {
 		return err
 	}
 	return serveMCP(ctx, r, os.Stdin, os.Stdout)
+}
+
+// createEmptyIndex creates the local index at path as the agent would: in
+// the client config's mode, with the agent's defaults. It holds the index
+// lock only while it creates the schema; when the agent holds the lock it
+// fails with *localindex.LockedError, and the agent creates the index.
+func createEmptyIndex(path string) error {
+	syncOnly := false
+	cc, ccErr := client.Load()
+	if err := resolveSyncOnly(flag.NewFlagSet("mcp", flag.ContinueOnError), &syncOnly, cc, ccErr); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	s, err := localindex.Open(path, localindex.Options{SyncOnly: syncOnly})
+	if err != nil {
+		return err
+	}
+	return s.Close()
+}
+
+// mcpEmptyIndex is the hint a retrieval tool adds while the local index
+// holds no transcript.
+const mcpEmptyIndex = "Flopwire's local index is empty: the device agent has not indexed this device's transcripts yet, so nothing can match. Start it with `flopwire agent run` (its first pass takes a few minutes), then call again. The messaging tools work once the agent runs."
+
+// emptyIndexHint returns mcpEmptyIndex while s holds no source. Once the
+// agent has indexed a transcript it stops asking.
+func emptyIndexHint(s *localindex.Store) func(context.Context) string {
+	var filled atomic.Bool
+	return func(ctx context.Context) string {
+		if filled.Load() {
+			return ""
+		}
+		ok, err := s.HasSources(ctx)
+		if err != nil || ok {
+			filled.Store(ok)
+			return ""
+		}
+		return mcpEmptyIndex
+	}
 }
 
 // cachedCaller remembers the detected session for ttl: detection may run
@@ -684,11 +753,21 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			if cctx.Err() != nil && ctx.Err() == nil {
 				return // cancelled by the client: no response
 			}
-			if err != nil {
-				reply("result", map[string]any{"isError": true, "content": []any{map[string]string{"type": "text", "text": mcpError(p.Name, err)}}})
-				return
+			isErr := err != nil
+			if isErr {
+				text = mcpError(p.Name, err)
 			}
-			res := map[string]any{"content": []any{map[string]string{"type": "text", "text": text}}}
+			content := []any{map[string]string{"type": "text", "text": text}}
+			if _, retrieval := mcpVerbs[p.Name]; retrieval && r.indexHint != nil {
+				// A second block, so a JSON answer stays JSON.
+				if h := r.indexHint(cctx); h != "" {
+					content = append(content, map[string]string{"type": "text", "text": h})
+				}
+			}
+			res := map[string]any{"content": content}
+			if isErr {
+				res["isError"] = true
+			}
 			reply("result", res)
 		}()
 	default:

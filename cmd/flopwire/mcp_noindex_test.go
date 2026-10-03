@@ -9,16 +9,19 @@ import (
 
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // TestMCPWithoutIndex: on a device where the agent has never run, flopwire
 // mcp still starts and answers. A harness would otherwise mark the server
-// failed (Claude Code then skips it for 15 minutes). Retrieval tools return
-// a short "no index yet" error result; the messaging tools answer from the
-// agent (here: not running) rather than taking the server down.
+// failed (Claude Code then skips it for 15 minutes). It creates the empty
+// index as the agent would; retrieval tools answer empty, with a second
+// block saying the agent has not indexed yet; the messaging tools answer
+// from the agent (here: not running) rather than taking the server down.
 func TestMCPWithoutIndex(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("FLOPWIRE_INDEX", filepath.Join(dir, "missing", "index.db"))
+	db := filepath.Join(dir, "missing", "index.db")
+	t.Setenv("FLOPWIRE_INDEX", db)
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "fw", "config.json"))
 	in := filepath.Join(dir, "in")
 	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n" +
@@ -70,8 +73,22 @@ func TestMCPWithoutIndex(t *testing.T) {
 			t.Errorf("tools/list lacks %s: %s", tool, lines[1])
 		}
 	}
-	if !strings.Contains(lines[2], `"isError":true`) || !strings.Contains(lines[2], "no index yet") || !strings.Contains(lines[2], "flopwire agent run") {
-		t.Errorf("grep without an index: want an isError result saying no index yet; got %s", lines[2])
+	var grep struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &grep); err != nil {
+		t.Fatal(err)
+	}
+	if c := grep.Result.Content; grep.Result.IsError || len(c) != 2 || c[1].Text != mcpEmptyIndex {
+		t.Errorf("grep without an index: want an empty answer and the empty-index hint; got %s", lines[2])
+	}
+	if _, err := os.Stat(db); err != nil {
+		t.Errorf("mcp did not create the empty index: %v", err)
 	}
 	if !strings.Contains(lines[3], `"isError":true`) || !strings.Contains(lines[3], codeAgentNotRunning) {
 		t.Errorf("peers with no agent: want the agent_not_running error result; got %s", lines[3])
@@ -95,5 +112,81 @@ func TestLazyIndexOpensOnceItExists(t *testing.T) {
 	s.Close()
 	if _, err := b.Sessions(t.Context(), "", "", format.Filters{}); err != nil {
 		t.Fatalf("after the index exists: %v", err)
+	}
+}
+
+// TestEmptyIndexHintStopsOnceIndexed: the hint shows while the index holds
+// no transcript and stops once the agent has indexed one.
+func TestEmptyIndexHintStopsOnceIndexed(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "index.db")
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "none.json"))
+	if err := createEmptyIndex(db); err != nil {
+		t.Fatal(err)
+	}
+	r, err := localindex.Open(db, localindex.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	hint := emptyIndexHint(r)
+	if h := hint(t.Context()); h != mcpEmptyIndex {
+		t.Fatalf("empty index: hint %q", h)
+	}
+	w, err := localindex.Open(db, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.EnsureSource(t.Context(), transcript.Source{Agent: transcript.AgentClaude, Path: "/x.jsonl", StorageKind: transcript.StorageJSONLAppend, Parser: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if h := hint(t.Context()); h != "" {
+		t.Fatalf("after the agent indexed a transcript: hint %q", h)
+	}
+}
+
+// TestMCPStartsWhileAnotherProcessCreatesTheIndex: Claude Code starts one
+// flopwire mcp per session, so two can start at once on a device whose
+// agent never ran. The first creates the index under its lock; the second
+// finds a file whose schema is not written yet. It must still serve (a
+// harness marks a server that exits failed), and open the index once the
+// first is done.
+func TestMCPStartsWhileAnotherProcessCreatesTheIndex(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "index.db")
+	t.Setenv("FLOPWIRE_INDEX", db)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "fw", "config.json"))
+	// The index file exists, but its creator has not written the schema.
+	if err := os.WriteFile(db, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(dir, "in")
+	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}` + "\n"
+	if err := os.WriteFile(in, []byte(req), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fin, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fin.Close()
+	fout, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fout.Close()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = fin, fout
+	err = run(t.Context(), []string{"mcp"})
+	os.Stdin, os.Stdout = oldIn, oldOut
+	if err != nil {
+		t.Fatalf("mcp exited while the index was being created: %v", err)
+	}
+	out, _ := os.ReadFile(fout.Name())
+	if !strings.Contains(string(out), `"flopwire_grep"`) {
+		t.Fatalf("mcp did not list its tools:\n%s", out)
 	}
 }
