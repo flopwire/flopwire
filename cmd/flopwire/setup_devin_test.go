@@ -777,7 +777,9 @@ func TestSetupDevinLoggedOut(t *testing.T) {
 			if err != nil {
 				t.Fatalf("a logged-out Devin alone is skipped, not failed; got %v", err)
 			}
-			if !strings.Contains(out, "  skipped: not logged in to Devin") || !strings.Contains(out, "  todo: log in to Devin: devin auth login") || strings.Contains(out, "error:") || strings.Contains(out, "nothing to change") {
+			// setup could not ask Devin, so it must not say the plugin is
+			// not installed (or, after --remove, that it is gone).
+			if !strings.Contains(out, "  skipped: not logged in to Devin") || !strings.Contains(out, "  todo: log in to Devin: devin auth login") || strings.Contains(out, "error:") || strings.Contains(out, "nothing to change") || strings.Contains(out, "not installed") {
 				t.Fatalf("--text:\n%s", out)
 			}
 		})

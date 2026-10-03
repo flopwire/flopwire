@@ -792,7 +792,8 @@ func writeSetupText(w io.Writer, rep setupReport) {
 				state = "disabled"
 			}
 			fmt.Fprintf(&b, "  plugin: %s %s, %s scope, %s\n", h.Plugin, h.Version, h.Scope, state)
-		case h.Plugin != "":
+		case h.Plugin != "" && h.Skipped == "":
+			// A skipped harness was never asked what it has installed.
 			fmt.Fprintf(&b, "  plugin: %s not installed\n", h.Plugin)
 		}
 		if h.Marketplace != "" {
