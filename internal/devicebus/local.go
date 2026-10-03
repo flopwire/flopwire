@@ -30,6 +30,9 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent); err != nil {
 		return busproto.SendResponse{}, err
 	}
+	if err := b.namesNoWithheld(ctx, req); err != nil {
+		return busproto.SendResponse{}, err
+	}
 	// The body and refs pass the device redactor before they leave the
 	// machine (plan §4 "Redaction"), as transcript text does. Masks keep
 	// the length, so the server's cap and duplicate check see the same
@@ -46,6 +49,40 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 	}
 	return out, err
+}
+
+// namesNoWithheld refuses a send whose recipient prefix or refs name a
+// session the path rules keep off the server: the request would tell the
+// server its id (issue #71).
+func (b *Bus) namesNoWithheld(ctx context.Context, req busproto.SendRequest) error {
+	b.mu.Lock()
+	withheld := b.cfg.Withheld
+	b.mu.Unlock()
+	if withheld == nil {
+		return nil
+	}
+	check := func(what, ref string) error {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return nil
+		}
+		id, err := withheld(ctx, ref)
+		if err != nil || id == "" {
+			return err
+		}
+		return fail(http.StatusForbidden, busproto.CodeWithheldSession, "%s %q names session %s, which a path rule keeps off the server; nothing about it may reach the team server", what, ref, id)
+	}
+	if to := strings.TrimSpace(req.To); !strings.HasPrefix(to, "@") {
+		if err := check("to", to); err != nil {
+			return err
+		}
+	}
+	for _, r := range req.Refs {
+		if err := check("ref", r); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // redactSend masks secrets in a send's body and refs in place and counts

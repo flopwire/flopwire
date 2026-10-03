@@ -871,3 +871,52 @@ func TestHeldNoticeOncePerSenderPerDay(t *testing.T) {
 		}
 	}
 }
+
+// A send whose refs or recipient prefix name a session the path rules
+// keep off the server is refused on the device, before any request: the
+// server would learn the session's id (issue #71). The check covers every
+// ref, and a send naming no withheld session goes through.
+func TestSendNamingWithheldSessionRefused(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	const secret = "5ec2e7aa-0000-4000-8000-000000000001"
+	var asked []string
+	b.SetWithheld(func(_ context.Context, ref string) (string, error) {
+		asked = append(asked, ref)
+		if strings.HasPrefix(ref, "5ec2e7aa") || strings.HasSuffix(ref, secret+".jsonl:3") {
+			return secret, nil
+		}
+		return "", nil
+	})
+	for _, req := range []busproto.SendRequest{
+		{FromSession: "open-1", To: "@alex", Body: "see the ref", Refs: []string{"4c19e0d2/12", "5ec2e7aa/28672"}},
+		{FromSession: "open-1", To: "@alex", Body: "see the ref", Refs: []string{"/home/g/.claude/projects/-src-client/" + secret + ".jsonl:3"}},
+		{FromSession: "open-1", To: "5ec2e7aa", Body: "hello"},
+	} {
+		var be *busproto.Error
+		_, err := b.Send(ctx, req)
+		if !errors.As(err, &be) || be.Code != busproto.CodeWithheldSession || be.Status != http.StatusForbidden || !strings.Contains(be.Detail, secret) || !strings.Contains(be.Detail, "path rule") {
+			t.Fatalf("send %+v: %v", req, err)
+		}
+	}
+	srv.mu.Lock()
+	n := len(srv.sends)
+	srv.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("server got %d sends naming a withheld session", n)
+	}
+	asked = nil
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "4c19e0d2", Body: "fine", Refs: []string{"4c19e0d2/12"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asked, []string{"4c19e0d2", "4c19e0d2/12"}) {
+		t.Fatalf("checked %q", asked)
+	}
+	// An @user recipient names no session.
+	asked = nil
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "fine too"}); err != nil || len(asked) != 0 {
+		t.Fatalf("@user: %v, checked %q", err, asked)
+	}
+}

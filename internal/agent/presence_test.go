@@ -418,3 +418,66 @@ func TestPresenceEndedSessions(t *testing.T) {
 		t.Fatal("a Devin session of a dead pid is live")
 	}
 }
+
+// A send's refs and recipient prefix are checked against the path rules
+// (devicebus namesNoWithheld, issue #71): an address, prefix or path of a
+// withheld session (or its subagent) names it, whether the rule keeps it
+// local or denies it (never indexed); the others name none.
+func TestBusWithheldNamesWithheldSessions(t *testing.T) {
+	for _, rule := range []string{"local /tmp/oracle-alpha", "deny /tmp/oracle-alpha"} {
+		t.Run(strings.Fields(rule)[0], func(t *testing.T) {
+			f := newFixture(t, "-")
+			f.cfg.UserRuleList = []string{rule}
+			f.a = New(f.store, f.cfg)
+			f.once()
+			var sub, open string
+			var codex []*target
+			f.a.mu.Lock()
+			for _, tg := range f.a.targets {
+				if tg.kind == kindTranscript && tg.root == alphaID {
+					sub = tg.src.SessionKey
+				}
+				if tg.kind == kindTranscript && tg.src.Agent == transcript.AgentCodex {
+					codex = append(codex, tg)
+				}
+			}
+			f.a.mu.Unlock()
+			for _, tg := range codex {
+				if f.a.uploadable(tg) {
+					open = tg.src.SessionKey
+				}
+			}
+			if sub == "" || open == "" {
+				t.Fatalf("subagent %q, open session %q", sub, open)
+			}
+			for ref, want := range map[string]bool{
+				alphaID:                       true,
+				alphaID[:8]:                   true, // also orphanID's prefix: either may be meant
+				alphaID[:13] + "/3":           true,
+				alphaID + "/3:2":              true,
+				sub:                           true,
+				sub + "/1":                    true,
+				f.path(alphaRel) + ":1":       true,
+				"~/" + alphaRel + ":1":        false, // the fixture's home is not $HOME
+				open:                          false,
+				open + "/4":                   false,
+				orphanID:                      false,
+				"not an address of a session": false,
+			} {
+				id, err := f.a.BusWithheld(ctx, ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (id != "") != want {
+					t.Fatalf("%s: withheld %q, want %v", ref, id, want)
+				}
+			}
+		})
+	}
+	// Without rules nothing is withheld.
+	f := newFixture(t, "-")
+	f.once()
+	if id, err := f.a.BusWithheld(ctx, alphaID); id != "" || err != nil {
+		t.Fatalf("no rules: %q %v", id, err)
+	}
+}

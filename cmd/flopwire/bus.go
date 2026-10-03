@@ -727,6 +727,9 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	case busproto.CodeNotFound:
 		e.Fix = "reply_to takes a message id this session sent or received"
 		e.Example = st.cmd("flopwire inbox", "flopwire_inbox") + " lists them"
+	case busproto.CodeWithheldSession:
+		e.Fix = "send it without that ref (or recipient): a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
+		e.Example = st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
 	case busproto.CodeSessionNotOnDevice:
 		if strings.Contains(be.Detail, "path rule") {
 			e.Fix = "messaging is not available from this session: its transcripts stay on this device, so nothing about it may reach the team server"

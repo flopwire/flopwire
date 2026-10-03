@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -383,6 +384,77 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 		out[i].Withheld = !a.reportable(ctx, key, paths[key])
 	}
 	return out, nil
+}
+
+// BusWithheld names a session the path rules keep off the server that ref
+// would tell the server about, "" when there is none (issue #71). ref is
+// a send's archive address (SESSION/ORDINAL[:LINE], SESSION, a message id,
+// /path/file.jsonl:LINE) or its recipient, a session id prefix. A prefix
+// is checked against every transcript the agent tracks (subagents
+// included; a denied one is never indexed, so the index cannot tell) and
+// every Devin session, and any match that may not reach the server counts:
+// the prefix alone could tell the server which. A path is the transcript
+// it names. A message id or anything else matches no session id.
+func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
+	addr, err := format.ParseAddress(ref)
+	if err != nil {
+		return "", nil
+	}
+	pv := a.policy()
+	if pv.pol.Empty() {
+		return "", nil
+	}
+	var prefix string
+	switch addr.Kind {
+	case format.AddrPath:
+		p := addr.Path
+		if strings.HasPrefix(p, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				p = filepath.Join(home, p[2:])
+			}
+		}
+		a.mu.Lock()
+		t := a.targets[filepath.Clean(p)]
+		a.mu.Unlock()
+		if t != nil && t.kind == kindTranscript && !a.uploadable(t) {
+			if t.src.SessionKey != "" {
+				return t.src.SessionKey, nil
+			}
+			return p, nil
+		}
+		return "", nil
+	case format.AddrMessage:
+		prefix = addr.Session
+	default:
+		prefix = addr.Token
+	}
+	if prefix == "" {
+		return "", nil
+	}
+	a.mu.Lock()
+	var match []*target
+	for _, t := range a.targets {
+		if t.kind == kindTranscript && t.src.SessionKey != "" && strings.HasPrefix(t.src.SessionKey, prefix) {
+			match = append(match, t)
+		}
+	}
+	a.mu.Unlock()
+	for _, t := range match {
+		if !a.uploadable(t) {
+			return t.src.SessionKey, nil
+		}
+	}
+	if a.devin.path != "" {
+		a.loadDevinModes(ctx, pv)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for session, m := range a.devinModes {
+			if strings.HasPrefix(session, prefix) && m != pathpolicy.Allow {
+				return session, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // BusRoot is the top-level session a subagent's session belongs to, or
