@@ -120,8 +120,9 @@ another person's session is held until the recipient accepts that person
   first-line preview; the whole body never leaves the server before
   acceptance. The hook tells the person about held messages through a
   channel the model does not see (Claude Code and Codex); it never puts
-  them in model context. The notice is recorded in the harness
-  transcript, which is uploaded like the rest of it.
+  them in model context. Claude Code records the notice (the sender's
+  email and a count) in its transcript, which is uploaded like the rest
+  of it. Codex does not write it to the rollout.
 - Revoking holds the sender's undelivered messages again, and the
   recipient's devices drop them at once. A message a session already
   received cannot be recalled.
