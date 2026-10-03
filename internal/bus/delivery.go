@@ -377,11 +377,13 @@ func validReads(in []busproto.ReadReceipt) ([]busproto.ReadReceipt, error) {
 // runs UndeliveredSQL over the report (the messages the device holds),
 // then this over the rest: the device's report races its next poll,
 // which drops the ended session from its presence, and a session that
-// ended before it was uploaded is then on no device.
+// ended before it was uploaded is then on no device. OFFSET 0 keeps each
+// NOT EXISTS a per-message index probe: as an anti-join the planner may
+// scan the whole presence and conversations indexes.
 const EndedSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
 	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND m.state='queued' AND m.addressed='session'
-		AND NOT EXISTS(SELECT 1 FROM bus_presence p WHERE (p.session_id COLLATE "C")=(m.to_session COLLATE "C") AND p.agent=m.to_agent AND p.device_id<>$3)
-		AND NOT EXISTS(SELECT 1 FROM conversations c WHERE (c.session_id COLLATE "C")=(m.to_session COLLATE "C") AND c.agent=m.to_agent AND c.device_id<>$3)
+		AND NOT EXISTS(SELECT 1 FROM bus_presence p WHERE (p.session_id COLLATE "C")=(m.to_session COLLATE "C") AND p.agent=m.to_agent AND p.device_id<>$3 OFFSET 0)
+		AND NOT EXISTS(SELECT 1 FROM conversations c WHERE (c.session_id COLLATE "C")=(m.to_session COLLATE "C") AND c.agent=m.to_agent AND c.device_id<>$3 OFFSET 0)
 	RETURNING m.id`
 
 // Ack records that hooks printed the messages in IDs (delivered_at), that
