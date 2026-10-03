@@ -552,12 +552,14 @@ const (
 	// ($3 person, $4 addressing, $5 session) since $6.
 	DuplicateSQL = `SELECT EXISTS(SELECT 1 FROM bus_messages WHERE from_session=$1 AND created_at>$6 AND state<>'refused'
 		AND body_sha=$2 AND to_user=$3 AND addressed=$4 AND ($4='user' OR to_session=$5))`
-	// SessionSendsSQL counts the session $1's sends since $2.
-	SessionSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_session=$1 AND created_at>$2 AND state<>'refused'`
-	// DeviceSendsSQL counts the device $1's sends since $2.
-	DeviceSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_device=$1 AND created_at>$2 AND state<>'refused'`
-	// UserSendsSQL counts the person $1's sends since $2.
-	UserSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_user=$1 AND created_at>$2 AND state<>'refused'`
+	// SessionSendsSQL counts the session $1's send attempts since $2.
+	// Refused ones count too, so an agent looping on a refusal reaches
+	// the ceiling; the same holds for the device and person counts.
+	SessionSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_session=$1 AND created_at>$2`
+	// DeviceSendsSQL counts the device $1's send attempts since $2.
+	DeviceSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_device=$1 AND created_at>$2`
+	// UserSendsSQL counts the person $1's send attempts since $2.
+	UserSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_user=$1 AND created_at>$2`
 	// ThreadSendsSQL counts the thread $1's messages since $2.
 	ThreadSendsSQL = `SELECT count(*) FROM bus_messages WHERE thread_id=$1 AND created_at>$2 AND state<>'refused'`
 	// SessionPendingSQL counts the session $1's undelivered messages

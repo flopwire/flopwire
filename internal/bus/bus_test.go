@@ -519,7 +519,7 @@ func TestLimits(t *testing.T) {
 		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "31st"); code(err) != busproto.CodeSessionRate {
 			t.Fatalf("31st send: %v", err)
 		}
-		// Refused sends do not count; another session is not limited.
+		// Another session is not limited.
 		tm.mustSend(tm.garyMac, "g-web-2222", "g-lin", "other session")
 		tm.advance(time.Hour + time.Second)
 		tm.presence()
@@ -576,7 +576,8 @@ func TestLimits(t *testing.T) {
 		lin := sessions(tm.garyLinux, "l", busproto.DevicePerHour/busproto.SessionPerHour)
 		third := sessions(garyThird, "t", busproto.DevicePerHour/busproto.SessionPerHour)
 		burst(tm.garyLinux, lin, busproto.DevicePerHour)
-		burst(garyThird, third, busproto.UserPerHour-2*busproto.DevicePerHour)
+		// The mac's refused attempt counts toward the person's ceiling.
+		burst(garyThird, third, busproto.UserPerHour-2*busproto.DevicePerHour-1)
 		refused(garyThird, third[len(third)-1], busproto.CodeUserRate)
 		// Another person is not limited.
 		tm.mustSend(tm.alexMac, to[0].SessionID, "g-l0-0000", "alex is free")
@@ -584,6 +585,41 @@ func TestLimits(t *testing.T) {
 		sessions(tm.garyMac, "m", 1)
 		tm.present(tm.alexMac, to...)
 		tm.mustSend(tm.garyMac, "g-m0-0000", to[0].SessionID, "next hour")
+	})
+	// A refused attempt uses the sender's hourly quota like a sent one,
+	// so an agent looping on a refusal reaches the ceiling (#70).
+	t.Run("refused sends count toward the ceilings", func(t *testing.T) {
+		tm := newTeam(t)
+		refusedN := func(c busproto.Caller, from string, n int) {
+			t.Helper()
+			tm.mustSend(c, from, "g-lin", "loop "+from)
+			for i := 1; i < n; i++ {
+				if _, err := tm.send(c, from, "g-lin", "loop "+from); code(err) != busproto.CodeDuplicate {
+					t.Fatalf("attempt %d from %s: %v", i+1, from, err)
+				}
+			}
+		}
+		refusedN(tm.garyMac, "g-api-1111", busproto.SessionPerHour)
+		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "something new"); code(err) != busproto.CodeSessionRate {
+			t.Fatalf("after %d attempts, 1 sent: %v", busproto.SessionPerHour, err)
+		}
+		// The device ceiling counts refusals across the device's sessions.
+		tm.advance(time.Hour + time.Second)
+		tm.presence()
+		var ps []busproto.PresenceSession
+		for i := range busproto.DevicePerHour/busproto.SessionPerHour + 1 {
+			ps = append(ps, live(fmt.Sprintf("g-r%02d-0000", i), "claude", "/x/api", true))
+		}
+		tm.present(tm.garyMac, ps...)
+		for _, p := range ps[:len(ps)-1] {
+			refusedN(tm.garyMac, p.SessionID, busproto.SessionPerHour)
+		}
+		if _, err := tm.send(tm.garyMac, ps[len(ps)-1].SessionID, "g-lin", "fresh"); code(err) != busproto.CodeDeviceRate {
+			t.Fatalf("device after %d attempts: %v", busproto.DevicePerHour, err)
+		}
+		tm.advance(time.Hour + time.Second)
+		tm.presence()
+		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
 	})
 	t.Run("duplicate", func(t *testing.T) {
 		tm := newTeam(t)
