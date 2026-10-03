@@ -22,7 +22,7 @@ spec and this page differ, this page describes the code.
 | CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | The four tools. Local by default; `--server` for team search. |
 | Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. The CLI and MCP tools are in `cmd/flopwire/bus.go`; `flopwire hook` (`cmd/flopwire/hook.go`, rendering in `internal/busrender`) delivers. |
 | Message bus (device) | each developer machine | `internal/devicebus`, `internal/agent/presence.go`, `internal/client/bus.go` | Local inbox (`bus.db`), presence, the long poll, claims and receipts; routing between the device's own sessions with no server. |
-| Web console | browser | `web/`, served at `/` by `internal/webapp` | Admin only: health, people and devices, policy, archive (deletion), audit. No corpus search. |
+| Web console | browser | `web/`, served at `/` by `internal/webapp` | Admins: health, people and devices, policy, archive (deletion), audit. Every member: the Messaging page (held messages, accept, revoke). No corpus search. |
 | Backup | server host | `internal/backup` | Coordinated Postgres dump plus chunk copy, verify, restore. |
 
 ## Local flow
@@ -312,10 +312,11 @@ off. Code: `internal/retrieval/local/caller.go`.
 ## Message bus
 
 Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
-server, the device agent, and the `peers`, `send` and `inbox` commands and
-MCP tools are built; the hook that delivers messages into a session is
-not. The commands reach the server only through the device agent's control
-socket. Routes and wire types are in `internal/busproto`.
+server, the device agent, the `peers`, `send` and `inbox` commands and MCP
+tools, `flopwire hook` and the plugins for Claude Code, Codex and Devin CLI
+are built, with read receipts. opencode and vendor cloud sessions are not. The
+commands reach the server only through the device agent's control socket.
+Routes and wire types are in `internal/busproto`.
 
 - **Presence.** Each device holds one long poll (`POST /v1/bus/poll`, up to
   25 s). The request carries every live session on the device (id, agent,
@@ -334,7 +335,9 @@ socket. Routes and wire types are in `internal/busproto`.
   undelivered messages per recipient are refused. A refused message is stored as `refused`.
 - **Delivery.** The poll answers the device's whole deliverable set:
   messages to its sessions, and `@user` messages it may claim. A claim is
-  atomic. An ack sets `delivered_at`.
+  atomic. The device acks a message after a hook confirms that it printed
+  it; the ack sets `delivered_at`. The same ack batch reports messages that
+  became `undelivered` (`unconfirmed` after 3 leases, or `session_ended`).
 - **Read receipts.** A delivered message is `read` once the recipient
   session's transcript shows it in hook context: its text entered the
   session's context, which says nothing about what the model did with it.
@@ -365,9 +368,12 @@ socket. Routes and wire types are in `internal/busproto`.
   accepts that person, so a held message never reaches it.
 - **Device agent** (`internal/devicebus`). Presence is what `sessions`
   prints as live, cross-checked with the harness registries (Claude session
-  files, Codex writer locks, Devin session locks; read, never locked), with
-  busy from the Claude session file or the Codex rollout's last task
-  event. Sessions the path rules keep off the server are not reported. The
+  files, Codex writer locks, Devin session locks; read, never written; a
+  Codex lock is probed with a non-blocking shared lock under Codex's own
+  coordination lock), with busy from the Claude session file, the Codex
+  rollout's last task event, or Devin's last hook event. A session ends on
+  harness evidence (a `SessionEnd` hook, a dead process, a registry entry
+  gone at two reads), never on idleness. Sessions the path rules keep off the server are not reported. The
   agent re-polls when presence changes. Each answer reconciles a local
   inbox (`bus.db` beside the client config, its own SQLite file so a hook
   never waits on the index writer); offered `@user` messages are claimed
@@ -378,8 +384,9 @@ socket. Routes and wire types are in `internal/busproto`.
 
 ## Trust boundaries
 
-- The device agent decides what leaves a machine. Path rules are the only
-  filter; nothing is redacted.
+- The device agent decides what leaves a machine. Path rules decide which
+  sessions leave; recognized secrets are redacted on the device before
+  upload and again on the server.
 - The server trusts only the credential for identity. A device credential
   uploads and reads; a service credential only uploads; admin routes need
   a human admin's login session, never a device token.
@@ -392,7 +399,8 @@ socket. Routes and wire types are in `internal/busproto`.
 - Accepting a message sender, revoking one, and reading held messages
   need the person's own login session, never a device token; accepting
   also needs the person's password, so an agent that reads the saved
-  session cannot accept for its human. An accepted sender's agents can direct the
+  session cannot accept for its human (it can still list held previews
+  and revoke). An accepted sender's agents can direct the
   recipient's agents within each session's permissions; the
   information-only rule for their messages is guidance to the model.
 - Retrieval and admin reads are audited with the query and result ids.
