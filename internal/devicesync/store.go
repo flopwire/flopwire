@@ -106,6 +106,17 @@ type sourceRow struct {
 	Spec      SourceSpec
 	Gen       int64
 	Watermark *transcript.Watermark
+	// RepoSent is Spec.repoKey as a flush last reported it, "" before
+	// any (storedSpec).
+	RepoSent string
+}
+
+// storedSpec is the spec column: the spec, and the repository a flush
+// last reported for it. A row written before RepoSent existed reads ""
+// and reports its repository once.
+type storedSpec struct {
+	SourceSpec
+	RepoSent string `json:",omitempty"`
 }
 
 type genRow struct {
@@ -151,11 +162,13 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal([]byte(specJSON), &row.Spec); err != nil {
+	var st storedSpec
+	if err := json.Unmarshal([]byte(specJSON), &st); err != nil {
 		return nil, err
 	}
+	row.Spec, row.RepoSent = st.SourceSpec, st.RepoSent
 	if spec != nil && *spec != row.Spec {
-		raw, _ := json.Marshal(spec)
+		raw, _ := json.Marshal(storedSpec{SourceSpec: *spec, RepoSent: row.RepoSent})
 		if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, string(raw), row.ID); err != nil {
 			return nil, err
 		}
@@ -168,6 +181,16 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 		}
 	}
 	return row, nil
+}
+
+// repoSent records that a flush reported src's current repository.
+func (s *Store) repoSent(ctx context.Context, src *sourceRow) error {
+	raw, _ := json.Marshal(storedSpec{SourceSpec: src.Spec, RepoSent: src.Spec.repoKey()})
+	if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, string(raw), src.ID); err != nil {
+		return err
+	}
+	src.RepoSent = src.Spec.repoKey()
+	return nil
 }
 
 const genCols = `source_id, generation, file_id, previous, parent, size, change_time, captured_at, entries,

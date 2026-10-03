@@ -147,7 +147,21 @@ type Source struct {
 	// Previous names the source this one replaces at the same path (new
 	// file identity). The server marks the previous source's rows superseded.
 	Previous *SourceRef `json:"previous,omitempty"`
+	// Checkout and Remote are the repository the session ran in, as the
+	// device placed it (D18): its main checkout (the bare repository for
+	// a bare-backed layout) and its normalized remote (host/owner/name,
+	// origin else the first). Either is "" when unknown. Every flush
+	// reports the device's current placement, so a later one (the
+	// deleted-worktree recovery pass) replaces an earlier one; a source
+	// whose bytes are all acknowledged is sent again header only.
+	// Retrieval and the bus match a repository across devices by Remote
+	// (issue #102).
+	Checkout string `json:"checkout,omitempty"`
+	Remote   string `json:"remote,omitempty"`
 }
+
+// MaxRepoField bounds Source.Checkout and Source.Remote.
+const MaxRepoField = 4096
 
 // ChunkerParams records how the device cut chunks. The server never
 // re-chunks; the parameters are recorded for diagnosis.
@@ -334,6 +348,12 @@ func (h *FlushHeader) Validate() error {
 	}
 	if h.Source.Path == "" || h.Source.Agent == "" || h.Source.StorageKind == "" {
 		return errors.New("source path, agent and storage_kind are required")
+	}
+	if len(h.Source.Checkout) > MaxRepoField || len(h.Source.Remote) > MaxRepoField {
+		return errors.New("source checkout or remote too long")
+	}
+	if c := h.Source.Checkout; c != "" && c[0] != '/' {
+		return errors.New("source checkout is not an absolute path")
 	}
 	if h.Generation < 0 {
 		return errors.New("negative generation")

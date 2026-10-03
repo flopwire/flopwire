@@ -153,8 +153,17 @@ CREATE TABLE sources (
     CHECK (storage_kind IN ('jsonl_append', 'json_doc', 'sqlite', 'dir', 'markdown')),
   parser text NOT NULL,
   first_seen_at timestamptz NOT NULL,
+  -- The repository the session ran in, as the device placed it: its main
+  -- checkout (the bare repository for a bare-backed layout) and its
+  -- normalized remote (host/owner/name). Every flush reports them, so
+  -- they follow the device's latest placement (issue #102). Retrieval and
+  -- the bus match one repository across devices by remote.
+  checkout text,
+  remote text,
   UNIQUE (device_id, path, file_id)
 );
+-- A repo filter keyed on the remote: the sources of every checkout of it.
+CREATE INDEX sources_remote_idx ON sources (remote) WHERE remote IS NOT NULL;
 
 CREATE TABLE generations (
   source_id uuid NOT NULL REFERENCES sources (id) ON DELETE CASCADE,

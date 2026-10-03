@@ -344,7 +344,11 @@ func (a *Agent) parseStore(ctx context.Context, d *storeState, id transcript.Ide
 		if i > 0 && sessions[i-1] == s || a.storeMode(ctx, d, s) != pathpolicy.Allow {
 			continue
 		}
-		a.cfg.Sync.NotifyExportFunc(d.spec(s), d.exportFn(s))
+		sp := d.spec(s)
+		if p, ok := a.storedPlace(placeKey{d.h.agent, s}); ok {
+			sp.Checkout, sp.Remote = p.pl.Main, p.pl.Remote
+		}
+		a.cfg.Sync.NotifyExportFunc(sp, d.exportFn(s))
 	}
 	return nil
 }
