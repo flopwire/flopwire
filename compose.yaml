@@ -61,6 +61,10 @@ services:
     ports:
       - "${FLOPWIRE_BIND:-127.0.0.1}:${FLOPWIRE_PORT:-8080}:8080"
     restart: unless-stopped
+    # On SIGTERM the server stops accepting connections, answers waiting
+    # message-bus polls at once, and waits up to 10 s for requests in
+    # flight. Docker's default 10 s would kill it at that same moment.
+    stop_grace_period: 15s
     healthcheck:
       test: ["CMD", "flopwire", "healthcheck"]
       interval: 10s
