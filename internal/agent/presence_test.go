@@ -537,6 +537,12 @@ func TestBusTitleRedactsBeforeTheCut(t *testing.T) {
 	if got := f.a.busTitle(ctx, s); got != strings.Repeat("word ", 18)+"word …" {
 		t.Fatalf("no line: %q", got)
 	}
+	// A cut with no word break left loses everything (a 150-character
+	// token cut at 100).
+	s.Title = string([]rune("ghp_" + strings.Repeat("Ab3dEf6hIj", 15))[:titleCut])
+	if got := f.a.busTitle(ctx, s); got != "" {
+		t.Fatalf("no word break: %q", got)
+	}
 	// A short title is no cut.
 	s.Title = "fix the flaky upload test"
 	if got := f.a.busTitle(ctx, s); got != s.Title {
