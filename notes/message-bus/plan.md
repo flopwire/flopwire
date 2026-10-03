@@ -258,11 +258,41 @@ ack request (`undelivered` ids) and the sender sees it. `undelivered`
 with reason `session_ended` when its session ended first; the device
 reports it in `session_ended` ids, and the server takes the report also
 for a session already gone from the device's presence when no other
-device holds it. `read_at`
-when the message id appears in the recipient's transcript in the archive.
-Claude Code, Codex and Devin record hook context in the transcript.
-opencode's transform hooks do not persist, so opencode has `delivered_at`
-only unless the `noReply` route below works.
+device holds it.
+
+`read_at` (built, #65) when the message's wrapper appears in hook context
+in the recipient session's transcript: its text entered the session's
+context. It does not say that the model acted on it. The device agent
+finds it while indexing, not the server: the device sees every row first,
+withheld sessions included, and its ack batch already carries the
+device's authority.
+
+| Harness | Hook context in the transcript | Row |
+|---|---|---|
+| Claude Code 2.1.287 | `attachment` of type `hook_additional_context`, `content` one string per hook | injected, `hook_context` = the hook event |
+| Codex 0.159.3 | developer message, `content_item_kinds: ["hooks.additional_context"]` | system (role developer), `hook_context` |
+| Devin CLI 3000.11.1 | `role: "system"` node, like Devin's own system parts | system; counts only when it starts with the hook's output |
+| opencode | transform hooks do not persist; no parser | none: `delivered_at` only |
+
+- Only `<flopwire-message id="…"` at the start of a line in those rows
+  counts. Prompts, replies and tool output never do: an agent that
+  `read`s another session's transcript sees its wrappers in tool output.
+- The first sighting wins: a redelivery printed again changes nothing.
+  A sighting while the message is still leased counts from its
+  confirmation, so `read_at` is never before `delivered_at`.
+- The device sends `read` events (`AckRequest.Read`) after the delivery
+  receipt. The server sets `read_at` once, cut to `[delivered_at, now]`,
+  only on a message delivered to that session and harness of the person,
+  on a session the calling device holds; others are rejected. Audited as
+  `bus.read`. Without a server the device sets it in `bus.db`.
+- A message a hook shows inside a Claude Code subagent stays `delivered`:
+  the subagent's transcript is its own session.
+- The spec's Codex-to-Codex caveat (§9 of the local-search README:
+  inter-agent bodies are encrypted in rollouts) is about Codex's own
+  agent messages. It does not apply here: Codex stores hook context as
+  plain text, so Codex recipients get `read_at`.
+- opencode has `delivered_at` only unless the `noReply` route below
+  works; its part metadata (`metadata.flopwire`) would then carry the id.
 
 **Permission.** Accept and revoke are human actions: the web console, or
 the CLI on a terminal. There is no MCP tool for them and the CLI refuses

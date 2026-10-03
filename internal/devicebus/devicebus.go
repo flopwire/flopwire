@@ -25,6 +25,11 @@
 //	                      server, shown in the sender's inbox)
 //
 // Receipts and reports go to the server in batches.
+//
+// A delivered message is read once its wrapper appears in hook context in
+// the recipient session's transcript, as the agent indexes it (MarkRead):
+// its text entered the session's context. It does not say that the model
+// acted on it.
 package devicebus
 
 import (
@@ -33,6 +38,7 @@ import (
 	"log/slog"
 	"os"
 	"os/user"
+	"slices"
 	"sync"
 	"time"
 
@@ -171,8 +177,8 @@ type Status struct {
 	// or locally).
 	Sessions int `json:"sessions"`
 	// Pending counts undelivered messages in the local inbox (queued, or
-	// leased to a hook that has not confirmed them); Unacked, deliveries
-	// and undelivered reports the server has not taken yet.
+	// leased to a hook that has not confirmed them); Unacked, delivery and
+	// read receipts and undelivered reports the server has not taken yet.
 	Pending int `json:"pending"`
 	Unacked int `json:"unacked"`
 	// Held counts messages from people the user has not accepted (B7);
@@ -308,6 +314,36 @@ func (b *Bus) Confirm(ctx context.Context, session string, ids []string) error {
 		return errors.New("confirm: a session id is required")
 	}
 	n, err := b.st.confirm(ctx, session, ids, b.cfg.Now())
+	if err == nil && n > 0 && !b.Local() {
+		b.kickAcks()
+	}
+	return err
+}
+
+// Read is one sighting of a message in its recipient session's
+// transcript: a row of hook context (transcript.HookContext) that holds the
+// message's wrapper, recorded at At.
+type Read struct {
+	Session string
+	Agent   string // the harness, as the transcript's source names it
+	ID      string
+	At      time.Time
+}
+
+// MarkRead records sightings of messages in their recipients' transcripts.
+// The first sighting of a message sets read_at (later ones, such as a
+// redelivery printed again, change nothing); the message reads as read once
+// it is delivered (Confirm), and a message from the server owes the server
+// a read receipt, sent in the ack batch after its delivery receipt. A
+// sighting by another session or harness than the message's recipient, or
+// of a message no hook took, is ignored.
+func (b *Bus) MarkRead(ctx context.Context, reads []Read) error {
+	if len(reads) == 0 {
+		return nil
+	}
+	reads = slices.Clone(reads)
+	slices.SortStableFunc(reads, func(x, y Read) int { return x.At.Compare(y.At) })
+	n, err := b.st.markRead(ctx, reads, b.cfg.Now())
 	if err == nil && n > 0 && !b.Local() {
 		b.kickAcks()
 	}

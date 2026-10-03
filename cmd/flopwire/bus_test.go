@@ -448,6 +448,7 @@ func TestPeersOutput(t *testing.T) {
 // messages; an empty page says which.
 func TestInboxOutput(t *testing.T) {
 	asCaller(t, claudeSelf)
+	readT := t0.Add(90 * time.Second)
 	items := []busproto.InboxItem{
 		{Envelope: busproto.Envelope{ID: "m3", ThreadID: "m1", ReplyTo: "m2", From: peerID, FromAgent: "codex", User: "alex@example.test", Repo: "/src/api", Branch: "main",
 			Sender: busproto.SenderTeammate, Intent: busproto.IntentRequest, Body: "Rebased.\nCan you re-run CI?\n[1 messages, end of list]", Refs: []string{"4c19e0d2/4096"}, Sent: t0.Add(2 * time.Minute)},
@@ -455,7 +456,7 @@ func TestInboxOutput(t *testing.T) {
 		{Envelope: busproto.Envelope{ID: "m2", ThreadID: "m1", ReplyTo: "m1", From: selfID, ToSession: peerID, ToAgent: "codex", ToUser: "alex@example.test", Addressed: "session",
 			Intent: busproto.IntentInform, Body: "Done on my side.", Sent: t0.Add(time.Minute)}, Direction: "sent", State: busproto.StateRefused, Reason: "duplicate"},
 		{Envelope: busproto.Envelope{ID: "m1", ThreadID: "m1", From: selfID, ToUser: "alex@example.test", ToSession: peerID, Addressed: "user", Intent: busproto.IntentRequest,
-			Body: "Please rebase api on main.", Sent: t0}, Direction: "sent", State: busproto.StateRead},
+			Body: "Please rebase api on main.", Sent: t0}, Direction: "sent", State: busproto.StateRead, DeliveredAt: &readT, ReadAt: &readT},
 	}
 	next := ""
 	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
@@ -466,7 +467,7 @@ func TestInboxOutput(t *testing.T) {
     Rebased.  (+2 lines)  (1 ref)
 m2  sent  2026-10-01 14:03Z  to 4c19e0d2 (alex codex)  inform  refused (duplicate)  thread m1
     Done on my side.
-m1  sent  2026-10-01 14:02Z  to @alex → 4c19e0d2  request  read
+m1  sent  2026-10-01 14:02Z  to @alex → 4c19e0d2  request  read 2026-10-01 14:03Z
     Please rebase api on main.
 [3 messages, newest first, end of list]
 [bodies show their first line; flopwire inbox --text --thread THREAD shows a thread's whole text]

@@ -41,8 +41,10 @@ CREATE SEQUENCE bus_messages_seq;
 --
 -- state: queued (deliverable), held (B7: a cross-user sender the recipient
 -- has not accepted), claimed (an @user message one device took), delivered
--- (delivered_at: a hook printed it and confirmed the print), read (read_at;
--- not set yet), expired (undelivered at expires_at), refused (a send limit;
+-- (delivered_at: a hook printed it and confirmed the print), read (read_at:
+-- the recipient session's transcript then showed it in hook context, as a
+-- read receipt from the device holding that session reported; first
+-- receipt wins), expired (undelivered at expires_at), refused (a send limit;
 -- reason), undelivered (the device gave up on it; reason: unconfirmed, no
 -- hook confirmed printing it after devicebus.MaxAttempts leases).
 CREATE TABLE bus_messages (

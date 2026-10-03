@@ -53,6 +53,8 @@ func perfFixture(t testing.TB, others int) (*pgxpool.Pool, *perfguard.Counter, b
 		VALUES('mine-1','mine-1',md5('u1')::uuid,'codex','up-000001',$1,'claude','me-session','session','teammate','inform','x',sha256('x'::bytea),'queued',$2,$3)`, me.UserID, now, now.Add(time.Hour))
 	run(`INSERT INTO bus_messages(id,thread_id,from_user,from_agent,from_session,to_user,addressed,sender,intent,body,body_sha,state,created_at,expires_at)
 		VALUES('mine-2','mine-2',md5('u1')::uuid,'codex','up-000001',$1,'user','teammate','inform','x',sha256('x'::bytea),'held',$2,$3)`, me.UserID, now, now.Add(time.Hour))
+	run(`INSERT INTO bus_messages(id,thread_id,from_user,from_agent,from_session,to_user,to_agent,to_session,addressed,sender,intent,body,body_sha,state,created_at,expires_at,delivered_at)
+		VALUES('mine-3','mine-3',md5('u1')::uuid,'codex','up-000001',$1,'claude','me-session','session','teammate','inform','x',sha256('x'::bytea),'delivered',$2,$3,$2)`, me.UserID, now, now.Add(time.Hour))
 	run(`ANALYZE`)
 	return pool, counter, me, now
 }
@@ -87,6 +89,8 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"undelivered", UndeliveredSQL, []any{ids, me.UserID, me.DeviceID, busproto.ReasonUnconfirmed}},
 		{"session ended", EndedSQL, []any{ids, me.UserID, me.DeviceID, busproto.ReasonSessionEnded}},
 		{"undelivered before", undeliveredBeforeSQL, []any{ids, me.UserID, []string{}}},
+		{"read", ReadSQL, []any{ids, me.UserID, me.DeviceID, now, []string{"me-session", "live-000002"}, []string{"claude", "codex"}, []time.Time{now, now}}},
+		{"read before", readBeforeSQL, []any{ids, me.UserID, me.DeviceID, []string{"me-session", "live-000002"}, []string{"claude", "codex"}, []string{}}},
 		{"inbox", InboxSQL, []any{"me-session", me.UserID, false, "", nil, "", 51}},
 		{"inbox page", InboxSQL, []any{"me-session", me.UserID, false, "m1-0", now, "m1-0", 51}},
 		{"peers", PeersSQL, []any{live}},
@@ -125,6 +129,21 @@ func TestPerfSendConstantInOrganization(t *testing.T) {
 		return perfguard.Measure(t, pool, counter, func() {
 			if _, err := s.Send(context.Background(), me, busproto.SendRequest{FromSession: "me-session", To: "live-000001", Body: "hello"}); err != nil {
 				t.Fatal(err)
+			}
+		})
+	})
+}
+
+// A read receipt looks its message up by id: its cost does not grow with
+// the organization's messages.
+func TestPerfReadReceiptConstantInOrganization(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 100, 8, func(t testing.TB, n int) perfguard.Cost {
+		pool, counter, me, now := perfFixture(t, n)
+		s := &Store{Pool: pool, Now: func() time.Time { return now }}
+		return perfguard.Measure(t, pool, counter, func() {
+			out, err := s.Ack(context.Background(), me, busproto.AckRequest{Read: []busproto.ReadReceipt{{ID: "mine-3", Session: "me-session", Agent: "claude", At: now}}})
+			if err != nil || len(out.Read) != 1 {
+				t.Fatalf("read: %+v %v", out, err)
 			}
 		})
 	})

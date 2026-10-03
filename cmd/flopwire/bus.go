@@ -823,6 +823,9 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 		if m.Reason != "" {
 			state += " (" + m.Reason + ")"
 		}
+		if m.State == busproto.StateRead && m.ReadAt != nil {
+			state += " " + m.ReadAt.UTC().Format("2006-01-02 15:04Z")
+		}
 		var peer string
 		if m.Direction == "received" {
 			peer = fmt.Sprintf("from %s (%s %s %s)", format.ShortPrefix(m.From, nil), shortUser(m.User), m.FromAgent, repoBranch(m.Repo, m.Branch))
@@ -1092,10 +1095,12 @@ JSON: {"kind":"inbox","session":FULL ID,"messages":[{"id","thread_id","reply_to"
 "to_session","to_agent","to_user","addressed","direction":"sent"|"received","is_reply",
 "state","reason","delivered_at","read_at"}…],"more":bool,"next":CURSOR}.
 direction says who wrote it. A sent message's state is its delivery (queued, held,
-claimed, delivered, read, expired, refused): delivered is not answered. An answer is a
-received message whose reply_to names yours. more=true: pass next as --cursor.
---text: ID  received|sent  TIME  from|to WHO  intent  state, then the text indented
-(a list shows first lines; --thread shows whole texts).
+claimed, delivered, read, expired, refused, undelivered): delivered is not answered;
+read (read_at) means its text entered the recipient's context, not that the recipient
+acted on it. An answer is a received message whose reply_to names yours. more=true:
+pass next as --cursor.
+--text: ID  received|sent  TIME  from|to WHO  intent  state (read: with its time), then
+the text indented (a list shows first lines; --thread shows whole texts).
 Received messages arrive in your context through the flopwire hook (inside a running
 turn at the next tool call, or with the human's next prompt); use inbox to check a sent
 message's state or re-read a thread, or where the hook is not set up.

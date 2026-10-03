@@ -329,6 +329,47 @@ const UndeliveredSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
 	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND ` + heldByDevice + `
 	RETURNING m.id`
 
+// heldSession is ReadSQL's and readBeforeSQL's test that the device $3
+// holds the session a message was delivered to: it claimed the message for
+// it, reports the session in its presence, or uploaded its transcript.
+const heldSession = `(m.claimed_device=$3
+		OR EXISTS(SELECT 1 FROM bus_presence p WHERE p.device_id=$3 AND p.agent=m.to_agent AND p.session_id=m.to_session)
+		OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=$3 AND c.agent=m.to_agent AND c.session_id=m.to_session))`
+
+// ReadSQL marks read the messages of the read receipts (ids $1, sessions
+// $5, agents $6, times $7) that were delivered to that session and agent
+// of the person $2 on a session the device $3 holds. read_at is the
+// receipt's time cut to [delivered_at, $4]: the device's clock is not the
+// server's. Each message is looked up by its id.
+const ReadSQL = `UPDATE bus_messages m SET state='read', read_at=LEAST($4::timestamptz, GREATEST(r.at, m.delivered_at))
+	FROM unnest($1::text[], $5::text[], $6::text[], $7::timestamptz[]) AS r(id, session, agent, at)
+	WHERE m.id=r.id AND m.to_user=$2 AND m.state='delivered' AND m.to_session=r.session AND m.to_agent=r.agent AND ` + heldSession + `
+	RETURNING m.id`
+
+// readBeforeSQL: which of the receipts ($1, $4, $5; not $6) name a message
+// read before, under the same conditions as ReadSQL.
+const readBeforeSQL = `SELECT m.id FROM bus_messages m, unnest($1::text[], $4::text[], $5::text[]) AS r(id, session, agent)
+	WHERE m.id=r.id AND m.to_user=$2 AND m.state='read' AND m.to_session=r.session AND m.to_agent=r.agent AND ` + heldSession + `
+		AND NOT (m.id=ANY($6::text[]))`
+
+// validReads checks read receipts and keeps the earliest of each id.
+func validReads(in []busproto.ReadReceipt) ([]busproto.ReadReceipt, error) {
+	var out []busproto.ReadReceipt
+	for _, r := range in {
+		if r.ID == "" || len(r.ID) > 64 || r.Session == "" || len(r.Session) > 256 || r.Agent == "" || len(r.Agent) > 64 || r.At.IsZero() {
+			return nil, badRequest("read: each receipt names a message id (at most 64 bytes), a session, an agent and a time")
+		}
+		if i := slices.IndexFunc(out, func(o busproto.ReadReceipt) bool { return o.ID == r.ID }); i >= 0 {
+			if r.At.Before(out[i].At) {
+				out[i] = r
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // EndedSQL marks undelivered (reason $4) those of the queued messages $1
 // to the person $2 whose session ended on the device $3 before a hook
 // delivered them (#67) and that no other device holds: their session is
@@ -336,21 +377,29 @@ const UndeliveredSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
 // runs UndeliveredSQL over the report (the messages the device holds),
 // then this over the rest: the device's report races its next poll,
 // which drops the ended session from its presence, and a session that
-// ended before it was uploaded is then on no device.
+// ended before it was uploaded is then on no device. OFFSET 0 keeps each
+// NOT EXISTS a per-message index probe: as an anti-join the planner may
+// scan the whole presence and conversations indexes.
 const EndedSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
 	WHERE m.id=ANY($1::text[]) AND m.to_user=$2 AND m.state='queued' AND m.addressed='session'
-		AND NOT EXISTS(SELECT 1 FROM bus_presence p WHERE (p.session_id COLLATE "C")=(m.to_session COLLATE "C") AND p.agent=m.to_agent AND p.device_id<>$3)
-		AND NOT EXISTS(SELECT 1 FROM conversations c WHERE (c.session_id COLLATE "C")=(m.to_session COLLATE "C") AND c.agent=m.to_agent AND c.device_id<>$3)
+		AND NOT EXISTS(SELECT 1 FROM bus_presence p WHERE (p.session_id COLLATE "C")=(m.to_session COLLATE "C") AND p.agent=m.to_agent AND p.device_id<>$3 OFFSET 0)
+		AND NOT EXISTS(SELECT 1 FROM conversations c WHERE (c.session_id COLLATE "C")=(m.to_session COLLATE "C") AND c.agent=m.to_agent AND c.device_id<>$3 OFFSET 0)
 	RETURNING m.id`
 
-// Ack records that hooks printed the messages in IDs (delivered_at), and
-// that the device gave up on those in Undelivered and SessionEnded. Acking a message
-// already delivered to the person (or reporting one already undelivered)
-// is a no-op that reports it acked.
+// Ack records that hooks printed the messages in IDs (delivered_at), that
+// the device gave up on those in Undelivered and SessionEnded, and that the
+// messages of the Read receipts were read (read_at, after the deliveries of
+// this batch). Acking a message already delivered to the person (or
+// reporting one already undelivered, or a receipt for one already read) is
+// a no-op that reports it taken.
 func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequest) (busproto.AckResponse, error) {
-	out := busproto.AckResponse{Acked: []string{}, Rejected: []string{}}
-	if n := len(req.IDs) + len(req.Undelivered) + len(req.SessionEnded); n == 0 || n > busproto.MaxAck {
-		return out, badRequest("ids, undelivered and session_ended: 1 to %d message ids", busproto.MaxAck)
+	out := busproto.AckResponse{Acked: []string{}, Rejected: []string{}, Read: []string{}, ReadRejected: []string{}}
+	if n := len(req.IDs) + len(req.Undelivered) + len(req.SessionEnded) + len(req.Read); n == 0 || n > busproto.MaxAck {
+		return out, badRequest("ids, undelivered, session_ended and read: 1 to %d entries", busproto.MaxAck)
+	}
+	reads, err := validReads(req.Read)
+	if err != nil {
+		return out, err
 	}
 	var ids, gone, ended []string
 	for _, l := range []struct {
@@ -367,7 +416,7 @@ func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequ
 		}
 	}
 	now := s.now()
-	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
+	err = inTx(ctx, s.Pool, func(tx pgx.Tx) error {
 		acked, before, err := settle(ctx, tx, AckSQL, ackedBeforeSQL, ids, c, now)
 		if err != nil {
 			return err
@@ -404,19 +453,63 @@ func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequ
 				out.Rejected = append(out.Rejected, id)
 			}
 		}
-		meta := map[string]any{"delivered": acked, "already": len(before), "rejected": out.Rejected}
-		if len(gone) > 0 {
-			meta["undelivered"] = undelivered
+		if len(ids)+len(gone)+len(ended) > 0 {
+			meta := map[string]any{"delivered": acked, "already": len(before), "rejected": out.Rejected}
+			if len(gone) > 0 {
+				meta["undelivered"] = undelivered
+			}
+			if len(ended) > 0 {
+				meta["session_ended"] = endedNow
+			}
+			if err := audit(ctx, tx, c, now, "bus.deliver", "bus_message", "", meta); err != nil {
+				return err
+			}
 		}
-		if len(ended) > 0 {
-			meta["session_ended"] = endedNow
+		if len(reads) == 0 {
+			return nil
 		}
-		return audit(ctx, tx, c, now, "bus.deliver", "bus_message", "", meta)
+		read, readBefore, err := s.markRead(ctx, tx, c, reads, now)
+		if err != nil {
+			return err
+		}
+		for _, r := range reads {
+			if slices.Contains(read, r.ID) || slices.Contains(readBefore, r.ID) {
+				out.Read = append(out.Read, r.ID)
+			} else {
+				out.ReadRejected = append(out.ReadRejected, r.ID)
+			}
+		}
+		return audit(ctx, tx, c, now, "bus.read", "bus_message", "", map[string]any{"read": read, "already": len(readBefore), "rejected": out.ReadRejected})
 	})
 	if err != nil {
 		return busproto.AckResponse{}, err
 	}
 	return out, nil
+}
+
+// markRead runs ReadSQL and readBeforeSQL over the receipts: the ids it
+// marked read, and those read before.
+func (s *Store) markRead(ctx context.Context, tx pgx.Tx, c busproto.Caller, reads []busproto.ReadReceipt, now time.Time) (read, before []string, err error) {
+	ids, sessions, agents, ats := make([]string, len(reads)), make([]string, len(reads)), make([]string, len(reads)), make([]time.Time, len(reads))
+	for i, r := range reads {
+		ids[i], sessions[i], agents[i], ats[i] = r.ID, r.Session, r.Agent, r.At
+	}
+	rows, err := tx.Query(ctx, ReadSQL, ids, c.UserID, c.DeviceID, now, sessions, agents, ats)
+	if err != nil {
+		return nil, nil, err
+	}
+	if read, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		return nil, nil, err
+	}
+	if read == nil {
+		read = []string{}
+	}
+	rows, err = tx.Query(ctx, readBeforeSQL, ids, c.UserID, c.DeviceID, sessions, agents, read)
+	if err != nil {
+		return nil, nil, err
+	}
+	before, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	return read, before, err
 }
 
 // settle runs one of Ack's updates (AckSQL or UndeliveredSQL, with arg

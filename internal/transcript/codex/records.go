@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -41,6 +42,9 @@ type item struct {
 	Tools     []namedTool     `json:"tools"`
 	Meta      *struct {
 		TurnID string `json:"turn_id"`
+		// ContentItemKinds says where a message's content came from;
+		// hooks.additional_context is a hook's additionalContext.
+		ContentItemKinds []string `json:"content_item_kinds"`
 	} `json:"internal_chat_message_metadata_passthrough"`
 
 	// Legacy header line fields (no "type").
@@ -59,6 +63,13 @@ func (it *item) turnID() string {
 		return ""
 	}
 	return it.Meta.TurnID
+}
+
+// hookContext reports whether the item is context hooks added to the
+// model's context: a developer message whose content_item_kinds include
+// hooks.additional_context (Codex 0.159.3, probes 2026-10-01).
+func (it *item) hookContext() bool {
+	return it.Type == "message" && it.Role == "developer" && it.Meta != nil && slices.Contains(it.Meta.ContentItemKinds, "hooks.additional_context")
 }
 
 type part struct {

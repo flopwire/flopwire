@@ -387,9 +387,9 @@ func (b *Bus) kickAcks() {
 	}
 }
 
-// runAcks sends delivery receipts and undelivered reports in batches
-// (sendAcks), retrying with backoff. A rejected id is not deliverable by
-// this device; it is not sent again.
+// runAcks sends delivery and read receipts and undelivered reports in
+// batches (sendAcks), retrying with backoff. A rejected id is not
+// deliverable by this device; it is not sent again.
 func (b *Bus) runAcks(ctx context.Context) {
 	var backoff time.Duration
 	for {
@@ -429,13 +429,20 @@ func (b *Bus) runAcks(ctx context.Context) {
 }
 
 // sendAcks sends one batch of what the server is owed: delivery receipts
-// first, then undelivered reports, at most busproto.MaxAck ids in all, and
-// records the answer. It returns how many ids it sent (0: nothing owed).
+// first, then undelivered reports, then read receipts, at most
+// busproto.MaxAck entries in all, and records the answer. A read receipt
+// goes only for a message whose delivery receipt was taken: one for a
+// message in this batch goes in the next. It returns how many entries it
+// sent (0: nothing owed).
 func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 	ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
 	var gone, ended []string
+	var reads []busproto.ReadReceipt
 	if err == nil && len(ids) < busproto.MaxAck {
 		gone, ended, err = b.st.reports(ctx, busproto.MaxAck-len(ids))
+	}
+	if err == nil {
+		reads, err = b.st.owedReads(ctx, busproto.MaxAck-len(ids)-len(gone)-len(ended))
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -443,22 +450,28 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 		}
 		return 0, nil // the store failed; the next kick tries again
 	}
-	n := len(ids) + len(gone) + len(ended)
+	n := len(ids) + len(gone) + len(ended) + len(reads)
 	if n == 0 {
 		return 0, nil
 	}
 	srv, _ := b.cfg.Connect()
 	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended})
+	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, Read: reads})
 	cancel()
 	if err == nil {
 		err = b.st.acked(ctx, resp.Acked, resp.Rejected)
+	}
+	if err == nil {
+		err = b.st.readAcked(ctx, resp.Read, resp.ReadRejected)
 	}
 	if err != nil {
 		return 0, err
 	}
 	if len(resp.Rejected) > 0 {
 		b.log.Info("devicebus: receipts rejected (delivered elsewhere, held again or expired)", "ids", resp.Rejected)
+	}
+	if len(resp.ReadRejected) > 0 {
+		b.log.Info("devicebus: read receipts rejected (not delivered to that session on this device)", "ids", resp.ReadRejected)
 	}
 	return n, nil
 }

@@ -832,7 +832,10 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    `undelivered` with `session_ended` means that the recipient session
    ended before a hook delivered the message. Send it again, to another
    session if the work still needs one. The state
-   of a sent message is its delivery only. A reply is a received
+   of a sent message is its delivery only. `read` (with `read_at`) means
+   that the message's text entered the recipient's context, not that the
+   recipient acted on it ([read receipts](messaging.md#read-receipts)).
+   A reply is a received
    entry whose `reply_to` names your message. To read one thread, use
    `flopwire inbox --thread ID`. When `more` is true, pass `next` as
    `--cursor`.

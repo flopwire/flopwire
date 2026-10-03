@@ -148,6 +148,40 @@ func (k *Kind) UnmarshalText(b []byte) error {
 	return err
 }
 
+// EnrichHookContext is the Enrichment key a parser sets on a row whose
+// text a harness hook added to the model's context (a hook's
+// additionalContext). Its value is the hook event ("SessionStart",
+// "PostToolUse", ...) when the harness records it, else "".
+const EnrichHookContext = "hook_context"
+
+// HookContext reports whether m holds text a hook added to the session's
+// context, as each harness records it (probes 2026-10-01):
+//
+//   - Claude Code: an attachment of type hook_additional_context, a row of
+//     kind injected with EnrichHookContext.
+//   - Codex: a developer message whose content_item_kinds include
+//     hooks.additional_context, a row of kind system with
+//     EnrichHookContext.
+//   - Devin CLI: a node of role system. Devin stores hook context like the
+//     parts of its own system prompt, with nothing to tell them apart, so
+//     every system row qualifies.
+//
+// User prompts, assistant text and tool calls and results never qualify,
+// whatever their text: an agent can quote or invent anything there.
+func HookContext(agent Agent, m *Message) bool {
+	switch agent {
+	case AgentClaude:
+		_, ok := m.Enrichment[EnrichHookContext]
+		return ok && m.Kind == KindInjected
+	case AgentCodex:
+		_, ok := m.Enrichment[EnrichHookContext]
+		return ok && m.Kind == KindSystem
+	case AgentDevin:
+		return m.Kind == KindSystem && m.Role == "system"
+	}
+	return false
+}
+
 // Message is one extracted record: a prompt, a reply, a tool call, a tool
 // result, a thinking block, or a system record. One physical JSONL line may
 // yield several messages; Part numbers them within the line.

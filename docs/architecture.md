@@ -334,10 +334,30 @@ socket. Routes and wire types are in `internal/busproto`.
   undelivered messages per recipient are refused. A refused message is stored as `refused`.
 - **Delivery.** The poll answers the device's whole deliverable set:
   messages to its sessions, and `@user` messages it may claim. A claim is
-  atomic. An ack sets `delivered_at`. `read_at` is not set yet.
-- **Audit.** Send, claim, ack, accept and revoke commit with their audit
-  event (`bus.send`, `bus.claim`, `bus.deliver`, `bus.accept`,
-  `bus.revoke`). Peers, inbox and polls that return messages are audited
+  atomic. An ack sets `delivered_at`.
+- **Read receipts.** A delivered message is `read` once the recipient
+  session's transcript shows it in hook context: its text entered the
+  session's context, which says nothing about what the model did with it.
+  The device agent finds it while it indexes the transcript
+  (`internal/agent/reads.go`): only in rows `transcript.HookContext`
+  names (Claude `hook_additional_context` attachments, Codex developer
+  messages of kind `hooks.additional_context`, Devin `system` nodes that
+  start with the hook's output), and only `<flopwire-message id="…"` at
+  the start of a line, which a body cannot contain. The local inbox keeps
+  the first sighting (`devicebus.MarkRead`); a sighting made while the
+  message is still leased counts from its confirmation. With a server,
+  the device sends it in the ack batch (`AckRequest.Read`) after the
+  delivery receipt; the server sets `read_at` once, cut to
+  `[delivered_at, now]`, on a message delivered to that session and
+  harness of the person on a session the calling device holds (a claim,
+  its presence or its upload), and audits `bus.read`. Each receipt finds
+  its message by primary key. Server-side ingest does not set `read_at`:
+  the device sees every row first, including sessions a path rule keeps
+  local. opencode keeps no hook output in its transcript and is not
+  indexed, so its messages stay `delivered`.
+- **Audit.** Send, claim, ack, read, accept and revoke commit with their
+  audit event (`bus.send`, `bus.claim`, `bus.deliver`, `bus.read`,
+  `bus.accept`, `bus.revoke`). Peers, inbox and polls that return messages are audited
   like other reads. Bodies are never in the audit log.
 - **Expiry.** A sweep each minute marks undelivered messages past their
   expiry `expired` and drops presence a day old. The recipient's inbox

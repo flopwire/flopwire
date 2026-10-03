@@ -31,7 +31,7 @@ type store struct {
 // schemaVersion is the inbox's PRAGMA user_version. An inbox with another
 // version is from an earlier build (pre-release: no migration) and is
 // recreated empty: messages from a server come back with the next poll.
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schema = `
 CREATE TABLE IF NOT EXISTS devbus_messages (
@@ -59,10 +59,17 @@ CREATE TABLE IF NOT EXISTS devbus_messages (
   -- server: '' none owed, owed (a delivery receipt), report (an undelivered
   -- report), done, rejected
   ack           TEXT NOT NULL DEFAULT '',
-  listed        INTEGER NOT NULL DEFAULT 1  -- server: in the last poll's set
+  listed        INTEGER NOT NULL DEFAULT 1, -- server: in the last poll's set
+  -- read_at: the first time the recipient session's transcript showed the
+  -- message in hook context (unix ms; markRead), kept from a lease on and
+  -- shown once the message is delivered. read_ack, server: '' none owed,
+  -- owed (a read receipt), done, rejected.
+  read_at       INTEGER,
+  read_ack      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS devbus_to ON devbus_messages (to_session, state);
 CREATE INDEX IF NOT EXISTS devbus_ack ON devbus_messages (ack) WHERE ack IN ('owed', 'report');
+CREATE INDEX IF NOT EXISTS devbus_read_ack ON devbus_messages (read_ack, read_at, id) WHERE read_ack = 'owed';
 CREATE INDEX IF NOT EXISTS devbus_lease ON devbus_messages (lease_until) WHERE state = 'leased';
 CREATE INDEX IF NOT EXISTS devbus_from ON devbus_messages (from_session, created_at);
 CREATE INDEX IF NOT EXISTS devbus_thread ON devbus_messages (thread_id, created_at);
@@ -279,9 +286,14 @@ func (s *store) confirm(ctx context.Context, session string, ids []string, now t
 	n := 0
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
 		for _, id := range ids {
+			// A sighting made while the message was leased (markRead) counts
+			// from the delivery on: a message is never read before it was
+			// delivered.
 			res, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET state='delivered', delivered_at=?, lease_until=NULL,
-					ack=CASE WHEN origin='server' THEN 'owed' ELSE '' END
-				WHERE id=? AND to_session=? AND attempts>0 AND state IN ('leased','queued')`, ms(now), id, session)
+					ack=CASE WHEN origin='server' THEN 'owed' ELSE '' END,
+					read_at=CASE WHEN read_at IS NULL THEN NULL ELSE max(read_at, ?) END,
+					read_ack=CASE WHEN origin='server' AND read_at IS NOT NULL THEN 'owed' ELSE read_ack END
+				WHERE id=? AND to_session=? AND attempts>0 AND state IN ('leased','queued')`, ms(now), ms(now), id, session)
 			if err != nil {
 				return err
 			}
@@ -398,7 +410,8 @@ func upsertServer(ctx context.Context, x execer, e busproto.Envelope) error {
 	_, err = x.ExecContext(ctx, `INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,envelope,state,created_at,expires_at)
 		VALUES(?,'server',?,?,?,?,?,?,?,'queued',?,?)
 		ON CONFLICT(id) DO UPDATE SET listed=1, envelope=excluded.envelope, to_session=excluded.to_session, to_agent=excluded.to_agent,
-			expires_at=excluded.expires_at, ack=CASE WHEN state='delivered' THEN 'owed' WHEN state='undelivered' THEN 'report' ELSE ack END
+			expires_at=excluded.expires_at, ack=CASE WHEN state='delivered' THEN 'owed' WHEN state='undelivered' THEN 'report' ELSE ack END,
+			read_ack=CASE WHEN state='delivered' AND read_at IS NOT NULL THEN 'owed' ELSE read_ack END
 		WHERE origin='server'`,
 		e.ID, e.Seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, string(raw), ms(e.Sent), ms(e.ExpiresAt))
 	return err
@@ -433,7 +446,97 @@ func (s *store) acked(ctx context.Context, acked, rejected []string) error {
 			to  string
 		}{{acked, "done"}, {rejected, "rejected"}} {
 			for _, id := range l.ids {
-				if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET ack=? WHERE id=? AND ack IN ('owed','report')`, l.to, id); err != nil {
+				// A rejected delivery can take no read receipt either (the
+				// server marks read only a message it holds as delivered).
+				if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET ack=?,
+						read_ack=CASE WHEN ?='rejected' AND read_ack='owed' THEN 'rejected' ELSE read_ack END
+					WHERE id=? AND ack IN ('owed','report')`, l.to, l.to, id); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// The read receipt statements. Each finds its message by primary key, or
+// the owed ones by the devbus_read_ack index.
+const (
+	markReadSQL = `UPDATE devbus_messages SET read_at=max(?, COALESCE(delivered_at, 0)),
+			read_ack=CASE WHEN origin='server' AND state='delivered' AND ack<>'rejected' THEN 'owed' ELSE read_ack END
+		WHERE id=? AND to_session=? AND to_agent=? AND attempts>0 AND state IN ('leased','queued','delivered') AND read_at IS NULL`
+	readAckSQL   = `SELECT read_ack FROM devbus_messages WHERE id=?`
+	owedReadsSQL = `SELECT id,to_session,to_agent,read_at FROM devbus_messages
+		WHERE read_ack='owed' AND ack='done' ORDER BY read_at, id LIMIT ?`
+	readAckedSQL = `UPDATE devbus_messages SET read_ack=? WHERE id=? AND read_ack='owed'`
+)
+
+// markRead records sightings of messages in their recipient session's
+// hook context: the first sets read_at, cut to [delivered_at, now]; later
+// ones change nothing. A sighting counts only for a message to that session
+// and harness that a hook took (attempts > 0) and that is leased, queued
+// again or delivered: a leased one keeps it until its confirmation (see
+// confirm). A delivered message from the server then owes a read receipt.
+// It returns how many receipts became owed.
+func (s *store) markRead(ctx context.Context, reads []Read, now time.Time) (int, error) {
+	owed := 0
+	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
+		for _, r := range reads {
+			at := min(ms(r.At), ms(now))
+			res, err := tx.ExecContext(ctx, markReadSQL, at, r.ID, r.Session, r.Agent)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				var ack string
+				if err := tx.QueryRowContext(ctx, readAckSQL, r.ID).Scan(&ack); err != nil {
+					return err
+				}
+				if ack == "owed" {
+					owed++
+				}
+			}
+		}
+		return nil
+	})
+	return owed, err
+}
+
+// owedReads returns up to n read receipts the server has not taken, of
+// messages whose delivery receipt it took: the server marks read only a
+// message it holds as delivered.
+func (s *store) owedReads(ctx context.Context, n int) ([]busproto.ReadReceipt, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, owedReadsSQL, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []busproto.ReadReceipt
+	for rows.Next() {
+		var r busproto.ReadReceipt
+		var at int64
+		if err := rows.Scan(&r.ID, &r.Session, &r.Agent, &at); err != nil {
+			return nil, err
+		}
+		r.At = time.UnixMilli(at).UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// readAcked records the server's answer to read receipts: taken or
+// rejected, neither is sent again.
+func (s *store) readAcked(ctx context.Context, taken, rejected []string) error {
+	return inTx(ctx, s.db, func(tx *sql.Tx) error {
+		for _, l := range []struct {
+			ids []string
+			to  string
+		}{{taken, "done"}, {rejected, "rejected"}} {
+			for _, id := range l.ids {
+				if _, err := tx.ExecContext(ctx, readAckedSQL, l.to, id); err != nil {
 					return err
 				}
 			}
@@ -451,7 +554,8 @@ const (
 
 // purge drops messages past their retention.
 func (s *store) purge(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM devbus_messages WHERE (origin='server' AND expires_at<? AND ack NOT IN ('owed','report')) OR (origin='local' AND expires_at<?)`,
+	_, err := s.db.ExecContext(ctx, `DELETE FROM devbus_messages WHERE (origin='server' AND expires_at<? AND ack NOT IN ('owed','report') AND NOT (ack='done' AND read_ack='owed'))
+		OR (origin='local' AND expires_at<?)`,
 		ms(now.Add(-serverKeep)), ms(now.Add(-localKeep)))
 	if err != nil {
 		return err
@@ -468,8 +572,8 @@ func (s *store) purge(ctx context.Context, now time.Time) error {
 }
 
 // counts is the inbox at a glance, for status: pending counts queued and
-// leased messages (a lease is not a delivery yet), owed the receipts and
-// reports the server has not taken.
+// leased messages (a lease is not a delivery yet), owed the receipts
+// (delivery and read) and reports the server has not taken.
 type counts struct {
 	pending, owed int
 }
@@ -478,7 +582,7 @@ func (s *store) counts(ctx context.Context, now time.Time) (counts, error) {
 	var c counts
 	err := s.db.QueryRowContext(ctx, `SELECT
 		(SELECT count(*) FROM devbus_messages WHERE state IN ('queued','leased') AND expires_at>?),
-		(SELECT count(*) FROM devbus_messages WHERE ack IN ('owed','report'))`, ms(now)).Scan(&c.pending, &c.owed)
+		(SELECT count(*) FROM devbus_messages WHERE ack IN ('owed','report')) + (SELECT count(*) FROM devbus_messages WHERE read_ack='owed')`, ms(now)).Scan(&c.pending, &c.owed)
 	return c, err
 }
 

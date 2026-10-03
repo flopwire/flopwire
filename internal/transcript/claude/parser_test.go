@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -465,6 +466,42 @@ func TestTaskNotificationIsInjected(t *testing.T) {
 	}
 	if title := lastConv(t, c).Title; title != "now ship it" {
 		t.Errorf("title %q", title)
+	}
+}
+
+// Hook context (a hook's additionalContext) is an attachment of type
+// hook_additional_context: one injected row per attachment, marked as hook
+// context with its event. The hook's raw stdout (hook_success) and a
+// prompt that quotes a wrapper are not hook context.
+func TestHookAdditionalContextIsInjectedHookContext(t *testing.T) {
+	wrapper := `<flopwire-message id=\"m0123456789abcdef\" from=\"s2\" sender=\"own\" intent=\"inform\" sent=\"2026-10-02T10:00:00Z\">\nhi\n</flopwire-message>`
+	lines := []string{
+		`{"type":"attachment","uuid":"h1","parentUuid":"p0","sessionId":"s","timestamp":"2026-10-02T10:00:01.000Z","attachment":{"type":"hook_success","hookName":"PostToolUse:Bash","hookEvent":"PostToolUse","stdout":"{\"hookSpecificOutput\":{\"additionalContext\":\"x\"}}","content":""}}`,
+		`{"type":"attachment","uuid":"h2","parentUuid":"h1","sessionId":"s","timestamp":"2026-10-02T10:00:02.000Z","attachment":{"type":"hook_additional_context","content":["` + wrapper + `","second hook"],"hookName":"PostToolUse:Bash","toolUseID":"t1","hookEvent":"PostToolUse"},"renderedRole":"system"}`,
+		`{"type":"user","uuid":"u1","sessionId":"s","message":{"role":"user","content":"` + wrapper + `"}}`,
+	}
+	c, _ := parseBytes(t, &Parser{}, "", []byte(strings.Join(lines, "\n")+"\n"), transcript.Cursor{})
+	if len(c.Messages) != 2 {
+		for _, m := range c.Messages {
+			t.Logf("  %v %s %q", m.Kind, m.NativeID, m.Text)
+		}
+		t.Fatalf("got %d rows, want 2", len(c.Messages))
+	}
+	h := c.Messages[0]
+	want := "<flopwire-message id=\"m0123456789abcdef\" from=\"s2\" sender=\"own\" intent=\"inform\" sent=\"2026-10-02T10:00:00Z\">\nhi\n</flopwire-message>\n\nsecond hook"
+	if h.Kind != transcript.KindInjected || h.Role != "system" || h.NativeID != "h2#0" || h.Text != want ||
+		h.Enrichment[transcript.EnrichHookContext] != "PostToolUse" || h.ParentNativeID != "h1" || !h.TS.Equal(time.Date(2026, 10, 2, 10, 0, 2, 0, time.UTC)) {
+		t.Fatalf("hook row %v %s %s %q %v %v", h.Kind, h.Role, h.NativeID, h.Text, h.Enrichment, h.TS)
+	}
+	if !transcript.HookContext(transcript.AgentClaude, h) {
+		t.Fatal("hook row is not hook context")
+	}
+	if u := c.Messages[1]; u.Kind != transcript.KindUser || transcript.HookContext(transcript.AgentClaude, u) {
+		t.Fatalf("prompt quoting a wrapper: %v %v", u.Kind, u.Enrichment)
+	}
+	only, _ := parseBytes(t, &Parser{}, "", []byte(lines[1]+"\n"), transcript.Cursor{})
+	if title := lastConv(t, only).Title; title != "" {
+		t.Errorf("title %q: hook context must not give the title", title)
 	}
 }
 

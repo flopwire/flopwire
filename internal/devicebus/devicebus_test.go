@@ -33,6 +33,9 @@ type fakeServer struct {
 	gone     []string // undelivered reports
 	ended    []string // session_ended reports
 	ackFn    func([]string) (busproto.AckResponse, error)
+	ackReqs  []busproto.AckRequest
+	reads    []busproto.ReadReceipt          // read receipts taken
+	readFn   func(busproto.ReadReceipt) bool // takes a read receipt; nil: all
 	sends    []busproto.SendRequest
 	pollErr  error // answered at once while set
 	answered chan struct{}
@@ -73,18 +76,42 @@ func (f *fakeServer) Claim(_ context.Context, req busproto.ClaimRequest) (buspro
 
 func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.AckResponse, error) {
 	f.mu.Lock()
+	f.ackReqs = append(f.ackReqs, req)
 	if len(req.IDs) > 0 {
 		f.acks = append(f.acks, slices.Clone(req.IDs))
 	}
 	f.gone = append(f.gone, req.Undelivered...)
 	f.ended = append(f.ended, req.SessionEnded...)
-	fn := f.ackFn
+	fn, readFn := f.ackFn, f.readFn
+	read, rejected := []string{}, []string{}
+	for _, r := range req.Read {
+		f.reads = append(f.reads, r)
+		if readFn == nil || readFn(r) {
+			read = append(read, r.ID)
+		} else {
+			rejected = append(rejected, r.ID)
+		}
+	}
 	f.mu.Unlock()
 	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded)
-	if fn == nil {
-		return busproto.AckResponse{Acked: all, Rejected: []string{}}, nil
+	if len(all) == 0 {
+		return busproto.AckResponse{Acked: []string{}, Rejected: []string{}, Read: read, ReadRejected: rejected}, nil
 	}
-	return fn(all)
+	var out busproto.AckResponse
+	var err error
+	if fn == nil {
+		out = busproto.AckResponse{Acked: all, Rejected: []string{}}
+	} else {
+		out, err = fn(all)
+	}
+	out.Read, out.ReadRejected = read, rejected
+	return out, err
+}
+
+func (f *fakeServer) readReceipts() []busproto.ReadReceipt {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reads)
 }
 
 func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {

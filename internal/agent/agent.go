@@ -176,6 +176,9 @@ type Agent struct {
 	claude transcript.Parser
 	codex  transcript.Parser
 	log    *slog.Logger
+	// onReads, when set (tests), takes the read sightings instead of
+	// the message bus.
+	onReads func([]devicebus.Read)
 
 	mu        sync.Mutex
 	targets   map[string]*target
