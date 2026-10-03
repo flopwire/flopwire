@@ -349,8 +349,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		a.Limit = peersDefaultLimit
 	}
 	q := busproto.PeersQuery{Repo: a.Repo, User: strings.TrimPrefix(a.User, "@"), Agent: a.Agent}
-	var fullRepo string
-	var fullRoots []string
+	var full local.Repo
 	if q.Repo != "" {
 		// Expanded here: only this device can read its git files and its
 		// local index's placements. A name keeps matching by name. With a
@@ -359,12 +358,14 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		var err error
 		dirs := localRepoDirs(ctx, local.IndexPath())
 		arg := local.ResolveRepo(q.Repo)
-		if fullRepo, fullRoots, err = local.ExpandRepo(arg, dirs, true); err != nil {
+		if full, err = local.ExpandRepo(arg, dirs, true); err != nil {
 			return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
 		}
-		q.Repo, q.Roots = fullRepo, fullRoots
+		q.Repo, q.Roots, q.Mains, q.Remotes = full.Repo, full.Roots, full.Mains, full.Remotes
 		if cc, err := client.Load(); err == nil && cc.Server != "" && cc.Token != "" {
-			if q.Repo, q.Roots, err = local.ServerRepo(arg, dirs, deviceUploads()); err != nil {
+			sr, err := local.ServerRepo(arg, dirs, deviceUploads())
+			q.Repo, q.Roots, q.Mains, q.Remotes = sr.Repo, sr.Roots, sr.Mains, sr.Remotes
+			if err != nil {
 				return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
 			}
 		}
@@ -373,13 +374,13 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	q.Session = self.SessionID
 	resp, err := c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	var be *busproto.Error
-	localRepo, localRoots := "", []string(nil)
+	var localRepo local.Repo
 	if err != nil && known && errors.As(err, &be) && be.Code == busproto.CodeSessionNotOnDevice {
 		// The agent has not seen this session yet, or a path rule keeps it
 		// off the server: ask without naming it and leave it out here. The
 		// repo filter runs here too: --repo . names the session's own repo,
 		// which may be the withheld one.
-		q.Session, localRepo, localRoots, q.Repo, q.Roots = "", fullRepo, fullRoots, "", nil
+		q.Session, localRepo, q.Repo, q.Roots, q.Mains, q.Remotes = "", full, "", nil, nil, nil
 		resp, err = c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	}
 	if err != nil {
@@ -392,7 +393,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	peers := []busproto.Peer{}
 	if resp.Peers != nil {
 		for _, p := range resp.Peers.Peers {
-			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) || !bus.RepoMatches(localRepo, localRoots, p.Repo) {
+			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) || !bus.RepoMatches(localRepo.Repo, localRepo.Roots, localRepo.Mains, localRepo.Remotes, p.Repo, p.Main, p.Remote) {
 				continue
 			}
 			p.SeenAt = p.SeenAt.UTC() // every time printed is UTC

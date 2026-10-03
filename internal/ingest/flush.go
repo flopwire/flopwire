@@ -473,13 +473,14 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 	// redacted-lines writer uses: the lock before any row lock.
 	b := &pgx.Batch{}
 	b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
-	b.Queue(`INSERT INTO sources(id,device_id,agent,path,file_id,session_key,storage_kind,parser,first_seen_at,parent_path,parent_file_id,previous_path,previous_file_id)
-		VALUES($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,now(),$9,$10,$11,$12)
+	b.Queue(`INSERT INTO sources(id,device_id,agent,path,file_id,session_key,storage_kind,parser,first_seen_at,parent_path,parent_file_id,previous_path,previous_file_id,checkout,remote)
+		VALUES($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,now(),$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,''))
 		ON CONFLICT (device_id,path,file_id) DO UPDATE SET agent=excluded.agent,session_key=excluded.session_key,
 			storage_kind=excluded.storage_kind,parser=excluded.parser,parent_path=excluded.parent_path,parent_file_id=excluded.parent_file_id,
-			previous_path=COALESCE(excluded.previous_path,sources.previous_path),previous_file_id=COALESCE(excluded.previous_file_id,sources.previous_file_id)
+			previous_path=COALESCE(excluded.previous_path,sources.previous_path),previous_file_id=COALESCE(excluded.previous_file_id,sources.previous_file_id),
+			checkout=excluded.checkout,remote=excluded.remote
 		RETURNING id::text, tombstoned_at IS NOT NULL, refused_rule`,
-		uuid.NewString(), f.deviceID, src.Agent, src.Path, src.FileID, src.SessionKey, kind, src.Parser, parentPath, parentFileID, prevPath, prevFileID)
+		uuid.NewString(), f.deviceID, src.Agent, src.Path, src.FileID, src.SessionKey, kind, src.Parser, parentPath, parentFileID, prevPath, prevFileID, src.Checkout, src.Remote)
 	br := tx.SendBatch(ctx, b)
 	if _, err := br.Exec(); err != nil {
 		br.Close()

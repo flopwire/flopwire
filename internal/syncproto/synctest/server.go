@@ -255,6 +255,8 @@ func (s *Server) flush(w http.ResponseWriter, r *http.Request) {
 		src = &Source{Desc: h.Source, Latest: -1, Gens: map[int64]*generation{}}
 		s.sources[key] = src
 	}
+	// The repository follows every flush, as on the real server.
+	src.Desc.Checkout, src.Desc.Remote = h.Source.Checkout, h.Source.Remote
 	resp := syncproto.FlushResponse{Version: syncproto.Version, Status: syncproto.StatusOK}
 	// Step 2: generation.
 	if h.Generation < src.Latest {

@@ -105,7 +105,34 @@ func (a *Agent) replacePlace(key placeKey, old, next placed) bool {
 	a.places[key] = next
 	a.mu.Unlock()
 	a.storePlace(key, next)
+	if old.pl.Main != next.pl.Main || old.pl.Remote != next.pl.Remote {
+		a.repoChanged(key)
+	}
 	return true
+}
+
+// repoChanged hands the transcripts of session key (its subagents'
+// included) to sync again after its repository changed, so the server
+// hears the new one (devicesync sends a flush header only when no bytes
+// are pending; issue #102).
+func (a *Agent) repoChanged(key placeKey) {
+	if a.cfg.Sync == nil {
+		return
+	}
+	a.mu.Lock()
+	var ts []*target
+	for _, t := range a.targets {
+		if t.kind != kindTranscript {
+			continue
+		}
+		if k, _ := t.placeKeyOf(); k == key || t.root == key.session && t.src.Agent == key.agent {
+			ts = append(ts, t)
+		}
+	}
+	a.mu.Unlock()
+	for _, t := range ts {
+		a.notify(t)
+	}
 }
 
 // recoverAndEnforce runs a pass and, when it settled or changed any

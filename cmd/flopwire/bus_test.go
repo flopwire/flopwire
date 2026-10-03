@@ -968,8 +968,8 @@ func TestPeersRepoCoversWorktrees(t *testing.T) {
 			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "withheld"})
 		}
 		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{
-			{Session: wtPeer, Agent: "codex", User: "g@x.test", Repo: wt},
-			{Session: otherPeer, Agent: "codex", User: "g@x.test", Repo: other},
+			{Session: wtPeer, Agent: "codex", User: "g@x.test", Repo: wt, Main: main},
+			{Session: otherPeer, Agent: "codex", User: "g@x.test", Repo: other, Main: other},
 		}}}
 	})
 	t.Chdir(main)
@@ -978,8 +978,10 @@ func TestPeersRepoCoversWorktrees(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 || pj.Peers[0].Session != wtPeer {
 		t.Fatalf("peers --repo . from the main checkout: %q %q %v", out, stderr, err)
 	}
-	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Roots, wt) {
-		t.Fatalf("the request names no worktree: %+v", r.Peers)
+	// The worktree is matched by its main checkout, which presence
+	// reports, not by listing it (#102).
+	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Mains, main) || slices.Contains(r.Peers.Mains, other) {
+		t.Fatalf("the request names no main checkout: %+v", r.Peers)
 	}
 }
 
@@ -1018,13 +1020,13 @@ func TestPeersRepoLeavesOutWithheldCheckouts(t *testing.T) {
 		if withheld && r.Peers.Session != "" {
 			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "withheld"})
 		}
-		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: secretPeer, Agent: "codex", User: "g@x.test", Repo: secret}}}}
+		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: secretPeer, Agent: "codex", User: "g@x.test", Repo: secret, Main: main}}}}
 	})
 	t.Chdir(main)
 	if _, stderr, err := cliJSON(t, fa, "", "peers", "--repo", "."); err != nil {
 		t.Fatalf("peers: %q %v", stderr, err)
 	}
-	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Roots, ok) || slices.Contains(r.Peers.Roots, secret) {
+	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Mains, main) || slices.Contains(r.Peers.Roots, secret) || slices.Contains(r.Peers.Mains, secret) {
 		t.Fatalf("the request to the server: %+v", r.Peers)
 	}
 	withheld = true

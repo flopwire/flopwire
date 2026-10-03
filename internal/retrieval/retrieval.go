@@ -165,8 +165,10 @@ func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	return h, err
 }
 
-// repoWhere adds f's repo condition: Repo as format.RepoMatch reads it,
-// or a directory that is one of RepoRoots or lies under one.
+// repoWhere adds f's repo condition: Repo as format.RepoMatch reads it
+// (a name is resolved first, resolveFilterRepo), a directory that is one
+// of RepoRoots or lies under one, or an upload placed in a checkout of
+// one of RepoRemotes or in one of RepoCheckouts.
 func repoWhere(q *query, f format.Filters) {
 	var ors []string
 	if prefix, like := format.RepoMatch(f.Repo); prefix != "" {
@@ -184,6 +186,17 @@ func repoWhere(q *query, f format.Filters) {
 		}
 		a, l := q.arg(roots), q.arg(likes)
 		ors = append(ors, fmt.Sprintf("c.repo_root=ANY(%[1]s) OR c.cwd=ANY(%[1]s) OR c.cwd LIKE ANY(%[2]s) OR c.repo_root LIKE ANY(%[2]s)", a, l))
+	}
+	if len(f.RepoRemotes) > 0 {
+		ors = append(ors, "c.source_id IN (SELECT id FROM sources WHERE remote=ANY("+q.arg(f.RepoRemotes)+"))")
+	}
+	if len(f.RepoCheckouts) > 0 {
+		devs := make([]string, len(f.RepoCheckouts))
+		dirs := make([]string, len(f.RepoCheckouts))
+		for i, dc := range f.RepoCheckouts {
+			devs[i], dirs[i] = dc.Device, dc.Checkout
+		}
+		ors = append(ors, fmt.Sprintf("c.source_id IN (SELECT s.id FROM sources s JOIN unnest(%s::uuid[],%s::text[]) k(device,checkout) ON s.device_id=k.device AND s.checkout=k.checkout)", q.arg(devs), q.arg(dirs)))
 	}
 	if len(ors) > 0 {
 		q.where("(" + strings.Join(ors, " OR ") + ")")

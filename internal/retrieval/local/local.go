@@ -92,25 +92,29 @@ func (b *Backend) filter(ctx context.Context, f format.Filters) (localindex.Filt
 	for _, a := range format.List(f.Agent) {
 		out.Agents = append(out.Agents, transcript.Agent(a))
 	}
-	if f.Repo != "" || len(f.RepoRoots) > 0 {
-		repo, roots := f.Repo, f.RepoRoots
-		if len(roots) == 0 {
+	if f.Repo != "" || len(f.RepoRoots)+len(f.RepoMains)+len(f.RepoRemotes) > 0 {
+		r := Repo{Repo: f.Repo, Roots: f.RepoRoots, Mains: f.RepoMains, Remotes: f.RepoRemotes}
+		if len(r.Roots)+len(r.Mains)+len(r.Remotes) == 0 {
 			dirs, err := b.Store.RepoDirs(ctx)
 			if err != nil {
 				return out, err
 			}
-			if repo, roots, err = ExpandRepo(repo, dirs, false); err != nil {
+			if r, err = ExpandRepo(f.Repo, dirs, false); err != nil {
 				return out, err
 			}
 		}
-		prefix, like := format.RepoMatch(repo)
+		prefix, like := format.RepoMatch(r.Repo)
 		if prefix != "" {
 			out.Repos = []string{prefix}
 		}
-		out.Repos = append(out.Repos, roots...)
+		out.Repos = append(out.Repos, r.Roots...)
+		if len(out.Repos) > localindex.MaxRepos {
+			return out, fmt.Errorf("%w: repo %q expands to %d directories; at most %d", format.ErrBadRequest, f.Repo, len(out.Repos), localindex.MaxRepos)
+		}
 		if like != "" {
 			out.RepoLikes = []string{like}
 		}
+		out.RepoMains, out.RepoRemotes = r.Mains, r.Remotes
 	}
 	out.Devices = format.List(f.Device)
 	if f.Branch != "" {

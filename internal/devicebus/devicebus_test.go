@@ -531,6 +531,30 @@ func TestClaimOrder(t *testing.T) {
 	}
 }
 
+// Review of #125: for a message routed by remote, a session on the
+// remote comes first, then one that reported no remote whose root has
+// the remote's name, then the rest; without a server the same order
+// decides which sessions may take it.
+func TestClaimOrderByRemote(t *testing.T) {
+	on := sess("on", "claude", "/home/a/web-local", false)
+	on.Remote = "github.com/acme/web"
+	bare := sess("bare", "claude", "/home/a/web", true)
+	fork := sess("fork", "codex", "/home/a/fork/web", true)
+	fork.Remote = "github.com/other/web"
+	e := env("mu", "")
+	e.Addressed, e.ToSession, e.ToRepo = "user", "", "github.com/acme/web"
+	got := claimOrder(busproto.Claimable{Message: e, Sessions: []string{"fork", "bare", "on"}}, []Session{on, bare, fork})
+	if want := []string{"on", "bare", "fork"}; !slices.Equal(got, want) {
+		t.Fatalf("order %v, want %v", got, want)
+	}
+	if !eligible(e.ToRepo, e, bare, []Session{bare, fork}) || eligible(e.ToRepo, e, fork, []Session{bare, fork}) {
+		t.Fatal("without a session on the remote, the one with no remote and the name is the route")
+	}
+	if eligible(e.ToRepo, e, bare, []Session{on, bare, fork}) {
+		t.Fatal("a session on the remote goes before one with no remote")
+	}
+}
+
 // An @user message offered by the poll is claimed for one session; a
 // session the server no longer holds is skipped for the next; a claim
 // lost to another device drops the message and it is not claimed again.

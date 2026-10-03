@@ -94,6 +94,12 @@ type Config struct {
 	// a name every session of the device on it is withheld from. The agent
 	// sets it (SetWithheld); nil checks nothing.
 	RepoWithheld func(ctx context.Context, repo string) (bool, error)
+	// RepoKey resolves an @user send's repo (a path or a name) to the
+	// normalized remote of the repository it names on this device, so
+	// the message is routed by the remote (issue #102); the repo as it is
+	// when the device knows none. A name that fits two repositories is
+	// an error. The agent sets it (SetRepoKey); nil resolves nothing.
+	RepoKey func(ctx context.Context, repo string) (string, error)
 
 	// User is the device's person without a server: the name @user
 	// matches and envelopes carry. Default: the OS account name.
@@ -265,6 +271,14 @@ func (b *Bus) SetWithheld(sessions func(context.Context, string) (string, error)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cfg.Withheld, b.cfg.RepoWithheld = sessions, repos
+}
+
+// SetRepoKey installs the agent's resolution of an @user send's repo
+// (Config.RepoKey).
+func (b *Bus) SetRepoKey(fn func(context.Context, string) (string, error)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cfg.RepoKey = fn
 }
 
 // Local reports whether the bus routes on the device (no server).

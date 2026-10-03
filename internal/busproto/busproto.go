@@ -262,8 +262,11 @@ type SendRequest struct {
 	// one its person sent or received); the reply joins its thread.
 	ReplyTo string   `json:"reply_to,omitempty"`
 	Refs    []string `json:"refs,omitempty"`
-	// Repo routes an @user message: a repo name or path (its last element
-	// is used). Empty: the sending session's repo. "*": any repo.
+	// Repo routes an @user message: a normalized remote (host/owner/name,
+	// or owner/name), which the device resolves a path or a name it knows
+	// to, or else a repo name or path (its last element is used). Empty:
+	// the sending session's repo, by its remote when it has one. "*": any
+	// repo.
 	Repo string `json:"repo,omitempty"`
 }
 
@@ -341,7 +344,15 @@ type PresenceSession struct {
 	Agent     string `json:"agent"`
 	// Repo is the repo root as the device placed the session (an absolute
 	// path); Branch its current git branch.
-	Repo   string `json:"repo,omitempty"`
+	Repo string `json:"repo,omitempty"`
+	// Remote is the normalized remote (host/owner/name) of the session's
+	// repository, "" for none: a repo filter or @user route matches it on
+	// any device and at any path (issue #102).
+	Remote string `json:"remote,omitempty"`
+	// Main is the main checkout of the session's repository as the device
+	// placed it: a repo filter matches it as it matches Repo, without
+	// listing every worktree (#102).
+	Main   string `json:"main,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	Title  string `json:"title,omitempty"`
 	// Busy: a turn is running.
@@ -471,6 +482,8 @@ type Peer struct {
 	UserName string `json:"user_name,omitempty"`
 	Device   string `json:"device,omitempty"`
 	Repo     string `json:"repo,omitempty"`
+	Remote   string `json:"remote,omitempty"`
+	Main     string `json:"main,omitempty"`
 	Branch   string `json:"branch,omitempty"`
 	Title    string `json:"title,omitempty"`
 	Busy     bool   `json:"busy"`
@@ -490,6 +503,11 @@ type PeersQuery struct {
 	// caller's device expanded it (local.ExpandRepo): a session on any of
 	// them, or under one, is on that repository.
 	Roots []string
+	// Mains are its main checkouts: a session placed in one is on it.
+	Mains []string
+	// Remotes are its normalized remotes: a session whose remote is one
+	// of them is on that repository, on any device (issue #102).
+	Remotes []string
 }
 
 // PeersResponse lists live sessions, the caller's own person first, the

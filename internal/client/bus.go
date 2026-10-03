@@ -55,6 +55,12 @@ func (b Bus) Peers(ctx context.Context, q busproto.PeersQuery) (busproto.PeersRe
 	if len(q.Roots) > 0 {
 		v["repo_root"] = q.Roots
 	}
+	if len(q.Remotes) > 0 {
+		v["repo_remote"] = q.Remotes
+	}
+	if len(q.Mains) > 0 {
+		v["repo_checkout"] = q.Mains
+	}
 	set(v, "user", q.User)
 	set(v, "agent", q.Agent)
 	var out busproto.PeersResponse
