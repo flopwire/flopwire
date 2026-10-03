@@ -161,6 +161,9 @@ func meta(h *Hit) string {
 	if h.User != "" {
 		parts = append(parts, Clean(h.User))
 	}
+	if h.Provenance.EvidenceKind == "cass_recovery" {
+		parts = append(parts, "recovered from CASS")
+	}
 	if h.IsError {
 		parts = append(parts, "error")
 	}
@@ -597,6 +600,9 @@ func readMessage(e *errWriter, cx *Context, m *Message, st Style, room int) {
 		mark = ">>"
 	}
 	flags := ""
+	if m.Provenance.EvidenceKind == "cass_recovery" {
+		flags += " recovered from CASS"
+	}
 	if m.IsError {
 		flags += " error"
 	}
@@ -741,7 +747,11 @@ func groupedHit(e *errWriter, h *Hit, sep bool) {
 			e.printf("%s-%d- %s\n", ord, l.N, text)
 		case !labelled:
 			labelled = true
-			e.printf("%s:%d %s: %s\n", ord, l.N, hitLabel(h), text)
+			label := hitLabel(h)
+			if h.Provenance.EvidenceKind == "cass_recovery" {
+				label += " (recovered from CASS)"
+			}
+			e.printf("%s:%d %s: %s\n", ord, l.N, label, text)
 		default:
 			e.printf("%s:%d: %s\n", ord, l.N, text)
 		}

@@ -279,14 +279,18 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 // Provenance locates a row in its raw evidence: raw(source_id, generation,
 // byte_offset, byte_len) returns the record's bytes.
 type Provenance struct {
-	SourceID   string `json:"source_id,omitempty"`
-	Path       string `json:"path"`
-	FileID     string `json:"file_id,omitempty"`
-	Generation int64  `json:"generation"`
-	LineNo     int64  `json:"line_no,omitempty"` // JSONL line, 1-based
-	ByteOffset *int64 `json:"byte_offset,omitempty"`
-	ByteLen    int64  `json:"byte_len,omitempty"`
-	Locator    string `json:"locator,omitempty"` // non-JSONL sources: rowid, pointer
+	// EvidenceKind labels normalized recovery evidence; OriginalPath is the
+	// source path CASS recorded, not a promise that native bytes still exist.
+	EvidenceKind string `json:"evidence_kind,omitempty"`
+	OriginalPath string `json:"original_path,omitempty"`
+	SourceID     string `json:"source_id,omitempty"`
+	Path         string `json:"path"`
+	FileID       string `json:"file_id,omitempty"`
+	Generation   int64  `json:"generation"`
+	LineNo       int64  `json:"line_no,omitempty"` // JSONL line, 1-based
+	ByteOffset   *int64 `json:"byte_offset,omitempty"`
+	ByteLen      int64  `json:"byte_len,omitempty"`
+	Locator      string `json:"locator,omitempty"` // non-JSONL sources: rowid, pointer
 }
 
 // Line is one line of a message's text: a matching line, or context
