@@ -210,6 +210,8 @@ func spawningCall(ctx context.Context, tx *sql.Tx, parent, child string) (string
 //   - vanished (no session row, no messages, no parts): SupersedeSession;
 //   - fewer rows at or below the saved highest id (a reverted turn):
 //     SupersedeSession, then re-emit the whole session;
+//   - more rows at or below the saved highest id: re-emit the whole
+//     session;
 //   - otherwise it emits the parts written since the watermark (less
 //     lagMS), and every part of a message new since then.
 //
@@ -345,11 +347,11 @@ func (s *syncer) session(id string, pa, ma agg, prev sessionState, had bool) (se
 	}
 	full := !had
 	if had {
-		lostParts, err := s.lost("part", id, prev.Parts)
+		lostParts, belowParts, err := s.lost("part", id, prev.Parts)
 		if err != nil {
 			return ns, err
 		}
-		lostMsgs, err := s.lost("message", id, prev.Msgs)
+		lostMsgs, belowMsgs, err := s.lost("message", id, prev.Msgs)
 		if err != nil {
 			return ns, err
 		}
@@ -359,6 +361,10 @@ func (s *syncer) session(id string, pa, ma agg, prev sessionState, had bool) (se
 			}
 			full = true
 		}
+		// A row new at or below the saved highest id (the clock stepped
+		// back, or another writer's older id) is neither newer than the
+		// highest id nor, past lagMS, inside the time window.
+		full = full || belowParts || belowMsgs
 	}
 	// Thresholds: everything for a full emit, else what moved since the
 	// watermark.
@@ -369,16 +375,17 @@ func (s *syncer) session(id string, pa, ma agg, prev sessionState, had bool) (se
 	return ns, s.emit(id, partWM, partMax, msgWM, msgMax)
 }
 
-// lost reports whether rows at or below the saved highest id are gone.
-func (s *syncer) lost(table, session string, prev agg) (bool, error) {
+// lost reports whether rows at or below the saved highest id are gone,
+// and whether rows were added there.
+func (s *syncer) lost(table, session string, prev agg) (gone, added bool, err error) {
 	if prev.N == 0 {
-		return false, nil
+		return false, false, nil
 	}
 	var n int64
 	if err := s.tx.QueryRowContext(s.ctx, `SELECT count(*) FROM `+table+` WHERE session_id = ? AND id <= ?`, session, prev.Max).Scan(&n); err != nil {
-		return false, fmt.Errorf("opencode: count %s: %w", table, err)
+		return false, false, fmt.Errorf("opencode: count %s: %w", table, err)
 	}
-	return n < prev.N, nil
+	return n < prev.N, n > prev.N, nil
 }
 
 // emit sends the rows of the parts updated at or after partWM or newer
