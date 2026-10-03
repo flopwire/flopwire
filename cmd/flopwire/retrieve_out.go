@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
@@ -83,8 +84,11 @@ type sessionBrief struct {
 	Intent        string   `json:"intent,omitempty"`
 	ParentSession string   `json:"parent_session,omitempty"`
 	Commits       []string `json:"commits,omitempty"`
-	Files         int      `json:"files,omitempty"`
-	Failed        int      `json:"failed,omitempty"`
+	// CommitsNoSHA are commits the session made whose sha its transcript
+	// never showed (git commit -q): subject, branch and time.
+	CommitsNoSHA []digest.Commit `json:"commits_no_sha,omitempty"`
+	Files        int             `json:"files,omitempty"`
+	Failed       int             `json:"failed,omitempty"`
 }
 
 // briefTitle is the most of a title the concise sessions answer prints.
@@ -106,7 +110,7 @@ func brief(c format.ConversationInfo) sessionBrief {
 		if d.Intent != "" && d.Intent != c.Title {
 			b.Intent = format.ClipAround(d.Intent, 0, briefTitle)
 		}
-		b.Commits, b.Files, b.Failed = d.Commits, len(d.FilesEdited), d.Failed
+		b.Commits, b.CommitsNoSHA, b.Files, b.Failed = d.Commits, d.CommitsNoSHA, len(d.FilesEdited), d.Failed
 	}
 	return b
 }

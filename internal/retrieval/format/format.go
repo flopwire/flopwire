@@ -401,6 +401,9 @@ func ParseDigest(b []byte) *digest.Digest {
 	}
 	d := digest.Parse(b)
 	d.State = nil
+	for i := range d.CommitsNoSHA {
+		d.CommitsNoSHA[i].ID = ""
+	}
 	return d
 }
 

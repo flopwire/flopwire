@@ -113,8 +113,8 @@ func outcome(d *digest.Digest) []string {
 			out = append(out, field("prs", fmt.Sprintf("%d%s", len(d.PRs), more(d.Truncated("prs")))))
 		}
 	}
-	if n := len(d.Commits); n > 0 {
-		out = append(out, field("commits", fmt.Sprintf("%d%s", n, more(d.Truncated("commits")))))
+	if n := len(d.Commits) + len(d.CommitsNoSHA); n > 0 {
+		out = append(out, field("commits", fmt.Sprintf("%d%s", n, more(d.Truncated("commits") || d.Truncated("commits_no_sha")))))
 	}
 	if d.Failed > 0 {
 		out = append(out, field("failed", strconv.Itoa(d.Failed)))
@@ -371,6 +371,21 @@ func writeDigest(e *errWriter, c *ConversationInfo) {
 	}
 	line("PRs", strings.Join(d.PRs, " "))
 	line("commits", strings.Join(d.Commits, " "))
+	var nosha []string
+	for _, c := range d.CommitsNoSHA {
+		e := strconv.Quote(c.Subject)
+		if c.Branch != "" {
+			e += " on " + c.Branch
+		}
+		if c.At != nil {
+			e += " at " + c.At.UTC().Format("2006-01-02T15:04Z")
+		}
+		nosha = append(nosha, e)
+	}
+	if d.Truncated("commits_no_sha") {
+		nosha = append(nosha, "(and more)")
+	}
+	line("commits without sha", strings.Join(nosha, "; "))
 	line("issues", strings.Join(d.Issues, " "))
 	if t := d.Tokens; t != nil {
 		line("tokens", fmt.Sprintf("input %s, output %s, cache read %s, cache write %s", si(t.Input), si(t.Output), si(t.CacheRead), si(t.CacheCreation)))

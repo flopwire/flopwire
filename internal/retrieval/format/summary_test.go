@@ -98,7 +98,8 @@ func TestGroupedLayout(t *testing.T) {
 func TestOutlineRendering(t *testing.T) {
 	ts := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	cx := &Context{Conversation: ConversationInfo{Address: "aaaa1111", SessionID: "aaaa1111-full", Agent: "claude", Repo: "/x/flopwire",
-		Digest: &digest.Digest{Intent: "fix it", FilesEdited: []string{"a.go"}, PRs: []string{"o/r#43"}, Tokens: &digest.Tokens{Input: 1200, Output: 3_400_000}}},
+		Digest: &digest.Digest{Intent: "fix it", FilesEdited: []string{"a.go"}, PRs: []string{"o/r#43"}, Tokens: &digest.Tokens{Input: 1200, Output: 3_400_000},
+			Commits: []string{"650a939"}, CommitsNoSHA: []digest.Commit{{Subject: "Add cursor", Branch: "api-cursors", At: &ts}}}},
 		OutlineMore: true, OutlineNext: "page-end"}
 	for i := range 40 {
 		e := OutlineEntry{Address: fmt.Sprintf("aaaa1111/%d", i), ID: fmt.Sprintf("m%d", i), Ordinal: int64(i), TS: &ts, Kind: "tool_call", Tool: "Bash", Text: "go test ./..."}
@@ -116,6 +117,7 @@ func TestOutlineRendering(t *testing.T) {
 	}
 	out := b.String()
 	for _, want := range []string{"# intent: \"fix it\"", "# files edited (1): a.go", "# PRs: o/r#43", "# tokens: input 1.2k, output 3.4M",
+		"# commits: 650a939", `# commits without sha: "Add cursor" on api-cursors at 2026-09-29T12:00Z`,
 		"aaaa1111/0  2026-09-29 12:00Z  user: run the tests", "  aaaa1111/3  Bash(go test ./...)  error  → sub agent-1",
 		"output budget of 900 bytes reached; next: flopwire_read address=aaaa1111 outline=true cursor="} {
 		if !strings.Contains(out, want) {

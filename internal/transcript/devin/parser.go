@@ -21,7 +21,9 @@ import (
 //
 // devin@2: part fixed per native id (0) and slot-based ordinals; rows only
 // an off-chain copy of a message has are emitted off the active path.
-const Name = "devin@2.0"
+// devin@3: rows unchanged; bumped so every store is re-parsed and its
+// digests re-folded with the commit evidence of issue #80.
+const Name = "devin@3.0"
 
 // Parser reads a Devin sessions.db. It implements transcript.Parser with
 // these differences from the JSONL parsers, because the source is a

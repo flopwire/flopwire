@@ -178,8 +178,9 @@ flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an addre
   ended=2026-09-23 repo=api branch=main intent="…"`; a value with a space
   is a JSON string.
 - `sessions` prints compact JSON, a brief row per session with its full
-  id, repo, branches and commit ids, and paging fields (`has_more`,
-  `next_cursor`). `--detail` adds the whole digest; `--text` prints rows.
+  id, repo, branches, commit ids and the commits recorded without a sha
+  (`commits_no_sha`: subject, branch, time), and paging fields
+  (`has_more`, `next_cursor`). `--detail` adds the whole digest; `--text` prints rows.
 - Every hit starts with an address, `SESSION/ORDINAL:LINE`. `read` takes
   it, a unique session prefix, a message id, or `transcript.jsonl:LINE`.
 - `grep` takes RE2 regexes with smart case and the common rg flags. It
@@ -242,7 +243,8 @@ flopwire inbox --sent                                    # what you sent, and it
 ```
 
 - Find the recipient in history first, then check that the session is
-  live: match `session_id` (and `commits`) from `sessions` to the
+  live: match `session_id` (and `commits`, or the subject in
+  `commits_no_sha`) from `sessions` to the
   `session` field of `peers`. Do not choose a session by its title or
   current branch alone.
 - Address a session by its id, or a unique prefix. Address a person as

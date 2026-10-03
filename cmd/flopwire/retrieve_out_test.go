@@ -17,6 +17,7 @@ import (
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // sessions answers JSON by default; it is main's sessions --json, field
@@ -429,4 +430,43 @@ func withFormat(args, f string) string {
 		return `{"format":"` + f + `"}`
 	}
 	return `{"format":"` + f + `",` + args[1:]
+}
+
+// Issue #80: a commit the transcript never showed the sha of (git commit
+// -q) is in sessions' concise row and its --detail, without its call id
+// and without a made-up sha, and the text header counts it.
+func TestSessionsShowCommitsWithoutSHA(t *testing.T) {
+	t0 := time.Date(2026, 10, 2, 0, 36, 24, 0, time.UTC)
+	cmd := func(ord int64, id, c string) *transcript.Message {
+		a, _ := json.Marshal(map[string]string{"command": c})
+		return &transcript.Message{Ordinal: ord, Kind: transcript.KindToolCall, ToolName: "Bash", ToolCallID: id, Text: string(a), TS: t0}
+	}
+	result := func(ord int64, id, out string) *transcript.Message {
+		return &transcript.Message{Ordinal: ord, Kind: transcript.KindToolResult, ToolName: "Bash", ToolCallID: id, Text: out, TS: t0.Add(2 * time.Second)}
+	}
+	msgs := []*transcript.Message{cmd(1, "c1", `git add a.go && git commit -q -m "Switch GET /users to cursor pagination"`), result(2, "c1", ""),
+		cmd(3, "c2", `git commit -m "Add tests"`), result(4, "c2", "[api-cursors 650a939] Add tests\n")}
+	b := digest.Update(nil, digest.Conv{Cwd: "/r", RepoRoot: "/r", Branches: []string{"api-cursors"}}, msgs, digest.Counts{})
+	last := time.Date(2026, 10, 2, 0, 40, 0, 0, time.UTC)
+	c := format.ConversationInfo{SessionID: "b5dd812f-0000-4000-8000-000000000001", Agent: "claude", Repo: "/r", Branches: []string{"api-cursors"},
+		LastActivityAt: &last, Digest: format.ParseDigest(b)}
+	s := &format.Sessions{Sessions: []format.ConversationInfo{c}}
+	for _, detail := range []bool{false, true} {
+		out, err := json.Marshal(boundSessions(s, 24000, false, detail))
+		if err != nil {
+			t.Fatal(err)
+		}
+		j := string(out)
+		want := `"commits_no_sha":[{"subject":"Switch GET /users to cursor pagination","branch":"api-cursors","at":"2026-10-02T00:36:26Z"}]`
+		if !strings.Contains(j, `"commits":["650a939"]`) || !strings.Contains(j, want) || strings.Contains(j, `"id":"c1"`) {
+			t.Fatalf("detail=%v: %s", detail, j)
+		}
+	}
+	var text strings.Builder
+	if err := format.WriteSessions(&text, s, format.Style{Now: func() time.Time { return last }}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), " commits=2") {
+		t.Fatalf("text: %s", text.String())
+	}
 }

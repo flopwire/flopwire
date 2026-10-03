@@ -79,7 +79,9 @@ import (
 // lines reserve their size from the LineBudget.
 // claude@3: the conversation lists every working directory the session
 // recorded (OtherCwds), for path rules.
-const ParserName = "claude@3.0"
+// claude@4: rows unchanged; bumped so every source is re-parsed and its
+// digest re-folded with the commit evidence of issue #80.
+const ParserName = "claude@4.0"
 
 // stateVersion is the Cursor.State format. A state of any other version,
 // or one that does not decode, restarts the parse from the beginning of the
