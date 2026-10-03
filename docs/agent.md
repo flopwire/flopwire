@@ -240,9 +240,10 @@ Follow these steps in order.
 5. Run `flopwire setup`.
 6. Read `error` in each entry of `harnesses`. Report each error to your
    user. If `ok` is `false`, stop.
-7. Read `warnings` in each entry of `harnesses`. Each warning names an
-   older manual entry that now runs twice. Show each warning to your user.
-   Do not edit the settings file unless your user tells you to.
+7. Read `warnings` in each entry of `harnesses`. Show each warning to
+   your user. A warning can name an older manual entry that now runs
+   twice, or a hook that a plugin update enabled. Do not edit the settings
+   file unless your user tells you to.
 8. Read `todo` in each entry of `harnesses`, and the top-level `todo`.
    Tell your user each item.
 9. If the Codex entry has a `hook_trust.need_review` list that is not
@@ -367,6 +368,10 @@ directory, so edits apply in the next session.
   logged in, setup reports `not logged in to Devin` in the Devin entry and
   continues with the other harnesses. Run `devin auth login`, then run
   setup again.
+- `devin plugins update` enables the hooks of a new plugin version without
+  a prompt. setup compares the plugin's hooks before and after the update.
+  It reports each hook that the update enabled in `warnings`, and each hook
+  that the update removed in `done`.
 
 Devin reads hooks from Claude Code's settings files, but not from Claude
 Code's plugins. The Claude Code plugin and the Devin plugin therefore never

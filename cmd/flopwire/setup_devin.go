@@ -316,6 +316,15 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 	}
 	if mode == setupInstall && before != nil && installed != nil && !foreign && !sameDevinInfo(before, installed) {
 		r.Done = append(r.Done, "updated the Devin plugin "+devinPlugin)
+		// Devin's update takes a new revision's hooks without asking, so
+		// name each hook the update enabled or dropped.
+		added, removed := devinHookChanges(before, installed)
+		if len(added) > 0 {
+			r.Warnings = append(r.Warnings, "the plugin update enabled new hooks in Devin: "+strings.Join(added, "; "))
+		}
+		if len(removed) > 0 {
+			r.Done = append(r.Done, "the plugin update removed hooks from Devin: "+strings.Join(removed, "; "))
+		}
 	}
 	if installed != nil {
 		r.Installed, r.Enabled, r.Scope = true, true, "user"
@@ -559,4 +568,32 @@ func flopwireMCPServersIn(path string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// devinHookChanges returns the hooks in b that are not in a, and those in
+// a that are not in b, as "on EVENT runs "COMMAND"", sorted. A command
+// that runs once more on an event counts as added.
+func devinHookChanges(a, b *devinPluginInfo) (added, removed []string) {
+	type hook struct{ event, command string }
+	count := func(info *devinPluginInfo) map[hook]int {
+		m := map[hook]int{}
+		for ev, cmds := range info.Hooks {
+			for _, c := range cmds {
+				m[hook{ev, c}]++
+			}
+		}
+		return m
+	}
+	ca, cb := count(a), count(b)
+	diff := func(x, y map[hook]int) []string {
+		var out []string
+		for h, n := range x {
+			for range n - y[h] {
+				out = append(out, fmt.Sprintf("on %s runs %q", h.event, h.command))
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	return diff(cb, ca), diff(ca, cb)
 }
