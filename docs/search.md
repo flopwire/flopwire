@@ -201,7 +201,7 @@ headers show its short form; `read SESSION --outline` shows all of it;
 | `tools` | Tool calls by tool name |
 | `prs` | PRs as `owner/repo#N`: the URLs `gh pr create`, `edit`, `merge`, `view` and the like print, and PR URLs in prompts and replies. At most 10 |
 | `commits` | Commit hashes the session made, as its transcript shows them (see [commits](#commits)). At most 20 |
-| `commits_no_sha` | Commits the session made whose hash its transcript never shows (`git commit -q`): `subject` (from `-m` or a here-document, cut to 80 characters; empty when the line does not give it), `branch` (the session's current branch) and `at` (when the call returned). At most 5 |
+| `commits_no_sha` | Commits the session made whose hash its transcript never shows (`git commit -q`): `subject` (from `-m` or a here-document, cut to 80 characters; empty when the line does not give it), `branch` (the session's branch; empty when the session was on several, since the transcript does not say which one the commit was on) and `at` (when the call returned). At most 5 |
 | `issues` | Issue URLs as `owner/repo#N`, from prompts, replies and `gh issue` output. At most 10 |
 | `more` | The lists above that hit their cap (the lists keep the first ones seen) |
 | `failed` | Distinct tool calls the harness marked failed |

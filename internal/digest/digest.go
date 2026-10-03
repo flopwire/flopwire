@@ -196,16 +196,28 @@ func Parse(b []byte) *Digest {
 	return d
 }
 
-// parseFold is Parse for a fold: a digest an older fold wrote loses the
-// bookkeeping that orders commits and HEAD moves (see State.V).
-func parseFold(prev []byte) *Digest {
+// parseFold is Parse for a fold of n rows. A digest an older fold wrote
+// loses what that fold took as commits and the bookkeeping that orders
+// commits and HEAD moves (see State.V): the fold version changes with a
+// parser major, whose re-parse folds every row again. A recount that folds
+// no rows (a failed parse) leaves the digest as it is, so the re-parse
+// still finds it older.
+func parseFold(prev []byte, n int) *Digest {
 	d := Parse(prev)
-	if st := d.State; st != nil && st.V != foldVersion {
-		st.HeadOrd, st.Open = nil, nil
+	if n == 0 {
+		return d
 	}
-	if d.State != nil {
-		d.State.V = foldVersion
+	if len(prev) > 0 && (d.State == nil || d.State.V != foldVersion) {
+		d.Commits, d.CommitsNoSHA = nil, nil
+		d.More = slices.DeleteFunc(d.More, func(s string) bool { return s == "commits" || s == "commits_no_sha" })
+		if len(d.More) == 0 {
+			d.More = nil
+		}
+		if st := d.State; st != nil {
+			st.HeadOrd, st.Open, st.Resolved, st.Pending, st.Seq = nil, nil, nil, nil, 0
+		}
 	}
+	d.state().V = foldVersion
 	return d
 }
 
@@ -218,7 +230,7 @@ func (d *Digest) Marshal() []byte {
 // Update folds msgs into the stored digest prev, sets the conversation
 // facts and counts, and returns the new stored form.
 func Update(prev []byte, c Conv, msgs []*transcript.Message, n Counts) []byte {
-	d := parseFold(prev)
+	d := parseFold(prev, len(msgs))
 	d.setConv(c)
 	for _, m := range msgs {
 		d.Fold(m)
@@ -235,7 +247,7 @@ func Update(prev []byte, c Conv, msgs []*transcript.Message, n Counts) []byte {
 // Fold is Update for a batch whose counts a later recount sets: it folds
 // msgs into prev and leaves the counted fields as they are.
 func Fold(prev []byte, c Conv, msgs []*transcript.Message) []byte {
-	d := parseFold(prev)
+	d := parseFold(prev, len(msgs))
 	d.setConv(c)
 	for _, m := range msgs {
 		d.Fold(m)
@@ -261,7 +273,7 @@ func Append(prev []byte, c Conv, msgs []*transcript.Message, failed, subagents i
 // refreshed them): every row of fold is folded, and only the rows of
 // count, the new ones, add to the counts.
 func AppendRows(prev []byte, c Conv, fold, count []*transcript.Message, failed, subagents int) []byte {
-	d := parseFold(prev)
+	d := parseFold(prev, len(fold))
 	n := Counts{Messages: map[string]int{}, Tools: map[string]int{}, Failed: d.Failed + failed, Subagents: subagents}
 	for k, v := range d.Messages {
 		n.Messages[k] = v
@@ -644,9 +656,12 @@ func (d *Digest) foldResult(m *transcript.Message, c *Call) {
 		}
 	}
 	st := d.state()
+	// The session's branch, when it had one: Branches lists every branch
+	// the parser has read so far, first seen first, so with several the
+	// one a commit was made on is unknown.
 	branch := ""
-	if n := len(d.Branches); n > 0 {
-		branch = d.Branches[n-1]
+	if len(d.Branches) == 1 {
+		branch = d.Branches[0]
 	}
 	sha := ""
 	if c.Reveal != "" && succeeded(c.RevOK) {
@@ -679,7 +694,9 @@ func (d *Digest) foldResult(m *transcript.Message, c *Call) {
 					d.More = append(d.More, "commits_no_sha")
 				}
 			}
-			if (c.Outside || d.noSHA(m.ToolCallID) >= 0) && (st.HeadOrd == nil || *st.HeadOrd <= c.Ord) {
+			// Kept or not (outside, or past maxNoSHA), a later command may
+			// still show its sha.
+			if st.HeadOrd == nil || *st.HeadOrd <= c.Ord {
 				st.Open = &Open{ID: m.ToolCallID, Ord: c.Ord, Where: c.Where}
 			}
 		}

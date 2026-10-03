@@ -466,3 +466,51 @@ func TestCodexExecStillRunningIsNoCommit(t *testing.T) {
 		t.Fatalf("commits %v, without sha %+v", d.Commits, d.CommitsNoSHA)
 	}
 }
+
+// With maxNoSHA commits still without a sha, a further commit's sha
+// still resolves from a later log.
+func TestCommitResolvesPastTheNoSHACap(t *testing.T) {
+	var steps []step
+	for i := range maxNoSHA {
+		steps = append(steps, step{cmd: fmt.Sprintf(`git commit -q -m "c%d"`, i)}, step{cmd: `git checkout -`})
+	}
+	steps = append(steps, step{cmd: `git commit -q -m last`}, step{cmd: `git log --oneline -1`, out: sha1 + " last\n"})
+	for _, sh := range shapes {
+		if d := runSteps(t, sh, repoConv, steps...); fmt.Sprint(d.Commits) != "[650a939]" {
+			t.Errorf("%s: commits %v, without sha %d", sh.name, d.Commits, len(d.CommitsNoSHA))
+		}
+	}
+}
+
+// Conv.Branches lists the branches first seen first, and holds the ones
+// the parser has read so far: its last entry is not the branch a commit
+// was made on (the session went back to main, or moved on to another
+// branch later in the transcript). A commit without a sha names a branch
+// only when the session had one, so the digest does not depend on where
+// a batch ends.
+func TestCommitWithoutSHANamesNoGuessedBranch(t *testing.T) {
+	steps := []step{{cmd: `git commit -q -m x`}}
+	early := runSteps(t, shapes[0], Conv{Cwd: "/r", RepoRoot: "/r", Branches: []string{"main", "api-cursors"}}, steps...)
+	late := runSteps(t, shapes[0], Conv{Cwd: "/r", RepoRoot: "/r", Branches: []string{"main", "api-cursors", "stacked-b"}}, steps...)
+	if len(early.CommitsNoSHA) != 1 || len(late.CommitsNoSHA) != 1 || early.CommitsNoSHA[0].Branch != late.CommitsNoSHA[0].Branch ||
+		late.CommitsNoSHA[0].Branch == "stacked-b" {
+		t.Fatalf("branch %+v, then %+v", early.CommitsNoSHA, late.CommitsNoSHA)
+	}
+	if one := runSteps(t, shapes[0], repoConv, steps...); one.CommitsNoSHA[0].Branch != "api-cursors" {
+		t.Fatalf("one branch: %+v", one.CommitsNoSHA)
+	}
+}
+
+// A re-parse after the fold changed re-folds every row onto the stored
+// digest: commits only the older fold took (a cat of another transcript's
+// "[main abc1234]" line) must not survive it.
+func TestOlderFoldDropsItsCommits(t *testing.T) {
+	sh := shapes[0]
+	msgs := []*transcript.Message{sh.call(10, "c1", `git commit -q -m x`, 0), sh.result(11, "c1", "", 0),
+		sh.call(20, "c2", `git log --oneline -1`, 0), sh.result(21, "c2", sha1+" x\n", 0)}
+	stale := []byte(`{"commits":["deadbee"],"files_edited":["a.go"],"state":{"h":900}}`)
+	d := Parse(Fold(stale, repoConv, msgs))
+	if fmt.Sprint(d.Commits) != "[650a939]" || fmt.Sprint(d.FilesEdited) != "[a.go]" {
+		t.Fatalf("commits %v, files %v", d.Commits, d.FilesEdited)
+	}
+}
