@@ -3,7 +3,7 @@
 // parser: the incremental Parser contract, a JSONL line reader with exact
 // byte offsets, text capping, and append-versus-rewrite change detection.
 //
-// Harness parsers (Claude Code, Codex, Devin) live in sub-packages and emit
+// Harness parsers (Claude Code, Codex, Devin, opencode) live in sub-packages and emit
 // Conversation and Message values into a Sink. Storage (SQLite locally,
 // Postgres centrally) is not this package's concern.
 package transcript
@@ -22,6 +22,9 @@ const (
 	AgentClaude Agent = "claude"
 	AgentCodex  Agent = "codex"
 	AgentDevin  Agent = "devin"
+	// AgentOpencode is opencode (sst/opencode), whose sessions live in one
+	// SQLite store like Devin's.
+	AgentOpencode Agent = "opencode"
 )
 
 // StorageKind is how a harness stores a source (spec §4.1, §5.3).
