@@ -297,8 +297,9 @@ func (c *Claude) Push(ctx context.Context, id, text string) (Pushed, error) {
 }
 
 // gone reports whether the vendor's record of the session says it is
-// archived or no longer exists: GET /v1/code/sessions/{id} answers 404, or
-// the session's status is "archived". Any other answer, or none, is not a
+// archived or no longer exists: GET /v1/code/sessions/{id} answers a
+// not_found_error for the session, or the session's status (under
+// "response_shape", as verified live) is "archived". Any other answer, or none, is not a
 // positive signal.
 func (c *Claude) gone(ctx context.Context, id string) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
@@ -318,19 +319,31 @@ func (c *Claude) gone(ctx context.Context, id string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return true
-	}
-	if resp.StatusCode != http.StatusOK {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
 		return false
 	}
-	var v struct {
-		Status string `json:"status"`
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		// Only the API's own answer that the session does not exist: a
+		// plain 404 (a route moved) says nothing about the session.
+		var e struct {
+			Error struct {
+				Type         string `json:"type"`
+				ResourceType string `json:"resource_type"`
+			} `json:"error"`
+		}
+		return json.Unmarshal(body, &e) == nil && e.Error.Type == "not_found_error" && e.Error.ResourceType == "session"
+	case http.StatusOK:
+		// The route wraps the session in "response_shape".
+		var v struct {
+			Session struct {
+				Status string `json:"status"`
+			} `json:"response_shape"`
+		}
+		return json.Unmarshal(body, &v) == nil && v.Session.Status == "archived"
 	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&v) != nil {
-		return false
-	}
-	return v.Status == "archived"
+	return false
 }
 
 // seqNum is a sequence number the route writes as a JSON string ("92");

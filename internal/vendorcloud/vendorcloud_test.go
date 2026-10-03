@@ -86,15 +86,28 @@ func TestClaudePush(t *testing.T) {
 	// The session's own record decides whether it is gone, never the
 	// CLI's text: a plugin hook's "not found" on stderr while the session
 	// is listed running is a failed push.
-	status := map[string]int{"cse_01BBBB": 200, "cse_01GONE": 404}
-	body := map[string]string{"cse_01BBBB": `{"id":"cse_01BBBB","status":"active","worker_status":"running"}`, "cse_01ARCH": `{"id":"cse_01ARCH","status":"archived"}`}
+	// The shapes as GET /v1/code/sessions/{id} answers live (2026-10-03):
+	// the session under "response_shape"; a missing session a typed
+	// not_found_error; an unknown route a plain-text 404, which is not a
+	// sign the session is gone; a 5xx neither.
+	body := map[string]string{
+		"cse_01BBBB": `{"response_shape":{"id":"cse_01BBBB","status":"active","worker_status":"running"}}`,
+		"cse_01ARCH": `{"response_shape":{"id":"cse_01ARCH","status":"archived","worker_status":"idle"}}`,
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/code/sessions/")
-		if code, ok := status[id]; ok && code != 200 {
-			http.Error(w, `{"type":"error"}`, code)
-			return
+		switch id {
+		case "cse_01GONE":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":{"message":"Session cse_01GONE not found","resource_id":"cse_01GONE","resource_type":"session","type":"not_found_error"},"type":"error"}`)
+		case "cse_01ROUTE":
+			http.Error(w, "404 page not found", http.StatusNotFound)
+		case "cse_01DOWN":
+			http.Error(w, `{"type":"error","error":{"type":"api_error"}}`, http.StatusBadGateway)
+		default:
+			io.WriteString(w, body[id])
 		}
-		io.WriteString(w, body[id])
 	}))
 	defer srv.Close()
 	c.BaseURL, c.Token = srv.URL, func(context.Context) (string, error) { return "tok", nil }
@@ -110,6 +123,11 @@ func TestClaudePush(t *testing.T) {
 	for _, id := range []string{"session_01ARCH", "session_01GONE"} {
 		if _, err := c.Push(context.Background(), id, "x"); !errors.Is(err, ErrGone) {
 			t.Fatalf("%s: err = %v, want ErrGone", id, err)
+		}
+	}
+	for _, id := range []string{"session_01ROUTE", "session_01DOWN"} {
+		if _, err := c.Push(context.Background(), id, "x"); err == nil || errors.Is(err, ErrGone) {
+			t.Fatalf("%s: err = %v, want a push failure, not ErrGone", id, err)
 		}
 	}
 	c.Run = func(context.Context, string, ...string) ([]byte, []byte, error) {
