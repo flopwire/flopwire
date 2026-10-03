@@ -65,6 +65,10 @@ const (
 	// device's next poll after the end (a presence tick, about 2 s), and
 	// the sender's clock may differ from the device's.
 	EndGrace = 10 * time.Second
+	// heldRefresh: how stale held_at may get before a read of the same
+	// holder writes it again (it only dates the row for purge). Presence is
+	// read every 2 s; most reads then write nothing.
+	heldRefresh = time.Minute
 )
 
 // Observe records what the harness registries say (see Registry) and
@@ -153,8 +157,9 @@ func (s *store) observe(ctx context.Context, r Registry, now time.Time, debounce
 			if _, err := tx.ExecContext(ctx, `INSERT INTO devbus_sessions(agent,session_id,holder,held_at) VALUES(?,?,?,?)
 				ON CONFLICT(agent,session_id) DO UPDATE SET holder=excluded.holder, held_at=excluded.held_at, missing_since=NULL,
 					ended_at=CASE WHEN ? THEN NULL ELSE ended_at END, ended_by=CASE WHEN ? THEN '' ELSE ended_by END,
-					ended_holder=CASE WHEN ? THEN '' ELSE ended_holder END`,
-				ref.Agent, ref.Session, h.ID, ms(now), revive, revive, revive); err != nil {
+					ended_holder=CASE WHEN ? THEN '' ELSE ended_holder END
+				WHERE ? OR holder<>excluded.holder OR missing_since IS NOT NULL OR COALESCE(held_at,0)<?`,
+				ref.Agent, ref.Session, h.ID, ms(now), revive, revive, revive, revive, ms(now.Add(-heldRefresh))); err != nil {
 				return err
 			}
 		}
@@ -173,7 +178,8 @@ func (s *store) observe(ctx context.Context, r Registry, now time.Time, debounce
 			// running).
 			if _, err := tx.ExecContext(ctx, `INSERT INTO devbus_sessions(agent,session_id,ended_at,ended_by) VALUES(?,?,?,'registry')
 				ON CONFLICT(agent,session_id) DO UPDATE SET holder='', missing_since=NULL, ended_holder='',
-					ended_at=COALESCE(ended_at,excluded.ended_at), ended_by='registry'`,
+					ended_at=COALESCE(ended_at,excluded.ended_at), ended_by='registry'
+				WHERE holder<>'' OR missing_since IS NOT NULL OR ended_at IS NULL OR ended_by<>'registry' OR ended_holder<>''`,
 				ref.Agent, ref.Session, ms(now)); err != nil {
 				return err
 			}
