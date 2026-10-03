@@ -339,9 +339,12 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
-For Devin CLI, setup uses no marketplace. Devin loads a Claude Code
-plugin as it is, so setup installs `plugins/claude-code/flopwire` into
-Devin:
+Devin CLI has no marketplace of its own: `devin plugins install` takes
+one plugin source. Given the root of a Claude Code marketplace
+repository, Devin 3000.10.31 and later recognizes the marketplace and
+offers to install one of its plugins. Devin loads a Claude Code plugin as
+it is, so setup names the plugin's directory in the repository and
+installs `plugins/claude-code/flopwire` into Devin directly:
 
 ```sh
 devin plugins install --local flopwire/flopwire#plugins/claude-code/flopwire -y
