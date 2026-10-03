@@ -1,0 +1,47 @@
+[
+  {
+    "id": "flopwire@flopwire",
+    "version": "0123456789ab",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/user/.claude/plugins/cache/flopwire/flopwire/0123456789ab",
+    "installedAt": "2026-10-01T12:00:00.000Z",
+    "lastUpdated": "2026-10-01T12:00:00.000Z",
+    "mcpServers": {
+      "flopwire": {
+        "command": "flopwire",
+        "args": ["mcp"]
+      }
+    },
+    "errors": [
+      "Hook load failed: JSON Parse error: Expected '}'"
+    ],
+    "errorDetails": [
+      {
+        "type": "hook-load-failed",
+        "plugin": "flopwire",
+        "path": "/home/user/.claude/plugins/cache/flopwire/flopwire/0123456789ab/hooks/hooks.json"
+      }
+    ],
+    "notes": [
+      "The packages it lists were not installed, because its package.json and package-lock.json list different dependencies"
+    ],
+    "noteDetails": [
+      {
+        "type": "dependencies-refused",
+        "plugin": "flopwire"
+      }
+    ],
+    "projectEnabled": false
+  },
+  {
+    "id": "other@elsewhere",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/user/.claude/plugins/cache/elsewhere/other/1.0.0",
+    "installedAt": "2026-01-01T00:00:00.000Z",
+    "lastUpdated": "2026-01-01T00:00:00.000Z",
+    "projectEnabled": false
+  }
+]

@@ -63,6 +63,8 @@ type fakeClaudeState struct {
 	// and exit 1.
 	Fail    map[string]string `json:"fail,omitempty"`
 	Garbage map[string]bool   `json:"garbage,omitempty"`
+	// RawList, when set, is what `plugin list --json` prints, verbatim.
+	RawList string `json:"raw_list,omitempty"`
 }
 
 // fakeClaude plays `claude plugin …` against the state file and appends
@@ -144,6 +146,10 @@ func fakeClaude(args []string) int {
 		fmt.Println(string(b))
 		return 0
 	case "list":
+		if st.RawList != "" {
+			fmt.Println(st.RawList)
+			return 0
+		}
 		b, _ := json.Marshal(st.Plugins)
 		if st.Plugins == nil {
 			b = []byte("[]")
@@ -877,6 +883,34 @@ func TestSetupWarnsAboutProjectAndLocalMCPServers(t *testing.T) {
 	for _, not := range []string{"fw-declined", "fw-other-project", `"other"`} {
 		if strings.Contains(w, not) {
 			t.Errorf("warned about %s:\n%s", not, w)
+		}
+	}
+}
+
+// TestSetupReadsClaudePluginListOutput: the load errors and notes of real
+// `claude plugin list --json` output (2.1.288, sanitized) reach the report.
+func TestSetupReadsClaudePluginListOutput(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "claude-plugin-list-2.1.288.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newSetupFixture(t, true)
+	f.setState(fakeClaudeState{
+		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+		RawList:      string(raw),
+	})
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := f.claude(rep)
+	if !h.Installed || !h.Enabled || h.Version != "0123456789ab" {
+		t.Fatalf("want the installed plugin from the listing; got %+v", h)
+	}
+	w := strings.Join(h.Warnings, "\n")
+	for _, want := range []string{"Claude Code reports a load error: Hook load failed: JSON Parse error: Expected '}'", "Claude Code notes: The packages it lists were not installed"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warnings lack %q:\n%s", want, w)
 		}
 	}
 }

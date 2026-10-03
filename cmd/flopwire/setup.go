@@ -379,8 +379,10 @@ type claudePluginEntry struct {
 	Scope       string `json:"scope"`
 	Enabled     bool   `json:"enabled"`
 	ProjectPath string `json:"projectPath"`
-	// Errors are load errors and Notes are warnings. Claude Code 2.1.287
-	// prints each only when it has some, so an empty list is no field.
+	// Errors are load errors and Notes are warnings, as strings. Claude
+	// Code (2.1.287, 2.1.288) prints each only when it has some, so an
+	// empty list is no field; errorDetails and noteDetails carry the same
+	// entries with a type and path (testdata/claude-plugin-list-2.1.288.json).
 	Errors []string `json:"errors,omitempty"`
 	Notes  []string `json:"notes,omitempty"`
 }
