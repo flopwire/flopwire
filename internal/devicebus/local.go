@@ -604,7 +604,7 @@ func (b *Bus) inboxLocal(ctx context.Context, q busproto.InboxQuery) (busproto.I
 		}
 		beforeAt, beforeID = ms(t), id
 	}
-	rows, err := b.st.db.QueryContext(ctx, `SELECT envelope,state,reason,delivered_at,
+	rows, err := b.st.db.QueryContext(ctx, `SELECT envelope,state,reason,delivered_at,read_at,
 			CASE WHEN to_session=? AND (?='' OR to_agent=?) AND NOT (from_session=? AND (?='' OR from_agent=?)) THEN 'received' ELSE 'sent' END
 		FROM devbus_messages WHERE origin='local' AND (
 			(to_session=? AND (?='' OR to_agent=?) AND state<>'refused' AND NOT ?)
@@ -622,8 +622,8 @@ func (b *Bus) inboxLocal(ctx context.Context, q busproto.InboxQuery) (busproto.I
 	now := b.cfg.Now()
 	for rows.Next() {
 		var raw, state, reason, dir string
-		var delivered sql.NullInt64
-		if err := rows.Scan(&raw, &state, &reason, &delivered, &dir); err != nil {
+		var delivered, read sql.NullInt64
+		if err := rows.Scan(&raw, &state, &reason, &delivered, &read, &dir); err != nil {
 			return out, err
 		}
 		var it busproto.InboxItem
@@ -637,6 +637,11 @@ func (b *Bus) inboxLocal(ctx context.Context, q busproto.InboxQuery) (busproto.I
 		if delivered.Valid {
 			t := time.UnixMilli(delivered.Int64).UTC()
 			it.DeliveredAt = &t
+		}
+		if it.State == busproto.StateDelivered && read.Valid {
+			// A sighting while leased (markRead) shows from the delivery on.
+			t := time.UnixMilli(read.Int64).UTC()
+			it.State, it.ReadAt = busproto.StateRead, &t
 		}
 		if it.State == busproto.StateQueued && !now.Before(it.ExpiresAt) {
 			it.State = busproto.StateExpired

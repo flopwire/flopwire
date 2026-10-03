@@ -381,9 +381,9 @@ func (b *Bus) kickAcks() {
 	}
 }
 
-// runAcks sends delivery receipts and undelivered reports in batches of
-// up to busproto.MaxAck ids, retrying with backoff. A rejected id is not deliverable by this device;
-// it is not sent again.
+// runAcks sends delivery and read receipts and undelivered reports in
+// batches of up to busproto.MaxAck entries, retrying with backoff. A
+// rejected id is not deliverable by this device; it is not sent again.
 func (b *Bus) runAcks(ctx context.Context) {
 	var backoff time.Duration
 	for {
@@ -401,10 +401,16 @@ func (b *Bus) runAcks(ctx context.Context) {
 		for {
 			ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
 			var gone []string
+			var reads []busproto.ReadReceipt
 			if err == nil && len(ids) < busproto.MaxAck {
 				gone, err = b.st.owed(ctx, "report", busproto.MaxAck-len(ids))
 			}
-			if err != nil || len(ids)+len(gone) == 0 {
+			if err == nil {
+				// Only of messages whose delivery receipt was taken: a read
+				// receipt for one in this batch goes in the next.
+				reads, err = b.st.owedReads(ctx, busproto.MaxAck-len(ids)-len(gone))
+			}
+			if err != nil || len(ids)+len(gone)+len(reads) == 0 {
 				if err != nil && ctx.Err() == nil {
 					b.log.Warn("devicebus: receipts", "err", err)
 				}
@@ -412,10 +418,13 @@ func (b *Bus) runAcks(ctx context.Context) {
 			}
 			srv, _ := b.cfg.Connect()
 			actx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone})
+			resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, Read: reads})
 			cancel()
 			if err == nil {
 				err = b.st.acked(ctx, resp.Acked, resp.Rejected)
+			}
+			if err == nil {
+				err = b.st.readAcked(ctx, resp.Read, resp.ReadRejected)
 			}
 			if err != nil {
 				if ctx.Err() != nil {
@@ -434,6 +443,9 @@ func (b *Bus) runAcks(ctx context.Context) {
 			backoff = 0
 			if len(resp.Rejected) > 0 {
 				b.log.Info("devicebus: receipts rejected (delivered elsewhere, held again or expired)", "ids", resp.Rejected)
+			}
+			if len(resp.ReadRejected) > 0 {
+				b.log.Info("devicebus: read receipts rejected (not delivered to that session on this device)", "ids", resp.ReadRejected)
 			}
 		}
 	}

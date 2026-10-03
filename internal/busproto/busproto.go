@@ -46,7 +46,9 @@
 // A hook takes a message on lease and confirms it after printing it; the
 // device then acknowledges it with AckRequest, which sets delivered_at. A
 // message no hook confirmed after MaxAttempts leases (devicebus) is
-// reported in AckRequest.Undelivered and becomes undelivered.
+// reported in AckRequest.Undelivered and becomes undelivered. When the
+// device then finds the message's wrapper in the hook context its session's
+// transcript recorded, it sends AckRequest.Read, which sets read_at.
 package busproto
 
 import (
@@ -83,7 +85,7 @@ const (
 	PresenceTTL = 75 * time.Second
 	// MaxPresence bounds the sessions one poll may report.
 	MaxPresence = 200
-	// MaxAck bounds the ids one ack may name.
+	// MaxAck bounds the ids and read receipts one ack may carry.
 	MaxAck = 100
 	// MinPrefix is the shortest session id prefix send accepts.
 	MinPrefix = 4
@@ -136,7 +138,11 @@ const (
 	StateHeld      State = "held"
 	StateClaimed   State = "claimed"
 	StateDelivered State = "delivered"
-	StateRead      State = "read"
+	// StateRead: delivered, and the message's text has since appeared in
+	// the recipient session's transcript as hook context (ReadReceipt).
+	// It says the text entered the session's context, not that the model
+	// acted on it.
+	StateRead State = "read"
 	StateExpired   State = "expired"
 	StateRefused   State = "refused"
 	// StateUndelivered: the message will not be delivered; Reason says
@@ -367,18 +373,38 @@ type ClaimResponse struct {
 // AckRequest is POST /v1/bus/ack: the messages in IDs were delivered (a
 // hook confirmed printing them); those in Undelivered will not be (no hook
 // confirmed them after devicebus.MaxAttempts leases) and become
-// undelivered with ReasonUnconfirmed. Together at most MaxAck ids.
+// undelivered with ReasonUnconfirmed; those in Read were read. Together at
+// most MaxAck entries.
 type AckRequest struct {
-	IDs         []string `json:"ids"`
-	Undelivered []string `json:"undelivered,omitempty"`
+	IDs         []string      `json:"ids"`
+	Undelivered []string      `json:"undelivered,omitempty"`
+	Read        []ReadReceipt `json:"read,omitempty"`
+}
+
+// ReadReceipt says that a delivered message's text entered its recipient
+// session's context: the session's transcript holds the message's wrapper
+// in hook context (transcript.HookContext), first at At. It does not say
+// that the model acted on it. The server sets read_at once, on a message
+// delivered to Session (and Agent) that the calling device holds; the
+// state becomes read.
+type ReadReceipt struct {
+	ID      string    `json:"id"`
+	Session string    `json:"session"`
+	Agent   string    `json:"agent"`
+	At      time.Time `json:"at"`
 }
 
 // AckResponse splits the ids of both lists. Rejected ids are not
 // deliverable by this device (unknown, another device's, held again, or
-// expired); the device does not send them again.
+// expired); the device does not send them again. Read lists the read
+// receipts taken (read_at set now or before), ReadRejected the others (not
+// a message delivered to that session on this device); neither is sent
+// again.
 type AckResponse struct {
-	Acked    []string `json:"acked"`
-	Rejected []string `json:"rejected"`
+	Acked        []string `json:"acked"`
+	Rejected     []string `json:"rejected"`
+	Read         []string `json:"read"`
+	ReadRejected []string `json:"read_rejected"`
 }
 
 // Peer is one live session, the row `flopwire peers` prints.
