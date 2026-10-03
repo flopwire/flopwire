@@ -46,8 +46,12 @@ import (
 //
 // codex@4: rows unchanged; bumped so every rollout is re-parsed and its
 // digest re-folded with the commit evidence of issue #80.
+//
+// codex@4.1: developer messages of kind hooks.additional_context are marked
+// transcript.EnrichHookContext (read receipts, issue #65). A minor bump:
+// lines parsed before keep their rows, which receipts do not need.
 const (
-	RowParser = "codex@4.0"
+	RowParser = "codex@4.1"
 	Name      = RowParser + "+" + EventsVersion
 )
 

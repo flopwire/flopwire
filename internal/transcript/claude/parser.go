@@ -83,7 +83,10 @@ import (
 // recorded (OtherCwds), for path rules.
 // claude@4: rows unchanged; bumped so every source is re-parsed and its
 // digest re-folded with the commit evidence of issue #80.
-const ParserName = "claude@4.0"
+// claude@4.1: hook_additional_context attachments are injected rows marked
+// transcript.EnrichHookContext (read receipts, issue #65). A minor bump:
+// lines parsed before keep their rows, which receipts do not need.
+const ParserName = "claude@4.1"
 
 // stateVersion is the Cursor.State format. A state of any other version,
 // or one that does not decode, restarts the parse from the beginning of the
