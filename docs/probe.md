@@ -3,8 +3,8 @@
 `flopwire probe` runs the message-bus delivery tests against the Claude Code,
 Codex, Devin CLI and opencode versions installed on this machine. Each case passes
 only when the hook log shows the right hook delivered the message and the
-model quotes the message's marker back. The command exits non-zero when a
-case fails.
+harness's own transcript shows the message's wrapper as it reached the
+model. The command exits non-zero when a case fails.
 
 ## When to run it
 
@@ -53,7 +53,7 @@ a recipient. Every message goes through the device agent's bus, as a real
 |---|---|
 | `idle` | A message sent to an idle session does not start a turn within the wait, and stays `queued`. Flopwire never wakes a session. |
 | `prompt-submit` | A message queued before the user's prompt is printed by the `UserPromptSubmit` hook, once, and reaches the model. |
-| `framing` | The `<flopwire-message>` wrapper arrives intact: the model quotes the message id, the sender session (`from`), the intent and the marker. |
+| `framing` | The `<flopwire-message>` wrapper arrives intact. The transcript holds it closed, with the sent message's id, sender session (`from`), harness (`agent`), `sender="own"`, intent and marker. |
 | `mid-turn` | A message queued while a tool runs is printed by the next `PostToolUse` hook, before the turn ends, and reaches the model. |
 | `subagent` | A message queued while a subagent runs is never printed by a hook inside the subagent and is not in the subagent's transcript. The session's own next hook prints it once, after the subagent returns. |
 | `guardian` (Codex) | A message queued while Codex's auto-review subagent reviews an escalated command is not taken by a hook during the review. The session's next hook prints it. |
@@ -69,6 +69,40 @@ The hook log (`<scratch>/<harness>/tap.jsonl`) records every hook: its
 event, tool, `agent_id` and the message ids it printed. The verdicts read
 it, so a harness change that moves a message to another hook or into a
 subagent fails the case even when the model still sees the marker.
+
+"Reaches the model" is read from the recipient's transcript, as the
+harness stored it. The probe parses it with Flopwire's own transcript
+parser and looks for the message's wrapper in the rows that the harness
+records as hook context:
+
+| Harness | Hook context row |
+|---|---|
+| Claude Code | A `hook_additional_context` attachment in the session's JSONL transcript. |
+| Codex | A developer message of kind `hooks.additional_context` in the rollout. |
+| Devin | A system node in `sessions.db` that starts with the hook's output. |
+| opencode | The text part that the plugin delivered, with `flopwire.id` metadata, in `opencode.db`. |
+
+A prompt, a model reply or a tool result never counts, whatever it
+quotes. A transcript that the probe cannot read fails the case.
+
+The wrapper must also have reached the model whole. The case fails when
+the wrapper is not closed, when the harness cut the hook context (Claude
+Code's `<persisted-output>` stub past 10,000 characters, Codex's
+truncation past 10,000 bytes), or when no model reply follows the row in
+the transcript. In `framing`, the wrapper's text must equal the sent text,
+and the hook log must show that the session's `UserPromptSubmit` printed
+the message once. In `subagent`, the session's transcript must hold the
+wrapper exactly once. The probe reads the transcript again for up to 20 s,
+because a harness may write it after the turn ends; the hook log and the
+reply that must follow the row bound that wait to the probed turn.
+
+`framing` expects `sender="own"`: the probe's sessions belong to one
+person, in `--local` mode and against the running agent alike. A probe
+between two people would expect `teammate`.
+
+The model's reply is corroboration only. Each case asks the model to
+quote the message, and the evidence says whether it did. A cheap model
+that answers the message instead of quoting it does not fail a case.
 
 ## What it does not touch
 

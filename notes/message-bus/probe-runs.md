@@ -65,3 +65,49 @@ flopwire dev, local agent. opencode: 1.18.30, model opencode/big-pickle.
 | opencode | subagent | PASS | 4 hooks ran inside the subagent; the session's PostToolUse task printed mcbd57c7bfc190d49 after PostToolUse task; subagent transcript clean; model quoted PROBE-SUBAGENT-2e6880 |
 
 5 passed, 0 failed.
+
+## 2026-10-04 20:12Z
+
+flopwire dev, local agent. claude: 2.1.289 (Claude Code), model haiku. codex: codex-cli 0.160.0, model gpt-5.6-luna. devin: devin 3000.11.1 (cc4e349ca55e), model swe-2-medium. opencode: 1.18.30, model opencode/big-pickle.
+
+| Harness | Case | Result | Evidence |
+|---|---|---|---|
+| claude | framing | PASS | transcript hook context holds the wrapper: id, from=47ba615d…, agent=claude, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| claude | prompt-submit | PASS | UserPromptSubmit printed m1759ad45df0296c0; transcript hook context holds m1759ad45df0296c0 with PROBE-PROMPTSUBMIT-40f16f; model quoted PROBE-PROMPTSUBMIT-40f16f |
+| claude | mid-turn | PASS | PostToolUse Bash printed ma1fd4619c4053096, 4.333s before the turn's Stop; transcript hook context holds ma1fd4619c4053096 with PROBE-MIDTURN-01f3b5; model quoted PROBE-MIDTURN-01f3b5 |
+| codex | framing | PASS | transcript hook context holds the wrapper: id, from=01a1088b…, agent=codex, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| codex | prompt-submit | PASS | UserPromptSubmit printed ma36ac645238153fe; transcript hook context holds ma36ac645238153fe with PROBE-PROMPTSUBMIT-39df3e; model quoted PROBE-PROMPTSUBMIT-39df3e |
+| codex | mid-turn | PASS | PostToolUse Bash printed m60cacc61faadefd3, 7.376s before the turn's Stop; transcript hook context holds m60cacc61faadefd3 with PROBE-MIDTURN-3c035a; model quoted PROBE-MIDTURN-3c035a |
+| devin | framing | PASS | transcript hook context holds the wrapper: id, from=perfect-…, agent=devin, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| devin | prompt-submit | PASS | UserPromptSubmit printed m5e1ba103f15db481; transcript hook context holds m5e1ba103f15db481 with PROBE-PROMPTSUBMIT-dccd52; model quoted PROBE-PROMPTSUBMIT-dccd52 |
+| devin | mid-turn | PASS | PostToolUse exec printed m7005467a31605d62, 4.623s before the turn's Stop; transcript hook context holds m7005467a31605d62 with PROBE-MIDTURN-7594d4; model quoted PROBE-MIDTURN-7594d4 |
+| opencode | framing | PASS | transcript hook context holds the wrapper: id, from=ses_ef77…, agent=opencode, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| opencode | prompt-submit | PASS | UserPromptSubmit printed mac1dc75717a16ce6; transcript hook context holds mac1dc75717a16ce6 with PROBE-PROMPTSUBMIT-38c011; model quoted PROBE-PROMPTSUBMIT-38c011 |
+| opencode | mid-turn | PASS | PostToolUse bash printed md6f181af568c138a, 5.196s before the turn's Stop; transcript hook context holds md6f181af568c138a with PROBE-MIDTURN-135b1f; model quoted PROBE-MIDTURN-135b1f |
+
+12 passed, 0 failed.
+
+First run with the transcript verdicts (#131): each case reads the
+message's wrapper from the recipient's transcript as the harness stored
+it, and the model's quote is corroboration only. Cases framing,
+prompt-submit and mid-turn, cheapest models.
+
+## 2026-10-04 20:32Z
+
+flopwire dev, local agent. claude: 2.1.289 (Claude Code), model haiku. codex: codex-cli 0.160.0, model gpt-5.6-luna. devin: devin 3000.11.1 (cc4e349ca55e), model swe-2-medium. opencode: 1.18.30, model opencode/big-pickle.
+
+| Harness | Case | Result | Evidence |
+|---|---|---|---|
+| claude | subagent | PASS | 8 hooks ran inside the subagent; the session's PostToolUse Agent printed m2048d6212229a55a after SubagentStop agent_id=a06ce78e9fb0…; subagent transcript clean; transcript hook context holds m2048d6212229a55a with PROBE-SUBAGENT-88e2c0; model quoted PROBE-SUBAGENT-88e2c0 |
+| codex | subagent | PASS | 5 hooks ran inside the subagent; the session's PostToolUse multi_agent_v1wait_agent printed m47a7eb8cd5a47d9a after SubagentStop agent_id=01a1089e-cfd…; subagent transcript clean; transcript hook context holds m47a7eb8cd5a47d9a with PROBE-SUBAGENT-be3068; model quoted PROBE-SUBAGENT-be3068 |
+| codex | guardian | PASS | review 3.347s; hooks during it: none; the session's PostToolUse Bash printed me6f6aea9a6a758ae after the review; transcript hook context holds me6f6aea9a6a758ae with PROBE-GUARDIAN-807a6b; model quoted PROBE-GUARDIAN-807a6b |
+| devin | subagent | PASS | 3 hooks ran inside the subagent; the session's PostToolUse run_subagent printed m5284fe353b5a8caa after PostToolUse run_subagent; subagent transcript clean; transcript hook context holds m5284fe353b5a8caa with PROBE-SUBAGENT-0155eb; model quoted PROBE-SUBAGENT-0155eb |
+| opencode | subagent | PASS | 8 hooks ran inside the subagent; the session's PostToolUse task printed me162938a3f11d930 after PostToolUse task; subagent transcript clean; transcript hook context holds me162938a3f11d930 with PROBE-SUBAGENT-ee8dc4; model quoted PROBE-SUBAGENT-ee8dc4 |
+
+5 passed, 0 failed.
+
+Reviewer run for PR #140, after the wrapper-completeness fix: subagent and
+guardian (Codex only), cheapest models. Each wrapper was closed, uncut,
+followed by a model reply, and held once by the session's transcript. The
+same build also passed framing on all four harnesses and mid-turn on
+Devin and opencode (not recorded above).
