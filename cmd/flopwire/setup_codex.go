@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // --- Codex ---
@@ -112,11 +115,14 @@ func (c codexCLI) marketplaces(ctx context.Context) ([]codexMarketplaceEntry, er
 	return l.Marketplaces, err
 }
 
+// installed lists the plugins installed from the flopwire marketplace.
+// Without --marketplace, codex plugin list also fetches the remote plugin
+// catalog into Codex's cache.
 func (c codexCLI) installed(ctx context.Context) ([]codexPluginEntry, error) {
 	var l struct {
 		Installed []codexPluginEntry `json:"installed"`
 	}
-	err := c.json(ctx, &l, "plugin", "list", "--json")
+	err := c.json(ctx, &l, "plugin", "list", "--marketplace", codexMarketplace, "--json")
 	return l.Installed, err
 }
 
@@ -397,11 +403,11 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 	installed := findCodexPlugin(list)
 	// Codex keeps loading a plugin whose marketplace was removed (its
 	// config entry and cache stay), and its hooks and MCP server still
-	// run, but plugin list no longer shows it. Ask Codex's config.
+	// run, but plugin list no longer shows it. Read Codex's user config.
 	orphan := false
 	if installed == nil && mode != setupInstall {
-		if _, cfg, err := codexAsk(ctx, path, env.cwd); err == nil {
-			orphan = codexUserConfigHasPlugin(cfg)
+		if cfg, err := readCodexUserConfig(env); err == nil {
+			_, orphan = cfg.Plugins[codexPlugin]
 		}
 	}
 
@@ -522,7 +528,20 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 	if len(r.Done) > 0 {
 		r.Todo = append(r.Todo, "restart running Codex sessions to apply the change")
 	}
-	if r.Installed {
+	switch {
+	case r.Installed && mode == setupCheck:
+		// codex app-server would answer exactly, but starting it upgrades
+		// the configured marketplaces and fetches the plugin catalog in
+		// the background. --check reads Codex's files instead.
+		r.Note = "--check read Codex's files in " + tildePath(codexHome(env), env.home) + " and did not start codex app-server, which refreshes plugin marketplaces as it starts. It looked for older manual Flopwire entries in your user config only, not in project .codex folders"
+		hooks, cfg, err := codexDiskHooks(env, r.Version)
+		if err != nil {
+			r.Warnings = append(r.Warnings, "could not read Codex's files to tell whether the plugin hooks are trusted: "+err.Error())
+		} else {
+			codexTrust(&r, hooks)
+			r.Warnings = append(r.Warnings, codexManualEntries(env, hooks, cfg)...)
+		}
+	case r.Installed:
 		hooks, cfg, err := codexAsk(ctx, path, env.cwd)
 		if err != nil {
 			r.Warnings = append(r.Warnings, "could not ask Codex whether the plugin hooks are trusted: "+err.Error())
@@ -567,30 +586,6 @@ func codexTrust(r *harnessReport, hooks []codexHook) {
 	if len(t.Disabled) > 0 {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("you disabled the Flopwire hooks for %s in Codex (/hooks); messages do not arrive through those events", strings.Join(t.Disabled, ", ")))
 	}
-}
-
-// codexUserConfigHasPlugin reports whether Codex's user config (from
-// config/read) still installs the plugin.
-func codexUserConfigHasPlugin(cfg json.RawMessage) bool {
-	var cr struct {
-		Layers []struct {
-			Name struct {
-				Type string `json:"type"`
-			} `json:"name"`
-			Config struct {
-				Plugins map[string]json.RawMessage `json:"plugins"`
-			} `json:"config"`
-		} `json:"layers"`
-	}
-	if json.Unmarshal(cfg, &cr) != nil {
-		return false
-	}
-	for _, l := range cr.Layers {
-		if _, ok := l.Config.Plugins[codexPlugin]; ok && l.Name.Type == "user" {
-			return true
-		}
-	}
-	return false
 }
 
 // codexManualEntries returns a warning for each older manual Flopwire entry
@@ -653,4 +648,251 @@ func codexManualEntries(env *setupEnv, hooks []codexHook, cfg json.RawMessage) [
 		}
 	}
 	return warn
+}
+
+// --- Codex's files, for --check ---
+//
+// What codex app-server's hooks/list and config/read would answer, read
+// from $CODEX_HOME instead (codex 0.160.0): the user config.toml, the
+// user hooks.json, and the plugin's cached hooks file.
+
+// codexHookHandler is one handler of a Codex hooks file, as Codex parses
+// it (codex-rs/config/src/hook_config.rs).
+type codexHookHandler struct {
+	Type                   string  `json:"type" toml:"type"`
+	Command                string  `json:"command" toml:"command"`
+	Timeout                *int64  `json:"timeout" toml:"timeout"`
+	Async                  bool    `json:"async" toml:"async"`
+	StatusMessage          *string `json:"statusMessage" toml:"statusMessage"`
+	AdditionalContextLimit *int64  `json:"additionalContextLimit" toml:"additionalContextLimit"`
+}
+
+type codexHookGroup struct {
+	Matcher *string            `json:"matcher" toml:"matcher"`
+	Hooks   []codexHookHandler `json:"hooks" toml:"hooks"`
+}
+
+// codexHookEvent is how Codex treats one hook event: the label in a hook's
+// state key, whether the event keeps a matcher, and whether it keeps an
+// additionalContextLimit.
+type codexHookEvent struct {
+	label            string
+	matcher, context bool
+}
+
+var codexHookEvents = map[string]codexHookEvent{
+	"PreToolUse":        {"pre_tool_use", true, true},
+	"PermissionRequest": {"permission_request", true, false},
+	"PostToolUse":       {"post_tool_use", true, true},
+	"PreCompact":        {"pre_compact", true, false},
+	"PostCompact":       {"post_compact", true, false},
+	"SessionStart":      {"session_start", true, true},
+	"SessionEnd":        {"session_end", true, false},
+	"UserPromptSubmit":  {"user_prompt_submit", false, true},
+	"SubagentStart":     {"subagent_start", true, true},
+	"SubagentStop":      {"subagent_stop", true, false},
+	"Stop":              {"stop", false, false},
+	"Interrupt":         {"interrupt", false, false},
+}
+
+// codexHookHash is the hash Codex gives a command hook and stores as
+// trusted_hash when you trust it (hook_hash in
+// codex-rs/hooks/src/engine/discovery.rs): SHA-256 of the canonical JSON
+// of the event label, the matcher and the normalized handler. "" for an
+// event or handler Codex would not run.
+func codexHookHash(event string, matcher *string, h codexHookHandler) string {
+	ev, ok := codexHookEvents[event]
+	if !ok || h.Type != "command" || strings.TrimSpace(h.Command) == "" {
+		return ""
+	}
+	var timeout int64
+	switch {
+	case event == "SessionEnd" || event == "Interrupt":
+		timeout = 1
+		if h.Timeout != nil {
+			timeout = min(max(*h.Timeout, 1), 3)
+		}
+	case h.Timeout != nil:
+		timeout = max(*h.Timeout, 1)
+	default:
+		timeout = 600
+	}
+	handler := map[string]any{"type": "command", "command": h.Command, "timeout": timeout, "async": h.Async}
+	if h.StatusMessage != nil {
+		handler["statusMessage"] = *h.StatusMessage
+	}
+	if l := h.AdditionalContextLimit; l != nil && ev.context && *l != 2500 {
+		handler["additionalContextLimit"] = *l
+	}
+	id := map[string]any{"event_name": ev.label, "hooks": []any{handler}}
+	if matcher != nil && ev.matcher {
+		id["matcher"] = *matcher
+	}
+	// encoding/json sorts map keys, as Codex's canonical form does.
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(id) != nil {
+		return ""
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(bytes.TrimSuffix(b.Bytes(), []byte("\n"))))
+}
+
+type codexHookState struct {
+	Enabled     *bool  `toml:"enabled"`
+	TrustedHash string `toml:"trusted_hash"`
+}
+
+type codexMCPServer struct {
+	Command string   `toml:"command" json:"command"`
+	Args    []string `toml:"args" json:"args"`
+}
+
+// codexUserConfig is the part of $CODEX_HOME/config.toml setup reads.
+type codexUserConfig struct {
+	path       string
+	Notify     []string                  `toml:"notify"`
+	MCPServers map[string]codexMCPServer `toml:"mcp_servers"`
+	Plugins    map[string]any            `toml:"plugins"`
+	// HookState is [hooks.state]; Hooks are the other [hooks] tables.
+	HookState map[string]codexHookState
+	Hooks     map[string][]codexHookGroup
+}
+
+// readCodexUserConfig reads $CODEX_HOME/config.toml. A missing file is an
+// empty config.
+func readCodexUserConfig(env *setupEnv) (codexUserConfig, error) {
+	home := codexHome(env)
+	if home == "" {
+		return codexUserConfig{}, errors.New("no home directory")
+	}
+	cfg := codexUserConfig{path: filepath.Join(home, "config.toml")}
+	var raw struct {
+		Notify     []string                  `toml:"notify"`
+		MCPServers map[string]codexMCPServer `toml:"mcp_servers"`
+		Plugins    map[string]any            `toml:"plugins"`
+		Hooks      map[string]toml.Primitive `toml:"hooks"`
+	}
+	md, err := toml.DecodeFile(cfg.path, &raw)
+	if errors.Is(err, fs.ErrNotExist) {
+		return cfg, nil
+	}
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Notify, cfg.MCPServers, cfg.Plugins = raw.Notify, raw.MCPServers, raw.Plugins
+	cfg.Hooks = map[string][]codexHookGroup{}
+	for k, v := range raw.Hooks {
+		if k == "state" {
+			if err := md.PrimitiveDecode(v, &cfg.HookState); err != nil {
+				return cfg, fmt.Errorf("%s: hooks.state: %w", cfg.path, err)
+			}
+			continue
+		}
+		if _, ok := codexHookEvents[k]; !ok {
+			continue
+		}
+		var groups []codexHookGroup
+		if err := md.PrimitiveDecode(v, &groups); err != nil {
+			return cfg, fmt.Errorf("%s: hooks.%s: %w", cfg.path, k, err)
+		}
+		cfg.Hooks[k] = groups
+	}
+	return cfg, nil
+}
+
+// readCodexHooksFile reads a hooks.json: {"hooks": {"Event": [groups]}}.
+func readCodexHooksFile(path string) (map[string][]codexHookGroup, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var f struct {
+		Hooks map[string][]codexHookGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return f.Hooks, nil
+}
+
+// codexDiskHooks returns what hooks/list and config/read would: the
+// plugin's hooks with their trust state, the user's own hooks, and the
+// user config layer. version is the installed plugin's version, the
+// directory of Codex's cached copy.
+func codexDiskHooks(env *setupEnv, version string) ([]codexHook, json.RawMessage, error) {
+	cfg, err := readCodexUserConfig(env)
+	if err != nil {
+		return nil, nil, err
+	}
+	if version == "" || filepath.Base(version) != version || version == ".." {
+		return nil, nil, fmt.Errorf("unexpected plugin version %q", version)
+	}
+	home := codexHome(env)
+	root := filepath.Join(home, "plugins", "cache", codexMarketplace, "flopwire", version)
+	rel := "hooks/hooks.json"
+	if raw, err := os.ReadFile(filepath.Join(root, ".codex-plugin", "plugin.json")); err == nil {
+		var m struct {
+			Hooks any `json:"hooks"`
+		}
+		if json.Unmarshal(raw, &m) == nil {
+			if p, ok := m.Hooks.(string); ok && p != "" {
+				rel = filepath.ToSlash(filepath.Clean(p))
+			}
+		}
+	}
+	if strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+		return nil, nil, fmt.Errorf("unexpected plugin hooks path %q", rel)
+	}
+	events, err := readCodexHooksFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		return nil, nil, err
+	}
+	var hooks []codexHook
+	for _, event := range slices.Sorted(maps.Keys(events)) {
+		ev, ok := codexHookEvents[event]
+		if !ok {
+			continue
+		}
+		for gi, g := range events[event] {
+			for hi, h := range g.Hooks {
+				hash := codexHookHash(event, g.Matcher, h)
+				if hash == "" {
+					continue
+				}
+				key := fmt.Sprintf("%s:%s:%s:%d:%d", codexPlugin, rel, ev.label, gi, hi)
+				st := cfg.HookState[key]
+				status := "untrusted"
+				switch {
+				case st.TrustedHash == hash:
+					status = "trusted"
+				case st.TrustedHash != "":
+					status = "modified"
+				}
+				hooks = append(hooks, codexHook{Key: key, EventName: event, Command: h.Command, Source: "plugin", PluginID: codexPlugin,
+					Enabled: st.Enabled == nil || *st.Enabled, TrustStatus: status})
+			}
+		}
+	}
+	// The user's own hooks: hooks.json beside config.toml, and [hooks].
+	user := func(path string, events map[string][]codexHookGroup) {
+		for _, event := range slices.Sorted(maps.Keys(events)) {
+			for _, g := range events[event] {
+				for _, h := range g.Hooks {
+					hooks = append(hooks, codexHook{EventName: event, Command: h.Command, SourcePath: path, Source: "user", Enabled: true})
+				}
+			}
+		}
+	}
+	userHooks := filepath.Join(home, "hooks.json")
+	if events, err := readCodexHooksFile(userHooks); err == nil {
+		user(userHooks, events)
+	}
+	user(cfg.path, cfg.Hooks)
+	// Shaped as config/read's answer.
+	layer, _ := json.Marshal(map[string]any{"layers": []any{map[string]any{
+		"name":   map[string]any{"type": "user", "file": cfg.path},
+		"config": map[string]any{"notify": cfg.Notify, "mcp_servers": cfg.MCPServers},
+	}}})
+	return hooks, layer, nil
 }

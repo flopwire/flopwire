@@ -226,10 +226,24 @@ The report has these parts:
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
 | `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
+| `harnesses[].note` | How setup learned what it reports, when that limits the report. |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
 Use `--check` to report and change nothing. Use `--remove` to uninstall.
+
+For Codex, `--check` runs only `codex plugin marketplace list` and
+`codex plugin list --marketplace flopwire`, which read local state. It
+does not start `codex app-server`: the app server upgrades the
+configured plugin marketplaces and fetches the plugin catalog in the
+background when it starts. Instead, `--check` reads Codex's files in
+`$CODEX_HOME` (default `~/.codex`): `config.toml`, `hooks.json` and the
+plugin's cached hooks file. It computes each plugin hook's hash as Codex
+0.160.0 does and compares it with the `trusted_hash` that Codex stored
+when you approved the hook. It looks for older manual Flopwire entries in
+the user config only, not in a project's `.codex` folder. The Codex entry
+says this in `note`. `flopwire setup` without `--check` asks the app
+server.
 Run `flopwire setup --help` for every flag.
 
 ### Set up a device (for an agent)
