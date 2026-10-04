@@ -958,8 +958,11 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 				}
 				e.WriteString(l + "\n")
 			}
+			// A ref is one line, whitespace (a newline, a tab) collapsed:
+			// a ref written by another device could otherwise start a line
+			// of its own and pass for a header (issue #71).
 			for _, r := range m.Refs {
-				e.WriteString("    ref: " + format.Clean(r) + "\n")
+				e.WriteString("    ref: " + strings.Join(strings.Fields(format.Clean(r)), " ") + "\n")
 			}
 		} else {
 			first := format.ClipAround(lines[0], 0, 160)

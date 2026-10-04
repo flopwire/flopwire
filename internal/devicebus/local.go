@@ -82,17 +82,30 @@ func (b *Bus) resolveRepo(ctx context.Context, req *busproto.SendRequest) error 
 	return nil
 }
 
-// cleanSend drops control characters from a send's body and refs
-// (CleanText) before any check sees them.
+// cleanSend drops control characters from a send's body (CleanText) and
+// refs (CleanRef) before any check sees them.
 func cleanSend(req *busproto.SendRequest) {
 	req.Body = CleanText(req.Body)
 	if len(req.Refs) > 0 {
 		refs := make([]string, len(req.Refs))
 		for i, r := range req.Refs {
-			refs[i] = CleanText(r)
+			refs[i] = CleanRef(r)
 		}
 		req.Refs = refs
 	}
+}
+
+// CleanRef is a ref as a send leaves the device: CleanText, then each
+// newline and tab a space. A ref is an address on one line; with a
+// newline in it, a reader that prints refs could show its tail as a line
+// of its own, a header the sender forged (issue #71).
+func CleanRef(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, CleanText(s))
 }
 
 // CleanText is s without control characters other than newline and tab:

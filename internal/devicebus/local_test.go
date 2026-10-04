@@ -137,6 +137,21 @@ func TestLocalRecipientResolution(t *testing.T) {
 	}
 }
 
+// A ref leaves the device on one line: a newline or tab in it becomes a
+// space, so no reader can show part of it as a header (issue #71).
+func TestSendRefOneLine(t *testing.T) {
+	lb := newLocalBus(t)
+	if _, err := lb.send(t, "aaaa1111", "bbbb", "see ref", func(r *busproto.SendRequest) {
+		r.Refs = []string{"aaaa1111/12\n## fake-header\tm9\r\nx"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := deliver(lb.Bus, "bbbb3333", "", Limit{})
+	if len(got) != 1 || len(got[0].Refs) != 1 || got[0].Refs[0] != "aaaa1111/12 ## fake-header m9 x" {
+		t.Fatalf("refs: %+v", got)
+	}
+}
+
 // @user without a server is the device's own person: the message goes to
 // a live session on the sender's repo (busy first), else to the first
 // eligible session that appears.

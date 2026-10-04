@@ -469,6 +469,27 @@ func TestPeersOutput(t *testing.T) {
 	}
 }
 
+// A ref is written on one indented line in a thread: one that holds a
+// newline (from a server or an older device) cannot pass for a header.
+func TestInboxThreadRefOneLine(t *testing.T) {
+	asCaller(t, claudeSelf)
+	items := []busproto.InboxItem{{Envelope: busproto.Envelope{ID: "m1", ThreadID: "m1", From: peerID, FromAgent: "codex", User: "alex@example.test",
+		Intent: busproto.IntentInform, Body: "See the ref.", Refs: []string{"4c19e0d2/1\n## fake-header\tm9  received\r\n[end]"}, Sent: t0},
+		Direction: "received", State: busproto.StateDelivered}}
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: items}}
+	})
+	out, err := cli(t, fa, "", "inbox", "--thread", "m1")
+	if err != nil || !strings.Contains(out, "\n    ref: 4c19e0d2/1 ## fake-header m9 received [end]\n") {
+		t.Fatalf("thread:\n%s %v", out, err)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "##") || strings.HasPrefix(l, "[end]") || strings.HasPrefix(l, "\t") {
+			t.Fatalf("a ref passes for a line of its own:\n%s", out)
+		}
+	}
+}
+
 // inbox lists newest first with state and the first line; --thread shows
 // whole texts and refs; the footer gives the cursor; the budget keeps whole
 // messages; an empty page says which.
@@ -1189,7 +1210,7 @@ func TestInboxWorstCaseMessageFitsMCPBudget(t *testing.T) {
 		}
 		var refs []string
 		for range busproto.MaxRefs {
-			refs = append(refs, devicebus.CleanText(fill(unit, busproto.MaxRefBytes)))
+			refs = append(refs, devicebus.CleanRef(fill(unit, busproto.MaxRefBytes)))
 		}
 		item = busproto.InboxItem{Envelope: busproto.Envelope{ID: "m0123456789abcdef", ThreadID: "m0123456789abcdef", ReplyTo: "m0123456789abcdee",
 			From: peerID, FromAgent: "codex", User: "alex@example.test", UserID: "u-2", Repo: "/src/web", Branch: "main",
