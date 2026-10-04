@@ -265,6 +265,9 @@ type Bus struct {
 	pushWake           chan struct{} // a cloud message may be due
 	cloud              map[string]cloudList
 	localSeq           int64
+	// skewLows are the recent poll answers' lower bounds on the clocks'
+	// skew (learnSkew); the poll loop alone uses them.
+	skewLows []time.Duration
 }
 
 // Open opens (creating) the local inbox at path.

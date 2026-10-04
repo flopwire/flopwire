@@ -1350,7 +1350,7 @@ func TestExpiryFollowsServerClock(t *testing.T) {
 			live, gone := env("mlive", "s1"), env("mgone", "s1")
 			live.ExpiresAt = serverNow.Add(30 * time.Minute)
 			gone.ExpiresAt = serverNow.Add(-time.Second)
-			if err := b.answered(ctx, busproto.PollResponse{Now: serverNow, Messages: []busproto.Envelope{live, gone}}, map[string]bool{}); err != nil {
+			if err := b.answered(ctx, busproto.PollResponse{Now: serverNow, Messages: []busproto.Envelope{live, gone}}, cfg.Now(), map[string]bool{}); err != nil {
 				t.Fatal(err)
 			}
 			got, err := deliver(b, "s1", "", Limit{})
@@ -1439,4 +1439,66 @@ func TestNoDeviceCredentialDoesNotPoll(t *testing.T) {
 	}
 	key.Store("device") // flopwire login
 	waitFor(t, "a poll", func() bool { return srv.pollCount() > 0 })
+}
+
+// The skew is not taken from one slow answer: an answer that left the
+// server 30 s (or, read after the laptop slept, an hour) before the device
+// read it does not move a message's expiry later by that much. Each answer
+// bounds the skew from below (it left the server before it arrived), and
+// from above (after the poll was asked); the device keeps the tightest
+// recent bound, so a clock set back or forward is still followed (#71).
+func TestSkewIgnoresASlowAnswer(t *testing.T) {
+	var mu sync.Mutex
+	dev := time.Now().UTC().Truncate(time.Millisecond)
+	clock := func(d time.Time) { mu.Lock(); dev = d; mu.Unlock() }
+	cfg := testConfig(newFakeServer(), nil)
+	cfg.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return dev }
+	p := &presenceSrc{}
+	var all []Session
+	for _, id := range []string{"s0", "s1", "s2", "s3", "s4"} {
+		all = append(all, sess(id, "claude", "/src/api", false))
+	}
+	p.set(all...)
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	// answer is a poll asked held before now and answered by a server
+	// whose clock reads now+skew-late, with one message to session to that
+	// expires ttl after the server's answer: on the device's clock, at
+	// now-late+ttl.
+	answer := func(to string, held, late, skew, ttl time.Duration) {
+		t.Helper()
+		now := cfg.Now()
+		m := env("m"+to, to)
+		m.ExpiresAt = now.Add(skew - late + ttl)
+		if err := b.answered(ctx, busproto.PollResponse{Now: now.Add(skew - late), Messages: []busproto.Envelope{m}}, now.Add(-held), map[string]bool{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expect := func(to string, after time.Duration, want int) {
+		t.Helper()
+		start := cfg.Now()
+		clock(start.Add(after))
+		got, err := b.Take(ctx, to, "", Limit{})
+		clock(start)
+		if err != nil || len(got) != want {
+			t.Fatalf("%s %v later: took %d messages (%v), want %d", to, after, len(got), err, want)
+		}
+	}
+	answer("s0", 50*time.Millisecond, 0, 0, time.Hour) // a prompt answer: no skew
+	// A 30 s latency spike: the message expires 40 s after the server sent
+	// it, 10 s after it arrived.
+	answer("s1", 35*time.Second, 30*time.Second, 0, 40*time.Second)
+	expect("s1", 20*time.Second, 0)
+	// The laptop slept an hour with the answer unread.
+	answer("s2", time.Hour+10*time.Second, time.Hour, 0, 90*time.Minute)
+	expect("s2", time.Hour, 0)
+	expect("s2", 20*time.Minute, 1)
+	// The device clock is set back an hour: the server now reads an hour
+	// ahead, which the next prompt answer shows.
+	answer("s3", 50*time.Millisecond, 0, time.Hour, 10*time.Minute)
+	expect("s3", 20*time.Minute, 0)
+	expect("s3", 5*time.Minute, 1)
+	// And forward again: a prompt answer bounds the skew from above.
+	answer("s4", 50*time.Millisecond, 0, 0, 10*time.Minute)
+	expect("s4", 20*time.Minute, 0)
+	expect("s4", 5*time.Minute, 1)
 }

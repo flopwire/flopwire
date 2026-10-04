@@ -27,9 +27,9 @@ import (
 // message came.
 type store struct {
 	db *sql.DB
-	// skew is the server's clock less the device's (ns), from the last
-	// poll answer: a server message's expiry is stored on the device's
-	// clock (upsertServer).
+	// skew is the server's clock less the device's (ns), from the recent
+	// poll answers (learnSkew): a server message's expiry is stored on the
+	// device's clock (upsertServer).
 	skew atomic.Int64
 }
 

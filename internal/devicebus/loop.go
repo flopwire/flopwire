@@ -261,7 +261,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			}
 			backoff = 0
 			cursor, gen = a.resp.Cursor, a.resp.Gen
-			if err := b.answered(ctx, a.resp, skip); err != nil {
+			if err := b.answered(ctx, a.resp, started, skip); err != nil {
 				// A claim could not be made (or the inbox not written):
 				// back off, then ask for the whole set again.
 				backoff = min(max(2*backoff, b.cfg.BackoffMin), b.cfg.BackoffMax)
@@ -316,14 +316,38 @@ func (b *Bus) pollFailed(ctx context.Context, a pollAnswer, backoff time.Duratio
 	return nil, backoff, next
 }
 
+// skewSamples is how many recent answers the skew is learned from.
+const skewSamples = 8
+
+// learnSkew learns the clocks' skew (the server's less the device's,
+// issue #71) from a poll asked at asked and answered at got (the device's
+// clock) by a server whose clock read server. The answer left the server
+// after the poll was asked and before it arrived, so server-got is a lower
+// bound on the skew and server-asked an upper one. A one-off slow answer
+// (a latency spike, or one read after the laptop slept) gives a low lower
+// bound: the skew is the highest of the recent ones. A recent bound above
+// this answer's upper bound predates a change of the device's clock and
+// is dropped. answered runs on the poll loop alone.
+func (b *Bus) learnSkew(asked, got, server time.Time) {
+	low := server.Sub(got)
+	if !asked.IsZero() {
+		high := server.Sub(asked)
+		b.skewLows = slices.DeleteFunc(b.skewLows, func(l time.Duration) bool { return l > high })
+	}
+	b.skewLows = append(b.skewLows, low)
+	if len(b.skewLows) > skewSamples {
+		b.skewLows = b.skewLows[len(b.skewLows)-skewSamples:]
+	}
+	b.st.skew.Store(int64(slices.Max(b.skewLows)))
+}
+
 // answered folds a poll answer into the inbox: reconcile against the whole
 // set, then claim what is offered.
-func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, skip map[string]bool) error {
+// asked is when the poll was asked (the device's clock).
+func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked time.Time, skip map[string]bool) error {
 	now := b.cfg.Now()
 	if !resp.Now.IsZero() {
-		// The answer left the server just now: the difference is the
-		// clocks' skew (issue #71), to a network trip.
-		b.st.skew.Store(int64(resp.Now.Sub(now)))
+		b.learnSkew(asked, now, resp.Now)
 	}
 	b.mu.Lock()
 	b.held = resp.Held
