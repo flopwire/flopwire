@@ -34,6 +34,8 @@ type server struct {
 	url   string
 	hc    *http.Client
 	admin string
+	pool  *pgxpool.Pool
+	bus   *bus.Store
 }
 
 func newServer(t *testing.T) *server {
@@ -49,7 +51,8 @@ func newServer(t *testing.T) *server {
 	}
 	s := store.NewPostgres(pool, nil, "")
 	reg := prometheus.NewRegistry()
-	h := httptest.NewServer(api.New(s, api.Config{Bus: &bus.Store{Pool: pool}, Registry: reg}).Handler(reg))
+	bs := &bus.Store{Pool: pool}
+	h := httptest.NewServer(api.New(s, api.Config{Bus: bs, Registry: reg}).Handler(reg))
 	t.Cleanup(h.Close)
 	// The first administrator, as `flopwire bootstrap` makes one.
 	now := time.Now().UTC()
@@ -66,7 +69,7 @@ func newServer(t *testing.T) *server {
 	if err := s.BootstrapIdentity(ctx, u, c, domain.AuditEvent{ID: uuid.NewString(), ActorID: u.ID, Action: "bootstrap", TargetType: "user", TargetID: u.ID, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	return &server{t: t, url: h.URL, hc: h.Client(), admin: plain}
+	return &server{t: t, url: h.URL, hc: h.Client(), admin: plain, pool: pool, bus: bs}
 }
 
 func (s *server) post(path, token string, body, out any) {
@@ -125,10 +128,20 @@ type agentBus struct {
 
 func (s *server) agent(token string, sessions ...devicebus.Session) *agentBus {
 	s.t.Helper()
+	return s.agentVia(token, nil, sessions...)
+}
+
+// agentVia is agent with the device's server wrapped by wrap (nil: as is).
+func (s *server) agentVia(token string, wrap func(devicebus.Server) devicebus.Server, sessions ...devicebus.Session) *agentBus {
+	s.t.Helper()
 	ab := &agentBus{sessions: sessions}
 	b, err := devicebus.Open(filepath.Join(s.t.TempDir(), "bus.db"), devicebus.Config{
 		Connect: func() (devicebus.Server, string) {
-			return client.Bus{Server: s.url, Token: token, HTTP: s.hc}, "k"
+			var srv devicebus.Server = client.Bus{Server: s.url, Token: token, HTTP: s.hc}
+			if wrap != nil {
+				srv = wrap(srv)
+			}
+			return srv, "k"
 		},
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		PresenceEvery: 50 * time.Millisecond, BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
