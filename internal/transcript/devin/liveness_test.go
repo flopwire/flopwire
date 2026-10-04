@@ -1,0 +1,164 @@
+package devin
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// livenessStore is a sessions.db with the tables the liveness reads use.
+type livenessStore struct {
+	t    *testing.T
+	path string
+	db   *sql.DB
+}
+
+func newLivenessStore(t *testing.T) *livenessStore {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, last_activity_at INTEGER NOT NULL DEFAULT 0);
+		CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, node_id INTEGER NOT NULL,
+		  parent_node_id INTEGER, chat_message TEXT NOT NULL, created_at INTEGER NOT NULL, metadata TEXT, UNIQUE(session_id, node_id));`); err != nil {
+		t.Fatal(err)
+	}
+	return &livenessStore{t: t, path: path, db: db}
+}
+
+// node writes a node; parent < 0 is a root.
+func (s *livenessStore) node(session string, id, parent int64, msg map[string]any) {
+	s.t.Helper()
+	b, _ := json.Marshal(msg)
+	var p any
+	if parent >= 0 {
+		p = parent
+	}
+	if _, err := s.db.Exec(`INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES (?,?,?,?,1791144707)`,
+		session, id, p, string(b)); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+func meta(at time.Time, ext map[string]any) map[string]any {
+	m := map[string]any{"created_at": at.UTC().Format(time.RFC3339Nano)}
+	if ext != nil {
+		m["extensions"] = ext
+	}
+	return m
+}
+
+// Devin fires no Stop for an interrupted turn; the store's marker node
+// (shapes from the TUI probe, devin 3000.11.1) says the turn ended, and
+// when.
+func TestInterruptedSince(t *testing.T) {
+	s := newLivenessStore(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 4, 20, 10, 0, 0, time.UTC)
+	got := func(session string, since time.Time) bool {
+		t.Helper()
+		ok, err := InterruptedSince(ctx, s.path, session, since)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	// A turn running a tool: no marker.
+	s.node("tool", 1, -1, map[string]any{"role": "user", "content": "run sleep 90", "metadata": meta(t0, nil)})
+	s.node("tool", 2, 1, map[string]any{"role": "assistant", "content": "", "tool_calls": []map[string]any{{"id": "get_output_0#1", "name": "get_output"}}})
+	if got("tool", t0) {
+		t.Fatal("a running turn reads as interrupted")
+	}
+	// Esc twice while the tool ran.
+	s.node("tool", 3, 2, map[string]any{"role": "tool", "content": "Canceled due to user interrupt", "tool_call_id": "get_output_0#1",
+		"metadata": meta(t0.Add(28*time.Second), map[string]any{"chisel/tool_failure": map[string]any{"reason": "Canceled"}})})
+	if !got("tool", t0.Add(19*time.Second)) {
+		t.Fatal("a tool interrupt after the last busy hook not seen")
+	}
+	// A prompt after the interrupt: that turn was not interrupted.
+	if got("tool", t0.Add(40*time.Second)) {
+		t.Fatal("an interrupt before the turn's start counted")
+	}
+	// Esc while the model wrote its answer.
+	s.node("text", 1, -1, map[string]any{"role": "user", "content": "write an essay"})
+	s.node("text", 2, 1, map[string]any{"role": "assistant", "content": "# Bridges\n\nFew structures..."})
+	s.node("text", 3, 2, map[string]any{"role": "system", "content": "[Response interrupted by user]", "metadata": meta(t0.Add(5*time.Second), nil)})
+	if !got("text", t0) {
+		t.Fatal("a response interrupt not seen")
+	}
+	// Text that only mentions an interrupt, and a marker without its time.
+	s.node("quote", 1, -1, map[string]any{"role": "user", "content": "[Response interrupted by user] is what Devin writes", "metadata": meta(t0.Add(time.Second), nil)})
+	s.node("quote", 2, 1, map[string]any{"role": "tool", "content": "Canceled due to user interrupt"})
+	if got("quote", t0) {
+		t.Fatal("a user's text or an undated marker counted")
+	}
+	// Only the newest nodes are read.
+	for i := int64(4); i < 4+InterruptRecentNodes; i++ {
+		s.node("tool", i, i-1, map[string]any{"role": "assistant", "content": "later"})
+	}
+	if got("tool", t0) {
+		t.Fatal("an interrupt older than the newest nodes counted")
+	}
+	if got("missing", t0) {
+		t.Fatal("an unknown session reads as interrupted")
+	}
+}
+
+func TestSessions(t *testing.T) {
+	s := newLivenessStore(t)
+	if _, err := s.db.Exec(`INSERT INTO sessions (id) VALUES ('running'), ('other')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Sessions(context.Background(), s.path, []string{"running", "deleted"})
+	if err != nil || !got["running"] || got["deleted"] || got["other"] {
+		t.Fatalf("Sessions: %v %v", got, err)
+	}
+	if _, err := Sessions(context.Background(), filepath.Join(t.TempDir(), "none.db"), []string{"x"}); err == nil {
+		t.Fatal("a missing store read without error")
+	}
+}
+
+// A run_subagent call whose process died has no result. `devin -r` goes on
+// from the call's parent: the next prompt is the call's sibling (probe,
+// devin 3000.11.1). The call is abandoned, so the session's Stop is its
+// own. Devin's second copy of an assistant node (a sibling with the same
+// message_id) is no fork.
+func TestSubagentRunningIgnoresAbandonedCall(t *testing.T) {
+	s := newLivenessStore(t)
+	ctx := context.Background()
+	running := func() bool {
+		t.Helper()
+		ok, err := SubagentRunning(ctx, s.path, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	call := map[string]any{"message_id": "m-call", "role": "assistant", "content": "",
+		"tool_calls": []map[string]any{{"id": "run_subagent_0_7b22#52ba", "name": "run_subagent"}}}
+	s.node("s", 28, -1, map[string]any{"message_id": "m-sys", "role": "system", "content": "instructions"})
+	s.node("s", 29, 28, map[string]any{"message_id": "m-u1", "role": "user", "content": "start a subagent"})
+	s.node("s", 30, 29, call)
+	s.node("s", 31, 29, call) // Devin's second copy
+	if !running() {
+		t.Fatal("an unanswered run_subagent call is not running")
+	}
+	// The process was killed; the resumed session's next prompt.
+	s.node("s", 32, 29, map[string]any{"message_id": "m-u2", "role": "user", "content": "reply gamma"})
+	if running() {
+		t.Fatal("an abandoned run_subagent call still counts as running")
+	}
+	// A new run_subagent in the resumed turn runs.
+	s.node("s", 33, 32, map[string]any{"message_id": "m-call2", "role": "assistant", "content": "",
+		"tool_calls": []map[string]any{{"id": "run_subagent_0_9c21#1111", "name": "run_subagent"}}})
+	if !running() {
+		t.Fatal("the resumed turn's run_subagent call is not running")
+	}
+}
