@@ -1124,3 +1124,20 @@ func TestCompareSemver(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeMarketplaceAddResult: Claude Code 2.1.289's `marketplace add
+// --json` names the marketplace it added (the name the source declares),
+// which setup reports in done.
+func TestClaudeMarketplaceAddResult(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "claude-marketplace-add-2.1.289.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r claudeResult
+	if err := json.Unmarshal(lastJSONLine(raw), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Outcome != "ok" || r.Marketplace != "notflop" {
+		t.Fatalf("decoded %+v", r)
+	}
+}
