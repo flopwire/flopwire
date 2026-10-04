@@ -63,7 +63,7 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	counts := redactSend(&req)
 	srv, _ := b.cfg.Connect()
 	out, err := srv.Send(ctx, req)
-	if isNotOnDevice(err) {
+	if isNotOnDevice(err) && b.mayAwaitReport(ctx, req.FromSession, req.FromAgent) {
 		// The server has not had the session in a poll yet (a brand-new
 		// session sends before its first presence report): report it
 		// now and ask again, within PlaceWait. A refused send stores
@@ -76,8 +76,24 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 				break // the poll that reported it may not have reached the server yet: else again
 			}
 		}
-		if !reported {
+		switch {
+		case !reported:
 			err = notIndexedYet(req.FromSession)
+		case isNotOnDevice(err):
+			// Refused after a poll reported it: another report will not
+			// change that soon, so the next sends do not wait for one.
+			b.mu.Lock()
+			if b.refusedAfterReport == nil {
+				b.refusedAfterReport = map[string]time.Time{}
+			}
+			now := b.cfg.Now()
+			for k, until := range b.refusedAfterReport {
+				if !now.Before(until) {
+					delete(b.refusedAfterReport, k)
+				}
+			}
+			b.refusedAfterReport[req.FromAgent+":"+req.FromSession] = now.Add(refusedAfterReportFor)
+			b.mu.Unlock()
 		}
 	}
 	if err == nil && len(counts) > 0 {
@@ -374,14 +390,22 @@ func (b *Bus) Nudge(session, agent string) {
 			listed = true
 		}
 	}
-	if !listed {
-		b.presence = presenceCache{}
+	now := b.cfg.Now()
+	ask := !listed && now.Sub(b.nudged) >= nudgeEvery
+	if ask {
+		b.presence, b.nudged = presenceCache{}, now
 	}
 	b.mu.Unlock()
-	if !listed {
+	if ask {
 		b.repollNow()
 	}
 }
+
+// nudgeEvery bounds Nudge's repolls: a session presence never lists (one
+// the agent does not track) would otherwise restart the server's long
+// poll on every hook call. The presence check (PresenceEvery) still
+// notices a session that appears later.
+const nudgeEvery = time.Second
 
 func (b *Bus) repollNow() {
 	select {
@@ -470,14 +494,37 @@ func (b *Bus) notWithheld(ctx context.Context, session, agent string, wait bool)
 	return nil
 }
 
-// awaitReported waits, up to the deadline, until a poll has reported
-// session to the server, asking for one now (Nudge's repoll). It reports
-// whether one has.
-func (b *Bus) awaitReported(ctx context.Context, session, agent string, deadline <-chan time.Time) bool {
+// refusedAfterReportFor is how long a sender the server refused after a
+// poll reported it sends without waiting for another report.
+const refusedAfterReportFor = time.Minute
+
+// mayAwaitReport reports whether a send the server refused as not on the
+// device may wait for a poll to report the sender: fresh presence reports
+// it to the server (a session the device knows only by Known, or past
+// MaxPresence, no poll reports), and the server has not refused it lately
+// after a poll had reported it.
+func (b *Bus) mayAwaitReport(ctx context.Context, session, agent string) bool {
 	b.mu.Lock()
+	until, refused := b.refusedAfterReport[agent+":"+session]
 	b.presence = presenceCache{}
 	b.mu.Unlock()
-	b.repollNow()
+	if refused && b.cfg.Now().Before(until) {
+		return false
+	}
+	all, err := b.sessions(ctx)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(serverPresence(all), func(s busproto.PresenceSession) bool {
+		return s.SessionID == session && (agent == "" || s.Agent == agent)
+	})
+}
+
+// awaitReported waits, up to the deadline, until a poll has reported
+// session to the server, asking once for one now (Nudge's repoll) when
+// the last poll did not. It reports whether one has.
+func (b *Bus) awaitReported(ctx context.Context, session, agent string, deadline <-chan time.Time) bool {
+	asked := false
 	for {
 		b.mu.Lock()
 		polled, reported := b.polled, b.reported
@@ -486,6 +533,13 @@ func (b *Bus) awaitReported(ctx context.Context, session, agent string, deadline
 			return s.SessionID == session && (agent == "" || s.Agent == agent)
 		}) {
 			return true
+		}
+		if !asked {
+			asked = true
+			b.mu.Lock()
+			b.presence = presenceCache{}
+			b.mu.Unlock()
+			b.repollNow()
 		}
 		select {
 		case <-ctx.Done():

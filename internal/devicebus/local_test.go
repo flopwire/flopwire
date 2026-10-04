@@ -238,6 +238,28 @@ func TestLocalLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("session_rate_no_lockout", func(t *testing.T) {
+		// Retrying at the ceiling does not extend it: 30 sends refused by
+		// session_rate, spread over the hour, do not count, so the
+		// session sends again an hour after the sends that filled it.
+		lb := newLocalBus(t)
+		for i := range busproto.SessionPerHour {
+			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("n", i)); err != nil {
+				t.Fatal(i, err)
+			}
+			deliver(lb.Bus, "bbbb3333", "", Limit{})
+		}
+		for i := range 30 {
+			lb.advance(time.Minute)
+			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("retry", i)); code(err) != busproto.CodeSessionRate {
+				t.Fatalf("retry %d: %v", i, err)
+			}
+		}
+		lb.advance(30*time.Minute + time.Second)
+		if _, err := lb.send(t, "aaaa1111", "bbbb", "an hour later"); err != nil {
+			t.Fatalf("locked out by its own refused retries: %v", err)
+		}
+	})
 	t.Run("thread_rate", func(t *testing.T) {
 		lb := newLocalBus(t)
 		first, err := lb.send(t, "aaaa1111", "bbbb", "start", func(r *busproto.SendRequest) { r.Intent = "request" })

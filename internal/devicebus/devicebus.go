@@ -247,10 +247,18 @@ type Bus struct {
 	// the presence that poll carries (awaitReported).
 	polled   chan struct{}
 	reported []busproto.PresenceSession
-	ackWake  chan struct{} // a delivery owes a receipt
-	pushWake chan struct{} // a cloud message may be due
-	cloud    map[string]cloudList
-	localSeq int64
+	// nudged is when a Nudge last asked for a poll: at most one a
+	// nudgeEvery, so hooks of a session presence never lists cannot
+	// restart the long poll on every call.
+	nudged time.Time
+	// refusedAfterReport holds, until a time, the senders the server
+	// refused as not on the device although a poll had reported them: a
+	// send from one does not wait for another report (Send).
+	refusedAfterReport map[string]time.Time
+	ackWake            chan struct{} // a delivery owes a receipt
+	pushWake           chan struct{} // a cloud message may be due
+	cloud              map[string]cloudList
+	localSeq           int64
 }
 
 // Open opens (creating) the local inbox at path.

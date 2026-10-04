@@ -1198,3 +1198,110 @@ func TestLocalSendFromNewSessionWaits(t *testing.T) {
 		t.Fatalf("local send from a new session: %v", err)
 	}
 }
+
+// A session the server refuses although a poll reported it (and one that
+// presence never reports, so no poll can) does not cost a repoll and a
+// PlaceWait on every send: the wait is bounded, and later sends return
+// the server's refusal at once.
+func TestSendRefusedAfterReportDoesNotRepollEachSend(t *testing.T) {
+	shortPlaceWait(t, 400*time.Millisecond)
+	srv := newFakeServer()
+	srv.sendFn = func(req busproto.SendRequest) error {
+		return &busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session " + req.FromSession + " is not on this device"}
+	}
+	p := &presenceSrc{}
+	p.set(sess("stuck-1", "claude", "/src/api", true))
+	cfg := testConfig(srv, nil)
+	cfg.PresenceEvery = time.Hour // only a repoll starts a poll
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	run(t, b)
+	waitFor(t, "the first poll", func() bool { return srv.pollCount() > 0 })
+	before := srv.pollCount()
+	var be *busproto.Error
+	for i := range 4 {
+		start := time.Now()
+		_, err := b.Send(ctx, busproto.SendRequest{FromSession: "stuck-1", To: "abcd", Body: fmt.Sprint("x", i)})
+		if !errors.As(err, &be) || be.Code != busproto.CodeSessionNotOnDevice {
+			t.Fatalf("send %d: %v", i, err)
+		}
+		if d := time.Since(start); i > 0 && d > 150*time.Millisecond {
+			t.Fatalf("send %d from a session the server refused after a report waited %s", i, d)
+		}
+	}
+	if n := srv.pollCount() - before; n > 1 {
+		t.Fatalf("4 refused sends started %d polls", n)
+	}
+
+	// Known but never in presence (not live): no poll can report it.
+	p.set()
+	b.mu.Lock()
+	b.presence = presenceCache{}
+	b.mu.Unlock()
+	b.SetSources(p.get, func(context.Context, string) ([]Session, error) {
+		return []Session{sess("quiet-1", "claude", "/src/api", false)}, nil
+	})
+	before = srv.pollCount()
+	start := time.Now()
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "quiet-1", To: "abcd", Body: "y"}); !errors.As(err, &be) || be.Code != busproto.CodeSessionNotOnDevice {
+		t.Fatalf("send from a known, not live session: %v", err)
+	}
+	if d := time.Since(start); d > 150*time.Millisecond {
+		t.Fatalf("a session no poll can report waited %s", d)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := srv.pollCount() - before; n != 0 {
+		t.Fatalf("a session no poll can report started %d polls", n)
+	}
+}
+
+// A hook's nudge for a session presence never lists (one the agent does
+// not track) does not restart the server's long poll on every hook call.
+func TestNudgeUnlistedSessionBounded(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	cfg := testConfig(srv, nil)
+	cfg.PresenceEvery = time.Hour
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	run(t, b)
+	waitFor(t, "the first poll", func() bool { return srv.pollCount() > 0 })
+	before := srv.pollCount()
+	for range 10 {
+		b.Nudge("ghost-1", "codex")
+		time.Sleep(60 * time.Millisecond)
+	}
+	if n := srv.pollCount() - before; n > 1 {
+		t.Fatalf("10 nudges for an unlisted session in 600ms started %d polls", n)
+	}
+}
+
+// CleanRef leaves a transcript path without newline or tab as it is, and
+// the withheld check sees each ref as it leaves (cleaned): control
+// characters or a newline around a withheld session's id do not hide it.
+func TestCleanRefKeepsWithheldCheck(t *testing.T) {
+	for _, r := range []string{"/Users/g/My Project/.claude/projects/-src-api/4c19e0d2.jsonl:3", "4c19e0d2/12:4", "~/x y/z.jsonl"} {
+		if got := CleanRef(r); got != r {
+			t.Fatalf("CleanRef(%q) = %q", r, got)
+		}
+	}
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	const secret = "5ec2e7aa-0000-4000-8000-000000000001"
+	b.SetWithheld(func(_ context.Context, ref string) (string, error) {
+		if strings.HasPrefix(ref, "5ec2e7aa") {
+			return secret, nil
+		}
+		return "", nil
+	}, nil)
+	for _, ref := range []string{"\n5ec2e7aa/28672", "\x005ec2e7aa\t/1", "5ec2\x01e7aa/2"} {
+		var be *busproto.Error
+		if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "x", Refs: []string{ref}}); !errors.As(err, &be) || be.Code != busproto.CodeWithheldSession {
+			t.Fatalf("ref %q: %v", ref, err)
+		}
+	}
+	if srv.sendCount() != 0 {
+		t.Fatal("a ref naming a withheld session reached the server")
+	}
+}
