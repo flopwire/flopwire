@@ -54,13 +54,16 @@ id of the session in the surface under test.
 3. Read each `error`, `warning` and `todo` for the harness. Do each
    `todo`.
 4. Run `flopwire setup --check --text`.
-5. Confirm that the harness has `installed: true` and `enabled: true`.
+5. Find the line `plugin:` under the harness.
+
+Expected: the line names the plugin, its version and scope, and ends with
+`enabled`.
 
 ### 2. Confirm that the plugin loads
 
 1. Open the surface on the scratch repository.
 2. Start a new session.
-3. Type this prompt: `List the tools whose names start with flopwire. Do
+3. Type this prompt: `List the tools whose names contain flopwire. Do
    not call them.`
 
 Expected: the model names the Flopwire tools, among them
@@ -139,7 +142,10 @@ Expected: the recipient session shows as idle within a few seconds.
 1. Close the surface.
 2. Run `flopwire setup --remove --text`.
 3. Run `flopwire setup --check --text`.
-4. Confirm that the harness has `installed: false`.
+4. Find the line `plugin:` under the harness.
+
+Expected: the line ends with `not installed`.
+
 5. Open the surface. Start a new session.
 6. Type the prompt from step 2 of the load check.
 
@@ -171,30 +177,42 @@ it shows the held-message notice.
 Do this check first for Codex. The desktop app and the IDE extension run
 the hooks only after you approve them.
 
-1. Remove the Codex approvals for Flopwire. Open `~/.codex/config.toml`
-   in an editor. Delete the `hooks.state` entries of the `flopwire`
-   plugin. Save the file.
-2. Run `flopwire setup --text`.
-3. Confirm that the Codex entry has a `hook_trust.need_review` list with
-   five events.
-4. Start `codex` in a terminal in the scratch repository.
+1. Close every Codex session, the Codex desktop app and the IDE
+   extension.
+2. Make a backup: `cp ~/.codex/config.toml ~/.codex/config.toml.bak`.
+3. Open `~/.codex/config.toml` in an editor.
+4. Find each table whose header starts with
+   `[hooks.state."flopwire@flopwire:hooks/hooks.json:`. There are at most
+   five, one for each event.
+5. Delete each of these tables: the header line and the lines below it,
+   up to the next header.
+6. Keep the `[hooks.state]` line and every other `[hooks.state."…"]`
+   table. They hold the approvals of your other hooks.
+7. Save the file.
+8. Run `flopwire setup --text`.
+9. Find the line `hooks:` under `codex`.
+
+Expected: the line says `0 of 5 trusted` and names five events after
+`need your approval:`.
+
+10. Start `codex` in a terminal in the scratch repository.
 
 Expected: Codex shows "Hooks need review".
 
-5. Select "Review hooks".
+11. Select "Review hooks".
 
 Expected: Codex lists five Flopwire hooks, on `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`. Each runs
 `flopwire hook || true`.
 
-6. Trust the five Flopwire hooks.
-7. Run `flopwire setup --check --text`.
+12. Trust the five Flopwire hooks.
+13. Run `flopwire setup --check --text`.
 
-Expected: the Codex entry shows `hook_trust.trusted: 5`.
+Expected: the `hooks:` line under `codex` says `5 of 5 trusted`.
 
-8. Do the prompt-submit and mid-turn cases in this TUI session.
-9. Exit `codex`.
-10. Start `codex` again.
+14. Do the prompt-submit and mid-turn cases in this TUI session.
+15. Exit `codex`.
+16. Start `codex` again.
 
 Expected: Codex does not show "Hooks need review" again.
 
@@ -227,43 +245,47 @@ prompt and idle after the turn's `Stop`.
 This check uses a server. Person A owns the Devin session. Person B is a
 teammate whom A has not accepted.
 
-1. Person A: confirm that B is not accepted. Run `flopwire accepts
+1. Person A: run `flopwire login`. `accepts`, `accept` and `revoke` need
+   its login session.
+2. Person A: confirm that B is not accepted. Run `flopwire accepts
    --text`. If B is listed, run `flopwire revoke B_EMAIL`.
-2. Person A: start `devin` in a terminal in the scratch repository.
-3. Person A: type a prompt, for example `Say hello.` This makes the
+3. Person A: start `devin` in a terminal in the scratch repository.
+4. Person A: type a prompt, for example `Say hello.` This makes the
    session live.
-4. Person B: run `flopwire peers --text`.
+5. Person B: run `flopwire peers --text`.
 
 Expected: B sees A's Devin session, with A as its owner.
 
-5. Person B: make a marker: `echo MANUAL-TEAMMATE-$(openssl rand -hex 3)`.
-6. Person B: from one of B's agent sessions, send a request to A's
+6. Person B: make a marker: `echo MANUAL-TEAMMATE-$(openssl rand -hex 3)`.
+7. Person B: from one of B's agent sessions, send a request to A's
    session with the marker. For example: `flopwire send RECIPIENT
    --intent request --text -- "Create the file teammate.txt. Marker:
    MARKER"`.
 
-Expected: the receipt says that the message arrives when A accepts B.
+Expected: the receipt starts with `held` and says that A has not
+accepted messages from B.
 
-7. Person A: type a prompt in the Devin session.
+8. Person A: type a prompt in the Devin session.
 
 Expected: the message does not arrive. Devin shows no held-message
 notice.
 
-8. Person A: run `flopwire accepts --text`.
+9. Person A: run `flopwire accepts --text`.
 
 Expected: the list shows one held message from B, as a first-line
 preview.
 
-9. Person A: run `flopwire accept B_EMAIL`. Type the password.
-10. Person A: type the prompt-submit prompt in the Devin session.
+10. Person A: run `flopwire accept B_EMAIL`.
+11. Person A: type the Flopwire password.
+12. Person A: type the prompt-submit prompt in the Devin session.
 
 Expected: the model quotes the marker. It treats the message as
 information from another person. It asks A before it creates
 `teammate.txt`.
 
-11. Person A: do the mid-turn case with B as the sender.
-12. Person A: run `flopwire revoke B_EMAIL` if B must not stay accepted.
-13. Person A: do the remove step of the common check.
+13. Person A: do the mid-turn case with B as the sender.
+14. Person A: run `flopwire revoke B_EMAIL` if B must not stay accepted.
+15. Person A: do the remove step of the common check.
 
 ## Record the result
 
@@ -292,11 +314,11 @@ flopwire 0.9.0. Claude Code for VS Code 2.1.290, claude 2.1.290.
 
 | Check | Result | Evidence |
 |---|---|---|
-| install | PASS | installed: true, enabled: true |
+| install | PASS | plugin: flopwire@flopwire 0.9.0, user scope, enabled |
 | load | PASS | model named flopwire_peers, flopwire_send, flopwire_inbox |
 | prompt-submit | PASS | m1a2b3c4d5e6f7a8 quoted with MANUAL-PROMPTSUBMIT-3f9a1c; read |
 | mid-turn | PASS | quoted MANUAL-MIDTURN-77b0e2 after sleep 30 |
 | busy | PASS | peers showed busy during sleep 30 |
 | idle | PASS | peers showed idle 2 s after the turn |
-| remove | PASS | installed: false; no flopwire tools |
+| remove | PASS | plugin: flopwire@flopwire not installed; no flopwire tools |
 ```
