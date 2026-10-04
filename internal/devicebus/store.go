@@ -31,7 +31,7 @@ type store struct {
 // schemaVersion is the inbox's PRAGMA user_version. An inbox with another
 // version is from an earlier build (pre-release: no migration) and is
 // recreated empty: messages from a server come back with the next poll.
-const schemaVersion = 4
+const schemaVersion = 5
 
 const schema = `
 CREATE TABLE IF NOT EXISTS devbus_messages (
@@ -72,6 +72,7 @@ CREATE INDEX IF NOT EXISTS devbus_ack ON devbus_messages (ack) WHERE ack IN ('ow
 CREATE INDEX IF NOT EXISTS devbus_read_ack ON devbus_messages (read_ack, read_at, id) WHERE read_ack = 'owed';
 CREATE INDEX IF NOT EXISTS devbus_lease ON devbus_messages (lease_until) WHERE state = 'leased';
 CREATE INDEX IF NOT EXISTS devbus_from ON devbus_messages (from_session, created_at);
+CREATE INDEX IF NOT EXISTS devbus_created ON devbus_messages (origin, created_at);
 CREATE INDEX IF NOT EXISTS devbus_thread ON devbus_messages (thread_id, created_at);
 CREATE INDEX IF NOT EXISTS devbus_expires ON devbus_messages (expires_at);
 -- The device's sessions as the bus tracks them (Bus.Observe, End,

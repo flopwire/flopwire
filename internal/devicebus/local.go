@@ -567,6 +567,11 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 	return out, nil
 }
 
+// localCounted is the server's counted (internal/bus): the hourly sender
+// ceilings count refused sends too, so an agent looping on a refusal
+// reaches them, but not a refusal by one of those ceilings.
+const localCounted = ` AND (state<>'refused' OR reason NOT IN ('` + busproto.CodeSessionRate + `','` + busproto.CodeDeviceRate + `','` + busproto.CodeUserRate + `'))`
+
 // checkLocal applies reply_to and the server's loop and volume limits
 // (plan §3) to the local inbox. A refusal is returned, not failed: the
 // message is still stored, as refused, so the sender's inbox lists it.
@@ -597,12 +602,22 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 	if n > 0 {
 		return fail(http.StatusConflict, busproto.CodeDuplicate, "dropped: this session sent the same text to the same recipient in the last %s", busproto.DuplicateWindow), nil
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND from_session=? AND created_at>? AND state<>'refused'`,
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND from_session=? AND created_at>?`+localCounted,
 		e.From, ms(now.Add(-time.Hour))).Scan(&n); err != nil {
 		return nil, err
 	}
 	if n >= busproto.SessionPerHour {
 		return fail(http.StatusTooManyRequests, busproto.CodeSessionRate, "this session sent %d messages in the last hour; the limit is %d", n, busproto.SessionPerHour), nil
+	}
+	// Every local message is this device's: the server's per-device
+	// ceiling (#51) bounds them all. The per-person ceiling is above it,
+	// and without a server the person has only this device.
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND created_at>?`+localCounted,
+		ms(now.Add(-time.Hour))).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n >= busproto.DevicePerHour {
+		return fail(http.StatusTooManyRequests, busproto.CodeDeviceRate, "this device sent %d messages in the last hour; the limit is %d", n, busproto.DevicePerHour), nil
 	}
 	if e.ReplyTo != "" {
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND thread_id=? AND created_at>? AND state<>'refused'`,
@@ -613,10 +628,18 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 			return fail(http.StatusTooManyRequests, busproto.CodeThreadRate, "thread %s had %d messages in the last hour; the limit is %d", e.ThreadID, n, busproto.ThreadPerHour), nil
 		}
 	}
-	// Undelivered messages to the recipient: to the session, or, for
-	// @user, those no session has taken yet.
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_key=? AND state IN ('queued','leased') AND expires_at>?
-		AND (to_key<>'user' OR to_session='')`, toKey, ms(now)).Scan(&n); err != nil {
+	// Undelivered messages to the recipient: to the session, @user ones a
+	// session has taken included (the server's SessionPendingSQL), or,
+	// for @user, those no session has taken yet (UserPendingSQL).
+	var err error
+	if e.Addressed == "session" {
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_session=? AND to_agent=? AND state IN ('queued','leased') AND expires_at>?`,
+			e.ToSession, e.ToAgent, ms(now)).Scan(&n)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_key='user' AND to_session='' AND state IN ('queued','leased') AND expires_at>?`,
+			ms(now)).Scan(&n)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if n >= busproto.MaxUndelivered {

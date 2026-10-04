@@ -277,6 +277,79 @@ func TestLocalLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("session_rate_counts_refusals", func(t *testing.T) {
+		// As on the server, a refused send counts toward the session's
+		// hourly ceiling: an agent looping on a refusal reaches it.
+		lb := newLocalBus(t)
+		if _, err := lb.send(t, "aaaa1111", "bbbb", "same"); err != nil {
+			t.Fatal(err)
+		}
+		for i := 1; i < busproto.SessionPerHour; i++ {
+			if _, err := lb.send(t, "aaaa1111", "bbbb", "same"); code(err) != busproto.CodeDuplicate {
+				t.Fatal(i, err)
+			}
+		}
+		if _, err := lb.send(t, "aaaa1111", "bbbb", "new text"); code(err) != busproto.CodeSessionRate {
+			t.Fatalf("refusals not counted: %v", err)
+		}
+	})
+	t.Run("device_rate", func(t *testing.T) {
+		// The server's per-device ceiling (#51) holds without a server:
+		// sessions each under their own ceiling cannot pass it together.
+		lb := newLocalBus(t)
+		senders := []string{"dddd0001", "dddd0002", "dddd0003", "dddd0004", "dddd0005"}
+		all := []Session{sess("ffff6666", "claude", "/src/api", false)}
+		for _, id := range senders {
+			all = append(all, sess(id, "claude", "/src/api", false))
+		}
+		lb.p.set(all...)
+		lb.advance(time.Second)
+		n := 0
+		for _, from := range senders[:busproto.DevicePerHour/busproto.SessionPerHour] {
+			for range busproto.SessionPerHour {
+				if _, err := lb.send(t, from, "ffff6666", fmt.Sprint("n", n)); err != nil {
+					t.Fatal(n, err)
+				}
+				n++
+				deliver(lb.Bus, "ffff6666", "", Limit{}) // keep the recipient under its cap
+			}
+		}
+		last := senders[len(senders)-1]
+		_, err := lb.send(t, last, "ffff6666", "one more")
+		var be *busproto.Error
+		if !errors.As(err, &be) || be.Code != busproto.CodeDeviceRate || be.Status != 429 {
+			t.Fatalf("device rate: %v", err)
+		}
+		// A refusal by the ceiling does not count toward it.
+		lb.advance(time.Hour - 2*time.Second)
+		if _, err := lb.send(t, last, "ffff6666", "still full"); code(err) != busproto.CodeDeviceRate {
+			t.Fatalf("still within the hour: %v", err)
+		}
+		lb.advance(3 * time.Second)
+		if _, err := lb.send(t, last, "ffff6666", "an hour later"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("recipient_full_counts_claimed_user", func(t *testing.T) {
+		// An @user message a session has taken counts toward that
+		// session's undelivered cap, as on the server.
+		lb := newLocalBus(t)
+		half := busproto.MaxUndelivered / 2
+		for i := range half {
+			out, err := lb.send(t, "bbbb3333", "@gary", fmt.Sprint("u", i), func(r *busproto.SendRequest) { r.Repo = "api" })
+			if err != nil || !out.To.Live {
+				t.Fatal(i, out, err)
+			}
+		}
+		for i := range busproto.MaxUndelivered - half {
+			if _, err := lb.send(t, "aaaa2222", "aaaa1111", fmt.Sprint("s", i)); err != nil {
+				t.Fatal(i, err)
+			}
+		}
+		if _, err := lb.send(t, "aaaa2222", "aaaa1111", "one more"); code(err) != busproto.CodeRecipientFull {
+			t.Fatalf("claimed @user messages not counted: %v", err)
+		}
+	})
 	t.Run("validation", func(t *testing.T) {
 		lb := newLocalBus(t)
 		for _, req := range []busproto.SendRequest{
