@@ -65,7 +65,7 @@ const (
 type acceptIO struct {
 	password func() (string, error) // reads the password typed at the prompt
 	out      io.Writer              // the answer
-	errOut   io.Writer // the statement and prompt, and JSON errors
+	errOut   io.Writer              // the statement and prompt, and JSON errors
 	terminal func() bool
 	load     func() (client.Config, error)
 }
