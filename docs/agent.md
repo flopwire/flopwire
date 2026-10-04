@@ -438,13 +438,28 @@ looks for a keychain item with another name, and prints
 `Not logged in · Please run /login`. `CLAUDE_CODE_OAUTH_TOKEN` supplies
 the login. Do not copy any files from `~/.claude`.
 
-1. Make an empty directory for the scratch configuration.
-2. Read the access token from the keychain item
-   `Claude Code-credentials` (`security find-generic-password -s
-   "Claude Code-credentials" -w`, field `claudeAiOauth.accessToken`).
-   Keep it in a shell variable. Do not write it to a file.
-3. Set `CLAUDE_CONFIG_DIR` to the scratch directory and
-   `CLAUDE_CODE_OAUTH_TOKEN` to the token.
+The access token is a secret. It must not show on the screen, in a
+file, in a log or in the shell history:
+
+- Never type or paste the token. Read it from the keychain inside a
+  command substitution, as in step 3. The history then holds the
+  `security` command, not the token.
+- Never run `security find-generic-password -w` alone. It prints the
+  whole keychain item, the refresh token too.
+- Do not run `echo`, `env`, `printenv`, `set` or `set -x` while the
+  token is set.
+
+1. Start a new shell (`zsh`) for the test. The token goes away when you
+   exit it.
+2. Make an empty directory for the scratch configuration. Set
+   `CLAUDE_CONFIG_DIR` to it.
+3. Read the access token from the keychain item
+   `Claude Code-credentials` straight into the environment:
+
+   ```sh
+   export CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s 'Claude Code-credentials' -w | /usr/bin/jq -r .claudeAiOauth.accessToken)"
+   ```
+
 4. Set `FLOPWIRE_CONFIG` and `FLOPWIRE_INDEX` to paths in scratch.
 5. Set `PATH` to a directory that holds only `claude`, `flopwire` and
    `git`, then `/usr/bin:/bin`. setup then finds no other harness.
@@ -453,7 +468,7 @@ the login. Do not copy any files from `~/.claude`.
 7. Run `claude -p --setting-sources user`. Ask the model to quote the
    hook output and to list the `flopwire` tools.
 8. Run `flopwire setup --remove`, then `flopwire setup --check`.
-9. Delete the scratch directory.
+9. Exit the shell from step 1. Delete the scratch directory.
 
 To prove that the hooks reach the model, put a `flopwire` script first
 on `PATH` for step 7. For `flopwire hook`, the script prints
