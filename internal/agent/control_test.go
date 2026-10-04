@@ -471,3 +471,31 @@ func TestControlPendingLeaseAndConfirm(t *testing.T) {
 		t.Fatal("confirm without a session accepted")
 	}
 }
+
+// A send from a session the agent has not indexed waits up to
+// devicebus.PlaceWait, but a hook's pending call meanwhile, from another
+// session or from the waiting one, answers within the hook's 200 ms
+// budget: the wait holds only its own connection.
+func TestControlPendingDuringPlacementWait(t *testing.T) {
+	f, _ := busFixture(t)
+	sent := make(chan Response, 1)
+	go func() {
+		sent <- ask(t, f.a, Request{Op: "send", Send: &busproto.SendRequest{FromSession: "new-9999", To: "to-2222", Body: "hi"}})
+	}()
+	time.Sleep(100 * time.Millisecond)
+	for _, s := range []string{"to-2222", "new-9999"} {
+		start := time.Now()
+		r := ask(t, f.a, Request{Op: "pending", Session: s})
+		if d := time.Since(start); !r.OK || d > 200*time.Millisecond {
+			t.Fatalf("pending for %s during a placement wait: %v after %s", s, r.Error, d)
+		}
+	}
+	select {
+	case r := <-sent:
+		t.Fatalf("the send did not wait: %+v", r)
+	default:
+	}
+	if r := <-sent; r.OK || r.BusError == nil || r.BusError.Code != busproto.CodeSessionNotOnDevice {
+		t.Fatalf("send from a session never indexed: %+v", r)
+	}
+}
