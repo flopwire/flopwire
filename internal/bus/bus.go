@@ -40,7 +40,10 @@ type Store struct {
 	// answers at once, as if its wait ended, so the server's shutdown
 	// grace outlasts it. Nil never closes.
 	Stopping <-chan struct{}
-	hub      hub
+	// Retention is how long Sweep keeps a message in a final state after
+	// its expiry, with its audit rows; 0 is busproto.DefaultRetention.
+	Retention time.Duration
+	hub       hub
 }
 
 func (s *Store) now() time.Time {

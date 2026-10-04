@@ -102,12 +102,19 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"expire", expireSQL, []any{now}},
 		{"drop presence", dropPresenceSQL, []any{now}},
 		{"refused row", RefusedRowSQL, []any{"me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now}},
+		{"purge", PurgeSQL, []any{now.Add(48 * time.Hour), purgeBatch}},
+		{"purge audit", PurgeAuditSQL, []any{now.Add(48 * time.Hour), purgeBatch}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			perfguard.AssertIndexedPlan(t, pool, c.sql, c.args...)
 		})
 	}
 	assertSendCeilingIndexes(t, pool, me, now)
+	// The retention sweep reads final rows by expiry, and their audit
+	// rows by message id or by age, never the whole tables.
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_retention_idx", PurgeSQL, now.Add(48*time.Hour), purgeBatch)
+	perfguard.AssertPlanUsesIndex(t, pool, "audit_bus_message_idx", PurgeSQL, now.Add(48*time.Hour), purgeBatch)
+	perfguard.AssertPlanUsesIndex(t, pool, "audit_bus_batch_idx", PurgeAuditSQL, now.Add(48*time.Hour), purgeBatch)
 	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_session_idx", RefusedRowSQL, "me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now)
 	// The users table is a handful of rows; its lookup is not indexed.
 	perfguard.AssertIndexedPlanExcept(t, pool, []string{"users"}, UserLookupSQL, "alex")
