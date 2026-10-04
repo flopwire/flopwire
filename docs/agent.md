@@ -419,7 +419,8 @@ Code's plugins. The Claude Code plugin and the Devin plugin therefore never
 run in the same Devin session.
 
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
-with the plugin.
+with the plugin. To check them by hand, see
+[manual-checks.md](manual-checks.md).
 
 ## Connect the harness hooks
 
