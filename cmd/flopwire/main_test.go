@@ -558,7 +558,7 @@ func TestBusRetention(t *testing.T) {
 			t.Errorf("busRetention(%q) = %v, %v; want %v", v, got, err, want)
 		}
 	}
-	for _, v := range []string{"7", "seven days", "0d", "-1h", "30m", "1.5d"} {
+	for _, v := range []string{"7", "seven days", "0d", "-1h", "30m", "1.5d", "300000d"} {
 		if got, err := busRetention(v); err == nil {
 			t.Errorf("busRetention(%q) = %v, want an error", v, got)
 		}

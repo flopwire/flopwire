@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -411,6 +412,11 @@ func busRetention(v string) (time.Duration, error) {
 	if days, ok := strings.CutSuffix(v, "d"); ok {
 		var n int
 		if n, err = strconv.Atoi(days); err == nil {
+			// Past the largest Duration, n days would wrap, possibly to a
+			// short positive retention.
+			if n > int(math.MaxInt64/int64(24*time.Hour)) {
+				n = -1
+			}
 			d = time.Duration(n) * 24 * time.Hour
 		}
 	} else {
