@@ -3,6 +3,10 @@
 One section per hand run of `flopwire probe --notes`, oldest first. See
 [`docs/probe.md`](../../docs/probe.md) for what each case proves.
 
+A manual check of a GUI surface or an interactive TUI gets its own
+section, headed `## YYYY-MM-DD manual: SURFACE`, in date order with the
+probe runs. See [`docs/manual-checks.md`](../../docs/manual-checks.md).
+
 ## 2026-10-03 16:05Z
 
 flopwire dev, local agent. claude: 2.1.288 (Claude Code), model haiku. codex: codex-cli 0.160.0, model gpt-5.6-luna. devin: devin 3000.11.1 (cc4e349ca55e), model swe-2-medium.

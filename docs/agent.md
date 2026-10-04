@@ -419,7 +419,8 @@ Code's plugins. The Claude Code plugin and the Devin plugin therefore never
 run in the same Devin session.
 
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
-with the plugin.
+with the plugin. To check them by hand, see
+[manual-checks.md](manual-checks.md).
 
 ## Connect the harness hooks
 
@@ -952,7 +953,9 @@ the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
 A subagent is not a session, so it gets no messages. A hook that runs in
 a subagent prints nothing and takes nothing. The session's own next hook
 delivers the messages. A message that a subagent sends goes out as its
-parent session, and the reply goes to the parent session.
+parent session, and the reply goes to the parent session. The parent's
+human does not see the call. This is the same on Claude Code, Codex,
+Devin CLI and opencode (decided 2026-10-04).
 
 A session that a path rule keeps off the server cannot send. The agent
 refuses the request before anything leaves the device.

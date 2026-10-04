@@ -110,11 +110,12 @@ within 5 minutes of expiry, or 8 days after `last_refresh`.
 
 ## What it does not cover
 
-- The Claude desktop app, the Codex desktop app and the IDE extensions.
-  Check them by hand after their releases: send a message to a session
-  in each surface, and check that it arrives at the next tool call or
-  prompt.
-- Interactive TUI sessions. The probe drives each harness headless:
+- The Claude desktop app, the Codex desktop app, Devin Desktop and the
+  IDE extensions. Check them by hand after their releases. See
+  [manual-checks.md](manual-checks.md).
+- Interactive TUI sessions. The Codex hook review screen and the Devin TUI
+  with a teammate sender have their own checks in
+  [manual-checks.md](manual-checks.md). The probe drives each harness headless:
   `claude -p` with stream-json input, `codex app-server`, `devin acp` and
   `opencode serve`.
   Each keeps one process open, so the session stays live and idle between
