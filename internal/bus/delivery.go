@@ -970,7 +970,10 @@ func (s *Store) Accept(ctx context.Context, c busproto.Caller, sender string) (b
 }
 
 // Revoke withdraws an acceptance: later messages from sender are held, and
-// so are its queued messages not yet delivered or claimed.
+// so are its queued messages not yet delivered or claimed. A queued
+// message a device's poll answered just before the revoke can still be
+// printed once; its receipt is then rejected (AckSQL). Accepted as
+// won't-fix (#70, notes/message-bus/plan.md §9).
 func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (busproto.AcceptResponse, error) {
 	var out busproto.AcceptResponse
 	now := s.now()
