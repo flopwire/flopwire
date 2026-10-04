@@ -25,7 +25,7 @@ func newLivenessStore(t *testing.T) *livenessStore {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, last_activity_at INTEGER NOT NULL DEFAULT 0);
+	if _, err := db.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, last_activity_at INTEGER NOT NULL DEFAULT 0, main_chain_id INTEGER);
 		CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, node_id INTEGER NOT NULL,
 		  parent_node_id INTEGER, chat_message TEXT NOT NULL, created_at INTEGER NOT NULL, metadata TEXT, UNIQUE(session_id, node_id));`); err != nil {
 		t.Fatal(err)
@@ -160,5 +160,69 @@ func TestSubagentRunningIgnoresAbandonedCall(t *testing.T) {
 		"tool_calls": []map[string]any{{"id": "run_subagent_0_9c21#1111", "name": "run_subagent"}}})
 	if !running() {
 		t.Fatal("the resumed turn's run_subagent call is not running")
+	}
+}
+
+// A background subagent (run_subagent in the background, or one moved
+// there by Esc) writes its nodes into its session as it runs, on a root of
+// its own, and its hooks carry the session's id (probes, devin 3000.11.1,
+// 2026-10-04). Its tool call is in the store, but not on the session's
+// main chain: sessions.main_chain_id names a node of that chain, which may
+// lag behind the newest node or already be past the call (#107, #109).
+func TestOwnToolCallIsOnTheMainChain(t *testing.T) {
+	s := newLivenessStore(t)
+	ctx := context.Background()
+	own := func(id string) bool {
+		t.Helper()
+		ok, err := OwnToolCall(ctx, s.path, "s", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	setMain := func(n any) {
+		t.Helper()
+		if _, err := s.db.Exec(`UPDATE sessions SET main_chain_id = ? WHERE id = 's'`, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(mid, id, name string) map[string]any {
+		return map[string]any{"message_id": mid, "role": "assistant", "content": "",
+			"tool_calls": []map[string]any{{"id": id, "name": name}}}
+	}
+	if _, err := s.db.Exec(`INSERT INTO sessions (id) VALUES ('s')`); err != nil {
+		t.Fatal(err)
+	}
+	s.node("s", 15, -1, map[string]any{"message_id": "m-sys", "role": "system", "content": "You are Devin"})
+	s.node("s", 21, 15, map[string]any{"message_id": "m-u", "role": "user", "content": "start a background subagent"})
+	s.node("s", 22, 21, call("m-run", "run_subagent_0#1", "run_subagent"))
+	s.node("s", 28, -1, map[string]any{"message_id": "m-sub", "role": "system", "content": "You are a subagent"})
+	s.node("s", 29, 28, map[string]any{"message_id": "m-task", "role": "user", "content": "sleep 4"})
+	s.node("s", 30, 21, call("m-run", "run_subagent_0#1", "run_subagent")) // Devin's second copy
+	s.node("s", 31, 30, map[string]any{"message_id": "m-r", "role": "tool", "content": "Background subagent started", "tool_call_id": "run_subagent_0#1"})
+	setMain(31)
+	s.node("s", 32, 29, call("m-s1", "exec_sub#1", "exec"))  // the subagent's
+	s.node("s", 33, 31, call("m-p1", "exec_main#1", "exec")) // the session's, past main_chain_id
+	if !own("exec_main#1") {
+		t.Fatal("the session's tool call, written after main_chain_id moved, is not its own")
+	}
+	if !own("run_subagent_0#1") {
+		t.Fatal("the run_subagent call, behind main_chain_id, is not its own")
+	}
+	if own("exec_sub#1") {
+		t.Fatal("a background subagent's tool call counts as the session's own")
+	}
+	// main_chain_id moves past the call (its result): still its own.
+	s.node("s", 34, 31, call("m-p1", "exec_main#1", "exec"))
+	s.node("s", 35, 34, map[string]any{"message_id": "m-r2", "role": "tool", "content": "ok", "tool_call_id": "exec_main#1"})
+	setMain(35)
+	if !own("exec_main#1") || own("exec_sub#1") {
+		t.Fatal("main_chain_id past the call")
+	}
+	// No main chain recorded (a store that does not set it): any recent
+	// call counts, as before.
+	setMain(nil)
+	if !own("exec_sub#1") {
+		t.Fatal("without main_chain_id a recent call is not taken as the session's")
 	}
 }

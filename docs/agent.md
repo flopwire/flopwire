@@ -1152,9 +1152,13 @@ again after a few seconds. `flopwire send` retries once by itself.
   receive. Claude Code cloud sessions and Devin cloud sessions only
   receive, while they run a turn. See [docs/cloud.md](cloud.md). For
   opencode, see [opencode.md](opencode.md#known-limits).
-- A Devin hook finds a subagent's tool call in Devin's session store. If
-  the hook cannot read the store, it delivers messages only at a prompt.
-  It writes the cause to stderr.
+- A Devin hook finds a subagent's tool call in Devin's session store. A
+  background subagent (`run_subagent` in the background, or a foreground
+  one that Esc moved there) writes its nodes to the store as it runs, on
+  a root of its own. Its tool call is then in the store, but not on the
+  session's main chain (`sessions.main_chain_id`), so its hook delivers
+  nothing. If the hook cannot read the store, it delivers messages only
+  at a prompt. It writes the cause to stderr.
 - Without a server, the agent applies the server's per-session,
   per-device, per-thread, duplicate and recipient limits. It does not
   apply the per-person ceiling: it is higher than the per-device ceiling,
@@ -1166,11 +1170,10 @@ again after a few seconds. `flopwire send` retries once by itself.
 - A Devin session held by a `devin acp` process with several sessions
   costs one `lsof` call (about 30 ms) for that process at each presence
   check. A process with one session needs none.
-- A Devin subagent moved to the background (Esc during a foreground
-  `run_subagent`) writes its nodes to the store at the move. A tool hook
-  of the subagent that runs after the move can then look like the
-  session's own (seen once, for its `get_output`), mark the session busy
-  and deliver messages into the subagent. Not fixed.
+- A background Devin subagent fires a `Stop` hook when it ends. That
+  `Stop` reads as the session's own and makes the session idle, also
+  while the session's own turn still runs. A message waits for the
+  session's next own hook.
 - `flopwire sessions` still takes a Devin lock of a running `devin` as
   live without the per-session checks that `peers` makes.
 

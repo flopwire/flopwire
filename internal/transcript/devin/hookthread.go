@@ -24,8 +24,16 @@ import (
 //     own. While it runs, none of its tool calls is in the store, and the
 //     run_subagent call that started it has no tool result.
 //
+// A background subagent (run_subagent in the background, or a foreground
+// one that Esc moved there) writes its nodes as it runs, also on a root of
+// its own (probes, devin 3000.11.1, 2026-10-04). Its tool calls are then
+// in the store, but not on the session's main chain: sessions.main_chain_id
+// names a node of that chain, written at each prompt and tool result, so a
+// call of the session lies just below it or above it.
+//
 // So a PostToolUse is the session's own only when its tool_use_id is a tool
-// call of one of the session's last nodes, and a Stop is a subagent's
+// call of one of the session's last nodes on the main chain (any of them
+// when the store records no main chain), and a Stop is a subagent's
 // while a run_subagent call among those nodes has no result. Both read
 // only the session's last HookRecentNodes rows, newest first, by the
 // message_nodes session index.
@@ -51,6 +59,7 @@ type hookNode struct {
 		Name string `json:"name"`
 	} `json:"tool_calls"`
 
+	node      int64         // node_id
 	parent    sql.NullInt64 // parent_node_id
 	messageID string
 }
@@ -58,13 +67,8 @@ type hookNode struct {
 // recentNodes returns the session's newest nodes, newest first. Tool
 // output can be long: only an assistant or tool node is decoded; every
 // node has its parent and message_id.
-func recentNodes(ctx context.Context, dbPath, session string) ([]hookNode, error) {
-	db, err := openForHook(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT parent_node_id,
+func recentNodes(ctx context.Context, db *sql.DB, session string) ([]hookNode, error) {
+	rows, err := db.QueryContext(ctx, `SELECT node_id, parent_node_id,
 		  CASE WHEN json_valid(chat_message) THEN COALESCE(json_extract(chat_message, '$.message_id'), '') ELSE '' END,
 		  CASE WHEN instr(chat_message, '"tool_call') > 0 THEN chat_message ELSE '' END
 		FROM message_nodes WHERE session_id = ? ORDER BY row_id DESC LIMIT ?`, session, HookRecentNodes)
@@ -76,7 +80,7 @@ func recentNodes(ctx context.Context, dbPath, session string) ([]hookNode, error
 	for rows.Next() {
 		var n hookNode
 		var raw string
-		if err := rows.Scan(&n.parent, &n.messageID, &raw); err != nil {
+		if err := rows.Scan(&n.node, &n.parent, &n.messageID, &raw); err != nil {
 			return nil, fmt.Errorf("devin: recent nodes: %w", err)
 		}
 		if raw != "" {
@@ -94,22 +98,62 @@ func OwnToolCall(ctx context.Context, dbPath, session, toolUseID string) (bool, 
 	if session == "" || toolUseID == "" {
 		return false, nil
 	}
-	nodes, err := recentNodes(ctx, dbPath, session)
+	db, err := openForHook(dbPath)
 	if err != nil {
 		return false, err
 	}
+	defer db.Close()
+	nodes, err := recentNodes(ctx, db, session)
+	if err != nil {
+		return false, err
+	}
+	var calls []int64 // the nodes with the call: Devin writes each twice
 	for _, n := range nodes {
 		if n.Role != "assistant" {
 			continue
 		}
 		for _, c := range n.ToolCalls {
 			if c.ID == toolUseID {
+				calls = append(calls, n.node)
+			}
+		}
+	}
+	if len(calls) == 0 {
+		return false, nil
+	}
+	var main sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT main_chain_id FROM sessions WHERE id = ?`, session).Scan(&main); err != nil || !main.Valid {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return true, nil // no main chain recorded: a recent call is the session's
+	}
+	for _, n := range calls {
+		for _, p := range [][2]int64{{n, main.Int64}, {main.Int64, n}} {
+			var up bool
+			if err := db.QueryRowContext(ctx, chainSQL, p[0], session, chainWalk, p[1]).Scan(&up); err != nil {
+				return false, fmt.Errorf("devin: main chain: %w", err)
+			}
+			if up {
 				return true, nil
 			}
 		}
 	}
-	return false, nil
+	return false, nil // another root's call: a subagent's
 }
+
+// chainWalk bounds how many parents chainSQL follows. A call of the
+// session is a few nodes from main_chain_id; a subagent's never reaches it.
+const chainWalk = 1024
+
+// chainSQL reports whether node ?1, followed up its parents (at most ?3),
+// reaches node ?4.
+const chainSQL = `WITH RECURSIVE up(n, d) AS (
+	SELECT ?1, 0
+	UNION ALL
+	SELECT m.parent_node_id, up.d + 1 FROM message_nodes m JOIN up ON m.session_id = ?2 AND m.node_id = up.n
+	WHERE m.parent_node_id IS NOT NULL AND up.d < ?3)
+SELECT EXISTS (SELECT 1 FROM up WHERE n = ?4)`
 
 // SubagentRunning reports whether a run_subagent call among the session's
 // newest nodes has no tool result yet and was not abandoned (a newer
@@ -118,7 +162,12 @@ func SubagentRunning(ctx context.Context, dbPath, session string) (bool, error) 
 	if session == "" {
 		return false, nil
 	}
-	nodes, err := recentNodes(ctx, dbPath, session)
+	db, err := openForHook(dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	nodes, err := recentNodes(ctx, db, session)
 	if err != nil {
 		return false, err
 	}
