@@ -249,3 +249,53 @@ func TestOwnToolCallIsOnTheMainChain(t *testing.T) {
 		t.Fatal("without main_chain_id a recent call is not taken as the session's")
 	}
 }
+
+// A long session: 200 nodes on the main chain, and a background subagent
+// with 200 nodes of its own. The walk is bounded at HookRecentNodes; the
+// session's newest call is a few nodes from main_chain_id however deep the
+// chain is, and a long subagent's call still never reaches it.
+func TestOwnToolCallDeepChains(t *testing.T) {
+	s := newLivenessStore(t)
+	ctx := context.Background()
+	if _, err := s.db.Exec(`INSERT INTO sessions (id) VALUES ('s')`); err != nil {
+		t.Fatal(err)
+	}
+	call := func(mid, id string) map[string]any {
+		return map[string]any{"message_id": mid, "role": "assistant", "content": "",
+			"tool_calls": []map[string]any{{"id": id, "name": "exec"}}}
+	}
+	s.node("s", 1, -1, map[string]any{"message_id": "m-sys", "role": "system", "content": "You are Devin"})
+	s.node("s", 10000, -1, map[string]any{"message_id": "m-sub", "role": "system", "content": "You are a subagent"})
+	mainTip, subTip := int64(1), int64(10000)
+	for i := int64(1); i <= 200; i++ { // interleaved: both chains grow
+		s.node("s", 1+i, mainTip, map[string]any{"message_id": fmt.Sprintf("m%d", i), "role": "user", "content": "x"})
+		mainTip = 1 + i
+		s.node("s", 10000+i, subTip, map[string]any{"message_id": fmt.Sprintf("s%d", i), "role": "user", "content": "x"})
+		subTip = 10000 + i
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET main_chain_id = ? WHERE id = 's'`, mainTip); err != nil {
+		t.Fatal(err)
+	}
+	s.node("s", 500, mainTip, call("m-own", "own#1"))
+	s.node("s", 10500, subTip, call("m-sc", "sub#1"))
+	for _, c := range []struct {
+		id   string
+		want bool
+	}{{"own#1", true}, {"sub#1", false}} {
+		got, err := OwnToolCall(ctx, s.path, "s", c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Fatalf("%s: own = %v, want %v", c.id, got, c.want)
+		}
+	}
+	// main_chain_id at the call's result, the walk from main goes 1 step.
+	s.node("s", 501, 500, map[string]any{"message_id": "m-r", "role": "tool", "content": "ok", "tool_call_id": "own#1"})
+	if _, err := s.db.Exec(`UPDATE sessions SET main_chain_id = 501 WHERE id = 's'`); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := OwnToolCall(ctx, s.path, "s", "own#1"); err != nil || !ok {
+		t.Fatalf("own call behind main_chain_id on a 200-node chain: %v %v", ok, err)
+	}
+}
