@@ -968,6 +968,16 @@ a subagent prints nothing and takes nothing. The session's own next hook
 delivers the messages. A message that a subagent sends goes out as its
 parent session, and the reply goes to the parent session.
 
+In Codex, a subagent's `flopwire_send` call names the subagent's own
+thread in `_meta.threadId`. The agent follows the index's parent links
+from that thread to the top-level session and sends as that session.
+Checked live with Codex 0.160.0 on 2026-10-04: a `codex exec` session
+spawned one subagent, and the subagent called `flopwire_send`. The receipt
+and the recipient's inbox showed the parent session as the sender. A
+message for the parent, queued while the subagent ran, printed in none of
+the subagent's seven hooks (one `UserPromptSubmit` and six
+`PostToolUse`). It printed once, at the parent's next `PostToolUse`.
+
 A session that a path rule keeps off the server cannot send. The agent
 refuses the request before anything leaves the device.
 
