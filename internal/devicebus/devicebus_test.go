@@ -1327,3 +1327,30 @@ func TestCleanRefKeepsWithheldCheck(t *testing.T) {
 		t.Fatal("a ref naming a withheld session reached the server")
 	}
 }
+
+// A message's expiry is the server's time, and the device judges it by the
+// server's clock as the poll answer gives it, not its own: a device clock
+// an hour ahead does not hold back a live message, and one an hour behind
+// does not show one the server has expired (issue #71).
+func TestExpiryFollowsServerClock(t *testing.T) {
+	for _, skew := range []time.Duration{time.Hour, -time.Hour} {
+		t.Run(skew.String(), func(t *testing.T) {
+			serverNow := time.Now().UTC().Truncate(time.Millisecond)
+			cfg := testConfig(newFakeServer(), nil)
+			cfg.Now = func() time.Time { return serverNow.Add(skew) }
+			p := &presenceSrc{}
+			p.set(sess("s1", "claude", "/src/api", false))
+			b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+			live, gone := env("mlive", "s1"), env("mgone", "s1")
+			live.ExpiresAt = serverNow.Add(30 * time.Minute)
+			gone.ExpiresAt = serverNow.Add(-time.Second)
+			if err := b.answered(ctx, busproto.PollResponse{Now: serverNow, Messages: []busproto.Envelope{live, gone}}, map[string]bool{}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := deliver(b, "s1", "", Limit{})
+			if err != nil || len(got) != 1 || got[0].ID != "mlive" {
+				t.Fatalf("delivered %+v %v, want only mlive", got, err)
+			}
+		})
+	}
+}

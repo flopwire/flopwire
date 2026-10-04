@@ -295,6 +295,11 @@ func (b *Bus) pollFailed(ctx context.Context, a pollAnswer, backoff time.Duratio
 // set, then claim what is offered.
 func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, skip map[string]bool) error {
 	now := b.cfg.Now()
+	if !resp.Now.IsZero() {
+		// The answer left the server just now: the difference is the
+		// clocks' skew (issue #71), to a network trip.
+		b.st.skew.Store(int64(resp.Now.Sub(now)))
+	}
 	b.mu.Lock()
 	b.held = resp.Held
 	b.status.State, b.status.LastError, b.status.RetryAt, b.status.LastPoll = StateConnected, "", time.Time{}, now
