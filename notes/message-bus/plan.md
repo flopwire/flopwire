@@ -157,7 +157,7 @@ Enforced by the server, reported to the sender as a refusal:
 - At most 30 sends per session per hour.
 - At most 120 sends per device and 300 per person per hour. The session id is the device's own report, so these ceilings hold a device that invents session ids.
 - A refused send counts toward these three ceilings like a sent one, so an agent looping on a refusal reaches them. A refusal by one of these three ceilings does not count: it would keep the window of a retrying session full, and one session at its ceiling would use up its device and person quota.
-- Repeated refusals of one session with the same code within an hour of the first are one stored row and one audit row, with `attempts` and `last_at` (#70). The ceilings sum `attempts`.
+- Repeated refusals of one session with the same code, recipient and thread within an hour of the first are one stored row and one audit row, with `attempts` and `last_at` (#70). The ceilings sum `attempts`.
 - The same body to the same recipient within 10 minutes is dropped.
 - At most 50 undelivered messages per recipient session.
 
@@ -479,7 +479,7 @@ after the plan merged. Tracker #73; the merged code wins over this note.
 | Vendor cloud | Discover with `GET /v1/sessions` | `GET /v1/code/sessions?statuses=active` (Claude) and `session/list` (Devin) on each device; `PollRequest.Cloud`; user-owned `bus_presence` rows; claimed by one device while a turn runs; `push_failed` after 3 failed pushes (#63). |
 | Read receipts | `read_at` at ingest on the server | Set by the device agent when the wrapper appears in a hook-context row of the recipient's transcript (Claude Code, Codex, Devin CLI; not opencode); sent in the ack batch; the server sets `read_at` once (#65, #106). It means the text entered the context, not that the model acted. |
 | Retention | not specified | A message in a final state (`delivered`, `read`, `expired`, `refused`, `undelivered`) is deleted 7 days after its expiry, with its `bus.send` and `bus.claim` audit rows; `bus.poll`, `bus.deliver` and `bus.read` audit rows go a day later than that by age. `FLOPWIRE_BUS_RETENTION` sets the 7 days. The sweep deletes at most 10,000 messages a minute. A deleted message leaves both inboxes; a late receipt for it is rejected (#70). |
-| Refused sends | stored, one row each | One row per session, code and hour, with `attempts`; still counted toward the ceilings (#70, #119). |
+| Refused sends | stored, one row each | One row per session, code, recipient, thread and hour, with `attempts`; still counted toward the ceilings (#70, #119). |
 
 Decisions recorded on #73 and its issues:
 

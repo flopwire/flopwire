@@ -148,8 +148,9 @@ the recipient. The server administrator can change the 7 days; see
 message that still waits for delivery is never deleted before it expires.
 
 When the server refuses a send, the sender's inbox shows the refusal.
-Repeated refusals of one session with the same reason within one hour
-show as one entry with a count, for example
+Repeated refusals of one session with the same reason, to the same
+recipient and in the same thread, within one hour show as one entry with
+a count, for example
 `refused (duplicate, 12 attempts)`. The entry keeps the text of the first
 attempt. Each attempt still counts toward the hourly send limits.
 

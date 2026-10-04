@@ -101,7 +101,7 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"rehold", reholdSQL, []any{me.UserID, me.UserID}},
 		{"expire", expireSQL, []any{now}},
 		{"drop presence", dropPresenceSQL, []any{now}},
-		{"refused row", RefusedRowSQL, []any{"me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now}},
+		{"refused row", RefusedRowSQL, []any{"me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now, me.UserID, "session", "to-session", ""}},
 		{"purge", PurgeSQL, []any{now.Add(48 * time.Hour), purgeBatch}},
 		{"purge audit", PurgeAuditSQL, []any{now.Add(48 * time.Hour), purgeBatch}},
 	} {
@@ -115,7 +115,7 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_retention_idx", PurgeSQL, now.Add(48*time.Hour), purgeBatch)
 	perfguard.AssertPlanUsesIndex(t, pool, "audit_bus_message_idx", PurgeSQL, now.Add(48*time.Hour), purgeBatch)
 	perfguard.AssertPlanUsesIndex(t, pool, "audit_bus_batch_idx", PurgeAuditSQL, now.Add(48*time.Hour), purgeBatch)
-	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_session_idx", RefusedRowSQL, "me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now)
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_session_idx", RefusedRowSQL, "me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now, me.UserID, "session", "to-session", "")
 	// The users table is a handful of rows; its lookup is not indexed.
 	perfguard.AssertIndexedPlanExcept(t, pool, []string{"users"}, UserLookupSQL, "alex")
 }

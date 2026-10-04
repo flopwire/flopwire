@@ -563,7 +563,8 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 		}
 		if refusal != nil {
 			// A refusal like one this session had within the hour adds to
-			// that row: a looping agent writes one row per code per hour.
+			// that row: a looping agent writes one row per code, recipient
+			// and thread per hour.
 			id, err := coalesceRefusal(ctx, tx, c, m, now)
 			if err != nil {
 				return err
@@ -657,18 +658,30 @@ func (m *message) insert(ctx context.Context, tx pgx.Tx, c busproto.Caller) erro
 }
 
 // RefusedRowSQL finds the refused row that a new refusal of the session $1
-// (agent $2, device $3) with code $4 adds to: one created since $5.
+// (agent $2, device $3) with code $4 adds to: one created since $5, to
+// the same recipient ($6 person, $7 addressing, $8 session) and in the
+// same thread ($9, a reply's thread, or empty for a root send: another root).
+// A refusal to another recipient or in another thread is its own row, so
+// the sender's inbox lists it there.
 const RefusedRowSQL = `SELECT id FROM bus_messages WHERE from_session=$1 AND created_at>$5 AND state='refused' AND reason=$4
-	AND from_agent=$2 AND from_device IS NOT DISTINCT FROM NULLIF($3,'')::uuid ORDER BY created_at DESC LIMIT 1`
+	AND from_agent=$2 AND from_device IS NOT DISTINCT FROM NULLIF($3,'')::uuid
+	AND to_user=$6 AND addressed=$7 AND to_session IS NOT DISTINCT FROM NULLIF($8,'')
+	AND CASE WHEN $9='' THEN thread_id=id ELSE thread_id=$9 END ORDER BY created_at DESC LIMIT 1`
 
 // coalesceRefusal adds a refusal to the session's refused row with the
-// same code from the last hour, if there is one, and returns its id. The
+// same code, recipient and thread from the last hour, if there is one,
+// and returns its id. The
 // row keeps its first attempt's recipient, body and audit row; attempts
 // counts the refusals and last_at is the latest. The caller holds the
 // session's send lock (lockSend), so two refusals cannot both miss the row.
 func coalesceRefusal(ctx context.Context, tx pgx.Tx, c busproto.Caller, m message, now time.Time) (string, error) {
 	var id string
-	err := tx.QueryRow(ctx, RefusedRowSQL, m.from.id, m.from.agent, c.DeviceID, m.refused, now.Add(-time.Hour)).Scan(&id)
+	thread := ""
+	if m.replyTo != "" {
+		thread = m.thread
+	}
+	err := tx.QueryRow(ctx, RefusedRowSQL, m.from.id, m.from.agent, c.DeviceID, m.refused, now.Add(-time.Hour),
+		m.toUser, m.addressed, m.toSession, thread).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}

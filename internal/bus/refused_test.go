@@ -99,3 +99,60 @@ func TestRefusalsCoalesce(t *testing.T) {
 		t.Fatalf("refused rows in the next hour %d, want 2", got)
 	}
 }
+
+// A refusal coalesces only with one to the same recipient in the same
+// thread: the sender's inbox must show a refusal for each recipient and
+// thread it tried, and the refusal's id names a message to that
+// recipient in that thread.
+func TestRefusalsCoalescePerRecipientAndThread(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	refusedID := func(err error, want string) string {
+		t.Helper()
+		var be *busproto.Error
+		if code(err) != want || !errors.As(err, &be) {
+			t.Fatalf("want %s: %v", want, err)
+		}
+		return be.MessageID
+	}
+	// Duplicates to two recipients.
+	tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "same text")
+	_, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", "same text")
+	toLin := refusedID(err, busproto.CodeDuplicate)
+	tm.mustSend(tm.garyMac, "g-api-1111", "g-web", "same text")
+	_, err = tm.send(tm.garyMac, "g-api-1111", "g-web", "same text")
+	toWeb := refusedID(err, busproto.CodeDuplicate)
+	if toWeb == toLin {
+		t.Fatalf("a refusal to g-web was recorded as the one to g-lin (%s)", toLin)
+	}
+	if got := tm.count(`SELECT count(*) FROM bus_messages WHERE id=$1 AND to_session='g-web-2222' AND state='refused'`, toWeb); got != 1 {
+		t.Fatalf("refused row %s is not to g-web", toWeb)
+	}
+	// Replies refused in two threads (each closed by done).
+	d1 := tm.mustSend(tm.garyLinux, "g-lin-3333", "g-api", "first done", intent(busproto.IntentDone))
+	d2 := tm.mustSend(tm.garyLinux, "g-lin-3333", "g-api", "second done", intent(busproto.IntentDone))
+	_, err = tm.send(tm.garyMac, "g-api-1111", "g-lin", "thanks 1", replyTo(d1.ID))
+	in1 := refusedID(err, busproto.CodeReplyToDone)
+	_, err = tm.send(tm.garyMac, "g-api-1111", "g-lin", "thanks 2", replyTo(d2.ID))
+	in2 := refusedID(err, busproto.CodeReplyToDone)
+	if in1 == in2 {
+		t.Fatalf("a refusal in thread %s was recorded in thread %s", d2.ThreadID, d1.ThreadID)
+	}
+	in, err := tm.s.Inbox(ctx, tm.garyMac, busproto.InboxQuery{Session: "g-api-1111", SentOnly: true, Thread: d2.ThreadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Messages) != 1 || in.Messages[0].ID != in2 || in.Messages[0].State != busproto.StateRefused {
+		t.Fatalf("thread %s in the sender's inbox: %+v", d2.ThreadID, in.Messages)
+	}
+	// A root send's refusal does not coalesce into a reply's.
+	tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "root text")
+	_, err = tm.send(tm.garyMac, "g-api-1111", "g-lin", "thanks 1", replyTo(d1.ID))
+	if again := refusedID(err, busproto.CodeReplyToDone); again != in1 {
+		t.Fatalf("same thread again: %s, want %s", again, in1)
+	}
+	_, err = tm.send(tm.garyMac, "g-api-1111", "g-lin", "root text")
+	if root := refusedID(err, busproto.CodeDuplicate); root != toLin {
+		t.Fatalf("root duplicate to g-lin: %s, want %s", root, toLin)
+	}
+}

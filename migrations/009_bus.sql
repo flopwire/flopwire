@@ -63,10 +63,12 @@ CREATE SEQUENCE bus_messages_seq;
 -- cloud session whose pushes all failed).
 --
 -- A refused row stands for every refusal of its sending session, device
--- and agent with the same reason (code) within an hour of its created_at:
--- attempts counts them and last_at is the latest. The hourly send
--- ceilings sum attempts, so a looping agent still reaches them while it
--- writes one row (and one bus.send audit row) per code per hour.
+-- and agent with the same reason (code), to the same recipient and in the
+-- same thread (a new thread for each root send), within an hour of its
+-- created_at: attempts counts them and last_at is the latest. The hourly
+-- send ceilings sum attempts, so a looping agent still reaches them while
+-- it writes one row (and one bus.send audit row) per code, recipient and
+-- thread per hour.
 --
 -- Retention: a row in a final state (delivered, read, expired, refused,
 -- undelivered) whose expires_at is more than the server's bus retention
