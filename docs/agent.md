@@ -836,8 +836,10 @@ How Devin CLI 3000.11.1 holds sessions (live checks, 2026-10-04):
 - Esc during a foreground `run_subagent` call cancels the call (its
   result is `Canceled due to user interrupt`). The subagent continues in
   the background, and the TUI stays in its working state: it queues new
-  prompts until the subagent ends. `peers` shows the session busy for
-  that time.
+  prompts until the subagent ends. `peers` shows the session idle for
+  that time: the call's result is an interrupt marker, and the hooks of
+  the background subagent are not the session's own, so they do not mark
+  it busy.
 - When the `devin acp` process dies while a subagent runs, the
   `run_subagent` call keeps no result. `devin -r` continues the session
   from the call's parent, so the next node is the call's sibling. The
@@ -1176,8 +1178,12 @@ again after a few seconds. `flopwire send` retries once by itself.
   `Stop` reads as the session's own and makes the session idle, also
   while the session's own turn still runs. A message waits for the
   session's next own hook.
-- `flopwire sessions` still takes a Devin lock of a running `devin` as
-  live without the per-session checks that `peers` makes.
+- The live mark of retrieval (`flopwire sessions`, the live sessions
+  each sync reports to the server, and `--exclude-live`) still takes a
+  Devin lock of a running `devin` as live without the per-session checks
+  that `peers` makes. A session that a `devin acp` process deleted, or a
+  lock whose pid a later `devin` reuses, reads live there until that
+  process exits. Messages are not affected: they follow `peers`.
 
 ## How the agent finds changes
 
