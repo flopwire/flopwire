@@ -31,7 +31,11 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		// Without a server the path rules do not matter: the sender must
 		// be live, so a session presence does not list yet is waited for.
 		if req.FromSession != "" {
-			if v, err := b.waitPlaced(ctx, req.FromSession, req.FromAgent, func(v sessionVerdict) bool { return v != sessionUnknown }); err != nil {
+			// Live, not only known: sendLocal takes the sender from
+			// presence, and Known can list a new session before the
+			// cached presence does.
+			live := func(sessionVerdict) bool { return b.inPresence(ctx, req.FromSession, req.FromAgent) }
+			if v, err := b.waitPlaced(ctx, req.FromSession, req.FromAgent, live); err != nil {
 				return busproto.SendResponse{}, err
 			} else if v == sessionUnknown {
 				return busproto.SendResponse{}, notIndexedYet(req.FromSession)
@@ -456,6 +460,15 @@ func (b *Bus) waitPlaced(ctx context.Context, session, agent string, done func(s
 			return v, err
 		}
 	}
+}
+
+// inPresence reports whether presence (as sessions reads it) lists
+// session.
+func (b *Bus) inPresence(ctx context.Context, session, agent string) bool {
+	all, err := b.sessions(ctx)
+	return err == nil && slices.ContainsFunc(all, func(s Session) bool {
+		return s.SessionID == session && (agent == "" || s.Agent == agent)
+	})
 }
 
 // notIndexedYet is the refusal of a session the device has not indexed or

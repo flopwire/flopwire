@@ -1275,6 +1275,28 @@ func TestNudgeUnlistedSessionBounded(t *testing.T) {
 	}
 }
 
+// Without a server, a new session the index already holds (Known) but
+// presence does not list yet is waited for until presence lists it:
+// sendLocal takes the sender from presence.
+func TestLocalSendFromIndexedSessionWaitsForPresence(t *testing.T) {
+	p := &presenceSrc{}
+	p.set(sess("bbbb3333", "claude", "/src/web", false))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(nil, nil), p)
+	b.SetSources(p.get, func(_ context.Context, prefix string) ([]Session, error) {
+		if strings.HasPrefix("aaaa1111", prefix) {
+			return []Session{sess("aaaa1111", "claude", "/src/api", true)}, nil
+		}
+		return nil, nil
+	})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		p.set(sess("bbbb3333", "claude", "/src/web", false), sess("aaaa1111", "claude", "/src/api", true))
+	}()
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "aaaa1111", To: "bbbb", Body: "x"}); err != nil {
+		t.Fatalf("local send from a session the index holds before presence lists it: %v", err)
+	}
+}
+
 // CleanRef leaves a transcript path without newline or tab as it is, and
 // the withheld check sees each ref as it leaves (cleaned): control
 // characters or a newline around a withheld session's id do not hide it.
