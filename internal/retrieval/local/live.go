@@ -144,6 +144,10 @@ func IsDevinProcess(name string) bool {
 	return strings.Contains(strings.ToLower(filepath.Base(name)), "devin")
 }
 
+// OpenFiles lists the files pid has open (lsof on macOS, /proc on Linux),
+// or nil when the process table cannot tell.
+func OpenFiles(pid int) []string { return openFiles(pid) }
+
 // ProcName is the name of the program pid runs, or "" when the process
 // table does not have it.
 func ProcName(pid int) string {
