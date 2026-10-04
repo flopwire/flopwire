@@ -758,7 +758,14 @@ func (a *Agent) BusRoot(ctx context.Context, agent, session string) string {
 	}
 	root, found := a.busParent(ctx, agent, session)
 	if !found {
-		if _, err := a.FlushPath(ctx, "", session); err == nil {
+		path := ""
+		if agent == "" || transcript.Agent(agent) == transcript.AgentCodex {
+			// A Codex thread _meta or CODEX_THREAD_ID names may be a
+			// rollout no pass has found yet (a subagent just spawned):
+			// its file name holds the id (issue #71).
+			path = codex.FindRollout(filepath.Join(a.cfg.CodexHome, codex.SessionsDir, "x"), session)
+		}
+		if _, err := a.FlushPath(ctx, path, session); err == nil {
 			root, _ = a.busParent(ctx, agent, session)
 		}
 	}
