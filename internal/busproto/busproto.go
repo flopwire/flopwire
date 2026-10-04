@@ -419,6 +419,10 @@ type PollResponse struct {
 	// Ignored lists reported sessions the server did not record: the id
 	// belongs to another person's session.
 	Ignored []string `json:"ignored,omitempty"`
+	// Now is the server's clock when it answered. The device judges a
+	// message's expiry by it (ExpiresAt is the server's time), not by its
+	// own clock, which may be skewed.
+	Now time.Time `json:"now"`
 }
 
 // ClaimRequest is POST /v1/bus/claim: take an @user message for one live

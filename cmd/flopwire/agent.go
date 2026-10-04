@@ -295,13 +295,15 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		// Messaging (devicebus): through the server when this device syncs
 		// with one, else between the device's own sessions.
 		var connect func() (devicebus.Server, string)
+		var noDevice func() string
 		if ccErr == nil && cc.Server != "" && cc.Token != "" && !*noSync {
 			connect = busConnect(cc, client.Load)
+			noDevice = busNoDevice(client.Load)
 			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
 		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
+		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -522,6 +524,26 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 			}
 			return next, next.Token != b.Token
 		}}, key
+	}
+}
+
+// busNoDevice is devicebus's NoDevice: the server takes the bus only from
+// an enrolled device credential, so a minted FLOPWIRE_TOKEN or a login
+// from before device credentials (no device id) would have every poll
+// refused. A config that cannot be read says nothing: Connect keeps the
+// last one.
+func busNoDevice(load func() (client.Config, error)) func() string {
+	return func() string {
+		cc, err := load()
+		switch {
+		case err != nil || cc.Token == "":
+			return ""
+		case cc.FromEnv:
+			return "messaging needs an enrolled device credential, and FLOPWIRE_TOKEN is a minted token: unset FLOPWIRE_TOKEN and run flopwire login"
+		case cc.DeviceID == "":
+			return "messaging needs an enrolled device credential, and this login predates them: run flopwire login"
+		}
+		return ""
 	}
 }
 

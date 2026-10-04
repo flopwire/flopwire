@@ -83,6 +83,15 @@ func serverPresence(all []Session) []busproto.PresenceSession {
 	return out
 }
 
+// sameButBusy reports whether two presence reports differ at most in
+// whether sessions are busy.
+func sameButBusy(a, b []busproto.PresenceSession) bool {
+	return slices.EqualFunc(a, b, func(x, y busproto.PresenceSession) bool {
+		x.Busy = y.Busy
+		return x == y
+	})
+}
+
 func jitter(d time.Duration) time.Duration { return d/2 + rand.N(d/2+1) }
 
 // pollAnswer is one poll's outcome.
@@ -136,6 +145,16 @@ func (b *Bus) runServer(ctx context.Context) {
 				next = now.Add(b.cfg.RepinEvery)
 			}
 		}
+		if !inflight && stop == nil && !now.Before(next) && b.cfg.NoDevice != nil {
+			// The key is read first: a login saved meanwhile then
+			// differs from it and resumes the bus.
+			_, key := b.cfg.Connect()
+			if why := b.cfg.NoDevice(); why != "" {
+				stop, next = &halt{state: StateStopped, reason: why, key: key}, now.Add(b.cfg.RepinEvery)
+				b.log.Error("devicebus: messaging "+stop.state, "reason", why)
+				b.setStatus(func(s *Status) { s.State, s.LastError, s.RetryAt = StateStopped, why, time.Time{} })
+			}
+		}
 		if !inflight && stop == nil && !now.Before(next) {
 			srv, key := b.cfg.Connect()
 			// A presence that cannot be read keeps the last one: an empty
@@ -144,7 +163,7 @@ func (b *Bus) runServer(ctx context.Context) {
 				b.log.Warn("devicebus: presence", "err", err)
 			} else {
 				cur := serverPresence(all)
-				if !slices.Equal(cur, sent) {
+				if !sameButBusy(cur, sent) {
 					// Changed since the last poll (between polls, or during
 					// a backoff): reset the cursor, as the in-flight check
 					// below does.
@@ -212,9 +231,17 @@ func (b *Bus) runServer(ctx context.Context) {
 			// that the new presence makes deliverable (a session newly
 			// reported) would otherwise wait for the poll to time out.
 			if inflight && b.cfg.Now().Sub(started) >= time.Second {
-				if err == nil && !slices.Equal(serverPresence(all), sent) || !slices.Equal(cloudPresence(b.CloudSessions()), sentCld) {
+				cur := serverPresence(all)
+				cld := !slices.Equal(cloudPresence(b.CloudSessions()), sentCld)
+				if err == nil && !slices.Equal(cur, sent) || cld {
 					cancel()
-					cursor = 0
+					// A session's busy or idle flip makes no message newly
+					// deliverable to the device: the cursor stays, and the
+					// next poll holds rather than answering at once (issue
+					// #71). A cloud session's flip may (claimCloud).
+					if cld || err == nil && !sameButBusy(cur, sent) {
+						cursor = 0
+					}
 				}
 			}
 		case a := <-answers:
@@ -236,7 +263,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			}
 			backoff = 0
 			cursor, gen = a.resp.Cursor, a.resp.Gen
-			if err := b.answered(ctx, a.resp, skip); err != nil {
+			if err := b.answered(ctx, a.resp, started, skip); err != nil {
 				// A claim could not be made (or the inbox not written):
 				// back off, then ask for the whole set again.
 				backoff = min(max(2*backoff, b.cfg.BackoffMin), b.cfg.BackoffMax)
@@ -291,10 +318,39 @@ func (b *Bus) pollFailed(ctx context.Context, a pollAnswer, backoff time.Duratio
 	return nil, backoff, next
 }
 
+// skewSamples is how many recent answers the skew is learned from.
+const skewSamples = 8
+
+// learnSkew learns the clocks' skew (the server's less the device's,
+// issue #71) from a poll asked at asked and answered at got (the device's
+// clock) by a server whose clock read server. The answer left the server
+// after the poll was asked and before it arrived, so server-got is a lower
+// bound on the skew and server-asked an upper one. A one-off slow answer
+// (a latency spike, or one read after the laptop slept) gives a low lower
+// bound: the skew is the highest of the recent ones. A recent bound above
+// this answer's upper bound predates a change of the device's clock and
+// is dropped. answered runs on the poll loop alone.
+func (b *Bus) learnSkew(asked, got, server time.Time) {
+	low := server.Sub(got)
+	if !asked.IsZero() {
+		high := server.Sub(asked)
+		b.skewLows = slices.DeleteFunc(b.skewLows, func(l time.Duration) bool { return l > high })
+	}
+	b.skewLows = append(b.skewLows, low)
+	if len(b.skewLows) > skewSamples {
+		b.skewLows = b.skewLows[len(b.skewLows)-skewSamples:]
+	}
+	b.st.skew.Store(int64(slices.Max(b.skewLows)))
+}
+
 // answered folds a poll answer into the inbox: reconcile against the whole
 // set, then claim what is offered.
-func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, skip map[string]bool) error {
+// asked is when the poll was asked (the device's clock).
+func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked time.Time, skip map[string]bool) error {
 	now := b.cfg.Now()
+	if !resp.Now.IsZero() {
+		b.learnSkew(asked, now, resp.Now)
+	}
 	b.mu.Lock()
 	b.held = resp.Held
 	b.status.State, b.status.LastError, b.status.RetryAt, b.status.LastPoll = StateConnected, "", time.Time{}, now
@@ -456,10 +512,20 @@ func (b *Bus) runAcks(ctx context.Context) {
 		case <-time.After(b.cfg.AckDelay):
 		}
 		for {
-			n, err := b.sendAcks(ctx)
+			n, key, err := b.sendAcks(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				if credentialRefused(err) {
+					// Retrying the same credential is refused again: the
+					// receipts stay owed until it changes (issue #71).
+					b.log.Warn("devicebus: receipts wait: the server refused this device's credential; run flopwire login", "err", err)
+					if !b.awaitNewKey(ctx, key) {
+						return
+					}
+					backoff = 0
+					continue
 				}
 				backoff = min(max(2*backoff, b.cfg.BackoffMin), b.cfg.BackoffMax)
 				d := jitter(backoff)
@@ -485,7 +551,7 @@ func (b *Bus) runAcks(ctx context.Context) {
 // goes only for a message whose delivery receipt was taken: one for a
 // message in this batch goes in the next. It returns how many entries it
 // sent (0: nothing owed).
-func (b *Bus) sendAcks(ctx context.Context) (int, error) {
+func (b *Bus) sendAcks(ctx context.Context) (int, string, error) {
 	ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
 	var gone, ended, failed []string
 	var reads []busproto.ReadReceipt
@@ -499,13 +565,13 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 		if ctx.Err() == nil {
 			b.log.Warn("devicebus: receipts", "err", err)
 		}
-		return 0, nil // the store failed; the next kick tries again
+		return 0, "", nil // the store failed; the next kick tries again
 	}
 	n := len(ids) + len(gone) + len(ended) + len(failed) + len(reads)
 	if n == 0 {
-		return 0, nil
+		return 0, "", nil
 	}
-	srv, _ := b.cfg.Connect()
+	srv, key := b.cfg.Connect()
 	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, PushFailed: failed, Read: reads})
 	cancel()
@@ -516,7 +582,7 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 		err = b.st.readAcked(ctx, resp.Read, resp.ReadRejected)
 	}
 	if err != nil {
-		return 0, err
+		return 0, key, err
 	}
 	if len(resp.Rejected) > 0 {
 		b.log.Info("devicebus: receipts rejected (delivered elsewhere, held again or expired)", "ids", resp.Rejected)
@@ -524,5 +590,32 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 	if len(resp.ReadRejected) > 0 {
 		b.log.Info("devicebus: read receipts rejected (not delivered to that session on this device)", "ids", resp.ReadRejected)
 	}
-	return n, nil
+	return n, key, nil
+}
+
+// credentialRefused reports whether the server refused the device's
+// credential or TLS pin: the same request is refused until it changes.
+func credentialRefused(err error) bool {
+	var ae *client.APIError
+	return errors.As(err, &ae) && ae.StatusCode == http.StatusUnauthorized || syncproto.Permanent(err)
+}
+
+// awaitNewKey waits until the saved credential's key (Connect) is no
+// longer key, re-reading it every RepinEvery. It reports false when ctx
+// ends first. Kicks meanwhile are dropped: the receipts they announce are
+// owed in the store and go with the first batch after.
+func (b *Bus) awaitNewKey(ctx context.Context, key string) bool {
+	tick := time.NewTicker(b.cfg.RepinEvery)
+	defer tick.Stop()
+	for {
+		if _, k := b.cfg.Connect(); k != key {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-b.ackWake:
+		case <-tick.C:
+		}
+	}
 }

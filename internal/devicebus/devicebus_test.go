@@ -446,7 +446,7 @@ func TestRestartKeepsInboxAndReceipts(t *testing.T) {
 func drainAcks(t *testing.T, b *Bus) int {
 	t.Helper()
 	for batches := 0; ; batches++ {
-		n, err := b.sendAcks(ctx)
+		n, _, err := b.sendAcks(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -614,8 +614,9 @@ func TestClaimFlow(t *testing.T) {
 }
 
 // Presence changes: the poll in flight is cancelled and a new one carries
-// the new presence with the cursor reset. A withheld session is never
-// reported.
+// the new presence. A busy or idle flip keeps the cursor (it makes no
+// message newly deliverable, issue #71); a new session resets it. A
+// withheld session is never reported.
 func TestPresenceChangeRepolls(t *testing.T) {
 	srv := newFakeServer()
 	p := &presenceSrc{}
@@ -636,8 +637,13 @@ func TestPresenceChangeRepolls(t *testing.T) {
 	p.set(sess("s1", "claude", "/src/api", true), secret) // s1 turns busy
 	waitFor(t, "a poll with the new presence", func() bool { return srv.pollCount() == 3 })
 	last := srv.lastPoll()
-	if len(last.Sessions) != 1 || !last.Sessions[0].Busy || last.Cursor != 0 {
-		t.Fatalf("poll after the change: %+v", last)
+	if len(last.Sessions) != 1 || !last.Sessions[0].Busy || last.Cursor != 9 {
+		t.Fatalf("poll after the busy flip: %+v", last)
+	}
+	p.set(sess("s1", "claude", "/src/api", true), sess("s2", "claude", "/src/web", false), secret)
+	waitFor(t, "a poll with the new session", func() bool { return srv.pollCount() == 4 })
+	if last := srv.lastPoll(); len(last.Sessions) != 2 || last.Cursor != 0 {
+		t.Fatalf("poll after a new session: %+v", last)
 	}
 }
 
@@ -1326,4 +1332,194 @@ func TestCleanRefKeepsWithheldCheck(t *testing.T) {
 	if srv.sendCount() != 0 {
 		t.Fatal("a ref naming a withheld session reached the server")
 	}
+}
+
+// A message's expiry is the server's time, and the device judges it by the
+// server's clock as the poll answer gives it, not its own: a device clock
+// an hour ahead does not hold back a live message, and one an hour behind
+// does not show one the server has expired (issue #71).
+func TestExpiryFollowsServerClock(t *testing.T) {
+	for _, skew := range []time.Duration{time.Hour, -time.Hour} {
+		t.Run(skew.String(), func(t *testing.T) {
+			serverNow := time.Now().UTC().Truncate(time.Millisecond)
+			cfg := testConfig(newFakeServer(), nil)
+			cfg.Now = func() time.Time { return serverNow.Add(skew) }
+			p := &presenceSrc{}
+			p.set(sess("s1", "claude", "/src/api", false))
+			b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+			live, gone := env("mlive", "s1"), env("mgone", "s1")
+			live.ExpiresAt = serverNow.Add(30 * time.Minute)
+			gone.ExpiresAt = serverNow.Add(-time.Second)
+			if err := b.answered(ctx, busproto.PollResponse{Now: serverNow, Messages: []busproto.Envelope{live, gone}}, cfg.Now(), map[string]bool{}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := deliver(b, "s1", "", Limit{})
+			if err != nil || len(got) != 1 || got[0].ID != "mlive" {
+				t.Fatalf("delivered %+v %v, want only mlive", got, err)
+			}
+		})
+	}
+}
+
+// Receipts the server refused for the device's credential are not retried
+// with it: they stay owed until the saved credential changes, then go
+// (issue #71).
+func TestReceiptsWaitForANewCredential(t *testing.T) {
+	srv := newFakeServer()
+	var key atomic.Value
+	key.Store("old")
+	refused := atomic.Bool{}
+	refused.Store(true)
+	srv.ackFn = func(ids []string) (busproto.AckResponse, error) {
+		if refused.Load() {
+			return busproto.AckResponse{}, &client.APIError{StatusCode: http.StatusUnauthorized}
+		}
+		return busproto.AckResponse{Acked: ids, Rejected: []string{}}, nil
+	}
+	cfg := testConfig(srv, nil)
+	cfg.Connect = func() (Server, string) { return srv, key.Load().(string) }
+	p := &presenceSrc{}
+	p.set(sess("s1", "claude", "/src/api", false))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	if err := b.st.reconcile(ctx, []busproto.Envelope{env("ma", "s1")}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := deliver(b, "s1", "", Limit{}); err != nil || len(got) != 1 {
+		t.Fatalf("deliver: %+v %v", got, err)
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { b.runAcks(rctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	b.kickAcks()
+	acks := func() int {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.ackReqs)
+	}
+	waitFor(t, "the first receipt", func() bool { return acks() == 1 })
+	time.Sleep(300 * time.Millisecond) // many backoffs (10-40ms) and repins (20ms)
+	b.kickAcks()
+	time.Sleep(50 * time.Millisecond)
+	if n := acks(); n != 1 {
+		t.Fatalf("a refused credential was retried: %d receipt requests", n)
+	}
+	refused.Store(false)
+	key.Store("new") // flopwire login saved a new token
+	waitFor(t, "the receipt with the new credential", func() bool { return slices.Contains(srv.ackedIDs(), "ma") })
+}
+
+// A credential that is not a device credential (a legacy login, a minted
+// FLOPWIRE_TOKEN) does not poll: the server would refuse every poll. The
+// bus says why once, and polls when a new credential is a device's
+// (issue #71).
+func TestNoDeviceCredentialDoesNotPoll(t *testing.T) {
+	srv := newFakeServer()
+	var key atomic.Value
+	key.Store("legacy")
+	var asked atomic.Int32
+	cfg := testConfig(srv, nil)
+	cfg.Connect = func() (Server, string) { return srv, key.Load().(string) }
+	cfg.NoDevice = func() string {
+		asked.Add(1)
+		if key.Load().(string) == "legacy" {
+			return "run flopwire login"
+		}
+		return ""
+	}
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, &presenceSrc{})
+	run(t, b)
+	waitFor(t, "the stop", func() bool { return b.Status(ctx).State == StateStopped })
+	time.Sleep(200 * time.Millisecond) // ten repins
+	if n := srv.pollCount(); n != 0 {
+		t.Fatalf("polled %d times without a device credential", n)
+	}
+	if st := b.Status(ctx); st.LastError != "run flopwire login" || asked.Load() != 1 {
+		t.Fatalf("status %+v, asked %d times", st, asked.Load())
+	}
+	key.Store("device") // flopwire login
+	waitFor(t, "a poll", func() bool { return srv.pollCount() > 0 })
+}
+
+// The skew is not taken from one slow answer: an answer that left the
+// server 30 s (or, read after the laptop slept, an hour) before the device
+// read it does not move a message's expiry later by that much. Each answer
+// bounds the skew from below (it left the server before it arrived), and
+// from above (after the poll was asked); the device keeps the tightest
+// recent bound, so a clock set back or forward is still followed (#71).
+func TestSkewIgnoresASlowAnswer(t *testing.T) {
+	var mu sync.Mutex
+	dev := time.Now().UTC().Truncate(time.Millisecond)
+	clock := func(d time.Time) { mu.Lock(); dev = d; mu.Unlock() }
+	cfg := testConfig(newFakeServer(), nil)
+	cfg.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return dev }
+	p := &presenceSrc{}
+	var all []Session
+	for _, id := range []string{"s0", "s1", "s2", "s3", "s4"} {
+		all = append(all, sess(id, "claude", "/src/api", false))
+	}
+	p.set(all...)
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	// answer is a poll asked held before now and answered by a server
+	// whose clock reads now+skew-late, with one message to session to that
+	// expires ttl after the server's answer: on the device's clock, at
+	// now-late+ttl.
+	answer := func(to string, held, late, skew, ttl time.Duration) {
+		t.Helper()
+		now := cfg.Now()
+		m := env("m"+to, to)
+		m.ExpiresAt = now.Add(skew - late + ttl)
+		if err := b.answered(ctx, busproto.PollResponse{Now: now.Add(skew - late), Messages: []busproto.Envelope{m}}, now.Add(-held), map[string]bool{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expect := func(to string, after time.Duration, want int) {
+		t.Helper()
+		start := cfg.Now()
+		clock(start.Add(after))
+		got, err := b.Take(ctx, to, "", Limit{})
+		clock(start)
+		if err != nil || len(got) != want {
+			t.Fatalf("%s %v later: took %d messages (%v), want %d", to, after, len(got), err, want)
+		}
+	}
+	answer("s0", 50*time.Millisecond, 0, 0, time.Hour) // a prompt answer: no skew
+	// A 30 s latency spike: the message expires 40 s after the server sent
+	// it, 10 s after it arrived.
+	answer("s1", 35*time.Second, 30*time.Second, 0, 40*time.Second)
+	expect("s1", 20*time.Second, 0)
+	// The laptop slept an hour with the answer unread.
+	answer("s2", time.Hour+10*time.Second, time.Hour, 0, 90*time.Minute)
+	expect("s2", time.Hour, 0)
+	expect("s2", 20*time.Minute, 1)
+	// The device clock is set back an hour: the server now reads an hour
+	// ahead, which the next prompt answer shows.
+	answer("s3", 50*time.Millisecond, 0, time.Hour, 10*time.Minute)
+	expect("s3", 20*time.Minute, 0)
+	expect("s3", 5*time.Minute, 1)
+	// And forward again: a prompt answer bounds the skew from above.
+	answer("s4", 50*time.Millisecond, 0, 0, 10*time.Minute)
+	expect("s4", 20*time.Minute, 0)
+	expect("s4", 5*time.Minute, 1)
+}
+
+// A login that lands while NoDevice reads the old credential still
+// resumes the bus: the stop remembers the credential NoDevice judged, not
+// the newer one (issue #71).
+func TestNoDeviceRacingALogin(t *testing.T) {
+	srv := newFakeServer()
+	var key atomic.Value
+	key.Store("legacy")
+	cfg := testConfig(srv, nil)
+	cfg.Connect = func() (Server, string) { return srv, key.Load().(string) }
+	cfg.NoDevice = func() string {
+		if key.Load().(string) == "legacy" {
+			key.Store("device") // flopwire login saves right after the read
+			return "run flopwire login"
+		}
+		return ""
+	}
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, &presenceSrc{})
+	run(t, b)
+	waitFor(t, "a poll with the new credential", func() bool { return srv.pollCount() > 0 })
 }

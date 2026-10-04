@@ -166,7 +166,7 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 		// changed since its last answer, maybe by shrinking (a revoke
 		// re-held a message), which the cursor cannot show.
 		if newest > req.Cursor || gen != req.Gen || timedOut {
-			out.Cursor, out.Gen, out.Ignored = max(newest, req.Cursor), gen, ignored
+			out.Cursor, out.Gen, out.Ignored, out.Now = max(newest, req.Cursor), gen, ignored, s.now().UTC()
 			return out, nil
 		}
 		select {
