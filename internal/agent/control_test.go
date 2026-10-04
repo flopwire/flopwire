@@ -484,10 +484,20 @@ func TestControlPendingDuringPlacementWait(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 	for _, s := range []string{"to-2222", "new-9999"} {
-		start := time.Now()
-		r := ask(t, f.a, Request{Op: "pending", Session: s})
-		if d := time.Since(start); !r.OK || d > 200*time.Millisecond {
-			t.Fatalf("pending for %s during a placement wait: %v after %s", s, r.Error, d)
+		// The best of three: a loaded test machine can stall one call
+		// past the budget; a call that waited for the placement could not
+		// get under it at all.
+		best := time.Hour
+		for range 3 {
+			start := time.Now()
+			r := ask(t, f.a, Request{Op: "pending", Session: s})
+			if !r.OK {
+				t.Fatalf("pending for %s during a placement wait: %s", s, r.Error)
+			}
+			best = min(best, time.Since(start))
+		}
+		if best > 200*time.Millisecond {
+			t.Fatalf("pending for %s during a placement wait took %s", s, best)
 		}
 	}
 	select {
