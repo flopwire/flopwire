@@ -89,6 +89,14 @@ func (c *stallConn) Write(b []byte) (int, error) {
 		select {
 		case at := <-ch:
 			time.Sleep(time.Until(at))
+			// The runtime marks the deadline passed by a timer that
+			// can fire after at; an empty write fails once it has.
+			for range 1000 {
+				if _, err := c.Conn.Write(nil); err != nil {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
 			n, err := c.Conn.Write(b)
 			var ne net.Error
 			c.plan.mu.Lock()
