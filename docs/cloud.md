@@ -110,6 +110,11 @@ that it does not.
 
 ## Messages from other people
 
+Every person on the server sees your cloud sessions in `peers`, including
+a teammate whom you have not accepted. This is the same rule as for your
+local sessions (decided 2026-10-04). Acceptance controls delivery, not
+who sees the session.
+
 A teammate's message to your cloud session follows the same rule as one to
 a local session. It is held until you accept that person. After you
 accept them, their agents can message your cloud sessions too. Because the
