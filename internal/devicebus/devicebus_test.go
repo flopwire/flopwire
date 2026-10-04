@@ -38,6 +38,7 @@ type fakeServer struct {
 	reads    []busproto.ReadReceipt          // read receipts taken
 	readFn   func(busproto.ReadReceipt) bool // takes a read receipt; nil: all
 	sends    []busproto.SendRequest
+	sendFn   func(busproto.SendRequest) error // refuses a send; nil: none
 	peers    []busproto.PeersQuery
 	pollErr  error // answered at once while set
 	answered chan struct{}
@@ -120,6 +121,11 @@ func (f *fakeServer) readReceipts() []busproto.ReadReceipt {
 func (f *fakeServer) Send(_ context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sendFn != nil {
+		if err := f.sendFn(req); err != nil {
+			return busproto.SendResponse{}, err
+		}
+	}
 	f.sends = append(f.sends, req)
 	return busproto.SendResponse{ID: "msent", State: busproto.StateQueued}, nil
 }
@@ -1034,5 +1040,161 @@ func TestRequestNamingWithheldRepoRefused(t *testing.T) {
 	}
 	if !slices.Equal(asked, []string{"/src/api", "api", "/src/api"}) {
 		t.Fatalf("checked %q", asked)
+	}
+}
+
+// shortPlaceWait shortens PlaceWait for one test.
+func shortPlaceWait(t *testing.T, d time.Duration) {
+	was := PlaceWait
+	PlaceWait = d
+	t.Cleanup(func() { PlaceWait = was })
+}
+
+func (f *fakeServer) sendCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sends)
+}
+
+// A brand-new session that sends before the agent indexed it is not
+// refused: the bus asks the agent to place it, waits up to PlaceWait, and
+// sends once it appears (issue #71).
+func TestSendFromNewSessionWaitsForIndex(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	var placed atomic.Int32
+	b.SetPlace(func(_ context.Context, session string) error {
+		placed.Add(1)
+		go func() {
+			time.Sleep(150 * time.Millisecond) // indexing
+			p.set(sess("open-1", "claude", "/src/api", true), sess(session, "claude", "/src/api", true))
+		}()
+		return nil
+	})
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "new-1", FromAgent: "claude", To: "abcd", Body: "x"}); err != nil {
+		t.Fatalf("send from a session indexed within the wait: %v", err)
+	}
+	if placed.Load() != 1 || srv.sendCount() != 1 {
+		t.Fatalf("placed %d times, %d sends", placed.Load(), srv.sendCount())
+	}
+	// Never indexed: refused once the wait is over, as not indexed yet,
+	// which a retry may fix.
+	shortPlaceWait(t, 100*time.Millisecond)
+	b.SetPlace(nil)
+	var be *busproto.Error
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "never-1", To: "abcd", Body: "x"}); !errors.As(err, &be) ||
+		be.Code != busproto.CodeSessionNotOnDevice || !strings.Contains(be.Detail, "not indexed") || strings.Contains(be.Detail, "path rule") {
+		t.Fatalf("send from an unknown session: %v", err)
+	}
+}
+
+// A session whose path rules are not decided yet (no complete line has
+// named its directory) is waited for, and refused as not indexed yet
+// rather than as kept off the server by a path rule; nothing reaches the
+// server meanwhile.
+func TestSendFromUnplacedSession(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	young := sess("young-1", "claude", "", true)
+	young.Withheld, young.Unplaced = true, true
+	p.set(young)
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	shortPlaceWait(t, 100*time.Millisecond)
+	var be *busproto.Error
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "young-1", To: "abcd", Body: "x"}); !errors.As(err, &be) ||
+		be.Code != busproto.CodeSessionNotOnDevice || !strings.Contains(be.Detail, "not indexed") || strings.Contains(be.Detail, "path rule") {
+		t.Fatalf("send from an unplaced session: %v", err)
+	}
+	if srv.sendCount() != 0 {
+		t.Fatal("an unplaced session's send reached the server")
+	}
+	shortPlaceWait(t, 2*time.Second)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		p.set(sess("young-1", "claude", "/src/api", true)) // its first line named an allowed directory
+	}()
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "young-1", To: "abcd", Body: "x"}); err != nil {
+		t.Fatalf("send once placed within the wait: %v", err)
+	}
+	// Placed and withheld: refused at once, as before.
+	secret := sess("young-1", "claude", "/src/client", true)
+	secret.Withheld = true
+	p.set(secret)
+	b.mu.Lock()
+	b.presence = presenceCache{}
+	b.mu.Unlock()
+	start := time.Now()
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "young-1", To: "abcd", Body: "y"}); !errors.As(err, &be) || !strings.Contains(be.Detail, "path rule") {
+		t.Fatalf("send from a withheld session: %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("a withheld session waited for placement")
+	}
+}
+
+// A session the device knows but the server has not had in a poll yet
+// is reported at once and the send asked again, within PlaceWait.
+func TestSendBeforeFirstPresenceReport(t *testing.T) {
+	srv := newFakeServer()
+	srv.sendFn = func(req busproto.SendRequest) error {
+		for _, s := range srv.polls[len(srv.polls)-1].Sessions {
+			if s.SessionID == req.FromSession {
+				return nil
+			}
+		}
+		return &busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session " + req.FromSession + " is not on this device"}
+	}
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	run(t, b)
+	waitFor(t, "the first poll", func() bool { return srv.pollCount() > 0 })
+	p.set(sess("open-1", "claude", "/src/api", true), sess("new-3", "claude", "/src/api", true))
+	start := time.Now()
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "new-3", To: "abcd", Body: "x"}); err != nil {
+		t.Fatalf("send before the first presence report: %v", err)
+	}
+	if d := time.Since(start); d > PlaceWait {
+		t.Fatalf("took %s", d)
+	}
+}
+
+// A hook's pending call for a session presence does not list yet reports
+// it now, not at the next presence check.
+func TestNudgeRepolls(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	cfg := testConfig(srv, nil)
+	cfg.PresenceEvery = time.Hour // no presence check during the test
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	run(t, b)
+	waitFor(t, "the first poll", func() bool { return srv.pollCount() > 0 })
+	p.set(sess("open-1", "claude", "/src/api", true), sess("new-4", "claude", "/src/api", true))
+	b.Nudge("open-1", "claude") // listed: nothing to do
+	time.Sleep(400 * time.Millisecond)
+	if n := srv.pollCount(); n != 1 {
+		t.Fatalf("a nudge for a listed session repolled: %d polls", n)
+	}
+	b.Nudge("new-4", "claude")
+	waitFor(t, "a poll reporting new-4", func() bool {
+		return slices.ContainsFunc(srv.lastPoll().Sessions, func(s busproto.PresenceSession) bool { return s.SessionID == "new-4" })
+	})
+}
+
+// Without a server, a session that sends before presence lists it is
+// waited for too.
+func TestLocalSendFromNewSessionWaits(t *testing.T) {
+	p := &presenceSrc{}
+	p.set(sess("bbbb3333", "claude", "/src/web", false))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(nil, nil), p)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		p.set(sess("bbbb3333", "claude", "/src/web", false), sess("aaaa1111", "claude", "/src/api", true))
+	}()
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "aaaa1111", To: "bbbb", Body: "x"}); err != nil {
+		t.Fatalf("local send from a new session: %v", err)
 	}
 }

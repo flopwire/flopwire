@@ -955,7 +955,15 @@ delivers the messages. A message that a subagent sends goes out as its
 parent session, and the reply goes to the parent session.
 
 A session that a path rule keeps off the server cannot send. The agent
-refuses the request before anything leaves the device.
+refuses the request before anything leaves the device. The agent also
+refuses a send whose recipient or ref names such a session
+(`withheld_session`).
+
+A new session can send before the agent has indexed it, or before its
+transcript names its directory. The agent then indexes the session and
+waits up to 2 seconds. If the session is still not ready, the agent
+refuses the send with `session_not_on_device` and "not indexed yet". Send
+again after a few seconds. `flopwire send` retries once by itself.
 
 ### Known limits
 
@@ -966,9 +974,10 @@ refuses the request before anything leaves the device.
 - A Devin hook finds a subagent's tool call in Devin's session store. If
   the hook cannot read the store, it delivers messages only at a prompt.
   It writes the cause to stderr.
-- Without a server, the agent applies the per-session, per-thread,
-  duplicate and recipient limits. It does not apply the per-device and
-  per-person ceilings of the server (#71).
+- Without a server, the agent applies the server's per-session,
+  per-device, per-thread, duplicate and recipient limits. It does not
+  apply the per-person ceiling: it is higher than the per-device ceiling,
+  and without a server the person has one device.
 - `@user` messages are routed by repo name. With `--server`, `--repo`
   does not match another machine's checkout at another path (#102).
 - Devin CLI shows no held-message notice. `codex exec` does not show it

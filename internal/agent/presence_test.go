@@ -659,3 +659,34 @@ func TestBusRepoKeyLeavesOutAWithheldRemote(t *testing.T) {
 		t.Fatalf("repo key %q %v: a withheld remote", got, err)
 	}
 }
+
+// A session whose path rules are not decided yet (a young transcript that
+// has not named its directory) is withheld and marked unplaced, so the bus
+// waits for it and refuses it as not indexed yet, never as kept off the
+// server by a path rule (issue #71). Once placed, it is neither.
+func TestKnownUnplacedSession(t *testing.T) {
+	const id = "019a0000-0000-7000-8000-0000000000a7"
+	saved := cwdWait
+	t.Cleanup(func() { cwdWait = saved })
+	cwdWait = time.Hour // every copied fixture is young
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local /tmp/oracle-alpha"}
+	f.a = New(f.store, f.cfg)
+	f.once()
+	known, err := f.a.BusKnown(ctx, id)
+	if err != nil || len(known) != 1 {
+		t.Fatalf("known: %+v %v", known, err)
+	}
+	if !known[0].Withheld || !known[0].Unplaced {
+		t.Fatalf("a session not placed yet: %+v", known[0])
+	}
+	cwdWait = 0 // the wait is over: placed by its fallback
+	f.once()    // and looked for by the recovery pass
+	known, _ = f.a.BusKnown(ctx, id)
+	if len(known) != 1 || known[0].Unplaced {
+		t.Fatalf("a placed session: %+v", known)
+	}
+	if err := f.a.BusPlace(ctx, "no-such-session"); err == nil {
+		t.Fatal("placing an unknown session")
+	}
+}

@@ -303,6 +303,8 @@ func TestSendRefusals(t *testing.T) {
 			[]string{"refused (session_not_on_device)", "its transcripts stay on this device"}},
 		{busproto.Error{Status: 403, Code: busproto.CodeWithheldSession, Detail: `ref "5ec2e7aa/3" names session 5ec2e7aa-1, which a path rule keeps off the server; nothing about it may reach the team server`},
 			[]string{"refused (withheld_session): ref \"5ec2e7aa/3\"", "Fix: send it without that ref", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
+		{busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session x is not indexed on this device yet (a new session); retry in a few seconds"},
+			[]string{"refused (session_not_on_device): session x is not indexed", "Fix: the device agent has not indexed this session yet (a new session); retry"}},
 		{busproto.Error{Status: 403, Code: busproto.CodeWithheldRepo, Detail: `repo "/src/client" is kept off the server by a path rule; nothing about it may reach the team server`},
 			[]string{"refused (withheld_repo): repo \"/src/client\"", "Fix: leave out --repo", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 400, Code: busproto.CodeBadRequest, Detail: "a ref is an archive address of at most 512 bytes"},
