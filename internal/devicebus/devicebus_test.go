@@ -1402,3 +1402,35 @@ func TestReceiptsWaitForANewCredential(t *testing.T) {
 	key.Store("new") // flopwire login saved a new token
 	waitFor(t, "the receipt with the new credential", func() bool { return slices.Contains(srv.ackedIDs(), "ma") })
 }
+
+// A credential that is not a device credential (a legacy login, a minted
+// FLOPWIRE_TOKEN) does not poll: the server would refuse every poll. The
+// bus says why once, and polls when a new credential is a device's
+// (issue #71).
+func TestNoDeviceCredentialDoesNotPoll(t *testing.T) {
+	srv := newFakeServer()
+	var key atomic.Value
+	key.Store("legacy")
+	var asked atomic.Int32
+	cfg := testConfig(srv, nil)
+	cfg.Connect = func() (Server, string) { return srv, key.Load().(string) }
+	cfg.NoDevice = func() string {
+		asked.Add(1)
+		if key.Load().(string) == "legacy" {
+			return "run flopwire login"
+		}
+		return ""
+	}
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, &presenceSrc{})
+	run(t, b)
+	waitFor(t, "the stop", func() bool { return b.Status(ctx).State == StateStopped })
+	time.Sleep(200 * time.Millisecond) // ten repins
+	if n := srv.pollCount(); n != 0 {
+		t.Fatalf("polled %d times without a device credential", n)
+	}
+	if st := b.Status(ctx); st.LastError != "run flopwire login" || asked.Load() != 1 {
+		t.Fatalf("status %+v, asked %d times", st, asked.Load())
+	}
+	key.Store("device") // flopwire login
+	waitFor(t, "a poll", func() bool { return srv.pollCount() > 0 })
+}

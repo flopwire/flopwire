@@ -136,6 +136,14 @@ func (b *Bus) runServer(ctx context.Context) {
 				next = now.Add(b.cfg.RepinEvery)
 			}
 		}
+		if !inflight && stop == nil && !now.Before(next) && b.cfg.NoDevice != nil {
+			if why := b.cfg.NoDevice(); why != "" {
+				_, key := b.cfg.Connect()
+				stop, next = &halt{state: StateStopped, reason: why, key: key}, now.Add(b.cfg.RepinEvery)
+				b.log.Error("devicebus: messaging "+stop.state, "reason", why)
+				b.setStatus(func(s *Status) { s.State, s.LastError, s.RetryAt = StateStopped, why, time.Time{} })
+			}
+		}
 		if !inflight && stop == nil && !now.Before(next) {
 			srv, key := b.cfg.Connect()
 			// A presence that cannot be read keeps the last one: an empty

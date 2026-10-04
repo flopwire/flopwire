@@ -82,6 +82,12 @@ type Config struct {
 	// re-login, a re-pin). nil: no server is configured, and the device
 	// routes between its own sessions.
 	Connect func() (Server, string)
+	// NoDevice says why the saved credential cannot use the bus (a login
+	// from before device credentials, a minted FLOPWIRE_TOKEN), with the
+	// fix; "" when it can. While it says so the bus does not poll: the
+	// server would refuse every poll (issue #71). It is asked again when
+	// the credential's key changes. nil: always a device credential.
+	NoDevice func() string
 	// Presence lists the device's live sessions. Known lists the sessions
 	// the device holds (live or not) whose id starts with a prefix, for
 	// addressing without a server. The agent sets both (SetSources).
