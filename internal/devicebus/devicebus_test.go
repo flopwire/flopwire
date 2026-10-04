@@ -446,7 +446,7 @@ func TestRestartKeepsInboxAndReceipts(t *testing.T) {
 func drainAcks(t *testing.T, b *Bus) int {
 	t.Helper()
 	for batches := 0; ; batches++ {
-		n, err := b.sendAcks(ctx)
+		n, _, err := b.sendAcks(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1353,4 +1353,52 @@ func TestExpiryFollowsServerClock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Receipts the server refused for the device's credential are not retried
+// with it: they stay owed until the saved credential changes, then go
+// (issue #71).
+func TestReceiptsWaitForANewCredential(t *testing.T) {
+	srv := newFakeServer()
+	var key atomic.Value
+	key.Store("old")
+	refused := atomic.Bool{}
+	refused.Store(true)
+	srv.ackFn = func(ids []string) (busproto.AckResponse, error) {
+		if refused.Load() {
+			return busproto.AckResponse{}, &client.APIError{StatusCode: http.StatusUnauthorized}
+		}
+		return busproto.AckResponse{Acked: ids, Rejected: []string{}}, nil
+	}
+	cfg := testConfig(srv, nil)
+	cfg.Connect = func() (Server, string) { return srv, key.Load().(string) }
+	p := &presenceSrc{}
+	p.set(sess("s1", "claude", "/src/api", false))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, p)
+	if err := b.st.reconcile(ctx, []busproto.Envelope{env("ma", "s1")}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := deliver(b, "s1", "", Limit{}); err != nil || len(got) != 1 {
+		t.Fatalf("deliver: %+v %v", got, err)
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { b.runAcks(rctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	b.kickAcks()
+	acks := func() int {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.ackReqs)
+	}
+	waitFor(t, "the first receipt", func() bool { return acks() == 1 })
+	time.Sleep(300 * time.Millisecond) // many backoffs (10-40ms) and repins (20ms)
+	b.kickAcks()
+	time.Sleep(50 * time.Millisecond)
+	if n := acks(); n != 1 {
+		t.Fatalf("a refused credential was retried: %d receipt requests", n)
+	}
+	refused.Store(false)
+	key.Store("new") // flopwire login saved a new token
+	waitFor(t, "the receipt with the new credential", func() bool { return slices.Contains(srv.ackedIDs(), "ma") })
 }

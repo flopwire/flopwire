@@ -461,10 +461,20 @@ func (b *Bus) runAcks(ctx context.Context) {
 		case <-time.After(b.cfg.AckDelay):
 		}
 		for {
-			n, err := b.sendAcks(ctx)
+			n, key, err := b.sendAcks(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				if credentialRefused(err) {
+					// Retrying the same credential is refused again: the
+					// receipts stay owed until it changes (issue #71).
+					b.log.Warn("devicebus: receipts wait: the server refused this device's credential; run flopwire login", "err", err)
+					if !b.awaitNewKey(ctx, key) {
+						return
+					}
+					backoff = 0
+					continue
 				}
 				backoff = min(max(2*backoff, b.cfg.BackoffMin), b.cfg.BackoffMax)
 				d := jitter(backoff)
@@ -490,7 +500,7 @@ func (b *Bus) runAcks(ctx context.Context) {
 // goes only for a message whose delivery receipt was taken: one for a
 // message in this batch goes in the next. It returns how many entries it
 // sent (0: nothing owed).
-func (b *Bus) sendAcks(ctx context.Context) (int, error) {
+func (b *Bus) sendAcks(ctx context.Context) (int, string, error) {
 	ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
 	var gone, ended, failed []string
 	var reads []busproto.ReadReceipt
@@ -504,13 +514,13 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 		if ctx.Err() == nil {
 			b.log.Warn("devicebus: receipts", "err", err)
 		}
-		return 0, nil // the store failed; the next kick tries again
+		return 0, "", nil // the store failed; the next kick tries again
 	}
 	n := len(ids) + len(gone) + len(ended) + len(failed) + len(reads)
 	if n == 0 {
-		return 0, nil
+		return 0, "", nil
 	}
-	srv, _ := b.cfg.Connect()
+	srv, key := b.cfg.Connect()
 	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, PushFailed: failed, Read: reads})
 	cancel()
@@ -521,7 +531,7 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 		err = b.st.readAcked(ctx, resp.Read, resp.ReadRejected)
 	}
 	if err != nil {
-		return 0, err
+		return 0, key, err
 	}
 	if len(resp.Rejected) > 0 {
 		b.log.Info("devicebus: receipts rejected (delivered elsewhere, held again or expired)", "ids", resp.Rejected)
@@ -529,5 +539,32 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 	if len(resp.ReadRejected) > 0 {
 		b.log.Info("devicebus: read receipts rejected (not delivered to that session on this device)", "ids", resp.ReadRejected)
 	}
-	return n, nil
+	return n, key, nil
+}
+
+// credentialRefused reports whether the server refused the device's
+// credential or TLS pin: the same request is refused until it changes.
+func credentialRefused(err error) bool {
+	var ae *client.APIError
+	return errors.As(err, &ae) && ae.StatusCode == http.StatusUnauthorized || syncproto.Permanent(err)
+}
+
+// awaitNewKey waits until the saved credential's key (Connect) is no
+// longer key, re-reading it every RepinEvery. It reports false when ctx
+// ends first. Kicks meanwhile are dropped: the receipts they announce are
+// owed in the store and go with the first batch after.
+func (b *Bus) awaitNewKey(ctx context.Context, key string) bool {
+	tick := time.NewTicker(b.cfg.RepinEvery)
+	defer tick.Stop()
+	for {
+		if _, k := b.cfg.Connect(); k != key {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-b.ackWake:
+		case <-tick.C:
+		}
+	}
 }
