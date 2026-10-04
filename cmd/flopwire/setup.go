@@ -450,9 +450,12 @@ const (
 
 // claudeResult is the last stdout line of a `claude plugin … --json` command.
 type claudeResult struct {
-	Outcome       string `json:"outcome"`
-	Message       string `json:"message"`
-	FailureCode   string `json:"failureCode"`
+	Outcome     string `json:"outcome"`
+	Message     string `json:"message"`
+	FailureCode string `json:"failureCode"`
+	// Marketplace is the name `marketplace add` added (2.1.289): the name
+	// the source's marketplace.json declares.
+	Marketplace   string `json:"marketplace"`
 	UpdateOutcome string `json:"updateOutcome"`
 	OldVersion    string `json:"oldVersion"`
 	NewVersion    string `json:"newVersion"`
@@ -677,8 +680,33 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 			if res.Outcome != "ok" {
 				return fail(fmt.Errorf("add the marketplace %s: %s", env.source, res.Message))
 			}
+			name := claudeMarketplace
+			if res.Marketplace != "" {
+				name = res.Marketplace
+			}
+			// existed: a marketplace of that name was configured before the
+			// add, so it is the user's, not one setup created.
+			existed := slices.ContainsFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == name })
+			if existed {
+				r.Done = append(r.Done, "the marketplace "+name+" from "+env.source+" was already present")
+			} else {
+				r.Done = append(r.Done, "added the marketplace "+name+" from "+env.source)
+			}
+			if name != claudeMarketplace {
+				// Not Flopwire's marketplace: install nothing from it. Remove
+				// it only when setup created it; one that was already
+				// configured is the user's and stays.
+				msg := fmt.Sprintf("the marketplace at %s is named %s, not %s, so it is not Flopwire's and setup installed nothing from it", env.source, name, claudeMarketplace)
+				if !existed {
+					res, err := c.result(ctx, append([]string{"plugin", "marketplace", "remove", name, "--json"}, scopeArgs...)...)
+					if err == nil && res.Outcome == "ok" {
+						r.Done = append(r.Done, "removed the marketplace "+name+" again")
+						return fail(errors.New(msg + "; setup removed the marketplace it added"))
+					}
+				}
+				return fail(fmt.Errorf("%s. To remove it, run claude plugin marketplace remove %s", msg, name))
+			}
 			r.Marketplace = env.source
-			r.Done = append(r.Done, "added the marketplace "+claudeMarketplace+" from "+env.source)
 		case foreign:
 			r.Error = fmt.Sprintf("did not install or update %s: the marketplace %s comes from %s, not %s (see warnings)", claudePlugin, claudeMarketplace, mkt.location(), env.source)
 		default:

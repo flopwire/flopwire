@@ -377,6 +377,13 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
+The source's Claude Code marketplace must be named `flopwire`. When it
+has another name, Claude Code adds the marketplace under that name.
+setup names it in `done`, sets `error`, and installs nothing from it.
+When setup added that marketplace, setup removes it again. When a
+marketplace with that name was already configured, setup keeps it. Run
+`claude plugin marketplace remove NAME` to remove it.
+
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace
 repository, Devin 3000.10.21 and later recognizes the marketplace and
@@ -421,6 +428,77 @@ run in the same Devin session.
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
 with the plugin. To check them by hand, see
 [manual-checks.md](manual-checks.md).
+
+### Test a Claude Code install in a scratch configuration
+
+Use this procedure to test `flopwire setup` at user scope without a
+change to your own Claude Code configuration. It works on macOS, where
+Claude Code keeps its login in the keychain.
+
+A scratch `CLAUDE_CONFIG_DIR` alone does not log in. Claude Code then
+looks for a keychain item with another name, and prints
+`Not logged in · Please run /login`. `CLAUDE_CODE_OAUTH_TOKEN` supplies
+the login. Do not copy any files from `~/.claude`.
+
+The access token is a secret. It must not show on the screen, in a
+file, in a log or in the shell history:
+
+- Never type or paste the token. Read it from the keychain inside a
+  command substitution, as in step 3. The history then holds the
+  `security` command, not the token.
+- Never run `security find-generic-password -w` alone. It prints the
+  whole keychain item, the refresh token too.
+- Do not run `echo`, `env`, `printenv`, `set` or `set -x` while the
+  token is set.
+
+1. Start a new shell (`zsh`) for the test. The token goes away when you
+   exit it.
+2. Make an empty directory for the scratch configuration. Set
+   `CLAUDE_CONFIG_DIR` to it.
+3. Read the access token from the keychain item
+   `Claude Code-credentials` straight into the environment:
+
+   ```sh
+   export CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s 'Claude Code-credentials' -w | /usr/bin/jq -r .claudeAiOauth.accessToken)"
+   ```
+
+4. Set `FLOPWIRE_CONFIG` and `FLOPWIRE_INDEX` to paths in scratch.
+5. Set `PATH` to a directory that holds only `claude`, `flopwire` and
+   `git`, then `/usr/bin:/bin`. setup then finds no other harness.
+6. Run `flopwire setup --source <checkout>`, then
+   `flopwire setup --check`.
+7. Run `claude -p --setting-sources user`. Ask the model to quote the
+   hook output and to list the `flopwire` tools.
+8. Run `flopwire setup --remove`, then `flopwire setup --check`.
+9. Exit the shell from step 1. Delete the scratch directory.
+
+To prove that the hooks reach the model, put a `flopwire` script first
+on `PATH` for step 7. For `flopwire hook`, the script prints
+`{"hookSpecificOutput":{"hookEventName":EV,"additionalContext":MARKER}}`
+on `SessionStart` and `PostToolUse`. For every other command it runs
+the real `flopwire`.
+
+What was verified, with Claude Code 2.1.289 on macOS 26 on 2026-10-04:
+
+- `flopwire setup` with a local checkout as the source added the
+  marketplace and installed `flopwire@flopwire` at user scope. Claude
+  Code wrote `extraKnownMarketplaces` and `enabledPlugins` to the
+  scratch `settings.json`. `--check` reported the plugin installed and
+  enabled.
+- `claude -p --model haiku --setting-sources user` with a marker
+  script quoted the `SessionStart` and `PostToolUse` markers. It listed
+  the seven `mcp__plugin_flopwire_flopwire__*` tools and the
+  `flopwire:messaging` skill. The same prompt with
+  `--setting-sources project` saw no marker and no tool, so the user
+  settings loaded the plugin.
+- `--remove` uninstalled the plugin and removed the marketplace, and
+  `--check` then reported it not installed.
+- A source whose `marketplace.json` names another marketplace: setup
+  reported the name that Claude Code added in `done`, set `error`, and
+  installed nothing.
+- `shasum` of `~/.claude/settings.json` and of
+  `installed_plugins.json` and `known_marketplaces.json` in
+  `~/.claude/plugins` was the same before and after.
 
 ## Connect the harness hooks
 
