@@ -87,3 +87,23 @@ First run with the transcript verdicts (#131): each case reads the
 message's wrapper from the recipient's transcript as the harness stored
 it, and the model's quote is corroboration only. Cases framing,
 prompt-submit and mid-turn, cheapest models.
+
+## 2026-10-04 20:32Z
+
+flopwire dev, local agent. claude: 2.1.289 (Claude Code), model haiku. codex: codex-cli 0.160.0, model gpt-5.6-luna. devin: devin 3000.11.1 (cc4e349ca55e), model swe-2-medium. opencode: 1.18.30, model opencode/big-pickle.
+
+| Harness | Case | Result | Evidence |
+|---|---|---|---|
+| claude | subagent | PASS | 8 hooks ran inside the subagent; the session's PostToolUse Agent printed m2048d6212229a55a after SubagentStop agent_id=a06ce78e9fb0…; subagent transcript clean; transcript hook context holds m2048d6212229a55a with PROBE-SUBAGENT-88e2c0; model quoted PROBE-SUBAGENT-88e2c0 |
+| codex | subagent | PASS | 5 hooks ran inside the subagent; the session's PostToolUse multi_agent_v1wait_agent printed m47a7eb8cd5a47d9a after SubagentStop agent_id=01a1089e-cfd…; subagent transcript clean; transcript hook context holds m47a7eb8cd5a47d9a with PROBE-SUBAGENT-be3068; model quoted PROBE-SUBAGENT-be3068 |
+| codex | guardian | PASS | review 3.347s; hooks during it: none; the session's PostToolUse Bash printed me6f6aea9a6a758ae after the review; transcript hook context holds me6f6aea9a6a758ae with PROBE-GUARDIAN-807a6b; model quoted PROBE-GUARDIAN-807a6b |
+| devin | subagent | PASS | 3 hooks ran inside the subagent; the session's PostToolUse run_subagent printed m5284fe353b5a8caa after PostToolUse run_subagent; subagent transcript clean; transcript hook context holds m5284fe353b5a8caa with PROBE-SUBAGENT-0155eb; model quoted PROBE-SUBAGENT-0155eb |
+| opencode | subagent | PASS | 8 hooks ran inside the subagent; the session's PostToolUse task printed me162938a3f11d930 after PostToolUse task; subagent transcript clean; transcript hook context holds me162938a3f11d930 with PROBE-SUBAGENT-ee8dc4; model quoted PROBE-SUBAGENT-ee8dc4 |
+
+5 passed, 0 failed.
+
+Reviewer run for PR #140, after the wrapper-completeness fix: subagent and
+guardian (Codex only), cheapest models. Each wrapper was closed, uncut,
+followed by a model reply, and held once by the session's transcript. The
+same build also passed framing on all four harnesses and mid-turn on
+Devin and opencode (not recorded above).
