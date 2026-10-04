@@ -432,6 +432,31 @@ Devin reads hooks from Claude Code's settings files, but not from Claude
 Code's plugins. The Claude Code plugin and the Devin plugin therefore never
 run in the same Devin session.
 
+Installing the Codex plugin from GitHub was checked with Codex 0.160.0 on
+2026-10-04, in an empty `CODEX_HOME`, with `flopwire` and `codex` the only
+harness commands on `PATH`:
+
+```sh
+flopwire setup --text
+```
+
+The result:
+
+- setup ran `codex plugin marketplace add flopwire/flopwire --json
+  --sparse .agents/plugins --sparse plugins/codex`, then
+  `codex plugin add flopwire@flopwire --json`.
+- `config.toml` got `[marketplaces.flopwire]` with
+  `source_type = "git"`, `source = "https://github.com/flopwire/flopwire.git"`
+  and both sparse paths, and `[plugins."flopwire@flopwire"]` with
+  `enabled = true`.
+- Codex copied the plugin to
+  `plugins/cache/flopwire/flopwire/local`, and listed five plugin hooks,
+  all waiting for review.
+- A second `flopwire setup` ran `codex plugin marketplace upgrade
+  flopwire` and reinstalled the plugin. It reported nothing to change.
+- `flopwire setup --check` reported the plugin installed and enabled, and
+  the five hooks waiting for approval.
+
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
 with the plugin.
 
