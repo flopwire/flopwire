@@ -119,6 +119,8 @@ func (v *verdict) reached(d delivery, id, marker, reply string) {
 		v.fail("no hook context in the transcript %s holds %s's wrapper", d.where, id)
 	case !strings.Contains(d.w.body, marker):
 		v.fail("%s's wrapper in the transcript does not hold %s", id, marker)
+	case d.w.whole(id) != nil:
+		v.fail("%v", d.w.whole(id))
 	default:
 		v.fact("transcript hook context holds %s with %s", id, marker)
 	}
@@ -169,6 +171,15 @@ func checkDeliveredOnce(results []probeResult, entries []tapEntry) []probeResult
 // wrapper is in the transcript's hook context (verdict.reached).
 func verdictPromptSubmit(entries []tapEntry, session, id, marker, reply string, d delivery) verdict {
 	var v verdict
+	v.promptSubmitPrinted(entries, session, id)
+	v.reached(d, id, marker, reply)
+	return v
+}
+
+// promptSubmitPrinted checks the hook log: the session's own
+// UserPromptSubmit printed id, once. It bounds the transcript read, which
+// waits for the harness to write: only the turn's first hook printed it.
+func (v *verdict) promptSubmitPrinted(entries []tapEntry, session, id string) {
 	ps := printers(entries, id)
 	switch {
 	case len(ps) == 0:
@@ -180,8 +191,6 @@ func verdictPromptSubmit(entries []tapEntry, session, id, marker, reply string, 
 	default:
 		v.fact("UserPromptSubmit printed %s", id)
 	}
-	v.reached(d, id, marker, reply)
-	return v
 }
 
 // verdictMidTurn: a message queued while a tool runs is printed by the
@@ -306,6 +315,9 @@ func verdictSubagent(entries []tapEntry, session, id, marker, reply string, d de
 	default:
 		v.fact("subagent transcript clean")
 	}
+	if d.n > 1 {
+		v.fail("the session's transcript holds %s's wrapper %d times, want once", id, d.n)
+	}
 	v.reached(d, id, marker, reply)
 	return v
 }
@@ -339,8 +351,14 @@ var framingAttr = regexp.MustCompile(`(?i)\b(id|from|intent|marker)\s*[=:]\s*["'
 
 // framingWant is what the framing case's wrapper must carry: the sent
 // message's attributes, in the order the evidence names them.
+//
+// sender is the relation the bus sets: "own" when the recipient's person
+// is the sender's (internal/devicebus/local.go; internal/bus/bus.go for a
+// server). The probe's sessions are always one person's, in --local mode
+// and against the running agent alike; a probe between two people would
+// want "teammate".
 type framingWant struct {
-	id, from, agent, sender, intent, marker string
+	id, from, agent, sender, intent, marker, body string
 }
 
 // verdictFraming: the <flopwire-message> wrapper reached the model intact.
@@ -348,8 +366,10 @@ type framingWant struct {
 // sent message's id, sender session, harness, sender relation and intent,
 // and the marker in its text. The model's quote of those attributes is
 // corroboration only.
-func verdictFraming(d delivery, reply string, want framingWant) verdict {
+func verdictFraming(entries []tapEntry, session string, d delivery, reply string, want framingWant) verdict {
 	var v verdict
+	v.promptSubmitPrinted(entries, session, want.id)
+	hookFails := len(v.fails)
 	switch {
 	case d.err != nil:
 		v.fail("cannot read the transcript %s: %v", d.where, d.err)
@@ -361,14 +381,16 @@ func verdictFraming(d delivery, reply string, want framingWant) verdict {
 				v.fail("wrapper %s=%q, want %q", kv[0], got, kv[1])
 			}
 		}
-		if !d.w.closed {
-			v.fail("the wrapper of %s is not closed", want.id)
+		if err := d.w.whole(want.id); err != nil {
+			v.fail("%v", err)
 		}
 		if !strings.Contains(d.w.body, want.marker) {
 			v.fail("the wrapper of %s does not hold %s", want.id, want.marker)
+		} else if got := strings.TrimSpace(d.w.body); got != want.body {
+			v.fail("the wrapper of %s holds %q, want the sent text %q", want.id, clip(got, 120), want.body)
 		}
-		if len(v.fails) == 0 {
-			v.fact("transcript hook context holds the wrapper: id, from=%s, agent=%s, sender=%s, intent=%s and the marker", clip(want.from, 8), want.agent, want.sender, want.intent)
+		if len(v.fails) == hookFails {
+			v.fact("transcript hook context holds the whole wrapper: id, from=%s, agent=%s, sender=%s, intent=%s and the marker", clip(want.from, 8), want.agent, want.sender, want.intent)
 		}
 	}
 	v.fact("%s", framingQuote(reply, want))

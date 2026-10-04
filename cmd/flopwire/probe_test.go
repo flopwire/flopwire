@@ -44,7 +44,7 @@ func agentID(a string) func(*tapEntry)      { return func(e *tapEntry) { e.Agent
 // seen is a delivery whose transcript holds the message's wrapper with the
 // marker; unseen is one whose transcript holds none.
 var (
-	seen   = delivery{where: "/x/t.jsonl", w: &wrapper{attrs: map[string]string{"id": pID}, body: probeBody(pMarker), closed: true}}
+	seen   = delivery{where: "/x/t.jsonl", w: &wrapper{attrs: map[string]string{"id": pID}, body: probeBody(pMarker), closed: true, answered: true}}
 	unseen = delivery{where: "/x/t.jsonl"}
 )
 
@@ -345,14 +345,14 @@ func TestVerdictSubagentUnreadableTranscript(t *testing.T) {
 // The model's quote of the wrapper is evidence, never the verdict: loose
 // formats read as a match, a wrong one is reported, neither fails.
 func TestFramingQuote(t *testing.T) {
-	w := framingWant{id: pID, from: pSender, agent: "claude", sender: "own", intent: "request", marker: pMarker}
+	w := framingWant{id: pID, from: pSender, agent: "claude", sender: "own", intent: "request", marker: pMarker, body: probeBody(pMarker)}
 	for reply, want := range map[string]string{
 		"Here they are:\nid=" + pID + " from=" + pSender + " intent=request marker=" + pMarker + "\n": "model quoted id, from, intent and the marker",
 		"- id: `" + pID + "`, from: \"" + pSender + "\", intent: request, marker: " + pMarker + ".":   "model quoted id, from, intent and the marker",
 		"id=" + pID + " from=unknown intent=request marker=" + pMarker:                                `model's quote differs: from="unknown"`,
 		"I saw " + pMarker: "model did not quote the message id",
 	} {
-		v := verdictFraming(delivery{w: &wrapper{attrs: map[string]string{"id": pID, "from": pSender, "agent": "claude", "sender": "own", "intent": "request"}, body: pMarker, closed: true}}, reply, w)
+		v := verdictFraming(framingTap, pSess, delivery{w: &wrapper{attrs: map[string]string{"id": pID, "from": pSender, "agent": "claude", "sender": "own", "intent": "request"}, body: "\n" + probeBody(pMarker) + "\n", closed: true, answered: true}}, reply, w)
 		if len(v.fails) != 0 || !strings.Contains(strings.Join(v.facts, ";"), want) {
 			t.Errorf("%q: %+v, want fact %q", reply, v, want)
 		}

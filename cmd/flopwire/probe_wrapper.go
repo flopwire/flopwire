@@ -36,24 +36,59 @@ type wrapper struct {
 	attrs  map[string]string // the opening tag's attributes, unescaped
 	body   string            // the text between the opening and closing tags
 	closed bool              // the closing tag follows
+	// cut is the harness's mark that the model did not get the hook
+	// context whole, when its row holds one: Claude Code's
+	// <persisted-output> stub (past 10,000 characters the model sees a
+	// 2 KB preview) or Codex's truncation (past 10,000 bytes it keeps the
+	// head and the tail). See notes/message-bus/hook-caps-2026-10-03.md.
+	cut string
+	// answered is whether the model replied after the row: a row after
+	// the turn's last model call was recorded but never read.
+	answered bool
 }
 
 // delivery is what the recipient's transcript shows of one message.
 type delivery struct {
 	where string   // the transcript read, for evidence
 	err   error    // the transcript could not be read
-	w     *wrapper // the message's wrapper in hook context; nil when none
+	w     *wrapper // the message's first wrapper in hook context; nil when none
+	n     int      // how many wrappers of the message hook context holds
+}
+
+// hookText is one hook context row of the transcript.
+type hookText struct {
+	text     string
+	answered bool // an assistant row of the session follows it
+}
+
+// cutMarks are what a harness puts in a hook context it did not give the
+// model whole.
+var cutMarks = []string{"<persisted-output>", "Warning: truncated output", "tokens truncated…"}
+
+// whole checks that the model got the wrapper whole and answered it: closed,
+// in a row the harness did not cut, and followed by a reply.
+func (w *wrapper) whole(id string) error {
+	switch {
+	case w.cut != "":
+		return fmt.Errorf("the hook context holding %s's wrapper was cut by the harness (%s): the model did not get it whole", id, w.cut)
+	case !w.closed:
+		return fmt.Errorf("the wrapper of %s is not closed", id)
+	case !w.answered:
+		return fmt.Errorf("no model reply follows the hook context holding %s: it came after the turn's last model call", id)
+	}
+	return nil
 }
 
 var wrapperAttr = regexp.MustCompile(`\s([a-z][a-z-]*)="([^"]*)"`)
 
-// findWrapper finds message id's wrapper in hook context texts: a line that
-// starts with its opening tag, as `flopwire hook` prints it
-// (busrender.Render). A wrapper's attributes are escaped, so the first ">"
-// ends the opening tag.
-func findWrapper(texts []string, id string) *wrapper {
+// findWrapper finds message id's first wrapper in hook context rows, and
+// counts them: a line that starts with its opening tag, as `flopwire hook`
+// prints it (busrender.Render). A wrapper's attributes are escaped, so the
+// first ">" ends the opening tag.
+func findWrapper(rows []hookText, id string) (first *wrapper, n int) {
 	open := wrapperOpen + id + `"`
-	for _, text := range texts {
+	for _, row := range rows {
+		text := row.text
 		for rest, at := text, 0; ; {
 			i := strings.Index(rest, open)
 			if i < 0 {
@@ -68,7 +103,13 @@ func findWrapper(texts []string, id string) *wrapper {
 			if end < 0 {
 				continue
 			}
-			w := &wrapper{attrs: map[string]string{}}
+			w := &wrapper{attrs: map[string]string{}, answered: row.answered}
+			for _, c := range cutMarks {
+				if strings.Contains(text, c) {
+					w.cut = c
+					break
+				}
+			}
 			for _, m := range wrapperAttr.FindAllStringSubmatch(text[start:start+end], -1) {
 				w.attrs[m[1]] = html.UnescapeString(m[2])
 			}
@@ -77,17 +118,19 @@ func findWrapper(texts []string, id string) *wrapper {
 				body, w.closed = body[:j], true
 			}
 			w.body = body
-			return w
+			if n++; first == nil {
+				first = w
+			}
 		}
 	}
-	return nil
+	return first, n
 }
 
 // hookContexts returns the text of every row of session's transcript at
 // path that the harness records as hook context, parsed by the harness's
 // own parser. path is a JSONL transcript (Claude Code, Codex) or a store
 // (Devin, opencode).
-func hookContexts(ctx context.Context, h transcript.Agent, path, session string) ([]string, error) {
+func hookContexts(ctx context.Context, h transcript.Agent, path, session string) ([]hookText, error) {
 	var p transcript.Parser
 	switch h {
 	case transcript.AgentClaude:
@@ -120,8 +163,14 @@ func hookContexts(ctx context.Context, h transcript.Agent, path, session string)
 	if _, err := p.Parse(ctx, in, transcript.Cursor{}, &c); err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []hookText
 	for _, m := range c.MessagesFor(session) {
+		if m.Kind == transcript.KindAssistant {
+			for i := range out {
+				out[i].answered = true
+			}
+			continue
+		}
 		if !transcript.HookContext(h, m) {
 			continue
 		}
@@ -130,7 +179,7 @@ func hookContexts(ctx context.Context, h transcript.Agent, path, session string)
 		if h == transcript.AgentDevin && !strings.HasPrefix(m.Text, wrapperOpen) && !strings.HasPrefix(m.Text, "<flopwire-instructions>") {
 			continue
 		}
-		out = append(out, m.Text)
+		out = append(out, hookText{text: m.Text})
 	}
 	return out, nil
 }
@@ -164,10 +213,11 @@ func (r *harnessRun) delivered(ctx context.Context, session, id string) delivery
 		if d.where == "" {
 			d.err = fmt.Errorf("no hook named the session's transcript")
 		} else {
-			texts, err := hookContexts(ctx, r.name, d.where, session)
-			d.err, d.w = err, findWrapper(texts, id)
+			rows, err := hookContexts(ctx, r.name, d.where, session)
+			d.err = err
+			d.w, d.n = findWrapper(rows, id)
 		}
-		if d.w != nil || time.Now().After(deadline) || ctx.Err() != nil {
+		if (d.w != nil && d.w.answered) || time.Now().After(deadline) || ctx.Err() != nil {
 			return d
 		}
 		select {

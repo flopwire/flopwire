@@ -85,6 +85,21 @@ records as hook context:
 A prompt, a model reply or a tool result never counts, whatever it
 quotes. A transcript that the probe cannot read fails the case.
 
+The wrapper must also have reached the model whole. The case fails when
+the wrapper is not closed, when the harness cut the hook context (Claude
+Code's `<persisted-output>` stub past 10,000 characters, Codex's
+truncation past 10,000 bytes), or when no model reply follows the row in
+the transcript. In `framing`, the wrapper's text must equal the sent text,
+and the hook log must show that the session's `UserPromptSubmit` printed
+the message once. In `subagent`, the session's transcript must hold the
+wrapper exactly once. The probe reads the transcript again for up to 20 s,
+because a harness may write it after the turn ends; the hook log and the
+reply that must follow the row bound that wait to the probed turn.
+
+`framing` expects `sender="own"`: the probe's sessions belong to one
+person, in `--local` mode and against the running agent alike. A probe
+between two people would expect `teammate`.
+
 The model's reply is corroboration only. Each case asks the model to
 quote the message, and the evidence says whether it did. A cheap model
 that answers the message instead of quoting it does not fail a case.

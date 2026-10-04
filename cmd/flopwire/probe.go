@@ -1093,8 +1093,8 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 		}
 		d := r.delivered(ctx, r.recv.ID(), sent.ID)
 		if c == caseFraming {
-			want := framingWant{id: sent.ID, from: r.sender.ID(), agent: string(r.name), sender: string(busproto.SenderOwn), intent: intent, marker: m}
-			return verdictFraming(d, reply, want).result(res)
+			want := framingWant{id: sent.ID, from: r.sender.ID(), agent: string(r.name), sender: string(busproto.SenderOwn), intent: intent, marker: m, body: probeBody(m)}
+			return verdictFraming(r.tapSince(start), r.recv.ID(), d, reply, want).result(res)
 		}
 		return verdictPromptSubmit(r.tapSince(start), r.recv.ID(), sent.ID, m, reply, d).result(res)
 
