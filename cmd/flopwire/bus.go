@@ -880,7 +880,9 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 					*t = &u
 				}
 			}
-			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != ""})
+			// A reply whose parent the retention sweep deleted lost its
+			// reply_to; its thread is still another message's.
+			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != "" || (m.ThreadID != "" && m.ThreadID != m.ID)})
 		}
 		out.Next = resp.Inbox.Next
 	}

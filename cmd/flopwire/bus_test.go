@@ -1209,3 +1209,44 @@ func TestInboxWorstCaseMessageFitsMCPBudget(t *testing.T) {
 		}
 	}
 }
+
+// A reply whose parent the retention sweep deleted has no reply_to left,
+// but it is still a reply: its thread is another message's. The JSON says
+// is_reply and the text form names the thread, for both directions (#70).
+func TestInboxReplyWithItsParentDeleted(t *testing.T) {
+	asCaller(t, claudeSelf)
+	env := busproto.Envelope{ID: "m3", ThreadID: "m1", From: peerID, FromAgent: "codex", User: "gary@example.test", UserID: "u-1",
+		Sender: busproto.SenderOwn, Intent: busproto.IntentInform, Body: "answer", Sent: t0, ExpiresAt: t0.Add(24 * time.Hour),
+		ToSession: selfID, ToAgent: "claude", ToUser: "gary@example.test", ToUserID: "u-1", Addressed: "session"}
+	received := busproto.InboxItem{Envelope: env, Direction: "received", State: busproto.StateRead}
+	sent := received
+	sent.ID, sent.Direction, sent.From, sent.ToSession = "m4", "sent", selfID, peerID
+	root := received
+	root.ID, root.ThreadID = "m5", "m5"
+	fa := startFakeAgent(t, func(agent.Request) agent.Response {
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{received, sent, root}}}
+	})
+	out, stderr, err := cliJSON(t, fa, "", "inbox", "--thread", "m1")
+	var ij struct {
+		Messages []struct {
+			ID        string `json:"id"`
+			Direction string `json:"direction"`
+			IsReply   bool   `json:"is_reply"`
+		} `json:"messages"`
+	}
+	if err != nil || stderr != "" || json.Unmarshal([]byte(out), &ij) != nil || len(ij.Messages) != 3 {
+		t.Fatalf("inbox: %q %q %v", out, stderr, err)
+	}
+	for i, want := range []struct {
+		dir   string
+		reply bool
+	}{{"received", true}, {"sent", true}, {"received", false}} {
+		if m := ij.Messages[i]; m.Direction != want.dir || m.IsReply != want.reply {
+			t.Fatalf("message %s: direction %s, is_reply %v; want %s, %v", m.ID, m.Direction, m.IsReply, want.dir, want.reply)
+		}
+	}
+	text, err := cli(t, fa, "", "inbox", "--thread", "m1")
+	if err != nil || !strings.Contains(text, "m3  received") || !strings.Contains(text, "m4  sent") || strings.Count(text, "read  thread m1\n") != 2 {
+		t.Fatalf("inbox --text: %q %v", text, err)
+	}
+}
