@@ -7,8 +7,9 @@ import (
 // Query helpers shared by the local index and the server, so a filter or
 // a query means the same on both.
 
-// MaxRepoRoots bounds Filters.RepoRoots, so the filter fits a request
-// line.
+// MaxRepoRoots bounds Filters.RepoRoots, RepoMains and RepoRemotes, so
+// the filter fits a request line. A request past it is refused, never
+// cut.
 const MaxRepoRoots = 256
 
 // RepoMatch interprets a repo filter that is not a relative path (callers

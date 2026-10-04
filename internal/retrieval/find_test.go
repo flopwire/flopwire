@@ -279,6 +279,13 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	if _, err := f.s.Pool.Exec(ctx, `UPDATE conversation_activity SET last_activity_at=now() WHERE conversation_id=$1`, other); err != nil {
 		t.Fatal(err)
 	}
+	// Its device placed it in the main checkout /src/web (no remote): a
+	// repo name resolves among the uploaded placements.
+	if _, err := f.s.Pool.Exec(ctx, `WITH s AS (INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at,checkout)
+		SELECT gen_random_uuid(),device_id,'codex','/h/web.jsonl','f','jsonl_append','test',now(),'/src/web' FROM conversations WHERE id=$1 RETURNING id)
+		UPDATE conversations SET source_id=(SELECT id FROM s) WHERE id=$1`, other); err != nil {
+		t.Fatal(err)
+	}
 	f.conv, f.n = other, 10
 	f.add("tool_result", "retry in the web repo")
 	f.conv = ""

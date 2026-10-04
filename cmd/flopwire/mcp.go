@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,8 @@ func mcp(ctx context.Context, args []string) error {
 	server := fs.Bool("server", false, "query the shared server explicitly")
 	localScope := fs.Bool("local", false, "query only this device's local index")
 	index := fs.String("index", "", "local index path (default $FLOPWIRE_INDEX or the user cache dir)")
+	call := fs.String("call", "", "run this one tool with the JSON arguments on stdin, print its answer and exit (the opencode plugin's tools)")
+	socket := fs.String("socket", "", "device agent control socket for the messaging tools (default <config dir>/agent.sock)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -90,8 +93,14 @@ func mcp(ctx context.Context, args []string) error {
 	}
 	r.caller = cachedCaller(r.caller, 10*time.Second)
 	r.underCodex = local.NewDetector().UnderCodex()
-	if r.busSocket, err = defaultSocket(); err != nil {
-		return err
+	r.busSocket = *socket
+	if r.busSocket == "" {
+		if r.busSocket, err = defaultSocket(); err != nil {
+			return err
+		}
+	}
+	if *call != "" {
+		return mcpCallOnce(ctx, r, *call, os.Stdin, os.Stdout)
 	}
 	return serveMCP(ctx, r, os.Stdin, os.Stdout)
 }
@@ -270,7 +279,7 @@ func (b *lazyIndexBackend) Raw(ctx context.Context, sourceID string, generation,
 
 // mcpInstructions is the server's instructions: the workflow, the address
 // form, how to read the output, and the filters every tool shares.
-const mcpInstructions = `Flopwire searches past coding-agent transcripts (Claude Code, Codex, Devin): prompts, replies, tool calls and their output, across sessions and repos. Use it to find what was done, decided, run or seen before.
+const mcpInstructions = `Flopwire searches past coding-agent transcripts (Claude Code, Codex, Devin, opencode): prompts, replies, tool calls and their output, across sessions and repos. Use it to find what was done, decided, run or seen before.
 
 Workflow: flopwire_grep for exact strings and regexes (like rg: error text, identifiers, commands, paths); flopwire_search for fuzzy natural-language questions; flopwire_sessions to list sessions by repo, agent or time; then flopwire_read on any address a result prints to see the full message and its neighbours. Hits are excerpts: read before you rely on one. If the hits don't answer the question, say the transcripts don't hold it rather than guess.
 
@@ -296,7 +305,7 @@ func prop(typ, desc string) map[string]any {
 // server instructions, and the schema alone must say what a value looks
 // like.
 var filterDesc = map[string]string{
-	"agent":              "claude, codex or devin; a comma list",
+	"agent":              "claude, codex, devin or opencode; a comma list",
 	"repo":               `"." (this repo: every checkout and worktree of it), /abs/path, a repo name or owner/name, or a glob like "team*"`,
 	"since":              `"7d", "24h", "2026-09-01", "2026-09-23 10:00Z" (the form hits print) or RFC 3339; times are UTC`,
 	"until":              `exclusive; same forms as since`,
@@ -785,4 +794,33 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 	default:
 		reply("error", map[string]any{"code": -32601, "message": "method not found: " + req.Method})
 	}
+}
+
+// mcpCallOnce runs one tool, as tools/call would, with the JSON object on
+// in as its arguments, and prints its answer. A failed call prints the
+// same text the MCP answer's isError block holds and returns
+// errReported, so the command exits 1. The opencode plugin serves the
+// MCP tools as plugin tools this way: each call runs with the calling
+// session in FLOPWIRE_SESSION_ID, which an MCP server there cannot learn.
+func mcpCallOnce(ctx context.Context, r *retriever, name string, in io.Reader, out io.Writer) error {
+	if !slices.Contains(mcpToolNames(), name) {
+		return fmt.Errorf("mcp --call: unknown tool %q (%s)", name, strings.Join(mcpToolNames(), ", "))
+	}
+	raw, err := io.ReadAll(io.LimitReader(in, 1<<20))
+	if err != nil {
+		return err
+	}
+	args := map[string]any{}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("mcp --call: the arguments are not a JSON object: %w", err)
+		}
+	}
+	text, err := mcpCall(ctx, r, name, args)
+	if err != nil {
+		fmt.Fprintln(out, mcpError(name, err))
+		return errReported
+	}
+	_, err = fmt.Fprintln(out, text)
+	return err
 }

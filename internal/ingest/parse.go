@@ -21,6 +21,7 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
+	"github.com/flopwire/flopwire/internal/transcript/opencode"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -143,13 +144,15 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	if err := q.Pool.QueryRow(ctx, "SELECT nextval('extraction_attempt_seq')").Scan(&j.src.parseAttempt); err != nil {
 		return err
 	}
-	isDevin := j.src.agent == string(transcript.AgentDevin)
+	// A store export (Devin, opencode) is one session's rows, re-read whole
+	// on every upload.
+	isExport := j.src.agent == string(transcript.AgentDevin) || j.src.agent == string(transcript.AgentOpencode)
 	contract := serverExtractionContract(j.src.agent)
 	version := serverParserVersion(j.src.agent)
 	versionChanged := j.appliedParser == nil || transcript.ReparseKey(*j.appliedParser) != transcript.ReparseKey(version) || j.appliedRules == nil || *j.appliedRules != redact.RulesVersion
 	full := g.Generation != j.cursorGen || j.reparse || versionChanged || (contract != "" && (j.extraction == nil || j.extraction.Contract != contract || j.extraction.Generation != g.Generation || j.extraction.Offset != j.cursor.Offset || j.extraction.LineNo != j.cursor.LineNo || j.extraction.Report.Validate() != nil))
 	if full {
-		j.cursor = transcript.Cursor{} // a new generation is parsed whole; Devin's cursor spans exports
+		j.cursor = transcript.Cursor{} // a new generation is parsed whole; a store's cursor spans exports
 	}
 	rules, err := loadRules(ctx, q.Pool)
 	if err != nil {
@@ -180,9 +183,9 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	// The server's own redaction pass (notes/redaction.md): bytes a device
 	// already redacted pass unchanged; anything that arrived unredacted is
 	// masked before it becomes a row. Offsets are unchanged.
-	// A Devin export is read whole every time, so its count is replaced.
+	// A store export is read whole every time, so its count is replaced.
 	rr := redact.NewReaderAt(r, redact.ModeFor(j.kind, j.path))
-	countAll := full || isDevin
+	countAll := full || isExport
 	masks, maskRevision, err := q.masks.lineMasks(ctx, q.Pool)
 	if err != nil {
 		return err
@@ -216,6 +219,8 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		next = result.Cursor
 	case transcript.AgentDevin:
 		next, err = parseDevinExport(ctx, in, j, sink)
+	case transcript.AgentOpencode:
+		next, err = parseOpencodeExport(ctx, in, j, sink)
 	default:
 		return q.done(ctx, j, g.Generation) // archived, no parser
 	}
@@ -285,7 +290,7 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		}
 	}
 	j.cursor = next
-	return q.complete(ctx, j, g.Generation, full || (!isDevin && result.Report != nil && result.FromOffset == 0 && originalOffset > 0))
+	return q.complete(ctx, j, g.Generation, full || (!isExport && result.Report != nil && result.FromOffset == 0 && originalOffset > 0))
 }
 
 // parseDevinExport rebuilds the session's store from the export in a
@@ -926,4 +931,24 @@ func loadLineMasks(ctx context.Context, q interface {
 		records = append(records, m)
 	}
 	return redact.NewLineCatalog(records), rows.Err()
+}
+
+// parseOpencodeExport rebuilds the session's store from the export in a
+// temporary directory and runs the opencode parser over it.
+func parseOpencodeExport(ctx context.Context, in transcript.Input, j *job, sink *sink) (transcript.Cursor, error) {
+	dir, err := os.MkdirTemp("", "flopwire-opencode-")
+	if err != nil {
+		return j.cursor, err
+	}
+	defer os.RemoveAll(dir)
+	session := opencode.SessionOfExport(j.path)
+	if session == "" {
+		session = j.path
+	}
+	db, err := opencode.LoadExport(ctx, io.NewSectionReader(in.R, 0, in.Size), session, dir)
+	if err != nil {
+		return j.cursor, err
+	}
+	in.Source.Path = db
+	return (&opencode.Parser{Caps: uncapped}).Parse(ctx, in, j.cursor, sink)
 }

@@ -1,6 +1,7 @@
 package devicebus
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"math/rand/v2"
@@ -111,6 +112,7 @@ func (b *Bus) runServer(ctx context.Context) {
 		inflight bool
 		cancel   context.CancelFunc = func() {}
 		sent     []busproto.PresenceSession
+		sentCld  []busproto.PresenceSession // the cloud sessions of the last poll
 		started  time.Time
 		cursor   int64
 		gen      int64 // the person's generation in the last answer
@@ -150,10 +152,13 @@ func (b *Bus) runServer(ctx context.Context) {
 				}
 				sent = cur
 			}
+			if cld := cloudPresence(b.CloudSessions()); !slices.Equal(cld, sentCld) {
+				cursor, sentCld = 0, cld
+			}
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
 			inflight, started = true, now
-			req := busproto.PollRequest{Sessions: sent, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
+			req := busproto.PollRequest{Sessions: sent, Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
 			go func() {
 				resp, err := srv.Poll(pctx, req)
@@ -193,7 +198,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			// that the new presence makes deliverable (a session newly
 			// reported) would otherwise wait for the poll to time out.
 			if inflight && b.cfg.Now().Sub(started) >= time.Second {
-				if err == nil && !slices.Equal(serverPresence(all), sent) {
+				if err == nil && !slices.Equal(serverPresence(all), sent) || !slices.Equal(cloudPresence(b.CloudSessions()), sentCld) {
 					cancel()
 					cursor = 0
 				}
@@ -306,11 +311,46 @@ func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, skip map
 		} else if ok {
 			continue
 		}
+		if c.Cloud {
+			// Claimed only to push at once: while its session runs a
+			// turn, by a device that lists it. Until then another of the
+			// person's devices may take it.
+			if s, ok := b.cloudSession(c.Message.ToSession, c.Message.ToAgent); !ok || !s.Busy {
+				continue
+			}
+			if err := b.claimCloud(ctx, c, skip); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := b.claim(ctx, c, all, skip); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// claimCloud takes a message to one of the person's cloud sessions for
+// this device to push. Lost to another device, or no longer eligible: it
+// is dropped (skip).
+func (b *Bus) claimCloud(ctx context.Context, c busproto.Claimable, skip map[string]bool) error {
+	srv, _ := b.cfg.Connect()
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	resp, err := srv.Claim(cctx, busproto.ClaimRequest{MessageID: c.Message.ID, SessionID: c.Message.ToSession, Agent: c.Message.ToAgent})
+	cancel()
+	var be *busproto.Error
+	switch {
+	case err == nil:
+		if err := b.st.addClaimed(ctx, resp.Message); err != nil {
+			return err
+		}
+		b.kickPush()
+		return nil
+	case errors.As(err, &be) && (be.Code == busproto.CodeAlreadyClaimed || be.Code == busproto.CodeNotEligible || be.Code == busproto.CodeNotFound):
+		skip[c.Message.ID] = true
+		return nil
+	}
+	return err
 }
 
 // claimOrder ranks the sessions a claimable message may go to: one on the
@@ -323,22 +363,19 @@ func claimOrder(c busproto.Claimable, all []Session) []string {
 		byID[s.SessionID] = s
 	}
 	out := slices.Clone(c.Sessions)
-	rank := func(id string) (onRepo, busy bool, at time.Time) {
+	rank := func(id string) (onRepo int, busy bool, at time.Time) {
 		s, ok := byID[id]
-		if !ok {
-			return false, false, time.Time{}
+		if !ok || c.Message.ToRepo == "" {
+			return 0, s.Busy, s.LastActive
 		}
-		return c.Message.ToRepo != "" && bus.RepoName(s.Repo) == c.Message.ToRepo, s.Busy, s.LastActive
+		return bus.RouteTier(c.Message.ToRepo, s.Repo, s.Remote), s.Busy, s.LastActive
 	}
 	slices.SortStableFunc(out, func(x, y string) int {
 		xr, xb, xt := rank(x)
 		yr, yb, yt := rank(y)
 		switch {
 		case xr != yr:
-			if xr {
-				return -1
-			}
-			return 1
+			return cmp.Compare(yr, xr)
 		case xb != yb:
 			if xb {
 				return -1
@@ -436,13 +473,13 @@ func (b *Bus) runAcks(ctx context.Context) {
 // sent (0: nothing owed).
 func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 	ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
-	var gone, ended []string
+	var gone, ended, failed []string
 	var reads []busproto.ReadReceipt
 	if err == nil && len(ids) < busproto.MaxAck {
-		gone, ended, err = b.st.reports(ctx, busproto.MaxAck-len(ids))
+		gone, ended, failed, err = b.st.reports(ctx, busproto.MaxAck-len(ids))
 	}
 	if err == nil {
-		reads, err = b.st.owedReads(ctx, busproto.MaxAck-len(ids)-len(gone)-len(ended))
+		reads, err = b.st.owedReads(ctx, busproto.MaxAck-len(ids)-len(gone)-len(ended)-len(failed))
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -450,13 +487,13 @@ func (b *Bus) sendAcks(ctx context.Context) (int, error) {
 		}
 		return 0, nil // the store failed; the next kick tries again
 	}
-	n := len(ids) + len(gone) + len(ended) + len(reads)
+	n := len(ids) + len(gone) + len(ended) + len(failed) + len(reads)
 	if n == 0 {
 		return 0, nil
 	}
 	srv, _ := b.cfg.Connect()
 	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, Read: reads})
+	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, PushFailed: failed, Read: reads})
 	cancel()
 	if err == nil {
 		err = b.st.acked(ctx, resp.Acked, resp.Rejected)

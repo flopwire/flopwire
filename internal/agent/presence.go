@@ -23,6 +23,13 @@ package agent
 //     only on that evidence, however recently it wrote. Busy or idle is the
 //     session's last hook event (hookTurns): Devin's store has no
 //     read-only signal that a turn runs.
+//   - opencode: the Flopwire plugin keeps <config dir>/opencode/<pid>.json
+//     per opencode process, naming the process's start and its top-level
+//     sessions (never a subagent's). A file whose pid runs a process named
+//     opencode that started by then holds its sessions; any other file's
+//     sessions ended. While the plugin is installed (the directory
+//     exists), an opencode session is live only on that evidence. Busy or
+//     idle is the session's last plugin event (hookTurns).
 //
 // A session that ended is not live (devicebus.Observe, End): its
 // registry entry names a process that is gone (a Claude session file of a
@@ -37,6 +44,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -173,7 +181,60 @@ func (a *Agent) registries() harnessLive {
 			}
 		}
 	}
+	if dir := a.cfg.OpencodeRegistry; dir != "" && a.opencode.path != "" {
+		oc := string(transcript.AgentOpencode)
+		h.reg.Read[oc] = dirRead(dir)
+		files, _ := fsprobe.Glob(filepath.Join(dir, "*.json"))
+		for _, f := range files {
+			pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json"))
+			if err != nil || pid <= 1 {
+				continue
+			}
+			b, err := fsprobe.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			var v struct {
+				Started  int64    `json:"started"` // unix ms
+				Sessions []string `json:"sessions"`
+			}
+			if json.Unmarshal(b, &v) != nil {
+				continue
+			}
+			alive := a.pidAlive(pid) && local.IsOpencodeProcess(a.procName(pid)) && a.startedAt(pid, v.Started)
+			for _, id := range v.Sessions {
+				if id == "" {
+					continue
+				}
+				ref := devicebus.Ref{Agent: oc, Session: id}
+				if !alive {
+					h.reg.Gone = append(h.reg.Gone, ref) // a dead pid, or reused by another program
+					continue
+				}
+				add(id, time.Time{})
+				h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", pid), Start: time.UnixMilli(v.Started)}
+			}
+		}
+	}
 	return h
+}
+
+// startedAt reports whether pid is the process that wrote a registry
+// file recording unix ms as its start: it started no later than that
+// (within 2s). The plugin records performance.timeOrigin, which in
+// opencode's TUI is its worker's start, later than the process's by an
+// unbounded delay; a process that reused the pid started after the
+// writer ended, so after ms. A platform that cannot tell, or a file
+// without the time, takes the pid alone.
+func (a *Agent) startedAt(pid int, ms int64) bool {
+	if ms <= 0 {
+		return true
+	}
+	started, ok := a.procStart(pid)
+	if !ok {
+		return true
+	}
+	return started.Sub(time.UnixMilli(ms)) < 2*time.Second
 }
 
 // sameProcess reports whether pid is the process a Claude session file
@@ -346,6 +407,11 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 				continue // its lock is gone or names no running devin: ended
 			}
 		}
+		if transcript.Agent(s.Agent) == transcript.AgentOpencode && reg.reg.Read[string(transcript.AgentOpencode)] {
+			if _, held := reg.at[s.SessionID]; !held {
+				continue // no running opencode with the plugin holds it
+			}
+		}
 		last := s.LastActive
 		info := format.ConversationInfo{SessionID: s.SessionID, LastActivityAt: &last}
 		local.MarkLive(&info, reg.at, now)
@@ -360,6 +426,9 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		if !s.Withheld {
 			s.Title = a.busTitle(ctx, s)
 		}
+		if p, ok := a.storedPlace(key); ok {
+			s.Remote, s.Main = p.pl.Remote, p.pl.Main
+		}
 		out = append(out, s)
 	}
 	for i, s := range out {
@@ -371,7 +440,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			if t := paths[key]; t != nil {
 				out[i].Busy = a.rollouts.busy(t.path, rollouts)
 			}
-		case transcript.AgentDevin:
+		case transcript.AgentDevin, transcript.AgentOpencode:
 			out[i].Busy = a.hookBusy(s.SessionID)
 		}
 	}
@@ -468,8 +537,41 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 	for i, s := range out {
 		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
 		out[i].Withheld = !a.reportable(ctx, key, paths[key])
+		if p, ok := a.storedPlace(key); ok {
+			out[i].Remote, out[i].Main = p.pl.Remote, p.pl.Main
+		}
 	}
 	return out, nil
+}
+
+// BusRepoKey resolves an @user send's repo to the normalized remote of
+// the repository it names on this device (devicebus Config.RepoKey,
+// issue #102): a path, or a name or owner/name the placements know, as
+// --server --repo resolves it (local.ExpandRepo). A repository with no
+// remote, or one the device does not know, keeps the repo as it is; a
+// name that fits two repositories is an error. With a server, a remote
+// goes only when the path rules let every checkout and remote of the
+// repository reach it (local.ServerRepo, as peers --repo has it).
+func (a *Agent) BusRepoKey(ctx context.Context, repo string) (string, error) {
+	dirs, err := a.store.RepoDirs(ctx)
+	if err != nil {
+		return "", err
+	}
+	var r local.Repo
+	if a.cfg.Bus != nil && a.cfg.Bus.Local() {
+		r, err = local.ExpandRepo(repo, dirs, true)
+	} else {
+		pol := a.policy().pol
+		r, err = local.ServerRepo(repo, dirs, func(pl pathpolicy.Placement) bool { return Uploads(pol, pl) })
+	}
+	remotes := r.Remotes
+	if err != nil {
+		return "", errors.New(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "))
+	}
+	if len(remotes) == 1 {
+		return remotes[0], nil
+	}
+	return repo, nil
 }
 
 // BusWithheld names a session the path rules keep off the server that ref
@@ -542,15 +644,16 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 			return t.src.SessionKey, nil
 		}
 	}
-	if a.devin.path != "" {
-		a.loadDevinModes(ctx, pv)
+	for _, d := range a.stores() {
+		a.loadStoreModes(ctx, d, pv)
 		a.mu.Lock()
-		defer a.mu.Unlock()
-		for session, m := range a.devinModes {
+		for session, m := range d.modes {
 			if names(session) && m != pathpolicy.Allow {
+				a.mu.Unlock()
 				return session, nil
 			}
 		}
+		a.mu.Unlock()
 	}
 	return "", nil
 }
@@ -698,8 +801,10 @@ func (a *Agent) transcriptsBySession() map[placeKey]*target {
 // reportable reports whether the path rules let the session reach the
 // server. A session not placed yet is not reported.
 func (a *Agent) reportable(ctx context.Context, key placeKey, t *target) bool {
-	if key.agent == transcript.AgentDevin {
-		return a.devin.path != "" && a.devinMode(ctx, key.session) == pathpolicy.Allow
+	if d := a.storeOf(key.agent); d != nil {
+		return a.storeMode(ctx, d, key.session) == pathpolicy.Allow
+	} else if key.agent == transcript.AgentDevin || key.agent == transcript.AgentOpencode {
+		return false // a store this device does not read
 	}
 	return t != nil && a.uploadable(t)
 }

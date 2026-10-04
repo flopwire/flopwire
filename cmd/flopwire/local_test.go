@@ -472,15 +472,21 @@ func TestSelfAndLive(t *testing.T) {
 		}
 		return live
 	}
-	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex")
+	// A name that no repository has is an error, not empty output: the
+	// oracle's /tmp/oracle-beta is outside git, so only its path names it
+	// (#102).
+	if out, err := call("sessions", "--repo", "oracle-beta", "--agent", "codex"); err == nil || out != "" || !strings.Contains(err.Error(), "names no repository") {
+		t.Fatalf("--repo with a name of no repository: %v\n%q", err, out)
+	}
+	out, err = call("sessions", "--repo", "/tmp/oracle-beta", "--agent", "codex")
 	if live, ok := liveOf(out)[open]; err != nil || !ok || !live {
 		t.Fatalf("live session: %v\n%s", err, out)
 	}
-	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--text")
+	out, err = call("sessions", "--repo", "/tmp/oracle-beta", "--agent", "codex", "--text")
 	if err != nil || !strings.Contains(out, open+" agent=codex live=30m ") {
 		t.Fatalf("live header: %v\n%s", err, out)
 	}
-	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--exclude-live")
+	out, err = call("sessions", "--repo", "/tmp/oracle-beta", "--agent", "codex", "--exclude-live")
 	if err != nil || strings.Contains(out, open) || !strings.HasPrefix(out, `{"scope":{"kind":"local"},"kind":"sessions","sessions":[],"has_more":false`) {
 		t.Fatalf("--exclude-live: %v\n%s", err, out)
 	}
@@ -491,7 +497,7 @@ func TestSelfAndLive(t *testing.T) {
 	// is neither live nor left out.
 	setActivity(open, time.Now().Add(-2*time.Hour))
 	r.live = func(bool) map[string]time.Time { return map[string]time.Time{open: {}} }
-	out, err = call("sessions", "--repo", "oracle-beta", "--agent", "codex", "--exclude-live")
+	out, err = call("sessions", "--repo", "/tmp/oracle-beta", "--agent", "codex", "--exclude-live")
 	if live, ok := liveOf(out)[open]; err != nil || !ok || live {
 		t.Fatalf("--exclude-live with an idle held session: %v\n%s", err, out)
 	}

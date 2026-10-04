@@ -29,7 +29,16 @@ func TestMain(m *testing.M) {
 		os.Exit(fakeCodex(os.Args[1:]))
 	case "devin":
 		os.Exit(fakeDevin(os.Args[1:]))
+	case "opencode":
+		if len(os.Args) > 1 && os.Args[1] == "--version" {
+			fmt.Println("1.18.30")
+			os.Exit(0)
+		}
+		os.Exit(2)
 	}
+	// An agent a test runs never reaches the vendors' cloud sessions with
+	// the developer's own logins.
+	os.Setenv("FLOPWIRE_CLOUD", "off")
 	os.Exit(m.Run())
 }
 

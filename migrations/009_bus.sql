@@ -4,22 +4,34 @@
 -- Live sessions as each device last reported them with its long poll
 -- (internal/bus). A session is live while seen_at is within
 -- busproto.PresenceTTL. Every poll replaces its device's rows. user_id is
--- the owner; device_id is NULL-able so a session owned by a user and no
--- device (a vendor cloud session) can be added later.
+-- the owner. A vendor cloud session (Claude cloud, Devin cloud) is owned by
+-- a user and no device: cloud is true and device_id NULL. Any of the
+-- user's devices may report it (busproto.PollRequest.Cloud); the last
+-- report wins, and a poll never removes it (it ages out by seen_at).
 CREATE TABLE bus_presence (
   device_id uuid REFERENCES devices (id),
+  cloud boolean NOT NULL DEFAULT false,
   user_id uuid NOT NULL REFERENCES users (id),
   agent text NOT NULL,
   session_id text NOT NULL,
   -- repo is the repo root as the device placed the session; names compare
   -- by its last path element.
   repo text NOT NULL DEFAULT '',
+  -- remote is the session's normalized remote ('' for none); a repo
+  -- routes and filters by it when it has one (issue #102).
+  remote text NOT NULL DEFAULT '',
+  -- main is the main checkout of the session's repository ('' unknown):
+  -- a repo filter matches it without listing every worktree.
+  main text NOT NULL DEFAULT '',
   branch text NOT NULL DEFAULT '',
   title text NOT NULL DEFAULT '',
   busy boolean NOT NULL,
-  seen_at timestamptz NOT NULL
+  seen_at timestamptz NOT NULL,
+  CHECK (cloud = (device_id IS NULL))
 );
 CREATE UNIQUE INDEX bus_presence_device_session_idx ON bus_presence (device_id, agent, session_id);
+-- One row per cloud session of a user, whichever device reported it.
+CREATE UNIQUE INDEX bus_presence_cloud_idx ON bus_presence (user_id, agent, session_id) WHERE cloud;
 -- Recipient prefixes, sender checks and claims look a session up by id.
 CREATE INDEX bus_presence_session_idx ON bus_presence ((session_id COLLATE "C"));
 -- peers and the @user eligibility check: the live set.
@@ -46,7 +58,13 @@ CREATE SEQUENCE bus_messages_seq;
 -- read receipt from the device holding that session reported; first
 -- receipt wins), expired (undelivered at expires_at), refused (a send limit;
 -- reason), undelivered (the device gave up on it; reason: unconfirmed, no
--- hook confirmed printing it after devicebus.MaxAttempts leases).
+-- hook confirmed printing it after devicebus.MaxAttempts leases;
+-- session_ended, its session ended first; push_failed, a message to a
+-- cloud session whose pushes all failed).
+--
+-- A message to a cloud session is addressed to that session and claimed
+-- (claimed_device, claimed_by = to_session) by the one device of the
+-- recipient that pushes it.
 CREATE TABLE bus_messages (
   id text PRIMARY KEY,
   seq bigint NOT NULL DEFAULT nextval('bus_messages_seq'),

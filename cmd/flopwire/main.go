@@ -166,8 +166,8 @@ const usageText = `Usage: flopwire <command>
   redact      hide a message (or some of its lines) on the server and in the local index
   hook        what harness hooks run: prints messages for this session into it,
               and asks the device agent to index the transcript now
-  setup       install Flopwire into Claude Code, Codex and Devin CLI through
-              each one's own plugin commands (--check reports, --remove uninstalls)
+  setup       install Flopwire into Claude Code, Codex, Devin CLI and opencode
+              through each one's own plugin mechanism (--check reports, --remove uninstalls)
   probe       re-run the message-bus delivery tests against the installed
               harnesses (--local, --json, --notes; docs/probe.md)
   agent       run the device agent (agent run) or signal it from a hook (agent flush)

@@ -40,6 +40,7 @@ import (
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/vendorcloud"
 )
 
 func agentCmd(ctx context.Context, args []string) error {
@@ -161,6 +162,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
+	opencodeDB := fs.String("opencode-db", "", `opencode.db (default FLOPWIRE_OPENCODE_DB, OPENCODE_DB, or opencode.db under XDG_DATA_HOME or ~/.local/share/opencode; "-" disables)`)
 	socket := fs.String("socket", "", "control socket (default <config dir>/agent.sock)")
 	spoolCap := fs.Int64("spool-cap", 1<<30, "sync spool cap in bytes")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile")
@@ -259,7 +261,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
@@ -297,7 +299,9 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			connect = busConnect(cc, client.Load)
 			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
 		}
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log}); b != nil {
+		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
+		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
+		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -874,6 +878,9 @@ func printBusStatus(w io.Writer, b *devicebus.Status) {
 		fmt.Fprintf(w, "messaging: %s\n", b.State)
 	}
 	fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	if b.Cloud > 0 {
+		fmt.Fprintf(w, "cloud sessions: %d listed (Claude Code cloud, Devin cloud)\n", b.Cloud)
+	}
 	for _, h := range b.HeldSenders {
 		fmt.Fprintf(w, "  held from %s: %d %s, oldest %s\n", busproto.Preview(h.User), h.Count, plural(h.Count, "message", "messages"), h.Oldest.Local().Format(time.DateTime))
 	}

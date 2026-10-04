@@ -1,6 +1,7 @@
 package local
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,30 +13,54 @@ import (
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
 
-// ExpandRepo resolves a --repo argument to what the retrieval filters
-// match (Filters.Repo and Filters.RepoRoots). One repository is one repo
+// Repo is what a --repo argument resolves to: the retrieval filters
+// Filters.Repo, RepoRoots, RepoMains and RepoRemotes. Every list is
+// small, whatever the number of checkouts: a session is matched by the
+// repository its placement records (its main checkout or remote), not by
+// enumerating the directories it may have run in (#102).
+type Repo struct {
+	// Repo is a path matched as a prefix (the argument's worktree root,
+	// or the path itself outside git), a glob, or, for the server, a
+	// name the device does not know. "" for a resolved name.
+	Repo string
+	// Roots are directories matched as prefixes: the argument's worktree
+	// root and the repository's main checkouts, also with symlinks
+	// resolved and as the argument reached them.
+	Roots []string
+	// Mains are the repository's main checkouts, as placements recorded
+	// them and resolved: a session placed in one matches.
+	Mains []string
+	// Remotes are its normalized remotes: a session placed in a checkout
+	// of one matches, on any device.
+	Remotes []string
+}
+
+// ExpandRepo resolves a --repo argument. One repository is one repo
 // however it is checked out: its identity is its main checkout (the bare
-// repository for a bare-backed layout), compared with symlinks resolved,
+// repository for a bare-backed layout), compared with symlinks resolved
+// and, where the file system ignores case, in the case it has on disk,
 // and, when it has one, its normalized remote. dirs are the placements
 // the local index holds (localindex.Store.RepoDirs); nil knows none.
 //
 //   - A path (absolute, ".", "./x", "../x") names the repository holding
-//     it. repo is its worktree root (the path itself outside git), and
-//     roots are every checkout of that repository: the main checkout,
-//     the live linked worktrees git lists, and the directories of every
-//     placement whose main checkout or remote is the repository's. A
-//     path that no longer exists names the repository of the placements
-//     at or above it when they agree on one.
+//     it: every session placed in it (its main checkouts and remotes,
+//     closed over the placements: a clone of the same remote is the same
+//     repository), and every session under its worktree root or main
+//     checkout. A path that no longer exists names the repository of the
+//     placements at or above it when they agree on one.
 //   - A short form (a name such as "app", or owner/name, or
 //     host/owner/name) names the one repository the placements know by
-//     that name or remote. Two or more is an error that lists them,
-//     except for the server (team), which gets the name and every one's
-//     checkouts.
-//     None leaves the name to match the last element of a session's
-//     directory, as before. team keeps the name in repo as well, for the
-//     server, which matches it across the team.
+//     that name or remote; Repo is then "". None, or two or more, is an
+//     error that says so: a name never falls back to the last element of
+//     a session's directory, which would merge two repositories of one
+//     name. For the server (team), a name the device does not know
+//     passes through as Repo, and the server resolves it among the
+//     uploaded placements (retrieval.resolveFilterRepo).
 //   - A glob passes through.
-func ExpandRepo(arg string, dirs []localindex.RepoDir, team bool) (repo string, roots []string, err error) {
+//
+// For the server each list must fit format.MaxRepoRoots; one that does
+// not is an error that names the cap, never a silent cut.
+func ExpandRepo(arg string, dirs []localindex.RepoDir, team bool) (Repo, error) {
 	return expandRepo(arg, dirs, team, nil)
 }
 
@@ -43,62 +68,60 @@ func ExpandRepo(arg string, dirs []localindex.RepoDir, team bool) (repo string, 
 // checkouts the path rules keep off it: uploads reports whether a
 // session placed at a directory may reach the server
 // (agent.Uploads). The server audits every query, so a checkout under a
-// local or deny rule is never named in one. A root is kept only when
-// every main checkout and remote of the repository allows it; a rule on
-// the main checkout therefore leaves only the argument itself (repo).
-func ServerRepo(arg string, dirs []localindex.RepoDir, uploads func(pathpolicy.Placement) bool) (repo string, roots []string, err error) {
+// local or deny rule is never named in one. A root or main checkout is
+// kept only when every main checkout and remote of the repository allows
+// it; a rule on the main checkout therefore leaves only the argument
+// itself (Repo), and no remote.
+func ServerRepo(arg string, dirs []localindex.RepoDir, uploads func(pathpolicy.Placement) bool) (Repo, error) {
 	return expandRepo(arg, dirs, true, uploads)
 }
 
-func expandRepo(arg string, dirs []localindex.RepoDir, team bool, uploads func(pathpolicy.Placement) bool) (repo string, roots []string, err error) {
+func expandRepo(arg string, dirs []localindex.RepoDir, team bool, uploads func(pathpolicy.Placement) bool) (Repo, error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" || strings.ContainsAny(arg, "*?[") {
-		return arg, nil, nil
+		return Repo{Repo: arg}, nil
 	}
-	x := &expander{canon: map[string]string{}, dirs: dirs, uploads: uploads}
+	x := &expander{canon: map[string]string{}, mainc: map[string]string{}, dirs: dirs, uploads: uploads}
+	var out Repo
 	if isPathArg(arg) {
 		abs, err := filepath.Abs(arg)
 		if err != nil {
-			return arg, nil, nil
+			return Repo{Repo: arg}, nil
 		}
-		repo, roots = x.path(abs)
-		if team {
-			roots = wireRoots(roots)
+		out = x.path(abs)
+	} else {
+		groups := x.named(arg)
+		switch len(groups) {
+		case 0:
+			if team {
+				return Repo{Repo: arg}, nil
+			}
+			return Repo{Repo: arg}, fmt.Errorf("%w: repo %q names no repository this device has a session in; pass its path, owner/name, or a glob", format.ErrBadRequest, arg)
+		case 1:
+			out = x.expand(groups[0], nil, "")
+		default:
+			labels := make([]string, 0, len(groups))
+			for _, g := range groups {
+				labels = append(labels, g.label())
+			}
+			slices.Sort(labels)
+			return Repo{Repo: arg}, fmt.Errorf("%w: repo %q names %d repositories: %s; pass its path or owner/name", format.ErrBadRequest, arg, len(groups), strings.Join(labels, "; "))
 		}
-		return repo, roots, nil
-	}
-	groups := x.named(arg)
-	switch len(groups) {
-	case 0:
-		return arg, nil, nil
-	case 1:
-		roots = x.rootsOf(groups[0], nil, "")
-		if team {
-			return arg, wireRoots(roots), nil
-		}
-		return "", roots, nil
 	}
 	if team {
-		// The server matches the name across the team, every repository
-		// by it included, as before; the request adds each one's
-		// checkouts here.
-		seen := map[string]bool{}
-		for _, g := range groups {
-			for _, r := range x.rootsOf(g, nil, "") {
-				if !seen[r] {
-					seen[r] = true
-					roots = append(roots, r)
-				}
+		for _, l := range [][]string{out.Roots, out.Mains, out.Remotes} {
+			if len(l) > format.MaxRepoRoots {
+				return Repo{Repo: arg}, fmt.Errorf("%w: repo %q has %d main checkouts, remotes or roots; a request carries at most %d of each; pass a narrower path", format.ErrBadRequest, arg, len(l), format.MaxRepoRoots)
 			}
 		}
-		return arg, wireRoots(roots), nil
 	}
-	labels := make([]string, 0, len(groups))
-	for _, g := range groups {
-		labels = append(labels, g.label())
-	}
-	slices.Sort(labels)
-	return arg, nil, fmt.Errorf("%w: repo %q names %d repositories: %s; pass its path or owner/name", format.ErrBadRequest, arg, len(groups), strings.Join(labels, "; "))
+	return out, nil
+}
+
+// gone reports whether the directory p no longer exists.
+func gone(p string) bool {
+	_, err := os.Stat(p)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // isPathArg reports whether a --repo argument is a path.
@@ -108,6 +131,7 @@ func isPathArg(s string) bool {
 
 type expander struct {
 	canon map[string]string
+	mainc map[string]string // main checkout -> key (main)
 	dirs  []localindex.RepoDir
 	// uploads, for a request to the server, keeps only the roots the
 	// path rules let reach it (ServerRepo); nil keeps every root.
@@ -130,6 +154,21 @@ func (x *expander) real(p string) string {
 	return r
 }
 
+// main is a main checkout as an identity compares it: symlinks resolved,
+// and in the case the file system spells it, so /p/App and /p/app on a
+// case-insensitive volume are one repository (diskCase).
+func (x *expander) main(p string) string {
+	if p == "" {
+		return ""
+	}
+	if r, ok := x.mainc[p]; ok {
+		return r
+	}
+	r := diskCase(x.real(p))
+	x.mainc[p] = r
+	return r
+}
+
 // ident is one repository: its main checkouts (resolved) and remotes.
 type ident struct {
 	mains   map[string]bool
@@ -140,7 +179,7 @@ func newIdent() *ident { return &ident{mains: map[string]bool{}, remotes: map[st
 
 func (id *ident) add(x *expander, main, remote string) {
 	if main != "" {
-		id.mains[x.real(main)] = true
+		id.mains[x.main(main)] = true
 	}
 	if remote != "" {
 		id.remotes[remote] = true
@@ -148,7 +187,7 @@ func (id *ident) add(x *expander, main, remote string) {
 }
 
 func (id *ident) has(x *expander, d localindex.RepoDir) bool {
-	return d.Main != "" && id.mains[x.real(d.Main)] || d.Remote != "" && id.remotes[d.Remote]
+	return d.Main != "" && id.mains[x.main(d.Main)] || d.Remote != "" && id.remotes[d.Remote]
 }
 
 func (id *ident) empty() bool { return len(id.mains)+len(id.remotes) == 0 }
@@ -176,7 +215,7 @@ func mapKeys(m map[string]bool) func(func(string) bool) {
 }
 
 // path resolves a path argument.
-func (x *expander) path(abs string) (string, []string) {
+func (x *expander) path(abs string) Repo {
 	abs = filepath.Clean(abs)
 	id := newIdent()
 	repo := abs
@@ -194,13 +233,16 @@ func (x *expander) path(abs string) (string, []string) {
 	if id.empty() {
 		// Outside git, or gone: a deleted main checkout or bare
 		// repository is still named by its path, and a deleted worktree
-		// by the placements recorded at or above it, when they agree.
+		// by the placements recorded at or above it, when they agree. A
+		// placement above it whose directory still exists is another
+		// repository (a home directory kept in git, issue #102), not the
+		// deleted one's.
 		seeds = append(seeds, abs)
 		id.add(x, abs, "")
 		ra := x.real(abs)
 		var found []*ident
 		for _, d := range x.dirs {
-			if rd := x.real(d.Dir); d.Dir != "" && (ra == rd || strings.HasPrefix(ra, rd+"/")) {
+			if rd := x.real(d.Dir); d.Dir != "" && (ra == rd || strings.HasPrefix(ra, rd+"/") && gone(d.Dir)) {
 				one := newIdent()
 				one.add(x, d.Main, d.Remote)
 				found = append(found, one)
@@ -215,27 +257,27 @@ func (x *expander) path(abs string) (string, []string) {
 			}
 		}
 	}
-	return repo, x.rootsOf(id, seeds, abs)
+	out := x.expand(id, seeds, abs)
+	out.Repo = repo
+	return out
 }
 
-// rootsOf lists the checkout roots of repository id: seeds first, then
-// the live linked worktrees of each main checkout, then the directories
-// of the placements in id (closing over the main checkouts and remotes
-// they add: a clone of the same remote is the same repository). Each
-// root also appears with its symlinks resolved and, when arg reached its
+// expand closes repository id over the placements (the main checkouts
+// and remotes they add: a clone of the same remote is the same
+// repository) and lists what matches it. Roots are seeds (the
+// argument's worktree root and main checkout) and the main checkouts,
+// each also with its symlinks resolved and, when arg reached its
 // directory through a symlink (/tmp for /private/tmp), as reached that
-// way.
-func (x *expander) rootsOf(id *ident, seeds []string, arg string) []string {
-	var roots []string
-	seen := map[string]bool{}
-	add := func(p string) {
-		if p != "" && filepath.IsAbs(p) && !seen[p] {
+// way. Mains are the main checkouts as resolved and as every placement
+// in id recorded them. The lists grow with the repository's main
+// checkouts and remotes, not with its worktrees or sessions.
+func (x *expander) expand(id *ident, seeds []string, arg string) Repo {
+	var out Repo
+	add := func(list *[]string, seen map[string]bool, p string) {
+		if p != "" && !seen[p] {
 			seen[p] = true
-			roots = append(roots, p)
+			*list = append(*list, p)
 		}
-	}
-	for _, s := range seeds {
-		add(s)
 	}
 	used := make([]bool, len(x.dirs))
 	for changed := true; changed; {
@@ -250,29 +292,52 @@ func (x *expander) rootsOf(id *ident, seeds []string, arg string) []string {
 			changed = changed || n != len(id.mains)+len(id.remotes)
 		}
 	}
+	seenM := map[string]bool{}
 	for _, m := range slices.Sorted(mapKeys(id.mains)) {
-		add(m)
-		for _, w := range localindex.Worktrees(m) {
-			add(w)
+		add(&out.Mains, seenM, m)
+	}
+	for _, s := range seeds {
+		if id.mains[x.main(s)] {
+			add(&out.Mains, seenM, s)
 		}
 	}
 	for i, d := range x.dirs {
 		if used[i] {
-			add(d.Dir)
-			add(d.Main)
+			add(&out.Mains, seenM, d.Main)
+		}
+	}
+	seenR := map[string]bool{}
+	for _, s := range seeds {
+		if filepath.IsAbs(s) {
+			add(&out.Roots, seenR, s)
+		}
+	}
+	for _, m := range out.Mains {
+		if filepath.IsAbs(m) {
+			add(&out.Roots, seenR, m)
 		}
 	}
 	lp, rp := symlinkPrefixes(arg, x.real(arg))
-	for _, r := range slices.Clone(roots) {
-		add(x.real(r))
+	for _, r := range slices.Clone(out.Roots) {
+		add(&out.Roots, seenR, x.real(r))
 		if rp != "" && (r == rp || strings.HasPrefix(r, rp+"/")) {
-			add(lp + r[len(rp):])
+			add(&out.Roots, seenR, lp+r[len(rp):])
 		}
 	}
+	out.Remotes = slices.Sorted(mapKeys(id.remotes))
 	if x.uploads != nil {
-		roots = slices.DeleteFunc(roots, func(r string) bool { return !x.allowed(id, r) })
+		out.Roots = slices.DeleteFunc(out.Roots, func(r string) bool { return !x.allowed(id, r) })
+		out.Mains = slices.DeleteFunc(out.Mains, func(m string) bool { return !x.allowed(id, m) })
+		if len(out.Remotes) > 0 && !x.allowed(id, "") {
+			out.Remotes = nil
+		}
 	}
-	return roots
+	for _, l := range []*[]string{&out.Roots, &out.Mains, &out.Remotes} {
+		if len(*l) == 0 {
+			*l = nil
+		}
+	}
+	return out
 }
 
 // allowed reports whether a session at root, on repository id, may reach
@@ -293,32 +358,6 @@ func (x *expander) allowed(id *ident, root string) bool {
 		}
 	}
 	return true
-}
-
-// wireRoots fits roots to a request (format.MaxRepoRoots): a root under
-// another one adds nothing and goes first; then the last ones go, so the
-// argument's own checkouts and the live worktrees stay.
-func wireRoots(roots []string) []string {
-	if len(roots) <= format.MaxRepoRoots {
-		return roots
-	}
-	var out []string
-	for _, r := range roots {
-		under := false
-		for _, o := range roots {
-			if o != r && strings.HasPrefix(r, strings.TrimSuffix(o, "/")+"/") {
-				under = true
-				break
-			}
-		}
-		if !under {
-			out = append(out, r)
-		}
-	}
-	if len(out) > format.MaxRepoRoots {
-		out = out[:format.MaxRepoRoots]
-	}
-	return out
 }
 
 // symlinkPrefixes returns the leading parts in which logical and real

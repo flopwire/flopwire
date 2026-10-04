@@ -12,19 +12,26 @@ package main
 //     turn/start, turn/completed).
 //   - Devin CLI: `devin acp` (Agent Client Protocol on stdio:
 //     session/new, session/prompt).
+//   - opencode: `opencode serve` (HTTP: POST /session, POST
+//     /session/{id}/message).
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -627,3 +634,172 @@ func (s *devinSession) Turn(ctx context.Context, prompt string) (string, error) 
 }
 
 func (s *devinSession) Close() { s.p.stop(10 * time.Second) }
+
+// --- opencode ---
+
+// opencodeSession is one `opencode serve` process holding one session,
+// driven over its HTTP API. A turn is POST /session/{id}/message, which
+// answers when the session goes idle; /session/status shows a turn
+// running.
+type opencodeSession struct {
+	p      *probeProc
+	base   string
+	id     string
+	model  map[string]string
+	turnAt atomic.Int64
+	stop   chan struct{}
+	tap    string // the probe's hook log
+}
+
+var opencodeListening = regexp.MustCompile(`listening on (http://[0-9.:a-z]+)`)
+
+func startOpencode(ctx context.Context, dir string, env []string, errLog, model, tap string) (*opencodeSession, error) {
+	provider, modelID, ok := strings.Cut(model, "/")
+	if !ok {
+		return nil, fmt.Errorf("opencode: model %q is not provider/model", model)
+	}
+	p, err := startProc(ctx, dir, env, errLog, "opencode", "serve", "--port", "0", "--hostname", "127.0.0.1")
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*opencodeSession, error) { p.kill(); <-p.done; return nil, err }
+	urls := make(chan string, 1)
+	go p.lines(func(b []byte) {
+		if m := opencodeListening.FindSubmatch(b); m != nil {
+			select {
+			case urls <- string(m[1]):
+			default:
+			}
+		}
+	})
+	s := &opencodeSession{p: p, model: map[string]string{"providerID": provider, "modelID": modelID}, stop: make(chan struct{}), tap: tap}
+	select {
+	case s.base = <-urls:
+	case <-p.done:
+		return fail(errors.New("opencode serve exited before it listened"))
+	case <-time.After(60 * time.Second):
+		return fail(errors.New("opencode serve did not listen within 60s"))
+	}
+	var r struct {
+		ID string `json:"id"`
+	}
+	if err := s.do(ctx, "POST", "/session", map[string]any{}, &r); err != nil {
+		return fail(err)
+	}
+	s.id = r.ID
+	go s.watch()
+	return s, nil
+}
+
+func (s *opencodeSession) do(ctx context.Context, method, path string, body, out any) error {
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, s.base+path, rd)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("opencode %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("opencode %s %s: %s: %s", method, path, resp.Status, clip(string(b), 300))
+	}
+	if out != nil && len(bytes.TrimSpace(b)) > 0 {
+		return json.Unmarshal(b, out)
+	}
+	return nil
+}
+
+// watch records when /session/status shows the session busy.
+func (s *opencodeSession) watch() {
+	t := time.NewTicker(300 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-s.p.done:
+			return
+		case <-t.C:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		var st map[string]struct {
+			Type string `json:"type"`
+		}
+		if s.do(ctx, "GET", "/session/status", nil, &st) == nil && st[s.id].Type != "" && st[s.id].Type != "idle" {
+			s.turnAt.Store(time.Now().UnixMilli())
+		}
+		cancel()
+	}
+}
+
+func (s *opencodeSession) ID() string    { return s.id }
+func (s *opencodeSession) TurnAt() int64 { return s.turnAt.Load() }
+
+// Turn sends the prompt and returns the text of every reply the turn
+// wrote: a message delivered during the turn earns a reply of its own
+// (docs/opencode.md), and the probe reads them all.
+func (s *opencodeSession) Turn(ctx context.Context, prompt string) (string, error) {
+	start := time.Now().UnixMilli()
+	s.turnAt.Store(start)
+	body := map[string]any{"model": s.model, "parts": []map[string]any{{"type": "text", "text": prompt}}}
+	if err := s.do(ctx, "POST", "/session/"+s.id+"/message", body, nil); err != nil {
+		return "", err
+	}
+	s.turnAt.Store(time.Now().UnixMilli())
+	// The answer can come before the plugin has handled the session's
+	// idle event: wait for its Stop hook, so a case never sees it late.
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline) && ctx.Err() == nil; time.Sleep(100 * time.Millisecond) {
+		all, _ := readTap(s.tap)
+		if slices.ContainsFunc(all, func(e tapEntry) bool { return e.Event == "Stop" && e.Session == s.id && e.At >= start }) {
+			break
+		}
+	}
+	var msgs []struct {
+		Info struct {
+			Role string `json:"role"`
+			Time struct {
+				Created int64 `json:"created"`
+			} `json:"time"`
+			Error json.RawMessage `json:"error"`
+		} `json:"info"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := s.do(ctx, "GET", "/session/"+s.id+"/message", nil, &msgs); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	var turnErr error
+	for _, m := range msgs {
+		if m.Info.Role != "assistant" || m.Info.Time.Created < start {
+			continue
+		}
+		if len(m.Info.Error) > 0 && string(m.Info.Error) != "null" {
+			turnErr = fmt.Errorf("opencode: the turn ended with %s", clip(string(m.Info.Error), 300))
+		}
+		for _, p := range m.Parts {
+			if p.Type == "text" && p.Text != "" {
+				b.WriteString(p.Text + "\n")
+			}
+		}
+	}
+	return b.String(), turnErr
+}
+
+func (s *opencodeSession) Close() {
+	close(s.stop)
+	if s.p.cmd.Process != nil {
+		_ = s.p.cmd.Process.Signal(syscall.SIGTERM)
+	}
+	s.p.stop(10 * time.Second)
+}

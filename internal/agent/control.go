@@ -229,6 +229,13 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	case req.Op == "flush":
 		a.noteHookEvent(req.Session, req.Event)
 		a.hookLifecycle(ctx, req)
+		if d := a.storeOf(transcript.AgentOpencode); d != nil && req.Agent == string(transcript.AgentOpencode) {
+			// opencode's store holds every session: poll it (at most once a
+			// second while it changes).
+			a.pollStore(ctx, d, false, false)
+			resp.OK = true
+			break
+		}
 		resp.Path, err = a.FlushPath(ctx, req.Path, req.Session)
 		resp.OK = err == nil
 		if err != nil {
@@ -360,7 +367,7 @@ func (a *Agent) Pass(ctx context.Context) error {
 	if err := a.sweep(ctx); err != nil {
 		return err
 	}
-	a.pollDevin(ctx, true, true)
+	a.pollStores(ctx, true, true)
 	a.WaitIdle()
 	return a.store.Sync(ctx)
 }

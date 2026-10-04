@@ -49,8 +49,11 @@ const setupHelp = `flopwire setup — install Flopwire into the coding-agent har
 
 For each harness it finds, setup runs that harness's own plugin commands. It
 never edits the harness's settings files. Harnesses: Claude Code (claude),
-Codex (codex) and Devin CLI (devin). Devin loads the Claude Code plugin;
-setup installs it with devin plugins install --local, on this machine only.
+Codex (codex), Devin CLI (devin) and opencode. Devin loads the Claude Code
+plugin; setup installs it with devin plugins install --local, on this
+machine only. opencode loads every file in its global plugin directory:
+setup writes the plugin there (~/.config/opencode/plugins/flopwire.js) and
+--remove deletes it.
 
 Codex runs a plugin's hooks only after you trust them once: start codex and
 answer its "Hooks need review" prompt, or use /hooks. setup reports whether
@@ -71,7 +74,7 @@ Flags
                      (default $FLOPWIRE_PLUGIN_SOURCE, else flopwire/flopwire)
   --scope SCOPE      Claude Code install scope: user (default), project or
                      local; project and local apply to the current directory.
-                     Codex and Devin install for the user only
+                     Codex, Devin and opencode install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{"running",
 "socket"},"server":{"configured","url"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
@@ -245,6 +248,7 @@ var setupHarnesses = []setupHarness{
 	{name: "claude", apply: setupClaude},
 	{name: "codex", apply: setupCodex},
 	{name: "devin", apply: setupDevin},
+	{name: "opencode", apply: setupOpencode},
 }
 
 func setupMain(ctx context.Context, args []string) error {

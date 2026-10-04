@@ -3,7 +3,7 @@
 // parser: the incremental Parser contract, a JSONL line reader with exact
 // byte offsets, text capping, and append-versus-rewrite change detection.
 //
-// Harness parsers (Claude Code, Codex, Devin) live in sub-packages and emit
+// Harness parsers (Claude Code, Codex, Devin, opencode) live in sub-packages and emit
 // Conversation and Message values into a Sink. Storage (SQLite locally,
 // Postgres centrally) is not this package's concern.
 package transcript
@@ -22,6 +22,9 @@ const (
 	AgentClaude Agent = "claude"
 	AgentCodex  Agent = "codex"
 	AgentDevin  Agent = "devin"
+	// AgentOpencode is opencode (sst/opencode), whose sessions live in one
+	// SQLite store like Devin's.
+	AgentOpencode Agent = "opencode"
 )
 
 // StorageKind is how a harness stores a source (spec §4.1, §5.3).
@@ -165,6 +168,10 @@ const EnrichHookContext = "hook_context"
 //   - Devin CLI: a node of role system. Devin stores hook context like the
 //     parts of its own system prompt, with nothing to tell them apart, so
 //     every system row qualifies.
+//   - opencode: a user text part whose metadata the Flopwire plugin set
+//     when it delivered the message (promptAsync with noReply), a row of
+//     kind injected with EnrichHookContext. opencode's transform hooks
+//     leave nothing in the store.
 //
 // User prompts, assistant text and tool calls and results never qualify,
 // whatever their text: an agent can quote or invent anything there.
@@ -178,6 +185,9 @@ func HookContext(agent Agent, m *Message) bool {
 		return ok && m.Kind == KindSystem
 	case AgentDevin:
 		return m.Kind == KindSystem && m.Role == "system"
+	case AgentOpencode:
+		_, ok := m.Enrichment[EnrichHookContext]
+		return ok && m.Kind == KindInjected
 	}
 	return false
 }

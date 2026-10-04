@@ -171,7 +171,7 @@ func (r serverRules) decideHome(home, projects, agent, sourcePath, cwd, remote s
 
 // harnessDirs are the directories under a user's home that hold harness
 // transcripts; the path before one is the home.
-var harnessDirs = []string{"/.claude/", "/.codex/", "/.local/share/devin/", "/.pi/", "/.gemini/"}
+var harnessDirs = []string{"/.claude/", "/.codex/", "/.local/share/devin/", "/.local/share/opencode/", "/.pi/", "/.gemini/"}
 
 // homeOf is the device user's home, from a source path under a harness
 // directory, or "".

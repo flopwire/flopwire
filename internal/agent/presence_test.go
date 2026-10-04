@@ -14,6 +14,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -621,5 +622,40 @@ func TestBusRepoWithheldByMainCheckoutAndRemote(t *testing.T) {
 	place(wt, "/tmp/work/oracle-alpha", "")
 	if got, err := f.a.BusRepoWithheld(ctx, "oracle-alpha"); got || err != nil {
 		t.Fatalf("an allowed worktree's main checkout is oracle-alpha: %v %v", got, err)
+	}
+}
+
+// Review of #125: an @user send's repo resolves to a remote only when the
+// path rules let every checkout and remote of the repository reach the
+// server (local.ServerRepo), as peers --repo does. Here one session of
+// oracle-alpha has no remote and is allowed, so the name is not
+// withheld, but the repository's other session recorded the remote
+// that a repo rule keeps local: that remote must not go to the server.
+func TestBusRepoKeyLeavesOutAWithheldRemote(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.UserRuleList = []string{"local repo:github.com/acme/secret-svc"}
+	f.a = New(f.store, f.cfg)
+	const wt = "0b7e2c1a-0000-4000-8000-0000000000e3"
+	f.writeSession(wt, "/tmp/work/oracle-alpha-wt", claudeRecord(wt, "/tmp/work/oracle-alpha-wt", "", "hello", 1))
+	f.once()
+	for _, p := range []localindex.Placement{
+		{Agent: transcript.AgentClaude, SessionID: alphaID, How: localindex.PlacedByWorktree, Placement: pathpolicy.Placement{Cwd: "/tmp/oracle-alpha", Main: "/tmp/oracle-alpha"}},
+		{Agent: transcript.AgentClaude, SessionID: wt, How: localindex.PlacedByWorktree, Placement: pathpolicy.Placement{Cwd: "/tmp/work/oracle-alpha-wt", Main: "/tmp/oracle-alpha", Remote: "github.com/acme/secret-svc"}},
+	} {
+		if err := f.store.SavePlacement(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.store.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.restart()
+	f.once()
+	if got, err := f.a.BusRepoWithheld(ctx, "oracle-alpha"); got || err != nil {
+		t.Fatalf("an allowed session is on oracle-alpha: %v %v", got, err)
+	}
+	got, err := f.a.BusRepoKey(ctx, "oracle-alpha")
+	if err != nil || strings.Contains(got, "secret-svc") {
+		t.Fatalf("repo key %q %v: a withheld remote", got, err)
 	}
 }

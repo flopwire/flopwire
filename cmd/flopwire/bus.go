@@ -117,8 +117,12 @@ const (
 	inboxDefaultLimit = 20
 )
 
-// defaultSocket is the agent's control socket beside the client config.
+// defaultSocket is the agent's control socket: $FLOPWIRE_SOCKET, else
+// agent.sock beside the client config.
 func defaultSocket() (string, error) {
+	if p := os.Getenv("FLOPWIRE_SOCKET"); p != "" {
+		return p, nil
+	}
 	dir, err := configDir()
 	if err != nil {
 		return "", err
@@ -278,7 +282,7 @@ func (c *busClient) callRetry(ctx context.Context, req agent.Request) (agent.Res
 // calling session.
 func errNoCaller(verb string, st busStyle) *busErr {
 	e := &busErr{Code: codeNoCaller, Detail: verb + ": cannot identify the calling session (no Claude Code session file, no Codex thread id, no Devin session lock, no FLOPWIRE_SESSION_ID), and messages always name the session they come from or belong to",
-		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex or devin) to your session's id",
+		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex, devin or opencode) to your session's id",
 		Example: "FLOPWIRE_SESSION_ID=0b7e2c1a-… FLOPWIRE_AGENT=claude flopwire " + verb + " …"}
 	if st.MCP {
 		e.Fix = "set FLOPWIRE_SESSION_ID and FLOPWIRE_AGENT in this MCP server's environment, or run flopwire " + verb + " from your shell tool instead"
@@ -345,8 +349,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		a.Limit = peersDefaultLimit
 	}
 	q := busproto.PeersQuery{Repo: a.Repo, User: strings.TrimPrefix(a.User, "@"), Agent: a.Agent}
-	var fullRepo string
-	var fullRoots []string
+	var full local.Repo
 	if q.Repo != "" {
 		// Expanded here: only this device can read its git files and its
 		// local index's placements. A name keeps matching by name. With a
@@ -355,12 +358,14 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		var err error
 		dirs := localRepoDirs(ctx, local.IndexPath())
 		arg := local.ResolveRepo(q.Repo)
-		if fullRepo, fullRoots, err = local.ExpandRepo(arg, dirs, true); err != nil {
+		if full, err = local.ExpandRepo(arg, dirs, true); err != nil {
 			return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
 		}
-		q.Repo, q.Roots = fullRepo, fullRoots
+		q.Repo, q.Roots, q.Mains, q.Remotes = full.Repo, full.Roots, full.Mains, full.Remotes
 		if cc, err := client.Load(); err == nil && cc.Server != "" && cc.Token != "" {
-			if q.Repo, q.Roots, err = local.ServerRepo(arg, dirs, deviceUploads()); err != nil {
+			sr, err := local.ServerRepo(arg, dirs, deviceUploads())
+			q.Repo, q.Roots, q.Mains, q.Remotes = sr.Repo, sr.Roots, sr.Mains, sr.Remotes
+			if err != nil {
 				return badUsage(strings.TrimPrefix(err.Error(), format.ErrBadRequest.Error()+": "), st.cmd("flopwire peers --repo PATH", "flopwire_peers repo=PATH"))
 			}
 		}
@@ -369,13 +374,13 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	q.Session = self.SessionID
 	resp, err := c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	var be *busproto.Error
-	localRepo, localRoots := "", []string(nil)
+	var localRepo local.Repo
 	if err != nil && known && errors.As(err, &be) && be.Code == busproto.CodeSessionNotOnDevice {
 		// The agent has not seen this session yet, or a path rule keeps it
 		// off the server: ask without naming it and leave it out here. The
 		// repo filter runs here too: --repo . names the session's own repo,
 		// which may be the withheld one.
-		q.Session, localRepo, localRoots, q.Repo, q.Roots = "", fullRepo, fullRoots, "", nil
+		q.Session, localRepo, q.Repo, q.Roots, q.Mains, q.Remotes = "", full, "", nil, nil, nil
 		resp, err = c.call(ctx, agent.Request{Op: "peers", Peers: &q})
 	}
 	if err != nil {
@@ -388,7 +393,7 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 	peers := []busproto.Peer{}
 	if resp.Peers != nil {
 		for _, p := range resp.Peers.Peers {
-			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) || !bus.RepoMatches(localRepo, localRoots, p.Repo) {
+			if known && p.Session == self.SessionID || a.Session != "" && !strings.HasPrefix(p.Session, a.Session) || !bus.RepoMatches(localRepo.Repo, localRepo.Roots, localRepo.Mains, localRepo.Remotes, p.Repo, p.Main, p.Remote) {
 				continue
 			}
 			p.SeenAt = p.SeenAt.UTC() // every time printed is UTC
@@ -441,6 +446,17 @@ func repoBranch(repo, branch string) string {
 	return format.Clean(r)
 }
 
+// sessionLabel is how a session id prints in a row: its shortest prefix
+// among ids, or, for a cloud session, the whole id. Every Claude cloud id
+// starts "session_" and every Devin one "devin-", so a short prefix names
+// none of them.
+func sessionLabel(id string, cloud bool, ids []string) string {
+	if cloud {
+		return format.Clean(id)
+	}
+	return format.ShortPrefix(id, ids)
+}
+
 // quoted is s on one line, cut to about n bytes, quoted; "" stays "".
 func quoted(s string, n int) string {
 	s = strings.Join(strings.Fields(format.Clean(s)), " ")
@@ -460,13 +476,18 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 	for i, p := range out.Peers {
 		ids[i] = p.Session
 	}
-	shown, own := 0, 0
+	shown, own, cloud := 0, 0, 0
 	for _, p := range out.Peers {
 		state := "live idle"
-		if p.Busy {
+		switch {
+		case p.Cloud && p.Busy:
+			state = "cloud busy"
+		case p.Cloud:
+			state = "cloud idle"
+		case p.Busy:
 			state = "live busy"
 		}
-		fields := []string{format.ShortPrefix(p.Session, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
+		fields := []string{sessionLabel(p.Session, p.Cloud, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
 		if t := quoted(p.Title, 80); t != "" {
 			fields = append(fields, t)
 		}
@@ -478,6 +499,9 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 		shown++
 		if p.Own {
 			own++
+		}
+		if p.Cloud {
+			cloud++
 		}
 	}
 	narrow := st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session")
@@ -493,8 +517,12 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 	case shown < out.Total:
 		fmt.Fprintf(&b, "[%s]\n", out.Hint)
 	default:
-		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]\n",
-			shown, plural(shown, "session", "sessions"), own)
+		cloudNote := ""
+		if cloud > 0 {
+			cloudNote = "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply"
+		}
+		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: with its human's next prompt%s. Address one by its first column, or a person as @user]\n",
+			shown, plural(shown, "session", "sessions"), own, cloudNote)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -516,6 +544,7 @@ const (
 	arriveAccepted     = "when_accepted"   // held until the recipient's human accepts the sender
 	arriveNextSession  = "next_session"    // @user with no live session: their next session
 	arriveIfResumed    = "only_if_resumed" // a session that is not running
+	arriveWhenRunning  = "when_running"    // an idle cloud session: pushed when it next runs a turn
 )
 
 // sendJSON is send's receipt: busproto.SendResponse (id, thread_id,
@@ -601,6 +630,8 @@ func arrival(r busproto.SendResponse) string {
 		return arriveAccepted
 	case r.To.Live && r.To.Busy:
 		return arriveNextToolCall
+	case r.To.Live && r.To.Cloud:
+		return arriveWhenRunning
 	case r.To.Live:
 		return arriveNextPrompt
 	case r.To.Session != "":
@@ -620,6 +651,8 @@ const (
 	// Idle, held, queued for @user, or not running: no reply until a
 	// human acts.
 	nextNoWait = "Do not wait for the reply; tell your user you asked."
+	// A cloud session gets messages pushed and has no route back.
+	nextCloud = "No reply will come: a cloud session cannot send messages. Tell your user you asked; its human sees the answer in that session."
 )
 
 // sendNext is the receipt's next: what to do until the reply comes. Only
@@ -627,6 +660,9 @@ const (
 func sendNext(r busproto.SendResponse) string {
 	if r.Intent != busproto.IntentRequest {
 		return ""
+	}
+	if r.To.Cloud {
+		return nextCloud
 	}
 	if arrival(r) == arriveNextToolCall {
 		return nextBusy
@@ -649,6 +685,13 @@ func sendOutcome(r busproto.SendResponse) string {
 			who = fmt.Sprintf("%s (%s %s %s)", format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		}
 		line = fmt.Sprintf("held %s for %s: %s has not accepted messages from you; expires %s", r.ID, who, shortUser(to.User), expiry(r.ExpiresAt))
+	case to.Session != "" && to.Cloud:
+		head := fmt.Sprintf("sent %s to %s (%s %s cloud %s)", r.ID, sessionLabel(to.Session, true, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
+		if to.Busy {
+			line = head + ": running, pushed now and read at its next tool call; a cloud session cannot reply"
+		} else {
+			line = head + ": not running a turn, pushed when it next runs one; a cloud session cannot reply; expires " + expiry(r.ExpiresAt)
+		}
 	case to.Session != "":
 		head := fmt.Sprintf("sent %s to %s (%s %s %s)", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		switch {
@@ -1102,7 +1145,7 @@ is running, so a message arrives at its next tool call; idle: it waits for that
 session's human. more=true: the limit cut the list; hint says how to narrow it.
 --text: SESSION  user  agent  live busy|idle  repo@branch  "title"
 
-Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin
+Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin|opencode
 Output   --limit N (50, max 500)  --text  --max-bytes N (text)  (--json: the default)
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example",…}}; exit 1
 Socket   --socket PATH (default <config dir>/agent.sock: the device agent answers)
@@ -1128,10 +1171,10 @@ at the next tool call, or with your human's next prompt. Never ask a peer to do
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
-"queued"|"held","to":{"session","agent","user","repo","branch","live","busy"},
+"queued"|"held","to":{"session","agent","user","repo","branch","live","busy","cloud"},
 "sender","intent","sent","expires_at","redactions","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed","outcome":TEXT,"next":TEXT (request only: what to do until the
+"only_if_resumed"|"when_running","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
 "thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",

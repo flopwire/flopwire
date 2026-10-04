@@ -4,7 +4,7 @@ Date: 2026-10-01. Supersedes section 9 of
 [`../local-search/README.md`](../local-search/README.md) where they differ.
 Evidence: [`README.md`](README.md) (socket and queue, 2026-09-28) and
 [`probes-2026-10-01.md`](probes-2026-10-01.md) (hooks, Devin, opencode,
-cloud). Built as of 2026-10-03 except opencode and vendor cloud; where the build diverged, see section 9 and the dated notes in
+cloud). Built as of 2026-10-03 except opencode; where the build diverged, see section 9 and the dated notes in
 sections 3 to 8.
 
 ## 1. Decisions
@@ -18,7 +18,7 @@ Made by Gary on 2026-10-01 unless marked "carried".
 | B3 | **No wake.** A message never starts a turn. It arrives inside a running turn, or with the human's next prompt. |
 | B4 | **Authority depends on the sender.** From the recipient's own user: a teammate request, acted on within the recipient session's permissions. From another user: information; the agent confirms with its human before consequential actions. A message never changes permissions or settings. |
 | B5 | **v1 harnesses:** Claude Code, Codex, Devin CLI, opencode. (2026-10-03: the first three are built; opencode is not, #62.) |
-| B6 | **Vendor cloud in v1:** Claude cloud sessions and Devin cloud, pushed only while the session is running. An occasional wake from a send that races the end of a turn is accepted. (2026-10-03: not built, #63.) |
+| B6 | **Vendor cloud in v1:** Claude cloud sessions and Devin cloud, pushed only while the session is running. An occasional wake from a send that races the end of a turn is accepted. (2026-10-03: built, #63; see section 6.) |
 | B7 | (carried) A message from another user is held until the recipient's human accepts that sender once. Acceptance is per sender and revocable. |
 | B8 | (carried) Undelivered messages expire after 24 hours by default. Flopwire never resumes a session headless to deliver. |
 
@@ -285,7 +285,7 @@ device's authority.
 | Claude Code 2.1.287 | `attachment` of type `hook_additional_context`, `content` one string per hook | injected, `hook_context` = the hook event |
 | Codex 0.159.3 | developer message, `content_item_kinds: ["hooks.additional_context"]` | system (role developer), `hook_context` |
 | Devin CLI 3000.11.1 | `role: "system"` node, like Devin's own system parts | system; counts only when it starts with the hook's output |
-| opencode | transform hooks do not persist; no parser | none: `delivered_at` only |
+| opencode | a user text part the plugin delivered with `promptAsync(noReply)`, `metadata.flopwire` on the part (2026-10-03, #62) | injected, `hook_context` = `flopwire-plugin` |
 
 - Only `<flopwire-message id="…"` at the start of a line in those rows
   counts. Prompts, replies and tool output never do: an agent that
@@ -305,8 +305,9 @@ device's authority.
   inter-agent bodies are encrypted in rollouts) is about Codex's own
   agent messages. It does not apply here: Codex stores hook context as
   plain text, so Codex recipients get `read_at`.
-- opencode has `delivered_at` only unless the `noReply` route below
-  works; its part metadata (`metadata.flopwire`) would then carry the id.
+- opencode: the `noReply` route below works (2026-10-03), so a message
+  the plugin delivers is stored with `metadata.flopwire` and gives
+  `read_at` like the other harnesses.
 
 **Permission.** Accept and revoke are human actions: the web console, or
 the CLI on a terminal. There is no MCP tool for them and the CLI refuses
@@ -335,8 +336,8 @@ therefore detects the harness from its input and delivers each message
 once, whichever config invoked it.
 
 On opencode, `promptAsync` with `noReply: true` stores a visible message
-with metadata and started no extra turn in a busy session. Whether it also
-leaves an idle session idle is untested. If it does, it replaces the
+with metadata and started no extra turn in a busy session. 2026-10-03: it
+also leaves an idle session idle (probes, opencode row), so it replaces the
 transform hook and gives opencode a read receipt.
 
 opencode needs a transcript parser (SQLite: `session`, `message.data`,
@@ -355,6 +356,38 @@ marking, so the wrapper and the B4 rule travel inline in every message.
 
 Cloud sessions are owned by a user, not a device. Any of that user's
 devices may deliver; the claim call picks one.
+
+2026-10-03 (#63), as built ([`cloud-2026-10-03.md`](cloud-2026-10-03.md),
+[`docs/cloud.md`](../../docs/cloud.md)):
+
+- Each vendor is behind `vendorcloud.Adapter`. Claude discovery reads
+  `GET /v1/code/sessions?statuses=active`, the list the CLI's `--teleport`
+  reads, not `/v1/sessions`: that one takes no filter and lists every
+  Remote Control session of the account (over 3,000 for the test account).
+  Only `environment_kind: "anthropic_cloud"` sessions are kept. Devin's
+  `session/list` is the organization's; only the person's own sessions
+  are kept.
+- Devices report cloud sessions in `PollRequest.Cloud`; the server keeps
+  one `bus_presence` row per person and session with `cloud` set and no
+  device. Peers marks them `cloud`. `@user` never routes to one.
+- A message to a cloud session is offered to all of the owner's devices;
+  one claims it only while the vendor reports a turn running and pushes
+  it. Lease and confirm as for hooks; a failed push is retried at the next
+  presence tick and after 3 failures is `undelivered` (`push_failed`). A
+  push the vendor refuses as archived or exited ends the session
+  (`session_ended`).
+- The cloud instruction (`busrender.CloudInstruction`) and the wrappers
+  travel in every push; requests carry no reply line, and the instruction
+  says the session cannot reply.
+- Cross-user: the accept rule applies unchanged (B7), so accepted
+  teammates reach cloud sessions; nothing extra was needed.
+- Read receipts: Claude from the session's events (the first assistant
+  event after the pushed text), Devin from the push (the first agent
+  chunk after the echo, within 8 s). The Limits column's "no `read_at`"
+  no longer holds for Claude.
+- Sending out: a Devin cloud session reached public HTTPS hosts, but it
+  has no `flopwire` CLI or device credential; both vendors' sessions
+  receive only.
 
 ## 7. Build sequence
 
@@ -377,7 +410,7 @@ Status as of 2026-10-03.
    Done: #85.
 7. Accept and revoke: console and CLI; held-message notice. Done: #97.
 8. opencode: parser, then plugin. Open: #62.
-9. Cloud: Claude cloud push and discovery; Devin cloud push. Open: #63.
+9. Cloud: Claude cloud push and discovery; Devin cloud push. Done: #63.
 10. Docs. Check the README and landing claims in PR #23 against what
     shipped. #72.
 
@@ -409,7 +442,8 @@ across worktrees (#100), commits without a sha (#103), read's
   hooks deliver in `claude -p`; interactive sessions still untested.)
 - **Cross-user messages into cloud sessions** arrive with user authority.
   Consider own-user only for cloud in v1. (2026-10-01, #63: accepted
-  teammates may message cloud sessions, as local ones.)
+  teammates may message cloud sessions, as local ones. 2026-10-03: built
+  that way; the accept rule needed no change.)
 - **Undocumented surfaces:** the Claude cloud session list, and the Devin
   CLI token on REST. Both can change without notice.
 - **Harness drift.** Claude Code and Codex ship several releases a week.
@@ -441,6 +475,7 @@ after the plan merged. Tracker #73; the merged code wins over this note.
 | Accept | console and terminal | Also needs the person's password (#97 review). Held messages show to the person as first-line previews only. The notice is a `systemMessage` on `UserPromptSubmit`, once per sender per day per device, on Claude Code and Codex; Devin has no such channel. Revoke also re-holds claimed messages. Members get the console's Messaging page. |
 | Repo | path prefix or basename | `--repo` names a repository: its main checkout and normalized remote, across worktrees and clones on the device (#100). The server stores no remote, so `--server --repo` does not match another machine's checkout at another path (#102). `@user` routing is still by repo name. |
 | Commit evidence | `[branch sha]` lines | Also `commits_no_sha` for quiet commits, resolved by a later `rev-parse`, `log`, `show` or `push` (#103). |
+| Vendor cloud | Discover with `GET /v1/sessions` | `GET /v1/code/sessions?statuses=active` (Claude) and `session/list` (Devin) on each device; `PollRequest.Cloud`; user-owned `bus_presence` rows; claimed by one device while a turn runs; `push_failed` after 3 failed pushes (#63). |
 | Read receipts | `read_at` at ingest on the server | Set by the device agent when the wrapper appears in a hook-context row of the recipient's transcript (Claude Code, Codex, Devin CLI; not opencode); sent in the ack batch; the server sets `read_at` once (#65, #106). It means the text entered the context, not that the model acted. |
 
 Decisions recorded on #73 and its issues:
@@ -463,7 +498,7 @@ Decisions recorded on #73 and its issues:
 - **Lost hooks (#101):** the standing instruction is leased like a
   message.
 
-Still open: opencode (#62), vendor cloud (#63), server
+Still open: opencode (#62), server
 hardening (#70), device-agent hardening (#71), the server repo key
 (#102), the plugin follow-ups (#58, #59, #60), and a captured exchange
 for the homepage (#55, #54).

@@ -66,7 +66,7 @@ type retriever struct {
 	// teamRepo, set for the server, expands a --repo argument on this
 	// device (local.ExpandRepo with the local index's placements), since
 	// the server cannot read this device's git files.
-	teamRepo func(ctx context.Context, repo string) (string, []string, error)
+	teamRepo func(ctx context.Context, repo string) (local.Repo, error)
 }
 
 // whoCalls is the calling session: the one an MCP request's _meta names
@@ -94,7 +94,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		if indexPath == "" {
 			indexPath = local.IndexPath()
 		}
-		team := func(ctx context.Context, repo string) (string, []string, error) {
+		team := func(ctx context.Context, repo string) (local.Repo, error) {
 			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
 		}
 		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team, scope: &format.Scope{Kind: "shared", Server: c.Server}}, nil
@@ -620,9 +620,11 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		return badArg(err)
 	}
 	if r.teamRepo != nil && f.Repo != "" {
-		if f.Repo, f.RepoRoots, err = r.teamRepo(ctx, f.Repo); err != nil {
+		rp, err := r.teamRepo(ctx, f.Repo)
+		if err != nil {
 			return err // a format.ErrBadRequest
 		}
+		f.Repo, f.RepoRoots, f.RepoMains, f.RepoRemotes = rp.Repo, rp.Roots, rp.Mains, rp.Remotes
 	}
 	if f.Session == "self" {
 		if f.Session, err = r.self(ctx, p); err != nil {
@@ -976,7 +978,7 @@ func flagsOf(verb string) []string {
 // toolHelp is each tool's help: three examples first, then every flag, on
 // one screen.
 var toolHelp = map[string]string{
-	"grep": `flopwire grep — regex search over coding-agent transcripts (Claude Code, Codex, Devin), like rg
+	"grep": `flopwire grep — regex search over agent transcripts (Claude Code, Codex, Devin, opencode), like rg
 
   flopwire grep 'upload\.test.*timeout'               RE2 regex; smart case
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
@@ -991,10 +993,10 @@ Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a matc
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
          --limit N (20)  --offset N  --sort newest|oldest|relevance  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)
-Filters  --agent claude,codex,devin  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB  --since 7d
-         --until T  --kind K,..  --exclude-kind K,..  --tool Bash  --session SESSION|self
-         --exclude-subagents  --exclude-live  --include-superseded  --include-branches
-         --include-self  --device D  --user U
+Filters  --agent claude,codex,devin,opencode  --repo .|PATH|NAME|GLOB  --branch NAME|GLOB
+         --since 7d  --until T  --kind K,..  --exclude-kind K,..  --tool Bash
+         --session SESSION|self  --exclude-subagents  --exclude-live  --include-superseded
+         --include-branches  --include-self  --device D  --user U
 Source   shared after enrollment, local before; --local / --server; --index PATH
 Kinds    user assistant tool_call tool_result thinking system agent_message injected (hidden
          unless --kind names it). Times are UTC: 7d, 24h, 2026-09-23, '2026-09-23 10:00Z'.

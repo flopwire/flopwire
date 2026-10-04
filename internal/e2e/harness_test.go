@@ -208,7 +208,7 @@ func baseEnv() []string {
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch k {
-		case "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "FLOPWIRE_DEVIN_DB", "FLOPWIRE_INDEX", "FLOPWIRE_CONFIG", "XDG_CONFIG_HOME", "XDG_CACHE_HOME":
+		case "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "FLOPWIRE_DEVIN_DB", "FLOPWIRE_OPENCODE_DB", "OPENCODE_DB", "XDG_DATA_HOME", "FLOPWIRE_INDEX", "FLOPWIRE_CONFIG", "XDG_CONFIG_HOME", "XDG_CACHE_HOME":
 			continue
 		}
 		env = append(env, kv)

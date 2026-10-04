@@ -115,6 +115,8 @@ func (a *API) filters(w http.ResponseWriter, r *http.Request) (format.Filters, b
 	}
 	// Self (session "self") matches only the caller's own sessions.
 	f.Owner = mustPrincipal(r).User.ID
+	// repo_checkout names main checkouts of the calling device only.
+	f.CallerDevice = mustPrincipal(r).Credential.DeviceID
 	return f, true
 }
 

@@ -201,6 +201,12 @@ func TestSendOutcomeLines(t *testing.T) {
 		{busproto.SendResponse{ID: "m7f41", State: busproto.StateQueued, ExpiresAt: exp, Redactions: map[string]int{"github-token": 2, "aws-key": 1},
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/src/api", Branch: "main", Live: true, Busy: true}},
 			"sent m7f41 to 4c19e0d2 (gary codex api@main): busy, arrives at its next tool call; 3 secrets masked before it left this device (aws-key, github-token)"},
+		{busproto.SendResponse{ID: "m7f42", State: busproto.StateQueued, ExpiresAt: exp,
+			To: busproto.Recipient{Session: "session_01AbCd", Agent: "claude", User: "gary@example.test", Repo: "acme/api", Branch: "claude/fix", Live: true, Busy: true, Cloud: true}},
+			"sent m7f42 to session_01AbCd (gary claude cloud api@claude/fix): running, pushed now and read at its next tool call; a cloud session cannot reply"},
+		{busproto.SendResponse{ID: "m7f43", State: busproto.StateQueued, ExpiresAt: exp,
+			To: busproto.Recipient{Session: "devin-0a1b2c3d", Agent: "devin", User: "gary@example.test", Live: true, Cloud: true}},
+			"sent m7f43 to devin-0a1b2c3d (gary devin cloud -): not running a turn, pushed when it next runs one; a cloud session cannot reply; expires 2026-10-02T14:02Z"},
 	} {
 		if got := sendOutcome(c.r); got != c.want {
 			t.Errorf("outcome\n got %s\nwant %s", got, c.want)
@@ -428,6 +434,14 @@ func TestPeersOutput(t *testing.T) {
 	if err != nil || out != want {
 		t.Fatalf("peers:\n%s\nwant:\n%s%v", out, want, err)
 	}
+	// A cloud session is marked, and the footer says what that means.
+	peers = append(peers, busproto.Peer{Session: "session_01AbCdEf", Agent: "claude", User: "gary@example.test", Repo: "acme/api", Branch: "claude/fix", Title: "cloud task", Own: true, Cloud: true})
+	out, err = cli(t, fa, "", "peers", "--text")
+	if err != nil || !strings.Contains(out, "session_01AbCdEf  gary  claude  cloud idle  api@claude/fix  \"cloud task\"\n") ||
+		!strings.Contains(out, "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply.") {
+		t.Fatalf("peers with a cloud session:\n%s%v", out, err)
+	}
+	peers = peers[:3]
 	if q := fa.requests()[0].Peers; q.Session != selfID || q.Repo != "api" || q.User != "alex" || q.Agent != "claude" {
 		t.Fatalf("query %+v", q)
 	}
@@ -954,8 +968,8 @@ func TestPeersRepoCoversWorktrees(t *testing.T) {
 			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "withheld"})
 		}
 		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{
-			{Session: wtPeer, Agent: "codex", User: "g@x.test", Repo: wt},
-			{Session: otherPeer, Agent: "codex", User: "g@x.test", Repo: other},
+			{Session: wtPeer, Agent: "codex", User: "g@x.test", Repo: wt, Main: main},
+			{Session: otherPeer, Agent: "codex", User: "g@x.test", Repo: other, Main: other},
 		}}}
 	})
 	t.Chdir(main)
@@ -964,8 +978,10 @@ func TestPeersRepoCoversWorktrees(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &pj) != nil || len(pj.Peers) != 1 || pj.Peers[0].Session != wtPeer {
 		t.Fatalf("peers --repo . from the main checkout: %q %q %v", out, stderr, err)
 	}
-	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Roots, wt) {
-		t.Fatalf("the request names no worktree: %+v", r.Peers)
+	// The worktree is matched by its main checkout, which presence
+	// reports, not by listing it (#102).
+	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Mains, main) || slices.Contains(r.Peers.Mains, other) {
+		t.Fatalf("the request names no main checkout: %+v", r.Peers)
 	}
 }
 
@@ -1004,13 +1020,13 @@ func TestPeersRepoLeavesOutWithheldCheckouts(t *testing.T) {
 		if withheld && r.Peers.Session != "" {
 			return refused(busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "withheld"})
 		}
-		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: secretPeer, Agent: "codex", User: "g@x.test", Repo: secret}}}}
+		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: []busproto.Peer{{Session: secretPeer, Agent: "codex", User: "g@x.test", Repo: secret, Main: main}}}}
 	})
 	t.Chdir(main)
 	if _, stderr, err := cliJSON(t, fa, "", "peers", "--repo", "."); err != nil {
 		t.Fatalf("peers: %q %v", stderr, err)
 	}
-	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Roots, ok) || slices.Contains(r.Peers.Roots, secret) {
+	if r := fa.requests()[0]; r.Peers.Repo != main || !slices.Contains(r.Peers.Mains, main) || slices.Contains(r.Peers.Roots, secret) || slices.Contains(r.Peers.Mains, secret) {
 		t.Fatalf("the request to the server: %+v", r.Peers)
 	}
 	withheld = true

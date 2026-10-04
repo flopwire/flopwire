@@ -32,6 +32,7 @@ type fakeServer struct {
 	acks     [][]string
 	gone     []string // undelivered reports
 	ended    []string // session_ended reports
+	failed   []string // push_failed reports
 	ackFn    func([]string) (busproto.AckResponse, error)
 	ackReqs  []busproto.AckRequest
 	reads    []busproto.ReadReceipt          // read receipts taken
@@ -83,6 +84,7 @@ func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.A
 	}
 	f.gone = append(f.gone, req.Undelivered...)
 	f.ended = append(f.ended, req.SessionEnded...)
+	f.failed = append(f.failed, req.PushFailed...)
 	fn, readFn := f.ackFn, f.readFn
 	read, rejected := []string{}, []string{}
 	for _, r := range req.Read {
@@ -94,7 +96,7 @@ func (f *fakeServer) Ack(_ context.Context, req busproto.AckRequest) (busproto.A
 		}
 	}
 	f.mu.Unlock()
-	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded)
+	all := slices.Concat(req.IDs, req.Undelivered, req.SessionEnded, req.PushFailed)
 	if len(all) == 0 {
 		return busproto.AckResponse{Acked: []string{}, Rejected: []string{}, Read: read, ReadRejected: rejected}, nil
 	}
@@ -526,6 +528,30 @@ func TestClaimOrder(t *testing.T) {
 	got := claimOrder(busproto.Claimable{Message: e, Sessions: []string{"d", "a", "b", "c"}}, []Session{a, b, c, d})
 	if want := []string{"c", "b", "a", "d"}; !slices.Equal(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
+	}
+}
+
+// Review of #125: for a message routed by remote, a session on the
+// remote comes first, then one that reported no remote whose root has
+// the remote's name, then the rest; without a server the same order
+// decides which sessions may take it.
+func TestClaimOrderByRemote(t *testing.T) {
+	on := sess("on", "claude", "/home/a/web-local", false)
+	on.Remote = "github.com/acme/web"
+	bare := sess("bare", "claude", "/home/a/web", true)
+	fork := sess("fork", "codex", "/home/a/fork/web", true)
+	fork.Remote = "github.com/other/web"
+	e := env("mu", "")
+	e.Addressed, e.ToSession, e.ToRepo = "user", "", "github.com/acme/web"
+	got := claimOrder(busproto.Claimable{Message: e, Sessions: []string{"fork", "bare", "on"}}, []Session{on, bare, fork})
+	if want := []string{"on", "bare", "fork"}; !slices.Equal(got, want) {
+		t.Fatalf("order %v, want %v", got, want)
+	}
+	if !eligible(e.ToRepo, e, bare, []Session{bare, fork}) || eligible(e.ToRepo, e, fork, []Session{bare, fork}) {
+		t.Fatal("without a session on the remote, the one with no remote and the name is the route")
+	}
+	if eligible(e.ToRepo, e, bare, []Session{on, bare, fork}) {
+		t.Fatal("a session on the remote goes before one with no remote")
 	}
 }
 

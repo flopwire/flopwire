@@ -1,7 +1,7 @@
 # Device agent
 
-The device agent keeps the local index current. It reads Claude Code, Codex
-and Devin transcripts. It never writes to the harness directories. When the
+The device agent keeps the local index current. It reads Claude Code, Codex,
+Devin and opencode transcripts. It never writes to the harness directories. When the
 device has a server configuration, the agent also uploads the transcripts.
 
 ## Run the agent
@@ -30,6 +30,7 @@ The agent uses these paths:
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
+| opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
 
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
@@ -70,7 +71,7 @@ crash of the agent.
 
 Local redaction does not protect the files on disk:
 
-- The harness transcripts (`~/.claude`, `~/.codex`, the Devin store) are
+- The harness transcripts (`~/.claude`, `~/.codex`, the Devin and opencode stores) are
   not changed. They still hold the text.
 - The index database keeps `content_sha`, a SHA-256 of each message's
   original text, for change detection. A person who can read the index
@@ -211,7 +212,9 @@ inspection, and JSON output.
 device. It installs the Flopwire plugin into Claude Code, Codex and Devin
 CLI: the MCP tools, the hooks and a messaging skill. It runs each harness's
 own plugin commands. It never edits the harness's settings files, and it
-writes no Devin config file.
+writes no Devin config file. For opencode, which loads every file in its
+plugin directory, it writes the one plugin file there
+([opencode.md](opencode.md)).
 
 `flopwire setup` prints a JSON report. Add `--text` for a readable form.
 The report has these parts:
@@ -253,7 +256,7 @@ Follow these steps in order.
    empty, tell your user to approve the Flopwire hooks in Codex. See
    [Approve the Codex hooks](#approve-the-codex-hooks). Do not approve
    them yourself, and do not edit `~/.codex/config.toml`.
-10. Tell your user to restart their Claude Code, Codex and Devin
+10. Tell your user to restart their Claude Code, Codex, Devin and opencode
     sessions. A running Claude Code session loads the plugin after a
     restart or after `/reload-plugins`. A running Codex or Devin session
     loads it after a restart.
@@ -354,7 +357,7 @@ a sandboxed shell command. See [Codex and git commits](#codex-and-git-commits).
 1. Run `flopwire setup --remove`.
 2. Run `flopwire setup --check`.
 3. Confirm that each detected harness has `installed: false`.
-4. Restart your Claude Code, Codex and Devin sessions.
+4. Restart your Claude Code, Codex, Devin and opencode sessions.
 
 `--remove` removes only what setup installed. It does not remove a Devin
 plugin that you installed without `--local`, or a plugin from another
@@ -691,6 +694,12 @@ plugin.
 Do not add `flopwire hook` to `PreToolUse`. Devin does not show that
 event's output to the model, and the messages would be lost.
 
+### opencode
+
+Run `flopwire setup`. It installs one plugin file into opencode's global
+plugin directory. The plugin delivers messages, serves the tools and keeps
+presence. See [opencode.md](opencode.md).
+
 ### Manual flush
 
 Run `flopwire agent flush --path <transcript>` or
@@ -950,10 +959,10 @@ refuses the request before anything leaves the device.
 
 ### Known limits
 
-- Only Claude Code, Codex and Devin CLI sessions send and receive.
-  opencode (#62) and vendor cloud sessions, such as Claude Code cloud
-  sessions and Devin cloud (#63), are not supported.
-- opencode has no read receipts.
+- Only Claude Code, Codex, Devin CLI and opencode sessions send and
+  receive. Claude Code cloud sessions and Devin cloud sessions only
+  receive, while they run a turn. See [docs/cloud.md](cloud.md). For
+  opencode, see [opencode.md](opencode.md#known-limits).
 - A Devin hook finds a subagent's tool call in Devin's session store. If
   the hook cannot read the store, it delivers messages only at a prompt.
   It writes the cause to stderr.
@@ -1099,7 +1108,10 @@ matches by its directory. See [search.md](search.md#which-repo).
 ### Sessions in deleted worktrees
 
 The agent can first see a session after its worktree was deleted. Then git
-cannot give its main checkout. A background pass looks for the checkout
+cannot give its main checkout. The agent does not use a repository above
+the deleted directory that still exists. For example, a home directory
+kept in git (dotfiles) is not the repository of a deleted worktree under
+it. A background pass looks for the checkout
 among the repositories the agent already knows (the main checkouts of
 other sessions). It records a main checkout only when exactly one
 repository fits these signals:

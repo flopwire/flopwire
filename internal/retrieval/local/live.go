@@ -132,6 +132,12 @@ func (d *Detector) isDevin(pid int) bool {
 	return ok && IsDevinProcess(name)
 }
 
+// IsOpencodeProcess reports whether a process name is opencode's (the
+// opencode binary, or a launcher whose name holds it).
+func IsOpencodeProcess(name string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(name)), "opencode")
+}
+
 // IsDevinProcess reports whether a process name is Devin CLI's (devin, or
 // a path ending in it).
 func IsDevinProcess(name string) bool {

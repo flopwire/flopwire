@@ -50,8 +50,8 @@ func (a *Agent) watchDirs(now time.Time) []string {
 		add(filepath.Join(sessions, y, m, d))
 	}
 	add(filepath.Join(a.cfg.CodexHome, "archived_sessions"))
-	if a.devin.path != "" {
-		add(filepath.Dir(a.devin.path))
+	for _, d := range a.stores() {
+		add(filepath.Dir(d.path))
 	}
 
 	// Hot transcripts: their directory, and the session directory beside a

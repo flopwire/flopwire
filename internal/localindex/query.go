@@ -26,7 +26,14 @@ type Filter struct {
 	Agents    []transcript.Agent
 	Repos     []string // repo_root or cwd equals, or lies under, one of these (a repository's checkout roots: local.ExpandRepo)
 	RepoLikes []string // or its repo root (its cwd without one) matches one of these LIKE patterns (backslash escapes)
-	Devices   []string
+	// RepoMains and RepoRemotes keep a conversation whose session (or
+	// parent session) is placed in one of these main checkouts or in a
+	// checkout of one of these remotes (placements). A repository is
+	// matched by what its placements record, not by listing its
+	// checkouts' directories (#102).
+	RepoMains   []string
+	RepoRemotes []string
+	Devices     []string
 	// Branches keeps conversations one of whose git branches matches one
 	// of these LIKE patterns (backslash escapes).
 	Branches []string
@@ -68,21 +75,42 @@ func (f *Filter) where() (string, []any) {
 			args = append(args, string(a))
 		}
 	}
-	if len(f.Repos)+len(f.RepoLikes) > 0 {
+	if len(f.Repos)+len(f.RepoLikes)+len(f.RepoMains)+len(f.RepoRemotes) > 0 {
 		// One uncorrelated subquery: SQLite evaluates it once, however
-		// many roots a repository expands to (local.ExpandRepo) and
-		// however many message rows the outer query walks.
+		// many message rows the outer query walks. Repos is a few
+		// directories (the argument's worktree root and the main
+		// checkouts: local.ExpandRepo), at most MaxRepos; the
+		// repository's sessions are found through placements by their
+		// indexed main checkout and remote, so the cost does not grow
+		// with its checkouts.
 		var ors []string
-		for _, r := range f.Repos {
+		for _, r := range f.Repos[:min(len(f.Repos), MaxRepos)] {
 			r = strings.TrimSuffix(r, "/")
 			ors = append(ors, "(rc.repo_root = ? OR substr(rc.repo_root, 1, ?) = ? OR rc.cwd = ? OR substr(rc.cwd, 1, ?) = ?)")
-			args = append(args, r, len(r)+1, r+"/", r, len(r)+1, r+"/")
+			n := utf8.RuneCountInString(r) + 1
+			args = append(args, r, n, r+"/", r, n, r+"/")
 		}
 		for _, p := range f.RepoLikes {
 			ors = append(ors, `ifnull(rc.repo_root, rc.cwd) LIKE ? ESCAPE '\'`)
 			args = append(args, p)
 		}
-		conds = append(conds, "c.id IN (SELECT rc.id FROM conversations rc WHERE "+strings.Join(ors, " OR ")+")")
+		var parts []string
+		if len(ors) > 0 {
+			parts = append(parts, "SELECT rc.id FROM conversations rc WHERE "+strings.Join(ors, " OR "))
+		}
+		if len(f.RepoMains)+len(f.RepoRemotes) > 0 {
+			// The sessions placed in the repository, and their subagents.
+			mains, _ := json.Marshal(nonNil(f.RepoMains))
+			remotes, _ := json.Marshal(nonNil(f.RepoRemotes))
+			placed := ` FROM placements p WHERE p.main_root IN (SELECT value FROM json_each(?)) OR p.remote IN (SELECT value FROM json_each(?))`
+			parts = append(parts,
+				"SELECT rc.id FROM conversations rc WHERE rc.session_id IN (SELECT p.session_id"+placed+") AND (rc.agent, rc.session_id) IN (SELECT p.agent, p.session_id"+placed+")",
+				"SELECT rc.id FROM conversations rc WHERE rc.parent_session_id IN (SELECT p.session_id"+placed+") AND (rc.agent, rc.parent_session_id) IN (SELECT p.agent, p.session_id"+placed+")")
+			for range 4 {
+				args = append(args, string(mains), string(remotes))
+			}
+		}
+		conds = append(conds, "c.id IN ("+strings.Join(parts, " UNION ")+")")
 	}
 	if len(f.Devices) > 0 {
 		conds = append(conds, in("c.device_id", len(f.Devices)))
@@ -179,7 +207,8 @@ func (f *Filter) convJoin() string {
 }
 
 func (f *Filter) onConversations() bool {
-	return len(f.Agents)+len(f.Repos)+len(f.RepoLikes)+len(f.Devices)+len(f.Branches)+len(f.ExcludeSessions) > 0 || f.ExcludeSubagents || !f.IdleBefore.IsZero()
+	return len(f.Agents)+len(f.Repos)+len(f.RepoLikes)+len(f.RepoMains)+len(f.RepoRemotes)+len(f.Devices)+len(f.Branches)+len(f.ExcludeSessions) > 0 ||
+		f.ExcludeSubagents || !f.IdleBefore.IsZero()
 }
 
 // split separates the conditions on conversation columns (cf, nil when
@@ -187,11 +216,12 @@ func (f *Filter) onConversations() bool {
 func (f *Filter) split() (mf Filter, cf *Filter) {
 	mf = *f
 	mf.Agents, mf.Repos, mf.RepoLikes, mf.Devices, mf.Branches, mf.ExcludeSessions, mf.ExcludeSubagents = nil, nil, nil, nil, nil, nil, false
+	mf.RepoMains, mf.RepoRemotes = nil, nil
 	mf.IdleBefore = time.Time{}
 	if !f.onConversations() {
 		return mf, nil
 	}
-	return mf, &Filter{Agents: f.Agents, Repos: f.Repos, RepoLikes: f.RepoLikes, Devices: f.Devices, Branches: f.Branches, IdleBefore: f.IdleBefore, ExcludeSessions: f.ExcludeSessions,
+	return mf, &Filter{Agents: f.Agents, Repos: f.Repos, RepoLikes: f.RepoLikes, RepoMains: f.RepoMains, RepoRemotes: f.RepoRemotes, Devices: f.Devices, Branches: f.Branches, IdleBefore: f.IdleBefore, ExcludeSessions: f.ExcludeSessions,
 		ExcludeSubagents: f.ExcludeSubagents, IncludeSuperseded: true, IncludeBranches: true}
 }
 
@@ -1551,7 +1581,7 @@ type ListKey struct {
 }
 
 func (o *ListOptions) where() (string, []any) {
-	f := Filter{Agents: o.Agents, Repos: o.Repos, RepoLikes: o.RepoLikes, Devices: o.Devices, Branches: o.Branches, IdleBefore: o.IdleBefore, ExcludeSubagents: o.ExcludeSubagents,
+	f := Filter{Agents: o.Agents, Repos: o.Repos, RepoLikes: o.RepoLikes, RepoMains: o.RepoMains, RepoRemotes: o.RepoRemotes, Devices: o.Devices, Branches: o.Branches, IdleBefore: o.IdleBefore, ExcludeSubagents: o.ExcludeSubagents,
 		ExcludeSessions: o.ExcludeSessions, ExcludeConversations: o.ExcludeConversations, IncludeSuperseded: true, IncludeBranches: true}
 	where, args := f.where()
 	where = strings.ReplaceAll(where, "m.conversation_id", "c.id")
@@ -1651,4 +1681,17 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// MaxRepos bounds Filter.Repos: each root is one OR term, and SQLite
+// refuses an expression deeper than 1000. local.ExpandRepo lists a few
+// (the argument's worktree root and the main checkouts); a caller with
+// more is refused (local.Backend), never cut here past the bound.
+const MaxRepos = 256
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
