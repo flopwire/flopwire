@@ -804,6 +804,12 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	case busproto.CodeWithheldSession:
 		e.Fix = "send it without that ref (or recipient): a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
 		e.Example = st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
+		if strings.HasPrefix(be.Detail, "to ") {
+			// The recipient is the withheld session: naming it again would
+			// be refused again.
+			e.Fix = "message another session or a person: a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
+			e.Example = st.cmd("flopwire peers", "flopwire_peers") + " lists the sessions you can message"
+		}
 	case busproto.CodeWithheldRepo:
 		e.Fix, e.Example = withheldRepoFix(st), st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
 	case busproto.CodeSessionNotOnDevice:

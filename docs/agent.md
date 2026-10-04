@@ -957,7 +957,9 @@ parent session, and the reply goes to the parent session.
 A session that a path rule keeps off the server cannot send. The agent
 refuses the request before anything leaves the device. The agent also
 refuses a send whose recipient or ref names such a session
-(`withheld_session`).
+(`withheld_session`). The agent does not check the message text: a
+withheld session id written in the text reaches the server. Do not write
+one there.
 
 A new session can send before the agent has indexed it, or before its
 transcript names its directory. The agent then indexes the session and
