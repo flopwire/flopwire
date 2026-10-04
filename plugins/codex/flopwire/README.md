@@ -19,8 +19,11 @@ The plugin connects Codex to Flopwire. It adds these parts:
 If `flopwire` is not on `PATH`, or is too old to know `flopwire hook`, the
 hooks do nothing: `|| true` keeps Codex from reporting a failed hook. If
 the agent is not running, the hooks print nothing and the messaging tools
-return `agent_not_running`. If the agent has never run on this device, the
-search tools return "no index yet".
+return `agent_not_running`. After enrollment, the search tools use the shared
+server by default and need no local index. Before enrollment, they use the
+local index and return "no index yet" until the agent builds it. CLI queries
+can use `--local` to select this device. A server failure returns an error;
+it does not switch to local search.
 
 ## Install
 

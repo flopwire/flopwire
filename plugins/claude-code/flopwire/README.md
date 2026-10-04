@@ -34,9 +34,11 @@ Code shows a non-blocking hook error that says to run
 `flopwire setup --check`. That command names the commands the binary lacks
 and both versions. A hook never exits 2, so it never blocks a prompt or a
 stop. If the agent is not running, the hooks print nothing and the
-messaging tools return `agent_not_running`. If the agent has never run,
-`flopwire mcp` creates an empty index and the search tools say that
-nothing is indexed yet.
+messaging tools return `agent_not_running`. After enrollment, the search tools
+use the shared server by default and need no local index. Before enrollment,
+they use the local index and report when it has no transcripts. CLI queries
+can use `--local` to select this device. A server failure returns an error;
+it does not switch to local search.
 
 ## Install
 
