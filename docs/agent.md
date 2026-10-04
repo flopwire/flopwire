@@ -377,6 +377,12 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
+The source's Claude Code marketplace must be named `flopwire`. When it
+has another name, Claude Code adds the marketplace under that name.
+setup names it in `done`, sets `error`, and installs nothing from it.
+setup does not remove it. Run `claude plugin marketplace remove NAME`
+to remove it.
+
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace
 repository, Devin 3000.10.21 and later recognizes the marketplace and
@@ -420,6 +426,62 @@ run in the same Devin session.
 
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
 with the plugin.
+
+### Test a Claude Code install in a scratch configuration
+
+Use this procedure to test `flopwire setup` at user scope without a
+change to your own Claude Code configuration. It works on macOS, where
+Claude Code keeps its login in the keychain.
+
+A scratch `CLAUDE_CONFIG_DIR` alone does not log in. Claude Code then
+looks for a keychain item with another name, and prints
+`Not logged in · Please run /login`. `CLAUDE_CODE_OAUTH_TOKEN` supplies
+the login. Do not copy any files from `~/.claude`.
+
+1. Make an empty directory for the scratch configuration.
+2. Read the access token from the keychain item
+   `Claude Code-credentials` (`security find-generic-password -s
+   "Claude Code-credentials" -w`, field `claudeAiOauth.accessToken`).
+   Keep it in a shell variable. Do not write it to a file.
+3. Set `CLAUDE_CONFIG_DIR` to the scratch directory and
+   `CLAUDE_CODE_OAUTH_TOKEN` to the token.
+4. Set `FLOPWIRE_CONFIG` and `FLOPWIRE_INDEX` to paths in scratch.
+5. Set `PATH` to a directory that holds only `claude`, `flopwire` and
+   `git`, then `/usr/bin:/bin`. setup then finds no other harness.
+6. Run `flopwire setup --source <checkout>`, then
+   `flopwire setup --check`.
+7. Run `claude -p --setting-sources user`. Ask the model to quote the
+   hook output and to list the `flopwire` tools.
+8. Run `flopwire setup --remove`, then `flopwire setup --check`.
+9. Delete the scratch directory.
+
+To prove that the hooks reach the model, put a `flopwire` script first
+on `PATH` for step 7. For `flopwire hook`, the script prints
+`{"hookSpecificOutput":{"hookEventName":EV,"additionalContext":MARKER}}`
+on `SessionStart` and `PostToolUse`. For every other command it runs
+the real `flopwire`.
+
+What was verified, with Claude Code 2.1.289 on macOS 26 on 2026-10-04:
+
+- `flopwire setup` with a local checkout as the source added the
+  marketplace and installed `flopwire@flopwire` at user scope. Claude
+  Code wrote `extraKnownMarketplaces` and `enabledPlugins` to the
+  scratch `settings.json`. `--check` reported the plugin installed and
+  enabled.
+- `claude -p --model haiku --setting-sources user` with a marker
+  script quoted the `SessionStart` and `PostToolUse` markers. It listed
+  the seven `mcp__plugin_flopwire_flopwire__*` tools and the
+  `flopwire:messaging` skill. The same prompt with
+  `--setting-sources project` saw no marker and no tool, so the user
+  settings loaded the plugin.
+- `--remove` uninstalled the plugin and removed the marketplace, and
+  `--check` then reported it not installed.
+- A source whose `marketplace.json` names another marketplace: setup
+  reported the name that Claude Code added in `done`, set `error`, and
+  installed nothing.
+- `shasum` of `~/.claude/settings.json` and of
+  `installed_plugins.json` and `known_marketplaces.json` in
+  `~/.claude/plugins` was the same before and after.
 
 ## Connect the harness hooks
 
