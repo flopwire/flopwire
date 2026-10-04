@@ -1502,3 +1502,24 @@ func TestSkewIgnoresASlowAnswer(t *testing.T) {
 	expect("s4", 20*time.Minute, 0)
 	expect("s4", 5*time.Minute, 1)
 }
+
+// A login that lands while NoDevice reads the old credential still
+// resumes the bus: the stop remembers the credential NoDevice judged, not
+// the newer one (issue #71).
+func TestNoDeviceRacingALogin(t *testing.T) {
+	srv := newFakeServer()
+	var key atomic.Value
+	key.Store("legacy")
+	cfg := testConfig(srv, nil)
+	cfg.Connect = func() (Server, string) { return srv, key.Load().(string) }
+	cfg.NoDevice = func() string {
+		if key.Load().(string) == "legacy" {
+			key.Store("device") // flopwire login saves right after the read
+			return "run flopwire login"
+		}
+		return ""
+	}
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), cfg, &presenceSrc{})
+	run(t, b)
+	waitFor(t, "a poll with the new credential", func() bool { return srv.pollCount() > 0 })
+}
