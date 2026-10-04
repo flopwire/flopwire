@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -248,7 +249,7 @@ func TestPresenceDevinOneProcessSeveralSessions(t *testing.T) {
 	f.a.procStart = func(int) (time.Time, bool) { return started, true }
 	var open []string
 	lsofCalls := 0
-	f.a.openFiles = func(p int) []string {
+	f.a.openFiles = func(_ context.Context, p int) []string {
 		lsofCalls++
 		if p != pid {
 			return nil
@@ -287,6 +288,27 @@ func TestPresenceDevinOneProcessSeveralSessions(t *testing.T) {
 	open = nil
 	if r, e := live(); !r || !e {
 		t.Fatalf("open files unknown: running %v, ended %v", r, e)
+	}
+	// lsof hangs: the presence check does not wait past its budget, and
+	// the locks stand.
+	f.a.openFiles = func(ctx context.Context, _ int) []string {
+		lsofCalls++
+		<-ctx.Done()
+		return nil
+	}
+	began := time.Now()
+	if r, e := live(); !r || !e {
+		t.Fatalf("open files cut off: running %v, ended %v", r, e)
+	}
+	if d := time.Since(began); d > devinOpenFilesBudget+time.Second {
+		t.Fatalf("a hung lsof held presence for %s", d)
+	}
+	f.a.openFiles = func(_ context.Context, p int) []string {
+		lsofCalls++
+		if p != pid {
+			return nil
+		}
+		return open
 	}
 	// The session was deleted from the store, its lock file kept.
 	if _, err := db.Exec(`DELETE FROM sessions WHERE id = ?`, ended); err != nil {

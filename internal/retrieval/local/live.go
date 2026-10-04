@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -145,8 +146,8 @@ func IsDevinProcess(name string) bool {
 }
 
 // OpenFiles lists the files pid has open (lsof on macOS, /proc on Linux),
-// or nil when the process table cannot tell.
-func OpenFiles(pid int) []string { return openFiles(pid) }
+// or nil when the process table cannot tell by ctx's deadline.
+func OpenFiles(ctx context.Context, pid int) []string { return openFiles(ctx, pid) }
 
 // ProcName is the name of the program pid runs, or "" when the process
 // table does not have it.

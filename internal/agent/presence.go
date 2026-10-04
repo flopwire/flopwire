@@ -259,11 +259,15 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 	if err != nil {
 		inStore = nil // unknown: every lock stands
 	}
+	// lsof can be slow or missing: one budget bounds the reads, and a pid
+	// not read by then is unknown.
+	octx, ocancel := context.WithTimeout(context.Background(), devinOpenFilesBudget)
+	defer ocancel()
 	for pid, sids := range perPid {
 		if len(sids) < 2 {
 			continue
 		}
-		files := a.openFiles(pid)
+		files := a.openFiles(octx, pid)
 		if len(files) == 0 {
 			continue // unknown
 		}
@@ -287,6 +291,10 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 		h.reg.Held[devicebus.Ref{Agent: harness, Session: id}] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", c.pid), Start: c.started}
 	}
 }
+
+// devinOpenFilesBudget bounds the open-file reads (lsof, about 30 ms a
+// process) of one presence check, well inside its 2s tick.
+const devinOpenFilesBudget = 500 * time.Millisecond
 
 // devinStoreBudget bounds each read of Devin's store for presence.
 const devinStoreBudget = 200 * time.Millisecond

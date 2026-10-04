@@ -1169,7 +1169,9 @@ again after a few seconds. `flopwire send` retries once by itself.
   either.
 - A Devin session held by a `devin acp` process with several sessions
   costs one `lsof` call (about 30 ms) for that process at each presence
-  check. A process with one session needs none.
+  check. A process with one session needs none. The calls of one check
+  stop after 500 ms. When `lsof` is missing, fails or is stopped, the
+  check keeps every lock of that process.
 - A background Devin subagent fires a `Stop` hook when it ends. That
   `Stop` reads as the session's own and makes the session idle, also
   while the session's own turn still runs. A message waits for the

@@ -25,12 +25,16 @@ func procInfo(pid int) (int, string, bool) {
 	return int(kp.Eproc.Ppid), string(comm), true
 }
 
-// openFiles lists the regular files pid has open, via lsof.
-func openFiles(pid int) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+// openFiles lists the files pid has open, via lsof, within 3s and by
+// ctx. An lsof that fails or is cut off gives nil: what it printed may be
+// part of the list.
+func openFiles(ctx context.Context, pid int) []string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-n", "-P", "-p", strconv.Itoa(pid), "-Fn").Output()
-	if err != nil && len(out) == 0 {
+	cmd := exec.CommandContext(ctx, "lsof", "-n", "-P", "-p", strconv.Itoa(pid), "-Fn")
+	cmd.WaitDelay = 100 * time.Millisecond
+	out, err := cmd.Output()
+	if err != nil {
 		return nil
 	}
 	var files []string

@@ -2,9 +2,11 @@
 
 package local
 
+import "context"
+
 func procInfo(int) (int, string, bool) { return 0, "", false }
 
-func openFiles(int) []string { return nil }
+func openFiles(context.Context, int) []string { return nil }
 
 func codexOpenFiles() []string { return nil }
 
