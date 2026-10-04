@@ -10,8 +10,9 @@ package main
 // log of what each hook printed. It starts two headless sessions there (a
 // sender and a recipient, probe_drivers.go), sends real messages from one
 // to the other through the device agent's bus, and judges each case
-// (probe_verdict.go) by the hook log and by the model quoting the
-// message's marker. It never writes the user's harness configuration:
+// (probe_verdict.go) by the hook log and by the message's wrapper in the
+// recipient's transcript (probe_wrapper.go); the model quoting the
+// message's marker is corroboration only. It never writes the user's harness configuration:
 // Claude Code runs with --setting-sources project; Codex and Devin run in
 // scratch homes holding a copy of their login file.
 
@@ -1090,17 +1091,19 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 		if err != nil {
 			return errResult(err)
 		}
+		d := r.delivered(ctx, r.recv.ID(), sent.ID)
 		if c == caseFraming {
-			return verdictFraming(reply, sent.ID, r.sender.ID(), intent, m).result(res)
+			want := framingWant{id: sent.ID, from: r.sender.ID(), agent: string(r.name), sender: string(busproto.SenderOwn), intent: intent, marker: m}
+			return verdictFraming(d, reply, want).result(res)
 		}
-		return verdictPromptSubmit(r.tapSince(start), r.recv.ID(), sent.ID, m, reply).result(res)
+		return verdictPromptSubmit(r.tapSince(start), r.recv.ID(), sent.ID, m, reply, d).result(res)
 
 	case caseMidTurn:
 		start := time.Now().UnixMilli()
 		prompt := "Run the shell command `sleep 8`. When it finishes, run the shell command `echo probe-second`. Then, without running anything else: " + quoteTags + " Also say after which command each tag appeared."
 		trigger := func(e tapEntry) bool { return e.Event == "PreToolUse" && e.Session == r.recv.ID() && e.AgentID == "" }
 		return r.sendDuring(tctx, res, start, m, prompt, trigger, func(entries []tapEntry, id, reply string, sentAt int64) verdict {
-			return verdictMidTurn(entries, r.recv.ID(), id, m, reply, sentAt)
+			return verdictMidTurn(entries, r.recv.ID(), id, m, reply, sentAt, r.delivered(ctx, r.recv.ID(), id))
 		})
 
 	case caseSubagent:
@@ -1134,7 +1137,7 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 		}
 		return r.sendDuring(tctx, res, start, m, prompt, trigger, func(entries []tapEntry, id, reply string, _ int64) verdict {
 			seen, path, err := r.subagentTranscript(entries, m)
-			return verdictSubagent(entries, r.recv.ID(), id, m, reply, seen, path, err)
+			return verdictSubagent(entries, r.recv.ID(), id, m, reply, r.delivered(ctx, r.recv.ID(), id), seen, path, err)
 		})
 
 	case caseGuardian:
@@ -1301,7 +1304,11 @@ func (r *harnessRun) guardian(ctx context.Context, res probeResult, m string) pr
 		res.Evidence = s0.err.Error()
 		return res
 	}
-	return verdictGuardian(r.tapSince(start), g.ID(), s0.id, m, reply, rs, re).result(res)
+	var d delivery
+	if s0.id != "" {
+		d = r.delivered(ctx, g.ID(), s0.id)
+	}
+	return verdictGuardian(r.tapSince(start), g.ID(), s0.id, m, reply, d, rs, re).result(res)
 }
 
 // --- report ---

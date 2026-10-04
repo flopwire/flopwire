@@ -106,13 +106,33 @@ func clip(s string, n int) string {
 	return s
 }
 
-// quoted checks that the model's reply quotes the marker.
-func (v *verdict) quoted(reply, marker string) {
+// reached checks that the message reached the model: the recipient's
+// transcript holds its wrapper, with the marker, in a row the harness
+// records as hook context (probe_wrapper.go). The model quoting the marker
+// is corroboration, shown as evidence: a cheap model that answers the
+// message instead of quoting it does not turn a delivery into a FAIL.
+func (v *verdict) reached(d delivery, id, marker, reply string) {
+	switch {
+	case d.err != nil:
+		v.fail("cannot read the transcript %s: %v", d.where, d.err)
+	case d.w == nil:
+		v.fail("no hook context in the transcript %s holds %s's wrapper", d.where, id)
+	case !strings.Contains(d.w.body, marker):
+		v.fail("%s's wrapper in the transcript does not hold %s", id, marker)
+	default:
+		v.fact("transcript hook context holds %s with %s", id, marker)
+	}
+	v.corroborate(reply, marker)
+}
+
+// corroborate records whether the model quoted the marker. It never fails
+// a case.
+func (v *verdict) corroborate(reply, marker string) {
 	if strings.Contains(reply, marker) {
 		v.fact("model quoted %s", marker)
 		return
 	}
-	v.fail("model did not quote %s (reply: %q)", marker, clip(oneLine(reply), 160))
+	v.fact("model did not quote %s (reply: %q)", marker, clip(oneLine(reply), 80))
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -145,8 +165,9 @@ func checkDeliveredOnce(results []probeResult, entries []tapEntry) []probeResult
 }
 
 // verdictPromptSubmit: a message queued before the prompt is printed by
-// the session's UserPromptSubmit hook, once, and the model quotes it.
-func verdictPromptSubmit(entries []tapEntry, session, id, marker, reply string) verdict {
+// the session's UserPromptSubmit hook, once, and reaches the model: its
+// wrapper is in the transcript's hook context (verdict.reached).
+func verdictPromptSubmit(entries []tapEntry, session, id, marker, reply string, d delivery) verdict {
 	var v verdict
 	ps := printers(entries, id)
 	switch {
@@ -159,19 +180,19 @@ func verdictPromptSubmit(entries []tapEntry, session, id, marker, reply string) 
 	default:
 		v.fact("UserPromptSubmit printed %s", id)
 	}
-	v.quoted(reply, marker)
+	v.reached(d, id, marker, reply)
 	return v
 }
 
 // verdictMidTurn: a message queued while a tool runs is printed by the
-// session's next PostToolUse, before the turn's Stop, and the model quotes
-// it.
-func verdictMidTurn(entries []tapEntry, session, id, marker, reply string, sentAt int64) verdict {
+// session's next PostToolUse, before the turn's Stop, and reaches the
+// model (verdict.reached).
+func verdictMidTurn(entries []tapEntry, session, id, marker, reply string, sentAt int64, d delivery) verdict {
 	var v verdict
 	ps := printers(entries, id)
 	if len(ps) != 1 {
 		v.fail("%s printed %d times (%s), want once", id, len(ps), describeAll(ps))
-		v.quoted(reply, marker)
+		v.reached(d, id, marker, reply)
 		return v
 	}
 	p := ps[0]
@@ -193,7 +214,7 @@ func verdictMidTurn(entries []tapEntry, session, id, marker, reply string, sentA
 	default:
 		v.fact("%s printed %s, %s before the turn's Stop", describe(p), id, time.Duration(stop.At-p.Done)*time.Millisecond)
 	}
-	v.quoted(reply, marker)
+	v.reached(d, id, marker, reply)
 	return v
 }
 
@@ -241,16 +262,16 @@ func (w subagentWindow) inside(e tapEntry) bool {
 // verdictSubagent: a message queued while a subagent runs is printed once,
 // by a hook of the session itself after the subagent returned, never by a
 // hook inside the subagent; the subagent's transcript does not hold it;
-// the model quotes it. subSeen is whether the subagent's transcript holds
+// it reaches the model (verdict.reached). subSeen is whether the subagent's transcript holds
 // the marker, nil when the harness has no transcript file to check;
 // subErr is why the transcript could not be read, which fails the case:
 // an unread transcript proves nothing.
-func verdictSubagent(entries []tapEntry, session, id, marker, reply string, subSeen *bool, subPath string, subErr error) verdict {
+func verdictSubagent(entries []tapEntry, session, id, marker, reply string, d delivery, subSeen *bool, subPath string, subErr error) verdict {
 	var v verdict
 	w, ok := findSubagent(entries, session)
 	if !ok {
 		v.fail("no subagent ran to completion (no SubagentStart/SubagentStop or run_subagent pair in the hooks)")
-		v.quoted(reply, marker)
+		v.reached(d, id, marker, reply)
 		return v
 	}
 	var inSub int
@@ -285,7 +306,7 @@ func verdictSubagent(entries []tapEntry, session, id, marker, reply string, subS
 	default:
 		v.fact("subagent transcript clean")
 	}
-	v.quoted(reply, marker)
+	v.reached(d, id, marker, reply)
 	return v
 }
 
@@ -313,49 +334,84 @@ func verdictIdle(hooksBefore int, during []tapEntry, harnessTurn bool, state, id
 	return v
 }
 
-// framingLine finds the reply's line for the message: one holding the id
-// attribute's value.
+// framingAttr reads one attribute of the model's quote of a wrapper.
 var framingAttr = regexp.MustCompile(`(?i)\b(id|from|intent|marker)\s*[=:]\s*["']?([^\s"',;]+)`)
 
-// verdictFraming: the model can quote the wrapper's sender, intent and
-// message id, not just the marker.
-func verdictFraming(reply, id, from, intent, marker string) verdict {
+// framingWant is what the framing case's wrapper must carry: the sent
+// message's attributes, in the order the evidence names them.
+type framingWant struct {
+	id, from, agent, sender, intent, marker string
+}
+
+// verdictFraming: the <flopwire-message> wrapper reached the model intact.
+// The recipient's transcript holds it in hook context, closed, with the
+// sent message's id, sender session, harness, sender relation and intent,
+// and the marker in its text. The model's quote of those attributes is
+// corroboration only.
+func verdictFraming(d delivery, reply string, want framingWant) verdict {
 	var v verdict
+	switch {
+	case d.err != nil:
+		v.fail("cannot read the transcript %s: %v", d.where, d.err)
+	case d.w == nil:
+		v.fail("no hook context in the transcript %s holds %s's wrapper", d.where, want.id)
+	default:
+		for _, kv := range [][2]string{{"id", want.id}, {"from", want.from}, {"agent", want.agent}, {"sender", want.sender}, {"intent", want.intent}} {
+			if got, ok := d.w.attrs[kv[0]]; !ok || got != kv[1] {
+				v.fail("wrapper %s=%q, want %q", kv[0], got, kv[1])
+			}
+		}
+		if !d.w.closed {
+			v.fail("the wrapper of %s is not closed", want.id)
+		}
+		if !strings.Contains(d.w.body, want.marker) {
+			v.fail("the wrapper of %s does not hold %s", want.id, want.marker)
+		}
+		if len(v.fails) == 0 {
+			v.fact("transcript hook context holds the wrapper: id, from=%s, agent=%s, sender=%s, intent=%s and the marker", clip(want.from, 8), want.agent, want.sender, want.intent)
+		}
+	}
+	v.fact("%s", framingQuote(reply, want))
+	return v
+}
+
+// framingQuote describes the model's quote of the wrapper: corroboration,
+// never a reason to fail.
+func framingQuote(reply string, want framingWant) string {
 	line := ""
 	for l := range strings.SplitSeq(reply, "\n") {
-		if strings.Contains(l, id) {
+		if strings.Contains(l, want.id) {
 			line = l
 			break
 		}
 	}
 	if line == "" {
-		v.fail("model did not quote the message id %s (reply: %q)", id, clip(oneLine(reply), 200))
-		return v
+		return fmt.Sprintf("model did not quote the message id (reply: %q)", clip(oneLine(reply), 80))
 	}
 	got := map[string]string{}
 	for _, m := range framingAttr.FindAllStringSubmatch(line, -1) {
 		got[strings.ToLower(m[1])] = strings.Trim(m[2], "`.")
 	}
-	want := map[string]string{"id": id, "from": from, "intent": intent, "marker": marker}
-	for _, k := range []string{"id", "from", "intent", "marker"} {
-		if got[k] != want[k] {
-			v.fail("%s: quoted %q, want %q", k, got[k], want[k])
+	var off []string
+	for _, kv := range [][2]string{{"id", want.id}, {"from", want.from}, {"intent", want.intent}, {"marker", want.marker}} {
+		if got[kv[0]] != kv[1] {
+			off = append(off, fmt.Sprintf("%s=%q", kv[0], got[kv[0]]))
 		}
 	}
-	if len(v.fails) == 0 {
-		v.fact("model quoted id, from=%s, intent=%s and the marker", clip(from, 8), intent)
+	if len(off) > 0 {
+		return "model's quote differs: " + strings.Join(off, ", ")
 	}
-	return v
+	return "model quoted id, from, intent and the marker"
 }
 
 // verdictGuardian: a message queued during a Codex auto-review pass is
 // not taken by a hook during the pass (the reviewer runs in its own
-// ephemeral thread), and reaches the session once.
-func verdictGuardian(entries []tapEntry, session, id, marker, reply string, start, end int64) verdict {
+// ephemeral thread), and reaches the session once (verdict.reached).
+func verdictGuardian(entries []tapEntry, session, id, marker, reply string, d delivery, start, end int64) verdict {
 	var v verdict
 	if start == 0 {
 		v.fail("no auto-review pass ran (the model did not ask for an escalation)")
-		v.quoted(reply, marker)
+		v.reached(d, id, marker, reply)
 		return v
 	}
 	var during []tapEntry
@@ -378,6 +434,6 @@ func verdictGuardian(entries []tapEntry, session, id, marker, reply string, star
 	default:
 		v.fact("the session's %s printed %s after the review", describe(ps[0]), id)
 	}
-	v.quoted(reply, marker)
+	v.reached(d, id, marker, reply)
 	return v
 }
