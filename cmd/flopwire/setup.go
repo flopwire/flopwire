@@ -211,6 +211,9 @@ type harnessReport struct {
 	Skipped string `json:"skipped,omitempty"`
 	// HookTrust is Codex's trust state for the plugin's hooks.
 	HookTrust *hookTrustReport `json:"hook_trust,omitempty"`
+	// Note says how setup learned the state it reports, when that limits
+	// the report.
+	Note string `json:"note,omitempty"`
 }
 
 // Setup modes.
@@ -1139,6 +1142,9 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		}
 		if h.Skipped != "" {
 			fmt.Fprintf(&b, "  skipped: %s\n", h.Skipped)
+		}
+		if h.Note != "" {
+			fmt.Fprintf(&b, "  note: %s\n", h.Note)
 		}
 		if len(h.Done) == 0 && h.Error == "" && h.Skipped == "" && rep.Mode != setupCheck {
 			b.WriteString("  done: nothing to change\n")

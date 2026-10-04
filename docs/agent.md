@@ -226,10 +226,26 @@ The report has these parts:
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
 | `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
+| `harnesses[].note` | How setup learned what it reports, when that limits the report. |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
 Use `--check` to report and change nothing. Use `--remove` to uninstall.
+
+For Codex, `--check` runs only `codex plugin marketplace list` and
+`codex plugin list --marketplace flopwire`, which read local state. It
+does not start `codex app-server`: the app server upgrades the
+configured plugin marketplaces and fetches the plugin catalog in the
+background when it starts. Instead, `--check` reads Codex's files in
+`$CODEX_HOME` (default `~/.codex`): `config.toml`, `hooks.json` and the
+plugin's cached hooks file. It computes each plugin hook's hash as Codex
+0.160.0 does and compares it with the `trusted_hash` that Codex stored
+when you approved the hook. When Codex is newer than 0.160.0 and a hook
+looks unapproved, `--check` warns that Codex may have changed its hash and
+says to run `flopwire setup`, which asks Codex. It looks for older manual Flopwire entries in
+the user config only, not in a project's `.codex` folder. The Codex entry
+says this in `note`. `flopwire setup` without `--check` asks the app
+server.
 Run `flopwire setup --help` for every flag.
 
 ### Set up a device (for an agent)
@@ -424,6 +440,31 @@ directory, so edits apply in the next session.
 Devin reads hooks from Claude Code's settings files, but not from Claude
 Code's plugins. The Claude Code plugin and the Devin plugin therefore never
 run in the same Devin session.
+
+Installing the Codex plugin from GitHub was checked with Codex 0.160.0 on
+2026-10-04, in an empty `CODEX_HOME`, with `flopwire` and `codex` the only
+harness commands on `PATH`:
+
+```sh
+flopwire setup --text
+```
+
+The result:
+
+- setup ran `codex plugin marketplace add flopwire/flopwire --json
+  --sparse .agents/plugins --sparse plugins/codex`, then
+  `codex plugin add flopwire@flopwire --json`.
+- `config.toml` got `[marketplaces.flopwire]` with
+  `source_type = "git"`, `source = "https://github.com/flopwire/flopwire.git"`
+  and both sparse paths, and `[plugins."flopwire@flopwire"]` with
+  `enabled = true`.
+- Codex copied the plugin to
+  `plugins/cache/flopwire/flopwire/local`, and listed five plugin hooks,
+  all waiting for review.
+- A second `flopwire setup` ran `codex plugin marketplace upgrade
+  flopwire` and reinstalled the plugin. It reported nothing to change.
+- `flopwire setup --check` reported the plugin installed and enabled, and
+  the five hooks waiting for approval.
 
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
 with the plugin. To check them by hand, see
@@ -1034,6 +1075,16 @@ delivers the messages. A message that a subagent sends goes out as its
 parent session, and the reply goes to the parent session. The parent's
 human does not see the call. This is the same on Claude Code, Codex,
 Devin CLI and opencode (decided 2026-10-04).
+
+In Codex, a subagent's `flopwire_send` call names the subagent's own
+thread in `_meta.threadId`. The agent follows the index's parent links
+from that thread to the top-level session and sends as that session.
+Checked live with Codex 0.160.0 on 2026-10-04: a `codex exec` session
+spawned one subagent, and the subagent called `flopwire_send`. The receipt
+and the recipient's inbox showed the parent session as the sender. A
+message for the parent, queued while the subagent ran, printed in none of
+the subagent's seven hooks (one `UserPromptSubmit` and six
+`PostToolUse`). It printed once, at the parent's next `PostToolUse`.
 
 A session that a path rule keeps off the server cannot send. The agent
 refuses the request before anything leaves the device. The agent also

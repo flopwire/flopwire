@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -29,6 +31,10 @@ type fakeCodexState struct {
 	ManualHooks []codexHook `json:"manual_hooks,omitempty"`
 	// Layers is config/read's layers.
 	Layers json.RawMessage `json:"layers,omitempty"`
+	// ExtraConfig starts the config.toml the fake writes.
+	ExtraConfig string `json:"extra_config,omitempty"`
+	// Version is what codex --version prints (default codex-cli 0.159.3).
+	Version string `json:"version,omitempty"`
 	// Fail makes a command ("plugin add", "marketplace add", "app-server",
 	// …) exit 1 with this message on stderr.
 	Fail map[string]string `json:"fail,omitempty"`
@@ -40,7 +46,83 @@ type fakeCodexMarketplace struct {
 	Source     string `json:"source"`
 }
 
-var codexPluginEvents = []string{"postToolUse", "sessionStart", "userPromptSubmit", "stop"}
+var codexPluginEvents = []string{"postToolUse", "sessionStart", "userPromptSubmit", "stop", "sessionEnd"}
+
+// codexHashCapturedVersion is the Codex release codex0160HookHashes came
+// from. It must equal codexHashVersion, the release --check names.
+const codexHashCapturedVersion = "0.160.0"
+
+// codex0160HookHashes are the hashes codex 0.160.0's hooks/list gave the
+// plugin's hooks (currentHash), captured live from a scratch CODEX_HOME
+// with plugins/codex/flopwire/hooks/hooks.json as of this commit. Codex
+// writes them to config.toml as trusted_hash when you trust a hook.
+var codex0160HookHashes = map[string]string{
+	"postToolUse":      "sha256:3d4deac7e6068391f18636c547475ec237763fe3f0f602c7ea54b778e094a2d7",
+	"sessionStart":     "sha256:e8fe555d794ce3d1b8333f0e12033db0ac10536b59fd0aedead0964d81ca08e3",
+	"sessionEnd":       "sha256:abb24f1d1cf8dba2e673141d2bd7672457199b468a753f092c17309acf1bb176",
+	"userPromptSubmit": "sha256:77289e39427cb5248871c51f4560862fc5c7dd46fd67b62afd65414c0efa8776",
+	"stop":             "sha256:8359d1f55bef687b7626f2f28229462c397ace9b1f35a2595a2d516f4e38191a",
+}
+
+// writeFakeCodexHome writes what Codex keeps on disk for st: config.toml
+// (marketplaces, installed plugins, hooks.state) and, for an installed
+// flopwire plugin, its cached hooks file and manifest.
+func writeFakeCodexHome(st fakeCodexState) error {
+	home, src := os.Getenv("CODEX_HOME"), os.Getenv("FAKE_CODEX_PLUGIN")
+	var b strings.Builder
+	b.WriteString(st.ExtraConfig + "\n") // top-level keys come before tables
+	for _, m := range st.Marketplaces {
+		fmt.Fprintf(&b, "[marketplaces.%s]\nsource_type = %q\nsource = %q\n\n", m.Name, m.SourceType, m.Source)
+	}
+	ids := make([]string, 0, len(st.Plugins))
+	for id := range st.Plugins {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		fmt.Fprintf(&b, "[plugins.%q]\nenabled = %v\n\n", id, st.Plugins[id])
+	}
+	for _, ev := range codexPluginEvents {
+		ts := st.Trust[ev]
+		if ts == "" || ts == "untrusted" {
+			continue
+		}
+		label := strings.ToLower(regexp.MustCompile(`([A-Z])`).ReplaceAllString(ev, "_$1"))
+		fmt.Fprintf(&b, "[hooks.state.\"flopwire@flopwire:hooks/hooks.json:%s:0:0\"]\n", label)
+		hash := codex0160HookHashes[ev]
+		if ts == "modified" {
+			hash = "sha256:0123"
+		}
+		fmt.Fprintf(&b, "trusted_hash = %q\n", hash)
+		if ts == "disabled" {
+			b.WriteString("enabled = false\n")
+		}
+		b.WriteString("\n")
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(b.String()), 0o600); err != nil {
+		return err
+	}
+	if _, ok := st.Plugins[codexPlugin]; !ok || src == "" {
+		return nil
+	}
+	cache := filepath.Join(home, "plugins", "cache", "flopwire", "flopwire", "local")
+	for _, f := range []string{"hooks/hooks.json", ".codex-plugin/plugin.json"} {
+		raw, err := os.ReadFile(filepath.Join(src, f))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(cache, f)), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(cache, f), raw, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // fakeCodex plays `codex plugin …` and `codex app-server` against the
 // state file and appends each call to FAKE_CODEX_LOG.
@@ -55,18 +137,22 @@ func fakeCodex(args []string) int {
 	if len(args) == 0 || args[0] != "app-server" {
 		logCall(strings.Join(args, " "))
 	}
-	if len(args) == 1 && args[0] == "--version" {
-		fmt.Println("codex-cli 0.159.3")
-		return 0
-	}
 	var st fakeCodexState
 	raw, _ := os.ReadFile(statePath)
 	_ = json.Unmarshal(raw, &st)
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Println(cmp.Or(st.Version, "codex-cli 0.159.3"))
+		return 0
+	}
 	save := func() {
 		b, _ := json.Marshal(st)
 		_ = os.WriteFile(statePath, b, 0o600)
+		_ = writeFakeCodexHome(st)
 	}
 	if len(args) == 1 && args[0] == "app-server" {
+		// Every launch is logged: --check must not start the app server,
+		// whose startup refreshes Codex's marketplaces in the background.
+		logCall("app-server launched")
 		if msg, ok := st.Fail["app-server"]; ok {
 			fmt.Fprintln(os.Stderr, msg)
 			return 1
@@ -82,11 +168,15 @@ func fakeCodex(args []string) int {
 		verb, rest = "marketplace "+args[2], args[3:]
 	}
 	var pos []string
+	onlyMarketplace := ""
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--json":
 		case "--sparse", "--ref":
 			i++
+		case "--marketplace":
+			i++
+			onlyMarketplace = rest[i]
 		default:
 			pos = append(pos, rest[i])
 		}
@@ -119,6 +209,9 @@ func fakeCodex(args []string) int {
 			_, mk, _ := strings.Cut(id, "@")
 			if !slices.ContainsFunc(st.Marketplaces, func(m fakeCodexMarketplace) bool { return m.Name == mk }) {
 				continue // Codex lists plugins by marketplace
+			}
+			if onlyMarketplace != "" && mk != onlyMarketplace {
+				continue
 			}
 			inst = append(inst, map[string]any{"pluginId": id, "marketplaceName": mk, "version": "local", "installed": true, "enabled": st.Plugins[id]})
 		}
@@ -260,12 +353,16 @@ func newCodexFixture(t *testing.T, withClaude bool) *codexFixture {
 	t.Setenv("FAKE_CODEX_STATE", c.state)
 	t.Setenv("FAKE_CODEX_LOG", c.log)
 	t.Setenv("CODEX_HOME", c.home)
+	t.Setenv("FAKE_CODEX_PLUGIN", filepath.Join(f.repo, "plugins", "codex", "flopwire"))
 	c.setCodex(fakeCodexState{Available: "rev1"})
 	return c
 }
 
 func (c *codexFixture) setCodex(st fakeCodexState) {
 	if err := os.WriteFile(c.state, mustJSON(st), 0o600); err != nil {
+		c.t.Fatal(err)
+	}
+	if err := writeFakeCodexHome(st); err != nil {
 		c.t.Fatal(err)
 	}
 }
@@ -351,7 +448,7 @@ func TestSetupCodexInstall(t *testing.T) {
 		t.Fatalf("install: done %q todo %q", h.Done, h.Todo)
 	}
 	// Trust is pending, reported plainly, and setup does not grant it.
-	if h.HookTrust == nil || h.HookTrust.Hooks != 4 || h.HookTrust.Trusted != 0 || len(h.HookTrust.NeedReview) != 4 {
+	if h.HookTrust == nil || h.HookTrust.Hooks != 5 || h.HookTrust.Trusted != 0 || len(h.HookTrust.NeedReview) != 5 {
 		t.Fatalf("hook trust: %+v", h.HookTrust)
 	}
 	if !hasString(h.Todo, `"Hooks need review"`) || !hasString(h.Todo, "/hooks") || !hasString(h.Todo, "setup does not approve hooks for you") {
@@ -562,8 +659,17 @@ func TestSetupCodexCheckChangesNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := mutating(c.codexCalls()); len(got) != 0 {
+			calls := c.codexCalls()
+			if got := mutating(calls); len(got) != 0 {
 				t.Fatalf("--check ran %q", got)
+			}
+			// codex app-server refreshes the configured marketplaces and
+			// the plugin catalog in the background as it starts, and a
+			// plugin list without --marketplace fetches the remote catalog.
+			for _, call := range calls {
+				if strings.HasPrefix(call, "app-server") || (strings.HasPrefix(call, "plugin list") && !strings.Contains(call, "--marketplace flopwire")) {
+					t.Fatalf("--check ran codex %q, which has side effects", call)
+				}
 			}
 			if !bytes.Equal(before, mustJSON(c.getCodex())) {
 				t.Fatal("--check changed Codex")
@@ -572,7 +678,7 @@ func TestSetupCodexCheckChangesNothing(t *testing.T) {
 			if h.Installed != installed || len(h.Done) != 0 || rep.Mode != setupCheck {
 				t.Fatalf("--check: %+v", h)
 			}
-			if installed && (h.HookTrust == nil || len(h.HookTrust.NeedReview) != 4 || !hasString(h.Todo, "Hooks need review")) {
+			if installed && (h.HookTrust == nil || len(h.HookTrust.NeedReview) != 5 || !hasString(h.Todo, "Hooks need review")) {
 				t.Fatalf("--check does not report pending trust: %+v", h)
 			}
 		})
@@ -585,14 +691,14 @@ func TestSetupCodexTrustReporting(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := c.getCodex()
-	st.Trust = map[string]string{"postToolUse": "trusted", "sessionStart": "trusted", "userPromptSubmit": "modified", "stop": "trusted"}
+	st.Trust = map[string]string{"postToolUse": "trusted", "sessionStart": "trusted", "userPromptSubmit": "modified", "stop": "trusted", "sessionEnd": "trusted"}
 	c.setCodex(st)
 	rep, out, err := c.run("--check")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := c.codex(rep)
-	if h.HookTrust.Trusted != 3 || !slices.Equal(h.HookTrust.NeedReview, []string{"UserPromptSubmit"}) || !hasString(h.Todo, "trust the 1 Flopwire hooks (UserPromptSubmit") {
+	if h.HookTrust.Trusted != 4 || !slices.Equal(h.HookTrust.NeedReview, []string{"UserPromptSubmit"}) || !hasString(h.Todo, "trust the 1 Flopwire hooks (UserPromptSubmit") {
 		t.Fatalf("one modified hook: %+v %q", h.HookTrust, h.Todo)
 	}
 	_ = out
@@ -604,12 +710,12 @@ func TestSetupCodexTrustReporting(t *testing.T) {
 		t.Fatal(err)
 	}
 	h = c.codex(rep)
-	if h.HookTrust.Trusted != 4 || len(h.HookTrust.NeedReview) != 0 || hasString(h.Todo, "approve") {
+	if h.HookTrust.Trusted != 5 || len(h.HookTrust.NeedReview) != 0 || hasString(h.Todo, "approve") {
 		t.Fatalf("all trusted: %+v %q", h.HookTrust, h.Todo)
 	}
 	// --text says it too.
 	_, txt, err := c.run("--check", "--text")
-	if err != nil || !strings.Contains(txt, "  hooks: 4 of 4 trusted\n") {
+	if err != nil || !strings.Contains(txt, "  hooks: 5 of 5 trusted\n") {
 		t.Fatalf("--text: %v\n%s", err, txt)
 	}
 	// The user disabled one: a warning, not a todo.
@@ -622,9 +728,129 @@ func TestSetupCodexTrustReporting(t *testing.T) {
 	// Codex cannot answer: a warning; the install itself stands.
 	st.Fail = map[string]string{"app-server": "boom"}
 	c.setCodex(st)
-	rep, _, err = c.run("--check")
+	rep, _, err = c.run()
 	if err != nil || !hasString(c.codex(rep).Warnings, "could not ask Codex whether the plugin hooks are trusted") {
 		t.Fatalf("app-server failure: %v %+v", err, c.codex(rep))
+	}
+	// --check cannot read Codex's config: a warning too.
+	st.Fail = nil
+	st.ExtraConfig = "this is not toml\n"
+	c.setCodex(st)
+	rep, _, err = c.run("--check")
+	if err != nil || !hasString(c.codex(rep).Warnings, "could not read Codex's files to tell whether the plugin hooks are trusted") {
+		t.Fatalf("broken config.toml: %v %+v", err, c.codex(rep))
+	}
+}
+
+// TestCodexHookHashMatchesCodex: --check tells a trusted hook from a
+// changed one by computing the hash Codex stores as trusted_hash. The
+// plugin's hooks must hash to what codex 0.160.0 reported for them.
+func TestCodexHookHashMatchesCodex(t *testing.T) {
+	if codexHashVersion != codexHashCapturedVersion {
+		t.Fatalf("--check says it hashes as Codex %s, but the hashes below come from Codex %s: capture them again from codex %s app-server hooks/list", codexHashVersion, codexHashCapturedVersion, codexHashVersion)
+	}
+	events, err := readCodexHooksFile("../../plugins/codex/flopwire/hooks/hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for event, groups := range events {
+		camel := strings.ToLower(event[:1]) + event[1:]
+		want, ok := codex0160HookHashes[camel]
+		if !ok {
+			t.Fatalf("no captured hash for %s: capture it from codex app-server hooks/list", event)
+		}
+		if got := codexHookHash(event, groups[0].Matcher, groups[0].Hooks[0]); got != want {
+			t.Errorf("%s: hash %s, codex says %s", event, got, want)
+		}
+		n++
+	}
+	if n != len(codex0160HookHashes) {
+		t.Fatalf("hashed %d hooks, captured %d", n, len(codex0160HookHashes))
+	}
+	// Codex's normalization: defaults and limits do not change the hash,
+	// a matcher on an event without one is dropped.
+	five, sixHundred, two := int64(5), int64(600), int64(2500)
+	star := "*"
+	base := codexHookHandler{Type: "command", Command: "x"}
+	withDefault := base
+	withDefault.Timeout = &sixHundred
+	if codexHookHash("PostToolUse", nil, base) != codexHookHash("PostToolUse", nil, withDefault) {
+		t.Error("the default timeout changed the hash")
+	}
+	withLimit := base
+	withLimit.AdditionalContextLimit = &two
+	if codexHookHash("PostToolUse", nil, base) != codexHookHash("PostToolUse", nil, withLimit) {
+		t.Error("the default additionalContextLimit changed the hash")
+	}
+	if codexHookHash("Stop", &star, base) != codexHookHash("Stop", nil, base) {
+		t.Error("a matcher on Stop changed the hash")
+	}
+	if codexHookHash("PostToolUse", &star, base) == codexHookHash("PostToolUse", nil, base) {
+		t.Error("a matcher on PostToolUse did not change the hash")
+	}
+	long := base
+	long.Timeout = &five
+	if codexHookHash("SessionEnd", nil, long) == codexHookHash("SessionEnd", nil, base) {
+		t.Error("SessionEnd: a 5 s timeout (clamped to 3) hashed like the 1 s default")
+	}
+	if codexHookHash("Nope", nil, base) != "" || codexHookHash("Stop", nil, codexHookHandler{Type: "prompt"}) != "" {
+		t.Error("hashed a hook Codex does not run")
+	}
+}
+
+// TestSetupCodexCheckReadsManualEntriesFromDisk: --check finds older
+// manual entries in the user's config.toml and hooks.json without asking
+// codex app-server.
+func TestSetupCodexCheckReadsManualEntriesFromDisk(t *testing.T) {
+	c := newCodexFixture(t, false)
+	if _, _, err := c.run(); err != nil {
+		t.Fatal(err)
+	}
+	st := c.getCodex()
+	st.ExtraConfig = `notify = ["flopwire", "agent", "flush"]
+
+[mcp_servers.flopwire]
+command = "flopwire"
+args = ["mcp"]
+
+[mcp_servers.other]
+command = "node"
+args = ["s.js"]
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "flopwire agent flush"
+`
+	c.setCodex(st)
+	if err := os.WriteFile(filepath.Join(c.home, "hooks.json"), []byte(`{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"flopwire hook"},{"type":"command","command":"echo done"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.codexCalls()
+	_, txt, err := c.run("--check", "--text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range c.codexCalls() {
+		if strings.HasPrefix(call, "app-server") {
+			t.Fatalf("--check started codex app-server")
+		}
+	}
+	for _, want := range []string{
+		`hooks.json runs "flopwire hook" on PostToolUse`,
+		`config.toml runs "flopwire agent flush" on Stop`,
+		`config.toml has notify = ["flopwire" "agent" "flush"]`,
+		`config.toml has an MCP server "flopwire" that runs flopwire mcp`,
+		"note: --check read Codex's files",
+		"did not start codex app-server",
+	} {
+		if !strings.Contains(txt, want) {
+			t.Errorf("--check --text lacks %q:\n%s", want, txt)
+		}
+	}
+	if strings.Contains(txt, "echo done") || strings.Contains(txt, `"other"`) {
+		t.Errorf("warned about an unrelated entry:\n%s", txt)
 	}
 }
 
@@ -816,5 +1042,53 @@ func TestSetupCodexOrphanedPlugin(t *testing.T) {
 	}
 	if st := c.getCodex(); len(st.Plugins) != 0 {
 		t.Fatalf("--remove left %+v", st.Plugins)
+	}
+}
+
+// TestSetupCodexCheckNewerCodexHash: --check copies Codex 0.160.0's hook
+// trust hash. On a newer Codex, hooks it reports as needing review may be
+// trusted under a changed hash, so it names the version it matches and
+// sends the user to flopwire setup, which asks Codex.
+func TestSetupCodexCheckNewerCodexHash(t *testing.T) {
+	c := newCodexFixture(t, false)
+	if _, _, err := c.run(); err != nil {
+		t.Fatal(err)
+	}
+	st := c.getCodex()
+	st.Trust = map[string]string{"postToolUse": "trusted", "sessionStart": "trusted", "userPromptSubmit": "modified", "stop": "trusted", "sessionEnd": "trusted"}
+	for _, tc := range []struct {
+		version string
+		warn    bool
+	}{
+		{"codex-cli 0.159.3", false},
+		{"codex-cli 0.160.0", false},
+		{"codex-cli 0.161.0-alpha.1", true},
+		{"codex-cli 1.0.0", true},
+		{"something else", true},
+	} {
+		st.Version = tc.version
+		c.setCodex(st)
+		rep, _, err := c.run("--check")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := c.codex(rep)
+		if !strings.Contains(h.Note, "as Codex "+codexHashVersion+" does") {
+			t.Fatalf("%s: note %q does not name the Codex version it hashes as", tc.version, h.Note)
+		}
+		if got := hasString(h.Warnings, "run flopwire setup, which asks Codex directly"); got != tc.warn {
+			t.Errorf("%s: newer-Codex warning %v, want %v: %q", tc.version, got, tc.warn, h.Warnings)
+		}
+	}
+	// All trusted: nothing to doubt.
+	st.Trust["userPromptSubmit"] = "trusted"
+	st.Version = "codex-cli 9.0.0"
+	c.setCodex(st)
+	rep, _, err := c.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := c.codex(rep); hasString(h.Warnings, "asks Codex directly") {
+		t.Errorf("all trusted, still warned: %q", h.Warnings)
 	}
 }
