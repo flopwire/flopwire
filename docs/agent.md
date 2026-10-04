@@ -240,7 +240,9 @@ background when it starts. Instead, `--check` reads Codex's files in
 `$CODEX_HOME` (default `~/.codex`): `config.toml`, `hooks.json` and the
 plugin's cached hooks file. It computes each plugin hook's hash as Codex
 0.160.0 does and compares it with the `trusted_hash` that Codex stored
-when you approved the hook. It looks for older manual Flopwire entries in
+when you approved the hook. When Codex is newer than 0.160.0 and a hook
+looks unapproved, `--check` warns that Codex may have changed its hash and
+says to run `flopwire setup`, which asks Codex. It looks for older manual Flopwire entries in
 the user config only, not in a project's `.codex` folder. The Codex entry
 says this in `note`. `flopwire setup` without `--check` asks the app
 server.

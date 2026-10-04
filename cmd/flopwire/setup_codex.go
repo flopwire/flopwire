@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -533,12 +534,15 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 		// codex app-server would answer exactly, but starting it upgrades
 		// the configured marketplaces and fetches the plugin catalog in
 		// the background. --check reads Codex's files instead.
-		r.Note = "--check read Codex's files in " + tildePath(codexHome(env), env.home) + " and did not start codex app-server, which refreshes plugin marketplaces as it starts. It looked for older manual Flopwire entries in your user config only, not in project .codex folders"
+		r.Note = "--check read Codex's files in " + tildePath(codexHome(env), env.home) + " and did not start codex app-server, which refreshes plugin marketplaces as it starts. It computed each hook's trust hash as Codex " + codexHashVersion + " does. It looked for older manual Flopwire entries in your user config only, not in project .codex folders"
 		hooks, cfg, err := codexDiskHooks(env, r.Version)
 		if err != nil {
 			r.Warnings = append(r.Warnings, "could not read Codex's files to tell whether the plugin hooks are trusted: "+err.Error())
 		} else {
 			codexTrust(&r, hooks)
+			if len(r.HookTrust.NeedReview) > 0 && !codexVersionAtMost(r.HarnessVersion, codexHashVersion) {
+				r.Warnings = append(r.Warnings, fmt.Sprintf("--check computes hook trust hashes as Codex %s does, and this Codex reports version %q. If Codex changed its hash, --check reports trusted hooks as needing review: run flopwire setup, which asks Codex directly", codexHashVersion, r.HarnessVersion))
+			}
 			r.Warnings = append(r.Warnings, codexManualEntries(env, hooks, cfg)...)
 		}
 	case r.Installed:
@@ -655,6 +659,48 @@ func codexManualEntries(env *setupEnv, hooks []codexHook, cfg json.RawMessage) [
 // What codex app-server's hooks/list and config/read would answer, read
 // from $CODEX_HOME instead (codex 0.160.0): the user config.toml, the
 // user hooks.json, and the plugin's cached hooks file.
+
+// codexHashVersion is the Codex release whose hook trust hash
+// codexHookHash copies. A newer Codex may hash differently.
+const codexHashVersion = "0.160.0"
+
+// codexVersionAtMost reports whether the `codex --version` output out
+// ("codex-cli 0.160.0") names version v or older. Output it cannot parse
+// is not at most v.
+func codexVersionAtMost(out, v string) bool {
+	f := strings.Fields(out)
+	if len(f) == 0 {
+		return false
+	}
+	parse := func(s string) ([3]int, bool) {
+		var n [3]int
+		// A prerelease ("0.161.0-alpha.1") compares as its release.
+		core, _, _ := strings.Cut(strings.TrimPrefix(s, "v"), "-")
+		parts := strings.Split(core, ".")
+		if len(parts) != 3 {
+			return n, false
+		}
+		for i, p := range parts {
+			x, err := strconv.Atoi(p)
+			if err != nil || x < 0 {
+				return n, false
+			}
+			n[i] = x
+		}
+		return n, true
+	}
+	got, ok1 := parse(f[len(f)-1])
+	want, ok2 := parse(v)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return got[i] < want[i]
+		}
+	}
+	return true
+}
 
 // codexHookHandler is one handler of a Codex hooks file, as Codex parses
 // it (codex-rs/config/src/hook_config.rs).

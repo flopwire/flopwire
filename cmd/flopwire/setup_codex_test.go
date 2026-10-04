@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type fakeCodexState struct {
 	Layers json.RawMessage `json:"layers,omitempty"`
 	// ExtraConfig starts the config.toml the fake writes.
 	ExtraConfig string `json:"extra_config,omitempty"`
+	// Version is what codex --version prints (default codex-cli 0.159.3).
+	Version string `json:"version,omitempty"`
 	// Fail makes a command ("plugin add", "marketplace add", "app-server",
 	// …) exit 1 with this message on stderr.
 	Fail map[string]string `json:"fail,omitempty"`
@@ -44,6 +47,10 @@ type fakeCodexMarketplace struct {
 }
 
 var codexPluginEvents = []string{"postToolUse", "sessionStart", "userPromptSubmit", "stop", "sessionEnd"}
+
+// codexHashCapturedVersion is the Codex release codex0160HookHashes came
+// from. It must equal codexHashVersion, the release --check names.
+const codexHashCapturedVersion = "0.160.0"
 
 // codex0160HookHashes are the hashes codex 0.160.0's hooks/list gave the
 // plugin's hooks (currentHash), captured live from a scratch CODEX_HOME
@@ -130,13 +137,13 @@ func fakeCodex(args []string) int {
 	if len(args) == 0 || args[0] != "app-server" {
 		logCall(strings.Join(args, " "))
 	}
-	if len(args) == 1 && args[0] == "--version" {
-		fmt.Println("codex-cli 0.159.3")
-		return 0
-	}
 	var st fakeCodexState
 	raw, _ := os.ReadFile(statePath)
 	_ = json.Unmarshal(raw, &st)
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Println(cmp.Or(st.Version, "codex-cli 0.159.3"))
+		return 0
+	}
 	save := func() {
 		b, _ := json.Marshal(st)
 		_ = os.WriteFile(statePath, b, 0o600)
@@ -739,6 +746,9 @@ func TestSetupCodexTrustReporting(t *testing.T) {
 // changed one by computing the hash Codex stores as trusted_hash. The
 // plugin's hooks must hash to what codex 0.160.0 reported for them.
 func TestCodexHookHashMatchesCodex(t *testing.T) {
+	if codexHashVersion != codexHashCapturedVersion {
+		t.Fatalf("--check says it hashes as Codex %s, but the hashes below come from Codex %s: capture them again from codex %s app-server hooks/list", codexHashVersion, codexHashCapturedVersion, codexHashVersion)
+	}
 	events, err := readCodexHooksFile("../../plugins/codex/flopwire/hooks/hooks.json")
 	if err != nil {
 		t.Fatal(err)
@@ -1032,5 +1042,53 @@ func TestSetupCodexOrphanedPlugin(t *testing.T) {
 	}
 	if st := c.getCodex(); len(st.Plugins) != 0 {
 		t.Fatalf("--remove left %+v", st.Plugins)
+	}
+}
+
+// TestSetupCodexCheckNewerCodexHash: --check copies Codex 0.160.0's hook
+// trust hash. On a newer Codex, hooks it reports as needing review may be
+// trusted under a changed hash, so it names the version it matches and
+// sends the user to flopwire setup, which asks Codex.
+func TestSetupCodexCheckNewerCodexHash(t *testing.T) {
+	c := newCodexFixture(t, false)
+	if _, _, err := c.run(); err != nil {
+		t.Fatal(err)
+	}
+	st := c.getCodex()
+	st.Trust = map[string]string{"postToolUse": "trusted", "sessionStart": "trusted", "userPromptSubmit": "modified", "stop": "trusted", "sessionEnd": "trusted"}
+	for _, tc := range []struct {
+		version string
+		warn    bool
+	}{
+		{"codex-cli 0.159.3", false},
+		{"codex-cli 0.160.0", false},
+		{"codex-cli 0.161.0-alpha.1", true},
+		{"codex-cli 1.0.0", true},
+		{"something else", true},
+	} {
+		st.Version = tc.version
+		c.setCodex(st)
+		rep, _, err := c.run("--check")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := c.codex(rep)
+		if !strings.Contains(h.Note, "as Codex "+codexHashVersion+" does") {
+			t.Fatalf("%s: note %q does not name the Codex version it hashes as", tc.version, h.Note)
+		}
+		if got := hasString(h.Warnings, "run flopwire setup, which asks Codex directly"); got != tc.warn {
+			t.Errorf("%s: newer-Codex warning %v, want %v: %q", tc.version, got, tc.warn, h.Warnings)
+		}
+	}
+	// All trusted: nothing to doubt.
+	st.Trust["userPromptSubmit"] = "trusted"
+	st.Version = "codex-cli 9.0.0"
+	c.setCodex(st)
+	rep, _, err := c.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := c.codex(rep); hasString(h.Warnings, "asks Codex directly") {
+		t.Errorf("all trusted, still warned: %q", h.Warnings)
 	}
 }
