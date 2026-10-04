@@ -614,8 +614,9 @@ func TestClaimFlow(t *testing.T) {
 }
 
 // Presence changes: the poll in flight is cancelled and a new one carries
-// the new presence with the cursor reset. A withheld session is never
-// reported.
+// the new presence. A busy or idle flip keeps the cursor (it makes no
+// message newly deliverable, issue #71); a new session resets it. A
+// withheld session is never reported.
 func TestPresenceChangeRepolls(t *testing.T) {
 	srv := newFakeServer()
 	p := &presenceSrc{}
@@ -636,8 +637,13 @@ func TestPresenceChangeRepolls(t *testing.T) {
 	p.set(sess("s1", "claude", "/src/api", true), secret) // s1 turns busy
 	waitFor(t, "a poll with the new presence", func() bool { return srv.pollCount() == 3 })
 	last := srv.lastPoll()
-	if len(last.Sessions) != 1 || !last.Sessions[0].Busy || last.Cursor != 0 {
-		t.Fatalf("poll after the change: %+v", last)
+	if len(last.Sessions) != 1 || !last.Sessions[0].Busy || last.Cursor != 9 {
+		t.Fatalf("poll after the busy flip: %+v", last)
+	}
+	p.set(sess("s1", "claude", "/src/api", true), sess("s2", "claude", "/src/web", false), secret)
+	waitFor(t, "a poll with the new session", func() bool { return srv.pollCount() == 4 })
+	if last := srv.lastPoll(); len(last.Sessions) != 2 || last.Cursor != 0 {
+		t.Fatalf("poll after a new session: %+v", last)
 	}
 }
 

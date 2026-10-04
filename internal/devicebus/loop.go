@@ -83,6 +83,15 @@ func serverPresence(all []Session) []busproto.PresenceSession {
 	return out
 }
 
+// sameButBusy reports whether two presence reports differ at most in
+// whether sessions are busy.
+func sameButBusy(a, b []busproto.PresenceSession) bool {
+	return slices.EqualFunc(a, b, func(x, y busproto.PresenceSession) bool {
+		x.Busy = y.Busy
+		return x == y
+	})
+}
+
 func jitter(d time.Duration) time.Duration { return d/2 + rand.N(d/2+1) }
 
 // pollAnswer is one poll's outcome.
@@ -152,7 +161,7 @@ func (b *Bus) runServer(ctx context.Context) {
 				b.log.Warn("devicebus: presence", "err", err)
 			} else {
 				cur := serverPresence(all)
-				if !slices.Equal(cur, sent) {
+				if !sameButBusy(cur, sent) {
 					// Changed since the last poll (between polls, or during
 					// a backoff): reset the cursor, as the in-flight check
 					// below does.
@@ -220,9 +229,17 @@ func (b *Bus) runServer(ctx context.Context) {
 			// that the new presence makes deliverable (a session newly
 			// reported) would otherwise wait for the poll to time out.
 			if inflight && b.cfg.Now().Sub(started) >= time.Second {
-				if err == nil && !slices.Equal(serverPresence(all), sent) || !slices.Equal(cloudPresence(b.CloudSessions()), sentCld) {
+				cur := serverPresence(all)
+				cld := !slices.Equal(cloudPresence(b.CloudSessions()), sentCld)
+				if err == nil && !slices.Equal(cur, sent) || cld {
 					cancel()
-					cursor = 0
+					// A session's busy or idle flip makes no message newly
+					// deliverable to the device: the cursor stays, and the
+					// next poll holds rather than answering at once (issue
+					// #71). A cloud session's flip may (claimCloud).
+					if cld || err == nil && !sameButBusy(cur, sent) {
+						cursor = 0
+					}
 				}
 			}
 		case a := <-answers:
