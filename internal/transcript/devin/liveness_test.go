@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -218,6 +219,28 @@ func TestOwnToolCallIsOnTheMainChain(t *testing.T) {
 	setMain(35)
 	if !own("exec_main#1") || own("exec_sub#1") {
 		t.Fatal("main_chain_id past the call")
+	}
+	// Twenty parallel calls: their results chain below the call (devin
+	// 3000.11.1), and main_chain_id moves to the last one.
+	calls := make([]map[string]any, 20)
+	for i := range calls {
+		calls[i] = map[string]any{"id": fmt.Sprintf("par#%d", i), "name": "read"}
+	}
+	par := map[string]any{"message_id": "m-par", "role": "assistant", "content": "", "tool_calls": calls}
+	s.node("s", 40, 35, par)
+	s.node("s", 41, 35, par)
+	parent := int64(41)
+	for i := range calls {
+		s.node("s", 42+int64(i), parent, map[string]any{"message_id": fmt.Sprintf("m-pr%d", i), "role": "tool", "content": "ok", "tool_call_id": fmt.Sprintf("par#%d", i)})
+		parent = 42 + int64(i)
+	}
+	setMain(parent)
+	if !own("par#0") || own("exec_sub#1") {
+		t.Fatal("main_chain_id past twenty parallel results")
+	}
+	setMain(35) // before the call: its PreToolUse
+	if !own("par#19") {
+		t.Fatal("main_chain_id before the parallel call")
 	}
 	// No main chain recorded (a store that does not set it): any recent
 	// call counts, as before.

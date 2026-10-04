@@ -128,32 +128,34 @@ func OwnToolCall(ctx context.Context, dbPath, session, toolUseID string) (bool, 
 		}
 		return true, nil // no main chain recorded: a recent call is the session's
 	}
-	for _, n := range calls {
-		for _, p := range [][2]int64{{n, main.Int64}, {main.Int64, n}} {
-			var up bool
-			if err := db.QueryRowContext(ctx, chainSQL, p[0], session, chainWalk, p[1]).Scan(&up); err != nil {
-				return false, fmt.Errorf("devin: main chain: %w", err)
-			}
-			if up {
-				return true, nil
-			}
-		}
+	callsJSON, _ := json.Marshal(calls)
+	var on bool
+	if err := db.QueryRowContext(ctx, chainSQL, main.Int64, string(callsJSON), session, chainWalk).Scan(&on); err != nil {
+		return false, fmt.Errorf("devin: main chain: %w", err)
 	}
-	return false, nil // another root's call: a subagent's
+	return on, nil // not on it: another root's call, a subagent's
 }
 
-// chainWalk bounds how many parents chainSQL follows. A call of the
-// session is a few nodes from main_chain_id; a subagent's never reaches it.
-const chainWalk = 1024
+// chainWalk bounds how many parents chainSQL follows from each start. A
+// call of the session is a few nodes from main_chain_id, which moves at
+// each prompt and tool result (a parallel call's results chain, one node
+// each); a subagent's never reaches it.
+const chainWalk = HookRecentNodes
 
-// chainSQL reports whether node ?1, followed up its parents (at most ?3),
-// reaches node ?4.
-const chainSQL = `WITH RECURSIVE up(n, d) AS (
-	SELECT ?1, 0
+// chainSQL reports whether main_chain_id (?1) and one of the call nodes
+// (?2, a JSON array) are on one chain: walking up the parents of each, at
+// most ?4 steps, main reaches a call or a call reaches main. The walks run
+// side by side, breadth first, and stop at the first meeting: the session's
+// own call costs a few row reads, not the whole bound. Each step reads a
+// row of a store that can be a gigabyte; the hook has 100 ms.
+const chainSQL = `WITH RECURSIVE up(n, d, from_main) AS (
+	SELECT ?1, 0, 1
 	UNION ALL
-	SELECT m.parent_node_id, up.d + 1 FROM message_nodes m JOIN up ON m.session_id = ?2 AND m.node_id = up.n
-	WHERE m.parent_node_id IS NOT NULL AND up.d < ?3)
-SELECT EXISTS (SELECT 1 FROM up WHERE n = ?4)`
+	SELECT value, 0, 0 FROM json_each(?2)
+	UNION ALL
+	SELECT m.parent_node_id, up.d + 1, up.from_main FROM up JOIN message_nodes m ON m.session_id = ?3 AND m.node_id = up.n
+	WHERE m.parent_node_id IS NOT NULL AND up.d < ?4)
+SELECT EXISTS (SELECT 1 FROM up WHERE from_main AND n IN (SELECT value FROM json_each(?2)) OR NOT from_main AND n = ?1)`
 
 // SubagentRunning reports whether a run_subagent call among the session's
 // newest nodes has no tool result yet and was not abandoned (a newer
