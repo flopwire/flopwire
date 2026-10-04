@@ -422,7 +422,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		if t := paths[key]; t != nil && key.agent == transcript.AgentCodex {
 			rollouts[t.path] = true
 		}
-		s.Withheld = !a.reportable(ctx, key, paths[key])
+		s.Withheld, s.Unplaced = a.reportState(ctx, key, paths[key])
 		if !s.Withheld {
 			s.Title = a.busTitle(ctx, s)
 		}
@@ -536,7 +536,7 @@ func (a *Agent) BusKnown(ctx context.Context, prefix string) ([]devicebus.Sessio
 	paths := a.transcriptsBySession()
 	for i, s := range out {
 		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
-		out[i].Withheld = !a.reportable(ctx, key, paths[key])
+		out[i].Withheld, out[i].Unplaced = a.reportState(ctx, key, paths[key])
 		if p, ok := a.storedPlace(key); ok {
 			out[i].Remote, out[i].Main = p.pl.Remote, p.pl.Main
 		}
@@ -801,10 +801,30 @@ func (a *Agent) transcriptsBySession() map[placeKey]*target {
 // reportable reports whether the path rules let the session reach the
 // server. A session not placed yet is not reported.
 func (a *Agent) reportable(ctx context.Context, key placeKey, t *target) bool {
+	withheld, _ := a.reportState(ctx, key, t)
+	return !withheld
+}
+
+// reportState is reportable's answer as the bus takes it: withheld when
+// the session may not reach the server, and unplaced when that is only
+// because its path rules are not decided yet (a new transcript whose
+// first complete line has not named its directory).
+func (a *Agent) reportState(ctx context.Context, key placeKey, t *target) (withheld, unplaced bool) {
 	if d := a.storeOf(key.agent); d != nil {
-		return a.storeMode(ctx, d, key.session) == pathpolicy.Allow
+		return a.storeMode(ctx, d, key.session) != pathpolicy.Allow, false
 	} else if key.agent == transcript.AgentDevin || key.agent == transcript.AgentOpencode {
-		return false // a store this device does not read
+		return true, false // a store this device does not read
 	}
-	return t != nil && a.uploadable(t)
+	if t == nil {
+		return true, false
+	}
+	m, known := a.modeOf(t)
+	return !known || m != pathpolicy.Allow, !known
+}
+
+// BusPlace indexes a session now (devicebus Config.Place): a request
+// names a session presence does not list placed yet.
+func (a *Agent) BusPlace(ctx context.Context, session string) error {
+	_, err := a.FlushPath(ctx, "", session)
+	return err
 }

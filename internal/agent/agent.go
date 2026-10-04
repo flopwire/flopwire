@@ -311,6 +311,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		cfg.Bus.SetSources(a.BusPresence, a.BusKnown)
 		cfg.Bus.SetWithheld(a.BusWithheld, a.BusRepoWithheld)
 		cfg.Bus.SetRepoKey(a.BusRepoKey)
+		cfg.Bus.SetPlace(a.BusPlace)
 	}
 	return a
 }

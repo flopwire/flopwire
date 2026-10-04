@@ -804,6 +804,12 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	case busproto.CodeWithheldSession:
 		e.Fix = "send it without that ref (or recipient): a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
 		e.Example = st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
+		if strings.HasPrefix(be.Detail, "to ") {
+			// The recipient is the withheld session: naming it again would
+			// be refused again.
+			e.Fix = "message another session or a person: a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
+			e.Example = st.cmd("flopwire peers", "flopwire_peers") + " lists the sessions you can message"
+		}
 	case busproto.CodeWithheldRepo:
 		e.Fix, e.Example = withheldRepoFix(st), st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
 	case busproto.CodeSessionNotOnDevice:
@@ -811,7 +817,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 			e.Fix = "messaging is not available from this session: its transcripts stay on this device, so nothing about it may reach the team server"
 			e.Example = "ask your human to send it, or send from a session in another repo"
 		} else {
-			e.Fix = "the device agent has not seen this session yet; try again in a few seconds"
+			e.Fix = "the device agent has not indexed this session yet (a new session); retry in a few seconds"
 			e.Example = "flopwire agent status shows how many live sessions the agent reports"
 		}
 	default:
@@ -963,8 +969,11 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 				}
 				e.WriteString(l + "\n")
 			}
+			// A ref is one line, whitespace (a newline, a tab) collapsed:
+			// a ref written by another device could otherwise start a line
+			// of its own and pass for a header (issue #71).
 			for _, r := range m.Refs {
-				e.WriteString("    ref: " + format.Clean(r) + "\n")
+				e.WriteString("    ref: " + strings.Join(strings.Fields(format.Clean(r)), " ") + "\n")
 			}
 		} else {
 			first := format.ClipAround(lines[0], 0, 160)

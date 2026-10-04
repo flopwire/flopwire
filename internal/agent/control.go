@@ -287,6 +287,7 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 	var err error
 	switch req.Op {
 	case "pending":
+		b.Nudge(req.Session, req.Agent) // a new session: report it now
 		lim := devicebus.Limit{Count: req.Limit, Bytes: req.MaxBytes, Sep: busrender.SepLen, Size: busrender.Size}
 		ins := &devicebus.Instruction{Source: req.Start, HookStart: hookStart(req, a.now()),
 			Bytes: busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen}

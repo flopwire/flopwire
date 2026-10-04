@@ -160,6 +160,11 @@ func (b *Bus) runServer(ctx context.Context) {
 			inflight, started = true, now
 			req := busproto.PollRequest{Sessions: sent, Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
+			b.mu.Lock()
+			b.reported = sent
+			close(b.polled)
+			b.polled = make(chan struct{})
+			b.mu.Unlock()
 			go func() {
 				resp, err := srv.Poll(pctx, req)
 				answers <- pollAnswer{resp: resp, err: err, key: key}
@@ -183,6 +188,15 @@ func (b *Bus) runServer(ctx context.Context) {
 			}
 		case <-b.recheck:
 			if stop != nil {
+				next = b.cfg.Now()
+			}
+		case <-b.repoll:
+			// A request names a session the last poll did not report:
+			// report the presence now (Nudge).
+			if inflight {
+				cancel()
+				cursor = 0
+			} else if stop == nil && backoff == 0 {
 				next = b.cfg.Now()
 			}
 		case <-wait:
