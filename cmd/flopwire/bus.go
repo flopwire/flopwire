@@ -918,7 +918,10 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 	for _, m := range in.Messages {
 		var e strings.Builder
 		state := string(m.State)
-		if m.Reason != "" {
+		switch {
+		case m.Reason != "" && m.Attempts > 1:
+			state += fmt.Sprintf(" (%s, %d attempts)", m.Reason, m.Attempts)
+		case m.Reason != "":
 			state += " (" + m.Reason + ")"
 		}
 		if m.State == busproto.StateRead && m.ReadAt != nil {

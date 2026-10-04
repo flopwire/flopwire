@@ -101,12 +101,14 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"rehold", reholdSQL, []any{me.UserID, me.UserID}},
 		{"expire", expireSQL, []any{now}},
 		{"drop presence", dropPresenceSQL, []any{now}},
+		{"refused row", RefusedRowSQL, []any{"me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			perfguard.AssertIndexedPlan(t, pool, c.sql, c.args...)
 		})
 	}
 	assertSendCeilingIndexes(t, pool, me, now)
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_session_idx", RefusedRowSQL, "me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now)
 	// The users table is a handful of rows; its lookup is not indexed.
 	perfguard.AssertIndexedPlanExcept(t, pool, []string{"users"}, UserLookupSQL, "alex")
 }

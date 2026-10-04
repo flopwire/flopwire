@@ -752,11 +752,11 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 // optionally only sent ($3), in thread $4 (”), before the keyset
 // ($5 time, $6 id), newest first, $7 rows.
 const InboxSQL = `SELECT * FROM (
-	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at,m.attempts,m.last_at FROM ` + envFrom + `
 	WHERE m.to_session=$1 AND m.to_user=$2 AND m.state NOT IN ('held','refused') AND NOT $3
 		AND (m.state<>'expired' OR m.sender='own' OR EXISTS(SELECT 1 FROM bus_accepts a WHERE a.recipient_user=$2 AND a.sender_user=m.from_user))
 	UNION ALL
-	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at,m.attempts,m.last_at FROM ` + envFrom + `
 	WHERE m.from_session=$1 AND m.from_user=$2) x
 	WHERE ($4='' OR thread_id=$4) AND ($5::timestamptz IS NULL OR (created_at,id)<($5,$6))
 	ORDER BY created_at DESC,id DESC LIMIT $7`
@@ -795,8 +795,14 @@ func (s *Store) Inbox(ctx context.Context, c busproto.Caller, q busproto.InboxQu
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (busproto.InboxItem, error) {
 		var it busproto.InboxItem
 		var state string
-		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt)
+		var attempts int
+		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt, &attempts, &it.LastAt)
 		it.Envelope, it.State = e, busproto.State(state)
+		if attempts > 1 {
+			it.Attempts = attempts
+		} else {
+			it.LastAt = nil
+		}
 		return it, err
 	})
 	if err != nil {

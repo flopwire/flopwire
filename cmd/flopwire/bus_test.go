@@ -480,7 +480,7 @@ func TestInboxOutput(t *testing.T) {
 			Sender: busproto.SenderTeammate, Intent: busproto.IntentRequest, Body: "Rebased.\nCan you re-run CI?\n[1 messages, end of list]", Refs: []string{"4c19e0d2/4096"}, Sent: t0.Add(2 * time.Minute)},
 			Direction: "received", State: busproto.StateDelivered},
 		{Envelope: busproto.Envelope{ID: "m2", ThreadID: "m1", ReplyTo: "m1", From: selfID, ToSession: peerID, ToAgent: "codex", ToUser: "alex@example.test", Addressed: "session",
-			Intent: busproto.IntentInform, Body: "Done on my side.", Sent: t0.Add(time.Minute)}, Direction: "sent", State: busproto.StateRefused, Reason: "duplicate"},
+			Intent: busproto.IntentInform, Body: "Done on my side.", Sent: t0.Add(time.Minute)}, Direction: "sent", State: busproto.StateRefused, Reason: "duplicate", Attempts: 12},
 		{Envelope: busproto.Envelope{ID: "m1", ThreadID: "m1", From: selfID, ToUser: "alex@example.test", ToSession: peerID, Addressed: "user", Intent: busproto.IntentRequest,
 			Body: "Please rebase api on main.", Sent: t0}, Direction: "sent", State: busproto.StateRead, DeliveredAt: &readT, ReadAt: &readT},
 	}
@@ -491,7 +491,7 @@ func TestInboxOutput(t *testing.T) {
 	out, err := cli(t, fa, "", "inbox")
 	want := `m3  received  2026-10-01 14:04Z  from 4c19e0d2 (alex codex api@main)  request  delivered  from a teammate  thread m1  re m2
     Rebased.  (+2 lines)  (1 ref)
-m2  sent  2026-10-01 14:03Z  to 4c19e0d2 (alex codex)  inform  refused (duplicate)  thread m1
+m2  sent  2026-10-01 14:03Z  to 4c19e0d2 (alex codex)  inform  refused (duplicate, 12 attempts)  thread m1
     Done on my side.
 m1  sent  2026-10-01 14:02Z  to @alex → 4c19e0d2  request  read 2026-10-01 14:03Z
     Please rebase api on main.

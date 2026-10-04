@@ -62,6 +62,12 @@ CREATE SEQUENCE bus_messages_seq;
 -- session_ended, its session ended first; push_failed, a message to a
 -- cloud session whose pushes all failed).
 --
+-- A refused row stands for every refusal of its sending session, device
+-- and agent with the same reason (code) within an hour of its created_at:
+-- attempts counts them and last_at is the latest. The hourly send
+-- ceilings sum attempts, so a looping agent still reaches them while it
+-- writes one row (and one bus.send audit row) per code per hour.
+--
 -- A message to a cloud session is addressed to that session and claimed
 -- (claimed_device, claimed_by = to_session) by the one device of the
 -- recipient that pushes it.
@@ -98,6 +104,9 @@ CREATE TABLE bus_messages (
   claimed_at timestamptz,
   delivered_at timestamptz,
   read_at timestamptz,
+  attempts integer NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+  last_at timestamptz,
+  CHECK (attempts = 1 OR state = 'refused'),
   CHECK (addressed = 'user' OR to_session IS NOT NULL),
   CHECK (addressed = 'session' OR (to_session IS NULL) = (claimed_by IS NULL)),
   CHECK ((to_session IS NULL) = (to_agent IS NULL))

@@ -538,6 +538,11 @@ type InboxItem struct {
 	Reason      string     `json:"reason,omitempty"`
 	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
 	ReadAt      *time.Time `json:"read_at,omitempty"`
+	// Attempts, on a refused send, counts the refusals with its reason
+	// from the session within the hour after it (the server keeps one row
+	// for them); LastAt is the latest. Unset for a single attempt.
+	Attempts int        `json:"attempts,omitempty"`
+	LastAt   *time.Time `json:"last_at,omitempty"`
 }
 
 // InboxResponse is one page, newest first. Next, when set, is the before
