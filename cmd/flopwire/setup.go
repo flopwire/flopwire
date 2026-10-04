@@ -684,11 +684,27 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 			if res.Marketplace != "" {
 				name = res.Marketplace
 			}
-			r.Done = append(r.Done, "added the marketplace "+name+" from "+env.source)
+			// existed: a marketplace of that name was configured before the
+			// add, so it is the user's, not one setup created.
+			existed := slices.ContainsFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == name })
+			if existed {
+				r.Done = append(r.Done, "the marketplace "+name+" from "+env.source+" was already present")
+			} else {
+				r.Done = append(r.Done, "added the marketplace "+name+" from "+env.source)
+			}
 			if name != claudeMarketplace {
-				// Not Flopwire's marketplace: install nothing from it. It may
-				// have been the user's before, so setup does not remove it.
-				return fail(fmt.Errorf("the marketplace at %s is named %s, not %s, so it is not Flopwire's and setup installed nothing from it. To remove it, run claude plugin marketplace remove %s", env.source, name, claudeMarketplace, name))
+				// Not Flopwire's marketplace: install nothing from it. Remove
+				// it only when setup created it; one that was already
+				// configured is the user's and stays.
+				msg := fmt.Sprintf("the marketplace at %s is named %s, not %s, so it is not Flopwire's and setup installed nothing from it", env.source, name, claudeMarketplace)
+				if !existed {
+					res, err := c.result(ctx, append([]string{"plugin", "marketplace", "remove", name, "--json"}, scopeArgs...)...)
+					if err == nil && res.Outcome == "ok" {
+						r.Done = append(r.Done, "removed the marketplace "+name+" again")
+						return fail(errors.New(msg + "; setup removed the marketplace it added"))
+					}
+				}
+				return fail(fmt.Errorf("%s. To remove it, run claude plugin marketplace remove %s", msg, name))
 			}
 			r.Marketplace = env.source
 		case foreign:

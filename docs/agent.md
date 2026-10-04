@@ -380,8 +380,9 @@ the [Codex plugin README](../plugins/codex/flopwire/README.md).
 The source's Claude Code marketplace must be named `flopwire`. When it
 has another name, Claude Code adds the marketplace under that name.
 setup names it in `done`, sets `error`, and installs nothing from it.
-setup does not remove it. Run `claude plugin marketplace remove NAME`
-to remove it.
+When setup added that marketplace, setup removes it again. When a
+marketplace with that name was already configured, setup keeps it. Run
+`claude plugin marketplace remove NAME` to remove it.
 
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace

@@ -416,25 +416,56 @@ func TestSetupInstall(t *testing.T) {
 
 // TestSetupSourceWithAnotherMarketplaceName: a --source whose
 // marketplace.json names another marketplace is not Flopwire's. done names
-// the marketplace Claude Code added, and setup installs nothing from it.
+// the marketplace Claude Code reported, and setup installs nothing from it.
+// setup removes the marketplace only when the add created it.
 func TestSetupSourceWithAnotherMarketplaceName(t *testing.T) {
-	f := newSetupFixture(t, true)
-	f.setState(fakeClaudeState{Available: "aaaaaaaaaaaa", SourceName: "notflop"})
-	rep, _, err := f.run()
-	if !errors.Is(err, errReported) || rep.OK {
-		t.Fatalf("want a failed report, got %v ok=%v", err, rep.OK)
-	}
-	h := f.claude(rep)
-	want := []string{"added the marketplace notflop from " + f.repo}
-	if !slices.Equal(h.Done, want) {
-		t.Fatalf("done:\n got %q\nwant %q", h.Done, want)
-	}
-	if h.Installed || h.Marketplace != "" || !strings.Contains(h.Error, "named notflop, not flopwire") || !strings.Contains(h.Error, "claude plugin marketplace remove notflop") {
-		t.Fatalf("report: %+v", h)
-	}
-	if got := mutating(f.calls()); !slices.Equal(got, []string{"plugin marketplace add " + f.repo + " --json --scope user"}) {
-		t.Fatalf("calls after adding another marketplace: %q", got)
-	}
+	add := "plugin marketplace add "
+	t.Run("created by setup", func(t *testing.T) {
+		f := newSetupFixture(t, true)
+		f.setState(fakeClaudeState{Available: "aaaaaaaaaaaa", SourceName: "notflop"})
+		rep, _, err := f.run()
+		if !errors.Is(err, errReported) || rep.OK {
+			t.Fatalf("want a failed report, got %v ok=%v", err, rep.OK)
+		}
+		h := f.claude(rep)
+		want := []string{"added the marketplace notflop from " + f.repo, "removed the marketplace notflop again"}
+		if !slices.Equal(h.Done, want) {
+			t.Fatalf("done:\n got %q\nwant %q", h.Done, want)
+		}
+		if h.Installed || h.Marketplace != "" || !strings.Contains(h.Error, "named notflop, not flopwire") || !strings.Contains(h.Error, "removed the marketplace it added") {
+			t.Fatalf("report: %+v", h)
+		}
+		wantCalls := []string{add + f.repo + " --json --scope user", "plugin marketplace remove notflop --json --scope user"}
+		if got := mutating(f.calls()); !slices.Equal(got, wantCalls) {
+			t.Fatalf("calls:\n got %q\nwant %q", got, wantCalls)
+		}
+		if st := f.getState(); len(st.Marketplaces) != 0 {
+			t.Fatalf("marketplaces left: %+v", st.Marketplaces)
+		}
+	})
+	t.Run("already configured", func(t *testing.T) {
+		f := newSetupFixture(t, true)
+		mine := claudeMarketplaceEntry{Name: "notflop", Source: "directory", Path: "/somewhere/else"}
+		f.setState(fakeClaudeState{Available: "aaaaaaaaaaaa", SourceName: "notflop", Marketplaces: []claudeMarketplaceEntry{mine}})
+		rep, _, err := f.run()
+		if !errors.Is(err, errReported) || rep.OK {
+			t.Fatalf("want a failed report, got %v ok=%v", err, rep.OK)
+		}
+		h := f.claude(rep)
+		want := []string{"the marketplace notflop from " + f.repo + " was already present"}
+		if !slices.Equal(h.Done, want) {
+			t.Fatalf("done:\n got %q\nwant %q", h.Done, want)
+		}
+		if h.Installed || !strings.Contains(h.Error, "named notflop, not flopwire") || !strings.Contains(h.Error, "claude plugin marketplace remove notflop") {
+			t.Fatalf("report: %+v", h)
+		}
+		if got := mutating(f.calls()); !slices.Equal(got, []string{add + f.repo + " --json --scope user"}) {
+			t.Fatalf("calls: %q", got)
+		}
+		if st := f.getState(); !slices.Equal(st.Marketplaces, []claudeMarketplaceEntry{mine}) {
+			t.Fatalf("the user's marketplace changed: %+v", st.Marketplaces)
+		}
+	})
 }
 
 func TestSetupGitHubSourceIsSparse(t *testing.T) {
