@@ -256,6 +256,9 @@ type Agent struct {
 	pidAlive  func(pid int) bool
 	procStart func(pid int) (time.Time, bool)
 	procName  func(pid int) string
+	// openFiles lists the files a process has open; nil when unknown,
+	// also when ctx ends first.
+	openFiles func(ctx context.Context, pid int) []string
 	// codexWriter probes a Codex writer lock (codexlock.go); tests replace it.
 	codexWriter func(lock string) int
 	now         func() time.Time
@@ -279,7 +282,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
-		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, codexWriter: codexWriter, now: time.Now}
+		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
 	a.idle = sync.NewCond(&a.mu)
 	a.devin.h, a.opencode.h = devinHarness, opencodeHarness
 	if cfg.DevinDB != "-" {

@@ -73,7 +73,7 @@ type Detector struct {
 // NewDetector returns a Detector over the real process and environment.
 func NewDetector() *Detector {
 	home, _ := os.UserHomeDir()
-	return &Detector{Getenv: os.Getenv, Home: home, Pid: os.Getppid(), Proc: procInfo, OpenFiles: openFiles}
+	return &Detector{Getenv: os.Getenv, Home: home, Pid: os.Getppid(), Proc: procInfo, OpenFiles: func(pid int) []string { return openFiles(context.Background(), pid) }}
 }
 
 var rolloutRe = regexp.MustCompile(`rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)

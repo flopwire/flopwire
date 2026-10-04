@@ -52,8 +52,10 @@ const hookBusyCap = 15 * time.Minute
 // hookTurns is each session's last hook event: UserPromptSubmit, PreToolUse
 // and PostToolUse mean a turn is running; Stop, SessionStart and SessionEnd
 // mean none is. Every event reaches the agent as the flush request of
-// `flopwire hook`, so this costs nothing extra. Only Devin's presence uses
-// it: Devin has no other read-only signal of a running turn.
+// `flopwire hook`, so this costs nothing extra. Devin's and opencode's
+// presence use it: neither has another read-only signal of a running turn.
+// Devin fires no Stop for an interrupted turn; presence reads the store's
+// interrupt marker for that (devinTurnBusy).
 type hookTurns struct {
 	mu sync.Mutex
 	m  map[string]hookTurn
@@ -61,11 +63,15 @@ type hookTurns struct {
 
 type hookTurn struct {
 	busy bool
-	at   time.Time
+	at   time.Time // when the agent got the event
+	// start is when the event's hook started (HookStart): an interrupt
+	// written at or after it ended the turn the event belongs to.
+	start time.Time
 }
 
-// noteHookEvent records a session's hook event.
-func (a *Agent) noteHookEvent(session, event string) {
+// noteHookEvent records a session's hook event; start is when its hook
+// started.
+func (a *Agent) noteHookEvent(session, event string, start time.Time) {
 	var busy bool
 	switch event {
 	case "UserPromptSubmit", "PreToolUse", "PostToolUse":
@@ -89,17 +95,32 @@ func (a *Agent) noteHookEvent(session, event string) {
 			delete(t.m, k)
 		}
 	}
-	t.m[session] = hookTurn{busy: busy, at: now}
+	t.m[session] = hookTurn{busy: busy, at: now, start: start}
 }
 
 // hookBusy reports whether the session's last hook event says a turn is
-// running, within hookBusyCap.
-func (a *Agent) hookBusy(session string) bool {
+// running, within hookBusyCap, and when that event's hook started.
+func (a *Agent) hookBusy(session string) (bool, time.Time) {
 	t := &a.turns
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v, ok := t.m[session]
-	return ok && v.busy && a.now().Sub(v.at) <= hookBusyCap
+	if !ok || !v.busy || a.now().Sub(v.at) > hookBusyCap {
+		return false, time.Time{}
+	}
+	return true, v.start
+}
+
+// hookTurnEnded records that the turn whose last event's hook started at
+// start ended without a Stop. A later event stands.
+func (a *Agent) hookTurnEnded(session string, start time.Time) {
+	t := &a.turns
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if v, ok := t.m[session]; ok && v.busy && v.start.Equal(start) {
+		v.busy = false
+		t.m[session] = v
+	}
 }
 
 // ExcerptBudget bounds the local index lookups for ref excerpts: they

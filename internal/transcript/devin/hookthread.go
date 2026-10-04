@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"strings"
 
 	"github.com/flopwire/flopwire/internal/fsprobe"
 )
@@ -25,11 +24,28 @@ import (
 //     own. While it runs, none of its tool calls is in the store, and the
 //     run_subagent call that started it has no tool result.
 //
+// A background subagent (run_subagent in the background, or a foreground
+// one that Esc moved there) writes its nodes as it runs, also on a root of
+// its own (probes, devin 3000.11.1, 2026-10-04). Its tool calls are then
+// in the store, but not on the session's main chain: sessions.main_chain_id
+// names a node of that chain, written at each prompt and tool result, so a
+// call of the session lies just below it or above it.
+//
 // So a PostToolUse is the session's own only when its tool_use_id is a tool
-// call of one of the session's last nodes, and a Stop is a subagent's
+// call of one of the session's last nodes on the main chain (any of them
+// when the store records no main chain), and a Stop is a subagent's
 // while a run_subagent call among those nodes has no result. Both read
 // only the session's last HookRecentNodes rows, newest first, by the
 // message_nodes session index.
+//
+// A run_subagent call can stay without a result: when the devin process
+// dies while the subagent runs, `devin -r` resumes the session from the
+// call's parent, and the next prompt is written as the call's sibling
+// (probe, devin 3000.11.1, 2026-10-04). Such a call is abandoned, not
+// running. Devin writes each assistant node twice, as siblings with one
+// message_id; only a sibling with another message_id is a fork. An
+// interrupted call (Esc) gets the tool result "Canceled due to user
+// interrupt".
 
 // HookRecentNodes is how many of a session's newest nodes the checks read.
 const HookRecentNodes = 64
@@ -42,30 +58,33 @@ type hookNode struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"tool_calls"`
+
+	node      int64         // node_id
+	parent    sql.NullInt64 // parent_node_id
+	messageID string
 }
 
-// recentNodes returns the session's newest nodes, newest first.
-func recentNodes(ctx context.Context, dbPath, session string) ([]hookNode, error) {
-	db, err := openForHook(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT chat_message FROM message_nodes WHERE session_id = ? ORDER BY row_id DESC LIMIT ?`, session, HookRecentNodes)
+// recentNodes returns the session's newest nodes, newest first. Tool
+// output can be long: only an assistant or tool node is decoded; every
+// node has its parent and message_id.
+func recentNodes(ctx context.Context, db *sql.DB, session string) ([]hookNode, error) {
+	rows, err := db.QueryContext(ctx, `SELECT node_id, parent_node_id,
+		  CASE WHEN json_valid(chat_message) THEN COALESCE(json_extract(chat_message, '$.message_id'), '') ELSE '' END,
+		  CASE WHEN instr(chat_message, '"tool_call') > 0 THEN chat_message ELSE '' END
+		FROM message_nodes WHERE session_id = ? ORDER BY row_id DESC LIMIT ?`, session, HookRecentNodes)
 	if err != nil {
 		return nil, fmt.Errorf("devin: recent nodes: %w", err)
 	}
 	defer rows.Close()
 	var out []hookNode
 	for rows.Next() {
+		var n hookNode
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&n.node, &n.parent, &n.messageID, &raw); err != nil {
 			return nil, fmt.Errorf("devin: recent nodes: %w", err)
 		}
-		var n hookNode
-		// Tool output can be long: only an assistant or tool node is decoded.
-		if !strings.Contains(raw, `"tool_call`) || json.Unmarshal([]byte(raw), &n) != nil {
-			continue
+		if raw != "" {
+			_ = json.Unmarshal([]byte(raw), &n)
 		}
 		out = append(out, n)
 	}
@@ -79,30 +98,78 @@ func OwnToolCall(ctx context.Context, dbPath, session, toolUseID string) (bool, 
 	if session == "" || toolUseID == "" {
 		return false, nil
 	}
-	nodes, err := recentNodes(ctx, dbPath, session)
+	db, err := openForHook(dbPath)
 	if err != nil {
 		return false, err
 	}
+	defer db.Close()
+	nodes, err := recentNodes(ctx, db, session)
+	if err != nil {
+		return false, err
+	}
+	var calls []int64 // the nodes with the call: Devin writes each twice
 	for _, n := range nodes {
 		if n.Role != "assistant" {
 			continue
 		}
 		for _, c := range n.ToolCalls {
 			if c.ID == toolUseID {
-				return true, nil
+				calls = append(calls, n.node)
 			}
 		}
 	}
-	return false, nil
+	if len(calls) == 0 {
+		return false, nil
+	}
+	var main sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT main_chain_id FROM sessions WHERE id = ?`, session).Scan(&main); err != nil || !main.Valid {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return true, nil // no main chain recorded: a recent call is the session's
+	}
+	callsJSON, _ := json.Marshal(calls)
+	var on bool
+	if err := db.QueryRowContext(ctx, chainSQL, main.Int64, string(callsJSON), session, chainWalk).Scan(&on); err != nil {
+		return false, fmt.Errorf("devin: main chain: %w", err)
+	}
+	return on, nil // not on it: another root's call, a subagent's
 }
 
+// chainWalk bounds how many parents chainSQL follows from each start. A
+// call of the session is a few nodes from main_chain_id, which moves at
+// each prompt and tool result (a parallel call's results chain, one node
+// each); a subagent's never reaches it.
+const chainWalk = HookRecentNodes
+
+// chainSQL reports whether main_chain_id (?1) and one of the call nodes
+// (?2, a JSON array) are on one chain: walking up the parents of each, at
+// most ?4 steps, main reaches a call or a call reaches main. The walks run
+// side by side, breadth first, and stop at the first meeting: the session's
+// own call costs a few row reads, not the whole bound. Each step reads a
+// row of a store that can be a gigabyte; the hook has 100 ms.
+const chainSQL = `WITH RECURSIVE up(n, d, from_main) AS (
+	SELECT ?1, 0, 1
+	UNION ALL
+	SELECT value, 0, 0 FROM json_each(?2)
+	UNION ALL
+	SELECT m.parent_node_id, up.d + 1, up.from_main FROM up JOIN message_nodes m ON m.session_id = ?3 AND m.node_id = up.n
+	WHERE m.parent_node_id IS NOT NULL AND up.d < ?4)
+SELECT EXISTS (SELECT 1 FROM up WHERE from_main AND n IN (SELECT value FROM json_each(?2)) OR NOT from_main AND n = ?1)`
+
 // SubagentRunning reports whether a run_subagent call among the session's
-// newest nodes has no tool result yet: a subagent of the session runs.
+// newest nodes has no tool result yet and was not abandoned (a newer
+// sibling node with another message_id): a subagent of the session runs.
 func SubagentRunning(ctx context.Context, dbPath, session string) (bool, error) {
 	if session == "" {
 		return false, nil
 	}
-	nodes, err := recentNodes(ctx, dbPath, session)
+	db, err := openForHook(dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	nodes, err := recentNodes(ctx, db, session)
 	if err != nil {
 		return false, err
 	}
@@ -112,17 +179,32 @@ func SubagentRunning(ctx context.Context, dbPath, session string) (bool, error) 
 			answered[n.ToolCallID] = true
 		}
 	}
-	for _, n := range nodes {
+	for i, n := range nodes {
 		if n.Role != "assistant" {
 			continue
 		}
 		for _, c := range n.ToolCalls {
-			if c.Name == "run_subagent" && !answered[c.ID] {
+			if c.Name == "run_subagent" && !answered[c.ID] && !forked(nodes[:i], n) {
 				return true, nil
 			}
 		}
 	}
 	return false, nil
+}
+
+// forked reports whether one of newer (the nodes written after n) is a
+// sibling of n that is not n's own copy: the conversation went on from
+// n's parent without n.
+func forked(newer []hookNode, n hookNode) bool {
+	if !n.parent.Valid {
+		return false
+	}
+	for _, m := range newer {
+		if m.parent == n.parent && m.messageID != n.messageID {
+			return true
+		}
+	}
+	return false
 }
 
 // openForHook opens the store read-only, like openReadOnly, with a busy

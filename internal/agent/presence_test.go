@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -218,16 +219,167 @@ func TestPresenceDevinBusyFromHookEvents(t *testing.T) {
 		{"PostToolUse", true},
 		{"SessionEnd", false},
 	} {
-		f.a.noteHookEvent(dv.id, c.event)
+		f.a.noteHookEvent(dv.id, c.event, at)
 		if got := busy(); got != c.busy {
 			t.Fatalf("after %s: busy %v, want %v", c.event, got, c.busy)
 		}
 	}
-	f.a.noteHookEvent(dv.id, "PostToolUse")
-	f.a.noteHookEvent("", "PostToolUse") // no session: ignored
+	f.a.noteHookEvent(dv.id, "PostToolUse", at)
+	f.a.noteHookEvent("", "PostToolUse", at) // no session: ignored
 	at = at.Add(hookBusyCap + time.Second)
 	if busy() {
 		t.Fatal("busy past hookBusyCap with no hook event")
+	}
+}
+
+// One devin process can hold several sessions (an ACP client's
+// session/new): each has a lock naming the same pid. A session the
+// process let go (ACP session/delete closes its lock file and drops it
+// from the store, and fires no SessionEnd) is not live, while the
+// process's other session is (devin 3000.11.1, issue #60).
+func TestPresenceDevinOneProcessSeveralSessions(t *testing.T) {
+	devinPath, db := buildDevin(t)
+	f := newFixture(t, devinPath)
+	f.once()
+	const pid = 5151
+	lockDir := filepath.Join(filepath.Dir(devinPath), "session_locks")
+	started := time.Now().Add(-time.Hour)
+	f.a.pidAlive = func(p int) bool { return p == pid }
+	f.a.procName = func(int) string { return "devin" }
+	f.a.procStart = func(int) (time.Time, bool) { return started, true }
+	var open []string
+	lsofCalls := 0
+	f.a.openFiles = func(_ context.Context, p int) []string {
+		lsofCalls++
+		if p != pid {
+			return nil
+		}
+		return open
+	}
+	const running, ended = "devin-oracle-001", "devin-oracle-002"
+	for _, id := range []string{running, ended} {
+		writeFile(t, filepath.Join(lockDir, id+".lock"), fmt.Sprintf("%d\n", pid))
+	}
+	var last time.Time
+	for _, s := range f.topSessions() {
+		if s.id == ended {
+			last = s.last
+		}
+	}
+	at := last.Add(20 * time.Minute) // past LiveWindow: live only on the lock
+	live := func() (bool, bool) {
+		t.Helper()
+		p := f.presence(at)
+		_, r := p[running]
+		_, e := p[ended]
+		return r, e
+	}
+	// The process holds both lock files open: both live.
+	open = []string{"/dev/null", filepath.Join(lockDir, running+".lock"), filepath.Join(lockDir, ended+".lock")}
+	if r, e := live(); !r || !e {
+		t.Fatalf("both sessions held open: running %v, ended %v", r, e)
+	}
+	// It closed one session's lock: only the other is live.
+	open = []string{"/dev/null", filepath.Join(lockDir, running+".lock")}
+	if r, e := live(); !r || e {
+		t.Fatalf("one lock let go: running %v, ended %v", r, e)
+	}
+	// The process table cannot tell: the locks stand.
+	open = nil
+	if r, e := live(); !r || !e {
+		t.Fatalf("open files unknown: running %v, ended %v", r, e)
+	}
+	// lsof hangs: the presence check does not wait past its budget, and
+	// the locks stand.
+	f.a.openFiles = func(ctx context.Context, _ int) []string {
+		lsofCalls++
+		<-ctx.Done()
+		return nil
+	}
+	began := time.Now()
+	if r, e := live(); !r || !e {
+		t.Fatalf("open files cut off: running %v, ended %v", r, e)
+	}
+	if d := time.Since(began); d > devinOpenFilesBudget+time.Second {
+		t.Fatalf("a hung lsof held presence for %s", d)
+	}
+	f.a.openFiles = func(_ context.Context, p int) []string {
+		lsofCalls++
+		if p != pid {
+			return nil
+		}
+		return open
+	}
+	// The session was deleted from the store, its lock file kept.
+	if _, err := db.Exec(`DELETE FROM sessions WHERE id = ?`, ended); err != nil {
+		t.Fatal(err)
+	}
+	if r, e := live(); !r || e {
+		t.Fatalf("deleted session: running %v, ended %v", r, e)
+	}
+	// A process named by one lock alone is not asked for its open files.
+	lsofCalls = 0
+	if err := os.Remove(filepath.Join(lockDir, ended+".lock")); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := live(); !r || lsofCalls != 0 {
+		t.Fatalf("single lock: running %v, open-file reads %d", r, lsofCalls)
+	}
+	// A devin that started after the lock was written reuses the pid of
+	// the session's dead process.
+	started = time.Now().Add(time.Minute)
+	if r, _ := live(); r {
+		t.Fatal("a lock older than its devin process counted")
+	}
+}
+
+// Devin fires no Stop hook for a turn the user interrupts; the store's
+// marker ends the busy mark within the presence tick, not after
+// hookBusyCap. A turn started after the interrupt stays busy.
+func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
+	devinPath, db := buildDevin(t)
+	f := newFixture(t, devinPath)
+	f.once()
+	f.a.pidAlive = func(pid int) bool { return pid == 5151 }
+	f.a.procName = func(int) string { return "devin" }
+	f.a.procStart = func(int) (time.Time, bool) { return time.Now().Add(-time.Hour), true }
+	dv := f.pick("devin")
+	writeFile(t, filepath.Join(filepath.Dir(devinPath), "session_locks", dv.id+".lock"), "5151\n")
+	at := dv.last.Add(time.Minute)
+	busy := func() bool {
+		t.Helper()
+		s, ok := f.presence(at)[dv.id]
+		if !ok {
+			t.Fatal("Devin session not live")
+		}
+		return s.Busy
+	}
+	node := func(id int, msg string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES (?, ?, NULL, ?, 0)`,
+			dv.id, 1000+id, msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hook := time.Date(2026, 10, 4, 20, 10, 19, 0, time.UTC)
+	f.a.noteHookEvent(dv.id, "PostToolUse", hook)
+	if !busy() {
+		t.Fatal("not busy after PostToolUse")
+	}
+	// Esc twice while the next tool ran: its result is the marker, no Stop.
+	node(1, `{"role":"tool","content":"Canceled due to user interrupt","tool_call_id":"get_output_0#1","metadata":{"created_at":"2026-10-04T20:10:28.937439Z","extensions":{"chisel/tool_failure":{"reason":"Canceled"}}}}`)
+	if busy() {
+		t.Fatal("busy after an interrupt the store shows")
+	}
+	// The next prompt starts a turn after the interrupt: busy.
+	f.a.noteHookEvent(dv.id, "UserPromptSubmit", hook.Add(30*time.Second))
+	if !busy() {
+		t.Fatal("a turn after the interrupt is not busy")
+	}
+	// Interrupted while the model answered.
+	node(2, `{"role":"system","content":"[Response interrupted by user]","metadata":{"created_at":"2026-10-04T20:10:55.035344Z"}}`)
+	if busy() {
+		t.Fatal("busy after a response interrupt")
 	}
 }
 

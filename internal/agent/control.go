@@ -227,7 +227,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Error = err.Error()
 		}
 	case req.Op == "flush":
-		a.noteHookEvent(req.Session, req.Event)
+		a.noteHookEvent(req.Session, req.Event, hookStart(req, a.now()))
 		a.hookLifecycle(ctx, req)
 		if d := a.storeOf(transcript.AgentOpencode); d != nil && req.Agent == string(transcript.AgentOpencode) {
 			// opencode's store holds every session: poll it (at most once a

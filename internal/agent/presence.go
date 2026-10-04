@@ -19,10 +19,12 @@ package agent
 //     rollout's last task event: task_started (busy), task_complete or
 //     turn_aborted (idle).
 //   - Devin: session_locks/<session>.lock names a running process named
-//     devin. Lock files outlive their sessions, so a Devin session is live
-//     only on that evidence, however recently it wrote. Busy or idle is the
-//     session's last hook event (hookTurns): Devin's store has no
-//     read-only signal that a turn runs.
+//     devin, and the session passes the per-session checks of
+//     devinRegistry (one process can hold several sessions). Lock files
+//     outlive their sessions, so a Devin session is live only on that
+//     evidence, however recently it wrote. Busy or idle is the session's
+//     last hook event (hookTurns): Devin's store has no read-only signal
+//     that a turn runs, only one that it was interrupted (devinTurnBusy).
 //   - opencode: the Flopwire plugin keeps <config dir>/opencode/<pid>.json
 //     per opencode process, naming the process's start and its top-level
 //     sessions (never a subagent's). A file whose pid runs a process named
@@ -66,6 +68,7 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/transcript/devin"
 )
 
 // harnessLive is what the harness registries say: sessions held open, with
@@ -156,30 +159,7 @@ func (a *Agent) registries() harnessLive {
 		}
 	}
 	if a.devin.path != "" {
-		devin := string(transcript.AgentDevin)
-		dir := filepath.Join(filepath.Dir(a.devin.path), "session_locks")
-		h.reg.Read[devin] = dirRead(dir)
-		locks, _ := fsprobe.Glob(filepath.Join(dir, "*.lock"))
-		for _, f := range locks {
-			id := strings.TrimSuffix(filepath.Base(f), ".lock")
-			ref := devicebus.Ref{Agent: devin, Session: id}
-			b, err := fsprobe.ReadFile(f)
-			if err != nil {
-				h.reg.Unknown = append(h.reg.Unknown, ref)
-				continue
-			}
-			pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-			switch {
-			case err != nil || pid <= 1:
-				h.reg.Unknown = append(h.reg.Unknown, ref)
-			case a.pidAlive(pid) && local.IsDevinProcess(a.procName(pid)):
-				add(id, time.Time{})
-				started, _ := a.procStart(pid)
-				h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", pid), Start: started}
-			default:
-				h.reg.Gone = append(h.reg.Gone, ref) // a dead pid, or reused by another program
-			}
-		}
+		a.devinRegistry(&h, add, dirRead)
 	}
 	if dir := a.cfg.OpencodeRegistry; dir != "" && a.opencode.path != "" {
 		oc := string(transcript.AgentOpencode)
@@ -217,6 +197,128 @@ func (a *Agent) registries() harnessLive {
 		}
 	}
 	return h
+}
+
+// devinRegistry reads Devin's session locks into h. A lock is the
+// session's own evidence; its pid alone is not: one `devin acp` process
+// can hold several sessions (an ACP client's session/new), each with a
+// lock naming it, and a session it deleted (session/delete, `devin rm`)
+// keeps its lock file. So a session is held when its lock names a running
+// devin that started by the time the lock was written (a later devin on a
+// reused pid is not the writer), the store still has the session, and,
+// when the process is named by more than one lock, the process holds the
+// session's lock file open (Devin closes it when it lets the session go).
+// A session that fails only these per-session checks is left out of Held
+// rather than reported Gone: the bus ends a session missing from two reads
+// EndDebounce apart, and a session Devin has not stored yet is not marked
+// ended. What cannot be read leaves the session held: presence must not
+// empty on a read error.
+func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRead func(string) bool) {
+	harness := string(transcript.AgentDevin)
+	dir := filepath.Join(filepath.Dir(a.devin.path), "session_locks")
+	h.reg.Read[harness] = dirRead(dir)
+	locks, _ := fsprobe.Glob(filepath.Join(dir, "*.lock"))
+	type held struct {
+		pid     int
+		started time.Time
+	}
+	cand := map[string]held{}
+	perPid := map[int][]string{}
+	for _, f := range locks {
+		id := strings.TrimSuffix(filepath.Base(f), ".lock")
+		ref := devicebus.Ref{Agent: harness, Session: id}
+		b, err := fsprobe.ReadFile(f)
+		if err != nil {
+			h.reg.Unknown = append(h.reg.Unknown, ref)
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil || pid <= 1 {
+			h.reg.Unknown = append(h.reg.Unknown, ref)
+			continue
+		}
+		if !a.pidAlive(pid) || !local.IsDevinProcess(a.procName(pid)) {
+			h.reg.Gone = append(h.reg.Gone, ref) // a dead pid, or reused by another program
+			continue
+		}
+		started, ok := a.procStart(pid)
+		if fi, err := fsprobe.Stat(f); ok && err == nil && started.Sub(fi.ModTime()) > 2*time.Second {
+			h.reg.Gone = append(h.reg.Gone, ref) // a devin that started after the lock was written
+			continue
+		}
+		cand[id] = held{pid, started}
+		perPid[pid] = append(perPid[pid], id)
+	}
+	ids := make([]string, 0, len(cand))
+	for id := range cand {
+		ids = append(ids, id)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), devinStoreBudget)
+	inStore, err := devin.Sessions(ctx, a.devin.path, ids)
+	cancel()
+	if err != nil {
+		inStore = nil // unknown: every lock stands
+	}
+	// lsof can be slow or missing: one budget bounds the reads, and a pid
+	// not read by then is unknown.
+	octx, ocancel := context.WithTimeout(context.Background(), devinOpenFilesBudget)
+	defer ocancel()
+	for pid, sids := range perPid {
+		if len(sids) < 2 {
+			continue
+		}
+		files := a.openFiles(octx, pid)
+		if len(files) == 0 {
+			continue // unknown
+		}
+		open := map[string]bool{}
+		for _, f := range files {
+			if filepath.Base(filepath.Dir(f)) == "session_locks" && strings.HasSuffix(f, ".lock") {
+				open[strings.TrimSuffix(filepath.Base(f), ".lock")] = true
+			}
+		}
+		for _, id := range sids {
+			if !open[id] {
+				delete(cand, id) // the process let it go
+			}
+		}
+	}
+	for id, c := range cand {
+		if inStore != nil && !inStore[id] {
+			continue // deleted from Devin
+		}
+		add(id, time.Time{})
+		h.reg.Held[devicebus.Ref{Agent: harness, Session: id}] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", c.pid), Start: c.started}
+	}
+}
+
+// devinOpenFilesBudget bounds the open-file reads (lsof, about 30 ms a
+// process) of one presence check, well inside its 2s tick.
+const devinOpenFilesBudget = 500 * time.Millisecond
+
+// devinStoreBudget bounds each read of Devin's store for presence.
+const devinStoreBudget = 200 * time.Millisecond
+
+// devinTurnBusy is a Devin session's busy or idle: its last hook event
+// (hookTurns), unless the store shows the turn interrupted since that
+// event's hook started. Devin fires no Stop for an interrupted turn.
+func (a *Agent) devinTurnBusy(ctx context.Context, session string) bool {
+	busy, start := a.hookBusy(session)
+	if !busy || a.devin.path == "" {
+		return busy
+	}
+	ctx, cancel := context.WithTimeout(ctx, devinStoreBudget)
+	defer cancel()
+	stopped, err := devin.InterruptedSince(ctx, a.devin.path, session, start)
+	if err != nil {
+		a.log.Debug("agent: devin interrupt", "session", session, "err", err)
+		return true
+	}
+	if stopped {
+		a.hookTurnEnded(session, start)
+		return false
+	}
+	return true
 }
 
 // startedAt reports whether pid is the process that wrote a registry
@@ -440,8 +542,10 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			if t := paths[key]; t != nil {
 				out[i].Busy = a.rollouts.busy(t.path, rollouts)
 			}
-		case transcript.AgentDevin, transcript.AgentOpencode:
-			out[i].Busy = a.hookBusy(s.SessionID)
+		case transcript.AgentDevin:
+			out[i].Busy = a.devinTurnBusy(ctx, s.SessionID)
+		case transcript.AgentOpencode:
+			out[i].Busy, _ = a.hookBusy(s.SessionID)
 		}
 	}
 	return out, nil
