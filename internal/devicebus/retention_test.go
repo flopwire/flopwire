@@ -12,23 +12,29 @@ import (
 	"github.com/flopwire/flopwire/internal/devicebus"
 )
 
-// offlineAcks is a device's server whose receipts fail while offline, and
-// which records every receipt batch that reached the server.
+// offlineAcks makes a device's receipts fail while offline, and records
+// every receipt batch that reached the server.
 type offlineAcks struct {
-	devicebus.Server
 	mu      sync.Mutex
 	offline bool
 	sent    []busproto.AckRequest
 }
 
-func (o *offlineAcks) Ack(ctx context.Context, req busproto.AckRequest) (busproto.AckResponse, error) {
+// gated is one connection of the device, through o.
+type gated struct {
+	devicebus.Server
+	o *offlineAcks
+}
+
+func (g gated) Ack(ctx context.Context, req busproto.AckRequest) (busproto.AckResponse, error) {
+	o := g.o
 	o.mu.Lock()
 	off := o.offline
 	o.mu.Unlock()
 	if off {
 		return busproto.AckResponse{}, errors.New("offline")
 	}
-	resp, err := o.Server.Ack(ctx, req)
+	resp, err := g.Server.Ack(ctx, req)
 	if err == nil {
 		o.mu.Lock()
 		o.sent = append(o.sent, req)
@@ -68,10 +74,7 @@ func TestReceiptsForMessagesTheServerDeleted(t *testing.T) {
 	lap := s.agent(s.device(gary), live("g-lap-1111", "claude", "/src/api", true))
 	gate := &offlineAcks{}
 	desk := s.agentVia(s.device(gary), func(srv devicebus.Server) devicebus.Server {
-		gate.mu.Lock()
-		defer gate.mu.Unlock()
-		gate.Server = srv
-		return gate
+		return gated{Server: srv, o: gate}
 	}, live("g-desk-2222", "codex", "/home/g/api", true))
 	reported(t, lap, "g-desk-2222")
 	reported(t, desk, "g-lap-1111")
