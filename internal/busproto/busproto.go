@@ -102,6 +102,11 @@ const (
 	MaxRefBytes = 512
 	// DefaultTTL is how long an undelivered message waits (B8).
 	DefaultTTL = 24 * time.Hour
+	// DefaultRetention is how long the server keeps a message in a final
+	// state (delivered, read, expired, refused, undelivered) after its
+	// expiry, with its audit rows. The server's FLOPWIRE_BUS_RETENTION
+	// overrides it.
+	DefaultRetention = 7 * 24 * time.Hour
 	// PollWait is the longest a poll holds; WaitSeconds above it is clamped.
 	PollWait = 25 * time.Second
 	// PresenceTTL is how long a session stays live after the poll that
@@ -538,6 +543,11 @@ type InboxItem struct {
 	Reason      string     `json:"reason,omitempty"`
 	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
 	ReadAt      *time.Time `json:"read_at,omitempty"`
+	// Attempts, on a refused send, counts the refusals with its reason
+	// from the session within the hour after it (the server keeps one row
+	// for them); LastAt is the latest. Unset for a single attempt.
+	Attempts int        `json:"attempts,omitempty"`
+	LastAt   *time.Time `json:"last_at,omitempty"`
 }
 
 // InboxResponse is one page, newest first. Next, when set, is the before

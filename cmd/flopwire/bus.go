@@ -880,7 +880,9 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 					*t = &u
 				}
 			}
-			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != ""})
+			// A reply whose parent the retention sweep deleted lost its
+			// reply_to; its thread is still another message's.
+			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != "" || (m.ThreadID != "" && m.ThreadID != m.ID)})
 		}
 		out.Next = resp.Inbox.Next
 	}
@@ -918,7 +920,10 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 	for _, m := range in.Messages {
 		var e strings.Builder
 		state := string(m.State)
-		if m.Reason != "" {
+		switch {
+		case m.Reason != "" && m.Attempts > 1:
+			state += fmt.Sprintf(" (%s, %d attempts)", m.Reason, m.Attempts)
+		case m.Reason != "":
 			state += " (" + m.Reason + ")"
 		}
 		if m.State == busproto.StateRead && m.ReadAt != nil {
