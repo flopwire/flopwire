@@ -450,9 +450,12 @@ const (
 
 // claudeResult is the last stdout line of a `claude plugin … --json` command.
 type claudeResult struct {
-	Outcome       string `json:"outcome"`
-	Message       string `json:"message"`
-	FailureCode   string `json:"failureCode"`
+	Outcome     string `json:"outcome"`
+	Message     string `json:"message"`
+	FailureCode string `json:"failureCode"`
+	// Marketplace is the name `marketplace add` added (2.1.289): the name
+	// the source's marketplace.json declares.
+	Marketplace   string `json:"marketplace"`
 	UpdateOutcome string `json:"updateOutcome"`
 	OldVersion    string `json:"oldVersion"`
 	NewVersion    string `json:"newVersion"`
@@ -677,8 +680,17 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 			if res.Outcome != "ok" {
 				return fail(fmt.Errorf("add the marketplace %s: %s", env.source, res.Message))
 			}
+			name := claudeMarketplace
+			if res.Marketplace != "" {
+				name = res.Marketplace
+			}
+			r.Done = append(r.Done, "added the marketplace "+name+" from "+env.source)
+			if name != claudeMarketplace {
+				// Not Flopwire's marketplace: install nothing from it. It may
+				// have been the user's before, so setup does not remove it.
+				return fail(fmt.Errorf("the marketplace at %s is named %s, not %s, so it is not Flopwire's and setup installed nothing from it. To remove it, run claude plugin marketplace remove %s", env.source, name, claudeMarketplace, name))
+			}
 			r.Marketplace = env.source
-			r.Done = append(r.Done, "added the marketplace "+claudeMarketplace+" from "+env.source)
 		case foreign:
 			r.Error = fmt.Sprintf("did not install or update %s: the marketplace %s comes from %s, not %s (see warnings)", claudePlugin, claudeMarketplace, mkt.location(), env.source)
 		default:
