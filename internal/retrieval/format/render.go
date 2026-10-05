@@ -13,6 +13,10 @@ import (
 // and the output budget.
 type Style struct {
 	MCP bool
+	// CLIReadCommand is the shell command prefix for read continuations,
+	// including explicit source flags. Empty means "flopwire read".
+	// MCP continuations use the already selected backend instead.
+	CLIReadCommand string
 	// Budget bounds the text of one answer, in bytes: grep, search and
 	// sessions print whole hits until the next would pass it, read drops
 	// the farthest neighbours, and the footer says where to go on. An
@@ -50,14 +54,18 @@ func (s Style) readAt(addr string, lineOffset int) string {
 	if s.MCP {
 		return fmt.Sprintf("flopwire_read address=%s line_offset=%d", addr, lineOffset)
 	}
-	return fmt.Sprintf("flopwire read %s --line-offset %d", addr, lineOffset)
+	return fmt.Sprintf("%s --line-offset %d", s.read(addr), lineOffset)
 }
 
 func (s Style) read(addr string) string {
 	if s.MCP {
 		return "flopwire_read address=" + addr
 	}
-	return "flopwire read " + addr
+	command := s.CLIReadCommand
+	if command == "" {
+		command = "flopwire read"
+	}
+	return command + " " + addr
 }
 
 // More is the call that reads n whole messages before or after (dir) the
@@ -66,7 +74,7 @@ func (s Style) More(addr, dir string, n int) string {
 	if s.MCP {
 		return fmt.Sprintf("flopwire_read address=%s messages_%s=%d", addr, dir, n)
 	}
-	return fmt.Sprintf("flopwire read %s --messages-%s %d", addr, dir, n)
+	return fmt.Sprintf("%s --messages-%s %d", s.read(addr), dir, n)
 }
 
 // moreLine is read's hint line for one side (dir) of the messages it
@@ -98,7 +106,7 @@ func (s Style) outlineAt(addr, c string) string {
 	if s.MCP {
 		return fmt.Sprintf("flopwire_read address=%s outline=true cursor=%s", addr, c)
 	}
-	return fmt.Sprintf("flopwire read %s --outline --cursor %s", addr, c)
+	return fmt.Sprintf("%s --outline --cursor %s", s.read(addr), c)
 }
 
 func (s Style) flag(cli, mcp string) string {

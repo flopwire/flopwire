@@ -859,7 +859,22 @@ func cliStyle(o *opts) (format.Style, error) {
 	if err != nil {
 		return format.Style{}, badArg(err)
 	}
-	return format.Style{Budget: n}, nil
+	st := format.Style{Budget: n}
+	if o.on["local"] || o.on["server"] || o.vals["index"] != "" {
+		st.CLIReadCommand = "flopwire read"
+		if o.on["local"] {
+			st.CLIReadCommand += " --local"
+		}
+		if o.on["server"] {
+			st.CLIReadCommand += " --server"
+		}
+		if index := o.vals["index"]; index != "" {
+			// Single quotes protect spaces and shell substitutions. An
+			// embedded quote is emitted outside that quoted segment.
+			st.CLIReadCommand += " --index '" + strings.ReplaceAll(index, "'", "'\"'\"'") + "'"
+		}
+	}
+	return st, nil
 }
 
 // toolCmd is the CLI entry of a tool: parse, print help, open, run.

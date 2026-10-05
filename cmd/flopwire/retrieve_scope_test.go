@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,6 +125,75 @@ func TestSharedMCPScopeIsVisibleInInstructionsAndAnswers(t *testing.T) {
 		}
 		if answer.Scope.Kind != "shared" || answer.Scope.Server != r.scope.Server {
 			t.Fatalf("%s scope=%+v", tool, answer.Scope)
+		}
+	}
+}
+
+func TestEnrolledLocalReadContinuationsStayLocal(t *testing.T) {
+	oracleIndex(t)
+	t.Setenv(client.EnvToken, "")
+	t.Setenv(client.EnvServer, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("local continuation queried shared server: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	if err := client.Save(client.Config{Server: srv.URL, Token: "device-token", DeviceID: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	// This path must remain one shell argument, with no substitutions.
+	index := filepath.Join(t.TempDir(), "archive ' $(printf injected) `printf injected`.db")
+	data, err := os.ReadFile(os.Getenv("FLOPWIRE_INDEX"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range [][]string{{"--local"}, {"--index", index}, {"--local", "--index", index}} {
+		args := append([]string{"0b7e2c1a-0000-4000-8000-000000000001/10178560", "--messages-before", "0", "--messages-after", "0"}, source...)
+		var out, stderr bytes.Buffer
+		if err := toolCmdIO(t.Context(), "read", args, &out, &stderr); err != nil {
+			t.Fatal(err)
+		}
+		followed := 0
+		for _, line := range strings.Split(out.String(), "\n") {
+			start := strings.Index(line, "flopwire read ")
+			if start < 0 {
+				continue
+			}
+			hint := strings.TrimSuffix(line[start:], "]")
+			// Interpret the printed command as a shell would, but replace
+			// flopwire with an argument recorder. Execute those arguments
+			// through the real CLI entry point below.
+			recorded, err := exec.Command("/bin/sh", "-c", "flopwire() { printf '%s\\000' \"$@\"; }\n"+hint).Output()
+			if err != nil {
+				t.Fatalf("hint %q: %v", hint, err)
+			}
+			argv := strings.Split(strings.TrimSuffix(string(recorded), "\x00"), "\x00")
+			if argv[0] != "read" {
+				t.Fatalf("hint arguments: %q", argv)
+			}
+			if len(source) > 1 {
+				found := false
+				for i := 0; i+1 < len(argv); i++ {
+					found = found || argv[i] == "--index" && argv[i+1] == index
+				}
+				if !found {
+					t.Fatalf("hint lost exact index argument: %q", argv)
+				}
+			}
+			var next bytes.Buffer
+			if err := toolCmdIO(t.Context(), "read", argv[1:], &next, &stderr); err != nil {
+				t.Fatalf("follow %q: %v", hint, err)
+			}
+			if !strings.HasPrefix(next.String(), "[scope: local device]\n") {
+				t.Fatalf("continuation lost local scope: %s", next.String())
+			}
+			followed++
+		}
+		if followed != 2 {
+			t.Fatalf("wanted earlier/later continuations, got %d: %s", followed, out.String())
 		}
 	}
 }
