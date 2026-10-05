@@ -12,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
+	"github.com/flopwire/flopwire/internal/retrieval/local/localtest"
 )
 
 func TestRetrievalScopeSelection(t *testing.T) {
@@ -130,7 +132,7 @@ func TestSharedMCPScopeIsVisibleInInstructionsAndAnswers(t *testing.T) {
 }
 
 func TestEnrolledLocalReadContinuationsStayLocal(t *testing.T) {
-	oracleIndex(t)
+	home := oracleIndex(t)
 	t.Setenv(client.EnvToken, "")
 	t.Setenv(client.EnvServer, "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,13 +145,15 @@ func TestEnrolledLocalReadContinuationsStayLocal(t *testing.T) {
 	}
 	// This path must remain one shell argument, with no substitutions.
 	index := filepath.Join(t.TempDir(), "archive ' $(printf injected) `printf injected`.db")
-	data, err := os.ReadFile(os.Getenv("FLOPWIRE_INDEX"))
+	store, err := localindex.Open(index, localindex.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(index, data, 0600); err != nil {
+	if err := localtest.IndexHome(t.Context(), store, home); err != nil {
+		store.Close()
 		t.Fatal(err)
 	}
+	store.Close()
 	for _, source := range [][]string{{"--local"}, {"--index", index}, {"--local", "--index", index}} {
 		args := append([]string{"0b7e2c1a-0000-4000-8000-000000000001/10178560", "--messages-before", "0", "--messages-after", "0"}, source...)
 		var out, stderr bytes.Buffer
