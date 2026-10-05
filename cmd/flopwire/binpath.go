@@ -12,9 +12,10 @@ import (
 // the flopwire binary from <config dir>/binary-path before it falls back
 // to PATH, because a harness runs hooks through a shell whose PATH is not
 // the user's terminal PATH (Codex: a login shell; a harness started from
-// the GUI: the GUI's PATH). flopwire setup writes the file, and every
-// command a person runs refreshes it (recordSelf), so an upgrade that
-// moves the binary heals at the next command.
+// the GUI: the GUI's PATH). flopwire setup writes the file. Another
+// command a person runs writes it only when the recorded binary is gone
+// (recordSelf), so an upgrade that moves the binary heals at the next
+// command and a scratch build never replaces the user's install.
 
 // binaryPathFile is the file name in the config directory.
 const binaryPathFile = "binary-path"
@@ -97,8 +98,12 @@ func recordBinary(file, exe string) (changed bool, err error) {
 	return true, nil
 }
 
-// recordSelf refreshes the recorded path for a command a person ran. It
-// stays silent: a read-only config directory must not fail the command.
+// recordSelf records this binary for a command a person ran, when no
+// binary is recorded or the recorded one is gone (an upgrade moved it). It
+// never replaces a recorded binary that exists: a scratch, CI or `go run`
+// build must not take over the hooks from the user's install; setup does
+// that. It stays silent: a read-only config directory must not fail the
+// command.
 func recordSelf(args []string) {
 	if len(args) == 0 || noRecordCommands[args[0]] || !knownCommand(args[0]) {
 		return
@@ -109,6 +114,9 @@ func recordSelf(args []string) {
 	file, err := recordedBinaryPath()
 	if err != nil {
 		return
+	}
+	if r := readRecordedBinary(file); r != "" && isExecFile(r) {
+		return // only setup replaces a recorded binary that still exists
 	}
 	exe, err := selfPath()
 	if err != nil {

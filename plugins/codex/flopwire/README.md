@@ -25,8 +25,9 @@ set, not the `PATH` Codex started with. Each hook runs
 first of these:
 
 1. The binary path that `flopwire setup` recorded in
-   `<config dir>/binary-path`. Every `flopwire` command you run updates
-   it when the binary moved.
+   `<config dir>/binary-path`. A `flopwire` command you run updates it
+   when the recorded binary is gone. A newer `flopwire` on the hook's
+   `PATH` wins over an older recorded one.
 2. `flopwire` on the hook's `PATH`.
 3. `flopwire` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin` or
    `~/.local/bin`.

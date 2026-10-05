@@ -267,8 +267,9 @@ func TestHookShimNoBinary(t *testing.T) {
 	}
 }
 
-// TestRecordSelf: a command a person runs records this binary's path,
-// writing only when it changed; hooks, the MCP server and the commands
+// TestRecordSelf: a command a person runs records this binary's path
+// when none is recorded or the recorded binary is gone, writing only when
+// it changed; hooks, the MCP server and the commands
 // setup or a test run on other binaries leave it alone.
 func TestRecordSelf(t *testing.T) {
 	dir := t.TempDir()
@@ -297,7 +298,24 @@ func TestRecordSelf(t *testing.T) {
 	if st, _ := os.Stat(file); !st.ModTime().Equal(old) {
 		t.Fatal("rewrote an unchanged path")
 	}
-	// Another binary was recorded (an upgrade moved it): refreshed.
+	// Another binary that still exists was recorded (the user's install,
+	// and this is a scratch or CI build): left alone. Only setup replaces
+	// a recorded binary that exists.
+	other := filepath.Join(dir, "installed", "flopwire")
+	if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordBinary(file, other); err != nil {
+		t.Fatal(err)
+	}
+	recordSelf([]string{"sessions"})
+	if got := readRecordedBinary(file); got != other {
+		t.Fatalf("a scratch build replaced the recorded install: %q, want %q", got, other)
+	}
+	// The recorded binary is gone (an upgrade moved it): refreshed.
 	if err := os.WriteFile(file, []byte("/opt/homebrew/Cellar/flopwire/0.1.0/bin/flopwire\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

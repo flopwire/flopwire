@@ -415,14 +415,19 @@ run a shim, `bin/flopwire-hook` in the Claude Code and Codex plugins
 
 1. The path in `<config dir>/binary-path`, if that file names an
    executable file. `flopwire setup` writes this binary's absolute path
-   there, with symlinks resolved. Each `flopwire` command that you run
-   writes it again when it differs, so an upgrade that moves the binary
-   corrects it at your next command. `flopwire hook`, `flopwire mcp`,
+   there, with symlinks resolved. Another `flopwire` command that you
+   run writes it only when no binary is recorded or the recorded one is
+   gone. So an upgrade that moves the binary corrects it at your next
+   command, and a scratch or CI build never replaces your install.
+   `flopwire hook`, `flopwire mcp`,
    `flopwire version`, `flopwire probe`, `flopwire agent flush`, the
    server commands and `flopwire setup --check` do not write it. The
    config directory is the directory of `FLOPWIRE_CONFIG`, else
    `~/Library/Application Support/flopwire` on macOS and
    `~/.config/flopwire` (or `$XDG_CONFIG_HOME/flopwire`) on Linux.
+   When `flopwire` on the hook shell's `PATH` is a newer file than the
+   recorded one (an old `go install` or a kept Homebrew keg still exists),
+   the shim takes the one on `PATH`.
 2. `flopwire` on the hook shell's `PATH`.
 3. `flopwire` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin` or
    `~/.local/bin`.
