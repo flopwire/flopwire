@@ -58,7 +58,7 @@ type job struct {
 	export []byte // latest export bytes; nil for files
 	// exportFn produces the export when the flush runs (NotifyExportFunc),
 	// so a queue of exports costs no memory while the server is down.
-	exportFn func(context.Context) ([]byte, error)
+	exportFn ExportFunc
 	first    time.Time
 	timer    *time.Timer
 }
@@ -138,15 +138,16 @@ func (s *Scheduler) NotifyExport(spec SourceSpec, data []byte) {
 }
 
 // NotifyExportFunc is NotifyExport with the export produced by fn when the
-// flush runs, not now. A device with many changed exports (a first sync of
-// Devin's store, or a long outage) then holds one export in memory at a
-// time instead of all of them.
-func (s *Scheduler) NotifyExportFunc(spec SourceSpec, fn func(context.Context) ([]byte, error)) {
+// flush runs, not now (SyncExportFunc). A device with many changed exports
+// (a first sync of Devin's store, or a long outage) then holds one export
+// in memory at a time instead of all of them, and an exporter that appends
+// exports only what changed since the last flush.
+func (s *Scheduler) NotifyExportFunc(spec SourceSpec, fn ExportFunc) {
 	spec.Export = true
 	s.notify(spec, nil, fn)
 }
 
-func (s *Scheduler) notify(spec SourceSpec, data []byte, fn func(context.Context) ([]byte, error)) {
+func (s *Scheduler) notify(spec SourceSpec, data []byte, fn ExportFunc) {
 	cad := s.cfg.Append
 	if spec.rewriteProne() || spec.Export {
 		cad = s.cfg.Document
@@ -447,10 +448,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		var err error
 		if j.spec.Export {
 			if j.exportFn != nil {
-				var data []byte
-				if data, err = j.exportFn(ctx); err == nil {
-					err = s.sy.SyncExport(ctx, j.spec, data)
-				}
+				err = s.sy.SyncExportFunc(ctx, j.spec, j.exportFn)
 			} else if j.export != nil {
 				err = s.sy.SyncExport(ctx, j.spec, j.export)
 			} else {

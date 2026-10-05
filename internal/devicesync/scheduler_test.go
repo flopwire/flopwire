@@ -120,10 +120,10 @@ func TestSchedulerExportFunc(t *testing.T) {
 		BackoffMin: 20 * time.Millisecond, BackoffMax: 40 * time.Millisecond})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sp := SourceSpec{Path: e.dir + "/db#s1", Agent: transcript.AgentDevin, StorageKind: transcript.StorageSQLite, SessionKey: "s1", Parser: "devin-export@1"}
+	sp := SourceSpec{Path: e.dir + "/db#s1", Agent: transcript.AgentDevin, StorageKind: transcript.StorageSQLite, SessionKey: "s1", Parser: "devin-export@2"}
 	data := jsonlLines(23, 50, 100)
 	var calls atomic.Int32
-	fn := func(context.Context) ([]byte, error) { calls.Add(1); return data, nil }
+	fn := func(context.Context, []byte) (Export, error) { calls.Add(1); return Export{Data: data}, nil }
 	e.srv.SetDown(true)
 	for range 5 {
 		sc.NotifyExportFunc(sp, fn)
@@ -182,7 +182,7 @@ func TestSchedulerFailingSourceDelaysOnlyItself(t *testing.T) {
 		Document: Cadence{5 * time.Millisecond, 10 * time.Millisecond}, BackoffMin: 20 * time.Millisecond, BackoffMax: 80 * time.Millisecond})
 	go sc.Run(ctx)
 	bad := SourceSpec{Path: "devin:x#bad", Agent: transcript.AgentDevin, StorageKind: transcript.StorageSQLite, Parser: "devin@1"}
-	sc.NotifyExportFunc(bad, func(context.Context) ([]byte, error) { return nil, errors.New("devin schema changed") })
+	sc.NotifyExportFunc(bad, func(context.Context, []byte) (Export, error) { return Export{}, errors.New("devin schema changed") })
 	waitFor(t, "bad source failing", func() bool { return len(sc.Status().Failing) == 1 })
 	for i := range 3 {
 		sp := e.spec(fmt.Sprintf("good%d.jsonl", i), transcript.StorageJSONLAppend)
@@ -238,10 +238,10 @@ func TestSchedulerSealsQuietExport(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go sc.Run(ctx)
-	sp := SourceSpec{Path: "devin:sessions.db#quiet", Agent: transcript.AgentDevin, StorageKind: transcript.StorageSQLite, Parser: "devin-export@1"}
+	sp := SourceSpec{Path: "devin:sessions.db#quiet", Agent: transcript.AgentDevin, StorageKind: transcript.StorageSQLite, Parser: "devin-export@2"}
 	rows := jsonlLines(31, 300, 150)
 	var exports atomic.Int32
-	sc.NotifyExportFunc(sp, func(context.Context) ([]byte, error) { exports.Add(1); return rows, nil })
+	sc.NotifyExportFunc(sp, func(context.Context, []byte) (Export, error) { exports.Add(1); return Export{Data: rows}, nil })
 	waitFor(t, "first flush", func() bool { _, tail := e.srv.Manifest(sp.Path, "", 0); return tail != nil })
 	waitFor(t, "sealed tail", func() bool {
 		entries, tail := e.srv.Manifest(sp.Path, "", 0)
