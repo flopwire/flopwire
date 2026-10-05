@@ -60,7 +60,7 @@ Output, newest message first, grouped under one header line per session
   | `who` | `user@device`, on the team server |
   | `agent` | `claude`, `codex`, `devin` or `opencode` |
   | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
-  | `repo`, `branch` | The repo's name; the branch, or `a→b` when it switched |
+  | `repo`, `branch` | The last element of the checkout the session ran in (a linked worktree shows its own directory, not the main checkout's); the branch, or `a→b` when it switched |
   | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits (with or without a sha), failed tool calls. A `+` means the digest capped the list |
   | `intent` | What the session was for, cut to 80 characters at a word. Always last |
 
@@ -147,8 +147,9 @@ The answer is compact JSON, one line, one brief row per session:
   --session ID`, `flopwire send ID` and `--session` of grep and search
   take it. `address` is its shortest unique prefix, left out when it is
   the whole id.
-- A row has `agent`, `user` and `device` (when known), `repo` (or the
-  working directory), `branches`, `live`, `last_activity_at`, `messages`,
+- A row has `agent`, `user` and `device` (when known), `repo` (the
+  root of the checkout the session ran in, which for a linked worktree is
+  the worktree, or the working directory outside git), `branches`, `live`, `last_activity_at`, `messages`,
   `title` (cut to 160 bytes), `intent` (when it is not the title),
   `parent_session` (a subagent's parent), and from the digest the commit
   ids, the commits recorded without a sha (`commits_no_sha`, see
@@ -362,7 +363,10 @@ Injected text (CLAUDE.md, AGENTS.md, system reminders) is hidden unless
 `--repo` names a repository, not one checkout of it. A session in a
 linked worktree (`git worktree add`) is on the same repo as a session in
 the main checkout. This is also true of the worktrees of a bare
-repository, with or without a remote.
+repository, with or without a remote. The `repo` that results show is
+the checkout a session ran in, so a worktree's directory name there is
+not a repo name for `--repo`: pass the worktree's path, or the repo's
+name.
 
 A repository is known by its main checkout. For a bare repository with
 worktrees beside it (`~/Code/.app.git` and `~/Code/app`), it is the bare
