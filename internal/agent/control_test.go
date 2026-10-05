@@ -542,3 +542,37 @@ func TestStatusContextEndsWhenClientLeaves(t *testing.T) {
 		t.Fatal("the client left and the status context lives on")
 	}
 }
+
+// The status op itself runs under that context: a client that closes the
+// socket mid-status cancels the work serveConn does for it.
+func TestStatusRequestCancelledWhenClientLeaves(t *testing.T) {
+	f := newFixture(t, "-")
+	runCtx, cancel := context.WithCancel(ctx)
+	sock := filepath.Join(shortTemp(t), "a.sock")
+	done := make(chan error, 1)
+	go func() { done <- f.a.Serve(runCtx, sock) }()
+	defer func() { cancel(); <-done }()
+	waitFor(t, func() bool { _, err := Call(ctx, sock, Request{Op: "ping"}); return err == nil })
+	entered, ended := make(chan struct{}), make(chan bool, 1)
+	testHookStatus = func(ctx context.Context) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			ended <- true
+		case <-time.After(2 * time.Second):
+			ended <- false
+		}
+	}
+	defer func() { testHookStatus = nil }()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(Request{Op: "status"})
+	c.Write(append(b, '\n'))
+	<-entered
+	c.Close()
+	if !<-ended {
+		t.Fatal("the client closed and its status kept running")
+	}
+}

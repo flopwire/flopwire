@@ -183,6 +183,9 @@ func untilClientLeaves(ctx context.Context, c net.Conn) (context.Context, contex
 	return ctx, cancel
 }
 
+// testHookStatus runs at the start of a status request, with its context.
+var testHookStatus func(context.Context)
+
 func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(30 * time.Second))
@@ -213,6 +216,9 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		// gives up, rather than hold a read connection for nobody.
 		ctx, stop := untilClientLeaves(ctx, c)
 		defer stop()
+		if testHookStatus != nil {
+			testHookStatus(ctx)
+		}
 		resp.OK = true
 		if st, ok := a.cfg.Sync.(interface{ Status() devicesync.Status }); ok {
 			v := st.Status()
