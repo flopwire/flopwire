@@ -759,7 +759,12 @@ The plugin it installs runs `flopwire hook` on `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
 MCP tools. A missing `flopwire` is silent; a `flopwire hook` that fails (a
 binary older than the plugin) exits 1 with a hint to run
-`flopwire setup --check`. Devin has no hook approval step.
+`flopwire setup --check` on stderr. Devin does not show that hint, in the
+TUI or in print mode. It writes only `Command exited with code 1` to its
+own log, and the session continues without messages. After you update the
+plugin or the binary, run `flopwire setup --check`: it reports a binary on
+`PATH` that lacks a command the plugin runs. Devin has no hook approval
+step.
 
 On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
@@ -1184,6 +1189,16 @@ again after a few seconds. `flopwire send` retries once by itself.
   that `peers` makes. A session that a `devin acp` process deleted, or a
   lock whose pid a later `devin` reuses, reads live there until that
   process exits. Messages are not affected: they follow `peers`.
+- On Linux, the agent computes a process's start from the boot time in
+  `/proc/stat`, and the boot time moves when the wall clock steps. A
+  forward step of more than 2 seconds (for example, a VM or WSL resume
+  that resyncs the clock) makes a running Claude Code, Devin or opencode
+  process look as if it started after the file that names it. A backward
+  step of more than 2 seconds also affects Claude Code: its session file
+  records the process's start, and the two must agree within 2 seconds.
+  The sessions then end, and they read as ended until that process exits.
+  Restart the harness to resume them. Codex sessions are not affected:
+  their writer lock does not use the start time.
 
 ## How the agent finds changes
 

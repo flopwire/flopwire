@@ -1523,3 +1523,28 @@ func TestNoDeviceRacingALogin(t *testing.T) {
 	run(t, b)
 	waitFor(t, "a poll with the new credential", func() bool { return srv.pollCount() > 0 })
 }
+
+// A path ref with a tab or newline in a directory name leaves the device
+// with spaces there (CleanRef), but the withheld check sees the path as it
+// was written: an exact-path lookup of a withheld transcript still finds
+// it (#142 review).
+func TestWithheldCheckSeesARefsTab(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	const path = "/home/u/a\tb/sessions/store.jsonl"
+	b.SetWithheld(func(_ context.Context, ref string) (string, error) {
+		if ref == path {
+			return "5ec2e7aa-0000-4000-8000-000000000001", nil
+		}
+		return "", nil
+	}, nil)
+	var be *busproto.Error
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", To: "@alex", Body: "x", Refs: []string{path}}); !errors.As(err, &be) || be.Code != busproto.CodeWithheldSession {
+		t.Fatalf("ref %q: %v", path, err)
+	}
+	if srv.sendCount() != 0 {
+		t.Fatal("a ref naming a withheld transcript reached the server")
+	}
+}

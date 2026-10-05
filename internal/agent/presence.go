@@ -29,7 +29,7 @@ package agent
 //     per opencode process, naming the process's start and its top-level
 //     sessions (never a subagent's). A file whose pid runs a process named
 //     opencode that started by then holds its sessions; any other file's
-//     sessions ended. While the plugin is installed (the directory
+//     sessions ended, and the agent removes a dead pid's file. While the plugin is installed (the directory
 //     exists), an opencode session is live only on that evidence. Busy or
 //     idle is the session's last plugin event (hookTurns).
 //
@@ -181,7 +181,13 @@ func (a *Agent) registries() harnessLive {
 			if json.Unmarshal(b, &v) != nil {
 				continue
 			}
-			alive := a.pidAlive(pid) && local.IsOpencodeProcess(a.procName(pid)) && a.startedAt(pid, v.Started)
+			running := a.pidAlive(pid)
+			if !running {
+				// A dead pid's file (opencode killed by a signal skips the
+				// plugin's cleanup) is removed; its sessions end below.
+				_ = os.Remove(f)
+			}
+			alive := running && local.IsOpencodeProcess(a.procName(pid)) && a.startedAt(pid, v.Started)
 			for _, id := range v.Sessions {
 				if id == "" {
 					continue

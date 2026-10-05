@@ -26,6 +26,7 @@ import (
 // server when one is configured, else into the local inbox. A refusal is a
 // *busproto.Error with the server's codes either way.
 func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	rawRefs := req.Refs
 	cleanSend(&req)
 	if b.Local() {
 		// Without a server the path rules do not matter: the sender must
@@ -49,7 +50,7 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent, true); err != nil {
 		return busproto.SendResponse{}, err
 	}
-	if err := b.namesNoWithheld(ctx, req); err != nil {
+	if err := b.namesNoWithheld(ctx, req, rawRefs); err != nil {
 		return busproto.SendResponse{}, err
 	}
 	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
@@ -195,8 +196,10 @@ func CleanText(s string) string {
 
 // namesNoWithheld refuses a send whose recipient prefix or refs name a
 // session the path rules keep off the server: the request would tell the
-// server its id (issue #71).
-func (b *Bus) namesNoWithheld(ctx context.Context, req busproto.SendRequest) error {
+// server its id (issue #71). raw are the refs before CleanRef: a path
+// with a tab or newline in a directory name is checked as written too, so
+// an exact-path lookup still finds it.
+func (b *Bus) namesNoWithheld(ctx context.Context, req busproto.SendRequest, raw []string) error {
 	b.mu.Lock()
 	withheld := b.cfg.Withheld
 	b.mu.Unlock()
@@ -222,6 +225,13 @@ func (b *Bus) namesNoWithheld(ctx context.Context, req busproto.SendRequest) err
 	for _, r := range req.Refs {
 		if err := check("ref", r); err != nil {
 			return err
+		}
+	}
+	for _, r := range raw {
+		if t := CleanText(r); t != CleanRef(r) {
+			if err := check("ref", t); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -224,7 +224,11 @@ func TestGrepCancelMidWrite(t *testing.T) {
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want an error that is not a spent budget, got %v (page %+v)", err, p)
 	}
-	t.Logf("cancelled grep: %v (is Canceled: %v)", err, errors.Is(err, context.Canceled))
+	// The cut write says why: the caller cancelled, as pgx says for a
+	// cut read, not a bare i/o timeout (#138 review).
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
 }
 
 // An i/o timeout the budget did not cause is a transport error, not a

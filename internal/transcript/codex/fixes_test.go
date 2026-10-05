@@ -315,3 +315,28 @@ func TestHookAdditionalContextIsMarked(t *testing.T) {
 		t.Fatalf("hook row enrichment %v", h.Enrichment)
 	}
 }
+
+// FindRollout takes the whole thread id: a tail of one (a short id a
+// caller's _meta names) matches no rollout, though the glob's "*" would
+// let it end any rollout's name (#146 review).
+func TestFindRolloutNeedsTheWholeID(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".codex")
+	day := filepath.Join(home, SessionsDir, "2026", "10", "04")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "019a0000-0000-7000-8000-0000000000c8"
+	path := filepath.Join(day, "rollout-2026-10-04T14-05-00-"+id+".jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(day, "x")
+	if got := FindRollout(child, id); got != path {
+		t.Fatalf("FindRollout(whole id) = %q, want %q", got, path)
+	}
+	for _, short := range []string{"c8", "0000000000c8", "8000-0000000000c8", "00-" + id} {
+		if got := FindRollout(child, short); got != "" {
+			t.Errorf("FindRollout(%q) = %q, want none", short, got)
+		}
+	}
+}

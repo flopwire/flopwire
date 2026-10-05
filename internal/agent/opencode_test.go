@@ -2,6 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -185,6 +188,18 @@ func TestPresenceOpencode(t *testing.T) {
 	name = "zsh"
 	if f.present(clock, at.Add(2*time.Second), a) {
 		t.Fatal("a session of a reused pid is live")
+	}
+	if _, err := os.Stat(reg); err != nil {
+		t.Fatalf("the file of a pid that still runs was removed: %v", err)
+	}
+	// The pid is dead (opencode killed by a signal left its file): the
+	// agent removes the file (#129 review).
+	alive = false
+	if f.present(clock, at.Add(3*time.Second), a) {
+		t.Fatal("a session of a dead pid is live")
+	}
+	if _, err := os.Stat(reg); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the file of a dead pid stays: %v", err)
 	}
 }
 
