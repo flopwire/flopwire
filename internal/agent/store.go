@@ -75,6 +75,10 @@ type storeState struct {
 	// modes caches each session's path rules verdict; guarded by Agent.mu.
 	modes map[string]pathpolicy.Mode
 	polls atomic.Int64
+	// parser is kept across incremental polls (guarded by mu): the Devin
+	// parser keeps the graphs of live sessions, so a poll reads only their
+	// new rows instead of every row of a session that is still growing.
+	parser transcript.Parser
 }
 
 // stores are the harness stores this device reads.
@@ -243,7 +247,13 @@ var _ transcript.SessionSuperseder = (*storeSink)(nil)
 // first, then every row again, then rows the new parse did not emit are
 // superseded and the source records the new parser version.
 func (a *Agent) parseStore(ctx context.Context, d *storeState, id transcript.Identity, full bool) error {
-	p := d.h.newParser()
+	p := d.parser
+	if full || p == nil {
+		p = d.h.newParser()
+	}
+	if !full {
+		d.parser = p
+	}
 	sampled := time.Now()
 	var st localindex.SourceState
 	var err error

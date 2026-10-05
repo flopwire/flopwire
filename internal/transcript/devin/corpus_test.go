@@ -121,7 +121,7 @@ func TestCorpus(t *testing.T) {
 		if s.hidden {
 			hidden++
 		}
-		g, err := loadGraph(ctx, tx, id)
+		g, err := loadGraph(ctx, tx, id, 0, nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
