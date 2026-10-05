@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func marshalJSON(v any) ([]byte, error)   { return json.Marshal(v) }
@@ -38,8 +39,41 @@ var ErrNoHTTPClient = errors.New("syncproto: Client.HTTP is required")
 // should back off and retry (5xx, 408, 429) rather than treat the request
 // as rejected.
 type HTTPError struct {
-	Status int
-	Body   ErrorResponse
+	Status  int
+	Body    ErrorResponse
+	RetryAt time.Time // Retry-After deadline, zero when absent or invalid
+}
+
+// Busy distinguishes an admission refusal from a transport outage. Legacy
+// servers use flush_in_progress; newer servers may describe the scope.
+func Busy(err error) bool {
+	var he *HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	if he.Status == http.StatusTooManyRequests {
+		return true
+	}
+	if he.Status != http.StatusServiceUnavailable {
+		return false
+	}
+	return !he.RetryAt.IsZero() || he.Body.Code == "server_busy" || he.Body.Code == "device_busy" || he.Body.Code == "source_busy"
+}
+
+func retryAfter(value string, now time.Time) time.Time {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		// Reject values that overflow time.Duration instead of wrapping into
+		// an immediate retry. Normal backoff applies to malformed headers.
+		if seconds > uint64((1<<63-1)/int64(time.Second)) {
+			return time.Time{}
+		}
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	if at, err := http.ParseTime(value); err == nil && at.After(now) {
+		return at
+	}
+	return time.Time{}
 }
 
 func (e *HTTPError) Error() string {
@@ -133,7 +167,7 @@ func (c *Client) do(ctx context.Context, path, ctype string, body io.Reader, siz
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		he := &HTTPError{Status: res.StatusCode}
+		he := &HTTPError{Status: res.StatusCode, RetryAt: retryAfter(res.Header.Get("Retry-After"), time.Now())}
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 		if json.Unmarshal(raw, &he.Body) != nil {
 			he.Body.Message = string(raw)

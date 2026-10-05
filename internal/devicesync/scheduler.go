@@ -187,10 +187,15 @@ func (s *Scheduler) debounced(path string, j *job) {
 // Claude Stop / PostToolUse and the Codex equivalents), and puts it at the
 // head of the queue: a backlog (a device's first sync, catch-up after an
 // outage) must not delay the session the user is working in. It resets
-// the server backoff and the source's own, so a hook retries at once.
+// an outage backoff and the source's own, so a hook retries at once.
+// Admission cooldowns and explicit Retry-After deadlines still apply.
 func (s *Scheduler) Flush(spec SourceSpec) {
 	s.mu.Lock()
-	s.backoff, s.retryAt = 0, time.Time{}
+	var he *syncproto.HTTPError
+	respectDeadline := errors.As(s.lastErr, &he) && time.Now().Before(he.RetryAt)
+	if !syncproto.Busy(s.lastErr) && !respectDeadline {
+		s.backoff, s.retryAt = 0, time.Time{}
+	}
 	if f := s.failing[spec.Path]; f != nil {
 		f.backoff, f.retryAt = 0, time.Time{}
 	}
@@ -293,6 +298,7 @@ func (s *Scheduler) repin(now time.Time) {
 // Status is the sync state for `flopwire agent status`.
 type Status struct {
 	ServerDown   bool          `json:"server_down"`
+	ServerBusy   bool          `json:"server_busy,omitempty"`
 	RetryAt      time.Time     `json:"retry_at,omitzero"`
 	LastError    string        `json:"last_error,omitempty"` // the last server (transport) error
 	Stopped      string        `json:"stopped,omitempty"`    // a permanent error: no uploads until the server is re-pinned
@@ -335,6 +341,7 @@ func (s *Scheduler) status() Status {
 	defer s.mu.Unlock()
 	st := Status{ServerDown: s.down, RetryAt: s.retryAt, Queued: len(s.ready) + len(s.waiting) + s.running,
 		SpoolBytes: s.sy.spool.Used(), SpoolBlocked: s.sy.spool.Blocked()}
+	st.ServerBusy = syncproto.Busy(s.lastErr) && time.Now().Before(s.retryAt)
 	if s.lastErr != nil {
 		st.LastError = s.lastErr.Error()
 	}
@@ -493,9 +500,15 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		if transport {
 			s.backoff = min(max(2*s.backoff, s.cfg.BackoffMin), s.cfg.BackoffMax)
 			d := jitter(s.backoff)
-			s.retryAt, s.lastErr, s.down = time.Now().Add(d), err, true
+			now := time.Now()
+			var he *syncproto.HTTPError
+			if errors.As(err, &he) {
+				d = max(d, he.RetryAt.Sub(now))
+			}
+			busy := syncproto.Busy(err)
+			s.retryAt, s.lastErr, s.down = now.Add(d), err, !busy
 			s.mu.Unlock()
-			s.sy.cfg.Logger.Info("devicesync: server unreachable, backing off", "retry_in", d, "err", err)
+			s.sy.cfg.Logger.Info("devicesync: sync backing off", "server_busy", busy, "retry_in", d, "err", err)
 			return
 		}
 		f := s.failing[path]

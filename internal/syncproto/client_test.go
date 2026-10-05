@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // A Client without HTTP fails instead of falling back to an unpinned
@@ -23,5 +24,39 @@ func TestClientRequiresHTTP(t *testing.T) {
 	}
 	if hit || Retryable(ErrNoHTTPClient) {
 		t.Fatalf("request sent %v, retryable %v", hit, Retryable(ErrNoHTTPClient))
+	}
+}
+
+func TestClientPreservesRetryAfter(t *testing.T) {
+	for _, status := range []int{429, 503} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", "60")
+				w.WriteHeader(status)
+				w.Write([]byte(`{"code":"flush_in_progress"}`))
+			}))
+			defer srv.Close()
+			c := &Client{Server: srv.URL, HTTP: srv.Client()}
+			before := time.Now()
+			_, err := c.Has(context.Background(), nil)
+			var he *HTTPError
+			if !errors.As(err, &he) || he.RetryAt.Before(before.Add(time.Minute)) || !Busy(err) || !Retryable(err) {
+				t.Fatalf("retry metadata lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetryAfterFormats(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	for _, value := range []string{"60", now.Add(time.Minute).Format(http.TimeFormat)} {
+		if got := retryAfter(value, now); !got.Equal(now.Add(time.Minute)) {
+			t.Fatalf("%q: %v", value, got)
+		}
+	}
+	for _, value := range []string{"", "nonsense", "-1", "18446744073709551615", now.Add(-time.Minute).Format(http.TimeFormat)} {
+		if got := retryAfter(value, now); !got.IsZero() {
+			t.Fatalf("%q: %v", value, got)
+		}
 	}
 }
