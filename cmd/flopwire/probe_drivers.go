@@ -150,9 +150,10 @@ type claudeSession struct {
 	turnAt  atomic.Int64
 }
 
-func startClaude(ctx context.Context, dir string, env []string, errLog, model string) (*claudeSession, error) {
-	p, err := startProc(ctx, dir, env, errLog, "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--setting-sources", "project", "--model", model, "--allowedTools", "Bash,Agent,Task")
+func startClaude(ctx context.Context, dir string, env []string, errLog, model string, extra ...string) (*claudeSession, error) {
+	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
+		"--verbose", "--setting-sources", "project", "--model", model, "--allowedTools", "Bash,Agent,Task"}, extra...)
+	p, err := startProc(ctx, dir, env, errLog, "claude", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -402,14 +403,15 @@ func startCodex(ctx context.Context, dir, home string, env []string, errLog stri
 	return s, nil
 }
 
-// codexTrustHooks marks the project's hooks trusted in the probe's own
-// CODEX_HOME config, as the TUI's review prompt does: hooks/list gives
-// each hook's key and hash, config/batchWrite records them.
+// codexTrustHooks marks the project's hooks (and the plugin's, which only
+// --as-installed installs there) trusted in the probe's own CODEX_HOME
+// config, as the TUI's review prompt does: hooks/list gives each hook's
+// key and hash, config/batchWrite records them.
 func codexTrustHooks(ctx context.Context, c *rpcConn, dir, home string) error {
 	var list struct {
 		Data []struct {
 			Hooks []struct {
-				Key, CurrentHash, TrustStatus, Source string
+				Key, CurrentHash, TrustStatus, Source, PluginID string
 			} `json:"hooks"`
 			Errors []json.RawMessage `json:"errors"`
 		} `json:"data"`
@@ -424,8 +426,11 @@ func codexTrustHooks(ctx context.Context, c *rpcConn, dir, home string) error {
 			return fmt.Errorf("codex hooks: %s", d.Errors[0])
 		}
 		for _, h := range d.Hooks {
+			// The project's hooks, and under --as-installed the plugin's,
+			// installed in this scratch CODEX_HOME only.
+			ours := h.Source == "project" || h.PluginID == codexPlugin
 			found = found || h.Source == "project"
-			if h.Source == "project" && h.TrustStatus != "trusted" {
+			if ours && h.TrustStatus != "trusted" {
 				k, _ := json.Marshal(h.Key)
 				edits = append(edits, map[string]any{"keyPath": "hooks.state." + string(k) + ".trusted_hash", "value": h.CurrentHash, "mergeStrategy": "upsert"})
 			}

@@ -143,6 +143,12 @@ func hookMain(ctx context.Context, args []string) error {
 	// EPIPE instead of killing the process with SIGPIPE, so the hook still
 	// exits 0, and it does not confirm what it could not print.
 	signal.Ignore(syscall.SIGPIPE)
+	if log := os.Getenv(envProbeTap); log != "" {
+		if sock, err := defaultSocket(); err == nil {
+			_ = probeTap(ctx, []string{"--log", log, "--socket", sock}, os.Stdin, os.Stdout, os.Stderr)
+			return nil
+		}
+	}
 	return hookCmd(ctx, args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
 }
 
