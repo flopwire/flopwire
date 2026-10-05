@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -39,13 +41,28 @@ const Name = "devin@3.0"
 //     vanished, or lost rows, is superseded (and, if it still exists,
 //     re-emitted whole).
 //
+// A Parser may be kept across parses of one store (the agent keeps one per
+// store): it then keeps the graphs of sessions that keep changing, so a
+// live session's next parse reads only its new rows (sessionGraph). Parse
+// calls on one Parser are serialized.
+//
 // Rows are upserted by native id: a message_id seen again (a compaction
 // copy, an on-path change, a tool_call_state update) is emitted again with
 // the same NativeID and the store replaces or versions the row.
 type Parser struct {
 	// Caps bounds stored text per kind; nil means transcript.DefaultCaps.
 	Caps map[transcript.Kind]transcript.CapConfig
+
+	mu        sync.Mutex            // serializes Parse: graphs
+	graphs    map[string]*keptGraph // session graphs kept across parses (sessionGraph)
+	graphRows atomic.Int64          // message_nodes rows read into session graphs
+	bodyRows  atomic.Int64          // message_nodes rows read with their content
 }
+
+// RowsRead is how many message_nodes rows this parser has read: into
+// session graphs (row ids, parents, message ids) and with their content.
+// Both should grow with what changed, not with session size.
+func (p *Parser) RowsRead() (graph, content int64) { return p.graphRows.Load(), p.bodyRows.Load() }
 
 func (p *Parser) Name() string                        { return Name }
 func (p *Parser) Agent() transcript.Agent             { return transcript.AgentDevin }
@@ -232,7 +249,9 @@ func (p *Parser) Parse(ctx context.Context, in transcript.Input, cur transcript.
 		}
 	}
 
-	s := &syncer{p: p, ctx: ctx, tx: tx, sink: sink, sup: sup, tools: tools}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := &syncer{p: p, ctx: ctx, tx: tx, sink: sink, sup: sup, tools: tools, now: time.Now()}
 	var maxRow int64 = cur.Offset
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
@@ -249,6 +268,7 @@ func (p *Parser) Parse(ctx context.Context, in transcript.Input, cur transcript.
 		next.Sessions[id] = ns
 		maxRow = max(maxRow, ns.MaxRow)
 	}
+	p.trimGraphs(next.Sessions, s.now)
 	b, err := json.Marshal(next)
 	if err != nil {
 		return cur, err
@@ -263,6 +283,7 @@ type syncer struct {
 	sink  transcript.Sink
 	sup   transcript.SessionSuperseder
 	tools *toolLookup
+	now   time.Time
 }
 
 // session syncs one session. Its tool_call_state tuple is read only when
@@ -297,7 +318,7 @@ func (s *syncer) session(id string, row *sessionRow, nc nodeCount, prev sessionS
 		}
 	}
 
-	g, err := loadGraph(s.ctx, s.tx, id)
+	g, err := s.p.sessionGraph(s.ctx, s.tx, id, nc, had, s.now)
 	if err != nil {
 		return ns, err
 	}
@@ -325,10 +346,7 @@ func (s *syncer) session(id string, row *sessionRow, nc nodeCount, prev sessionS
 			return ns, err
 		}
 		if len(changed) > 0 {
-			rowsWith, err := rowsReferencingCalls(s.ctx, s.tx, id, changed)
-			if err != nil {
-				return ns, err
-			}
+			rowsWith := g.rowsCalling(changed) // had: g was loaded with its calls
 			for i := range g.nodes {
 				if _, ok := cur[g.nodes[i].key]; ok && rowsWith[g.nodes[i].rowID] {
 					emit[g.nodes[i].key] = true
@@ -486,6 +504,7 @@ func (s *syncer) scan(q string, args []any, fn func(nodeRow) error) error {
 		if err := rows.Scan(&n.rowID, &n.nodeID, &n.chat, &n.createdAt); err != nil {
 			return fmt.Errorf("devin: scan node: %w", err)
 		}
+		s.p.bodyRows.Add(1)
 		if err := fn(n); err != nil {
 			return err
 		}

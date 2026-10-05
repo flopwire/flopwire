@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -44,16 +45,14 @@ func exec(t *testing.T, db *sql.DB, q string, args ...any) {
 	}
 }
 
+// parsers holds one Parser per store path, kept across parses as the
+// agent keeps it, so the incremental tests run on kept session graphs.
+var parsers sync.Map
+
 func parse(t *testing.T, path string, cur transcript.Cursor) (*transcript.Collector, transcript.Cursor) {
 	t.Helper()
-	c := &transcript.Collector{}
-	p := &Parser{}
-	src := &transcript.Source{Agent: transcript.AgentDevin, Path: path, StorageKind: transcript.StorageSQLite, Parser: p.Name()}
-	next, err := p.Parse(context.Background(), transcript.Input{Source: src}, cur, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c, next
+	p, _ := parsers.LoadOrStore(path, &Parser{})
+	return parseWith(t, p.(*Parser), path, cur)
 }
 
 // store is a minimal upserting index: the latest emission per row key wins,
@@ -252,7 +251,7 @@ func TestUnchangedStoreEmitsNothing(t *testing.T) {
 
 // snapshotStore parses from scratch and applies it to a fresh store.
 func snapshotStore(t *testing.T, path string) store {
-	c, _ := parse(t, path, transcript.Cursor{})
+	c, _ := parseWith(t, &Parser{}, path, transcript.Cursor{})
 	s := store{}
 	s.apply(c)
 	return s
