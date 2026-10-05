@@ -57,7 +57,7 @@ func Busy(err error) bool {
 	if he.Status != http.StatusServiceUnavailable {
 		return false
 	}
-	return !he.RetryAt.IsZero() || he.Body.Code == "server_busy" || he.Body.Code == "device_busy" || he.Body.Code == "source_busy"
+	return he.Body.Code == "flush_in_progress" || he.Body.Code == "parse_backlog" || he.Body.Code == "server_busy" || he.Body.Code == "device_busy" || he.Body.Code == "source_busy"
 }
 
 func retryAfter(value string, now time.Time) time.Time {

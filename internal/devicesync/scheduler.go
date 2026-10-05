@@ -192,8 +192,10 @@ func (s *Scheduler) debounced(path string, j *job) {
 func (s *Scheduler) Flush(spec SourceSpec) {
 	s.mu.Lock()
 	var he *syncproto.HTTPError
-	respectDeadline := errors.As(s.lastErr, &he) && time.Now().Before(he.RetryAt)
-	if !syncproto.Busy(s.lastErr) && !respectDeadline {
+	now := time.Now()
+	respectDeadline := errors.As(s.lastErr, &he) && now.Before(he.RetryAt)
+	busyCooldown := syncproto.Busy(s.lastErr) && now.Before(s.retryAt)
+	if !busyCooldown && !respectDeadline {
 		s.backoff, s.retryAt = 0, time.Time{}
 	}
 	if f := s.failing[spec.Path]; f != nil {

@@ -60,3 +60,20 @@ func TestRetryAfterFormats(t *testing.T) {
 		}
 	}
 }
+
+func TestBusyClassificationWithoutRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   string
+		busy   bool
+	}{
+		{429, "flush_in_progress", true}, {503, "flush_in_progress", true},
+		{503, "parse_backlog", true}, {503, "server_busy", true},
+		{503, "object_store_unavailable", false}, {503, "unavailable", false},
+		{400, "server_busy", false},
+	} {
+		if got := Busy(&HTTPError{Status: tc.status, Body: ErrorResponse{Code: tc.code}}); got != tc.busy {
+			t.Errorf("%d %s: busy=%v, want %v", tc.status, tc.code, got, tc.busy)
+		}
+	}
+}
