@@ -53,7 +53,7 @@ func badRequest(format string, args ...any) *Error {
 const reservationGrace = 15 * time.Minute
 
 // storageKinds are the sources.storage_kind values a device may send.
-var storageKinds = []string{"jsonl_append", "json_doc", "sqlite", "dir", "markdown", string(transcript.StorageCompanion)}
+var storageKinds = []string{"cass_export", "jsonl_append", "json_doc", "sqlite", "dir", "markdown", string(transcript.StorageCompanion)}
 
 // Server applies sync requests.
 type Server struct {

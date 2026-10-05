@@ -150,7 +150,8 @@ const from = `messages m JOIN ` + visible + ` c ON c.id=m.conversation_id JOIN d
 const hitCols = `m.id::text,c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(c.repo_root,c.cwd,''),d.name,u.email,c.branches,
 	m.kind,COALESCE(m.tool_name,''),COALESCE(m.is_error,false),m.ts,m.superseded,COALESCE(m.on_active_path,true),
 	COALESCE(s.id::text,''),COALESCE(s.path,''),COALESCE(s.file_id,''),m.source_generation,COALESCE(m.line_no,0),m.byte_offset,COALESCE(m.byte_len,0),COALESCE(m.locator,''),
-	m.ordinal`
+	m.ordinal,CASE WHEN s.storage_kind='cass_export' THEN 'cass_recovery' ELSE '' END,
+ CASE WHEN s.storage_kind='cass_export' THEN COALESCE(c.extra->>'cass_source_path','') ELSE '' END`
 
 func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	var h format.Hit
@@ -158,7 +159,7 @@ func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	dst := []any{&h.MessageID, &h.ConversationID, &h.Agent, &h.SessionID, &h.Title, &h.Repo, &h.Device, &h.User, &h.Branches,
 		&h.Kind, &h.ToolName, &h.IsError, &h.TS, &h.Superseded, &onPath,
 		&h.Provenance.SourceID, &h.Provenance.Path, &h.Provenance.FileID, &h.Provenance.Generation, &h.Provenance.LineNo, &h.Provenance.ByteOffset, &h.Provenance.ByteLen, &h.Provenance.Locator,
-		&h.Ordinal}
+		&h.Ordinal, &h.Provenance.EvidenceKind, &h.Provenance.OriginalPath}
 	err := row.Scan(append(dst, extra...)...)
 	h.OffPath = !onPath
 	if h.Provenance.Locator != "" && strings.HasPrefix(h.Provenance.Locator, "@") {
@@ -526,7 +527,8 @@ func timedOut(err error) bool {
 const msgCols = `m.id::text,COALESCE(m.native_id,''),m.ordinal,m.kind,COALESCE(m.role,''),COALESCE(m.tool_name,''),COALESCE(m.tool_call_id,''),
 	COALESCE(m.is_error,false),m.ts,m.text,m.text_len,m.version,m.superseded,COALESCE(m.on_active_path,true),
 	COALESCE(s.id::text,''),COALESCE(s.path,''),m.source_generation,COALESCE(m.line_no,0),m.byte_offset,COALESCE(m.byte_len,0),COALESCE(m.locator,''),
-	c.session_id`
+	c.session_id,CASE WHEN s.storage_kind='cass_export' THEN 'cass_recovery' ELSE '' END,
+ CASE WHEN s.storage_kind='cass_export' THEN COALESCE(c.extra->>'cass_source_path','') ELSE '' END`
 
 // scanMessage scans msgCols. Address holds the full session id until
 // addresses shorten it.
@@ -535,7 +537,7 @@ func scanMessage(row pgx.Row) (format.Message, error) {
 	var onPath bool
 	err := row.Scan(&m.ID, &m.NativeID, &m.Ordinal, &m.Kind, &m.Role, &m.ToolName, &m.ToolCallID, &m.IsError, &m.TS, &m.Text, &m.TextLen, &m.Version,
 		&m.Superseded, &onPath, &m.Provenance.SourceID, &m.Provenance.Path, &m.Provenance.Generation, &m.Provenance.LineNo, &m.Provenance.ByteOffset,
-		&m.Provenance.ByteLen, &m.Provenance.Locator, &m.Address)
+		&m.Provenance.ByteLen, &m.Provenance.Locator, &m.Address, &m.Provenance.EvidenceKind, &m.Provenance.OriginalPath)
 	if err != nil {
 		return m, err
 	}

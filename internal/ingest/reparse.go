@@ -33,9 +33,9 @@ func serverParserVersion(agent string) string {
 const staleParseSQL = `s.tombstoned_at IS NULL AND s.storage_kind<>'companion'
  AND s.agent IN ('claude','codex','devin','opencode') AND (
  regexp_replace(p.applied_parser,'@([0-9]+)\.[0-9]+','@\1','g') IS DISTINCT FROM
- CASE s.agent WHEN 'claude' THEN $1 WHEN 'codex' THEN $2 WHEN 'devin' THEN $3 ELSE $7 END
+ CASE WHEN s.storage_kind='cass_export' THEN 'cass@1' ELSE CASE s.agent WHEN 'claude' THEN $1 WHEN 'codex' THEN $2 WHEN 'devin' THEN $3 ELSE $7 END END
  OR p.applied_redaction_rules IS DISTINCT FROM $4
- OR (s.agent IN ('claude','codex') AND (
+ OR (s.storage_kind<>'cass_export' AND s.agent IN ('claude','codex') AND (
  regexp_replace(p.extraction_report->>'contract','@([0-9]+)\.[0-9]+','@\1','g') IS DISTINCT FROM CASE s.agent WHEN 'claude' THEN $5 ELSE $6 END
  OR p.extraction_report->'report'->>'version' IS DISTINCT FROM '1')))`
 
