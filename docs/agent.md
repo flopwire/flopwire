@@ -759,7 +759,12 @@ The plugin it installs runs `flopwire hook` on `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
 MCP tools. A missing `flopwire` is silent; a `flopwire hook` that fails (a
 binary older than the plugin) exits 1 with a hint to run
-`flopwire setup --check`. Devin has no hook approval step.
+`flopwire setup --check` on stderr. Devin does not show that hint, in the
+TUI or in print mode. It writes only `Command exited with code 1` to its
+own log, and the session continues without messages. After you update the
+plugin or the binary, run `flopwire setup --check`: it reports a binary on
+`PATH` that lacks a command the plugin runs. Devin has no hook approval
+step.
 
 On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
