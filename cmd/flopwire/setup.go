@@ -84,7 +84,8 @@ JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{
 server.credential is device login, FLOPWIRE_TOKEN, legacy login or none (the
 running agent's when it answers); server.messaging, when set, is why
 messaging is off and the fix; server.warning says FLOPWIRE_TOKEN hides a saved
-device login.
+device login; server.differs, when set, says this shell's credential is not
+the running agent's, and why.
 A harness that fails is reported with "error"; setup carries on with the
 others, then sets ok false and exits 1. A harness setup cannot manage because
 you are not logged in to it (Devin) is reported with "skipped" instead; it
@@ -202,6 +203,9 @@ type setupServer struct {
 	Messaging string `json:"messaging,omitempty"`
 	// Warning: FLOPWIRE_TOKEN hides a saved device login.
 	Warning string `json:"warning,omitempty"`
+	// Differs, when set, says this process's credential is not the
+	// running agent's, and why (credentialDiffers).
+	Differs string `json:"differs,omitempty"`
 }
 
 // harnessReport is one harness's state after setup ran.
@@ -402,6 +406,7 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	}
 	cred := credentialSource(client.Load, client.LoadFile)
 	if agentCred != nil {
+		rep.Server.Differs = credentialDiffers(cred, *agentCred)
 		cred = *agentCred
 	}
 	rep.Server.Credential, rep.Server.Messaging, rep.Server.Warning = cred.Source, cred.MessagingOff, cred.Warning
@@ -1130,6 +1135,9 @@ func writeSetupText(w io.Writer, rep setupReport) {
 	}
 	if rep.Server.Warning != "" {
 		fmt.Fprintf(&b, "warning: %s\n", rep.Server.Warning)
+	}
+	if rep.Server.Differs != "" {
+		fmt.Fprintf(&b, "note: %s\n", rep.Server.Differs)
 	}
 	for _, h := range rep.Harnesses {
 		if !h.Detected {

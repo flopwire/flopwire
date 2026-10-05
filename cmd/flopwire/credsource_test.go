@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,5 +138,43 @@ func TestAgentStatusMessagingOffOnce(t *testing.T) {
 	printAgentStatus(&b, resp)
 	if !strings.Contains(b.String(), "messaging: stopped: the server refused") {
 		t.Fatalf("status:\n%s", b.String())
+	}
+}
+
+// A shell with FLOPWIRE_TOKEN set while the agent runs without it: setup
+// --check and agent status report the agent's credential, and say that
+// this shell's differs and why.
+func TestCredentialShellDiffersFromAgent(t *testing.T) {
+	fx := newSetupFixture(t, false)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(shortSockDir(t), "config.json"))
+	credentialFixtures[4].apply(t) // env-hides-device: FLOPWIRE_TOKEN here, a device login saved
+	fa := startFakeAgent(t, func(agent.Request) agent.Response {
+		return agent.Response{OK: true, Credential: &agent.Credential{Source: credDevice}}
+	})
+	t.Setenv("FLOPWIRE_SOCKET", fa.sock)
+	rep, _, err := fx.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "this shell's credential is FLOPWIRE_TOKEN, the running agent's is device login: FLOPWIRE_TOKEN is set in this shell but not in the agent's environment"
+	if rep.Server.Credential != credDevice || !strings.Contains(rep.Server.Differs, want) {
+		t.Fatalf("server section %+v, want the agent's source and %q", rep.Server, want)
+	}
+	_, out, err := fx.run("--check", "--text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\nnote: "+want) {
+		t.Fatalf("--text lacks the note:\n%s", out)
+	}
+	// agent status asks the socket beside the config.
+	dir, _ := configDir()
+	if err := os.Symlink(fa.sock, filepath.Join(dir, "agent.sock")); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	_ = agentStatusOutput(t.Context(), &b, false)
+	if !strings.Contains(b.String(), "credential: device login") || !strings.Contains(b.String(), "note: "+want) {
+		t.Fatalf("agent status:\n%s", b.String())
 	}
 }

@@ -874,11 +874,16 @@ func agentStatusOutput(ctx context.Context, w io.Writer, asJSON bool) error {
 	// The running agent names its own credential: its environment, not
 	// this shell's, decides whether FLOPWIRE_TOKEN wins.
 	src := credentialSource(client.Load, client.LoadFile)
+	differs := ""
 	if resp.Credential != nil {
+		differs = credentialDiffers(src, *resp.Credential)
 		src = *resp.Credential
 	}
 	cfg, _ := client.LoadFile()
 	credentialStatus(w, src, cfg, time.Now())
+	if differs != "" {
+		fmt.Fprintf(w, "note: %s\n", differs)
+	}
 	return err
 }
 

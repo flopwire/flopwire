@@ -354,6 +354,24 @@ func credentialSource(load, loadFile func() (client.Config, error)) agent.Creden
 	return agent.Credential{Source: credDevice}
 }
 
+// credentialDiffers says why this process's credential (shell) is not
+// the running agent's (agentCred), or "" when they match. Both re-read the
+// same config, so only the environment differs: FLOPWIRE_TOKEN set in one
+// of them.
+func credentialDiffers(shell, agentCred agent.Credential) string {
+	if shell.Source == agentCred.Source {
+		return ""
+	}
+	why := "the agent's environment differs from this shell's"
+	switch {
+	case shell.Source == credEnv:
+		why = "FLOPWIRE_TOKEN is set in this shell but not in the agent's environment"
+	case agentCred.Source == credEnv:
+		why = "FLOPWIRE_TOKEN is set in the agent's environment but not in this shell"
+	}
+	return fmt.Sprintf("this shell's credential is %s, the running agent's is %s: %s; the agent's decides uploads and messaging", shell.Source, agentCred.Source, why)
+}
+
 // credentialStatus is what `flopwire agent status` says about the
 // credential: its source, then for a device login a refused credential, a
 // deadline within CredentialWarnBefore, or ok; a messaging: off line when

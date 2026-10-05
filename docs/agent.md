@@ -205,15 +205,20 @@ socket and prints these parts:
 | `credential: SOURCE` | The credential the agent uses. `device login`: an enrolled device. `FLOPWIRE_TOKEN`: a minted token from the agent's environment. `legacy login`: a login with no device credential. `none`: no server. A device login also shows `ok`, a deadline warning or `re-login required`. |
 | `messaging: off: REASON: FIX` | The credential cannot use the message bus. The agent does not poll. Do the fix; messaging resumes when the agent sees the new credential. |
 | `warning: FLOPWIRE_TOKEN in the environment hides the device login saved for URL` | `FLOPWIRE_TOKEN` wins over the saved config. Unset it in the agent's environment to use the device login. |
+| `note: this shell's credential is X, the running agent's is Y: WHY` | This shell and the agent have different environments: `FLOPWIRE_TOKEN` is set in only one of them. The agent's credential decides uploads and messaging. |
 
-`flopwire setup --check` shows the same `credential`, `messaging: off` and
-`warning` lines in its server section, for the running agent when it
-answers.
+`flopwire setup --check` shows the same `credential`, `messaging: off`,
+`warning` and `note` lines in its server section, for the running agent when
+it answers.
 
 The agent reads the server credential at startup. When a login is saved
 while it runs without one, or the saved credential is removed, the agent
 restarts itself within 2 seconds. It then uploads and polls the server, or
 runs local.
+
+A login to a different server while the agent runs does not restart it.
+Restart the agent yourself after you switch servers (see
+[Stop the agent](#stop-the-agent)).
 
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
