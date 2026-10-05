@@ -163,6 +163,9 @@ func TestClaudeSeen(t *testing.T) {
 		// Events without a usable sequence number are skipped, not fatal.
 		`{"sequence_num":null,"created_at":"2026-10-03T18:00:02Z","payload":{"type":"assistant","message":{"role":"assistant","content":[]}}}`,
 		`{"sequence_num":"x","created_at":"2026-10-03T18:00:01Z","payload":{"type":"system"}}`,
+		// No sequence_num at all: not taken as 0, which would order it
+		// first and credit m4 to the assistant event after it.
+		`{"created_at":"2026-10-03T18:00:10Z","payload":{"type":"user","message":{"role":"user","content":"<flopwire-message id=\"m4\" from=\"s\">\nlate\n</flopwire-message>"}}}`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/code/sessions/cse_01BBBB/events" || r.URL.Query().Get("sort_order") != "desc" {
@@ -179,7 +182,7 @@ func TestClaudeSeen(t *testing.T) {
 	}
 	want := map[string]time.Time{"m1": at(7), "m2": at(7)}
 	if len(got) != len(want) || !got["m1"].Equal(want["m1"]) || !got["m2"].Equal(want["m2"]) {
-		t.Fatalf("Seen = %v, want %v (m3 is only quoted mid-line, m4 never pushed)", got, want)
+		t.Fatalf("Seen = %v, want %v (m3 is only quoted mid-line, m4 only in an event without a sequence number)", got, want)
 	}
 }
 
