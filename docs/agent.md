@@ -1193,8 +1193,10 @@ again after a few seconds. `flopwire send` retries once by itself.
   `/proc/stat`, and the boot time moves when the wall clock steps. A
   forward step of more than 2 seconds (for example, a VM or WSL resume
   that resyncs the clock) makes a running Claude Code, Devin or opencode
-  process look as if it started after the file that names it. Its
-  sessions then end, and they read as ended until that process exits.
+  process look as if it started after the file that names it. A backward
+  step of more than 2 seconds also affects Claude Code: its session file
+  records the process's start, and the two must agree within 2 seconds.
+  The sessions then end, and they read as ended until that process exits.
   Restart the harness to resume them. Codex sessions are not affected:
   their writer lock does not use the start time.
 
