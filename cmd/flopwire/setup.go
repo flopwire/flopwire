@@ -21,6 +21,7 @@ import (
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
 
 // flopwire setup installs Flopwire into each coding-agent harness on this
@@ -77,7 +78,7 @@ Flags
                      Codex, Devin and opencode install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{"running",
-"socket"},"server":{"configured","url","credential","messaging","warning"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
+"socket"},"server":{"configured","url","credential","messaging","warning","differs"},"search_scope":{"kind","server"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
 "need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
@@ -94,15 +95,16 @@ does not change ok or the exit status.
 
 // setupReport is what setup prints.
 type setupReport struct {
-	Kind      string          `json:"kind"`
-	Mode      string          `json:"mode"`
-	OK        bool            `json:"ok"`
-	Flopwire  setupBinary     `json:"flopwire"`
-	Agent     setupAgent      `json:"agent"`
-	Server    setupServer     `json:"server"`
-	Index     setupIndex      `json:"index"`
-	Harnesses []harnessReport `json:"harnesses"`
-	Todo      []string        `json:"todo"`
+	Kind        string          `json:"kind"`
+	Mode        string          `json:"mode"`
+	OK          bool            `json:"ok"`
+	Flopwire    setupBinary     `json:"flopwire"`
+	Agent       setupAgent      `json:"agent"`
+	Server      setupServer     `json:"server"`
+	SearchScope *format.Scope   `json:"search_scope,omitempty"`
+	Index       setupIndex      `json:"index"`
+	Harnesses   []harnessReport `json:"harnesses"`
+	Todo        []string        `json:"todo"`
 }
 
 type setupBinary struct {
@@ -139,7 +141,7 @@ type setupAgent struct {
 	Socket  string `json:"socket"`
 }
 
-// setupIndex is the local index the MCP tools read.
+// setupIndex reports the local index, including when shared search is selected.
 type setupIndex struct {
 	Path string `json:"path,omitempty"`
 	// State is missing (the agent never ran), empty (no transcript
@@ -410,9 +412,21 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 		cred = *agentCred
 	}
 	rep.Server.Credential, rep.Server.Messaging, rep.Server.Warning = cred.Source, cred.MessagingOff, cred.Warning
+	shared, scopeErr := retrievalServer(false, false, "")
+	if scopeErr != nil {
+		// Removing harness integrations does not require a working search config.
+		if env.mode != setupRemove {
+			rep.OK = false
+			rep.Todo = append(rep.Todo, "fix the search configuration: "+scopeErr.Error())
+		}
+	} else if shared {
+		rep.SearchScope = &format.Scope{Kind: "shared", Server: rep.Server.URL}
+	} else {
+		rep.SearchScope = &format.Scope{Kind: "local"}
+	}
 	rep.Index = localIndexState(ctx)
 	if env.mode != setupRemove {
-		if (rep.Index.State == indexMissing || rep.Index.State == indexEmpty) && !rep.Agent.Running {
+		if scopeErr == nil && !shared && (rep.Index.State == indexMissing || rep.Index.State == indexEmpty) && !rep.Agent.Running {
 			rep.Todo = append(rep.Todo, "the local index holds no transcripts yet, so the MCP search tools find nothing: the device agent builds it on its first run (flopwire agent run)")
 		}
 		if !rep.Agent.Running {
@@ -1149,6 +1163,13 @@ func writeSetupText(w io.Writer, rep setupReport) {
 	}
 	if rep.Server.Differs != "" {
 		fmt.Fprintf(&b, "note: %s\n", rep.Server.Differs)
+	}
+	if rep.SearchScope != nil {
+		if rep.SearchScope.Kind == "shared" {
+			b.WriteString("search: shared by default (use --local for this device)\n")
+		} else {
+			b.WriteString("search: local by default (enroll to search shared history)\n")
+		}
 	}
 	for _, h := range rep.Harnesses {
 		if !h.Detected {

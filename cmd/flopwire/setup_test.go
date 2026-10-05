@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -1069,6 +1070,75 @@ func TestSetupReportsTheLocalIndex(t *testing.T) {
 	rep, _, _ = f.run("--check")
 	if rep.Index.State != indexIndexed || strings.Contains(strings.Join(rep.Todo, "\n"), "the local index") {
 		t.Fatalf("indexed: got %+v, todo %q", rep.Index, rep.Todo)
+	}
+}
+
+func TestSetupReportsSharedSearchWithoutLocalIndex(t *testing.T) {
+	f := newSetupFixture(t, false)
+	cfg := client.Config{Server: "https://shared.example.test", Token: "device-token", DeviceID: "device", Mode: "sync-only"}
+	if err := client.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered bytes.Buffer
+	writeSetupText(&rendered, rep)
+	out := rendered.String()
+	if rep.Index.State != indexMissing || rep.SearchScope == nil || rep.SearchScope.Kind != "shared" || rep.SearchScope.Server != cfg.Server {
+		t.Fatalf("shared search without an index: %+v", rep)
+	}
+	if strings.Contains(strings.Join(rep.Todo, "\n"), "MCP search tools find nothing") || !strings.Contains(out, "search: shared by default") {
+		t.Fatalf("wrong search guidance: %s\n%v", out, rep.Todo)
+	}
+	// A login session alone still searches locally until device enrollment.
+	cfg.DeviceID, cfg.Token = "", "session-token"
+	if err := client.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err = f.run("--check")
+	rendered.Reset()
+	writeSetupText(&rendered, rep)
+	out = rendered.String()
+	if err != nil || rep.SearchScope == nil || rep.SearchScope.Kind != "local" || !strings.Contains(out, "search: local by default") || !strings.Contains(strings.Join(rep.Todo, "\n"), "MCP search tools find nothing") {
+		t.Fatalf("login without enrollment: err=%v scope=%+v text=%s todo=%v", err, rep.SearchScope, out, rep.Todo)
+	}
+}
+
+func TestSetupReportsInvalidSearchConfiguration(t *testing.T) {
+	f := newSetupFixture(t, false)
+	p := os.Getenv("FLOPWIRE_CONFIG")
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("broken config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := f.run("--check")
+	if err == nil || rep.OK || rep.SearchScope != nil || !strings.Contains(strings.Join(rep.Todo, "\n"), "fix the search configuration") {
+		t.Fatalf("invalid config must not report local fallback: err=%v report=%+v", err, rep)
+	}
+}
+
+func TestSetupRemoveWithInvalidSearchConfiguration(t *testing.T) {
+	f := newSetupFixture(t, true)
+	if _, _, err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	p := os.Getenv("FLOPWIRE_CONFIG")
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("broken config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := f.run("--remove")
+	if err != nil || !rep.OK || rep.SearchScope != nil || strings.Contains(strings.Join(rep.Todo, "\n"), "fix the search configuration") {
+		t.Fatalf("removal must not require a working search config: err=%v report=%+v", err, rep)
+	}
+	if st := f.getState(); len(st.Plugins) != 0 || len(st.Marketplaces) != 0 {
+		t.Fatalf("removal left harness integrations: %+v", st)
 	}
 }
 

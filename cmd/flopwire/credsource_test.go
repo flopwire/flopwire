@@ -103,12 +103,24 @@ func TestSetupCheckNamesTheCredential(t *testing.T) {
 			if rep.Server.Credential != f.source || !strings.Contains(rep.Server.Messaging, f.off) || f.off == "" && rep.Server.Messaging != "" || rep.Server.Warning != f.warning {
 				t.Fatalf("server section %+v, want source %q, off %q, warning %q", rep.Server, f.source, f.off, f.warning)
 			}
+			wantScope, wantServer := "local", ""
+			if f.source == credDevice {
+				wantScope, wantServer = "shared", f.file.Server
+			} else if f.env {
+				wantScope, wantServer = "shared", "https://ci.test"
+			}
+			if rep.SearchScope == nil || rep.SearchScope.Kind != wantScope || rep.SearchScope.Server != wantServer {
+				t.Fatalf("search scope %+v, want %s at %q alongside credential %s", rep.SearchScope, wantScope, wantServer, f.source)
+			}
 			_, out, err := fx.run("--check", "--text")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(out, "\ncredential: "+f.source+"\n") {
 				t.Fatalf("--text lacks the credential line:\n%s", out)
+			}
+			if !strings.Contains(out, "\nsearch: "+wantScope+" by default") {
+				t.Fatalf("--text lacks the search scope alongside credential reporting:\n%s", out)
 			}
 			if f.off != "" && !strings.Contains(out, "\nmessaging: off: ") || !strings.Contains(out, f.off) || f.off == "" && strings.Contains(out, "messaging: off") {
 				t.Fatalf("--text messaging line, want %q:\n%s", f.off, out)
@@ -159,6 +171,11 @@ func TestCredentialShellDiffersFromAgent(t *testing.T) {
 	want := "this shell's credential is FLOPWIRE_TOKEN, the running agent's is device login: FLOPWIRE_TOKEN is set in this shell but not in the agent's environment"
 	if rep.Server.Credential != credDevice || !strings.Contains(rep.Server.Differs, want) {
 		t.Fatalf("server section %+v, want the agent's source and %q", rep.Server, want)
+	}
+	// Retrieval uses this shell's minted token, even when messaging reports
+	// the running agent's saved device credential.
+	if rep.SearchScope == nil || rep.SearchScope.Kind != "shared" || rep.SearchScope.Server != "https://ci.test" {
+		t.Fatalf("search must report this shell's server alongside the credential difference: %+v", rep.SearchScope)
 	}
 	_, out, err := fx.run("--check", "--text")
 	if err != nil {
