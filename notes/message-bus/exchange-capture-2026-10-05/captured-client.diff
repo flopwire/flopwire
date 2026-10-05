@@ -1,0 +1,23 @@
+diff --git a/src/client/users.ts b/src/client/users.ts
+index 573c21d..e84445a 100644
+--- a/src/client/users.ts
++++ b/src/client/users.ts
+@@ -4,11 +4,14 @@ type Fetch = (path: string) => Promise<any>;
+ 
+ export async function fetchAllUsers(get: Fetch): Promise<User[]> {
+   const all: User[] = [];
+-  let page: number | null = 1;
+-  while (page !== null) {
+-    const res = await get(`/users?page=${page}&limit=50`);
++  let cursor: string | null = null;
++  while (true) {
++    const params = new URLSearchParams({ limit: "50" });
++    if (cursor !== null) params.set("cursor", cursor);
++    const res = await get(`/users?${params.toString()}`);
+     all.push(...res.users);
+-    page = res.next_page;
++    cursor = res.next_cursor;
++    if (cursor === null) break;
+   }
+   return all;
+ }

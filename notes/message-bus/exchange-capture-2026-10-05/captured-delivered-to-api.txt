@@ -1,0 +1,4 @@
+<flopwire-message id="mfd8a363fd905ad00" from="01a10c80-5756-7310-8db5-659b27ee0d69" user="dev" agent="codex" repo="app@main" sender="own" intent="request" sent="2026-10-05T14:39:22Z">
+I’m updating src/client/users.ts in the main checkout to match your GET /users pagination change from commit fc7114b on api-cursors. What exact request parameters/query shape and response pagination fields must the client send/handle now? Please reply with the concrete contract and any compatibility details. Do not edit files for this request.
+</flopwire-message>
+Reply with the flopwire_send tool: to="01a10c80-5756-7310-8db5-659b27ee0d69" reply_to="mfd8a363fd905ad00" message="…"; or in a shell: flopwire send 01a10c80-5756-7310-8db5-659b27ee0d69 --reply-to mfd8a363fd905ad00 -- "…"

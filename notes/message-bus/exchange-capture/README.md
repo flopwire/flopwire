@@ -1,5 +1,10 @@
 # Captured messaging exchange (#55, item 6)
 
+A second capture with the build of 2026-10-05 (read receipts, concise
+`sessions`, remote-based repo identity) is in
+[`../exchange-capture-2026-10-05/`](../exchange-capture-2026-10-05/README.md).
+This directory is kept as it was captured.
+
 A real exchange between a Claude Code session and a Codex session through
 Flopwire, captured to replace the contract examples on the homepage
 preview (#54). Tracker: #73.
