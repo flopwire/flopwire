@@ -5,8 +5,8 @@
 # the GUI's PATH), so the hooks do not rely on PATH alone. The binary is,
 # in order:
 #
-#   1. the path `flopwire setup` recorded in <config dir>/binary-path
-#      (every flopwire command refreshes it), when it is executable;
+#   1. the path `flopwire setup` recorded in <config dir>/binary-path,
+#      when it is executable, unless flopwire on PATH is a newer file;
 #   2. flopwire on PATH;
 #   3. flopwire in /opt/homebrew/bin, /usr/local/bin, ~/go/bin or
 #      ~/.local/bin.
@@ -44,19 +44,28 @@ fi
 bin='' via=''
 if [ -n "$recorded" ] && [ -f "$recorded" ] && [ -x "$recorded" ]; then
 	bin=$recorded via=recorded
-else
-	p=$(command -v flopwire 2>/dev/null) || p=
-	case $p in
-	/*) [ -f "$p" ] && [ -x "$p" ] && bin=$p via=path ;;
-	esac
-	if [ -z "$bin" ]; then
-		for d in /opt/homebrew/bin /usr/local/bin "${HOME:-}/go/bin" "${HOME:-}/.local/bin"; do
-			if [ -f "$d/flopwire" ] && [ -x "$d/flopwire" ]; then
-				bin=$d/flopwire via=known
-				break
-			fi
-		done
+fi
+p=$(command -v flopwire 2>/dev/null) || p=
+case $p in
+/*)
+	if [ -f "$p" ] && [ -x "$p" ] && [ "$p" != "$bin" ]; then
+		# A flopwire on PATH newer than the recorded one wins: the recorded
+		# path can name an older install that still exists (an old go
+		# install, a kept Homebrew keg). find -L compares the files that
+		# symlinks name, so Homebrew's link to the recorded binary is equal.
+		if [ -z "$bin" ] || [ -n "$(find -L "$p" -prune -newer "$bin" 2>/dev/null)" ]; then
+			bin=$p via=path
+		fi
 	fi
+	;;
+esac
+if [ -z "$bin" ]; then
+	for d in /opt/homebrew/bin /usr/local/bin "${HOME:-}/go/bin" "${HOME:-}/.local/bin"; do
+		if [ -f "$d/flopwire" ] && [ -x "$d/flopwire" ]; then
+			bin=$d/flopwire via=known
+			break
+		fi
+	done
 fi
 
 if [ -z "$bin" ]; then

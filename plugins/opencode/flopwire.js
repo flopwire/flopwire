@@ -55,10 +55,15 @@ function findBin(env = process.env, platform = process.platform) {
   const file = join(dir, "binary-path")
   let recorded = ""
   try { recorded = readFileSync(file, "utf8").split("\n")[0].trim() } catch {}
-  if (recorded && exe(recorded)) return { bin: recorded, via: "recorded" }
+  let onPath = ""
   for (const d of (env.PATH || "").split(delimiter)) {
-    if (isAbsolute(d) && exe(join(d, "flopwire"))) return { bin: join(d, "flopwire"), via: "path" }
+    if (isAbsolute(d) && exe(join(d, "flopwire"))) { onPath = join(d, "flopwire"); break }
   }
+  // A flopwire on PATH newer than the recorded one wins: the recorded path
+  // can name an older install that still exists.
+  const newer = (a, b) => { try { return statSync(a).mtimeMs > statSync(b).mtimeMs } catch { return false } }
+  if (recorded && exe(recorded) && !(onPath && newer(onPath, recorded))) return { bin: recorded, via: "recorded" }
+  if (onPath) return { bin: onPath, via: "path" }
   for (const d of ["/opt/homebrew/bin", "/usr/local/bin", join(home, "go", "bin"), join(home, ".local", "bin")]) {
     if (exe(join(d, "flopwire"))) return { bin: join(d, "flopwire"), via: "known" }
   }

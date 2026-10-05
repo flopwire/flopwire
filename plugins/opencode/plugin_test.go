@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The plugin's delivery after a tool call, driven by node with a fake
@@ -174,6 +175,13 @@ console.log(Object.keys(hooks).length ? "loaded" : "empty")
 		write(at, "#!/bin/sh\ncat >/dev/null\necho \"$0 $FLOPWIRE_HOOK_VIA\" >> \"$RUN_LOG\"\necho '{\"instruction\":\"I\",\"tools\":[],\"registry\":\"\"}'\n", 0o755)
 		return at
 	}
+	age := func(p string) string { // an hour old: an older install
+		at := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
 	for _, c := range []struct {
 		name  string
 		setup func(home, cfg string) (path, want string)
@@ -181,7 +189,14 @@ console.log(Object.keys(hooks).length ? "loaded" : "empty")
 		{"recorded", func(home, cfg string) (string, string) {
 			want := fake(filepath.Join(home, "opt", "flopwire"))
 			write(filepath.Join(filepath.Dir(cfg), "binary-path"), want+"\n", 0o644)
-			return filepath.Dir(fake(filepath.Join(home, "onpath", "flopwire"))), want + " recorded"
+			return filepath.Dir(age(fake(filepath.Join(home, "onpath", "flopwire")))), want + " recorded"
+		}},
+		// A stale recorded install loses to a newer flopwire on PATH.
+		{"newer path", func(home, cfg string) (string, string) {
+			stale := age(fake(filepath.Join(home, "go", "bin", "flopwire")))
+			write(filepath.Join(filepath.Dir(cfg), "binary-path"), stale+"\n", 0o644)
+			want := fake(filepath.Join(home, "onpath", "flopwire"))
+			return filepath.Dir(want), want + " path"
 		}},
 		{"path", func(home, cfg string) (string, string) {
 			want := fake(filepath.Join(home, "onpath", "flopwire"))

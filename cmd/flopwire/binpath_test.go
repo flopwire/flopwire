@@ -54,7 +54,8 @@ func newShimFixture(t *testing.T) *shimFixture {
 		t.Skip("a flopwire in /opt/homebrew/bin or /usr/local/bin would be found")
 	}
 	d := t.TempDir()
-	f := &shimFixture{t: t, home: filepath.Join(d, "home"), log: filepath.Join(d, "log"), path: "/usr/bin:/bin"}
+	// A space in HOME, as in a macOS user name; the shim must quote it.
+	f := &shimFixture{t: t, home: filepath.Join(d, "my home"), log: filepath.Join(d, "log"), path: "/usr/bin:/bin"}
 	f.cfg = filepath.Join(d, "config dir", "config.json") // a space, as in Application Support
 	return f
 }
@@ -72,6 +73,15 @@ func (f *shimFixture) fake(dir string) string {
 		f.t.Fatal(err)
 	}
 	return p
+}
+
+// age sets p's modification time d in the past: an older install.
+func (f *shimFixture) age(p string, d time.Duration) {
+	f.t.Helper()
+	at := time.Now().Add(-d)
+	if err := os.Chtimes(p, at, at); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func (f *shimFixture) record(bin string) {
@@ -135,12 +145,45 @@ func TestHookShimResolution(t *testing.T) {
 		via      string
 		defaults bool // no FLOPWIRE_CONFIG: the platform's config directory
 	}{
-		{"recorded beats PATH", func(f *shimFixture) string {
+		{"recorded beats an older PATH", func(f *shimFixture) string {
 			want := f.fake(filepath.Join(f.home, "opt", "fw"))
-			f.path = filepath.Dir(f.fake(filepath.Join(f.home, "onpath"))) + ":" + f.path
+			onPath := f.fake(filepath.Join(f.home, "onpath"))
+			f.age(onPath, time.Hour)
+			f.path = filepath.Dir(onPath) + ":" + f.path
 			f.record(want)
 			return want
 		}, "recorded", false},
+		// A stale recorded install (an old go install, a kept Homebrew
+		// keg) loses to a newer flopwire on PATH (brew upgrade).
+		{"newer PATH beats a stale recorded path", func(f *shimFixture) string {
+			stale := f.fake(filepath.Join(f.home, "go", "bin"))
+			f.age(stale, 24*time.Hour)
+			f.record(stale)
+			want := f.fake(filepath.Join(f.home, "onpath"))
+			f.path = filepath.Dir(want) + ":" + f.path
+			return want
+		}, "path", false},
+		// PATH reaches the recorded binary through a symlink (Homebrew's
+		// bin/flopwire -> Cellar/...): the same file, so recorded.
+		{"PATH symlink to the recorded binary", func(f *shimFixture) string {
+			want := f.fake(filepath.Join(f.home, "Cellar", "flopwire", "1.0", "bin"))
+			f.age(want, time.Hour)
+			f.record(want)
+			link := filepath.Join(f.home, "brew bin")
+			if err := os.MkdirAll(link, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(want, filepath.Join(link, "flopwire")); err != nil {
+				t.Fatal(err)
+			}
+			f.path = link + ":" + f.path
+			return want
+		}, "recorded", false},
+		{"recorded path with spaces", func(f *shimFixture) string {
+			want := f.fake(filepath.Join(f.home, "Application Support", "fw bin"))
+			f.record(want)
+			return want
+		}, "recorded", true},
 		{"recorded in the default config directory", func(f *shimFixture) string {
 			want := f.fake(filepath.Join(f.home, "opt", "fw"))
 			f.record(want)

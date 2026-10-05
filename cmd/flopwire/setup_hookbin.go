@@ -133,15 +133,20 @@ func resolveLikeShim(getenv func(string) string, goos string) *hookBinaryReport 
 	}
 	file := filepath.Join(dir, binaryPathFile)
 	recorded := readRecordedBinary(file)
-	if recorded != "" && isExecFile(recorded) {
+	var onPath string
+	for _, d := range filepath.SplitList(getenv("PATH")) {
+		if p := filepath.Join(d, "flopwire"); filepath.IsAbs(d) && isExecFile(p) {
+			onPath = p
+			break
+		}
+	}
+	if recorded != "" && isExecFile(recorded) && (onPath == "" || !newerFile(onPath, recorded)) {
 		r.Path, r.Via = recorded, hookVia["recorded"]
 		return r
 	}
-	for _, d := range filepath.SplitList(getenv("PATH")) {
-		if p := filepath.Join(d, "flopwire"); filepath.IsAbs(d) && isExecFile(p) {
-			r.Path, r.Via = p, hookVia["path"]
-			return r
-		}
+	if onPath != "" {
+		r.Path, r.Via = onPath, hookVia["path"]
+		return r
 	}
 	for _, d := range []string{"/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, "go", "bin"), filepath.Join(home, ".local", "bin")} {
 		if p := filepath.Join(d, "flopwire"); isExecFile(p) {
@@ -154,6 +159,17 @@ func resolveLikeShim(getenv func(string) string, goos string) *hookBinaryReport 
 	}
 	r.Error = fmt.Sprintf("no flopwire binary: the recorded path (%s, from %s) is not executable, flopwire is not on PATH (%s), and not in /opt/homebrew/bin, /usr/local/bin, ~/go/bin or ~/.local/bin; fix: run flopwire setup", recorded, file, getenv("PATH"))
 	return r
+}
+
+// newerFile reports whether a's modification time is after b's, through
+// symlinks: the shim's find -L "$a" -newer "$b".
+func newerFile(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	sb, err := os.Stat(b)
+	return err == nil && sa.ModTime().After(sb.ModTime())
 }
 
 func isExecFile(p string) bool {
