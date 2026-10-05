@@ -182,7 +182,7 @@ synthetic transcripts and the story "Rename user response field"
 | Fixture | Captured replacement | Differences from the fixture |
 |---|---|---|
 | `intended-sessions.json`, `branch-session.json` | `captured-sessions.json` | Same concise shape and `excluded` note. Each row adds `intent` and `files`. `commits` is `["fc7114b"]`. `repo` is the worktree's full path, not `/work/acme/app`. |
-| `sessions-text.txt` | `captured-sessions.txt` | Same `key=value` header form, with `files=1` added and the `last:` line. `repo=app-api` is the checkout's directory name, not the remote. |
+| `sessions-text.txt` | `captured-sessions.txt` | Same `key=value` header form and `last:` line, with `files=1` added. `repo=app-api` is the checkout's directory name, not the remote. |
 | `intended-peers.json` | `captured-peers-session.json` (one peer); `captured-peers.json` (default) | Each peer adds `remote` (`github.com/acme/app`) and `main` (the main checkout's path). The default `peers` lists only A. |
 | `intended-send.json` | `captured-send.json` | Same fields, including `arrives: "next_tool_call"` and the `next` hint for a busy recipient. `to.repo` is a full path. |
 | `reply-receipt.json` | `captured-reply-receipt.json` | Same fields. `intent` is `inform` (the default) and it has no `next`, because only a request gets one. |
@@ -195,7 +195,7 @@ synthetic transcripts and the story "Rename user response field"
 ## Differences from the #79 capture
 
 - **Read receipts.** Every message in both inboxes is `read`, with
-  `read_at` 40 to 70 ms after `delivered_at`. In #79 the state stopped at
+  `read_at` 39 and 68 ms after `delivered_at`. In #79 the state stopped at
   `delivered`. `--text` shows `read <time>` instead of the state.
 - **Concise `sessions`.** The default JSON is one short row per session
   (`session_id`, `address`, `agent`, `repo`, `branches`, `live`,
@@ -206,8 +206,9 @@ synthetic transcripts and the story "Rename user response field"
 - **`.commits` is filled.** `commits: ["fc7114b"]` is on the row, and
   `commits=1` is in the text header. Haiku committed without `-q`, so this
   run does not exercise the #103 quiet-commit path.
-- **`key=value` headers.** `sessions --text` and B's `flopwire_read`
-  headers lead with the full session id followed by `key=value` fields.
+- **`key=value` headers.** The `sessions --text` header leads with the
+  full session id followed by `key=value` fields. B made no `flopwire_read`
+  call in run 4.
 - **Remote-based repo identity.** The repository has a remote, so the main
   checkout and the linked worktree share the identity
   `github.com/acme/app`. `sessions --repo .` from the main checkout found
@@ -290,7 +291,7 @@ other value are as captured.
 | Captured | Replaced with | Where |
 |---|---|---|
 | The run 4 scratch root (`/private/tmp/claude-501/-Users-<account>-Code-flopwire/<capturing session id>/scratchpad/capture/r4`) | `/tmp/capture` | `repo`, `main`, `cwd`, `workdir`, digest `repos` |
-| The home directory `/Users/<account>` | `/Users/dev` | B's skill lookup |
+| The home directory `/Users/<account>` | `/Users/dev` | no captured file (B's skill lookup is not in `captured-client-tool-calls.txt`) |
 | The device hostname | `devbox.local` | `device` in peers |
 | The OS account name | `dev` | `user`, `user_id` (`local:dev`), `user_name`, `to_user`, `to_user_id`, wrapper `user=`, text views, `outcome` |
 
