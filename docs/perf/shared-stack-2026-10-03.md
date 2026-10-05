@@ -294,9 +294,11 @@ directory has mode `0700`, and FileVault is enabled. These controls restrict
 file access and protect the volume while locked. They do not protect the
 secrets from a process with access as the owner while the Mac is unlocked.
 
-Move the administrator password into an appropriate secret store. Establish
-an independent off-Mac recovery-key escrow before removing the working key
-file. Keep encrypted production backups off the Pandora host, and keep key
-escrow separate from those backups. Verify recovery using the escrowed key.
-The existing local secret files and lab restore do not establish those
-operational recovery safeguards.
+The owner chose to retain the current secret files while preparing the recovery
+plan. Establish an independent off-Mac recovery-key escrow before considering
+removal of the working key file. Keep encrypted production backups off the
+Pandora host, and keep key escrow separate from those backups. Verify recovery
+using the escrowed key. The existing local secret files and lab restore do not
+establish those operational recovery safeguards. Follow the proposed
+[production recovery runbook](../operations/recovery.md) before changing the
+secret storage or retiring the migration archives.
