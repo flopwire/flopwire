@@ -10,7 +10,11 @@ import (
 // ExtractionSummary aggregates counters in SQLite, without loading locator samples.
 func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSummary, error) {
 	out := &transcript.ExtractionSummary{Counts: map[transcript.DiagnosticCode]uint64{}, Affected: []transcript.SourceReference{}}
-	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+	// The read pool, not the writer (readSources): the summary scans every
+	// source, and the agent's status answer runs it. On the writer it waited
+	// behind every queued batch and held up hook flushes while it ran. A
+	// summary that misses a batch the writer has not committed yet is fine.
+	summarize := func(q dbtx) error {
 		// Newest identity at each device/path is current; replaced sources remain history.
 		const current = `WITH current AS (SELECT s.* FROM sources s WHERE s.agent IN ('claude','codex') AND s.storage_kind='jsonl_append' AND NOT EXISTS (SELECT 1 FROM sources n WHERE n.device_id=s.device_id AND n.path=s.path AND n.id>s.id)) `
 		if err := q.QueryRowContext(ctx, current+`SELECT count(extraction_report),count(*)-count(extraction_report),coalesce(sum(json_array_length(extraction_report,'$.report.issues')>0),0),coalesce(sum(EXISTS(SELECT 1 FROM json_each(extraction_report,'$.report.issues') WHERE json_extract(value,'$.code')<>'unknown_record_type')),0),coalesce(sum(EXISTS(SELECT 1 FROM json_each(extraction_report,'$.report.issues') WHERE json_extract(value,'$.code')='unknown_record_type')),0) FROM current`).Scan(&out.AssessedSources, &out.UnassessedSources, &out.AffectedSources, &out.WarningSources, &out.InfoSources); err != nil {
@@ -47,8 +51,8 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 			out.Affected = append(out.Affected, ref)
 		}
 		return rows.Err()
-	})
-	return out, err
+	}
+	return out, summarize(s.rdb)
 }
 
 func (s *Store) SourceDiagnostics(ctx context.Context, sourceID string) (*transcript.SourceDiagnostics, error) {

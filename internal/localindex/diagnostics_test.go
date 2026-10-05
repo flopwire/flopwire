@@ -3,6 +3,7 @@ package localindex
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -38,5 +39,42 @@ func TestExtractionInspectionScopeAndCompanionRepair(t *testing.T) {
 	detail, err = s.SourceDiagnostics(ctx, id)
 	if err != nil || detail.MissingCompanions != 0 || detail.TruncatedCompanions != 0 {
 		t.Fatalf("repair %+v %v", detail, err)
+	}
+}
+
+// The agent's status answer calls ExtractionSummary, a scan of every
+// source. It must not queue on the writer: a busy writer (a long batch, a
+// Devin re-parse) made `flopwire agent status` and `setup --check` time
+// out, and each abandoned status still ran its scan on the writer, ahead of
+// hook flushes and index writes.
+func TestExtractionSummaryDoesNotWaitForWriter(t *testing.T) {
+	s := openTest(t, DetailFull)
+	source(t, s, transcript.AgentClaude, "/a.jsonl")
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	busy, release := make(chan struct{}), make(chan struct{})
+	go s.write(ctx, func(*writeTx) error {
+		close(busy)
+		<-release
+		return nil
+	})
+	<-busy
+	defer close(release)
+	got := make(chan error, 1)
+	go func() {
+		summary, err := s.ExtractionSummary(ctx)
+		if err == nil && summary.UnassessedSources != 1 {
+			t.Errorf("summary %+v", summary)
+		}
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExtractionSummary waited for the busy writer")
 	}
 }
