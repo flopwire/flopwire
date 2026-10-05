@@ -37,6 +37,7 @@ func TestSessionsJSONKeepsMainFields(t *testing.T) {
 		return s, m
 	}
 	main, _ := read("testdata/sessions_json_main.json")
+	main.Scope = &format.Scope{Kind: "local"}
 	now, raw := read("testdata/golden/sessions_json.txt")
 	if !reflect.DeepEqual(main, now) || len(now.Sessions) == 0 {
 		t.Fatalf("sessions JSON differs from main's --json:\nmain %+v\nnow  %+v", main, now)
@@ -45,7 +46,7 @@ func TestSessionsJSONKeepsMainFields(t *testing.T) {
 		t.Fatalf("kind and has_more: %v %v", raw["kind"], raw["has_more"])
 	}
 	b, _ := os.ReadFile("testdata/golden/sessions_json.txt")
-	if d, _ := os.ReadFile("testdata/golden/sessions_glob.txt"); strings.Count(string(b), "\n") != 1 || !strings.HasPrefix(string(d), `{"kind":"sessions",`) {
+	if d, _ := os.ReadFile("testdata/golden/sessions_glob.txt"); strings.Count(string(b), "\n") != 1 || !strings.HasPrefix(string(d), `{"scope":{"kind":"local"},"kind":"sessions",`) {
 		t.Fatalf("sessions JSON is not one compact line, or not the default")
 	}
 	for _, c := range now.Sessions {
@@ -70,16 +71,16 @@ func TestJSONAndTextFlagsOnEveryVerb(t *testing.T) {
 		t.Helper()
 		return captureStdout(t, func() error { return run(t.Context(), args) })
 	}
-	if a, b := cli("sessions"), cli("sessions", "--json"); a != b || !strings.HasPrefix(a, `{"kind":"sessions",`) {
+	if a, b := cli("sessions"), cli("sessions", "--json"); a != b || !strings.HasPrefix(a, `{"scope":{"kind":"local"},"kind":"sessions",`) {
 		t.Fatalf("sessions --json is not the default:\n%s\n%s", a, b)
 	}
-	if out := cli("sessions", "--text", "--json"); !strings.HasPrefix(out, "0b7e2c1a-0000-4000-8000-000000000002 agent=claude ") {
+	if out := cli("sessions", "--text", "--json"); !strings.HasPrefix(out, "[scope: local device]\n0b7e2c1a-0000-4000-8000-000000000002 agent=claude ") {
 		t.Fatalf("sessions --text --json: %s", out)
 	}
-	if a, b := cli("grep", "retr"), cli("grep", "retr", "--text"); a != b || !strings.HasPrefix(a, "## 0b7e2c1a-") {
+	if a, b := cli("grep", "retr"), cli("grep", "retr", "--text"); a != b || !strings.HasPrefix(a, "[scope: local device]\n## 0b7e2c1a-") {
 		t.Fatalf("grep --text is not the default:\n%s\n%s", a, b)
 	}
-	if out := cli("search", "backoff", "--json", "--text"); !strings.HasPrefix(out, "## 0b7e2c1a-") {
+	if out := cli("search", "backoff", "--json", "--text"); !strings.HasPrefix(out, "[scope: local device]\n## 0b7e2c1a-") {
 		t.Fatalf("search --json --text: %s", out)
 	}
 }

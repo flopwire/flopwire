@@ -1,3 +1,4 @@
+[scope: local device]
 # 0b7e2c1a-0000-4000-8000-000000000002 agent=claude repo=/tmp/oracle-beta branch=fix/retry device=local start=2026-09-23T11:00Z active=2026-09-23T11:00Z msgs=24 title="Exponential backoff for upload retries"
 # intent: "the upload retry test is flaky; find out why"
 # where: /tmp/oracle-beta  fix/retry  duration 34s

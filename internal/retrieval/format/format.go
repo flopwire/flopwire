@@ -460,6 +460,7 @@ func ParseDigest(b []byte) *digest.Digest {
 // Context is read's answer: a focus message with its neighbours in
 // conversation order.
 type Context struct {
+	Scope        *Scope           `json:"scope,omitempty"`
 	Conversation ConversationInfo `json:"conversation"`
 	Focus        string           `json:"focus"`          // the focus message id
 	Line         int              `json:"line,omitempty"` // the addressed line of the focus
@@ -533,7 +534,8 @@ const (
 // is still an answer, never an error: Truncated is set and Reason says
 // what was checked.
 type Page struct {
-	Hits []Hit `json:"hits"`
+	Scope *Scope `json:"scope,omitempty"`
+	Hits  []Hit  `json:"hits"`
 	// Sessions is grep's -l/-c answer: sessions with matches, newest hit
 	// first, Hits set on each.
 	Sessions []ConversationInfo `json:"sessions,omitempty"`
@@ -562,11 +564,19 @@ type Page struct {
 // activity first. HasMore says sessions follow; Next is the cursor that
 // reads them (see SessionCursor).
 type Sessions struct {
+	Scope    *Scope             `json:"scope,omitempty"`
 	Sessions []ConversationInfo `json:"sessions"`
 	HasMore  bool               `json:"has_more,omitempty"`
 	Next     string             `json:"next_cursor,omitempty"`
 	Notes    []string           `json:"notes,omitempty"`
 	Excluded string             `json:"excluded,omitempty"`
+}
+
+// Scope identifies the backend that answered a retrieval request.
+// It is attached by the CLI or MCP adapter, not inferred from result rows.
+type Scope struct {
+	Kind   string `json:"kind"` // "local" or "shared"
+	Server string `json:"server,omitempty"`
 }
 
 // Attribution names whose evidence a raw read returns: the user and
