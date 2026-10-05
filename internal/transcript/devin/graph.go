@@ -116,7 +116,7 @@ const (
 	// graphIdle drops a kept graph whose session has not changed for this
 	// long.
 	graphIdle = 10 * time.Minute
-	// maxKeptNodes bounds the nodes of all kept graphs (about 100 bytes
+	// maxKeptNodes bounds the nodes of all kept graphs (about 260 bytes
 	// each); least recently used graphs go first.
 	maxKeptNodes = 250_000
 )
