@@ -1,7 +1,11 @@
 package localindex
 
 import (
+	"context"
+	"errors"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,5 +127,61 @@ func TestExtractionSummaryOneSnapshot(t *testing.T) {
 		if a, l, c := sum.AffectedSources > 0, len(sum.Affected) > 0, len(sum.Counts) > 0; a != l || a != c {
 			t.Fatalf("mixed snapshots: affected=%d list=%d counts=%v", sum.AffectedSources, len(sum.Affected), sum.Counts)
 		}
+	}
+}
+
+// One summary scan at a time: a status asked while one runs waits without
+// a read connection, so two status calls cannot hold the agent's whole
+// read pool (two connections) and stall hook reads.
+func TestExtractionSummaryOneScanAtATime(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "index.db"), Options{ReadConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	source(t, s, transcript.AgentClaude, "/a.jsonl")
+	inScan, release := make(chan struct{}, 2), make(chan struct{})
+	testHookSummaryScan = func(context.Context) {
+		inScan <- struct{}{}
+		<-release
+	}
+	defer func() { testHookSummaryScan = nil }()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer close(release)
+	for range 2 {
+		wg.Go(func() {
+			if _, err := s.ExtractionSummary(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	<-inScan
+	time.Sleep(50 * time.Millisecond) // let the second caller reach the pool
+	if n := s.rdb.Stats().InUse; n != 1 {
+		t.Fatalf("%d read connections held by summaries, want 1", n)
+	}
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var one int
+	if err := s.rdb.QueryRowContext(rctx, `SELECT 1`).Scan(&one); err != nil {
+		t.Fatalf("a hook read on the pool: %v", err)
+	}
+}
+
+// The caller's context reaches the queries: a status whose client left
+// stops its scan.
+func TestExtractionSummaryCancelled(t *testing.T) {
+	s := openTest(t, DetailFull)
+	source(t, s, transcript.AgentClaude, "/a.jsonl")
+	cctx, cancel := context.WithCancel(ctx)
+	testHookSummaryScan = func(context.Context) { cancel() }
+	defer func() { testHookSummaryScan = nil }()
+	if _, err := s.ExtractionSummary(cctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v, want context.Canceled", err)
+	}
+	testHookSummaryScan = nil
+	if _, err := s.ExtractionSummary(ctx); err != nil {
+		t.Fatalf("after a cancelled scan: %v", err)
 	}
 }

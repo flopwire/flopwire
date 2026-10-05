@@ -60,6 +60,13 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 	// Not BeginTx: the pool's DSN asks for BEGIN IMMEDIATE, which a
 	// query_only connection refuses. A deferred BEGIN takes the snapshot at
 	// the first read and holds it until the ROLLBACK.
+	// One scan at a time, waited for without a read connection.
+	select {
+	case s.summarySem <- struct{}{}:
+	case <-ctx.Done():
+		return out, ctx.Err()
+	}
+	defer func() { <-s.summarySem }()
 	conn, err := s.rdb.Conn(ctx)
 	if err != nil {
 		return out, err
@@ -67,6 +74,9 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
 		return out, err
+	}
+	if testHookSummaryScan != nil {
+		testHookSummaryScan(ctx)
 	}
 	err = summarize(conn)
 	if _, rerr := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); rerr != nil {
@@ -76,6 +86,9 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 	}
 	return out, err
 }
+
+// testHookSummaryScan runs inside a summary scan, on its read connection.
+var testHookSummaryScan func(context.Context)
 
 func (s *Store) SourceDiagnostics(ctx context.Context, sourceID string) (*transcript.SourceDiagnostics, error) {
 	id, err := strconv.ParseInt(sourceID, 10, 64)

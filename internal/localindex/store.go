@@ -106,18 +106,21 @@ type Options struct {
 
 // Store is an open local index.
 type Store struct {
-	path    string
-	opts    Options
-	wdb     *sql.DB // exactly one connection, used only by the writer goroutine
-	rdb     *sql.DB // read pool
-	reqs    chan writeReq
-	quit    chan struct{}
-	wg      sync.WaitGroup
-	once    sync.Once
-	details Details
-	shards  []*ftsShard // fts_tok, then the fts_tri parts
-	tri     []*ftsShard // the fts_tri parts
-	lastSeq int64       // highest fts_queue sequence handed to the shards (writer only)
+	path string
+	opts Options
+	wdb  *sql.DB // exactly one connection, used only by the writer goroutine
+	rdb  *sql.DB // read pool
+	// summarySem lets one ExtractionSummary scan hold a read connection at
+	// a time: the agent's pool has two, and hook reads need one.
+	summarySem chan struct{}
+	reqs       chan writeReq
+	quit       chan struct{}
+	wg         sync.WaitGroup
+	once       sync.Once
+	details    Details
+	shards     []*ftsShard // fts_tok, then the fts_tri parts
+	tri        []*ftsShard // the fts_tri parts
+	lastSeq    int64       // highest fts_queue sequence handed to the shards (writer only)
 	// mainScrubTries: checkpoints left to truncate the main WAL after a
 	// redaction (writer only).
 	mainScrubTries int
@@ -304,6 +307,7 @@ func openWriter(path string, opts Options) (*Store, error) {
 	s.rdb = sql.OpenDB(&attachConnector{dsn: dsn(path, true, opts.ReadCacheMB, false), shards: s.shards})
 	s.rdb.SetMaxOpenConns(opts.ReadConns)
 	s.rdb.SetMaxIdleConns(opts.ReadConns)
+	s.summarySem = make(chan struct{}, 1)
 	s.wg.Add(1)
 	go s.writer()
 	// Redactions the sidecar holds and the rows may not reflect (a lost
@@ -408,6 +412,7 @@ func openReadOnly(path string, opts Options) (*Store, error) {
 	s.rdb = sql.OpenDB(&attachConnector{dsn: dsn(path, true, opts.ReadCacheMB, false), shards: s.shards})
 	s.rdb.SetMaxOpenConns(opts.ReadConns)
 	s.rdb.SetMaxIdleConns(opts.ReadConns)
+	s.summarySem = make(chan struct{}, 1)
 	return s, nil
 }
 
