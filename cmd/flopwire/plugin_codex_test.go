@@ -229,13 +229,21 @@ func TestCodexPluginMCP(t *testing.T) {
 		MCPServers map[string]struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			Cwd     string   `json:"cwd"`
 			EnvVars []string `json:"env_vars"`
 		} `json:"mcpServers"`
 	}
 	readJSONFile(t, filepath.Join(codexPluginDir, ".mcp.json"), &m)
 	s, ok := m.MCPServers["flopwire"]
-	if len(m.MCPServers) != 1 || !ok || s.Command != "flopwire" || !slices.Equal(s.Args, []string{"mcp"}) {
-		t.Fatalf(".mcp.json: want one server flopwire = flopwire mcp; got %+v", m)
+	// Codex does not expand ${PLUGIN_ROOT} in a plugin's .mcp.json, but
+	// resolves a relative cwd against the plugin root: the server runs the
+	// hook shim from there, not flopwire by bare name from Codex's PATH.
+	if len(m.MCPServers) != 1 || !ok || s.Command != "/bin/sh" || !slices.Equal(s.Args, []string{"./bin/flopwire-hook", "mcp"}) || s.Cwd != "." {
+		t.Fatalf(".mcp.json: want one server flopwire = /bin/sh ./bin/flopwire-hook mcp in cwd .; got %+v", m)
+	}
+	runMCPThroughShim(t, s.Command, s.Args, codexPluginDir)
+	if got := pluginCommands(codexPluginDir); !slices.Equal(got, []string{"hook", "mcp"}) {
+		t.Fatalf("pluginCommands = %q, want hook and mcp", got)
 	}
 	if got := slices.Sorted(slices.Values(s.EnvVars)); !slices.Equal(got, codexMCPEnvVars) {
 		t.Errorf(".mcp.json env_vars %q, want %q: Codex passes an MCP server no other variables", got, codexMCPEnvVars)
@@ -304,6 +312,7 @@ func TestCodexPluginLoads(t *testing.T) {
 		Transport struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			Cwd     string   `json:"cwd"`
 		} `json:"transport"`
 	}
 	if err := json.Unmarshal(run("mcp", "list", "--json"), &servers); err != nil || !slices.ContainsFunc(servers, func(s struct {
@@ -311,9 +320,11 @@ func TestCodexPluginLoads(t *testing.T) {
 		Transport struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			Cwd     string   `json:"cwd"`
 		} `json:"transport"`
 	}) bool {
-		return s.Name == "flopwire" && s.Transport.Command == "flopwire" && slices.Equal(s.Transport.Args, []string{"mcp"})
+		return s.Name == "flopwire" && s.Transport.Command == "/bin/sh" && slices.Equal(s.Transport.Args, []string{"./bin/flopwire-hook", "mcp"}) &&
+			samePath(s.Transport.Cwd, filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire", "flopwire", "local"))
 	}) {
 		t.Fatalf("codex mcp list has no flopwire server: %v %+v", err, servers)
 	}

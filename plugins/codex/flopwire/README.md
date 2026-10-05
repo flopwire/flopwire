@@ -4,14 +4,15 @@ The plugin connects Codex to Flopwire. It adds these parts:
 
 | Part | What it does |
 |---|---|
-| MCP server `flopwire` | Runs `flopwire mcp`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
+| MCP server `flopwire` | Runs `flopwire mcp` through the shim `bin/flopwire-hook`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
 | Hooks | Run `flopwire hook` through the shim `bin/flopwire-hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout (3 seconds for `SessionEnd`, the most Codex allows). The `Stop` hook is `async`, so Codex ignores text that your shell's startup files print, unless that text starts with `{` or `[`. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
 | Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. The text is the same as in the Claude Code plugin. |
 
 ## Requirements
 
-- The `flopwire` binary is on `PATH`, for the MCP server, which runs it by
-  name. The hooks find it by the path `flopwire setup` recorded first.
+- A `flopwire` binary the shim can find: the path `flopwire setup`
+  recorded, `PATH` or a known directory. The hooks and the MCP server
+  both run it through the shim.
 - The device agent runs (`flopwire agent run`). Messages and capture go
   through it. See [docs/agent.md](../../../docs/agent.md).
 - You approve the plugin's hooks once in Codex. See below.

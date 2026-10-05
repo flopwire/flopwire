@@ -64,11 +64,11 @@ Codex runs a plugin's hooks only after you trust them once: start codex and
 answer its "Hooks need review" prompt, or use /hooks. setup reports whether
 that is still needed and never approves hooks for you.
 
-The plugin's MCP server runs "flopwire mcp", so flopwire must be on PATH.
-Its hooks run a shim (bin/flopwire-hook) that takes the binary path setup
-records in <config dir>/binary-path, then PATH, then /opt/homebrew/bin,
-/usr/local/bin, ~/go/bin and ~/.local/bin: a harness runs hooks through a
-shell whose PATH is not your terminal's. --check runs each installed
+The plugin's hooks and MCP server run a shim (bin/flopwire-hook) that
+takes the binary path setup records in <config dir>/binary-path (unless
+flopwire on PATH is a newer file), then PATH, then /opt/homebrew/bin,
+/usr/local/bin, ~/go/bin and ~/.local/bin: a harness runs them with a
+PATH that is not your terminal's. --check runs each installed
 plugin's shim as its harness runs a hook (hook_binary) and warns when that
 binary lacks a command the plugin runs. Messaging needs the device agent
 (flopwire agent run); setup reports it and the local index and starts
@@ -402,14 +402,14 @@ func runHarnessCommand(ctx context.Context, name string, args ...string) ([]byte
 func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep := setupReport{Kind: "setup", Mode: env.mode, OK: true, Todo: []string{}}
 	if p, err := env.lookPath("flopwire"); err != nil {
-		rep.Flopwire.Note = "flopwire is not on PATH: the plugin's MCP server runs `flopwire mcp` by name, so its tools do not load (the hooks find the binary by its recorded path)"
+		rep.Flopwire.Note = "flopwire is not on PATH: the plugins find the binary by the path setup records, but your terminal and any MCP server you added by hand run it by name"
 		if env.mode != setupRemove {
 			rep.Todo = append(rep.Todo, "put the flopwire binary on PATH (for example in ~/.local/bin), then restart your agent sessions")
 		}
 	} else {
 		rep.Flopwire = pathBinary(ctx, env, p)
 		if self, err := os.Executable(); err == nil && !samePath(self, p) {
-			rep.Flopwire.Note = fmt.Sprintf("the plugin's MCP server runs %s, not this binary (%s)", p, self)
+			rep.Flopwire.Note = fmt.Sprintf("flopwire on PATH is %s, not this binary (%s)", p, self)
 		}
 	}
 	if file, err := recordedBinaryPath(); err == nil {
@@ -910,8 +910,9 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 // pluginCommandRe matches a plugin hook command that runs flopwire, by
 // name or through the plugin's shim, and captures the command it runs:
 // `/bin/sh "${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook" hook` and
-// `flopwire hook || …` give hook.
-var pluginCommandRe = regexp.MustCompile(`^\s*(?:(?:\S*/)?sh\s+"\S*/flopwire-hook"|(?:\S*/)?flopwire)\s+([a-z][a-z-]*)`)
+// `flopwire hook || …` give hook; Devin lists the MCP server unquoted,
+// `/bin/sh ${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook mcp`.
+var pluginCommandRe = regexp.MustCompile(`^\s*(?:(?:\S*/)?sh\s+"?\S*/flopwire-hook"?|(?:\S*/)?flopwire)\s+([a-z][a-z-]*)`)
 
 // pluginCommands are the flopwire commands an installed plugin runs: its
 // hooks (hooks/hooks.json) and its MCP server (.mcp.json), sorted.
@@ -941,8 +942,11 @@ func pluginCommands(dir string) []string {
 	}
 	if raw, err := os.ReadFile(filepath.Join(dir, ".mcp.json")); err == nil && json.Unmarshal(raw, &mj) == nil {
 		for _, s := range mj.MCPServers {
-			if filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0 {
+			switch {
+			case filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0:
 				set[s.Args[0]] = true
+			case filepath.Base(s.Command) == "sh" && len(s.Args) > 1 && filepath.Base(s.Args[0]) == "flopwire-hook":
+				set[s.Args[1]] = true // through the plugin's shim
 			}
 		}
 	}

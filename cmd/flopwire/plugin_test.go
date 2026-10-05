@@ -224,8 +224,21 @@ func TestClaudePluginMCP(t *testing.T) {
 	}
 	readJSONFile(t, filepath.Join(claudePluginDir, ".mcp.json"), &m)
 	s, ok := m.MCPServers["flopwire"]
-	if len(m.MCPServers) != 1 || !ok || s.Command != "flopwire" || !slices.Equal(s.Args, []string{"mcp"}) {
-		t.Fatalf(".mcp.json: want one server flopwire = flopwire mcp; got %+v", m)
+	// The MCP server runs through the hook shim, by the plugin root that
+	// Claude Code and Devin expand in .mcp.json: flopwire by bare name
+	// would take the harness's PATH and lose the tools silently.
+	if len(m.MCPServers) != 1 || !ok || s.Command != "/bin/sh" || !slices.Equal(s.Args, []string{"${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook", "mcp"}) {
+		t.Fatalf(".mcp.json: want one server flopwire = /bin/sh ${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook mcp; got %+v", m)
+	}
+	root, err := filepath.Abs(claudePluginDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := slices.Clone(s.Args)
+	args[0] = strings.ReplaceAll(args[0], "${CLAUDE_PLUGIN_ROOT}", root)
+	runMCPThroughShim(t, s.Command, args, "")
+	if got := pluginCommands(claudePluginDir); !slices.Equal(got, []string{"hook", "mcp"}) {
+		t.Fatalf("pluginCommands = %q, want hook and mcp", got)
 	}
 	if !subcommands()["mcp"] {
 		t.Fatal("mcp is not a flopwire subcommand")
@@ -289,5 +302,28 @@ func TestClaudePluginValidates(t *testing.T) {
 		if !rep.Success || len(rep.Manifest.Errors) > 0 {
 			t.Errorf("claude plugin validate %s failed:\n%s", dir, out)
 		}
+	}
+}
+
+// runMCPThroughShim starts the plugin's MCP server command (argv, in dir)
+// with flopwire not on PATH and a fake recorded binary, and checks that
+// the fake ran as `flopwire mcp` with the harness's stdin and stdout.
+func runMCPThroughShim(t *testing.T, command string, args []string, dir string) {
+	t.Helper()
+	f := newShimFixture(t)
+	f.fake(filepath.Join(f.home, "rec bin"))
+	bin := filepath.Join(f.home, "rec bin", "flopwire")
+	f.record(bin)
+	cmd := exec.Command(command, args...)
+	cmd.Dir = dir
+	cmd.Env = f.environ()
+	cmd.Stdin = strings.NewReader(`{"jsonrpc":"2.0"}`)
+	out, err := cmd.CombinedOutput()
+	if err != nil || len(out) != 0 {
+		t.Fatalf("MCP command: %v %s", err, out)
+	}
+	// The fake logs "$0 $FLOPWIRE_HOOK_VIA $* stdin"; VIA is for hooks.
+	if got, want := f.logged(), bin+`  mcp {"jsonrpc":"2.0"}`; got != want {
+		t.Fatalf("ran %q, want %q (no FLOPWIRE_HOOK_VIA for the MCP server)", got, want)
 	}
 }

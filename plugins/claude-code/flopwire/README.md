@@ -4,7 +4,7 @@ The plugin connects Claude Code to Flopwire. It adds these parts:
 
 | Part | What it does |
 |---|---|
-| MCP server `flopwire` | Runs `flopwire mcp`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
+| MCP server `flopwire` | Runs `flopwire mcp` through the shim `bin/flopwire-hook`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
 | Hooks | Run `flopwire hook` through the shim `bin/flopwire-hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
 | Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. |
 
@@ -20,8 +20,9 @@ model uses it. `claude plugin details flopwire` shows the current numbers.
 
 ## Requirements
 
-- The `flopwire` binary is on `PATH`, for the MCP server, which runs it by
-  name. The hooks find it by the path `flopwire setup` recorded first.
+- A `flopwire` binary the shim can find: the path `flopwire setup`
+  recorded, `PATH` or a known directory. The hooks and the MCP server
+  both run it through the shim.
 - The device agent runs (`flopwire agent run`). Messages and capture go
   through it. See [docs/agent.md](../../../docs/agent.md).
 
@@ -51,7 +52,7 @@ fails, for example because the binary is older than the plugin and has no
 exits 2, so it never blocks a prompt or a stop. See
 [docs/agent.md](../../../docs/agent.md#how-the-hooks-find-the-binary).
 
-If `flopwire` is not on `PATH`, the MCP server shows as failed in `/mcp`. If the agent is not running, the hooks print nothing and the
+If the shim finds no `flopwire`, the MCP server shows as failed in `/mcp`. If the agent is not running, the hooks print nothing and the
 messaging tools return `agent_not_running`. After enrollment, the search tools use the shared
 server by default and need no local index. Before enrollment, they use the
 local index and report when it has no transcripts. CLI queries can use

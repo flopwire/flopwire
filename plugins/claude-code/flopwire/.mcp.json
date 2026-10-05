@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "flopwire": {
-      "command": "flopwire",
-      "args": ["mcp"]
+      "command": "/bin/sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook", "mcp"]
     }
   }
 }

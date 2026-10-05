@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeDevinState is the fake Devin CLI's plugin state, kept in the file
@@ -930,6 +931,12 @@ func TestSetupDevinReportsHookBinary(t *testing.T) {
 	}
 	script := "#!/bin/sh\ncase \"$1\" in\nversion) echo v0.1.0 ;;\n*) printf 'Usage: flopwire <command>\\n\\n  mcp         serve tools\\n  version     print version\\n' >&2; exit 1 ;;\nesac\n"
 	if err := os.WriteFile(fw, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An older install is an older file: a newer flopwire on PATH would
+	// win over the recorded one.
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(fw, old, old); err != nil {
 		t.Fatal(err)
 	}
 	rep, _, err := d.run("--check")

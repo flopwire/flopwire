@@ -239,7 +239,7 @@ The report has these parts:
 | Field | Means |
 |---|---|
 | `ok` | `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
-| `flopwire.path` | The `flopwire` on `PATH`, which the plugins' MCP server runs. Empty when `flopwire` is not on `PATH`. |
+| `flopwire.path` | The `flopwire` on `PATH`. Empty when `flopwire` is not on `PATH`. The plugins run the binary their shim finds (`hook_binary`). |
 | `flopwire.recorded` | The binary path recorded for the plugins' hooks. See [How the hooks find the binary](#how-the-hooks-find-the-binary). |
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
@@ -447,8 +447,13 @@ The hook commands start the shim by the harness's plugin root:
 and Devin, `/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook` in Codex.
 `/bin/sh` runs the file, so its mode does not matter.
 
-The MCP server still runs `flopwire mcp` by name: keep `flopwire` on
-`PATH`.
+The MCP server runs through the same shim, `flopwire-hook mcp`, so it
+finds the same binary. Claude Code and Devin expand `${CLAUDE_PLUGIN_ROOT}`
+in the plugin's `.mcp.json`. Codex 0.160 does not expand `${PLUGIN_ROOT}`
+there, so its `.mcp.json` sets `cwd` to `.` (Codex resolves it to the
+plugin directory) and runs `./bin/flopwire-hook mcp`. The shim `exec`s
+the binary for the MCP server. A missing binary shows as a failed MCP
+server in the harness.
 
 `flopwire setup --check` runs each installed plugin's shim the way its
 harness runs a hook: `/bin/sh -c` for Claude Code, `$SHELL -lc` for Codex

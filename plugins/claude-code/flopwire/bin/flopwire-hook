@@ -19,7 +19,9 @@
 # would block the prompt or the stop.
 #
 # `flopwire-hook --which` prints "<via> <path>" and runs nothing; it is
-# what `flopwire setup --check` runs. This file is the same in the Claude
+# what `flopwire setup --check` runs. `flopwire-hook mcp` runs the
+# plugin's MCP server the same way: Claude Code and Devin start it by
+# ${CLAUDE_PLUGIN_ROOT}, Codex from the plugin directory (cwd "."). This file is the same in the Claude
 # Code and Codex plugins; a test fails when they differ.
 
 if [ -n "${FLOPWIRE_CONFIG:-}" ]; then
@@ -76,6 +78,12 @@ fi
 if [ "${1:-}" = --which ]; then
 	echo "$via $bin"
 	exit 0
+fi
+
+# The MCP server: the harness talks to the binary on stdin and stdout and
+# stops it with a signal, so the binary replaces this shell.
+if [ "${1:-}" = mcp ]; then
+	exec "$bin" "$@"
 fi
 
 FLOPWIRE_HOOK_VIA=$via
