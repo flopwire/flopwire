@@ -78,3 +78,50 @@ func TestExtractionSummaryDoesNotWaitForWriter(t *testing.T) {
 		t.Fatal("ExtractionSummary waited for the busy writer")
 	}
 }
+
+// ExtractionSummary runs three statements. Off the writer they must still
+// read one snapshot: a commit between them made the totals disagree with
+// the per-code counts and the affected list.
+func TestExtractionSummaryOneSnapshot(t *testing.T) {
+	s := openTest(t, DetailFull)
+	st := source(t, s, transcript.AgentClaude, "/a.jsonl")
+	m := msg("session", "m", 0, transcript.KindToolResult, "preview")
+	apply(t, s, Batch{SourceID: st.ID, Generation: 1, NewGeneration: &transcript.Generation{Generation: 1}, Watermark: &transcript.Watermark{Offset: 10, LineNo: 1}, Extraction: checkpointReport(t, 1, 10, 1, nil), AppliedParser: "claude@2", Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "session"}}, Messages: []*transcript.Message{m}})
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var report string
+	if err := s.rdb.QueryRowContext(ctx, `SELECT extraction_report FROM sources WHERE id=?`, st.ID).Scan(&report); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := s.write(ctx, func(w *writeTx) error {
+				_, err := w.exec(`UPDATE sources SET extraction_report=CASE WHEN extraction_report IS NULL THEN ? ELSE NULL END WHERE id=?`, report, st.ID)
+				return err
+			}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sum, err := s.ExtractionSummary(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a, l, c := sum.AffectedSources > 0, len(sum.Affected) > 0, len(sum.Counts) > 0; a != l || a != c {
+			t.Fatalf("mixed snapshots: affected=%d list=%d counts=%v", sum.AffectedSources, len(sum.Affected), sum.Counts)
+		}
+	}
+}

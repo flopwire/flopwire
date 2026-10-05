@@ -2,6 +2,8 @@ package localindex
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
 	"strconv"
 
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -14,6 +16,9 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 	// source, and the agent's status answer runs it. On the writer it waited
 	// behind every queued batch and held up hook flushes while it ran. A
 	// summary that misses a batch the writer has not committed yet is fine.
+	// One read transaction keeps its three statements on one snapshot: a
+	// commit between them would make the totals disagree with the counts
+	// and the affected list.
 	summarize := func(q dbtx) error {
 		// Newest identity at each device/path is current; replaced sources remain history.
 		const current = `WITH current AS (SELECT s.* FROM sources s WHERE s.agent IN ('claude','codex') AND s.storage_kind='jsonl_append' AND NOT EXISTS (SELECT 1 FROM sources n WHERE n.device_id=s.device_id AND n.path=s.path AND n.id>s.id)) `
@@ -52,7 +57,24 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 		}
 		return rows.Err()
 	}
-	return out, summarize(s.rdb)
+	// Not BeginTx: the pool's DSN asks for BEGIN IMMEDIATE, which a
+	// query_only connection refuses. A deferred BEGIN takes the snapshot at
+	// the first read and holds it until the ROLLBACK.
+	conn, err := s.rdb.Conn(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+		return out, err
+	}
+	err = summarize(conn)
+	if _, rerr := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); rerr != nil {
+		// Never hand the pool a connection still inside a transaction.
+		conn.Raw(func(any) error { return driver.ErrBadConn })
+		err = errors.Join(err, rerr)
+	}
+	return out, err
 }
 
 func (s *Store) SourceDiagnostics(ctx context.Context, sourceID string) (*transcript.SourceDiagnostics, error) {
