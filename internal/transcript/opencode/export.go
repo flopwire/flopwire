@@ -1,10 +1,10 @@
 package opencode
 
-// Export and import of one session's rows (format opencode-export@1).
+// Export and import of one session's rows (format opencode-export@2).
 //
 // The device does not upload opencode.db: it is one database for every
 // session, rewritten in place, and it holds account tokens. It uploads one
-// export per session instead, through devicesync's SyncExport, at the
+// export per session instead, through devicesync's SyncExportFunc, at the
 // source path ExportPath(db, id), the way it uploads Devin sessions. The
 // server rebuilds a throwaway SQLite store from an export (LoadExport) and
 // runs the same Parser over it, so the parser cursor carries over from one
@@ -16,6 +16,9 @@ package opencode
 // parent's task part read at export time, and depth, since the export
 // holds no rows of its ancestors. A session with no rows at all exports one "gone" record
 // (never zero bytes); the parser then supersedes its rows.
+//
+// @2 appends new and changed records. LoadExport keeps the last record
+// per key. Deletions start a whole export and a new sync generation.
 
 import (
 	"bufio"
@@ -33,7 +36,7 @@ import (
 
 // ExportFormat names the export format; it is the source's parser string
 // on the wire.
-const ExportFormat = "opencode-export@1"
+const ExportFormat = "opencode-export@2"
 
 // ExportPath is the device source path of one session's export.
 func ExportPath(dbPath, sessionID string) string { return dbPath + "#" + sessionID }
