@@ -670,6 +670,10 @@ func (h *harness) consistency(d *device, skip map[string]bool) (string, []string
 		if err != nil {
 			return "", nil, err
 		}
+		content, err := h.expectedContent(path, agent, "")
+		if err != nil {
+			return "", nil, err
+		}
 		for session, want := range all {
 			if skip[session] && d == h.devs[0] {
 				continue
@@ -681,6 +685,13 @@ func (h *harness) consistency(d *device, skip map[string]bool) (string, []string
 				return "", nil, err
 			}
 			if diff := diffKeys(want, got); diff != "" {
+				problems = append(problems, fmt.Sprintf("server %s %s: %s", filepath.Base(path), session, diff))
+			}
+			stored, err := h.serverContent(d.id, string(agent), session)
+			if err != nil {
+				return "", nil, err
+			}
+			if diff := contentDiff(content[session], stored); diff != "" {
 				problems = append(problems, fmt.Sprintf("server %s %s: %s", filepath.Base(path), session, diff))
 			}
 			local, err := d.localKeys(string(agent), session)
@@ -719,6 +730,21 @@ func (h *harness) consistency(d *device, skip map[string]bool) (string, []string
 		}
 		if diff := diffKeys(want, got); diff != "" {
 			problems = append(problems, fmt.Sprintf("devin %s server vs local: %s", sid, diff))
+		}
+		content, err := h.expectedContent(d.devinDB(), transcript.AgentDevin, sid)
+		if err != nil {
+			return "", nil, err
+		}
+		stored, err := h.serverContent(d.id, string(transcript.AgentDevin), sid)
+		if err != nil {
+			return "", nil, err
+		}
+		expected := content[sid]
+		if !placed[sid] {
+			expected = nil
+		}
+		if diff := contentDiff(expected, stored); diff != "" {
+			problems = append(problems, fmt.Sprintf("devin %s: %s", sid, diff))
 		}
 	}
 	return fmt.Sprintf("%d files, %d sessions, %d rows; %d Devin sessions, %d rows", len(files), sessions, rows, len(devinSessions), devinRows), problems, nil
