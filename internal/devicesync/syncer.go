@@ -200,7 +200,23 @@ func (s *Syncer) Close() {
 // it. A transport error leaves the capture persisted: the watermark is the
 // queue, and the next Sync resumes from the acknowledged offset.
 func (s *Syncer) Sync(ctx context.Context, spec SourceSpec) error {
-	return s.run(ctx, spec, nil, -1)
+	return s.run(ctx, spec, nil, -1, nil)
+}
+
+// SyncSnapshot captures an immutable staged file under the original source's
+// path and identity. The caller must keep snapshot unchanged until this call
+// returns. Capture and upload read snapshot, never spec.Path. This allows a
+// checksum-verified, disk-backed import without buffering the whole source.
+func (s *Syncer) SyncSnapshot(ctx context.Context, spec SourceSpec, snapshot string, identity transcript.Identity) error {
+	if snapshot == "" || identity.Size < 0 {
+		return errors.New("devicesync: invalid snapshot")
+	}
+	return s.run(ctx, spec, nil, -1, &snapshotSource{path: snapshot, identity: identity})
+}
+
+type snapshotSource struct {
+	path     string
+	identity transcript.Identity
 }
 
 // SyncUpTo is Sync capturing at most the file's first upTo bytes: the
@@ -208,7 +224,7 @@ func (s *Syncer) Sync(ctx context.Context, spec SourceSpec) error {
 // name a directory a path rule covers, D18). The rest waits for a later
 // sync with a higher bound.
 func (s *Syncer) SyncUpTo(ctx context.Context, spec SourceSpec, upTo int64) error {
-	return s.run(ctx, spec, nil, upTo)
+	return s.run(ctx, spec, nil, upTo, nil)
 }
 
 // SyncExport syncs bytes that exist only in memory, such as rows exported
@@ -219,7 +235,7 @@ func (s *Syncer) SyncExport(ctx context.Context, spec SourceSpec, data []byte) e
 	if data == nil {
 		data = []byte{}
 	}
-	return s.run(ctx, spec, data, -1)
+	return s.run(ctx, spec, data, -1, nil)
 }
 
 // Resume uploads what is pending for a source without capturing it again.
@@ -233,7 +249,7 @@ func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error {
 	return s.upload(ctx, src)
 }
 
-func (s *Syncer) run(ctx context.Context, spec SourceSpec, export []byte, upTo int64) error {
+func (s *Syncer) run(ctx context.Context, spec SourceSpec, export []byte, upTo int64, snapshot *snapshotSource) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src, err := s.store.source(ctx, spec.Path, &spec)
@@ -241,12 +257,12 @@ func (s *Syncer) run(ctx context.Context, spec SourceSpec, export []byte, upTo i
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		if err := s.capture(ctx, src, export, upTo); errors.Is(err, ErrSpoolFull) {
+		if err := s.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
 			// Uploading what is pending is what frees the spool.
 			if uerr := s.upload(ctx, src); uerr != nil {
 				return errors.Join(err, uerr)
 			}
-			if err := s.capture(ctx, src, export, upTo); err != nil {
+			if err := s.capture(ctx, src, export, upTo, snapshot); err != nil {
 				return err
 			}
 		} else if err != nil {
@@ -261,7 +277,7 @@ func (s *Syncer) run(ctx context.Context, spec SourceSpec, export []byte, upTo i
 
 // capture chunks whatever the source gained since the last capture, up
 // to upTo bytes of a file when upTo >= 0.
-func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upTo int64) error {
+func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upTo int64, snapshot *snapshotSource) error {
 	var (
 		r  io.ReaderAt
 		id transcript.Identity
@@ -272,8 +288,18 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 		r, id = bytes.NewReader(export), transcript.Identity{Size: int64(len(export))}
 	} else {
 		var err error
-		f, err = os.Open(src.Spec.Path)
+		path := src.Spec.Path
+		if snapshot != nil {
+			if s.held[src.ID] == nil && len(s.held) >= s.cfg.MaxHeldFiles {
+				return errors.New("devicesync: snapshot descriptor limit reached")
+			}
+			path = snapshot.path
+		}
+		f, err = os.Open(path)
 		if errors.Is(err, os.ErrNotExist) {
+			if snapshot != nil {
+				return err
+			}
 			return s.vanish(ctx, src)
 		} else if err != nil {
 			return err
@@ -284,6 +310,13 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 			return err
 		}
 		r, id = f, transcript.IdentityOf(fi)
+		if snapshot != nil {
+			if !fi.Mode().IsRegular() || fi.Size() != snapshot.identity.Size {
+				f.Close()
+				return errors.New("devicesync: invalid snapshot")
+			}
+			id = snapshot.identity
+		}
 		if upTo >= 0 && id.Size > upTo {
 			if w := src.Watermark; w != nil && w.Identity.ID == id.ID && upTo < w.Offset {
 				// Captured further before: nothing new within the bound. (A
@@ -296,6 +329,14 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	}
 	keep := false
 	defer func() {
+		if snapshot != nil && f != nil {
+			// Also retain on the unchanged/pending path: upload must not fall
+			// back to reopening the original source after a retry.
+			if old := s.held[src.ID]; old != nil && old != f {
+				old.Close()
+			}
+			s.held[src.ID], keep = f, true
+		}
 		if f != nil && !keep {
 			f.Close()
 		}

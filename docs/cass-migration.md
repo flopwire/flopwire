@@ -52,7 +52,17 @@ collection. Set `FLOPWIRE_CONFIG` to its configuration file. Then upload:
 flopwire import upload --dir /private/cass-recovery
 ```
 
-The command verifies every checksum before uploading. Upload uses the normal
+The command copies each regular export file into private temporary staging.
+It checks every staged copy's checksum before uploading any source. Symlinks
+and special files are refused. Upload reads the checked copies even if the
+original files change. Original source paths and file identities are preserved.
+Allow temporary disk space for one copy of the complete export. Copying streams
+through a bounded buffer; it does not hold the history in memory. Staging is
+removed when the command returns. A killed process can leave a private
+`flopwire-cass-verified-*` directory in the system temporary directory. Remove
+that directory after confirming that its import process has stopped.
+
+Upload uses the normal
 authenticated, chunked sync protocol and server collection policy. It keeps
 acknowledgment state per server and device in the export directory. Repeat the
 command after an interruption to resume. Keep the directory until verification

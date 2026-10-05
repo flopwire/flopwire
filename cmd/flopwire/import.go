@@ -74,78 +74,50 @@ func importCommand(ctx context.Context, args []string, out io.Writer) error {
 		if m.Version != 1 || m.Origin == "" || len(m.Entries) == 0 {
 			return fmt.Errorf("invalid recovery manifest")
 		}
-		// Verify every file before starting any upload. Never trust manifest paths
-		// that could read outside this directory.
-		seen := map[string]bool{}
-		for _, e := range m.Entries {
-			if filepath.Base(e.File) != e.File || filepath.Ext(e.File) != ".jsonl" || seen[e.File] {
-				return fmt.Errorf("invalid recovery filename")
-			}
-			seen[e.File] = true
-			f, err := os.Open(filepath.Join(root, e.File))
+		return withRecoverySnapshots(ctx, root, m, func(snapshots []recoverySnapshot) error {
+			cfg, err := client.Load()
 			if err != nil {
 				return err
 			}
-			info, err := os.Lstat(filepath.Join(root, e.File))
+			if cfg.DeviceID == "" || cfg.Token == "" {
+				return fmt.Errorf("enroll a recovery device before uploading")
+			}
+			// Per-device state prevents acknowledged work under one credential from
+			// being mistaken for work uploaded by a different device.
+			stateKey := sha256.Sum256([]byte(cfg.Server + "\x00" + cfg.DeviceID))
+			state := filepath.Join(root, ".sync-"+hex.EncodeToString(stateKey[:]))
+			if err = os.MkdirAll(state, 0700); err != nil {
+				return err
+			}
+			st, err := devicesync.OpenStore(filepath.Join(state, "sync.db"))
 			if err != nil {
-				f.Close()
 				return err
 			}
-			if !info.Mode().IsRegular() {
-				f.Close()
-				return fmt.Errorf("recovery evidence is not a regular file")
-			}
-			h := sha256.New()
-			_, err = io.Copy(h, f)
-			f.Close()
+			defer st.Close()
+			spool, err := devicesync.OpenSpool(filepath.Join(state, "spool"), 1<<30)
 			if err != nil {
 				return err
 			}
-			if hex.EncodeToString(h.Sum(nil)) != e.SHA256 {
-				return fmt.Errorf("recovery evidence checksum mismatch")
-			}
-		}
-		cfg, err := client.Load()
-		if err != nil {
-			return err
-		}
-		if cfg.DeviceID == "" || cfg.Token == "" {
-			return fmt.Errorf("enroll a recovery device before uploading")
-		}
-		// Per-device state prevents acknowledged work under one credential from
-		// being mistaken for work uploaded by a different device.
-		stateKey := sha256.Sum256([]byte(cfg.Server + "\x00" + cfg.DeviceID))
-		state := filepath.Join(root, ".sync-"+hex.EncodeToString(stateKey[:]))
-		if err = os.MkdirAll(state, 0700); err != nil {
-			return err
-		}
-		st, err := devicesync.OpenStore(filepath.Join(state, "sync.db"))
-		if err != nil {
-			return err
-		}
-		defer st.Close()
-		spool, err := devicesync.OpenSpool(filepath.Join(state, "spool"), 1<<30)
-		if err != nil {
-			return err
-		}
-		log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-		sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log}, st, spool, newSyncTransport(cfg, client.Load, log))
-		if err != nil {
-			return err
-		}
-		defer sy.Close()
-		var uploaded int
-		for _, e := range m.Entries {
-			if err = sy.Sync(ctx, devicesync.SourceSpec{Path: filepath.Join(root, e.File), Agent: e.Agent, StorageKind: cassimport.StorageKind, SessionKey: e.SessionID, Parser: cassimport.Name}); err != nil {
+			log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+			sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log}, st, spool, newSyncTransport(cfg, client.Load, log))
+			if err != nil {
 				return err
 			}
-			uploaded++
-		}
-		_, n := sy.Refused()
-		if n > 0 {
-			return fmt.Errorf("server collection policy refused %d recovery sources", n)
-		}
-		return json.NewEncoder(out).Encode(map[string]any{"uploaded_conversations": uploaded, "origin": m.Origin, "indexing": "asynchronous; verify server counts before retiring CASS"})
+			defer sy.Close()
+			var uploaded int
+			for _, snapshot := range snapshots {
+				e := snapshot.entry
+				if err = sy.SyncSnapshot(ctx, devicesync.SourceSpec{Path: filepath.Join(root, e.File), Agent: e.Agent, StorageKind: cassimport.StorageKind, SessionKey: e.SessionID, Parser: cassimport.Name}, snapshot.path, snapshot.identity); err != nil {
+					return err
+				}
+				uploaded++
+			}
+			_, n := sy.Refused()
+			if n > 0 {
+				return fmt.Errorf("server collection policy refused %d recovery sources", n)
+			}
+			return json.NewEncoder(out).Encode(map[string]any{"uploaded_conversations": uploaded, "origin": m.Origin, "indexing": "asynchronous; verify server counts before retiring CASS"})
+		})
 	default:
 		return fmt.Errorf("unknown import command %q", args[0])
 	}
