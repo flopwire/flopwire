@@ -43,8 +43,8 @@ func validPresence(in []busproto.PresenceSession) ([]busproto.PresenceSession, e
 	for _, p := range in {
 		p.SessionID, p.Agent = strings.TrimSpace(p.SessionID), strings.TrimSpace(p.Agent)
 		if p.SessionID == "" || p.Agent == "" || len(p.SessionID) > 256 || len(p.Agent) > 64 ||
-			len(p.Repo) > 4096 || len(p.Branch) > 1024 || len(p.Title) > 1024 {
-			return nil, badRequest("each session needs session_id and agent (and bounded repo, branch and title)")
+			len(p.Repo) > 4096 || len(p.Remote) > 4096 || len(p.Main) > 4096 || len(p.Branch) > 1024 || len(p.Title) > 1024 {
+			return nil, badRequest("each session needs session_id and agent (and bounded repo, remote, branch and title)")
 		}
 		k := [2]string{p.Agent, p.SessionID}
 		if i, ok := seen[k]; ok {
@@ -66,22 +66,30 @@ const (
 	ForeignSessionsSQL = `SELECT session_id FROM conversations WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2
 		UNION SELECT session_id FROM bus_presence WHERE (session_id COLLATE "C")=ANY($1::text[]) AND user_id<>$2`
 	clearPresenceSQL  = `DELETE FROM bus_presence WHERE device_id=$1 AND (agent,session_id) NOT IN (SELECT * FROM unnest($2::text[],$3::text[]))`
-	upsertPresenceSQL = `INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,branch,title,busy,seen_at)
-		SELECT $1,$2,a,s,r,b,t,busy,$9 FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::bool[]) AS x(a,s,r,b,t,busy)
+	upsertPresenceSQL = `INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,branch,title,busy,seen_at,remote,main)
+		SELECT $1,$2,a,s,r,b,t,busy,$9,rm,mn FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::bool[],$10::text[],$11::text[]) AS x(a,s,r,b,t,busy,rm,mn)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET user_id=EXCLUDED.user_id,repo=EXCLUDED.repo,branch=EXCLUDED.branch,
+			title=EXCLUDED.title,busy=EXCLUDED.busy,seen_at=EXCLUDED.seen_at,remote=EXCLUDED.remote,main=EXCLUDED.main`
+	// upsertCloudSQL records the person $1's cloud sessions: one row per
+	// (person, agent, session), on no device, whichever device reports it.
+	upsertCloudSQL = `INSERT INTO bus_presence(device_id,cloud,user_id,agent,session_id,repo,branch,title,busy,seen_at)
+		SELECT NULL,true,$1,a,s,r,b,t,busy,$8 FROM unnest($2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::bool[]) AS x(a,s,r,b,t,busy)
+		ON CONFLICT (user_id,agent,session_id) WHERE cloud DO UPDATE SET repo=EXCLUDED.repo,branch=EXCLUDED.branch,
 			title=EXCLUDED.title,busy=EXCLUDED.busy,seen_at=EXCLUDED.seen_at`
 )
 
-// heartbeat replaces the device's presence with sessions. An id that is
-// another person's session (uploaded or in their presence) is not recorded
-// (returned): a device could otherwise pose as that session to send, spend
-// its limits, or make it ambiguous to address.
-func (s *Store) heartbeat(ctx context.Context, c busproto.Caller, sessions []busproto.PresenceSession, now time.Time) ([]string, error) {
+// heartbeat replaces the device's presence with sessions and records the
+// person's cloud sessions the device listed (they are the person's, so no
+// device's poll removes one). An id that is another person's session
+// (uploaded or in their presence) is not recorded (returned): a device
+// could otherwise pose as that session to send, spend its limits, or make
+// it ambiguous to address.
+func (s *Store) heartbeat(ctx context.Context, c busproto.Caller, sessions, cloud []busproto.PresenceSession, now time.Time) ([]string, error) {
 	var ignored []string
 	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		ids := make([]string, len(sessions))
-		for i, p := range sessions {
-			ids[i] = p.SessionID
+		ids := make([]string, 0, len(sessions)+len(cloud))
+		for _, p := range slices.Concat(sessions, cloud) {
+			ids = append(ids, p.SessionID)
 		}
 		rows, err := tx.Query(ctx, ForeignSessionsSQL, ids, c.UserID)
 		if err != nil {
@@ -90,19 +98,32 @@ func (s *Store) heartbeat(ctx context.Context, c busproto.Caller, sessions []bus
 		if ignored, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 			return err
 		}
-		var a, sid, repo, branch, title []string
+		var a, sid, repo, branch, title, remote, main []string
 		var busy []bool
 		for _, p := range sessions {
 			if slices.Contains(ignored, p.SessionID) {
 				continue
 			}
 			a, sid, repo, branch, title, busy = append(a, p.Agent), append(sid, p.SessionID), append(repo, p.Repo), append(branch, p.Branch), append(title, p.Title), append(busy, p.Busy)
+			remote, main = append(remote, p.Remote), append(main, p.Main)
 		}
 		if _, err := tx.Exec(ctx, clearPresenceSQL, c.DeviceID, a, sid); err != nil {
 			return err
 		}
 		if len(a) > 0 {
-			if _, err := tx.Exec(ctx, upsertPresenceSQL, c.DeviceID, c.UserID, a, sid, repo, branch, title, busy, now); err != nil {
+			if _, err := tx.Exec(ctx, upsertPresenceSQL, c.DeviceID, c.UserID, a, sid, repo, branch, title, busy, now, remote, main); err != nil {
+				return err
+			}
+		}
+		a, sid, repo, branch, title, busy = nil, nil, nil, nil, nil, nil
+		for _, p := range cloud {
+			if slices.Contains(ignored, p.SessionID) {
+				continue
+			}
+			a, sid, repo, branch, title, busy = append(a, p.Agent), append(sid, p.SessionID), append(repo, p.Repo), append(branch, p.Branch), append(title, p.Title), append(busy, p.Busy)
+		}
+		if len(a) > 0 {
+			if _, err := tx.Exec(ctx, upsertCloudSQL, c.UserID, a, sid, repo, branch, title, busy, now); err != nil {
 				return err
 			}
 		}
@@ -120,11 +141,15 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 	if err != nil {
 		return busproto.PollResponse{}, err
 	}
+	cloud, err := validPresence(req.Cloud)
+	if err != nil {
+		return busproto.PollResponse{}, err
+	}
 	if req.WaitSeconds < 0 || req.Cursor < 0 {
 		return busproto.PollResponse{}, badRequest("wait_seconds and cursor must not be negative")
 	}
 	wait := min(time.Duration(req.WaitSeconds)*time.Second, busproto.PollWait)
-	ignored, err := s.heartbeat(ctx, c, sessions, s.now())
+	ignored, err := s.heartbeat(ctx, c, sessions, cloud, s.now())
 	if err != nil {
 		return busproto.PollResponse{}, err
 	}
@@ -141,7 +166,7 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 		// changed since its last answer, maybe by shrinking (a revoke
 		// re-held a message), which the cursor cannot show.
 		if newest > req.Cursor || gen != req.Gen || timedOut {
-			out.Cursor, out.Gen, out.Ignored = max(newest, req.Cursor), gen, ignored
+			out.Cursor, out.Gen, out.Ignored, out.Now = max(newest, req.Cursor), gen, ignored, s.now().UTC()
 			return out, nil
 		}
 		select {
@@ -156,14 +181,21 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 	}
 }
 
+// cloudLive is DeliverableSQL's test that a queued message is for a cloud
+// session of its recipient $1 that is live (seen since $4).
+const cloudLive = `(m.state='queued' AND m.addressed='session' AND EXISTS(SELECT 1 FROM bus_presence p
+		WHERE p.cloud AND p.user_id=$1 AND p.agent=m.to_agent AND (p.session_id COLLATE "C")=(m.to_session COLLATE "C") AND p.seen_at>$4))`
+
 // DeliverableSQL is the person $1's deliverable messages (expiring after
 // $2) that the device $3 should see: those to its sessions (live in its
-// presence or uploaded from it), those it claimed, and unclaimed @user
-// messages (the caller filters them by eligibility).
-const DeliverableSQL = `SELECT ` + envCols + ` FROM ` + envFrom + `
+// presence or uploaded from it), those it claimed, unclaimed @user
+// messages (the caller filters them by eligibility), and unclaimed ones to
+// the person's live cloud sessions (seen since $4; the last column).
+const DeliverableSQL = `SELECT ` + envCols + `,` + cloudLive + ` FROM ` + envFrom + `
 	WHERE m.to_user=$1 AND m.state IN ('queued','claimed') AND m.expires_at>$2 AND (
 		(m.state='claimed' AND m.claimed_device=$3)
 		OR (m.state='queued' AND m.to_session IS NULL)
+		OR ` + cloudLive + `
 		OR (m.state='queued' AND m.addressed='session' AND (
 			EXISTS(SELECT 1 FROM bus_presence p WHERE p.device_id=$3 AND p.agent=m.to_agent AND p.session_id=m.to_session)
 			OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=$3 AND c.agent=m.to_agent AND c.session_id=m.to_session))))
@@ -192,17 +224,34 @@ func held(ctx context.Context, q querier, userID string, now time.Time) ([]buspr
 // deliverable reads the device's set and its highest seq.
 func (s *Store) deliverable(ctx context.Context, c busproto.Caller, now time.Time) (busproto.PollResponse, int64, error) {
 	out := busproto.PollResponse{Messages: []busproto.Envelope{}, Claimable: []busproto.Claimable{}}
-	rows, err := s.Pool.Query(ctx, DeliverableSQL, c.UserID, now, c.DeviceID)
+	rows, err := s.Pool.Query(ctx, DeliverableSQL, c.UserID, now, c.DeviceID, now.Add(-busproto.PresenceTTL))
 	if err != nil {
 		return out, 0, err
 	}
-	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (busproto.Envelope, error) { return scanEnvelope(r) })
+	type row struct {
+		busproto.Envelope
+		cloud bool
+	}
+	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var v row
+		e, err := scanEnvelope(r, &v.cloud)
+		v.Envelope = e
+		return v, err
+	})
 	if err != nil {
 		return out, 0, err
 	}
 	var live []liveSession
 	var newest int64
-	for i, e := range all {
+	for _, v := range all {
+		e := v.Envelope
+		if v.cloud {
+			// Any of the person's devices may push it; the one that
+			// claims it does (Claim).
+			out.Claimable = append(out.Claimable, busproto.Claimable{Message: e, Sessions: []string{e.ToSession}, Cloud: true})
+			newest = max(newest, e.Seq)
+			continue
+		}
 		if e.ToSession != "" {
 			out.Messages = append(out.Messages, e)
 			newest = max(newest, e.Seq)
@@ -230,7 +279,7 @@ func (s *Store) deliverable(ctx context.Context, c busproto.Caller, now time.Tim
 			}
 		}
 		if len(mine) > 0 {
-			out.Claimable = append(out.Claimable, busproto.Claimable{Message: all[i], Sessions: mine})
+			out.Claimable = append(out.Claimable, busproto.Claimable{Message: e, Sessions: mine})
 			newest = max(newest, e.Seq)
 		}
 	}
@@ -240,17 +289,30 @@ func (s *Store) deliverable(ctx context.Context, c busproto.Caller, now time.Tim
 	return out, newest, nil
 }
 
+// CloudSessionSQL: the person $1's cloud session $2 of agent $3 is live
+// (seen since $4).
+const CloudSessionSQL = `SELECT EXISTS(SELECT 1 FROM bus_presence WHERE cloud AND user_id=$1 AND (session_id COLLATE "C")=$2 AND agent=$3 AND seen_at>$4)`
+
 // Claim takes an @user message for one live session on the caller's
-// device. The message row is locked, so of two devices claiming at once
-// one wins and the other gets already_claimed. Claiming again for the same
-// session returns the message.
+// device, or a message to one of the caller's person's live cloud sessions
+// for the caller's device to push. The message row is locked, so of two
+// devices claiming at once one wins and the other gets already_claimed.
+// Claiming again for the same session returns the message.
 func (s *Store) Claim(ctx context.Context, c busproto.Caller, req busproto.ClaimRequest) (busproto.ClaimResponse, error) {
 	var out busproto.ClaimResponse
 	if req.MessageID == "" || len(req.MessageID) > 64 {
 		return out, badRequest("message_id is required")
 	}
 	now := s.now()
-	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
+	var cloud bool
+	err := s.Pool.QueryRow(ctx, `SELECT addressed='session' FROM bus_messages WHERE id=$1 AND to_user=$2`, req.MessageID, c.UserID).Scan(&cloud)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return out, err
+	}
+	if cloud {
+		return s.claimCloud(ctx, c, req, now)
+	}
+	err = inTx(ctx, s.Pool, func(tx pgx.Tx) error {
 		sess, err := s.deviceSession(ctx, tx, c, strings.TrimSpace(req.SessionID), strings.TrimSpace(req.Agent), now)
 		if err != nil {
 			return err
@@ -288,7 +350,7 @@ func (s *Store) Claim(ctx context.Context, c busproto.Caller, req busproto.Claim
 		if err != nil {
 			return err
 		}
-		if !eligible(toRepo, liveSession{device: c.DeviceID, agent: sess.agent, id: sess.id, repo: sess.repo}, live) {
+		if !eligible(toRepo, liveSession{device: c.DeviceID, agent: sess.agent, id: sess.id, repo: sess.repo, remote: sess.remote}, live) {
 			return fail(http.StatusConflict, busproto.CodeNotEligible, "message %s is for a session on %s, and one is live", req.MessageID, toRepo)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE bus_messages SET state='claimed',to_session=$2,to_agent=$3,claimed_by=$2,claimed_device=$4,claimed_at=$5 WHERE id=$1`,
@@ -296,6 +358,54 @@ func (s *Store) Claim(ctx context.Context, c busproto.Caller, req busproto.Claim
 			return err
 		}
 		if err := audit(ctx, tx, c, now, "bus.claim", "bus_message", req.MessageID, map[string]any{"session": sess.id, "agent": sess.agent}); err != nil {
+			return err
+		}
+		return s.readEnvelope(ctx, tx, req.MessageID, &out.Message)
+	})
+	return out, err
+}
+
+// claimCloud takes a message to a cloud session of the caller's person for
+// the caller's device, which pushes it. The session must be live: a device
+// claims only to push at once.
+func (s *Store) claimCloud(ctx context.Context, c busproto.Caller, req busproto.ClaimRequest, now time.Time) (busproto.ClaimResponse, error) {
+	var out busproto.ClaimResponse
+	err := inTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		var toSession, toAgent, state, claimedDevice string
+		var expires time.Time
+		err := tx.QueryRow(ctx, `SELECT to_session,to_agent,state,COALESCE(claimed_device::text,''),expires_at
+			FROM bus_messages WHERE id=$1 AND to_user=$2 AND addressed='session' FOR NO KEY UPDATE`, req.MessageID, c.UserID).Scan(&toSession, &toAgent, &state, &claimedDevice, &expires)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (toSession != strings.TrimSpace(req.SessionID) || req.Agent != "" && req.Agent != toAgent)) {
+			return fail(http.StatusNotFound, busproto.CodeNotFound, "no message %s to cloud session %s for you", req.MessageID, req.SessionID)
+		}
+		if err != nil {
+			return err
+		}
+		switch busproto.State(state) {
+		case busproto.StateClaimed, busproto.StateDelivered, busproto.StateRead:
+			if claimedDevice == c.DeviceID {
+				return s.readEnvelope(ctx, tx, req.MessageID, &out.Message)
+			}
+			return fail(http.StatusConflict, busproto.CodeAlreadyClaimed, "message %s was claimed by another device", req.MessageID)
+		case busproto.StateQueued:
+		default:
+			return fail(http.StatusConflict, busproto.CodeNotEligible, "message %s is %s", req.MessageID, state)
+		}
+		if !now.Before(expires) {
+			return fail(http.StatusConflict, busproto.CodeNotEligible, "message %s expired", req.MessageID)
+		}
+		var live bool
+		if err := tx.QueryRow(ctx, CloudSessionSQL, c.UserID, toSession, toAgent, now.Add(-busproto.PresenceTTL)).Scan(&live); err != nil {
+			return err
+		}
+		if !live {
+			return fail(http.StatusConflict, busproto.CodeNotEligible, "cloud session %s is not live", toSession)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE bus_messages SET state='claimed',claimed_by=to_session,claimed_device=$2,claimed_at=$3 WHERE id=$1`,
+			req.MessageID, c.DeviceID, now); err != nil {
+			return err
+		}
+		if err := audit(ctx, tx, c, now, "bus.claim", "bus_message", req.MessageID, map[string]any{"session": toSession, "agent": toAgent, "cloud": true}); err != nil {
 			return err
 		}
 		return s.readEnvelope(ctx, tx, req.MessageID, &out.Message)
@@ -397,23 +507,23 @@ const EndedSQL = `UPDATE bus_messages m SET state='undelivered',reason=$4
 // a no-op that reports it taken.
 func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequest) (busproto.AckResponse, error) {
 	out := busproto.AckResponse{Acked: []string{}, Rejected: []string{}, Read: []string{}, ReadRejected: []string{}}
-	if n := len(req.IDs) + len(req.Undelivered) + len(req.SessionEnded) + len(req.Read); n == 0 || n > busproto.MaxAck {
-		return out, badRequest("ids, undelivered, session_ended and read: 1 to %d entries", busproto.MaxAck)
+	if n := len(req.IDs) + len(req.Undelivered) + len(req.SessionEnded) + len(req.PushFailed) + len(req.Read); n == 0 || n > busproto.MaxAck {
+		return out, badRequest("ids, undelivered, session_ended, push_failed and read: 1 to %d entries", busproto.MaxAck)
 	}
 	reads, err := validReads(req.Read)
 	if err != nil {
 		return out, err
 	}
-	var ids, gone, ended []string
+	var ids, gone, ended, failed []string
 	for _, l := range []struct {
 		in  []string
 		out *[]string
-	}{{req.IDs, &ids}, {req.Undelivered, &gone}, {req.SessionEnded, &ended}} {
+	}{{req.IDs, &ids}, {req.Undelivered, &gone}, {req.SessionEnded, &ended}, {req.PushFailed, &failed}} {
 		for _, id := range l.in {
 			if len(id) > 64 {
 				return out, badRequest("ids: a message id is at most 64 bytes")
 			}
-			if !slices.Contains(ids, id) && !slices.Contains(gone, id) && !slices.Contains(ended, id) {
+			if !slices.Contains(ids, id) && !slices.Contains(gone, id) && !slices.Contains(ended, id) && !slices.Contains(failed, id) {
 				*l.out = append(*l.out, id)
 			}
 		}
@@ -425,6 +535,10 @@ func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequ
 			return err
 		}
 		undelivered, already, err := settle(ctx, tx, UndeliveredSQL, undeliveredBeforeSQL, gone, c, busproto.ReasonUnconfirmed)
+		if err != nil {
+			return err
+		}
+		pushFailed, failedBefore, err := settle(ctx, tx, UndeliveredSQL, undeliveredBeforeSQL, failed, c, busproto.ReasonPushFailed)
 		if err != nil {
 			return err
 		}
@@ -448,18 +562,21 @@ func (s *Store) Ack(ctx context.Context, c busproto.Caller, req busproto.AckRequ
 				return err
 			}
 		}
-		for _, id := range slices.Concat(ids, gone, ended) {
+		for _, id := range slices.Concat(ids, gone, ended, failed) {
 			if slices.Contains(acked, id) || slices.Contains(before, id) || slices.Contains(undelivered, id) || slices.Contains(already, id) ||
-				slices.Contains(endedNow, id) || slices.Contains(endedBefore, id) {
+				slices.Contains(endedNow, id) || slices.Contains(endedBefore, id) || slices.Contains(pushFailed, id) || slices.Contains(failedBefore, id) {
 				out.Acked = append(out.Acked, id)
 			} else {
 				out.Rejected = append(out.Rejected, id)
 			}
 		}
-		if len(ids)+len(gone)+len(ended) > 0 {
+		if len(ids)+len(gone)+len(ended)+len(failed) > 0 {
 			meta := map[string]any{"delivered": acked, "already": len(before), "rejected": out.Rejected}
 			if len(gone) > 0 {
 				meta["undelivered"] = undelivered
+			}
+			if len(failed) > 0 {
+				meta["push_failed"] = pushFailed
 			}
 			if len(ended) > 0 {
 				meta["session_ended"] = endedNow
@@ -547,10 +664,10 @@ func settle(ctx context.Context, tx pgx.Tx, update, beforeSQL string, ids []stri
 const PeersSQL = `SELECT p.session_id,p.agent,p.user_id::text,
 		(SELECT email FROM users WHERE id=p.user_id),(SELECT name FROM users WHERE id=p.user_id),(SELECT disabled FROM users WHERE id=p.user_id),
 		COALESCE((SELECT name FROM devices WHERE id=p.device_id),''),COALESCE((SELECT revoked_at IS NOT NULL FROM devices WHERE id=p.device_id),false),
-		p.repo,p.branch,p.title,
+		p.repo,p.remote,p.main,p.branch,p.title,
 		COALESCE((SELECT title FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),''),
 		COALESCE((SELECT hidden_at IS NOT NULL FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),false),
-		p.busy,p.seen_at
+		p.busy,p.seen_at,p.cloud
 	FROM bus_presence p WHERE p.seen_at>$1 LIMIT 2000`
 
 func userMatches(filter string, p busproto.Peer) bool {
@@ -578,7 +695,7 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var p row
 		return p, r.Scan(&p.Session, &p.Agent, &p.UserID, &p.User, &p.UserName, &p.disabled, &p.Device, &p.revoked,
-			&p.Repo, &p.Branch, &p.Title, &p.uploadedTitle, &p.hidden, &p.Busy, &p.SeenAt)
+			&p.Repo, &p.Remote, &p.Main, &p.Branch, &p.Title, &p.uploadedTitle, &p.hidden, &p.Busy, &p.SeenAt, &p.Cloud)
 	})
 	if err != nil {
 		return busproto.PeersResponse{}, err
@@ -590,7 +707,11 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 		if p.Title == "" {
 			p.Title = r.uploadedTitle
 		}
-		if r.disabled || r.revoked || r.hidden || p.Session == q.Session || !RepoMatches(q.Repo, q.Roots, p.Repo) || !userMatches(q.User, p) || (q.Agent != "" && !strings.EqualFold(q.Agent, p.Agent)) {
+		repoOK := RepoMatches(q.Repo, q.Roots, q.Mains, q.Remotes, p.Repo, p.Main, p.Remote)
+		if p.Cloud {
+			repoOK = CloudRepoMatches(q.Repo, q.Roots, p.Repo)
+		}
+		if r.disabled || r.revoked || r.hidden || p.Session == q.Session || !repoOK || !userMatches(q.User, p) || (q.Agent != "" && !strings.EqualFold(q.Agent, p.Agent)) {
 			continue
 		}
 		p.Own = p.UserID == c.UserID
@@ -631,18 +752,20 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 // optionally only sent ($3), in thread $4 (”), before the keyset
 // ($5 time, $6 id), newest first, $7 rows.
 const InboxSQL = `SELECT * FROM (
-	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at,m.attempts,m.last_at FROM ` + envFrom + `
 	WHERE m.to_session=$1 AND m.to_user=$2 AND m.state NOT IN ('held','refused') AND NOT $3
 		AND (m.state<>'expired' OR m.sender='own' OR EXISTS(SELECT 1 FROM bus_accepts a WHERE a.recipient_user=$2 AND a.sender_user=m.from_user))
 	UNION ALL
-	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at,m.attempts,m.last_at FROM ` + envFrom + `
 	WHERE m.from_session=$1 AND m.from_user=$2) x
 	WHERE ($4='' OR thread_id=$4) AND ($5::timestamptz IS NULL OR (created_at,id)<($5,$6))
 	ORDER BY created_at DESC,id DESC LIMIT $7`
 
 // Inbox lists a session's threads, received and sent, newest first, with
 // each message's state. Undelivered messages past their expiry show as
-// expired before the sweep marks them.
+// expired before the sweep marks them. A message the retention sweep
+// deleted is not listed, on either side: the sweep deletes its audit rows
+// with it, so no final state is kept to show.
 func (s *Store) Inbox(ctx context.Context, c busproto.Caller, q busproto.InboxQuery) (busproto.InboxResponse, error) {
 	out := busproto.InboxResponse{Messages: []busproto.InboxItem{}}
 	limit := q.Limit
@@ -674,8 +797,14 @@ func (s *Store) Inbox(ctx context.Context, c busproto.Caller, q busproto.InboxQu
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (busproto.InboxItem, error) {
 		var it busproto.InboxItem
 		var state string
-		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt)
+		var attempts int
+		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt, &attempts, &it.LastAt)
 		it.Envelope, it.State = e, busproto.State(state)
+		if attempts > 1 {
+			it.Attempts = attempts
+		} else {
+			it.LastAt = nil
+		}
 		return it, err
 	})
 	if err != nil {
@@ -841,7 +970,10 @@ func (s *Store) Accept(ctx context.Context, c busproto.Caller, sender string) (b
 }
 
 // Revoke withdraws an acceptance: later messages from sender are held, and
-// so are its queued messages not yet delivered or claimed.
+// so are its queued messages not yet delivered or claimed. A queued
+// message a device's poll answered just before the revoke can still be
+// printed once; its receipt is then rejected (AckSQL). Accepted as
+// won't-fix (#70, notes/message-bus/plan.md §9).
 func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (busproto.AcceptResponse, error) {
 	var out busproto.AcceptResponse
 	now := s.now()
@@ -873,21 +1005,96 @@ func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (b
 	return out, nil
 }
 
-// Sweep marks undelivered messages past their expiry expired and drops
-// presence a day stale. It returns how many messages expired.
-func (s *Store) Sweep(ctx context.Context) (int64, error) {
+// Retention statements. Each deletes at most $2 rows: a backlog is
+// worked off a batch at a time, so no statement holds many row locks.
+// ANY(ARRAY(...)) keeps each delete a probe by key: as a semi-join the
+// planner may scan a whole primary key index.
+const (
+	// PurgeSQL deletes the messages in a final state that expired before
+	// $1, with the audit rows of each (bus.send, bus.claim): at most $2.
+	// A reply to one keeps its row (reply_to is set to NULL).
+	PurgeSQL = `WITH gone AS (
+			DELETE FROM bus_messages WHERE id=ANY(ARRAY(SELECT id FROM bus_messages
+				WHERE state IN ('delivered','read','expired','refused','undelivered') AND expires_at<$1 LIMIT $2))
+			RETURNING id),
+		audit AS (DELETE FROM audit_events WHERE target_type='bus_message' AND target_id<>'' AND target_id=ANY(ARRAY(SELECT id FROM gone)) RETURNING 1)
+		SELECT (SELECT count(*) FROM gone),(SELECT count(*) FROM audit)`
+	// PurgeAuditSQL deletes the bus audit rows that name several messages
+	// (bus.poll, bus.deliver, bus.read) written before $1: at most $2.
+	// Sweep passes the message cutoff less DefaultTTL: every message such
+	// a row names was sent before it, so expired by then and is past
+	// retention too. None is still live.
+	PurgeAuditSQL = `DELETE FROM audit_events WHERE id=ANY(ARRAY(SELECT id FROM audit_events
+		WHERE target_type='bus_message' AND target_id='' AND created_at<$1 LIMIT $2))`
+)
+
+// purgeBatch is the rows one retention statement deletes; purgeBatches
+// the statements of each kind one sweep runs. The rest wait for the next
+// sweep, a minute later.
+const (
+	purgeBatch   = 1000
+	purgeBatches = 10
+)
+
+// SweepResult is what one sweep did.
+type SweepResult struct {
+	// Expired is the undelivered messages it marked expired.
+	Expired int64
+	// Deleted is the messages past retention it deleted; Audit the audit
+	// rows deleted with them or by age.
+	Deleted, Audit int64
+}
+
+// RetentionPeriod is how long a message in a final state is kept after its
+// expiry: s.Retention, or busproto.DefaultRetention when that is 0.
+func (s *Store) RetentionPeriod() time.Duration {
+	if s.Retention <= 0 {
+		return busproto.DefaultRetention
+	}
+	return s.Retention
+}
+
+// Sweep marks undelivered messages past their expiry expired, drops
+// presence a day stale, and deletes messages in a final state whose
+// expiry is more than the retention past, with their audit rows. A
+// queued, held or claimed message is never deleted: it expires first.
+// Deletes are capped per sweep (purgeBatch, purgeBatches).
+func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 	now := s.now()
-	var n int64
+	var out SweepResult
 	for {
 		tag, err := s.Pool.Exec(ctx, expireSQL, now)
 		if err != nil {
-			return n, err
+			return out, err
 		}
-		n += tag.RowsAffected()
+		out.Expired += tag.RowsAffected()
 		if tag.RowsAffected() < 1000 {
 			break
 		}
 	}
-	_, err := s.Pool.Exec(ctx, dropPresenceSQL, now.Add(-24*time.Hour))
-	return n, err
+	if _, err := s.Pool.Exec(ctx, dropPresenceSQL, now.Add(-24*time.Hour)); err != nil {
+		return out, err
+	}
+	cutoff := now.Add(-s.RetentionPeriod())
+	for range purgeBatches {
+		var n, a int64
+		if err := s.Pool.QueryRow(ctx, PurgeSQL, cutoff, purgeBatch).Scan(&n, &a); err != nil {
+			return out, err
+		}
+		out.Deleted, out.Audit = out.Deleted+n, out.Audit+a
+		if n < purgeBatch {
+			break
+		}
+	}
+	for range purgeBatches {
+		tag, err := s.Pool.Exec(ctx, PurgeAuditSQL, cutoff.Add(-busproto.DefaultTTL), purgeBatch)
+		if err != nil {
+			return out, err
+		}
+		out.Audit += tag.RowsAffected()
+		if tag.RowsAffected() < purgeBatch {
+			break
+		}
+	}
+	return out, nil
 }

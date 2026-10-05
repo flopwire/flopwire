@@ -1,7 +1,7 @@
 package main
 
 // `flopwire hook` is the one command harness hooks run (Claude Code, Codex,
-// Devin CLI). It reads the hook's JSON on stdin and, by hook_event_name:
+// Devin CLI), and the one the opencode plugin runs (hook_opencode.go). It reads the hook's JSON on stdin and, by hook_event_name:
 //
 //	SessionStart, UserPromptSubmit,  pending messages, after the standing
 //	PostToolUse                      instruction while the session is owed it
@@ -118,6 +118,12 @@ type hookInput struct {
 	// subagent's transcript.
 	AgentID             string `json:"agent_id"`
 	AgentTranscriptPath string `json:"agent_transcript_path"`
+	// Harness names the harness when the caller is Flopwire's own plugin
+	// (opencode); IDs and Instruction are its Confirm event's
+	// (hook_opencode.go).
+	Harness     string   `json:"harness"`
+	IDs         []string `json:"ids"`
+	Instruction bool     `json:"instruction"`
 }
 
 // hookOutput is the Claude-format hook JSON. SystemMessage is shown to the
@@ -168,15 +174,19 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return nil
 	}
 	if *socket == "" {
-		dir, err := configDir()
+		p, err := defaultSocket()
 		if err != nil {
 			warn("no config directory: %v", err)
 			return nil
 		}
-		*socket = filepath.Join(dir, "agent.sock")
+		*socket = p
 	}
 
 	harness := hookHarness(in, getenv)
+	if harness == transcript.AgentOpencode && (in.Event == evHello || in.Event == evConfirm) {
+		opencodeHook(ctx, in, *socket, stdout, warn)
+		return nil
+	}
 	// A hook inside a subagent carries its parent session's id (#107). A
 	// subagent is not a session a message can be addressed to: it takes
 	// nothing, and its flush indexes the subagent's transcript without an
@@ -243,6 +253,10 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	if late {
 		warn("started %s ago, too late to deliver; nothing delivered", age.Round(time.Millisecond))
+		return nil
+	}
+	if harness == transcript.AgentOpencode {
+		opencodeDeliver(ctx, in, *socket, started, stdout, warn)
 		return nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
@@ -394,8 +408,8 @@ func firstLine(s string, n int) string {
 // transcript file; the agent finds it by session id.
 func hookFlush(ctx context.Context, socket string, in hookInput, harness transcript.Agent, started time.Time) {
 	req := agent.Request{Op: "flush", Path: in.TranscriptPath, Session: in.SessionID, Event: in.Event, Agent: string(harness), HookStart: started.UnixMilli()}
-	if harness == transcript.AgentDevin {
-		req.Path = ""
+	if harness == transcript.AgentDevin || harness == transcript.AgentOpencode {
+		req.Path = "" // a store: the agent finds the session by id
 	}
 	if req.Path == "" && req.Session == "" {
 		return
@@ -460,6 +474,8 @@ var codexRollout = regexp.MustCompile(`(^|/)rollout-[^/]*\.jsonl$`)
 // hook asks first gets each message, once.
 func hookHarness(in hookInput, getenv func(string) string) transcript.Agent {
 	switch {
+	case in.Harness == string(transcript.AgentOpencode):
+		return transcript.AgentOpencode
 	case getenv("DEVIN_PROJECT_DIR") != "" || getenv("CHISEL_SESSION_DB") != "":
 		return transcript.AgentDevin
 	case codexRollout.MatchString(in.TranscriptPath) || in.TurnID != "" || (in.SessionID != "" && getenv("CODEX_THREAD_ID") == in.SessionID):

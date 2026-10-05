@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/opencode"
@@ -123,5 +128,118 @@ func TestOpencodeDisabled(t *testing.T) {
 		if d == filepath.Dir(oc.Path) {
 			t.Fatal("the opencode directory is watched")
 		}
+	}
+}
+
+// opencode presence comes from the plugin's registry: a session its
+// running opencode names is live and busy as its last plugin event says;
+// a session the file no longer names (deleted in opencode) or a file of a
+// dead or reused pid is not live, however recently the session wrote.
+func TestPresenceOpencode(t *testing.T) {
+	oc := opencodetest.New(t, "")
+	const a, b = "ses_synthetic0000000000000A", "ses_synthetic0000000000000B"
+	t0 := opencodetest.T0
+	for i, s := range []string{a, b} {
+		oc.Session(s, "", "/work/opencode-demo", "Presence", t0)
+		oc.Prompt(s, t0+int64(i), "hello from "+s)
+	}
+	f := newFixture(t, "-")
+	f.cfg.OpencodeDB = oc.Path
+	f.cfg.OpencodeRegistry = filepath.Join(t.TempDir(), "opencode")
+	clock := new(time.Time)
+	bus, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger, Now: func() time.Time { return *clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bus.Close() })
+	f.cfg.Bus = bus
+	f.a = New(f.store, f.cfg)
+	f.once()
+	start := time.UnixMilli(t0 - 3600_000)
+	alive, name := true, "opencode"
+	f.a.pidAlive = func(pid int) bool { return pid == 6161 && alive }
+	f.a.procName = func(int) string { return name }
+	f.a.procStart = func(int) (time.Time, bool) { return start, true }
+	reg := filepath.Join(f.cfg.OpencodeRegistry, "6161.json")
+	write := func(sessions ...string) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"pid": 6161, "started": start.UnixMilli(), "sessions": sessions})
+		writeFile(t, reg, string(b))
+	}
+	at := time.UnixMilli(t0).Add(time.Minute)
+
+	write(a, b)
+	if !f.present(clock, at, a) || !f.present(clock, at, b) {
+		t.Fatal("sessions the registry names are not live")
+	}
+	ask(t, f.a, Request{Op: "flush", Session: a, Agent: "opencode", Event: "PreToolUse", HookStart: at.UnixMilli()})
+	if s := f.presence(at)[a]; !s.Busy {
+		t.Fatalf("busy after a PreToolUse: %+v", s)
+	}
+	// B deleted in opencode: the plugin drops it from the file.
+	write(a)
+	if f.present(clock, at.Add(time.Second), b) {
+		t.Fatal("a session the registry no longer names is live")
+	}
+	if !f.present(clock, at.Add(time.Second), a) {
+		t.Fatal("the remaining session is not live")
+	}
+	// The pid now runs another program.
+	name = "zsh"
+	if f.present(clock, at.Add(2*time.Second), a) {
+		t.Fatal("a session of a reused pid is live")
+	}
+	if _, err := os.Stat(reg); err != nil {
+		t.Fatalf("the file of a pid that still runs was removed: %v", err)
+	}
+	// The pid is dead (opencode killed by a signal left its file): the
+	// agent removes the file (#129 review).
+	alive = false
+	if f.present(clock, at.Add(3*time.Second), a) {
+		t.Fatal("a session of a dead pid is live")
+	}
+	if _, err := os.Stat(reg); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the file of a dead pid stays: %v", err)
+	}
+}
+
+// The plugin records performance.timeOrigin as its process's start. In the
+// TUI the plugin runs in a worker that starts after the process (0.6-0.8s
+// measured on opencode 1.18.30, more on a loaded machine), so the process
+// can have started well before the recorded time; its sessions are live.
+// A pid that started after the recorded time is another process that
+// reused it.
+func TestPresenceOpencodeWorkerStart(t *testing.T) {
+	oc := opencodetest.New(t, "")
+	const a = "ses_synthetic0000000000000A"
+	t0 := opencodetest.T0
+	oc.Session(a, "", "/work/opencode-demo", "Presence", t0)
+	oc.Prompt(a, t0, "hello")
+	f := newFixture(t, "-")
+	f.cfg.OpencodeDB = oc.Path
+	f.cfg.OpencodeRegistry = filepath.Join(t.TempDir(), "opencode")
+	clock := new(time.Time)
+	bus, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger, Now: func() time.Time { return *clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bus.Close() })
+	f.cfg.Bus = bus
+	f.a = New(f.store, f.cfg)
+	f.once()
+	recorded := time.UnixMilli(t0 - 3600_000)
+	start := recorded.Add(-5 * time.Second) // the worker started 5s after the process
+	f.a.pidAlive = func(pid int) bool { return pid == 6161 }
+	f.a.procName = func(int) string { return "opencode" }
+	f.a.procStart = func(int) (time.Time, bool) { return start, true }
+	b, _ := json.Marshal(map[string]any{"pid": 6161, "started": recorded.UnixMilli(), "sessions": []string{a}})
+	writeFile(t, filepath.Join(f.cfg.OpencodeRegistry, "6161.json"), string(b))
+	at := time.UnixMilli(t0).Add(time.Minute)
+	if !f.present(clock, at, a) {
+		t.Fatal("a session of an opencode whose plugin worker started 5s after the process is not live")
+	}
+	start = recorded.Add(10 * time.Second) // a later process reused the pid
+	if f.present(clock, at.Add(time.Second), a) {
+		t.Fatal("a session of a pid that started after the plugin recorded its start is live")
 	}
 }

@@ -60,7 +60,7 @@ Output, newest message first, grouped under one header line per session
   | `who` | `user@device`, on the team server |
   | `agent` | `claude`, `codex`, `devin` or `opencode` |
   | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
-  | `repo`, `branch` | The repo's name; the branch, or `a→b` when it switched |
+  | `repo`, `branch` | The last element of the checkout the session ran in (a linked worktree shows its own directory, not the main checkout's); the branch, or `a→b` when it switched |
   | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits (with or without a sha), failed tool calls. A `+` means the digest capped the list |
   | `intent` | What the session was for, cut to 80 characters at a word. Always last |
 
@@ -147,8 +147,9 @@ The answer is compact JSON, one line, one brief row per session:
   --session ID`, `flopwire send ID` and `--session` of grep and search
   take it. `address` is its shortest unique prefix, left out when it is
   the whole id.
-- A row has `agent`, `user` and `device` (when known), `repo` (or the
-  working directory), `branches`, `live`, `last_activity_at`, `messages`,
+- A row has `agent`, `user` and `device` (when known), `repo` (the
+  root of the checkout the session ran in, which for a linked worktree is
+  the worktree, or the working directory outside git), `branches`, `live`, `last_activity_at`, `messages`,
   `title` (cut to 160 bytes), `intent` (when it is not the title),
   `parent_session` (a subagent's parent), and from the digest the commit
   ids, the commits recorded without a sha (`commits_no_sha`, see
@@ -362,12 +363,17 @@ Injected text (CLAUDE.md, AGENTS.md, system reminders) is hidden unless
 `--repo` names a repository, not one checkout of it. A session in a
 linked worktree (`git worktree add`) is on the same repo as a session in
 the main checkout. This is also true of the worktrees of a bare
-repository, with or without a remote.
+repository, with or without a remote. The `repo` that results show is
+the checkout a session ran in, so a worktree's directory name there is
+not a repo name for `--repo`: pass the worktree's path, or the repo's
+name.
 
 A repository is known by its main checkout. For a bare repository with
 worktrees beside it (`~/Code/.app.git` and `~/Code/app`), it is the bare
 repository. The comparison resolves symlinks, so `/tmp/x` and
-`/private/tmp/x` are one path. When the repository has a remote (`origin`,
+`/private/tmp/x` are one path. On macOS it also uses the case that the
+volume stores, so `/p/App` and `/p/app` are one checkout on a
+case-insensitive volume. When the repository has a remote (`origin`,
 else the first), the normalized remote (`github.com/acme/app`) also names
 it. A second clone of the same remote is then the same repo.
 
@@ -375,35 +381,65 @@ it. A second clone of the same remote is then the same repo.
 |---|---|
 | `.`, `./x`, `../x`, or an absolute path in a checkout | Every session of the repository that holds the path: the main checkout, every linked worktree, subdirectories, and worktrees deleted since (see [agent.md](agent.md#sessions-in-deleted-worktrees)) |
 | A path outside git | Sessions in that directory or under it |
-| A path that no longer exists | The repository the device placed sessions there in, when they agree on one; else sessions in that directory or under it |
+| A path that no longer exists | The repository the device placed sessions there in, or in a deleted directory above it, when they agree on one; else sessions in that directory or under it. A repository above it that still exists (a home directory kept in git) is not its repository |
 | The bare repository's path | Every worktree of it |
-| A name (`app`) | The one repository with that name: the last element of its remote or of its main checkout (`.app.git` and `app.git` are `app`). A checkout at `~/Code/app` with the remote `github.com/acme/web` is named both `app` and `web`. Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. With `--server` they are not an error: the name matches both, as below. When no repository has the name, a session whose directory's last element is the name |
+| A name (`app`) | The one repository with that name: the last element of its remote or of its main checkout (`.app.git` and `app.git` are `app`). A checkout at `~/Code/app` with the remote `github.com/acme/web` is named both `app` and `web`. Two repositories with the name are an error that lists both; pass a path or `owner/name` instead. A name that no repository has is an error too. It never matches the last element of a directory outside git; pass the path |
 | `owner/name`, `host/owner/name` | The repository whose remote, or main checkout's path, ends with it |
 | A glob (`team*`) | A session whose directory, or its last element, matches |
 
 The device resolves `--repo` from its git files and from where it placed
-its sessions. It never runs git. With `--server`, it sends the
-repository's checkout roots with the query, because the server cannot
-read this device's git files. It leaves out every checkout that a
-`local` or `deny` path rule covers (see
+its sessions. It never runs git. A session matches by the main checkout
+and remote that its placement records, so the query does not list the
+repository's worktrees. Its cost does not grow with their number. A
+session that has no placement matches when its directory is under the
+argument's checkout or a main checkout of the repository.
+
+#### With `--server`
+
+Each device uploads, with every transcript, the repository it placed the
+session in: the main checkout and the normalized remote. When the
+placement changes later (the agent finds the checkout of a deleted
+worktree), the device sends the new one.
+
+With `--server`, the device resolves `--repo` as above. It sends the
+repository's remotes, its main checkouts, and the argument's checkout. It
+never sends a name that it resolved. The server cannot read this device's
+git files. The server matches a main checkout only against sessions that
+the calling device uploaded. A request can carry at most 256 of each
+list. A larger list is an error, never a cut. The request leaves out
+every checkout that a `local` or `deny` path rule covers (see
 [agent.md](agent.md#keep-sessions-out-with-path-rules)), because the
 server keeps each query in its audit log. A rule on the main checkout or
 the remote covers every checkout, so then only the path that you gave is
-sent. The server stores only the directory each transcript recorded. For
-this reason:
+sent, and no remote.
 
-- With `--server`, a path matches the sessions in this device's checkouts
-  of the repository. It also matches a session on another device that ran
-  under the same path. It does not match another device's checkout at
-  another path, even of the same remote.
-- With `--server`, a name matches every session whose directory has that
-  last element, on every device of the team, as well as this device's
-  checkouts of each repository by that name. Two different repositories
-  with the same name on two devices are not told apart there.
+- A repository with a remote matches every session that any device
+  placed in a checkout of that remote, at any path.
+- A repository without a remote matches the sessions that this device
+  placed in it, and by path a session on another device that ran under
+  the argument's checkout. Two devices' checkouts of it at different paths are not told
+  apart from two repositories with the same name, so they never merge.
+- A name that this device does not know (a teammate's repository) is
+  resolved on the server, over what the devices uploaded, with the same
+  rules: one repository by that name, else an error that lists them
+  (each remote, or `device:checkout` for one without a remote).
+- Separate projects cloned from one starter template that keep its
+  `origin` share a remote, so they are one repository. This is by design:
+  the remote is the only identity that crosses devices. Remove or rename
+  the template's `origin` to keep them apart.
 
-`flopwire peers --repo` matches the same way, against the repo root that
-each live session reports. An `@user` message's `--repo` is still routed
-by repo name, the last element of the session's repo root.
+`flopwire peers --repo` matches the same way, against the repo root and
+remote that each live session reports. An `@user` message is routed by
+the sending session's remote when it has one, else by its repo name.
+`--repo` on the send names the repository the same way: the device sends
+its remote when it knows one. A session is on a name when its remote's
+last element is the name, or, without a remote, its repo root's last
+element. A message routed by a remote goes to a session on that remote.
+When none is live, it goes to a session without a remote whose repo root
+has the remote's name, and then to any session. A name that the sending
+device does not know is resolved over the recipient's live sessions: one
+remote routes the message by that remote, and two repositories of that
+name refuse the send and list them.
 
 ### Live sessions
 

@@ -4,22 +4,34 @@
 -- Live sessions as each device last reported them with its long poll
 -- (internal/bus). A session is live while seen_at is within
 -- busproto.PresenceTTL. Every poll replaces its device's rows. user_id is
--- the owner; device_id is NULL-able so a session owned by a user and no
--- device (a vendor cloud session) can be added later.
+-- the owner. A vendor cloud session (Claude cloud, Devin cloud) is owned by
+-- a user and no device: cloud is true and device_id NULL. Any of the
+-- user's devices may report it (busproto.PollRequest.Cloud); the last
+-- report wins, and a poll never removes it (it ages out by seen_at).
 CREATE TABLE bus_presence (
   device_id uuid REFERENCES devices (id),
+  cloud boolean NOT NULL DEFAULT false,
   user_id uuid NOT NULL REFERENCES users (id),
   agent text NOT NULL,
   session_id text NOT NULL,
   -- repo is the repo root as the device placed the session; names compare
   -- by its last path element.
   repo text NOT NULL DEFAULT '',
+  -- remote is the session's normalized remote ('' for none); a repo
+  -- routes and filters by it when it has one (issue #102).
+  remote text NOT NULL DEFAULT '',
+  -- main is the main checkout of the session's repository ('' unknown):
+  -- a repo filter matches it without listing every worktree.
+  main text NOT NULL DEFAULT '',
   branch text NOT NULL DEFAULT '',
   title text NOT NULL DEFAULT '',
   busy boolean NOT NULL,
-  seen_at timestamptz NOT NULL
+  seen_at timestamptz NOT NULL,
+  CHECK (cloud = (device_id IS NULL))
 );
 CREATE UNIQUE INDEX bus_presence_device_session_idx ON bus_presence (device_id, agent, session_id);
+-- One row per cloud session of a user, whichever device reported it.
+CREATE UNIQUE INDEX bus_presence_cloud_idx ON bus_presence (user_id, agent, session_id) WHERE cloud;
 -- Recipient prefixes, sender checks and claims look a session up by id.
 CREATE INDEX bus_presence_session_idx ON bus_presence ((session_id COLLATE "C"));
 -- peers and the @user eligibility check: the live set.
@@ -46,12 +58,34 @@ CREATE SEQUENCE bus_messages_seq;
 -- read receipt from the device holding that session reported; first
 -- receipt wins), expired (undelivered at expires_at), refused (a send limit;
 -- reason), undelivered (the device gave up on it; reason: unconfirmed, no
--- hook confirmed printing it after devicebus.MaxAttempts leases).
+-- hook confirmed printing it after devicebus.MaxAttempts leases;
+-- session_ended, its session ended first; push_failed, a message to a
+-- cloud session whose pushes all failed).
+--
+-- A refused row stands for every refusal of its sending session, device
+-- and agent with the same reason (code), to the same recipient and in the
+-- same thread (a new thread for each root send), within an hour of its
+-- created_at: attempts counts them and last_at is the latest. The hourly
+-- send ceilings sum attempts, so a looping agent still reaches them while
+-- it writes one row (and one bus.send audit row) per code, recipient and
+-- thread per hour.
+--
+-- Retention: a row in a final state (delivered, read, expired, refused,
+-- undelivered) whose expires_at is more than the server's bus retention
+-- (FLOPWIRE_BUS_RETENTION, default 7 days) in the past is deleted, with
+-- its audit rows (Store.Sweep). A queued, held or claimed row is never
+-- deleted: the sweep first expires it at expires_at.
+--
+-- A message to a cloud session is addressed to that session and claimed
+-- (claimed_device, claimed_by = to_session) by the one device of the
+-- recipient that pushes it.
 CREATE TABLE bus_messages (
   id text PRIMARY KEY,
   seq bigint NOT NULL DEFAULT nextval('bus_messages_seq'),
   thread_id text NOT NULL,
-  reply_to text REFERENCES bus_messages (id),
+  -- A reply outlives the message it answers when retention deletes that
+  -- one first.
+  reply_to text REFERENCES bus_messages (id) ON DELETE SET NULL,
   from_user uuid NOT NULL REFERENCES users (id),
   from_device uuid REFERENCES devices (id),
   from_agent text NOT NULL,
@@ -80,6 +114,9 @@ CREATE TABLE bus_messages (
   claimed_at timestamptz,
   delivered_at timestamptz,
   read_at timestamptz,
+  attempts integer NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+  last_at timestamptz,
+  CHECK (attempts = 1 OR state = 'refused'),
   CHECK (addressed = 'user' OR to_session IS NOT NULL),
   CHECK (addressed = 'session' OR (to_session IS NULL) = (claimed_by IS NULL)),
   CHECK ((to_session IS NULL) = (to_agent IS NULL))
@@ -105,6 +142,15 @@ CREATE INDEX bus_messages_reply_to_idx ON bus_messages (reply_to) WHERE reply_to
 -- The expiry sweep.
 CREATE INDEX bus_messages_expiry_idx ON bus_messages (expires_at)
   WHERE state IN ('queued', 'held', 'claimed');
+-- The retention sweep: final rows by expiry.
+CREATE INDEX bus_messages_retention_idx ON bus_messages (expires_at)
+  WHERE state IN ('delivered', 'read', 'expired', 'refused', 'undelivered');
+-- The retention sweep's audit rows: those of one message (send, claim) by
+-- its id, and those that name several (poll, deliver, read) by age.
+CREATE INDEX audit_bus_message_idx ON audit_events (target_id)
+  WHERE target_type = 'bus_message' AND target_id <> '';
+CREATE INDEX audit_bus_batch_idx ON audit_events (created_at)
+  WHERE target_type = 'bus_message' AND target_id = '';
 
 -- B7: recipient_user accepts messages from sender_user. Revoking deletes
 -- the row.

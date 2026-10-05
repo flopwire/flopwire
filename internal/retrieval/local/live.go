@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -132,11 +133,21 @@ func (d *Detector) isDevin(pid int) bool {
 	return ok && IsDevinProcess(name)
 }
 
+// IsOpencodeProcess reports whether a process name is opencode's (the
+// opencode binary, or a launcher whose name holds it).
+func IsOpencodeProcess(name string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(name)), "opencode")
+}
+
 // IsDevinProcess reports whether a process name is Devin CLI's (devin, or
 // a path ending in it).
 func IsDevinProcess(name string) bool {
 	return strings.Contains(strings.ToLower(filepath.Base(name)), "devin")
 }
+
+// OpenFiles lists the files pid has open (lsof on macOS, /proc on Linux),
+// or nil when the process table cannot tell by ctx's deadline.
+func OpenFiles(ctx context.Context, pid int) []string { return openFiles(ctx, pid) }
 
 // ProcName is the name of the program pid runs, or "" when the process
 // table does not have it.

@@ -93,8 +93,8 @@ func TestGrepSearchAndFilters(t *testing.T) {
 	if page = grepFor(t, b, grep.Spec{Patterns: []string{`CHI\.New(Router|Mux)`}, IgnoreCase: true}, format.Filters{}); len(page.Hits) != 4 {
 		t.Fatalf("-i: %s", hitIDs(page.Hits))
 	}
-	// Filters: agent, kind, subagents, tool, excluded kinds, repo by name
-	// and glob.
+	// Filters: agent, kind, subagents, tool, excluded kinds, repo by glob
+	// and path.
 	for _, tc := range []struct {
 		name string
 		f    format.Filters
@@ -104,13 +104,17 @@ func TestGrepSearchAndFilters(t *testing.T) {
 		{"exclude subagents", format.Filters{Agent: "codex", Kinds: []string{"assistant"}, ExcludeSubagents: true}, "98"},
 		{"tool", format.Filters{Tools: []string{"EXEC_COMMAND"}}, "97,59"},
 		{"exclude kind", format.Filters{Agent: "codex", ExcludeKinds: []string{"tool_result", "assistant"}}, ""},
-		{"repo name", format.Filters{Repo: "oracle-beta"}, "59"},
 		{"repo glob", format.Filters{Repo: "oracle-b*"}, "59"},
 		{"repo path", format.Filters{Repo: "/tmp/oracle-alpha"}, "98,97,100"},
 	} {
 		if got := hitIDs(grepFor(t, b, grep.Spec{Patterns: []string{"chi.New"}, Fixed: true}, tc.f).Hits); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
 		}
+	}
+	// A name no repository has is an error, never a match on the last
+	// element of a directory outside git (#102).
+	if _, err := b.Grep(ctx, format.GrepQuery{Pattern: "chi.New", Fixed: true}, format.Filters{Repo: "oracle-beta"}); !errors.Is(err, format.ErrBadRequest) {
+		t.Fatalf("repo name of no repository: %v", err)
 	}
 	if _, err := b.Grep(ctx, format.GrepQuery{Pattern: "x", Fixed: true}, format.Filters{Kinds: []string{"bogus"}}); !errors.Is(err, format.ErrBadRequest) {
 		t.Fatalf("bad kind: %v", err)

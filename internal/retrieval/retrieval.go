@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,13 +84,14 @@ func (s *Store) budgeted(ctx context.Context, fn func(*Store) error) error {
 		c.tx = tx
 		return fn(&c)
 	})
-	return spent(b, err)
+	return spent(ctx, b, err)
 }
 
-// spent turns a query stopped by budget b (its statement_timeout or
+// spent turns a query stopped by budget b (its statement_timeout or ctx's
 // deadline) into an error that says so and wraps context.DeadlineExceeded.
-func spent(b time.Duration, err error) error {
-	if timedOut(err) {
+// It classifies err as observed now, as cutShort does.
+func spent(ctx context.Context, b time.Duration, err error) error {
+	if timedOut(cutShort(ctx, err)) {
 		return fmt.Errorf("timed out after %s: %w", b.Round(100*time.Millisecond), context.DeadlineExceeded)
 	}
 	return err
@@ -166,8 +168,10 @@ func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	return h, err
 }
 
-// repoWhere adds f's repo condition: Repo as format.RepoMatch reads it,
-// or a directory that is one of RepoRoots or lies under one.
+// repoWhere adds f's repo condition: Repo as format.RepoMatch reads it
+// (a name is resolved first, resolveFilterRepo), a directory that is one
+// of RepoRoots or lies under one, or an upload placed in a checkout of
+// one of RepoRemotes or in one of RepoCheckouts.
 func repoWhere(q *query, f format.Filters) {
 	var ors []string
 	if prefix, like := format.RepoMatch(f.Repo); prefix != "" {
@@ -185,6 +189,17 @@ func repoWhere(q *query, f format.Filters) {
 		}
 		a, l := q.arg(roots), q.arg(likes)
 		ors = append(ors, fmt.Sprintf("c.repo_root=ANY(%[1]s) OR c.cwd=ANY(%[1]s) OR c.cwd LIKE ANY(%[2]s) OR c.repo_root LIKE ANY(%[2]s)", a, l))
+	}
+	if len(f.RepoRemotes) > 0 {
+		ors = append(ors, "c.source_id IN (SELECT id FROM sources WHERE remote=ANY("+q.arg(f.RepoRemotes)+"))")
+	}
+	if len(f.RepoCheckouts) > 0 {
+		devs := make([]string, len(f.RepoCheckouts))
+		dirs := make([]string, len(f.RepoCheckouts))
+		for i, dc := range f.RepoCheckouts {
+			devs[i], dirs[i] = dc.Device, dc.Checkout
+		}
+		ors = append(ors, fmt.Sprintf("c.source_id IN (SELECT s.id FROM sources s JOIN unnest(%s::uuid[],%s::text[]) k(device,checkout) ON s.device_id=k.device AND s.checkout=k.checkout)", q.arg(devs), q.arg(dirs)))
 	}
 	if len(ors) > 0 {
 		q.where("(" + strings.Join(ors, " OR ") + ")")
@@ -462,7 +477,7 @@ func followUp(ctx context.Context) (context.Context, context.CancelFunc) {
 func (s *Store) read(ctx context.Context, b time.Duration, fn func(pgx.Tx) error) error {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return err
+		return cutShort(ctx, err)
 	}
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -470,9 +485,9 @@ func (s *Store) read(ctx context.Context, b time.Duration, fn func(pgx.Tx) error
 		_ = tx.Rollback(rctx)
 	}()
 	if err := setTimeout(ctx, tx, b); err != nil {
-		return err
+		return cutShort(ctx, err)
 	}
-	return fn(tx)
+	return cutShort(ctx, fn(tx))
 }
 
 // setTimeout sets the transaction's statement_timeout to d.
@@ -481,7 +496,29 @@ func setTimeout(ctx context.Context, tx pgx.Tx, d time.Duration) error {
 	return err
 }
 
-// timedOut reports a query stopped by its statement timeout or deadline.
+// cutShort reports err, just observed, as context.DeadlineExceeded when
+// ctx's deadline caused it: a connection i/o timeout while ctx's deadline
+// has passed; and as context.Canceled when the caller's cancel did. When
+// ctx ends, pgx interrupts the read or write in flight by
+// setting a deadline on the net.Conn; it turns an interrupted read into a
+// context error but returns an interrupted write's i/o timeout as is
+// (#121). Any other error, an i/o timeout before the deadline included,
+// is returned unchanged, so a genuine transport error still surfaces.
+// Call it where err is observed: ctx's error only says what caused err
+// while the two are close in time.
+func cutShort(ctx context.Context, err error) error {
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	if cause := ctx.Err(); cause != nil {
+		return fmt.Errorf("%w: %w", cause, err)
+	}
+	return err
+}
+
+// timedOut reports a query stopped by its statement timeout or deadline
+// (cutShort: or by a transport timeout the deadline caused).
 func timedOut(err error) bool {
 	var pe *pgconn.PgError
 	return errors.As(err, &pe) && pe.Code == "57014" || errors.Is(err, context.DeadlineExceeded)
@@ -664,7 +701,7 @@ func (s *Store) fetch(ctx context.Context, a format.Attribution, offset, length 
 		return nil, a, ErrNotFound
 	}
 	if err != nil {
-		return nil, a, spent(b, err)
+		return nil, a, spent(ctx, b, err)
 	}
 	r := ingest.NewReader(ctx, s.Objects, g)
 	if offset >= r.Size() {
@@ -674,18 +711,18 @@ func (s *Store) fetch(ctx context.Context, a format.Attribution, offset, length 
 	// reached the archive unredacted are never served (notes/redaction.md).
 	var kind string
 	if err := s.db().QueryRow(ctx, `SELECT storage_kind FROM sources WHERE id=$1`, a.SourceID).Scan(&kind); err != nil {
-		return nil, a, spent(b, err)
+		return nil, a, spent(ctx, b, err)
 	}
 	masks, err := ingest.LineMasks(ctx, s.db())
 	if err != nil {
-		return nil, a, spent(b, err)
+		return nil, a, spent(ctx, b, err)
 	}
 	rr := redact.NewReaderAt(r, redact.ModeFor(kind, a.Path))
 	rr.SetLineMasks(masks)
 	buf := make([]byte, min(length, r.Size()-offset))
 	n, err := rr.ReadAt(buf, offset)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, a, spent(b, err)
+		return nil, a, spent(ctx, b, err)
 	}
 	return buf[:n], a, nil
 }

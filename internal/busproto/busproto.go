@@ -40,7 +40,10 @@
 // old; the poll waits while nothing is newer than the cursor sent.
 //
 // A message to a session arrives in Messages on the devices that hold that
-// session. A message to @user arrives in Claimable on each of that person's
+// session. A message to a vendor cloud session (Claude cloud, Devin cloud)
+// arrives in Claimable, marked Cloud, on each of its owner's devices: the
+// device that claims it pushes it into the session while the session
+// reports a turn running (see Cloud sessions). A message to @user arrives in Claimable on each of that person's
 // devices with an eligible live session; the device claims it for one
 // session with ClaimRequest (atomic: one claim wins) and then delivers it.
 // A hook takes a message on lease and confirms it after printing it; the
@@ -51,6 +54,20 @@
 // When the device then finds a delivered message's wrapper in the hook
 // context its session's transcript recorded, it sends AckRequest.Read, which
 // sets read_at.
+//
+// # Cloud sessions
+//
+// A vendor cloud session runs on the vendor's machines and is owned by a
+// person, not a device. Each of the person's devices that can list them
+// (the vendor's CLI login) reports them in PollRequest.Cloud; the server
+// keeps one row per (person, agent, session) whichever device reported it
+// last, live for PresenceTTL like any session. Peers marks them Cloud.
+// Sending to one follows the rules of any session: own, or held until the
+// recipient accepts the sender (B7). An @user message never goes to a
+// cloud session. The device that claims a cloud message pushes it with the
+// vendor's own route (internal/vendorcloud) only while the session runs a
+// turn; a push that fails is retried, and after devicebus.MaxAttempts
+// failures reported in AckRequest.PushFailed.
 package busproto
 
 import (
@@ -85,6 +102,11 @@ const (
 	MaxRefBytes = 512
 	// DefaultTTL is how long an undelivered message waits (B8).
 	DefaultTTL = 24 * time.Hour
+	// DefaultRetention is how long the server keeps a message in a final
+	// state (delivered, read, expired, refused, undelivered) after its
+	// expiry, with its audit rows. The server's FLOPWIRE_BUS_RETENTION
+	// overrides it.
+	DefaultRetention = 7 * 24 * time.Hour
 	// PollWait is the longest a poll holds; WaitSeconds above it is clamped.
 	PollWait = 25 * time.Second
 	// PresenceTTL is how long a session stays live after the poll that
@@ -166,8 +188,13 @@ const (
 	ReasonUnconfirmed = "unconfirmed"
 	// ReasonSessionEnded: the session the message was for (addressed, or
 	// claimed for an @user message) ended before a hook delivered it. It
-	// is not given to another session (#67).
+	// is not given to another session (#67). For a cloud session: its
+	// vendor reported it archived or exited when the push was tried.
 	ReasonSessionEnded = "session_ended"
+	// ReasonPushFailed: the message is for a vendor cloud session, and
+	// devicebus.MaxAttempts pushes into it failed (the vendor refused or
+	// did not answer).
+	ReasonPushFailed = "push_failed"
 )
 
 // Sender is own when both sessions belong to one person, else teammate (B4).
@@ -240,8 +267,11 @@ type SendRequest struct {
 	// one its person sent or received); the reply joins its thread.
 	ReplyTo string   `json:"reply_to,omitempty"`
 	Refs    []string `json:"refs,omitempty"`
-	// Repo routes an @user message: a repo name or path (its last element
-	// is used). Empty: the sending session's repo. "*": any repo.
+	// Repo routes an @user message: a normalized remote (host/owner/name,
+	// or owner/name), which the device resolves a path or a name it knows
+	// to, or else a repo name or path (its last element is used). Empty:
+	// the sending session's repo, by its remote when it has one. "*": any
+	// repo.
 	Repo string `json:"repo,omitempty"`
 }
 
@@ -261,6 +291,9 @@ type Recipient struct {
 	// running a turn, so the message arrives at its next tool call.
 	Live bool `json:"live"`
 	Busy bool `json:"busy"`
+	// Cloud: the session is a vendor cloud session. It gets the message
+	// pushed while it runs a turn, and it cannot reply.
+	Cloud bool `json:"cloud,omitempty"`
 }
 
 // SendResponse is the outcome of a send that was not refused.
@@ -316,7 +349,15 @@ type PresenceSession struct {
 	Agent     string `json:"agent"`
 	// Repo is the repo root as the device placed the session (an absolute
 	// path); Branch its current git branch.
-	Repo   string `json:"repo,omitempty"`
+	Repo string `json:"repo,omitempty"`
+	// Remote is the normalized remote (host/owner/name) of the session's
+	// repository, "" for none: a repo filter or @user route matches it on
+	// any device and at any path (issue #102).
+	Remote string `json:"remote,omitempty"`
+	// Main is the main checkout of the session's repository as the device
+	// placed it: a repo filter matches it as it matches Repo, without
+	// listing every worktree (#102).
+	Main   string `json:"main,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	Title  string `json:"title,omitempty"`
 	// Busy: a turn is running.
@@ -327,6 +368,12 @@ type PresenceSession struct {
 type PollRequest struct {
 	// Sessions is the device's whole presence; it replaces the last one.
 	Sessions []PresenceSession `json:"sessions"`
+	// Cloud is the person's vendor cloud sessions the device listed
+	// (Busy: a turn is running). They belong to the person, not the
+	// device: each is recorded for the person, and one the device leaves
+	// out stays live until PresenceTTL after the last report of any of
+	// the person's devices. At most MaxPresence.
+	Cloud []PresenceSession `json:"cloud,omitempty"`
 	// Cursor is the Cursor of the last answer (0 at start). The poll
 	// answers at once when it holds a message newer than Cursor.
 	Cursor int64 `json:"cursor"`
@@ -341,10 +388,13 @@ type PollRequest struct {
 }
 
 // Claimable is an @user message this device may claim, with the device's
-// sessions it may go to (busy sessions first).
+// sessions it may go to (busy sessions first); or, Cloud, a message to one
+// of the person's cloud sessions (Sessions holds that one), which the
+// device claims when it is about to push it.
 type Claimable struct {
 	Message  Envelope `json:"message"`
 	Sessions []string `json:"sessions"`
+	Cloud    bool     `json:"cloud,omitempty"`
 }
 
 // HeldSender counts held messages from one sender to the device's person;
@@ -369,10 +419,15 @@ type PollResponse struct {
 	// Ignored lists reported sessions the server did not record: the id
 	// belongs to another person's session.
 	Ignored []string `json:"ignored,omitempty"`
+	// Now is the server's clock when it answered. The device judges a
+	// message's expiry by it (ExpiresAt is the server's time), not by its
+	// own clock, which may be skewed.
+	Now time.Time `json:"now"`
 }
 
 // ClaimRequest is POST /v1/bus/claim: take an @user message for one live
-// session on this device.
+// session on this device, or a message to a live cloud session of the
+// device's person (SessionID is that session) for this device to push.
 type ClaimRequest struct {
 	MessageID string `json:"message_id"`
 	SessionID string `json:"session_id"`
@@ -389,12 +444,15 @@ type ClaimResponse struct {
 // confirmed them after devicebus.MaxAttempts leases) and become
 // undelivered with ReasonUnconfirmed; those in SessionEnded will not be
 // either (their session ended first) and become undelivered with
-// ReasonSessionEnded; those in Read were read. Together at most MaxAck
+// ReasonSessionEnded; those in PushFailed (cloud messages whose pushes
+// failed devicebus.MaxAttempts times) become undelivered with
+// ReasonPushFailed; those in Read were read. Together at most MaxAck
 // entries.
 type AckRequest struct {
 	IDs          []string      `json:"ids"`
 	Undelivered  []string      `json:"undelivered,omitempty"`
 	SessionEnded []string      `json:"session_ended,omitempty"`
+	PushFailed   []string      `json:"push_failed,omitempty"`
 	Read         []ReadReceipt `json:"read,omitempty"`
 }
 
@@ -426,18 +484,24 @@ type AckResponse struct {
 
 // Peer is one live session, the row `flopwire peers` prints.
 type Peer struct {
-	Session  string    `json:"session"`
-	Agent    string    `json:"agent"`
-	User     string    `json:"user"`
-	UserID   string    `json:"user_id"`
-	UserName string    `json:"user_name,omitempty"`
-	Device   string    `json:"device,omitempty"`
-	Repo     string    `json:"repo,omitempty"`
-	Branch   string    `json:"branch,omitempty"`
-	Title    string    `json:"title,omitempty"`
-	Busy     bool      `json:"busy"`
-	Own      bool      `json:"own"` // the caller's own person
-	SeenAt   time.Time `json:"seen_at"`
+	Session  string `json:"session"`
+	Agent    string `json:"agent"`
+	User     string `json:"user"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name,omitempty"`
+	Device   string `json:"device,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	Remote   string `json:"remote,omitempty"`
+	Main     string `json:"main,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Busy     bool   `json:"busy"`
+	Own      bool   `json:"own"` // the caller's own person
+	// Cloud: a vendor cloud session, owned by User and on no device
+	// (Device is empty). A message is pushed into it while it is busy;
+	// it cannot reply.
+	Cloud  bool      `json:"cloud,omitempty"`
+	SeenAt time.Time `json:"seen_at"`
 }
 
 // PeersQuery is GET /v1/bus/peers: session (the calling session, left
@@ -448,6 +512,11 @@ type PeersQuery struct {
 	// caller's device expanded it (local.ExpandRepo): a session on any of
 	// them, or under one, is on that repository.
 	Roots []string
+	// Mains are its main checkouts: a session placed in one is on it.
+	Mains []string
+	// Remotes are its normalized remotes: a session whose remote is one
+	// of them is on that repository, on any device (issue #102).
+	Remotes []string
 }
 
 // PeersResponse lists live sessions, the caller's own person first, the
@@ -478,6 +547,11 @@ type InboxItem struct {
 	Reason      string     `json:"reason,omitempty"`
 	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
 	ReadAt      *time.Time `json:"read_at,omitempty"`
+	// Attempts, on a refused send, counts the refusals with its reason
+	// from the session within the hour after it (the server keeps one row
+	// for them); LastAt is the latest. Unset for a single attempt.
+	Attempts int        `json:"attempts,omitempty"`
+	LastAt   *time.Time `json:"last_at,omitempty"`
 }
 
 // InboxResponse is one page, newest first. Next, when set, is the before

@@ -40,6 +40,7 @@ func perfFixture(t testing.TB, others int) (*pgxpool.Pool, *perfguard.Counter, b
 	run(`INSERT INTO users(id,email,name,role,identity_type,created_at) VALUES($1,'me@example.test','Me','member','human',$2)`, me.UserID, now)
 	run(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'mac','darwin',$3)`, me.DeviceID, me.UserID, now)
 	run(`INSERT INTO bus_presence(device_id,user_id,agent,session_id,repo,busy,seen_at) VALUES($1,$2,'claude','me-session','/x/api',true,$3)`, me.DeviceID, me.UserID, now)
+	run(`INSERT INTO bus_presence(device_id,cloud,user_id,agent,session_id,repo,busy,seen_at) VALUES(NULL,true,$1,'claude','session_01cloud','acme/api',true,$2)`, me.UserID, now)
 	run(`INSERT INTO users(id,email,name,role,identity_type,created_at)
 		SELECT md5('u'||i)::uuid,'u'||i||'@example.test','U'||i,'member','human',$1 FROM generate_series(1,$2) i`, now, others)
 	run(`INSERT INTO devices(id,user_id,name,platform,created_at) SELECT md5('d'||i)::uuid,md5('u'||i)::uuid,'d','linux',$1 FROM generate_series(1,$2) i`, now, others)
@@ -74,7 +75,8 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"session on device", SessionOnDeviceSQL, []any{me.DeviceID, "me-session", "", live}},
 		{"session prefix", SessionPrefixSQL, []any{"live-000001%", live}},
 		{"user live", UserLiveSQL, []any{me.UserID, live}},
-		{"deliverable", DeliverableSQL, []any{me.UserID, now, me.DeviceID}},
+		{"deliverable", DeliverableSQL, []any{me.UserID, now, me.DeviceID, live}},
+		{"cloud session", CloudSessionSQL, []any{me.UserID, "session_01cloud", "claude", live}},
 		{"held", HeldSQL, []any{me.UserID, now}},
 		{"held list", HeldListSQL, []any{me.UserID, now}},
 		{"reply to", ReplyToSQL, []any{"m1-0"}},
@@ -99,12 +101,21 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"rehold", reholdSQL, []any{me.UserID, me.UserID}},
 		{"expire", expireSQL, []any{now}},
 		{"drop presence", dropPresenceSQL, []any{now}},
+		{"refused row", RefusedRowSQL, []any{"me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now, me.UserID, "session", "to-session", ""}},
+		{"purge", PurgeSQL, []any{now.Add(48 * time.Hour), purgeBatch}},
+		{"purge audit", PurgeAuditSQL, []any{now.Add(48 * time.Hour), purgeBatch}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			perfguard.AssertIndexedPlan(t, pool, c.sql, c.args...)
 		})
 	}
 	assertSendCeilingIndexes(t, pool, me, now)
+	// The retention sweep reads final rows by expiry, and their audit
+	// rows by message id or by age, never the whole tables.
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_retention_idx", PurgeSQL, now.Add(48*time.Hour), purgeBatch)
+	perfguard.AssertPlanUsesIndex(t, pool, "audit_bus_message_idx", PurgeSQL, now.Add(48*time.Hour), purgeBatch)
+	perfguard.AssertPlanUsesIndex(t, pool, "audit_bus_batch_idx", PurgeAuditSQL, now.Add(48*time.Hour), purgeBatch)
+	perfguard.AssertPlanUsesIndex(t, pool, "bus_messages_from_session_idx", RefusedRowSQL, "me-session", "claude", me.DeviceID, busproto.CodeDuplicate, now, me.UserID, "session", "to-session", "")
 	// The users table is a handful of rows; its lookup is not indexed.
 	perfguard.AssertIndexedPlanExcept(t, pool, []string{"users"}, UserLookupSQL, "alex")
 }

@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -354,7 +355,16 @@ func (a *Agent) fallback(agent transcript.Agent, path, remote string) (pathpolic
 // the transcript recorded when git has none. The git files are read each
 // time (not memoized per process): a session is placed once, and a remote
 // or worktree added while the agent runs must cover the next session.
+//
+// A directory that is gone is not placed in the repository of an
+// ancestor that still exists (issue #102): a deleted worktree under a
+// home directory that is a git repository (dotfiles) is no part of it.
+// Its placement keeps the directory and the recorded remote, and the
+// recovery pass (recover.go) looks for its checkout by evidence.
 func (a *Agent) resolve(cwd, remote string) pathpolicy.Placement {
+	if _, err := fsprobe.Stat(cwd); errors.Is(err, os.ErrNotExist) {
+		return pathpolicy.Placement{Cwd: cwd, Remote: remote}
+	}
 	r := localindex.ResolveRepo(cwd)
 	pl := pathpolicy.Placement{Cwd: cwd, Worktree: r.Worktree, Main: r.Main, Remote: r.Remote}
 	if pl.Remote == "" {

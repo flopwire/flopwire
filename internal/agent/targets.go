@@ -77,11 +77,24 @@ func (t *target) racy() bool {
 }
 
 // specOf is t.spec with Agent.mu held: a discovery pass may update a
-// companion's owner and parent.
+// companion's owner and parent. A transcript's spec carries its
+// session's repository as placed (issue #102): its own placement, else
+// its root session's (a subagent's).
 func (a *Agent) specOf(t *target) devicesync.SourceSpec {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return t.spec()
+	sp := t.spec()
+	if t.kind == kindTranscript {
+		key, _ := t.placeKeyOf()
+		p, ok := a.places[key]
+		if !ok && t.root != "" {
+			p, ok = a.places[placeKey{t.src.Agent, t.root}]
+		}
+		if ok {
+			sp.Checkout, sp.Remote = p.pl.Main, p.pl.Remote
+		}
+	}
+	return sp
 }
 
 // spec describes t to sync. Called with Agent.mu held.

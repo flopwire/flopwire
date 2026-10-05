@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"github.com/flopwire/flopwire/internal/auth"
 	backupsvc "github.com/flopwire/flopwire/internal/backup"
 	"github.com/flopwire/flopwire/internal/bus"
+	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/ingest"
@@ -169,8 +171,8 @@ const usageText = `Usage: flopwire <command>
   redact      hide a message (or some of its lines) on the server and in the local index
   hook        what harness hooks run: prints messages for this session into it,
               and asks the device agent to index the transcript now
-  setup       install Flopwire into Claude Code, Codex and Devin CLI through
-              each one's own plugin commands (--check reports, --remove uninstalls)
+  setup       install Flopwire into Claude Code, Codex, Devin CLI and opencode
+              through each one's own plugin mechanism (--check reports, --remove uninstalls)
   probe       re-run the message-bus delivery tests against the installed
               harnesses (--local, --json, --notes; docs/probe.md)
   agent       run the device agent (agent run) or signal it from a hook (agent flush)
@@ -248,7 +250,12 @@ func serve(ctx context.Context, args []string) error {
 	go parser.Run(ctx)
 	// The server's ctx ends at shutdown: a waiting poll answers then,
 	// inside the shutdown grace, instead of being cut.
-	messageBus := &bus.Store{Pool: pool, Stopping: ctx.Done()}
+	retention, err := busRetention(os.Getenv("FLOPWIRE_BUS_RETENTION"))
+	if err != nil {
+		return err
+	}
+	messageBus := &bus.Store{Pool: pool, Stopping: ctx.Done(), Retention: retention}
+	slog.Info("message bus retention", "retention", retention.String(), "applies_to", "delivered, read, expired, refused and undelivered messages after their expiry, with their audit rows")
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
 		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
 		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
@@ -394,7 +401,38 @@ func runCredentialSweeper(ctx context.Context, s interface {
 	}
 }
 
-// runBusSweeper expires undelivered messages and drops stale presence.
+// busRetention parses FLOPWIRE_BUS_RETENTION: a Go duration ("168h") or
+// a whole number of days ("7d"); empty is busproto.DefaultRetention. A
+// value that does not parse, or is under an hour, stops the server: a typo
+// must not delete messages early.
+func busRetention(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return busproto.DefaultRetention, nil
+	}
+	var d time.Duration
+	var err error
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		var n int
+		if n, err = strconv.Atoi(days); err == nil {
+			// Past the largest Duration, n days would wrap, possibly to a
+			// short positive retention.
+			if n > int(math.MaxInt64/int64(24*time.Hour)) {
+				n = -1
+			}
+			d = time.Duration(n) * 24 * time.Hour
+		}
+	} else {
+		d, err = time.ParseDuration(v)
+	}
+	if err != nil || d < time.Hour {
+		return 0, fmt.Errorf("FLOPWIRE_BUS_RETENTION=%q: want a duration of at least 1h, such as 168h or 7d", v)
+	}
+	return d, nil
+}
+
+// runBusSweeper expires undelivered messages, drops stale presence, and
+// deletes messages past retention, every minute.
 func runBusSweeper(ctx context.Context, s *bus.Store, log *slog.Logger) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
@@ -403,8 +441,8 @@ func runBusSweeper(ctx context.Context, s *bus.Store, log *slog.Logger) {
 		switch {
 		case err != nil && ctx.Err() == nil:
 			log.Error("message bus sweep", "err", err)
-		case n > 0:
-			log.Info("message bus sweep", "expired", n)
+		case n != (bus.SweepResult{}):
+			log.Info("message bus sweep", "expired", n.Expired, "deleted", n.Deleted, "audit_deleted", n.Audit)
 		}
 		select {
 		case <-ctx.Done():
@@ -729,6 +767,7 @@ func enroll(ctx context.Context, args []string) error {
 		if err = client.Save(cfg); err != nil {
 			return err
 		}
+		notifyRepin(ctx) // a bus stopped for want of a device credential resumes
 		res := map[string]any{"device": out.Device, "config": "saved with mode 0600"}
 		if cfg.TLSFingerprint != "" {
 			res["tls_fingerprint"] = cfg.TLSFingerprint

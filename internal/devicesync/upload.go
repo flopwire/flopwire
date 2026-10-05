@@ -30,7 +30,43 @@ func (s *Syncer) upload(ctx context.Context, src *sourceRow) error {
 		f.Close()
 		delete(s.held, src.ID)
 	}
-	return nil
+	if src.RepoSent == src.Spec.repoKey() || src.Gen < 0 {
+		return nil
+	}
+	if len(gens) == 0 {
+		// Every byte is acknowledged, and the server has not heard the
+		// session's repository (placed or recovered since): tell it, header
+		// only.
+		if err := s.sendRepo(ctx, src); err != nil {
+			return err
+		}
+	}
+	return s.store.repoSent(ctx, src)
+}
+
+// sendRepo reports src's repository with a flush of its current
+// generation that carries no entries and no tail: the server updates the
+// source's row and leaves its bytes as they are.
+func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow) error {
+	g, err := s.store.gen(ctx, src.ID, src.Gen)
+	if err != nil || g == nil {
+		return err
+	}
+	h := syncproto.FlushHeader{
+		Version:    syncproto.Version,
+		Source:     s.describe(src, g),
+		Generation: g.Gen,
+		CapturedAt: time.Unix(0, g.CapturedAt).UTC(),
+		Chunker:    s.cfg.Chunk.wire(),
+	}
+	if g.ChangeTime != 0 {
+		h.ChangeTime = time.Unix(0, g.ChangeTime).UTC()
+	}
+	resp, err := s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h})
+	if err == nil && resp.Refused != "" {
+		s.noteRefused(src.Spec.Path, resp.Refused)
+	}
+	return err
 }
 
 func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error {
@@ -265,6 +301,8 @@ func (s *Syncer) describe(src *sourceRow, g *genRow) syncproto.Source {
 		Parser:      src.Spec.Parser,
 		Previous:    g.Previous,
 		Parent:      g.Parent,
+		Checkout:    src.Spec.Checkout,
+		Remote:      src.Spec.Remote,
 	}
 	return d
 }

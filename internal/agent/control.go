@@ -109,6 +109,8 @@ type Response struct {
 	Inbox    *busproto.InboxResponse `json:"inbox,omitempty"`
 	BusError *busproto.Error         `json:"bus_error,omitempty"`
 	Bus      *devicebus.Status       `json:"bus,omitempty"`
+	// Credential (status): the server credential the agent uses.
+	Credential *Credential `json:"credential,omitempty"`
 	// Instruct (pending): print the standing instruction before the
 	// messages, then confirm it. The session is owed it until a hook
 	// confirms it, and it is leased to one hook at a time, so a session
@@ -204,6 +206,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			st := a.cfg.Bus.Status(ctx)
 			resp.Bus = &st
 		}
+		if a.cfg.Credential != nil {
+			c := a.cfg.Credential()
+			resp.Credential = &c
+		}
 		var err error
 		resp.Extraction, err = a.store.ExtractionSummary(ctx)
 		if err != nil {
@@ -227,8 +233,15 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Error = err.Error()
 		}
 	case req.Op == "flush":
-		a.noteHookEvent(req.Session, req.Event)
+		a.noteHookEvent(req.Session, req.Event, hookStart(req, a.now()))
 		a.hookLifecycle(ctx, req)
+		if d := a.storeOf(transcript.AgentOpencode); d != nil && req.Agent == string(transcript.AgentOpencode) {
+			// opencode's store holds every session: poll it (at most once a
+			// second while it changes).
+			a.pollStore(ctx, d, false, false)
+			resp.OK = true
+			break
+		}
 		resp.Path, err = a.FlushPath(ctx, req.Path, req.Session)
 		resp.OK = err == nil
 		if err != nil {
@@ -280,6 +293,7 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 	var err error
 	switch req.Op {
 	case "pending":
+		b.Nudge(req.Session, req.Agent) // a new session: report it now
 		lim := devicebus.Limit{Count: req.Limit, Bytes: req.MaxBytes, Sep: busrender.SepLen, Size: busrender.Size}
 		ins := &devicebus.Instruction{Source: req.Start, HookStart: hookStart(req, a.now()),
 			Bytes: busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen}

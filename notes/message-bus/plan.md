@@ -4,7 +4,7 @@ Date: 2026-10-01. Supersedes section 9 of
 [`../local-search/README.md`](../local-search/README.md) where they differ.
 Evidence: [`README.md`](README.md) (socket and queue, 2026-09-28) and
 [`probes-2026-10-01.md`](probes-2026-10-01.md) (hooks, Devin, opencode,
-cloud). Built as of 2026-10-03 except opencode and vendor cloud; where the build diverged, see section 9 and the dated notes in
+cloud). Built as of 2026-10-03 except opencode; where the build diverged, see section 9 and the dated notes in
 sections 3 to 8.
 
 ## 1. Decisions
@@ -18,7 +18,7 @@ Made by Gary on 2026-10-01 unless marked "carried".
 | B3 | **No wake.** A message never starts a turn. It arrives inside a running turn, or with the human's next prompt. |
 | B4 | **Authority depends on the sender.** From the recipient's own user: a teammate request, acted on within the recipient session's permissions. From another user: information; the agent confirms with its human before consequential actions. A message never changes permissions or settings. |
 | B5 | **v1 harnesses:** Claude Code, Codex, Devin CLI, opencode. (2026-10-03: the first three are built; opencode is not, #62.) |
-| B6 | **Vendor cloud in v1:** Claude cloud sessions and Devin cloud, pushed only while the session is running. An occasional wake from a send that races the end of a turn is accepted. (2026-10-03: not built, #63.) |
+| B6 | **Vendor cloud in v1:** Claude cloud sessions and Devin cloud, pushed only while the session is running. An occasional wake from a send that races the end of a turn is accepted. (2026-10-03: built, #63; see section 6.) |
 | B7 | (carried) A message from another user is held until the recipient's human accepts that sender once. Acceptance is per sender and revocable. |
 | B8 | (carried) Undelivered messages expire after 24 hours by default. Flopwire never resumes a session headless to deliver. |
 
@@ -157,6 +157,7 @@ Enforced by the server, reported to the sender as a refusal:
 - At most 30 sends per session per hour.
 - At most 120 sends per device and 300 per person per hour. The session id is the device's own report, so these ceilings hold a device that invents session ids.
 - A refused send counts toward these three ceilings like a sent one, so an agent looping on a refusal reaches them. A refusal by one of these three ceilings does not count: it would keep the window of a retrying session full, and one session at its ceiling would use up its device and person quota.
+- Repeated refusals of one session with the same code, recipient and thread within an hour of the first are one stored row and one audit row, with `attempts` and `last_at` (#70). The ceilings sum `attempts`.
 - The same body to the same recipient within 10 minutes is dropped.
 - At most 50 undelivered messages per recipient session.
 
@@ -357,6 +358,38 @@ marking, so the wrapper and the B4 rule travel inline in every message.
 Cloud sessions are owned by a user, not a device. Any of that user's
 devices may deliver; the claim call picks one.
 
+2026-10-03 (#63), as built ([`cloud-2026-10-03.md`](cloud-2026-10-03.md),
+[`docs/cloud.md`](../../docs/cloud.md)):
+
+- Each vendor is behind `vendorcloud.Adapter`. Claude discovery reads
+  `GET /v1/code/sessions?statuses=active`, the list the CLI's `--teleport`
+  reads, not `/v1/sessions`: that one takes no filter and lists every
+  Remote Control session of the account (over 3,000 for the test account).
+  Only `environment_kind: "anthropic_cloud"` sessions are kept. Devin's
+  `session/list` is the organization's; only the person's own sessions
+  are kept.
+- Devices report cloud sessions in `PollRequest.Cloud`; the server keeps
+  one `bus_presence` row per person and session with `cloud` set and no
+  device. Peers marks them `cloud`. `@user` never routes to one.
+- A message to a cloud session is offered to all of the owner's devices;
+  one claims it only while the vendor reports a turn running and pushes
+  it. Lease and confirm as for hooks; a failed push is retried at the next
+  presence tick and after 3 failures is `undelivered` (`push_failed`). A
+  push the vendor refuses as archived or exited ends the session
+  (`session_ended`).
+- The cloud instruction (`busrender.CloudInstruction`) and the wrappers
+  travel in every push; requests carry no reply line, and the instruction
+  says the session cannot reply.
+- Cross-user: the accept rule applies unchanged (B7), so accepted
+  teammates reach cloud sessions; nothing extra was needed.
+- Read receipts: Claude from the session's events (the first assistant
+  event after the pushed text), Devin from the push (the first agent
+  chunk after the echo, within 8 s). The Limits column's "no `read_at`"
+  no longer holds for Claude.
+- Sending out: a Devin cloud session reached public HTTPS hosts, but it
+  has no `flopwire` CLI or device credential; both vendors' sessions
+  receive only.
+
 ## 7. Build sequence
 
 Small PRs, each with tests. Items 1 to 5 are the first usable slice.
@@ -378,7 +411,7 @@ Status as of 2026-10-03.
    Done: #85.
 7. Accept and revoke: console and CLI; held-message notice. Done: #97.
 8. opencode: parser, then plugin. Open: #62.
-9. Cloud: Claude cloud push and discovery; Devin cloud push. Open: #63.
+9. Cloud: Claude cloud push and discovery; Devin cloud push. Done: #63.
 10. Docs. Check the README and landing claims in PR #23 against what
     shipped. #72.
 
@@ -410,7 +443,8 @@ across worktrees (#100), commits without a sha (#103), read's
   hooks deliver in `claude -p`; interactive sessions still untested.)
 - **Cross-user messages into cloud sessions** arrive with user authority.
   Consider own-user only for cloud in v1. (2026-10-01, #63: accepted
-  teammates may message cloud sessions, as local ones.)
+  teammates may message cloud sessions, as local ones. 2026-10-03: built
+  that way; the accept rule needed no change.)
 - **Undocumented surfaces:** the Claude cloud session list, and the Devin
   CLI token on REST. Both can change without notice.
 - **Harness drift.** Claude Code and Codex ship several releases a week.
@@ -442,7 +476,10 @@ after the plan merged. Tracker #73; the merged code wins over this note.
 | Accept | console and terminal | Also needs the person's password (#97 review). Held messages show to the person as first-line previews only. The notice is a `systemMessage` on `UserPromptSubmit`, once per sender per day per device, on Claude Code and Codex; Devin has no such channel. Revoke also re-holds claimed messages. Members get the console's Messaging page. |
 | Repo | path prefix or basename | `--repo` names a repository: its main checkout and normalized remote, across worktrees and clones on the device (#100). The server stores no remote, so `--server --repo` does not match another machine's checkout at another path (#102). `@user` routing is still by repo name. |
 | Commit evidence | `[branch sha]` lines | Also `commits_no_sha` for quiet commits, resolved by a later `rev-parse`, `log`, `show` or `push` (#103). |
+| Vendor cloud | Discover with `GET /v1/sessions` | `GET /v1/code/sessions?statuses=active` (Claude) and `session/list` (Devin) on each device; `PollRequest.Cloud`; user-owned `bus_presence` rows; claimed by one device while a turn runs; `push_failed` after 3 failed pushes (#63). |
 | Read receipts | `read_at` at ingest on the server | Set by the device agent when the wrapper appears in a hook-context row of the recipient's transcript (Claude Code, Codex, Devin CLI; not opencode); sent in the ack batch; the server sets `read_at` once (#65, #106). It means the text entered the context, not that the model acted. |
+| Retention | not specified | A message in a final state (`delivered`, `read`, `expired`, `refused`, `undelivered`) is deleted 7 days after its expiry, with its `bus.send` and `bus.claim` audit rows; `bus.poll`, `bus.deliver` and `bus.read` audit rows go a day later than that by age. `FLOPWIRE_BUS_RETENTION` sets the 7 days. The sweep deletes at most 10,000 messages a minute. A deleted message leaves both inboxes; a late receipt for it is rejected (#70). |
+| Refused sends | stored, one row each | One row per session, code, recipient, thread and hour, with `attempts`; still counted toward the ceilings (#70, #119). |
 
 Decisions recorded on #73 and its issues:
 
@@ -463,8 +500,32 @@ Decisions recorded on #73 and its issues:
   `next` says what to do.
 - **Lost hooks (#101):** the standing instruction is leased like a
   message.
+- **Poll before revoke (#70): won't fix.** A device that took a message
+  just before a revoke can still print it once. Its receipt is then
+  rejected, so the sender sees it held, then expired. Accepted
+  2026-10-04; no fix planned.
+- **Retention (#70):** 7 days after expiry for final messages and their
+  audit rows (2026-10-04).
 
-Still open: opencode (#62), vendor cloud (#63), server
-hardening (#70), device-agent hardening (#71), the server repo key
+Decided 2026-10-04:
+
+- **Cloud sessions in `peers`:** a teammate whom the user has not
+  accepted still sees the user's cloud sessions in `peers`, the same rule
+  as for local sessions. Acceptance gates delivery, not presence
+  ([docs/cloud.md](../../docs/cloud.md#messages-from-other-people)).
+- **opencode mid-turn:** a message delivered during an opencode turn
+  earns one extra model reply before the session goes idle. opencode sees
+  the stored message only after the current stream ends. Accepted
+  ([docs/opencode.md](../../docs/opencode.md#how-a-message-arrives)).
+- **Subagent sends:** on every harness, a subagent's send goes out as its
+  parent session, and the parent's human does not see the call. Accepted
+  ([docs/agent.md](../../docs/agent.md#send-and-read-messages)).
+- **Poll before revoke (#70):** won't fix. A poll that read a message just
+  before a revoke still delivers it once; the ack is rejected afterwards.
+- **Bus-row retention (#70):** the server keeps delivered, expired and
+  refused bus rows for 7 days. Not built yet.
+
+Still open: opencode (#62), server
+hardening (#70: only the multi-process wake-up, `LISTEN/NOTIFY`), device-agent hardening (#71), the server repo key
 (#102), the plugin follow-ups (#58, #59, #60), and a captured exchange
 for the homepage (#55, #54).

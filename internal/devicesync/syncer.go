@@ -32,6 +32,21 @@ type SourceSpec struct {
 	Parent string
 	// Export marks a source whose bytes come from SyncExport, not a file.
 	Export bool
+	// Checkout and Remote are the repository the session ran in, as the
+	// device agent placed it (syncproto.Source.Checkout). A change is
+	// reported to the server with the next flush, header only when no
+	// bytes are pending.
+	Checkout string `json:",omitempty"`
+	Remote   string `json:",omitempty"`
+}
+
+// repoKey is what of the spec the server must hear again when it changes:
+// "" for no repository, which a source starts with.
+func (sp *SourceSpec) repoKey() string {
+	if sp.Checkout == "" && sp.Remote == "" {
+		return ""
+	}
+	return sp.Checkout + "\x00" + sp.Remote
 }
 
 // rewriteProne reports whether the source rewrites itself whole, so every

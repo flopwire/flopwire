@@ -44,7 +44,26 @@ type Filters struct {
 	// checkout, linked worktrees, and the directories its placements
 	// know. A session also matches when its directory is one of them or
 	// lies under one.
-	RepoRoots    []string `json:"repo_root,omitempty"`
+	RepoRoots []string `json:"repo_root,omitempty"`
+	// RepoRemotes are the normalized remotes (host/owner/name) of the
+	// repository Repo names, as the caller's device resolved them: a
+	// session whose device placed it in a checkout of one of them
+	// matches, on any device and at any path (issue #102).
+	RepoRemotes []string `json:"repo_remote,omitempty"`
+	// RepoMains are the main checkouts of the repository Repo names, as
+	// the caller's device recorded and resolved them: a session that
+	// device placed in one matches (locally by its placement, on the
+	// server by the checkout the device uploaded with it).
+	RepoMains []string `json:"repo_checkout,omitempty"`
+	// CallerDevice is the calling device's id, which the server sets from
+	// the credential for RepoMains; it never travels.
+	CallerDevice string `json:"-"`
+	// RepoCheckouts are main checkouts the server resolved a repo name
+	// to, for a repository without a remote: a session matches when the
+	// device that uploaded it placed it in one. Set by the server only;
+	// never on the wire.
+	RepoCheckouts []DeviceCheckout `json:"-"`
+
 	Device       string   `json:"device,omitempty"` // device id or name
 	User         string   `json:"user,omitempty"`   // user id or email
 	Kinds        []string `json:"kind,omitempty"`   // user, assistant, tool_call, tool_result, thinking, system, injected, agent_message
@@ -87,6 +106,9 @@ type Filters struct {
 	Limit int `json:"limit,omitempty"`
 }
 
+// DeviceCheckout is one device's main checkout of a repository.
+type DeviceCheckout struct{ Device, Checkout string }
+
 // Values encodes the filters as URL query parameters.
 func (f Filters) Values() url.Values {
 	v := url.Values{}
@@ -104,6 +126,12 @@ func (f Filters) Values() url.Values {
 	set("repo", f.Repo)
 	if len(f.RepoRoots) > 0 {
 		v["repo_root"] = append([]string(nil), f.RepoRoots...)
+	}
+	if len(f.RepoRemotes) > 0 {
+		v["repo_remote"] = append([]string(nil), f.RepoRemotes...)
+	}
+	if len(f.RepoMains) > 0 {
+		v["repo_checkout"] = append([]string(nil), f.RepoMains...)
 	}
 	set("device", f.Device)
 	set("user", f.User)
@@ -150,6 +178,28 @@ func ParseFilters(v url.Values) (Filters, error) {
 			}
 		}
 		f.RepoRoots = append([]string(nil), roots...)
+	}
+	if remotes := v["repo_remote"]; len(remotes) > 0 {
+		if len(remotes) > MaxRepoRoots {
+			return f, fmt.Errorf("repo_remote: at most %d", MaxRepoRoots)
+		}
+		for _, r := range remotes {
+			if r == "" || strings.HasPrefix(r, "/") || len(r) > 4096 {
+				return f, fmt.Errorf("repo_remote: %q is not a normalized remote", r)
+			}
+		}
+		f.RepoRemotes = append([]string(nil), remotes...)
+	}
+	if mains := v["repo_checkout"]; len(mains) > 0 {
+		if len(mains) > MaxRepoRoots {
+			return f, fmt.Errorf("repo_checkout: at most %d", MaxRepoRoots)
+		}
+		for _, m := range mains {
+			if !strings.HasPrefix(m, "/") || len(m) > 4096 {
+				return f, fmt.Errorf("repo_checkout: %q is not an absolute path", m)
+			}
+		}
+		f.RepoMains = append([]string(nil), mains...)
 	}
 	var err error
 	for _, p := range []struct {

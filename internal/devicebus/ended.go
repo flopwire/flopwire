@@ -309,22 +309,25 @@ func settleEnded(ctx context.Context, x execer, now time.Time) (int64, error) {
 
 // reports returns up to n message ids whose undelivered report the server
 // has not taken, split by reason.
-func (s *store) reports(ctx context.Context, n int) (unconfirmed, ended []string, err error) {
+func (s *store) reports(ctx context.Context, n int) (unconfirmed, ended, failed []string, err error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,reason FROM devbus_messages WHERE ack='report' ORDER BY id LIMIT ?`, n)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, reason string
 		if err := rows.Scan(&id, &reason); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if reason == busproto.ReasonSessionEnded {
+		switch reason {
+		case busproto.ReasonSessionEnded:
 			ended = append(ended, id)
-		} else {
+		case busproto.ReasonPushFailed:
+			failed = append(failed, id)
+		default:
 			unconfirmed = append(unconfirmed, id)
 		}
 	}
-	return unconfirmed, ended, rows.Err()
+	return unconfirmed, ended, failed, rows.Err()
 }

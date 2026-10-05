@@ -49,8 +49,11 @@ const setupHelp = `flopwire setup — install Flopwire into the coding-agent har
 
 For each harness it finds, setup runs that harness's own plugin commands. It
 never edits the harness's settings files. Harnesses: Claude Code (claude),
-Codex (codex) and Devin CLI (devin). Devin loads the Claude Code plugin;
-setup installs it with devin plugins install --local, on this machine only.
+Codex (codex), Devin CLI (devin) and opencode. Devin loads the Claude Code
+plugin; setup installs it with devin plugins install --local, on this
+machine only. opencode loads every file in its global plugin directory:
+setup writes the plugin there (~/.config/opencode/plugins/flopwire.js) and
+--remove deletes it.
 
 Codex runs a plugin's hooks only after you trust them once: start codex and
 answer its "Hooks need review" prompt, or use /hooks. setup reports whether
@@ -71,13 +74,18 @@ Flags
                      (default $FLOPWIRE_PLUGIN_SOURCE, else flopwire/flopwire)
   --scope SCOPE      Claude Code install scope: user (default), project or
                      local; project and local apply to the current directory.
-                     Codex and Devin install for the user only
+                     Codex, Devin and opencode install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{"running",
-"socket"},"server":{"configured","url"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
+"socket"},"server":{"configured","url","credential","messaging","warning"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
 "need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
+server.credential is device login, FLOPWIRE_TOKEN, legacy login or none (the
+running agent's when it answers); server.messaging, when set, is why
+messaging is off and the fix; server.warning says FLOPWIRE_TOKEN hides a saved
+device login; server.differs, when set, says this shell's credential is not
+the running agent's, and why.
 A harness that fails is reported with "error"; setup carries on with the
 others, then sets ok false and exits 1. A harness setup cannot manage because
 you are not logged in to it (Devin) is reported with "skipped" instead; it
@@ -185,6 +193,19 @@ func localIndexState(ctx context.Context) setupIndex {
 type setupServer struct {
 	Configured bool   `json:"configured"`
 	URL        string `json:"url,omitempty"`
+	// Credential is the credential's source: "device login",
+	// "FLOPWIRE_TOKEN", "legacy login" or "none" (credentialSource). The
+	// running agent's when it answers (its environment decides), else
+	// this process's.
+	Credential string `json:"credential"`
+	// Messaging, when set, is why messaging is off with this credential,
+	// and the fix.
+	Messaging string `json:"messaging,omitempty"`
+	// Warning: FLOPWIRE_TOKEN hides a saved device login.
+	Warning string `json:"warning,omitempty"`
+	// Differs, when set, says this process's credential is not the
+	// running agent's, and why (credentialDiffers).
+	Differs string `json:"differs,omitempty"`
 }
 
 // harnessReport is one harness's state after setup ran.
@@ -208,6 +229,9 @@ type harnessReport struct {
 	Skipped string `json:"skipped,omitempty"`
 	// HookTrust is Codex's trust state for the plugin's hooks.
 	HookTrust *hookTrustReport `json:"hook_trust,omitempty"`
+	// Note says how setup learned the state it reports, when that limits
+	// the report.
+	Note string `json:"note,omitempty"`
 }
 
 // Setup modes.
@@ -245,6 +269,7 @@ var setupHarnesses = []setupHarness{
 	{name: "claude", apply: setupClaude},
 	{name: "codex", apply: setupCodex},
 	{name: "devin", apply: setupDevin},
+	{name: "opencode", apply: setupOpencode},
 }
 
 func setupMain(ctx context.Context, args []string) error {
@@ -368,15 +393,23 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	}
 	env.binary = &rep.Flopwire
 	rep.Agent.Socket, _ = defaultSocket()
+	var agentCred *agent.Credential
 	if rep.Agent.Socket != "" {
 		c, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
+		resp, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
 		cancel()
 		rep.Agent.Running = err == nil
+		agentCred = resp.Credential
 	}
 	if cfg, err := client.Load(); err == nil {
 		rep.Server = setupServer{Configured: true, URL: cfg.Server}
 	}
+	cred := credentialSource(client.Load, client.LoadFile)
+	if agentCred != nil {
+		rep.Server.Differs = credentialDiffers(cred, *agentCred)
+		cred = *agentCred
+	}
+	rep.Server.Credential, rep.Server.Messaging, rep.Server.Warning = cred.Source, cred.MessagingOff, cred.Warning
 	rep.Index = localIndexState(ctx)
 	if env.mode != setupRemove {
 		if (rep.Index.State == indexMissing || rep.Index.State == indexEmpty) && !rep.Agent.Running {
@@ -446,9 +479,12 @@ const (
 
 // claudeResult is the last stdout line of a `claude plugin … --json` command.
 type claudeResult struct {
-	Outcome       string `json:"outcome"`
-	Message       string `json:"message"`
-	FailureCode   string `json:"failureCode"`
+	Outcome     string `json:"outcome"`
+	Message     string `json:"message"`
+	FailureCode string `json:"failureCode"`
+	// Marketplace is the name `marketplace add` added (2.1.289): the name
+	// the source's marketplace.json declares.
+	Marketplace   string `json:"marketplace"`
 	UpdateOutcome string `json:"updateOutcome"`
 	OldVersion    string `json:"oldVersion"`
 	NewVersion    string `json:"newVersion"`
@@ -673,8 +709,33 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 			if res.Outcome != "ok" {
 				return fail(fmt.Errorf("add the marketplace %s: %s", env.source, res.Message))
 			}
+			name := claudeMarketplace
+			if res.Marketplace != "" {
+				name = res.Marketplace
+			}
+			// existed: a marketplace of that name was configured before the
+			// add, so it is the user's, not one setup created.
+			existed := slices.ContainsFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == name })
+			if existed {
+				r.Done = append(r.Done, "the marketplace "+name+" from "+env.source+" was already present")
+			} else {
+				r.Done = append(r.Done, "added the marketplace "+name+" from "+env.source)
+			}
+			if name != claudeMarketplace {
+				// Not Flopwire's marketplace: install nothing from it. Remove
+				// it only when setup created it; one that was already
+				// configured is the user's and stays.
+				msg := fmt.Sprintf("the marketplace at %s is named %s, not %s, so it is not Flopwire's and setup installed nothing from it", env.source, name, claudeMarketplace)
+				if !existed {
+					res, err := c.result(ctx, append([]string{"plugin", "marketplace", "remove", name, "--json"}, scopeArgs...)...)
+					if err == nil && res.Outcome == "ok" {
+						r.Done = append(r.Done, "removed the marketplace "+name+" again")
+						return fail(errors.New(msg + "; setup removed the marketplace it added"))
+					}
+				}
+				return fail(fmt.Errorf("%s. To remove it, run claude plugin marketplace remove %s", msg, name))
+			}
 			r.Marketplace = env.source
-			r.Done = append(r.Done, "added the marketplace "+claudeMarketplace+" from "+env.source)
 		case foreign:
 			r.Error = fmt.Sprintf("did not install or update %s: the marketplace %s comes from %s, not %s (see warnings)", claudePlugin, claudeMarketplace, mkt.location(), env.source)
 		default:
@@ -860,22 +921,9 @@ func pluginBinaryMismatch(bin *setupBinary, pluginVersion, installPath string) [
 	if bin == nil || bin.Path == "" {
 		return nil
 	}
-	binVersion := bin.Version
-	if binVersion == "" {
-		binVersion = "unknown"
-	}
-	fix := "install a flopwire built from the same commit as the plugin or newer (git pull, then make build in a checkout of github.com/flopwire/flopwire) and put it on PATH in place of " + bin.Path + ", then restart your agent sessions"
 	var warn []string
-	if bin.commands != nil && installPath != "" {
-		var missing []string
-		for _, c := range pluginCommands(installPath) {
-			if !bin.commands[c] {
-				missing = append(missing, "flopwire "+c)
-			}
-		}
-		if len(missing) > 0 {
-			warn = append(warn, fmt.Sprintf("the plugin (version %s) runs %s, which %s (version %s) does not know: its hooks deliver nothing and its tools fail. Fix: %s", pluginVersion, strings.Join(missing, ", "), bin.Path, binVersion, fix))
-		}
+	if installPath != "" {
+		warn = binaryLacks(bin, pluginVersion, pluginCommands(installPath))
 	}
 	switch c, ok := compareSemver(pluginVersion, bin.Version); {
 	case !ok || c == 0:
@@ -885,6 +933,30 @@ func pluginBinaryMismatch(bin *setupBinary, pluginVersion, installPath string) [
 		warn = append(warn, fmt.Sprintf("the plugin is version %s but %s is version %s. Fix: run flopwire setup to update the plugin", pluginVersion, bin.Path, bin.Version))
 	}
 	return warn
+}
+
+// binaryLacks warns when the flopwire on PATH does not know one of cmds,
+// the commands a plugin of pluginVersion runs. It says nothing when the
+// binary's commands are unknown.
+func binaryLacks(bin *setupBinary, pluginVersion string, cmds []string) []string {
+	if bin == nil || bin.Path == "" || bin.commands == nil {
+		return nil
+	}
+	var missing []string
+	for _, c := range cmds {
+		if !bin.commands[c] {
+			missing = append(missing, "flopwire "+c)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	binVersion := bin.Version
+	if binVersion == "" {
+		binVersion = "unknown"
+	}
+	fix := "install a flopwire built from the same commit as the plugin or newer (git pull, then make build in a checkout of github.com/flopwire/flopwire) and put it on PATH in place of " + bin.Path + ", then restart your agent sessions"
+	return []string{fmt.Sprintf("the plugin (version %s) runs %s, which %s (version %s) does not know: its hooks deliver nothing and its tools fail. Fix: %s", pluginVersion, strings.Join(missing, ", "), bin.Path, binVersion, fix)}
 }
 
 // manualHookRe matches a hook that runs flopwire's hook or flush command.
@@ -1068,6 +1140,16 @@ func writeSetupText(w io.Writer, rep setupReport) {
 	} else {
 		b.WriteString("server: none (messages stay on this device)\n")
 	}
+	fmt.Fprintf(&b, "credential: %s\n", rep.Server.Credential)
+	if rep.Server.Messaging != "" {
+		fmt.Fprintf(&b, "messaging: off: %s\n", rep.Server.Messaging)
+	}
+	if rep.Server.Warning != "" {
+		fmt.Fprintf(&b, "warning: %s\n", rep.Server.Warning)
+	}
+	if rep.Server.Differs != "" {
+		fmt.Fprintf(&b, "note: %s\n", rep.Server.Differs)
+	}
 	for _, h := range rep.Harnesses {
 		if !h.Detected {
 			fmt.Fprintf(&b, "%s: not found\n", h.Harness)
@@ -1107,6 +1189,9 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		}
 		if h.Skipped != "" {
 			fmt.Fprintf(&b, "  skipped: %s\n", h.Skipped)
+		}
+		if h.Note != "" {
+			fmt.Fprintf(&b, "  note: %s\n", h.Note)
 		}
 		if len(h.Done) == 0 && h.Error == "" && h.Skipped == "" && rep.Mode != setupCheck {
 			b.WriteString("  done: nothing to change\n")

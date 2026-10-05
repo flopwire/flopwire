@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/vendorcloud"
 )
 
 // Server is the bus routes the device calls; client.Bus implements them.
@@ -55,14 +56,23 @@ type Server interface {
 	Inbox(context.Context, busproto.InboxQuery) (busproto.InboxResponse, error)
 }
 
-// Session is one of the device's sessions as the agent knows it.
+// Session is one of the device's sessions as the agent knows it, or one
+// of its person's vendor cloud sessions (Cloud).
 type Session struct {
 	busproto.PresenceSession
 	// Withheld: the path rules keep the session off the server, so it is
 	// not reported there; only routing on the device sees it.
 	Withheld bool
+	// Unplaced: the path rules cannot judge the session yet (its
+	// transcript has not named its directory: no complete line yet).
+	// Withheld is set too, so nothing about it reaches the server; a
+	// request naming it waits for the decision (PlaceWait).
+	Unplaced bool
 	// LastActive is the transcript's last write.
 	LastActive time.Time
+	// Cloud: a vendor cloud session (cloud.go); Busy means the vendor
+	// reports a turn running.
+	Cloud bool
 }
 
 // Config configures a Bus. Zero fields take defaults.
@@ -72,6 +82,12 @@ type Config struct {
 	// re-login, a re-pin). nil: no server is configured, and the device
 	// routes between its own sessions.
 	Connect func() (Server, string)
+	// NoDevice says why the saved credential cannot use the bus (a login
+	// from before device credentials, a minted FLOPWIRE_TOKEN), with the
+	// fix; "" when it can. While it says so the bus does not poll: the
+	// server would refuse every poll (issue #71). It is asked again when
+	// the credential's key changes. nil: always a device credential.
+	NoDevice func() string
 	// Presence lists the device's live sessions. Known lists the sessions
 	// the device holds (live or not) whose id starts with a prefix, for
 	// addressing without a server. The agent sets both (SetSources).
@@ -89,10 +105,26 @@ type Config struct {
 	// a name every session of the device on it is withheld from. The agent
 	// sets it (SetWithheld); nil checks nothing.
 	RepoWithheld func(ctx context.Context, repo string) (bool, error)
+	// RepoKey resolves an @user send's repo (a path or a name) to the
+	// normalized remote of the repository it names on this device, so
+	// the message is routed by the remote (issue #102); the repo as it is
+	// when the device knows none. A name that fits two repositories is
+	// an error. The agent sets it (SetRepoKey); nil resolves nothing.
+	RepoKey func(ctx context.Context, repo string) (string, error)
+	// Place asks the agent to index and place a session now: a request
+	// names one presence does not list yet, or whose path rules are not
+	// decided yet. The agent sets it (SetPlace); nil asks nothing.
+	Place func(ctx context.Context, session string) error
 
 	// User is the device's person without a server: the name @user
 	// matches and envelopes carry. Default: the OS account name.
 	User string
+
+	// Cloud reaches the person's vendor cloud sessions (cloud.go); nil:
+	// none.
+	Cloud []vendorcloud.Adapter
+	// CloudEvery is how often cloud sessions are listed; default 20s.
+	CloudEvery time.Duration
 
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -157,6 +189,9 @@ func (c *Config) defaults() {
 	if c.MaxAttempts <= 0 {
 		c.MaxAttempts = MaxAttempts
 	}
+	if c.CloudEvery <= 0 {
+		c.CloudEvery = 20 * time.Second
+	}
 }
 
 func localUser() string {
@@ -186,8 +221,9 @@ type Status struct {
 	RetryAt   time.Time `json:"retry_at,omitzero"`
 	LastPoll  time.Time `json:"last_poll,omitzero"` // the last answered poll
 	// Sessions is how many live sessions presence reports (to the server,
-	// or locally).
+	// or locally); Cloud, how many vendor cloud sessions the device lists.
 	Sessions int `json:"sessions"`
+	Cloud    int `json:"cloud,omitempty"`
 	// Pending counts undelivered messages in the local inbox (queued, or
 	// leased to a hook that has not confirmed them); Unacked, delivery and
 	// read receipts and undelivered reports the server has not taken yet.
@@ -212,8 +248,26 @@ type Bus struct {
 	held     []busproto.HeldSender
 	presence presenceCache
 	recheck  chan struct{} // Recheck: re-read the saved credential now
-	ackWake  chan struct{} // a delivery owes a receipt
-	localSeq int64
+	repoll   chan struct{} // Nudge: poll now with a fresh presence
+	// polled is closed when a poll starts, then replaced; reported is
+	// the presence that poll carries (awaitReported).
+	polled   chan struct{}
+	reported []busproto.PresenceSession
+	// nudged is when a Nudge last asked for a poll: at most one a
+	// nudgeEvery, so hooks of a session presence never lists cannot
+	// restart the long poll on every call.
+	nudged time.Time
+	// refusedAfterReport holds, until a time, the senders the server
+	// refused as not on the device although a poll had reported them: a
+	// send from one does not wait for another report (Send).
+	refusedAfterReport map[string]time.Time
+	ackWake            chan struct{} // a delivery owes a receipt
+	pushWake           chan struct{} // a cloud message may be due
+	cloud              map[string]cloudList
+	localSeq           int64
+	// skewLows are the recent poll answers' lower bounds on the clocks'
+	// skew (learnSkew); the poll loop alone uses them.
+	skewLows []time.Duration
 }
 
 // Open opens (creating) the local inbox at path.
@@ -223,7 +277,8 @@ func Open(path string, cfg Config) (*Bus, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bus{cfg: cfg, st: st, log: cfg.Logger, recheck: make(chan struct{}, 1), ackWake: make(chan struct{}, 1)}
+	b := &Bus{cfg: cfg, st: st, log: cfg.Logger, recheck: make(chan struct{}, 1), repoll: make(chan struct{}, 1), polled: make(chan struct{}), ackWake: make(chan struct{}, 1), pushWake: make(chan struct{}, 1),
+		cloud: map[string]cloudList{}}
 	b.status.State = StateConnecting
 	if cfg.Connect == nil {
 		b.status.State = StateLocal
@@ -249,6 +304,22 @@ func (b *Bus) SetWithheld(sessions func(context.Context, string) (string, error)
 	b.cfg.Withheld, b.cfg.RepoWithheld = sessions, repos
 }
 
+// SetPlace installs the agent's request to index and place a session
+// now (Config.Place).
+func (b *Bus) SetPlace(fn func(context.Context, string) error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cfg.Place = fn
+}
+
+// SetRepoKey installs the agent's resolution of an @user send's repo
+// (Config.RepoKey).
+func (b *Bus) SetRepoKey(fn func(context.Context, string) (string, error)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cfg.RepoKey = fn
+}
+
 // Local reports whether the bus routes on the device (no server).
 func (b *Bus) Local() bool { return b.cfg.Connect == nil }
 
@@ -256,16 +327,16 @@ func (b *Bus) Local() bool { return b.cfg.Connect == nil }
 // ends. It returns nil on shutdown. A failing server never stops it: it
 // backs off and retries, and nothing else in the agent waits for it.
 func (b *Bus) Run(ctx context.Context) error {
+	var wg sync.WaitGroup
+	if len(b.cfg.Cloud) > 0 {
+		wg.Go(func() { b.runCloud(ctx) })
+	}
 	if b.Local() {
 		b.runLocal(ctx)
+		wg.Wait()
 		return nil
 	}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		b.runAcks(ctx)
-	}()
+	wg.Go(func() { b.runAcks(ctx) })
 	b.runServer(ctx)
 	wg.Wait()
 	return nil
@@ -432,6 +503,7 @@ func (b *Bus) Status(ctx context.Context) Status {
 	}
 	st.HeldSenders = append([]busproto.HeldSender(nil), b.held...)
 	b.mu.Unlock()
+	st.Cloud = len(b.CloudSessions())
 	if c, err := b.st.counts(ctx, b.cfg.Now()); err == nil {
 		st.Pending, st.Unacked = c.pending, c.owed
 	}

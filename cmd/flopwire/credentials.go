@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -319,39 +320,98 @@ func (t *syncTransport) repin() bool {
 	return true
 }
 
-// credentialStatus is what `flopwire agent status` says about the device
-// credential, from the config: a refused credential, a deadline within
-// CredentialWarnBefore, or nothing to report.
-func credentialStatus(w io.Writer, cfg client.Config, now time.Time) {
+// Credential sources, as setup --check and agent status name them.
+const (
+	credDevice = "device login"
+	credEnv    = client.EnvToken
+	credLegacy = "legacy login"
+	credNone   = "none"
+)
+
+// credentialSource names the credential client.Load gives this process,
+// says why it cannot use the server's message bus (with the fix), and
+// warns when FLOPWIRE_TOKEN hides a saved device login. The precedence
+// is not changed here: FLOPWIRE_TOKEN in the environment wins over the
+// config file (flags > env > file, as gh with GH_TOKEN). A config that
+// cannot be read is none.
+func credentialSource(load, loadFile func() (client.Config, error)) agent.Credential {
+	cc, err := load()
 	switch {
-	case cfg.FromEnv:
-		fmt.Fprintln(w, "credential: minted token from FLOPWIRE_TOKEN (not rotated; mint a new one when it expires)")
-		return
-	case cfg.DeviceID == "":
-		return
+	case err != nil || cc.Token == "":
+		return agent.Credential{Source: credNone}
+	case cc.FromEnv:
+		c := agent.Credential{Source: credEnv, MessagingOff: "FLOPWIRE_TOKEN is a minted token, and messaging needs an enrolled device credential"}
+		if f, ferr := loadFile(); ferr == nil && f.DeviceID != "" {
+			c.Warning = "FLOPWIRE_TOKEN in the environment hides the device login saved for " + f.Server + "; unset FLOPWIRE_TOKEN to use it"
+			c.MessagingOff += ": unset FLOPWIRE_TOKEN to use the saved device login"
+		} else {
+			c.MessagingOff += ": unset FLOPWIRE_TOKEN, then run flopwire login and flopwire enroll"
+		}
+		return c
+	case cc.DeviceID == "":
+		return agent.Credential{Source: credLegacy, MessagingOff: "this login has no device credential, and messaging needs one: run flopwire login, then flopwire enroll"}
+	}
+	return agent.Credential{Source: credDevice}
+}
+
+// credentialDiffers says why this process's credential (shell) is not
+// the running agent's (agentCred), or "" when they match. Both re-read the
+// same config, so only the environment differs: FLOPWIRE_TOKEN set in one
+// of them.
+func credentialDiffers(shell, agentCred agent.Credential) string {
+	if shell.Source == agentCred.Source {
+		return ""
+	}
+	why := "the agent's environment differs from this shell's"
+	switch {
+	case shell.Source == credEnv:
+		why = "FLOPWIRE_TOKEN is set in this shell but not in the agent's environment"
+	case agentCred.Source == credEnv:
+		why = "FLOPWIRE_TOKEN is set in the agent's environment but not in this shell"
+	}
+	return fmt.Sprintf("this shell's credential is %s, the running agent's is %s: %s; the agent's decides uploads and messaging", shell.Source, agentCred.Source, why)
+}
+
+// credentialStatus is what `flopwire agent status` says about the
+// credential: its source, then for a device login a refused credential, a
+// deadline within CredentialWarnBefore, or ok; a messaging: off line when
+// the source cannot use the bus; and the FLOPWIRE_TOKEN warning. cfg is
+// the config the source came from.
+func credentialStatus(w io.Writer, src agent.Credential, cfg client.Config, now time.Time) {
+	line := "credential: " + src.Source
+	switch {
+	case src.Source == credEnv:
+		line += " (a minted token: not rotated; mint a new one when it expires)"
+	case src.Source != credDevice:
 	case cfg.ReloginRequired != "":
-		fmt.Fprintf(w, "credential: re-login required (%s): the server refused this device's credential; uploads stopped. Run flopwire login\n", cfg.ReloginRequired)
-		return
-	}
-	var due []string
-	if d := cfg.CredentialExpiresAt; !d.IsZero() && d.Sub(now) <= domain.CredentialWarnBefore {
-		due = append(due, "interactive re-login due by "+d.Local().Format(time.DateTime))
-	}
-	if d := cfg.IdleExpiresAt; !d.IsZero() && d.Sub(now) <= domain.CredentialWarnBefore {
-		due = append(due, "idle limit reached at "+d.Local().Format(time.DateTime)+" unless the agent reaches the server")
-	}
-	if len(due) > 0 {
-		fmt.Fprintf(w, "credential: warning: %s (flopwire login)\n", strings.Join(due, "; "))
-		return
-	}
-	line := "credential: ok"
-	if !cfg.RotatedAt.IsZero() {
-		line += "; rotated " + cfg.RotatedAt.Local().Format(time.DateTime)
-	}
-	if !cfg.CredentialExpiresAt.IsZero() {
-		line += "; re-login due " + cfg.CredentialExpiresAt.Local().Format(time.DateOnly)
+		line += fmt.Sprintf("; re-login required (%s): the server refused this device's credential; uploads stopped. Run flopwire login", cfg.ReloginRequired)
+	default:
+		var due []string
+		if d := cfg.CredentialExpiresAt; !d.IsZero() && d.Sub(now) <= domain.CredentialWarnBefore {
+			due = append(due, "interactive re-login due by "+d.Local().Format(time.DateTime))
+		}
+		if d := cfg.IdleExpiresAt; !d.IsZero() && d.Sub(now) <= domain.CredentialWarnBefore {
+			due = append(due, "idle limit reached at "+d.Local().Format(time.DateTime)+" unless the agent reaches the server")
+		}
+		if len(due) > 0 {
+			line += fmt.Sprintf("; warning: %s (flopwire login)", strings.Join(due, "; "))
+			break
+		}
+		line += "; ok"
+		if !cfg.RotatedAt.IsZero() {
+			line += "; rotated " + cfg.RotatedAt.Local().Format(time.DateTime)
+		}
+		if !cfg.CredentialExpiresAt.IsZero() {
+			line += "; re-login due " + cfg.CredentialExpiresAt.Local().Format(time.DateOnly)
+		}
 	}
 	fmt.Fprintln(w, line)
+	if src.MessagingOff != "" {
+		fmt.Fprintf(w, "messaging: off: %s\n", src.MessagingOff)
+	}
+	if src.Warning != "" {
+		fmt.Fprintf(w, "warning: %s\n", src.Warning)
+	}
 }
 
 // tokenCmd is `flopwire token mint`: a short-lived scoped token for a

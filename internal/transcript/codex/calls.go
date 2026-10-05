@@ -262,7 +262,9 @@ func (r *run) loadParent() (*parentHistory, error) {
 
 // FindRollout returns the path of the rollout of sessionID under the Codex
 // home that holds childPath (sessions/YYYY/MM/DD or archived_sessions), or
-// "" when there is none.
+// "" when there is none. The name must hold the whole id after the
+// rollout's timestamp (rollout-2006-01-02T15-04-05-ID.jsonl): a tail of
+// an id names no rollout.
 func FindRollout(childPath, sessionID string) string {
 	if sessionID == "" || strings.ContainsAny(sessionID, `*?[\/`) {
 		return ""
@@ -283,8 +285,12 @@ func FindRollout(childPath, sessionID string) string {
 		filepath.Join(home, ArchivedDir, name),
 		filepath.Join(home, ArchivedDir, "*", "*", "*", name),
 	} {
-		if m, _ := fsprobe.Glob(pat); len(m) > 0 {
-			return m[0]
+		m, _ := fsprobe.Glob(pat)
+		for _, p := range m {
+			ts := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "rollout-"), "-"+sessionID+".jsonl")
+			if _, err := time.Parse("2006-01-02T15-04-05", ts); err == nil {
+				return p
+			}
 		}
 	}
 	return ""

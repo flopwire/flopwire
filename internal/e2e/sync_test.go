@@ -15,6 +15,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
@@ -522,7 +523,8 @@ func TestTwoDeviceSync(t *testing.T) {
 		}
 		headMark := fmt.Sprintf("e2e companion head marker %d", nonce)
 		midMark := fmt.Sprintf("deep middle needle %d", nonce)
-		big := headMark + "\n" + noise(150<<10) + midMark + "\n" + noise(150<<10) + "e2e companion tail marker\n"
+		secret := "ghp_" + strings.Repeat("aB3dE5", 6) // synthetic token; never a credential
+		big := headMark + "\n" + secret + "\n" + noise(150<<10) + midMark + "\n" + noise(150<<10) + "e2e companion tail marker\n"
 		bigPath := filepath.Join(trDir, "e2ebig01.txt")
 		writeFile(t, bigPath, big)
 		preview := fmt.Sprintf("<persisted-output>\nOutput too large (%dKB). Full output saved to: %s\n\nPreview (first 2KB):\npreview only text\n</persisted-output>", len(big)>>10, bigPath)
@@ -572,7 +574,15 @@ func TestTwoDeviceSync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != big {
+		wantRaw := make([]byte, len(big))
+		rr := redact.NewReaderAt(strings.NewReader(big), redact.ModeFor(string(transcript.StorageCompanion), bigPath))
+		if n, err := rr.ReadAt(wantRaw, 0); n != len(wantRaw) || err != nil {
+			t.Fatalf("redact companion fixture: n=%d err=%v", n, err)
+		}
+		if strings.Contains(got, secret) || strings.Contains(string(wantRaw), secret) {
+			t.Fatal("synthetic secret survived companion redaction")
+		}
+		if got != string(wantRaw) {
 			t.Fatalf("raw companion: %d bytes, want %d identical", len(got), len(big))
 		}
 		// meta.json reached the server and linked the subagent.
@@ -670,6 +680,10 @@ func (h *harness) consistency(d *device, skip map[string]bool) (string, []string
 		if err != nil {
 			return "", nil, err
 		}
+		content, err := h.expectedContent(path, agent, "")
+		if err != nil {
+			return "", nil, err
+		}
 		for session, want := range all {
 			if skip[session] && d == h.devs[0] {
 				continue
@@ -681,6 +695,13 @@ func (h *harness) consistency(d *device, skip map[string]bool) (string, []string
 				return "", nil, err
 			}
 			if diff := diffKeys(want, got); diff != "" {
+				problems = append(problems, fmt.Sprintf("server %s %s: %s", filepath.Base(path), session, diff))
+			}
+			stored, err := h.serverContent(d.id, string(agent), session)
+			if err != nil {
+				return "", nil, err
+			}
+			if diff := contentDiff(content[session], stored); diff != "" {
 				problems = append(problems, fmt.Sprintf("server %s %s: %s", filepath.Base(path), session, diff))
 			}
 			local, err := d.localKeys(string(agent), session)
@@ -719,6 +740,21 @@ func (h *harness) consistency(d *device, skip map[string]bool) (string, []string
 		}
 		if diff := diffKeys(want, got); diff != "" {
 			problems = append(problems, fmt.Sprintf("devin %s server vs local: %s", sid, diff))
+		}
+		content, err := h.expectedContent(d.devinDB(), transcript.AgentDevin, sid)
+		if err != nil {
+			return "", nil, err
+		}
+		stored, err := h.serverContent(d.id, string(transcript.AgentDevin), sid)
+		if err != nil {
+			return "", nil, err
+		}
+		expected := content[sid]
+		if !placed[sid] {
+			expected = nil
+		}
+		if diff := contentDiff(expected, stored); diff != "" {
+			problems = append(problems, fmt.Sprintf("devin %s: %s", sid, diff))
 		}
 	}
 	return fmt.Sprintf("%d files, %d sessions, %d rows; %d Devin sessions, %d rows", len(files), sessions, rows, len(devinSessions), devinRows), problems, nil

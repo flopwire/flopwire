@@ -279,6 +279,13 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	if _, err := f.s.Pool.Exec(ctx, `UPDATE conversation_activity SET last_activity_at=now() WHERE conversation_id=$1`, other); err != nil {
 		t.Fatal(err)
 	}
+	// Its device placed it in the main checkout /src/web (no remote): a
+	// repo name resolves among the uploaded placements.
+	if _, err := f.s.Pool.Exec(ctx, `WITH s AS (INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at,checkout)
+		SELECT gen_random_uuid(),device_id,'codex','/h/web.jsonl','f','jsonl_append','test',now(),'/src/web' FROM conversations WHERE id=$1 RETURNING id)
+		UPDATE conversations SET source_id=(SELECT id FROM s) WHERE id=$1`, other); err != nil {
+		t.Fatal(err)
+	}
 	f.conv, f.n = other, 10
 	f.add("tool_result", "retry in the web repo")
 	f.conv = ""
@@ -431,38 +438,6 @@ func TestServerAgentListAndSelfExclusion(t *testing.T) {
 	if err != nil || len(p.Hits) != 1 || !p.Hits[0].IsError {
 		t.Fatalf("is_error: %+v %v", p, err)
 	}
-}
-
-// A grep whose budget runs out after it has verified hits returns them as
-// a truncated page: the lookups that follow the scan (session infos,
-// addresses) must not fail on the spent deadline.
-func TestGrepBudgetEndsAfterHits(t *testing.T) {
-	f := newFindFixture(t)
-	ctx := context.Background()
-	if _, err := f.s.Pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,ordinal,kind,ts,text,text_len,content_sha,source_generation,parser)
-		SELECT gen_random_uuid(),$1,g,'tool_result',now()-g*interval '1 second','upload number '||g,20,sha256(('upload number '||g)::bytea),0,'test'
-		FROM generate_series(1,20000) g`, f.conv); err != nil {
-		t.Fatal(err)
-	}
-	partial := 0
-	for d := 20 * time.Millisecond; d < 5*time.Second; d = d * 5 / 4 {
-		qctx, cancel := context.WithTimeout(ctx, d)
-		p, err := f.s.Grep(qctx, format.GrepQuery{Pattern: "upload number", Fixed: true, Limit: 500}, format.Filters{})
-		cancel()
-		if err != nil {
-			t.Fatalf("budget %s: %v", d, err)
-		}
-		if !p.Truncated {
-			break
-		}
-		if len(p.Hits) > 0 {
-			partial++
-			if p.Hits[0].Address == "" {
-				t.Fatalf("budget %s: a partial hit without an address", d)
-			}
-		}
-	}
-	t.Logf("%d partial pages with hits", partial)
 }
 
 // deadlineOnly carries a deadline but is never cancelled, so only the

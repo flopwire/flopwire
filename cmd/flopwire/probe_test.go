@@ -41,6 +41,13 @@ func printed(ids ...string) func(*tapEntry) { return func(e *tapEntry) { e.Print
 func tool(t string) func(*tapEntry)         { return func(e *tapEntry) { e.Tool = t } }
 func agentID(a string) func(*tapEntry)      { return func(e *tapEntry) { e.AgentID = a } }
 
+// seen is a delivery whose transcript holds the message's wrapper with the
+// marker; unseen is one whose transcript holds none.
+var (
+	seen   = delivery{where: "/x/t.jsonl", w: &wrapper{attrs: map[string]string{"id": pID}, body: probeBody(pMarker), closed: true, answered: true}}
+	unseen = delivery{where: "/x/t.jsonl"}
+)
+
 func TestPrintedIDs(t *testing.T) {
 	ctx := "<flopwire-instructions>\nFlopwire messaging…\n</flopwire-instructions>\n\n" +
 		`<flopwire-message id="m1" from="a" intent="inform">x</flopwire-message>` + "\n" +
@@ -194,8 +201,13 @@ func TestDevinNotes(t *testing.T) {
 func TestVerdictPromptSubmit(t *testing.T) {
 	reply := "ID " + pID + " MARKER " + pMarker
 	ok := []tapEntry{at(0, evUserPromptSubmit, printed("mOther", pID)), at(50, "Stop")}
-	if v := verdictPromptSubmit(ok, pSess, pID, pMarker, reply); len(v.fails) != 0 {
+	if v := verdictPromptSubmit(ok, pSess, pID, pMarker, reply, seen); len(v.fails) != 0 {
 		t.Fatalf("pass case failed: %v", v.fails)
+	}
+	// A model that answers instead of quoting does not fail a delivery
+	// the transcript shows (#131).
+	if v := verdictPromptSubmit(ok, pSess, pID, pMarker, "NONE", seen); len(v.fails) != 0 || !strings.Contains(strings.Join(v.facts, ";"), "model did not quote") {
+		t.Fatalf("chatty model: %+v", v)
 	}
 	for name, tc := range map[string]struct {
 		es    []tapEntry
@@ -205,12 +217,16 @@ func TestVerdictPromptSubmit(t *testing.T) {
 		"late hook":   {[]tapEntry{at(0, evUserPromptSubmit), at(10, evPostToolUse, printed(pID))}, reply, "not the session's UserPromptSubmit"},
 		"not printed": {[]tapEntry{at(0, evUserPromptSubmit)}, reply, "no hook printed"},
 		"twice":       {[]tapEntry{at(0, evUserPromptSubmit, printed(pID)), at(10, evPostToolUse, printed(pID))}, reply, "printed 2 times"},
-		"not quoted":  {ok, "NONE", "did not quote"},
 	} {
-		v := verdictPromptSubmit(tc.es, pSess, pID, pMarker, tc.reply)
+		v := verdictPromptSubmit(tc.es, pSess, pID, pMarker, tc.reply, seen)
 		if !strings.Contains(strings.Join(v.fails, ";"), tc.want) {
 			t.Errorf("%s: fails %v, want %q", name, v.fails, tc.want)
 		}
+	}
+	// The model quoting the marker does not pass a message the transcript
+	// does not show in hook context.
+	if v := verdictPromptSubmit(ok, pSess, pID, pMarker, reply, unseen); !strings.Contains(strings.Join(v.fails, ";"), "no hook context in the transcript") {
+		t.Fatalf("quoted, not delivered: %v", v.fails)
 	}
 }
 
@@ -218,9 +234,15 @@ func TestVerdictMidTurn(t *testing.T) {
 	reply := "ID " + pID + " MARKER " + pMarker + " after sleep 8"
 	ok := []tapEntry{at(100, "PreToolUse", tool("Bash")), at(8100, evPostToolUse, tool("Bash"), printed(pID)), at(9000, "PreToolUse", tool("Bash")),
 		at(9100, evPostToolUse, tool("Bash")), at(15000, "Stop")}
-	v := verdictMidTurn(ok, pSess, pID, pMarker, reply, 150)
+	v := verdictMidTurn(ok, pSess, pID, pMarker, reply, 150, seen)
 	if len(v.fails) != 0 || !strings.Contains(strings.Join(v.facts, ";"), "PostToolUse Bash printed") {
 		t.Fatalf("pass case: %+v", v)
+	}
+	if v := verdictMidTurn(ok, pSess, pID, pMarker, "I ran both commands.", 150, seen); len(v.fails) != 0 {
+		t.Fatalf("chatty model: %v", v.fails)
+	}
+	if v := verdictMidTurn(ok, pSess, pID, pMarker, reply, 150, unseen); !strings.Contains(strings.Join(v.fails, ";"), "no hook context in the transcript") {
+		t.Fatalf("quoted, not delivered: %v", v.fails)
 	}
 	for name, tc := range map[string]struct {
 		es   []tapEntry
@@ -232,7 +254,7 @@ func TestVerdictMidTurn(t *testing.T) {
 		"turn never ends": {[]tapEntry{at(8100, evPostToolUse, printed(pID))}, "no Stop after the send"},
 		"never printed":   {[]tapEntry{at(15000, "Stop")}, "printed 0 times"},
 	} {
-		v := verdictMidTurn(tc.es, pSess, pID, pMarker, reply, 150)
+		v := verdictMidTurn(tc.es, pSess, pID, pMarker, reply, 150, seen)
 		if !strings.Contains(strings.Join(v.fails, ";"), tc.want) {
 			t.Errorf("%s: fails %v, want %q", name, v.fails, tc.want)
 		}
@@ -250,7 +272,7 @@ func TestVerdictSubagent(t *testing.T) {
 		at(200, "PreToolUse", tool("Bash"), agentID("a1")), at(6200, evPostToolUse, tool("Bash"), agentID("a1")),
 		at(7000, "SubagentStop", agentID("a1")), at(7100, evPostToolUse, tool("Agent"), printed(pID)), at(9000, "Stop"),
 	}
-	if v := verdictSubagent(claude, pSess, pID, pMarker, reply, boolp(false), "/x/agent-a1.jsonl", nil); len(v.fails) != 0 {
+	if v := verdictSubagent(claude, pSess, pID, pMarker, reply, seen, boolp(false), "/x/agent-a1.jsonl", nil); len(v.fails) != 0 {
 		t.Fatalf("claude pass case: %v", v.fails)
 	}
 	// Devin 3000.11.1: nothing marks the subagent's hooks; the run_subagent
@@ -259,7 +281,7 @@ func TestVerdictSubagent(t *testing.T) {
 		at(0, "PreToolUse", tool("run_subagent")), at(100, "PreToolUse", tool("exec")), at(6100, evPostToolUse, tool("exec")),
 		at(6500, "Stop"), at(7000, evPostToolUse, tool("run_subagent"), printed(pID)),
 	}
-	if v := verdictSubagent(devinOK, pSess, pID, pMarker, reply, boolp(false), "sessions.db", nil); len(v.fails) != 0 {
+	if v := verdictSubagent(devinOK, pSess, pID, pMarker, reply, seen, boolp(false), "sessions.db", nil); len(v.fails) != 0 {
 		t.Fatalf("devin pass case: %v", v.fails)
 	}
 	stolen := slices.Clone(devinOK)
@@ -279,7 +301,7 @@ func TestVerdictSubagent(t *testing.T) {
 		"no subagent":                 {[]tapEntry{at(0, evPostToolUse, printed(pID))}, nil, "no subagent ran"},
 		"printed twice":               {append(slices.Clone(claude), at(9500, evPostToolUse, printed(pID))), boolp(false), "printed 2 times"},
 	} {
-		v := verdictSubagent(tc.es, pSess, pID, pMarker, reply, tc.seen, "/x/agent-a1.jsonl", nil)
+		v := verdictSubagent(tc.es, pSess, pID, pMarker, reply, seen, tc.seen, "/x/agent-a1.jsonl", nil)
 		if !strings.Contains(strings.Join(v.fails, ";"), tc.want) {
 			t.Errorf("%s: fails %v, want %q", name, v.fails, tc.want)
 		}
@@ -308,37 +330,31 @@ func TestVerdictIdleNeedsHookEvidence(t *testing.T) {
 // The Devin subagent case passed ("no subagent transcript file to check")
 // when Devin's store could not be read.
 func TestVerdictSubagentUnreadableTranscript(t *testing.T) {
-	seen, path, err := devinSubagentSeen(filepath.Join(t.TempDir(), "missing", "sessions.db"), "surf-feels", pMarker)
-	if err == nil || seen != nil {
-		t.Fatalf("missing store: %v %v", seen, err)
+	sub, path, err := devinSubagentSeen(filepath.Join(t.TempDir(), "missing", "sessions.db"), "surf-feels", pMarker)
+	if err == nil || sub != nil {
+		t.Fatalf("missing store: %v %v", sub, err)
 	}
 	es := []tapEntry{at(0, "PreToolUse", tool("run_subagent")), at(100, "PreToolUse", tool("exec")),
 		at(7000, evPostToolUse, tool("run_subagent"), printed(pID))}
-	v := verdictSubagent(es, pSess, pID, pMarker, "ID "+pID+" MARKER "+pMarker, seen, path, err)
+	v := verdictSubagent(es, pSess, pID, pMarker, "ID "+pID+" MARKER "+pMarker, seen, sub, path, err)
 	if !strings.Contains(strings.Join(v.fails, ";"), "cannot read the subagent transcript") {
 		t.Fatalf("fails %v", v.fails)
 	}
 }
 
-func TestVerdictFraming(t *testing.T) {
-	good := "Here they are:\nid=" + pID + " from=" + pSender + " intent=request marker=" + pMarker + "\n"
-	if v := verdictFraming(good, pID, pSender, "request", pMarker); len(v.fails) != 0 {
-		t.Fatalf("pass case: %v", v.fails)
-	}
-	// Models format a little differently: quotes, colons, backticks.
-	loose := "- id: `" + pID + "`, from: \"" + pSender + "\", intent: request, marker: " + pMarker + "."
-	if v := verdictFraming(loose, pID, pSender, "request", pMarker); len(v.fails) != 0 {
-		t.Fatalf("loose quoting: %v", v.fails)
-	}
-	for name, tc := range map[string]struct{ reply, want string }{
-		"sender lost":  {"id=" + pID + " from=unknown intent=request marker=" + pMarker, `from: quoted "unknown"`},
-		"intent lost":  {"id=" + pID + " from=" + pSender + " marker=" + pMarker, `intent: quoted ""`},
-		"marker only":  {"I saw " + pMarker, "did not quote the message id"},
-		"wrong intent": {"id=" + pID + " from=" + pSender + " intent=inform marker=" + pMarker, `want "request"`},
+// The model's quote of the wrapper is evidence, never the verdict: loose
+// formats read as a match, a wrong one is reported, neither fails.
+func TestFramingQuote(t *testing.T) {
+	w := framingWant{id: pID, from: pSender, agent: "claude", sender: "own", intent: "request", marker: pMarker, body: probeBody(pMarker)}
+	for reply, want := range map[string]string{
+		"Here they are:\nid=" + pID + " from=" + pSender + " intent=request marker=" + pMarker + "\n": "model quoted id, from, intent and the marker",
+		"- id: `" + pID + "`, from: \"" + pSender + "\", intent: request, marker: " + pMarker + ".":   "model quoted id, from, intent and the marker",
+		"id=" + pID + " from=unknown intent=request marker=" + pMarker:                                `model's quote differs: from="unknown"`,
+		"I saw " + pMarker: "model did not quote the message id",
 	} {
-		v := verdictFraming(tc.reply, pID, pSender, "request", pMarker)
-		if !strings.Contains(strings.Join(v.fails, ";"), tc.want) {
-			t.Errorf("%s: fails %v, want %q", name, v.fails, tc.want)
+		v := verdictFraming(framingTap, pSess, delivery{w: &wrapper{attrs: map[string]string{"id": pID, "from": pSender, "agent": "claude", "sender": "own", "intent": "request"}, body: "\n" + probeBody(pMarker) + "\n", closed: true, answered: true}}, reply, w)
+		if len(v.fails) != 0 || !strings.Contains(strings.Join(v.facts, ";"), want) {
+			t.Errorf("%q: %+v, want fact %q", reply, v, want)
 		}
 	}
 }
@@ -346,15 +362,15 @@ func TestVerdictFraming(t *testing.T) {
 func TestVerdictGuardian(t *testing.T) {
 	reply := "ID " + pID + " MARKER " + pMarker
 	es := []tapEntry{at(0, "PreToolUse", tool("Bash")), at(4000, evPostToolUse, tool("Bash"), printed(pID)), at(6000, "Stop")}
-	v := verdictGuardian(es, pSess, pID, pMarker, reply, 100, 3800)
+	v := verdictGuardian(es, pSess, pID, pMarker, reply, seen, 100, 3800)
 	if len(v.fails) != 0 || !strings.Contains(strings.Join(v.facts, ";"), "hooks during it: none") {
 		t.Fatalf("pass case: %+v", v)
 	}
 	stolen := []tapEntry{at(0, "PreToolUse", tool("Bash")), at(1000, evPostToolUse, tool("Bash"), printed(pID)), at(4000, evPostToolUse, tool("Bash"))}
-	if v := verdictGuardian(stolen, pSess, pID, pMarker, reply, 100, 3800); !strings.Contains(strings.Join(v.fails, ";"), "printed during the review") {
+	if v := verdictGuardian(stolen, pSess, pID, pMarker, reply, seen, 100, 3800); !strings.Contains(strings.Join(v.fails, ";"), "printed during the review") {
 		t.Fatalf("stolen: %v", v.fails)
 	}
-	if v := verdictGuardian(es, pSess, pID, pMarker, reply, 0, 0); !strings.Contains(strings.Join(v.fails, ";"), "no auto-review pass ran") {
+	if v := verdictGuardian(es, pSess, pID, pMarker, reply, seen, 0, 0); !strings.Contains(strings.Join(v.fails, ";"), "no auto-review pass ran") {
 		t.Fatalf("no review: %v", v.fails)
 	}
 }
@@ -371,7 +387,7 @@ func TestParseProbeFlags(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"--model", "haiku"}, // bare model, no single harness
-		{"--harness", "opencode"},
+		{"--harness", "cursor"},
 		{"--case", "wake"},
 		{"--local", "--socket", "/tmp/a.sock"},
 		{"--model", "cursor=x", "--harness", "claude"},
@@ -457,7 +473,7 @@ func TestMirrorDir(t *testing.T) {
 func TestProbeDeliveredOnceAcrossCases(t *testing.T) {
 	reply := "ID " + pID + " MARKER " + pMarker
 	window := []tapEntry{at(0, evUserPromptSubmit, printed(pID)), at(50, "Stop")}
-	r := verdictPromptSubmit(window, pSess, pID, pMarker, reply).result(probeResult{Case: casePromptSubmit, Message: pID, session: pSess})
+	r := verdictPromptSubmit(window, pSess, pID, pMarker, reply, seen).result(probeResult{Case: casePromptSubmit, Message: pID, session: pSess})
 	if !r.Pass {
 		t.Fatalf("window verdict: %s", r.Evidence)
 	}

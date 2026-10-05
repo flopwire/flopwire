@@ -29,7 +29,16 @@ func TestMain(m *testing.M) {
 		os.Exit(fakeCodex(os.Args[1:]))
 	case "devin":
 		os.Exit(fakeDevin(os.Args[1:]))
+	case "opencode":
+		if len(os.Args) > 1 && os.Args[1] == "--version" {
+			fmt.Println("1.18.30")
+			os.Exit(0)
+		}
+		os.Exit(2)
 	}
+	// An agent a test runs never reaches the vendors' cloud sessions with
+	// the developer's own logins.
+	os.Setenv("FLOPWIRE_CLOUD", "off")
 	os.Exit(m.Run())
 }
 
@@ -68,6 +77,9 @@ type fakeClaudeState struct {
 	Garbage map[string]bool   `json:"garbage,omitempty"`
 	// RawList, when set, is what `plugin list --json` prints, verbatim.
 	RawList string `json:"raw_list,omitempty"`
+	// SourceName is the name the added source's marketplace.json declares;
+	// empty is "flopwire".
+	SourceName string `json:"source_name,omitempty"`
 }
 
 // fakeClaude plays `claude plugin …` against the state file and appends
@@ -160,16 +172,22 @@ func fakeClaude(args []string) int {
 		fmt.Println(string(b))
 		return 0
 	case "marketplace add":
-		if slices.ContainsFunc(st.Marketplaces, func(m claudeMarketplaceEntry) bool { return m.Name == "flopwire" }) {
-			return result("marketplace-add", true, "Marketplace 'flopwire' already on disk", nil)
+		// Claude Code 2.1.289 names the marketplace it added in the result.
+		name := st.SourceName
+		if name == "" {
+			name = "flopwire"
 		}
-		m := claudeMarketplaceEntry{Name: "flopwire", Source: "github", Repo: pos[0]}
+		named := map[string]any{"marketplace": name}
+		if slices.ContainsFunc(st.Marketplaces, func(m claudeMarketplaceEntry) bool { return m.Name == name }) {
+			return result("marketplace-add", true, "Marketplace '"+name+"' already on disk", named)
+		}
+		m := claudeMarketplaceEntry{Name: name, Source: "github", Repo: pos[0]}
 		if strings.HasPrefix(pos[0], "/") {
-			m = claudeMarketplaceEntry{Name: "flopwire", Source: "directory", Path: pos[0]}
+			m = claudeMarketplaceEntry{Name: name, Source: "directory", Path: pos[0]}
 		}
 		st.Marketplaces = append(st.Marketplaces, m)
 		save()
-		return result("marketplace-add", true, "Successfully added marketplace: flopwire", nil)
+		return result("marketplace-add", true, "Successfully added marketplace: "+name+" (declared in user settings)", named)
 	case "marketplace update":
 		return result("marketplace-update", true, "Successfully updated marketplace: flopwire", nil)
 	case "marketplace remove":
@@ -394,6 +412,60 @@ func TestSetupInstall(t *testing.T) {
 	if rep.Flopwire.Path == "" {
 		t.Fatalf("flopwire on PATH not reported: %+v", rep.Flopwire)
 	}
+}
+
+// TestSetupSourceWithAnotherMarketplaceName: a --source whose
+// marketplace.json names another marketplace is not Flopwire's. done names
+// the marketplace Claude Code reported, and setup installs nothing from it.
+// setup removes the marketplace only when the add created it.
+func TestSetupSourceWithAnotherMarketplaceName(t *testing.T) {
+	add := "plugin marketplace add "
+	t.Run("created by setup", func(t *testing.T) {
+		f := newSetupFixture(t, true)
+		f.setState(fakeClaudeState{Available: "aaaaaaaaaaaa", SourceName: "notflop"})
+		rep, _, err := f.run()
+		if !errors.Is(err, errReported) || rep.OK {
+			t.Fatalf("want a failed report, got %v ok=%v", err, rep.OK)
+		}
+		h := f.claude(rep)
+		want := []string{"added the marketplace notflop from " + f.repo, "removed the marketplace notflop again"}
+		if !slices.Equal(h.Done, want) {
+			t.Fatalf("done:\n got %q\nwant %q", h.Done, want)
+		}
+		if h.Installed || h.Marketplace != "" || !strings.Contains(h.Error, "named notflop, not flopwire") || !strings.Contains(h.Error, "removed the marketplace it added") {
+			t.Fatalf("report: %+v", h)
+		}
+		wantCalls := []string{add + f.repo + " --json --scope user", "plugin marketplace remove notflop --json --scope user"}
+		if got := mutating(f.calls()); !slices.Equal(got, wantCalls) {
+			t.Fatalf("calls:\n got %q\nwant %q", got, wantCalls)
+		}
+		if st := f.getState(); len(st.Marketplaces) != 0 {
+			t.Fatalf("marketplaces left: %+v", st.Marketplaces)
+		}
+	})
+	t.Run("already configured", func(t *testing.T) {
+		f := newSetupFixture(t, true)
+		mine := claudeMarketplaceEntry{Name: "notflop", Source: "directory", Path: "/somewhere/else"}
+		f.setState(fakeClaudeState{Available: "aaaaaaaaaaaa", SourceName: "notflop", Marketplaces: []claudeMarketplaceEntry{mine}})
+		rep, _, err := f.run()
+		if !errors.Is(err, errReported) || rep.OK {
+			t.Fatalf("want a failed report, got %v ok=%v", err, rep.OK)
+		}
+		h := f.claude(rep)
+		want := []string{"the marketplace notflop from " + f.repo + " was already present"}
+		if !slices.Equal(h.Done, want) {
+			t.Fatalf("done:\n got %q\nwant %q", h.Done, want)
+		}
+		if h.Installed || !strings.Contains(h.Error, "named notflop, not flopwire") || !strings.Contains(h.Error, "claude plugin marketplace remove notflop") {
+			t.Fatalf("report: %+v", h)
+		}
+		if got := mutating(f.calls()); !slices.Equal(got, []string{add + f.repo + " --json --scope user"}) {
+			t.Fatalf("calls: %q", got)
+		}
+		if st := f.getState(); !slices.Equal(st.Marketplaces, []claudeMarketplaceEntry{mine}) {
+			t.Fatalf("the user's marketplace changed: %+v", st.Marketplaces)
+		}
+	})
 }
 
 func TestSetupGitHubSourceIsSparse(t *testing.T) {
@@ -1081,5 +1153,22 @@ func TestCompareSemver(t *testing.T) {
 		if cmp, ok := compareSemver(c.a, c.b); cmp != c.cmp || ok != c.ok {
 			t.Errorf("compareSemver(%q, %q) = %d, %v; want %d, %v", c.a, c.b, cmp, ok, c.cmp, c.ok)
 		}
+	}
+}
+
+// TestClaudeMarketplaceAddResult: Claude Code 2.1.289's `marketplace add
+// --json` names the marketplace it added (the name the source declares),
+// which setup reports in done.
+func TestClaudeMarketplaceAddResult(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "claude-marketplace-add-2.1.289.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r claudeResult
+	if err := json.Unmarshal(lastJSONLine(raw), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Outcome != "ok" || r.Marketplace != "notflop" {
+		t.Fatalf("decoded %+v", r)
 	}
 }

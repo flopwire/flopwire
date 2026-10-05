@@ -68,6 +68,12 @@ Revoking takes effect at once. The sender's undelivered messages are held
 again. Their next messages are held until you accept them again. A
 message that a session already received stays with that session.
 
+A device can take a message just before the revoke reaches the server.
+The hook can then still print that message into the session once. The
+server rejects its delivery receipt, so the sender's inbox shows the
+message as held, and then as expired. Flopwire accepts this race and will
+not close it (#70).
+
 To revoke in the web console:
 
 1. Open **Messaging**.
@@ -102,7 +108,7 @@ shows the time, for example `read 2026-10-02 14:03Z`.
 | Claude Code | A `hook_additional_context` attachment | Yes |
 | Codex | A developer message of kind `hooks.additional_context` | Yes |
 | Devin CLI | A `system` message that starts with the hook's output | Yes |
-| opencode | Not kept | No. Messages stay `delivered`. |
+| opencode | A text part with `metadata.flopwire` that the plugin stored ([opencode.md](opencode.md)) | Yes |
 
 A message stays `delivered` in these cases:
 
@@ -131,6 +137,22 @@ delivered.
 A message sent to a session that `peers` no longer lists is not marked
 `undelivered`. Its receipt says `only_if_resumed`: it waits until that
 session resumes, or until it expires after 24 hours.
+
+## How long messages are kept
+
+The server keeps a message for 7 days after it expires, which is about 8
+days after it was sent. Then it deletes the message and its audit rows.
+The message is then gone from `flopwire inbox`, for the sender and for
+the recipient. The server administrator can change the 7 days; see
+[Set message-bus retention](runbook.md#set-message-bus-retention). A
+message that still waits for delivery is never deleted before it expires.
+
+When the server refuses a send, the sender's inbox shows the refusal.
+Repeated refusals of one session with the same reason, to the same
+recipient and in the same thread, within one hour show as one entry with
+a count, for example
+`refused (duplicate, 12 attempts)`. The entry keeps the text of the first
+attempt. Each attempt still counts toward the hourly send limits.
 
 ## Fix errors
 

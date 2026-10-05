@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -26,12 +27,16 @@ import (
 // message came.
 type store struct {
 	db *sql.DB
+	// skew is the server's clock less the device's (ns), from the recent
+	// poll answers (learnSkew): a server message's expiry is stored on the
+	// device's clock (upsertServer).
+	skew atomic.Int64
 }
 
 // schemaVersion is the inbox's PRAGMA user_version. An inbox with another
 // version is from an earlier build (pre-release: no migration) and is
 // recreated empty: messages from a server come back with the next poll.
-const schemaVersion = 4
+const schemaVersion = 5
 
 const schema = `
 CREATE TABLE IF NOT EXISTS devbus_messages (
@@ -72,6 +77,7 @@ CREATE INDEX IF NOT EXISTS devbus_ack ON devbus_messages (ack) WHERE ack IN ('ow
 CREATE INDEX IF NOT EXISTS devbus_read_ack ON devbus_messages (read_ack, read_at, id) WHERE read_ack = 'owed';
 CREATE INDEX IF NOT EXISTS devbus_lease ON devbus_messages (lease_until) WHERE state = 'leased';
 CREATE INDEX IF NOT EXISTS devbus_from ON devbus_messages (from_session, created_at);
+CREATE INDEX IF NOT EXISTS devbus_created ON devbus_messages (origin, created_at);
 CREATE INDEX IF NOT EXISTS devbus_thread ON devbus_messages (thread_id, created_at);
 CREATE INDEX IF NOT EXISTS devbus_expires ON devbus_messages (expires_at);
 -- The device's sessions as the bus tracks them (Bus.Observe, End,
@@ -367,7 +373,7 @@ func (s *store) reconcile(ctx context.Context, set []busproto.Envelope, keep []s
 			return err
 		}
 		for _, e := range set {
-			if err := upsertServer(ctx, tx, e); err != nil {
+			if err := s.upsertServer(ctx, tx, e); err != nil {
 				return err
 			}
 		}
@@ -391,7 +397,7 @@ func (s *store) has(ctx context.Context, id string) (bool, error) {
 // addClaimed stores an @user message this device claimed for one of its
 // sessions.
 func (s *store) addClaimed(ctx context.Context, e busproto.Envelope) error {
-	return upsertServer(ctx, s.db, e)
+	return s.upsertServer(ctx, s.db, e)
 }
 
 type execer interface {
@@ -401,8 +407,10 @@ type execer interface {
 // upsertServer adds a message from the server as queued, or marks one the
 // inbox holds as listed. A delivered (or undelivered) message listed again
 // was never acknowledged (or reported) as far as the server knows: its ack
-// (or report) is owed again.
-func upsertServer(ctx context.Context, x execer, e busproto.Envelope) error {
+// (or report) is owed again. Its expires_at is the server's expiry on the
+// device's clock (skew), so every check against the device's now holds
+// it as long as the server does; each listing refreshes it.
+func (s *store) upsertServer(ctx context.Context, x execer, e busproto.Envelope) error {
 	raw, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -413,7 +421,7 @@ func upsertServer(ctx context.Context, x execer, e busproto.Envelope) error {
 			expires_at=excluded.expires_at, ack=CASE WHEN state='delivered' THEN 'owed' WHEN state='undelivered' THEN 'report' ELSE ack END,
 			read_ack=CASE WHEN state='delivered' AND read_at IS NOT NULL THEN 'owed' ELSE read_ack END
 		WHERE origin='server'`,
-		e.ID, e.Seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, string(raw), ms(e.Sent), ms(e.ExpiresAt))
+		e.ID, e.Seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, string(raw), ms(e.Sent), ms(e.ExpiresAt.Add(-time.Duration(s.skew.Load()))))
 	return err
 }
 

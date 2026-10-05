@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -91,5 +93,25 @@ func TestBusConnectFollowsARotationInFlight(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// The bus is not polled with a credential the server refuses for it: a
+// minted FLOPWIRE_TOKEN or a login without a device id (issue #71).
+func TestBusNoDevice(t *testing.T) {
+	noFile := func() (client.Config, error) { return client.Config{}, os.ErrNotExist }
+	for _, c := range []struct {
+		cc   client.Config
+		want string
+	}{
+		{client.Config{Server: "https://x.test", Token: "t", DeviceID: "d1"}, ""},
+		{client.Config{Server: "https://x.test", Token: "t"}, "this login has no device credential, and messaging needs one: run flopwire login, then flopwire enroll"},
+		{client.Config{Server: "https://x.test", Token: "t", FromEnv: true}, "unset FLOPWIRE_TOKEN, then run flopwire login and flopwire enroll"},
+		{client.Config{}, ""},
+	} {
+		got := busNoDevice(func() (client.Config, error) { return c.cc, nil }, noFile)()
+		if c.want == "" && got != "" || !strings.Contains(got, c.want) {
+			t.Errorf("%+v: %q, want %q", c.cc, got, c.want)
+		}
 	}
 }

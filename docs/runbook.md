@@ -142,7 +142,7 @@ operating-system file lock serializes concurrent local credential changes.
 
 ## Respond to "re-login required"
 
-`flopwire agent status` shows `credential: re-login required (REASON)` when
+`flopwire agent status` shows `credential: device login; re-login required (REASON)` when
 the server refused the device credential. The agent stops uploads and
 continues to index locally. Reasons:
 
@@ -347,6 +347,40 @@ its raw bytes; only the deleted conversation's rows go.
 A separate reconciler deletes chunk objects whose upload never committed a
 manifest reference, with exponential backoff while object storage is down.
 
+## Set message-bus retention
+
+The server deletes old message-bus messages and their audit rows. The
+sweep runs every minute. It deletes a message when all of these are true:
+
+- The message is `delivered`, `read`, `expired`, `refused` or
+  `undelivered`.
+- Its 24-hour expiry is more than the retention in the past.
+
+The default retention is 7 days. A message is therefore kept for about 8
+days after it is sent.
+
+The sweep never deletes a `queued`, `held` or `claimed` message. It marks
+such a message `expired` at its expiry first. The sweep also deletes the
+message's `bus.send` and `bus.claim` audit rows, and the `bus.poll`,
+`bus.deliver` and `bus.read` rows that are older than the retention plus
+one day. Other audit rows stay.
+
+One sweep deletes at most 10,000 messages. A larger backlog continues in
+the next sweeps.
+
+To change the retention:
+
+1. Set `FLOPWIRE_BUS_RETENTION` in `.env`. Use a duration such as `168h`,
+   or days such as `30d`. The minimum is `1h`.
+2. Restart the server.
+3. Find the `message bus retention` line in the server log. Make sure that
+   it shows the new value.
+
+The server does not start when the value is not valid.
+
+A deleted message is gone from `flopwire inbox` for the sender and the
+recipient. A late receipt for it is rejected.
+
 ## Upgrade
 
 1. Create a coordinated backup with `--encrypted-destination`.
@@ -362,6 +396,11 @@ requests in flight to finish. The `flopwire` service in `compose.yaml` sets
 `stop_grace_period: 15s` so that Docker does not kill the server first. If you
 run the server under another supervisor, give it a stop timeout longer than
 10 seconds.
+
+Run the server as one process. A message wakes a waiting poll only in the
+process that took the send. With two or more processes, a device on another
+process sees the message only at its next poll. Before you run more than one
+process, replace the in-process wake-up with Postgres `LISTEN/NOTIFY`.
 
 Database migrations are forward-only and run in one transaction at startup.
 Before the first release, migration files are edited in place, so the server
