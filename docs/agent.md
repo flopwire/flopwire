@@ -1189,6 +1189,14 @@ again after a few seconds. `flopwire send` retries once by itself.
   that `peers` makes. A session that a `devin acp` process deleted, or a
   lock whose pid a later `devin` reuses, reads live there until that
   process exits. Messages are not affected: they follow `peers`.
+- On Linux, the agent computes a process's start from the boot time in
+  `/proc/stat`, and the boot time moves when the wall clock steps. A
+  forward step of more than 2 seconds (for example, a VM or WSL resume
+  that resyncs the clock) makes a running Claude Code, Devin or opencode
+  process look as if it started after the file that names it. Its
+  sessions then end, and they read as ended until that process exits.
+  Restart the harness to resume them. Codex sessions are not affected:
+  their writer lock does not use the start time.
 
 ## How the agent finds changes
 
