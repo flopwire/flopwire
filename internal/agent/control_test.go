@@ -509,3 +509,70 @@ func TestControlPendingDuringPlacementWait(t *testing.T) {
 		t.Fatalf("send from a session never indexed: %+v", r)
 	}
 }
+
+// A status whose client hangs up stops its work (the index scan) within a
+// tick, instead of running on and holding a read connection.
+func TestStatusContextEndsWhenClientLeaves(t *testing.T) {
+	sock := filepath.Join(shortTemp(t), "s.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	client, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	ctx, stop := untilClientLeaves(t.Context(), server)
+	defer stop()
+	select {
+	case <-ctx.Done():
+		t.Fatal("cancelled while the client waits")
+	case <-time.After(50 * time.Millisecond):
+	}
+	client.Close()
+	select {
+	case <-ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("the client left and the status context lives on")
+	}
+}
+
+// The status op itself runs under that context: a client that closes the
+// socket mid-status cancels the work serveConn does for it.
+func TestStatusRequestCancelledWhenClientLeaves(t *testing.T) {
+	f := newFixture(t, "-")
+	runCtx, cancel := context.WithCancel(ctx)
+	sock := filepath.Join(shortTemp(t), "a.sock")
+	done := make(chan error, 1)
+	go func() { done <- f.a.Serve(runCtx, sock) }()
+	defer func() { cancel(); <-done }()
+	waitFor(t, func() bool { _, err := Call(ctx, sock, Request{Op: "ping"}); return err == nil })
+	entered, ended := make(chan struct{}), make(chan bool, 1)
+	testHookStatus = func(ctx context.Context) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			ended <- true
+		case <-time.After(2 * time.Second):
+			ended <- false
+		}
+	}
+	defer func() { testHookStatus = nil }()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(Request{Op: "status"})
+	c.Write(append(b, '\n'))
+	<-entered
+	c.Close()
+	if !<-ended {
+		t.Fatal("the client closed and its status kept running")
+	}
+}

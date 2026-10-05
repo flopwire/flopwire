@@ -2,6 +2,8 @@ package localindex
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
 	"strconv"
 
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -10,7 +12,14 @@ import (
 // ExtractionSummary aggregates counters in SQLite, without loading locator samples.
 func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSummary, error) {
 	out := &transcript.ExtractionSummary{Counts: map[transcript.DiagnosticCode]uint64{}, Affected: []transcript.SourceReference{}}
-	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+	// The read pool, not the writer (readSources): the summary scans every
+	// source, and the agent's status answer runs it. On the writer it waited
+	// behind every queued batch and held up hook flushes while it ran. A
+	// summary that misses a batch the writer has not committed yet is fine.
+	// One read transaction keeps its three statements on one snapshot: a
+	// commit between them would make the totals disagree with the counts
+	// and the affected list.
+	summarize := func(q dbtx) error {
 		// Newest identity at each device/path is current; replaced sources remain history.
 		const current = `WITH current AS (SELECT s.* FROM sources s WHERE s.agent IN ('claude','codex') AND s.storage_kind='jsonl_append' AND NOT EXISTS (SELECT 1 FROM sources n WHERE n.device_id=s.device_id AND n.path=s.path AND n.id>s.id)) `
 		if err := q.QueryRowContext(ctx, current+`SELECT count(extraction_report),count(*)-count(extraction_report),coalesce(sum(json_array_length(extraction_report,'$.report.issues')>0),0),coalesce(sum(EXISTS(SELECT 1 FROM json_each(extraction_report,'$.report.issues') WHERE json_extract(value,'$.code')<>'unknown_record_type')),0),coalesce(sum(EXISTS(SELECT 1 FROM json_each(extraction_report,'$.report.issues') WHERE json_extract(value,'$.code')='unknown_record_type')),0) FROM current`).Scan(&out.AssessedSources, &out.UnassessedSources, &out.AffectedSources, &out.WarningSources, &out.InfoSources); err != nil {
@@ -47,9 +56,39 @@ func (s *Store) ExtractionSummary(ctx context.Context) (*transcript.ExtractionSu
 			out.Affected = append(out.Affected, ref)
 		}
 		return rows.Err()
-	})
+	}
+	// Not BeginTx: the pool's DSN asks for BEGIN IMMEDIATE, which a
+	// query_only connection refuses. A deferred BEGIN takes the snapshot at
+	// the first read and holds it until the ROLLBACK.
+	// One scan at a time, waited for without a read connection.
+	select {
+	case s.summarySem <- struct{}{}:
+	case <-ctx.Done():
+		return out, ctx.Err()
+	}
+	defer func() { <-s.summarySem }()
+	conn, err := s.rdb.Conn(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+		return out, err
+	}
+	if testHookSummaryScan != nil {
+		testHookSummaryScan(ctx)
+	}
+	err = summarize(conn)
+	if _, rerr := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); rerr != nil {
+		// Never hand the pool a connection still inside a transaction.
+		conn.Raw(func(any) error { return driver.ErrBadConn })
+		err = errors.Join(err, rerr)
+	}
 	return out, err
 }
+
+// testHookSummaryScan runs inside a summary scan, on its read connection.
+var testHookSummaryScan func(context.Context)
 
 func (s *Store) SourceDiagnostics(ctx context.Context, sourceID string) (*transcript.SourceDiagnostics, error) {
 	id, err := strconv.ParseInt(sourceID, 10, 64)

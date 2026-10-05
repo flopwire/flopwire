@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -1240,5 +1241,43 @@ func TestClaudeMarketplaceAddResult(t *testing.T) {
 	}
 	if r.Outcome != "ok" || r.Marketplace != "notflop" {
 		t.Fatalf("decoded %+v", r)
+	}
+}
+
+// An agent busy enough that its status answer takes seconds (the index
+// summary queued behind a long write) still answers ping at once: setup
+// --check says it runs, not "not running".
+func TestSetupCheckBusyAgentRuns(t *testing.T) {
+	fx := newSetupFixture(t, false)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(shortSockDir(t), "config.json"))
+	release := make(chan struct{})
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Op == "status" {
+			<-release
+		}
+		return agent.Response{OK: true}
+	})
+	t.Cleanup(func() { close(release) })
+	t.Setenv("FLOPWIRE_SOCKET", fa.sock)
+	defer func(d time.Duration) { setupStatusBudget = d }(setupStatusBudget)
+	setupStatusBudget = 50 * time.Millisecond
+	rep, _, err := fx.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Agent.Running {
+		t.Fatalf("a busy agent reads as not running: %+v", rep.Agent)
+	}
+	// The credential shown is this shell's, not the agent's: the report
+	// must say the agent's is unknown rather than pass one off as the other.
+	if !strings.Contains(rep.Agent.Note, "credential is unknown") {
+		t.Fatalf("no note that the agent's credential is unknown: %+v", rep.Agent)
+	}
+	_, out, err := fx.run("--check", "--text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "agent: running\n  note: ") || !strings.Contains(out, "credential is unknown") {
+		t.Fatalf("text report hides the unknown agent credential:\n%s", out)
 	}
 }
