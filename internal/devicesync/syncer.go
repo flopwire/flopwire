@@ -284,7 +284,9 @@ type Export struct {
 // new generation): the function must then return the whole export. With
 // prev it may return an append; when the syncer cannot use the append
 // (the generation it extends ended, or the provisional tail is gone) it
-// asks again with nil.
+// asks again with nil. An append must end a line, like the export it
+// extends: the syncer redacts it on its own, which is the whole export's
+// redaction only from a line start.
 type ExportFunc func(ctx context.Context, prev []byte) (Export, error)
 
 // SyncExportFunc syncs an export produced by fn. An exporter that appends
@@ -805,6 +807,12 @@ func (e *exportRead) watermark() *transcript.Watermark {
 // readExport asks fn for the source's export: an append to the current
 // generation when the saved state, the generation and its spooled tail
 // allow one, else the whole export.
+//
+// An append is redacted on its own, after the already redacted tail, so it
+// must start a line of a line-redacted source: otherwise a secret across
+// the boundary would be split between two redactions and missed. A state
+// is therefore kept only while the captured bytes end a line (lineEnd),
+// and an append that does not end a line is not used.
 func (s *Syncer) readExport(ctx context.Context, src *sourceRow, fn ExportFunc) (*exportRead, error) {
 	cur, err := s.store.gen(ctx, src.ID, src.Gen)
 	if err != nil {
@@ -819,7 +827,7 @@ func (s *Syncer) readExport(ctx context.Context, src *sourceRow, fn ExportFunc) 
 		if !e.Append {
 			return wholeExport(src, e), nil
 		}
-		if tail, ok := s.exportTail(src, cur); ok {
+		if tail, ok := s.exportTail(src, cur); ok && lineEnd(e.Data) {
 			base := src.Watermark.Offset
 			ex := &exportRead{size: base + int64(len(e.Data)), state: e.State, appended: true, data: e.Data, base: base, tail: tail,
 				change: transcript.Change{Decision: transcript.Append}}
@@ -845,8 +853,14 @@ func wholeExport(src *sourceRow, e Export) *exportRead {
 	if e.Data == nil {
 		e.Data = []byte{}
 	}
+	if redact.ModeFor(string(src.Spec.StorageKind), src.Spec.Path) != redact.Lines || !lineEnd(e.Data) {
+		e.State = nil // no append may follow (readExport)
+	}
 	return &exportRead{r: bytes.NewReader(e.Data), size: int64(len(e.Data)), change: decideExport(src.Watermark, e.Data), state: e.State, data: e.Data}
 }
+
+// lineEnd reports whether b is empty or ends a line.
+func lineEnd(b []byte) bool { return len(b) == 0 || b[len(b)-1] == '\n' }
 
 // exportTail returns the redacted bytes of the generation's provisional
 // tail from the spool (keepTail keeps an export's after it is

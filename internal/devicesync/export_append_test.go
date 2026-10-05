@@ -106,3 +106,33 @@ func TestAppendingExport(t *testing.T) {
 	sync("append to generation 1", add(jsonlLines(45, 2, 150)))
 	e.requireServerHas(sp.Path, "", 1, redacted())
 }
+
+// An append redacts on its own only from a line start. An exporter whose
+// append ends inside a line (here a token split across two appends) must
+// still have the token redacted on the server, as a whole capture would.
+func TestAppendingExportSplitLineRedacted(t *testing.T) {
+	e := newEnv(t, Config{SealAfter: -1}, 4<<20)
+	ctx := context.Background()
+	sp := SourceSpec{Path: "devin:sessions.db#split", Agent: transcript.AgentDevin, StorageKind: transcript.StorageSQLite, Parser: "devin-export@2", Export: true}
+	g := &growingExport{log: jsonlLines(47, 20, 150)}
+	token := "ghp_" + "0123456789abcdefghijABCDEFGHIJ012345"
+	line := []byte(`{"t":"node","text":"token ` + token + ` here"}` + "\n")
+	cut := bytes.Index(line, []byte(token)) + 10
+	for _, part := range [][]byte{nil, line[:cut], line[cut:]} {
+		g.log = append(g.log, part...)
+		if err := e.sy.SyncExportFunc(ctx, sp, g.fn); err != nil {
+			t.Fatalf("%v\n%s", err, e.logs)
+		}
+	}
+	src, err := e.store.source(ctx, sp.Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.srv.Reconstruct(sp.Path, "", src.Gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(got, []byte(token)) {
+		t.Fatalf("a token split across two appends reached the server unredacted")
+	}
+}
