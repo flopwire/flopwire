@@ -143,6 +143,9 @@ func pathBinary(ctx context.Context, env *setupEnv, path string) setupBinary {
 type setupAgent struct {
 	Running bool   `json:"running"`
 	Socket  string `json:"socket"`
+	// Note, when set, says what this check could not learn from a running
+	// agent: a status that did not answer leaves its credential unknown.
+	Note string `json:"note,omitempty"`
 }
 
 // setupIndex reports the local index, including when shared search is selected.
@@ -410,9 +413,16 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 		rep.Agent.Running = err == nil
 		if rep.Agent.Running {
 			c, cancel := context.WithTimeout(ctx, setupStatusBudget)
-			resp, _ := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
+			resp, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
 			cancel()
 			agentCred = resp.Credential
+			if agentCred == nil {
+				why := "did not answer status"
+				if err != nil {
+					why += ": " + err.Error()
+				}
+				rep.Agent.Note = fmt.Sprintf("the agent %s, so its credential is unknown; the credential below is this shell's", why)
+			}
 		}
 	}
 	if cfg, err := client.Load(); err == nil {
@@ -1150,6 +1160,9 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		b.WriteString("agent: running\n")
 	} else {
 		b.WriteString("agent: not running\n")
+	}
+	if rep.Agent.Note != "" {
+		fmt.Fprintf(&b, "  note: %s\n", rep.Agent.Note)
 	}
 	switch rep.Index.State {
 	case indexMissing:

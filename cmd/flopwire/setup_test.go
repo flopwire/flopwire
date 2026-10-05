@@ -1268,4 +1268,16 @@ func TestSetupCheckBusyAgentRuns(t *testing.T) {
 	if !rep.Agent.Running {
 		t.Fatalf("a busy agent reads as not running: %+v", rep.Agent)
 	}
+	// The credential shown is this shell's, not the agent's: the report
+	// must say the agent's is unknown rather than pass one off as the other.
+	if !strings.Contains(rep.Agent.Note, "credential is unknown") {
+		t.Fatalf("no note that the agent's credential is unknown: %+v", rep.Agent)
+	}
+	_, out, err := fx.run("--check", "--text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "agent: running\n  note: ") || !strings.Contains(out, "credential is unknown") {
+		t.Fatalf("text report hides the unknown agent credential:\n%s", out)
+	}
 }
