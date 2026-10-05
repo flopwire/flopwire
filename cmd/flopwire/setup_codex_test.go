@@ -55,13 +55,15 @@ const codexHashCapturedVersion = "0.160.0"
 // codex0160HookHashes are the hashes codex 0.160.0's hooks/list gave the
 // plugin's hooks (currentHash), captured live from a scratch CODEX_HOME
 // with plugins/codex/flopwire/hooks/hooks.json as of this commit. Codex
-// writes them to config.toml as trusted_hash when you trust a hook.
+// writes them to config.toml as trusted_hash when you trust a hook. Codex
+// hashes the command as written, ${PLUGIN_ROOT} and all: two CODEX_HOMEs
+// gave the same hashes, though hooks/list shows the expanded command.
 var codex0160HookHashes = map[string]string{
-	"postToolUse":      "sha256:3d4deac7e6068391f18636c547475ec237763fe3f0f602c7ea54b778e094a2d7",
-	"sessionStart":     "sha256:e8fe555d794ce3d1b8333f0e12033db0ac10536b59fd0aedead0964d81ca08e3",
-	"sessionEnd":       "sha256:abb24f1d1cf8dba2e673141d2bd7672457199b468a753f092c17309acf1bb176",
-	"userPromptSubmit": "sha256:77289e39427cb5248871c51f4560862fc5c7dd46fd67b62afd65414c0efa8776",
-	"stop":             "sha256:8359d1f55bef687b7626f2f28229462c397ace9b1f35a2595a2d516f4e38191a",
+	"postToolUse":      "sha256:db6b4f710700b98a6fe926dd3776b13b569f4c72b9a2b206c17ca9fe6fa51b9b",
+	"sessionStart":     "sha256:c66bfa676b61b3fe04b1558e201fcfa15716309115bc282c3604686d8f712cef",
+	"sessionEnd":       "sha256:81e9bdd36d33c5fbbafeb8a26a08f21c05b6eed99bddde0330434f102c4cc680",
+	"userPromptSubmit": "sha256:7718dc9a28bfffd9a768efd3bc8115a7dec35a70ff9f9bd6d13403e7816e4fd0",
+	"stop":             "sha256:5299facb8432ce9539ce26b248819c821b6a1ed9636f35bbeba15408deb99fe4",
 }
 
 // writeFakeCodexHome writes what Codex keeps on disk for st: config.toml
@@ -109,7 +111,7 @@ func writeFakeCodexHome(st fakeCodexState) error {
 		return nil
 	}
 	cache := filepath.Join(home, "plugins", "cache", "flopwire", "flopwire", "local")
-	for _, f := range []string{"hooks/hooks.json", ".codex-plugin/plugin.json"} {
+	for _, f := range []string{"hooks/hooks.json", ".codex-plugin/plugin.json", "bin/flopwire-hook"} {
 		raw, err := os.ReadFile(filepath.Join(src, f))
 		if err != nil {
 			return err
@@ -117,7 +119,7 @@ func writeFakeCodexHome(st fakeCodexState) error {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(cache, f)), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(cache, f), raw, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(cache, f), raw, 0o755); err != nil {
 			return err
 		}
 	}
@@ -458,6 +460,15 @@ func TestSetupCodexInstall(t *testing.T) {
 		if strings.Contains(call, "config/batchWrite") || strings.Contains(call, "config/value/write") {
 			t.Fatalf("setup wrote Codex config: %q", call)
 		}
+	}
+	// The hooks run the binary setup recorded, found by the cached
+	// plugin's shim in a login shell, as Codex runs hooks.
+	self, err := selfPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hb := h.HookBinary; hb == nil || hb.Path != self || hb.Via != "recorded path" || hb.Shim != filepath.Join(c.home, "plugins", "cache", "flopwire", "flopwire", "local", "bin", "flopwire-hook") || !strings.Contains(hb.Shell, " -lc") {
+		t.Fatalf("hook binary: %+v", hb)
 	}
 }
 

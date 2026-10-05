@@ -2,19 +2,19 @@
   "description": "flopwire hook: prints the standing instruction and pending messages into the session, tells the device agent when the session ends, and asks it to index the transcript",
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook\" hook", "timeout": 5 }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook\" hook", "timeout": 5 }] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }", "timeout": 5 }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook\" hook", "timeout": 5 }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook\" hook", "timeout": 5 }] }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "/bin/sh \"${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook\" hook", "timeout": 5 }] }
     ]
   }
 }

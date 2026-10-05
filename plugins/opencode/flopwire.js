@@ -29,16 +29,42 @@
 //   - Tells the device agent when a turn starts and ends, and sets
 //     FLOPWIRE_SESSION_ID and FLOPWIRE_AGENT for shell commands.
 //
-// FLOPWIRE_BIN (the flopwire binary), FLOPWIRE_HOOK_ARGS (a JSON array
-// replacing ["hook"]) and FLOPWIRE_SOCKET (the agent's control socket)
-// exist for `flopwire probe`.
+// FLOPWIRE_BIN (the flopwire binary, skipping the search),
+// FLOPWIRE_HOOK_ARGS (a JSON array replacing ["hook"]) and FLOPWIRE_SOCKET
+// (the agent's control socket) exist for `flopwire probe`.
 
 import { tool } from "@opencode-ai/plugin"
 import { spawn } from "node:child_process"
-import { appendFileSync, mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { accessSync, appendFileSync, constants, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { delimiter, dirname, isAbsolute, join } from "node:path"
 
-const BIN = process.env.FLOPWIRE_BIN || "flopwire"
+// findBin finds the flopwire binary: {bin, via} with via env, recorded, path
+// or known (FLOPWIRE_HOOK_VIA for the binary), or null after one line on
+// stderr naming what it searched and the fix.
+function findBin(env = process.env, platform = process.platform) {
+  if (env.FLOPWIRE_BIN) return { bin: env.FLOPWIRE_BIN, via: "env" }
+  const home = env.HOME || homedir()
+  let dir
+  if (env.FLOPWIRE_CONFIG) dir = dirname(env.FLOPWIRE_CONFIG)
+  else if (platform === "darwin") dir = join(home, "Library", "Application Support", "flopwire")
+  else dir = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? join(env.XDG_CONFIG_HOME, "flopwire") : join(home, ".config", "flopwire")
+  const exe = (p) => {
+    try { if (!statSync(p).isFile()) return false; accessSync(p, constants.X_OK); return true } catch { return false }
+  }
+  const file = join(dir, "binary-path")
+  let recorded = ""
+  try { recorded = readFileSync(file, "utf8").split("\n")[0].trim() } catch {}
+  if (recorded && exe(recorded)) return { bin: recorded, via: "recorded" }
+  for (const d of (env.PATH || "").split(delimiter)) {
+    if (isAbsolute(d) && exe(join(d, "flopwire"))) return { bin: join(d, "flopwire"), via: "path" }
+  }
+  for (const d of ["/opt/homebrew/bin", "/usr/local/bin", join(home, "go", "bin"), join(home, ".local", "bin")]) {
+    if (exe(join(d, "flopwire"))) return { bin: join(d, "flopwire"), via: "known" }
+  }
+  console.error(`flopwire (opencode plugin): no flopwire binary: the recorded path (${recorded || "none"}, from ${file}) is not executable, flopwire is not on PATH (${env.PATH || ""}), and not in /opt/homebrew/bin, /usr/local/bin, ~/go/bin or ~/.local/bin; fix: run flopwire setup`)
+  return null
+}
 const SOCKET = process.env.FLOPWIRE_SOCKET || ""
 const HOOK = (() => {
   try {
@@ -50,14 +76,18 @@ const HOOK = (() => {
 const HOOK_TIMEOUT = 5000
 const TOOL_TIMEOUT = 90000
 
-// run runs flopwire with input on stdin; it never throws.
+// run runs flopwire with input on stdin; it never throws. It looks for
+// the binary on every run, so an upgrade that moves it takes effect
+// without restarting opencode.
 function run(args, input, env, timeout) {
   return new Promise((resolve) => {
     let out = "", err = "", done = false
     const finish = (code) => { if (!done) { done = true; resolve({ code, out, err }) } }
+    const found = findBin()
+    if (!found) return finish(-1, (err = "no flopwire binary"))
     let p
     try {
-      p = spawn(BIN, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] })
+      p = spawn(found.bin, args, { env: { ...process.env, FLOPWIRE_HOOK_VIA: found.via, ...env }, stdio: ["pipe", "pipe", "pipe"] })
     } catch (e) {
       return finish(-1, (err = String(e)))
     }
@@ -113,7 +143,7 @@ function zodOf(z, p) {
 export const Flopwire = async ({ client }) => {
   const started = Math.round(performance.timeOrigin)
   const hello = lastJSON((await run(HOOK, JSON.stringify({ hook_event_name: "Hello", harness: "opencode" }), {}, HOOK_TIMEOUT)).out)
-  if (!hello || !hello.instruction) return {} // flopwire is not on PATH, or too old: stay out of the way
+  if (!hello || !hello.instruction) return {} // no flopwire binary, or one too old: stay out of the way
 
   const regDir = hello.registry || ""
   const regFile = regDir ? join(regDir, `${process.pid}.json`) : ""

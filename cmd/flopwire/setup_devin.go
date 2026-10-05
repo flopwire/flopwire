@@ -343,7 +343,12 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 		}
 		if !foreign {
 			r.Warnings = append(r.Warnings, devinPluginProblems(installed)...)
-			r.Warnings = append(r.Warnings, binaryLacks(env.binary, r.Version, devinPluginCommands(installed))...)
+			var hb *hookBinaryReport
+			if root := devinPluginRoot(env); root != "" {
+				hb = resolveHookBinary(ctx, env, "devin", shimIn(root))
+			}
+			bin := applyHookBinary(ctx, env, &r, hb)
+			r.Warnings = append(r.Warnings, binaryLacks(bin, r.Version, devinPluginCommands(installed))...)
 		}
 	}
 	switch {

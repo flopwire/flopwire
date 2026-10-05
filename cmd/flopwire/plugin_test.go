@@ -110,8 +110,8 @@ func TestClaudePluginHooks(t *testing.T) {
 			t.Errorf("%s matcher %q: the event takes none", ev, g.Matcher)
 		}
 		h := g.Hooks[0]
-		// A missing binary stays silent; one that fails is reported, but
-		// never with exit 2, which blocks (TestClaudePluginHooksWithoutBinary).
+		// The shim finds the binary; a missing or failing one is reported,
+		// never with exit 2, which blocks (TestClaudePluginHooksThroughShim).
 		if h.Type != "command" || h.Command != claudeHookCommand || len(h.Args) != 0 {
 			t.Errorf("%s: command %q %q, want the shell command %q", ev, h.Command, h.Args, claudeHookCommand)
 			continue
@@ -125,23 +125,29 @@ func TestClaudePluginHooks(t *testing.T) {
 	}
 }
 
-// claudeHookCommand is the Claude Code plugin's hook command.
-const claudeHookCommand = "flopwire hook || [ $? -eq 127 ] || { echo 'flopwire hook failed: the flopwire on PATH may be older than this plugin; run: flopwire setup --check' >&2; exit 1; }"
+// claudeHookCommand is the Claude Code plugin's hook command: the shim,
+// by the plugin root Claude Code (and Devin) set, through /bin/sh so the
+// file's mode bits do not matter.
+const claudeHookCommand = `/bin/sh "${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook" hook`
 
-// TestClaudePluginHooksWithoutBinary: with flopwire missing from PATH,
-// every hook exits 0 with nothing on stdout (stderr of a hook that exits 0
-// reaches only Claude Code's debug log): Claude Code shows a "hook error"
-// notice for any other exit status, which on PostToolUse means one on
-// every tool call, and setup reports the missing binary. A flopwire that
-// fails (an older binary without the hook command; flopwire hook itself
-// always exits 0) exits 1 with a hint on stderr, which Claude Code shows
-// as a non-blocking hook error: the plugin and binary do not match, and
-// delivery has stopped. No failure exits 2, which would block a prompt or
-// a stop. Nothing reaches stdout, the model's context.
-func TestClaudePluginHooksWithoutBinary(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no sh")
+// TestClaudePluginHooksThroughShim runs each hook command as Claude Code
+// does (/bin/sh -c, CLAUDE_PLUGIN_ROOT set) against flopwire binaries
+// that are missing, current, older and crashing.
+func TestClaudePluginHooksThroughShim(t *testing.T) {
+	testHooksThroughShim(t, claudePluginDir, "CLAUDE_PLUGIN_ROOT")
+}
+
+// testHooksThroughShim: with no flopwire anywhere, every hook exits 1 with
+// one line on stderr that names the recorded path, the PATH searched and
+// flopwire setup: delivery has stopped and the harness shows it. A
+// flopwire that fails (an older binary without the hook command; flopwire
+// hook itself always exits 0) exits 1 with a hint. A crash's exit 2 also
+// becomes 1: no failure exits 2, which would block a prompt or a stop.
+// Nothing reaches stdout, the model's context.
+func testHooksThroughShim(t *testing.T, pluginDir, rootVar string) {
+	t.Helper()
+	if knownFlopwireInstalled() {
+		t.Skip("a flopwire in /opt/homebrew/bin or /usr/local/bin would be found")
 	}
 	var hf struct {
 		Hooks map[string][]struct {
@@ -150,7 +156,11 @@ func TestClaudePluginHooksWithoutBinary(t *testing.T) {
 			} `json:"hooks"`
 		} `json:"hooks"`
 	}
-	readJSONFile(t, filepath.Join(claudePluginDir, "hooks", "hooks.json"), &hf)
+	readJSONFile(t, filepath.Join(pluginDir, "hooks", "hooks.json"), &hf)
+	root, err := filepath.Abs(pluginDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fake := func(body string) string {
 		d := t.TempDir()
 		if err := os.WriteFile(filepath.Join(d, "flopwire"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
@@ -161,24 +171,31 @@ func TestClaudePluginHooksWithoutBinary(t *testing.T) {
 	for _, c := range []struct {
 		name, path string
 		exit       int
-		stderr     string
+		stderr     []string
 	}{
-		{"missing", t.TempDir(), 0, ""},
-		{"current", fake("exit 0"), 0, ""},
-		{"older", fake("echo 'Usage: flopwire <command>' >&2; exit 1"), 1, "run: flopwire setup --check"},
-		{"crashed", fake("echo 'fatal error: concurrent map writes' >&2; exit 2"), 1, "run: flopwire setup --check"},
+		{"missing", t.TempDir(), 1, []string{"recorded path (none", "flopwire is not on PATH", "fix: run flopwire setup"}},
+		{"current", fake("cat >/dev/null; exit 0"), 0, nil},
+		{"older", fake("echo 'Usage: flopwire <command>' >&2; exit 1"), 1, []string{"exited 1", "run: flopwire setup --check"}},
+		{"crashed", fake("echo 'fatal error: concurrent map writes' >&2; exit 2"), 1, []string{"exited 2", "run: flopwire setup --check"}},
 	} {
 		for ev, groups := range hf.Hooks {
 			for _, g := range groups {
 				for _, h := range g.Hooks {
-					cmd := exec.Command(sh, "-c", h.Command)
-					cmd.Env = []string{"PATH=" + c.path}
+					cmd := exec.Command("/bin/sh", "-c", h.Command)
+					cmd.Env = []string{"PATH=" + c.path, "HOME=" + t.TempDir(), "FLOPWIRE_CONFIG=" + filepath.Join(t.TempDir(), "config.json"), rootVar + "=" + root}
 					cmd.Stdin = strings.NewReader(`{"hook_event_name":"` + ev + `","session_id":"s"}`)
 					var out, errb bytes.Buffer
 					cmd.Stdout, cmd.Stderr = &out, &errb
 					_ = cmd.Run()
 					code := cmd.ProcessState.ExitCode()
-					if code != c.exit || out.Len() != 0 || !strings.Contains(errb.String(), c.stderr) {
+					ok := code == c.exit && out.Len() == 0
+					for _, want := range c.stderr {
+						ok = ok && strings.Contains(errb.String(), want)
+					}
+					if c.name == "missing" {
+						ok = ok && strings.Count(errb.String(), "\n") == 1 && strings.Contains(errb.String(), c.path)
+					}
+					if !ok {
 						t.Errorf("%s binary, %s: exit %d, stdout %q, stderr %q; want exit %d, no stdout, stderr with %q", c.name, ev, code, out.String(), errb.String(), c.exit, c.stderr)
 					}
 				}
@@ -187,41 +204,15 @@ func TestClaudePluginHooksWithoutBinary(t *testing.T) {
 	}
 }
 
-func testHooksWithoutBinary(t *testing.T, hooksFile string) {
-	t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no sh")
-	}
-	var hf struct {
-		Hooks map[string][]struct {
-			Hooks []struct {
-				Command string `json:"command"`
-			} `json:"hooks"`
-		} `json:"hooks"`
-	}
-	readJSONFile(t, hooksFile, &hf)
-	// An "older binary": a flopwire that knows no hook command.
-	old := t.TempDir()
-	if err := os.WriteFile(filepath.Join(old, "flopwire"), []byte("#!/bin/sh\necho 'Usage: flopwire <command>' >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{t.TempDir(), old} {
-		for ev, groups := range hf.Hooks {
-			for _, g := range groups {
-				for _, h := range g.Hooks {
-					cmd := exec.Command(sh, "-c", h.Command)
-					cmd.Env = []string{"PATH=" + path}
-					cmd.Stdin = strings.NewReader(`{"hook_event_name":"` + ev + `","session_id":"s"}`)
-					var out bytes.Buffer
-					cmd.Stdout = &out
-					if err := cmd.Run(); err != nil || out.Len() != 0 {
-						t.Errorf("%s with PATH=%s: %q exits %v, stdout %q; want exit 0 and no output", ev, path, h.Command, err, out.String())
-					}
-				}
-			}
+// knownFlopwireInstalled: the shim's last resort finds a flopwire in a
+// system directory a test cannot hide.
+func knownFlopwireInstalled() bool {
+	for _, p := range []string{"/opt/homebrew/bin/flopwire", "/usr/local/bin/flopwire"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
 		}
 	}
+	return false
 }
 
 func TestClaudePluginMCP(t *testing.T) {
