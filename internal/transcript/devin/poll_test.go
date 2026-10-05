@@ -135,3 +135,32 @@ func TestLiveSessionParseReadsOnlyNewRows(t *testing.T) {
 	}
 	assertSame(t, s, snapshotStore(t, path))
 }
+
+// Devin moves a long session's main chain to another branch (compaction
+// starts a new tree; the live chain of a 30k-node session was 390 nodes).
+// The keys that flip on or off the path are re-emitted; their rows are
+// read by row id, not by streaming the whole session.
+func TestChainSwitchReadsOnlyFlippedRows(t *testing.T) {
+	const big, fork = 1600, 1300
+	path, db := buildDB(t)
+	growSession(t, db, "big", big)
+	p := &Parser{}
+	s := store{}
+	c, cur := parseWith(t, p, path, transcript.Cursor{})
+	s.apply(c)
+
+	// A branch off node fork: the nodes after it leave the path.
+	exec(t, db, `INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES ('big', ?, ?, '{"message_id":"big-branch","role":"assistant","content":"other branch"}', 1790170000)`, big+1, fork)
+	exec(t, db, `UPDATE sessions SET main_chain_id = ? WHERE id = 'big'`, big+1)
+	_, before := p.RowsRead()
+	c, _ = parseWith(t, p, path, cur)
+	s.apply(c)
+	_, after := p.RowsRead()
+	if len(c.Messages) != big-fork+1 {
+		t.Errorf("chain switch emitted %d messages, want %d", len(c.Messages), big-fork+1)
+	}
+	if n := after - before; n != big-fork+1 {
+		t.Errorf("chain switch read %d rows with content, want the %d flipped and new ones", n, big-fork+1)
+	}
+	assertSame(t, s, snapshotStore(t, path))
+}

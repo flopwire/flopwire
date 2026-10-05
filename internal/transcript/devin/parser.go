@@ -371,8 +371,9 @@ func (s *syncer) session(id string, row *sessionRow, nc nodeCount, prev sessionS
 // emit reads every copy of the chosen keys and sends their messages: the
 // canonical copy's rows, then the rows only other copies have (newest copy
 // first), off the active path. A key's rows go out once its last copy has
-// been read. A large selection streams the whole session instead of
-// batching row ids.
+// been read. A selection of most of the session streams the whole session
+// instead of batching row ids; a main chain switch in a long session (a few
+// hundred keys flip on or off the path) is read by row id.
 func (s *syncer) emit(sessionID string, g *graph, cur map[string]pick, keys map[string]bool, maxRow int64) error {
 	members := g.members(keys, maxRow)
 	byRow := map[int64]int{}
@@ -417,7 +418,7 @@ func (s *syncer) emit(sessionID string, g *graph, cur map[string]pick, keys map[
 		}
 		return nil
 	}
-	if len(rowIDs) > 256 {
+	if len(rowIDs) > 256 && len(rowIDs) > len(g.nodes)/4 {
 		return s.scan(`SELECT row_id, node_id, chat_message, created_at FROM message_nodes WHERE session_id = ? ORDER BY row_id`, []any{sessionID}, handle)
 	}
 	for start := 0; start < len(rowIDs); start += 128 {
