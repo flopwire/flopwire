@@ -142,7 +142,7 @@ operating-system file lock serializes concurrent local credential changes.
 
 ## Respond to "re-login required"
 
-`flopwire agent status` shows `credential: re-login required (REASON)` when
+`flopwire agent status` shows `credential: device login; re-login required (REASON)` when
 the server refused the device credential. The agent stops uploads and
 continues to index locally. Reasons:
 
@@ -396,6 +396,11 @@ requests in flight to finish. The `flopwire` service in `compose.yaml` sets
 `stop_grace_period: 15s` so that Docker does not kill the server first. If you
 run the server under another supervisor, give it a stop timeout longer than
 10 seconds.
+
+Run the server as one process. A message wakes a waiting poll only in the
+process that took the send. With two or more processes, a device on another
+process sees the message only at its next poll. Before you run more than one
+process, replace the in-process wake-up with Postgres `LISTEN/NOTIFY`.
 
 Database migrations are forward-only and run in one transaction at startup.
 Before the first release, migration files are edited in place, so the server

@@ -109,6 +109,8 @@ type Response struct {
 	Inbox    *busproto.InboxResponse `json:"inbox,omitempty"`
 	BusError *busproto.Error         `json:"bus_error,omitempty"`
 	Bus      *devicebus.Status       `json:"bus,omitempty"`
+	// Credential (status): the server credential the agent uses.
+	Credential *Credential `json:"credential,omitempty"`
 	// Instruct (pending): print the standing instruction before the
 	// messages, then confirm it. The session is owed it until a hook
 	// confirms it, and it is leased to one hook at a time, so a session
@@ -203,6 +205,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if a.cfg.Bus != nil {
 			st := a.cfg.Bus.Status(ctx)
 			resp.Bus = &st
+		}
+		if a.cfg.Credential != nil {
+			c := a.cfg.Credential()
+			resp.Credential = &c
 		}
 		var err error
 		resp.Extraction, err = a.store.ExtractionSummary(ctx)

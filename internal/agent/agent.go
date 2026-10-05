@@ -121,6 +121,21 @@ type Config struct {
 	// Console is the web console page where the user reviews held
 	// messages ("" without a server); the held notice names it.
 	Console string
+	// Credential names the server credential the agent uses, for status;
+	// nil reports none.
+	Credential func() Credential
+}
+
+// Credential is the server credential the agent uses, as status shows it.
+type Credential struct {
+	// Source is "device login", "FLOPWIRE_TOKEN", "legacy login" or
+	// "none".
+	Source string `json:"source"`
+	// MessagingOff says why the credential cannot use the server's
+	// message bus, with the fix; "" when it can or there is no server.
+	MessagingOff string `json:"messaging_off,omitempty"`
+	// Warning: FLOPWIRE_TOKEN hides a saved device login.
+	Warning string `json:"warning,omitempty"`
 }
 
 func (c *Config) defaults() {
