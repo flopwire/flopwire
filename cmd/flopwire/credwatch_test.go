@@ -174,3 +174,70 @@ func TestWatchCredential(t *testing.T) {
 		})
 	}
 }
+
+// A config that flaps (saved, removed, saved...) restarts the agent at
+// most once per change it sees, and once the config settles the agent
+// stops restarting: no restart loop.
+func TestAgentCredentialFlapSettles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "flopwire", "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
+	t.Setenv(client.EnvToken, "")
+	t.Setenv(client.EnvServer, "")
+	defer func(d time.Duration) { credentialWatchEvery = d }(credentialWatchEvery)
+	credentialWatchEvery = 50 * time.Millisecond
+	srv, _ := fakeBusServer(t)
+	sock := filepath.Join(shortSockDir(t), "a.sock")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p, _ := client.Path()
+
+	flapping := make(chan struct{})
+	go func() {
+		defer close(flapping)
+		for i := range 20 {
+			if i%2 == 0 {
+				_ = client.Save(client.Config{Server: srv.URL, Token: "dev", DeviceID: "d1"})
+			} else {
+				_ = os.Remove(p)
+			}
+			time.Sleep(30 * time.Millisecond)
+		}
+		// Settled: a device login is saved.
+		_ = client.Save(client.Config{Server: srv.URL, Token: "dev", DeviceID: "d1"})
+	}()
+	restarts := 0
+	done := runAgentAsync(t, ctx, home, sock)
+	settled := false
+	for {
+		select {
+		case <-flapping:
+			flapping, settled = nil, true
+		case lock := <-done:
+			if lock == nil {
+				t.Fatal("the agent stopped instead of restarting")
+			}
+			lock.Close()
+			restarts++
+			done = runAgentAsync(t, ctx, home, sock)
+			continue
+		case <-time.After(500 * time.Millisecond):
+			if !settled {
+				continue
+			}
+			// Ten ticks with no restart after the config settled.
+			resp, err := agent.Call(ctx, sock, agent.Request{Op: "status"})
+			if err != nil || resp.Credential == nil || resp.Credential.Source != credDevice {
+				t.Fatalf("after the flap settled: %+v %v", resp.Credential, err)
+			}
+			if restarts > 20 {
+				t.Fatalf("%d restarts for 20 changes", restarts)
+			}
+			cancel()
+			if lock := <-done; lock != nil {
+				t.Fatal("a shutdown asked for a restart")
+			}
+			return
+		}
+	}
+}
