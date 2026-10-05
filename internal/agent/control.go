@@ -169,6 +169,20 @@ func (a *Agent) Serve(ctx context.Context, path string) error {
 	}
 }
 
+// untilClientLeaves returns ctx cancelled also when the client closes c.
+// A client sends one request line and then only reads, so any read
+// returning (EOF, reset, or the connection's deadline) means it is gone.
+// stop releases the watcher; serveConn closing c ends its read.
+func untilClientLeaves(ctx context.Context, c net.Conn) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		var b [1]byte
+		c.Read(b[:])
+		cancel()
+	}()
+	return ctx, cancel
+}
+
 func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(30 * time.Second))
@@ -195,6 +209,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Error = err.Error()
 		}
 	case req.Op == "status":
+		// The index summary scans every source: stop it if the client
+		// gives up, rather than hold a read connection for nobody.
+		ctx, stop := untilClientLeaves(ctx, c)
+		defer stop()
 		resp.OK = true
 		if st, ok := a.cfg.Sync.(interface{ Status() devicesync.Status }); ok {
 			v := st.Status()
