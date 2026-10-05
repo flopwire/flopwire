@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeDevinState is the fake Devin CLI's plugin state, kept in the file
@@ -899,5 +900,58 @@ func TestSetupDevinCheckComparesPluginAndBinary(t *testing.T) {
 	}
 	if hasString(h.Warnings, "flopwire mcp,") || hasString(h.Warnings, "runs flopwire mcp") {
 		t.Errorf("warned about mcp, which the binary knows: %q", h.Warnings)
+	}
+}
+
+// TestSetupDevinReportsHookBinary: setup finds Devin's cached copy of the
+// plugin and runs its shim in a login shell, as Devin's hooks get their
+// PATH from one. The plugin/binary comparison follows the binary the
+// shim finds: the recorded one, though an older flopwire is on PATH.
+func TestSetupDevinReportsHookBinary(t *testing.T) {
+	d := newDevinFixture(t, false)
+	if _, _, err := d.run(); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(d.home, ".local", "share", "devin", "cli", "plugins", "cache", "github.com_flopwire_flopwire_plugins_claude-code_flopwire-ca84f741", "0.0.0-unversioned")
+	for _, f := range []string{".claude-plugin/plugin.json", "bin/flopwire-hook"} {
+		b, err := os.ReadFile(filepath.Join(d.pluginDir(), f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(cache, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cache, f), b, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fw := filepath.Join(d.dir, "bin", "flopwire")
+	if err := os.Remove(fw); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$1\" in\nversion) echo v0.1.0 ;;\n*) printf 'Usage: flopwire <command>\\n\\n  mcp         serve tools\\n  version     print version\\n' >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(fw, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An older install is an older file: a newer flopwire on PATH would
+	// win over the recorded one.
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(fw, old, old); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := d.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := selfPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := d.devin(rep)
+	if hb := h.HookBinary; hb == nil || hb.Path != self || hb.Via != "recorded path" || hb.Shim != filepath.Join(cache, "bin", "flopwire-hook") || !strings.Contains(hb.Shell, " -lc") {
+		t.Fatalf("hook binary: %+v", hb)
+	}
+	if hasString(h.Warnings, "does not know") {
+		t.Fatalf("compared the plugin with the flopwire on PATH, which the hooks do not run: %q", h.Warnings)
 	}
 }

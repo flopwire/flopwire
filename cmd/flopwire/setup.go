@@ -64,11 +64,15 @@ Codex runs a plugin's hooks only after you trust them once: start codex and
 answer its "Hooks need review" prompt, or use /hooks. setup reports whether
 that is still needed and never approves hooks for you.
 
-The plugin runs "flopwire hook" and "flopwire mcp", so flopwire must be on
-PATH, and messaging needs the device agent (flopwire agent run). setup
-reports both and starts neither. It warns when the Claude Code plugin runs
-a command the flopwire on PATH does not know (a binary older than the
-plugin), and reports whether the agent has built the local index yet.
+The plugin's hooks and MCP server run a shim (bin/flopwire-hook) that
+takes the binary path setup records in <config dir>/binary-path (unless
+flopwire on PATH is a newer file), then PATH, then /opt/homebrew/bin,
+/usr/local/bin, ~/go/bin and ~/.local/bin: a harness runs them with a
+PATH that is not your terminal's. --check runs each installed
+plugin's shim as its harness runs a hook (hook_binary) and warns when that
+binary lacks a command the plugin runs. Messaging needs the device agent
+(flopwire agent run); setup reports it and the local index and starts
+nothing.
 
 Flags
   --check            report only
@@ -81,11 +85,12 @@ Flags
                      local; project and local apply to the current directory.
                      Codex, Devin and opencode install for the user only
 
-JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{"running",
+JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note","recorded"},"agent":{"running",
 "socket"},"server":{"configured","url","credential","messaging","warning","differs"},"search_scope":{"kind","server"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
-"need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
+"need_review":[…],"disabled":[…]},"hook_binary":{"shim","shell","path","via","error"}}],
+"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
 server.credential is device login, FLOPWIRE_TOKEN, legacy login or none (the
 running agent's when it answers); server.messaging, when set, is why
 messaging is off and the fix; server.warning says FLOPWIRE_TOKEN hides a saved
@@ -115,6 +120,10 @@ type setupBinary struct {
 	Path    string `json:"path,omitempty"`
 	Version string `json:"version,omitempty"`
 	Note    string `json:"note,omitempty"`
+	// Recorded is the binary path recorded for the plugins' hook shim
+	// (<config dir>/binary-path): install mode writes this binary's path
+	// there; --check and --remove only read it.
+	Recorded string `json:"recorded,omitempty"`
 	// commands are the commands the binary on PATH knows, from its usage;
 	// nil when unknown.
 	commands map[string]bool
@@ -238,6 +247,9 @@ type harnessReport struct {
 	Skipped string `json:"skipped,omitempty"`
 	// HookTrust is Codex's trust state for the plugin's hooks.
 	HookTrust *hookTrustReport `json:"hook_trust,omitempty"`
+	// HookBinary is the flopwire the installed plugin's hooks run, found
+	// the way the harness runs them (setup_hookbin.go).
+	HookBinary *hookBinaryReport `json:"hook_binary,omitempty"`
 	// Note says how setup learned the state it reports, when that limits
 	// the report.
 	Note string `json:"note,omitempty"`
@@ -390,14 +402,28 @@ func runHarnessCommand(ctx context.Context, name string, args ...string) ([]byte
 func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep := setupReport{Kind: "setup", Mode: env.mode, OK: true, Todo: []string{}}
 	if p, err := env.lookPath("flopwire"); err != nil {
-		rep.Flopwire.Note = "flopwire is not on PATH: the plugin runs `flopwire hook` and `flopwire mcp`, so its hooks fail and its tools do not load"
+		rep.Flopwire.Note = "flopwire is not on PATH: the plugins find the binary by the path setup records, but your terminal and any MCP server you added by hand run it by name"
 		if env.mode != setupRemove {
 			rep.Todo = append(rep.Todo, "put the flopwire binary on PATH (for example in ~/.local/bin), then restart your agent sessions")
 		}
 	} else {
 		rep.Flopwire = pathBinary(ctx, env, p)
 		if self, err := os.Executable(); err == nil && !samePath(self, p) {
-			rep.Flopwire.Note = fmt.Sprintf("the plugin runs %s, not this binary (%s)", p, self)
+			rep.Flopwire.Note = fmt.Sprintf("flopwire on PATH is %s, not this binary (%s)", p, self)
+		}
+	}
+	if file, err := recordedBinaryPath(); err == nil {
+		if env.mode == setupInstall {
+			if self, err := selfPath(); err == nil {
+				if _, err := recordBinary(file, self); err != nil {
+					rep.OK = false
+					rep.Todo = append(rep.Todo, fmt.Sprintf("could not record this binary's path in %s for the hooks: %v", file, err))
+				}
+			}
+		}
+		rep.Flopwire.Recorded = readRecordedBinary(file)
+		if rep.Flopwire.Recorded == "" && env.mode == setupCheck {
+			rep.Todo = append(rep.Todo, "no binary path is recorded for the plugins' hooks ("+file+"), so they search PATH: run flopwire setup")
 		}
 	}
 	env.binary = &rep.Flopwire
@@ -870,15 +896,23 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 		r.Todo = append(r.Todo, "restart running Claude Code sessions, or run /reload-plugins in each, to apply the change")
 	}
 	if r.Installed {
-		r.Warnings = append(r.Warnings, pluginBinaryMismatch(env.binary, r.Version, installed.InstallPath)...)
+		var hb *hookBinaryReport
+		if installed.InstallPath != "" {
+			hb = resolveHookBinary(ctx, env, "claude", shimIn(installed.InstallPath))
+		}
+		bin := applyHookBinary(ctx, env, &r, hb)
+		r.Warnings = append(r.Warnings, pluginBinaryMismatch(bin, r.Version, installed.InstallPath)...)
 		r.Warnings = append(r.Warnings, claudeManualEntries(env)...)
 	}
 	return r
 }
 
-// pluginCommandRe matches a plugin hook command that runs flopwire and
-// captures the command it runs: `flopwire hook || …` gives hook.
-var pluginCommandRe = regexp.MustCompile(`^\s*(?:\S*/)?flopwire\s+([a-z][a-z-]*)`)
+// pluginCommandRe matches a plugin hook command that runs flopwire, by
+// name or through the plugin's shim, and captures the command it runs:
+// `/bin/sh "${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook" hook` and
+// `flopwire hook || …` give hook; Devin lists the MCP server unquoted,
+// `/bin/sh ${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook mcp`.
+var pluginCommandRe = regexp.MustCompile(`^\s*(?:(?:\S*/)?sh\s+"?\S*/flopwire-hook"?|(?:\S*/)?flopwire)\s+([a-z][a-z-]*)`)
 
 // pluginCommands are the flopwire commands an installed plugin runs: its
 // hooks (hooks/hooks.json) and its MCP server (.mcp.json), sorted.
@@ -908,8 +942,11 @@ func pluginCommands(dir string) []string {
 	}
 	if raw, err := os.ReadFile(filepath.Join(dir, ".mcp.json")); err == nil && json.Unmarshal(raw, &mj) == nil {
 		for _, s := range mj.MCPServers {
-			if filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0 {
+			switch {
+			case filepath.Base(s.Command) == "flopwire" && len(s.Args) > 0:
 				set[s.Args[0]] = true
+			case filepath.Base(s.Command) == "sh" && len(s.Args) > 1 && filepath.Base(s.Args[0]) == "flopwire-hook":
+				set[s.Args[1]] = true // through the plugin's shim
 			}
 		}
 	}
@@ -995,8 +1032,9 @@ func binaryLacks(bin *setupBinary, pluginVersion string, cmds []string) []string
 	return []string{fmt.Sprintf("the plugin (version %s) runs %s, which %s (version %s) does not know: its hooks deliver nothing and its tools fail. Fix: %s", pluginVersion, strings.Join(missing, ", "), bin.Path, binVersion, fix)}
 }
 
-// manualHookRe matches a hook that runs flopwire's hook or flush command.
-var manualHookRe = regexp.MustCompile(`(^|[\s/"'])flopwire["']?\s+(hook|agent\s+flush)\b`)
+// manualHookRe matches a hook that runs flopwire's hook or flush command,
+// by name or through the plugins' shim (flopwire-hook).
+var manualHookRe = regexp.MustCompile(`(^|[\s/"'])flopwire(?:-hook)?["']?\s+(hook|agent\s+flush)\b`)
 
 // claudeManualEntries reads Claude Code's settings files, read-only, and
 // returns a warning for each manual Flopwire hook or MCP server that the
@@ -1156,6 +1194,9 @@ func writeSetupText(w io.Writer, rep setupReport) {
 	if rep.Flopwire.Note != "" {
 		fmt.Fprintf(&b, "  note: %s\n", rep.Flopwire.Note)
 	}
+	if rep.Flopwire.Recorded != "" {
+		fmt.Fprintf(&b, "  recorded for the hooks: %s\n", rep.Flopwire.Recorded)
+	}
 	if rep.Agent.Running {
 		b.WriteString("agent: running\n")
 	} else {
@@ -1229,6 +1270,13 @@ func writeSetupText(w io.Writer, rep setupReport) {
 				fmt.Fprintf(&b, "; disabled: %s", strings.Join(t.Disabled, ", "))
 			}
 			b.WriteString("\n")
+		}
+		if hb := h.HookBinary; hb != nil {
+			if hb.Error != "" {
+				fmt.Fprintf(&b, "  hook binary: none, run through %s: %s\n", hb.Shell, hb.Error)
+			} else {
+				fmt.Fprintf(&b, "  hook binary: %s (via %s)\n", hb.Path, hb.Via)
+			}
 		}
 		for _, d := range h.Done {
 			fmt.Fprintf(&b, "  done: %s\n", d)

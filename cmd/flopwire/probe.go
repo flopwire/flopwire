@@ -69,7 +69,7 @@ var probeBinary = map[transcript.Agent]string{
 	transcript.AgentOpencode: "opencode",
 }
 
-const probeUsage = `Usage: flopwire probe [--harness claude,codex,devin,opencode] [--case CASES] [--model M] [--local] [--json] [--notes]
+const probeUsage = `Usage: flopwire probe [--harness claude,codex,devin,opencode] [--case CASES] [--model M] [--local] [--as-installed] [--json] [--notes]
 
 Re-runs the message-bus delivery tests against the installed harnesses, in
 a scratch project with project-scope hooks only. Each case prints PASS or
@@ -77,7 +77,10 @@ FAIL with its evidence; the command exits non-zero on any FAIL.
 
 Cases: idle, prompt-submit, framing, mid-turn, subagent, guardian (Codex
 only). Codex, Devin and opencode run in scratch homes the running agent
-does not watch, so they need --local. See docs/probe.md.`
+does not watch, so they need --local. --as-installed installs this
+binary's plugins the way setup does and runs their own hook commands
+(shim, shell and plugin root) instead of calling the binary by absolute
+path, and adds a hook-binary case per harness. See docs/probe.md.`
 
 type probeOpts struct {
 	harnesses []transcript.Agent
@@ -87,20 +90,24 @@ type probeOpts struct {
 	notes     bool
 	notesFile string
 	local     bool
-	dir       string
-	socket    string
-	idleWait  time.Duration
-	turnWait  time.Duration
+	// asInstalled: the harnesses run the plugins' own hook commands.
+	asInstalled bool
+	dir         string
+	socket      string
+	idleWait    time.Duration
+	turnWait    time.Duration
 }
 
 // probeReport is what one run found.
 type probeReport struct {
-	Date     time.Time      `json:"date"`
-	Flopwire string         `json:"flopwire"`
-	Mode     string         `json:"mode"` // local or agent
-	Dir      string         `json:"dir"`
-	Harness  []probeVersion `json:"harnesses"`
-	Results  []probeResult  `json:"results"`
+	Date     time.Time `json:"date"`
+	Flopwire string    `json:"flopwire"`
+	Mode     string    `json:"mode"` // local or agent
+	// AsInstalled: the plugins' own hook commands ran (--as-installed).
+	AsInstalled bool           `json:"as_installed,omitempty"`
+	Dir         string         `json:"dir"`
+	Harness     []probeVersion `json:"harnesses"`
+	Results     []probeResult  `json:"results"`
 	// Skipped names a harness the probe did not run, and why.
 	Skipped []string `json:"skipped,omitempty"`
 
@@ -168,6 +175,7 @@ func parseProbeFlags(args []string, stderr io.Writer) (probeOpts, error) {
 	fs.BoolVar(&o.notes, "notes", false, "append the run to --notes-file")
 	fs.StringVar(&o.notesFile, "notes-file", filepath.Join("notes", "message-bus", "probe-runs.md"), "the run log --notes appends to")
 	fs.BoolVar(&o.local, "local", false, "start a local-only device agent in the scratch directory instead of using the running one")
+	fs.BoolVar(&o.asInstalled, "as-installed", false, "install the plugins as setup does and run their own hook commands (through the shim and the harness's shell), not the binary by absolute path")
 	fs.StringVar(&o.dir, "dir", "", "scratch directory (default: a new one under the OS temp directory)")
 	fs.StringVar(&o.socket, "socket", "", "the running agent's control socket (default <config dir>/agent.sock; not with --local)")
 	fs.DurationVar(&o.idleWait, "idle-wait", 60*time.Second, "idle case: how long a message to an idle session must stay queued")
@@ -226,7 +234,7 @@ type prober struct {
 }
 
 func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, error) {
-	rep := probeReport{Date: time.Now().UTC(), Flopwire: version, Mode: "agent"}
+	rep := probeReport{Date: time.Now().UTC(), Flopwire: version, Mode: "agent", AsInstalled: o.asInstalled}
 	if o.local {
 		rep.Mode = "local"
 	}
@@ -295,6 +303,11 @@ func runProbe(ctx context.Context, o probeOpts, log io.Writer) (probeReport, err
 	}
 	rep.Dir = p.dir
 	fmt.Fprintf(log, "probe: scratch directory %s\n", p.dir)
+	if o.asInstalled {
+		if err := p.installPlugins(); err != nil {
+			return rep, err
+		}
+	}
 	stopAgent, err := p.startAgent(ctx)
 	if err != nil {
 		return rep, err
@@ -408,11 +421,20 @@ func (p *prober) harnessEnv(h transcript.Agent) []string {
 		// under the XDG directories. The plugin runs the tap as its hook and
 		// talks to the probe's agent.
 		home := p.scratchHome(h)
-		hook, _ := json.Marshal([]string{"probe", "tap", "--log", filepath.Join(p.dir, string(h), "tap.jsonl"), "--socket", p.sock})
 		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_DATA_HOME="+filepath.Join(home, "data"),
 			"XDG_STATE_HOME="+filepath.Join(home, "state"), "XDG_CACHE_HOME="+filepath.Join(home, "cache"),
-			"FLOPWIRE_BIN="+p.exe, "FLOPWIRE_HOOK_ARGS="+string(hook), "FLOPWIRE_SOCKET="+p.sock,
-			"FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"))
+			"FLOPWIRE_SOCKET="+p.sock)
+		if !p.o.asInstalled {
+			hook, _ := json.Marshal([]string{"probe", "tap", "--log", filepath.Join(p.dir, string(h), "tap.jsonl"), "--socket", p.sock})
+			env = append(env, "FLOPWIRE_BIN="+p.exe, "FLOPWIRE_HOOK_ARGS="+string(hook), "FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"))
+		}
+	}
+	if p.o.asInstalled {
+		// The plugin's hook command finds this binary through the path
+		// recorded in the scratch config directory (installPlugins), and
+		// `flopwire hook` then taps itself into this harness's log.
+		env = append(env, "FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"), "FLOPWIRE_SOCKET="+p.sock,
+			envProbeTap+"="+filepath.Join(p.dir, string(h), "tap.jsonl"))
 	}
 	return env
 }
@@ -681,6 +703,11 @@ func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model strin
 	if err := r.setup(); err != nil {
 		return fail("", err.Error())
 	}
+	if p.o.asInstalled {
+		if err := r.installPlugin(ctx); err != nil {
+			return fail("", err.Error())
+		}
+	}
 	var err error
 	if r.sender, err = r.session(ctx, "sender", nil); err != nil {
 		return fail("", err.Error())
@@ -708,6 +735,11 @@ func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model strin
 			fmt.Fprintf(p.log, "probe: %s %s %s: %s\n", h, checked[i].Case, checked[i].verdict(), checked[i].Evidence)
 		}
 	}
+	if p.o.asInstalled {
+		res := r.hookBinaryResult(all)
+		fmt.Fprintf(p.log, "probe: %s %s %s: %s\n", h, res.Case, res.verdict(), res.Evidence)
+		checked = append(checked, res)
+	}
 	return checked
 }
 
@@ -727,6 +759,10 @@ func (r *harnessRun) setup() error {
 		return []map[string]any{g}
 	}
 	events := append(slices.Clone(probeHookEvents), probeObserveEvents...)
+	if r.p.o.asInstalled {
+		// The plugin hooks the delivery events; the project only observes.
+		events = slices.Clone(probeObserveEvents)
+	}
 	hooks := map[string]any{}
 	for _, ev := range events {
 		if r.name == transcript.AgentDevin && strings.HasPrefix(ev, "Subagent") {
@@ -924,7 +960,7 @@ func (r *harnessRun) session(ctx context.Context, role string, codex *codexStart
 	var err error
 	switch r.name {
 	case transcript.AgentClaude:
-		s, err = startClaude(ctx, r.proj, r.env, errLog, r.model)
+		s, err = startClaude(ctx, r.proj, r.env, errLog, r.model, r.claudePluginArgs()...)
 	case transcript.AgentCodex:
 		o := codexStartOpts{Model: r.model, ApprovalPolicy: "never", Sandbox: "workspace-write"}
 		if codex != nil {
@@ -1020,6 +1056,37 @@ func (r *harnessRun) tapSince(t int64) []tapEntry {
 	return out
 }
 
+// settleWait bounds how long settle waits for a turn's Stop hook.
+const settleWait = 15 * time.Second
+
+// settle waits until every turn of the recipient has its Stop hook in the
+// tap log: as many Stops as UserPromptSubmits. The plugins' Codex Stop
+// hook is async (--as-installed): Codex runs it after it reports the turn
+// done, so it would land in the next case's window, or after a case's
+// verdict looked for it.
+func (r *harnessRun) settle(ctx context.Context) {
+	deadline := time.Now().Add(settleWait)
+	for ctx.Err() == nil && time.Now().Before(deadline) {
+		prompts, stops := 0, 0
+		all, _ := readTap(r.tap)
+		for _, e := range all {
+			if e.Session != r.recv.ID() || e.AgentID != "" {
+				continue
+			}
+			switch e.Event {
+			case evUserPromptSubmit:
+				prompts++
+			case "Stop":
+				stops++
+			}
+		}
+		if stops >= prompts {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // watchTap waits for the first tap entry since t that pred accepts.
 func (r *harnessRun) watchTap(ctx context.Context, t int64, pred func(tapEntry) bool) (tapEntry, bool) {
 	for {
@@ -1050,6 +1117,7 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 	}
 	switch c {
 	case caseIdle:
+		r.settle(ctx)
 		start := time.Now().UnixMilli()
 		sent, err := r.send(ctx, r.recv, "inform", probeBody(m))
 		if err != nil {
@@ -1170,6 +1238,7 @@ func (r *harnessRun) sendDuring(ctx context.Context, res probeResult, start int6
 	reply, terr := r.recv.Turn(ctx, prompt)
 	stopWatch()
 	s := <-sentc
+	r.settle(ctx)
 	res.Message = s.id
 	if s.err != nil {
 		res.Evidence = s.err.Error()
@@ -1314,7 +1383,11 @@ func (r *harnessRun) guardian(ctx context.Context, res probeResult, m string) pr
 // --- report ---
 
 func writeProbeTable(w io.Writer, rep probeReport) error {
-	fmt.Fprintf(w, "flopwire probe %s (%s, flopwire %s)\n", rep.Date.Format("2006-01-02 15:04Z"), rep.Mode, rep.Flopwire)
+	mode := rep.Mode
+	if rep.AsInstalled {
+		mode += ", plugins as installed"
+	}
+	fmt.Fprintf(w, "flopwire probe %s (%s, flopwire %s)\n", rep.Date.Format("2006-01-02 15:04Z"), mode, rep.Flopwire)
 	for _, h := range rep.Harness {
 		fmt.Fprintf(w, "  %s: %s, model %s\n", h.Name, h.Version, h.Model)
 	}
@@ -1338,6 +1411,9 @@ func probeMarkdown(rep probeReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s\n\n", rep.Date.Format("2006-01-02 15:04Z"))
 	fmt.Fprintf(&b, "flopwire %s, %s agent.", rep.Flopwire, rep.Mode)
+	if rep.AsInstalled {
+		b.WriteString(" Plugins as installed (`--as-installed`): the hooks ran the plugins' own commands through the shim.")
+	}
 	for _, h := range rep.Harness {
 		fmt.Fprintf(&b, " %s: %s, model %s.", h.Name, h.Version, h.Model)
 	}

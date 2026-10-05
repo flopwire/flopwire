@@ -62,6 +62,10 @@ func TestSetupOpencode(t *testing.T) {
 	if err != nil || !bytes.Equal(got, opencodeplugin.Source) {
 		t.Fatalf("installed plugin differs: %v", err)
 	}
+	// The plugin starts the binary setup recorded (no shell).
+	if self, err := selfPath(); err != nil || h.HookBinary == nil || h.HookBinary.Path != self || h.HookBinary.Via != "recorded path" || h.HookBinary.Shim != "" {
+		t.Fatalf("hook binary: %v %+v", err, h.HookBinary)
+	}
 
 	rep, _, _ = f.run()
 	if h := opencodeEntry(t, rep); len(h.Done) != 0 || !h.Installed {

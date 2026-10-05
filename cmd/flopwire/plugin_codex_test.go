@@ -102,13 +102,17 @@ var codexHookContract = map[string]struct {
 	timeout          int
 	async            bool
 }{
-	"SessionStart":     {"", "flopwire hook || true", 5, false},
-	"UserPromptSubmit": {"", "flopwire hook || true", 5, false},
-	"PostToolUse":      {"*", "flopwire hook || true", 5, false},
+	"SessionStart":     {"", codexHookCommand, 5, false},
+	"UserPromptSubmit": {"", codexHookCommand, 5, false},
+	"PostToolUse":      {"*", codexHookCommand, 5, false},
 	// Async: see TestCodexStopHookSurvivesShellNoise.
-	"Stop":       {"", "flopwire hook || true", 5, true},
-	"SessionEnd": {"", "flopwire hook || true", 3, false},
+	"Stop":       {"", codexHookCommand, 5, true},
+	"SessionEnd": {"", codexHookCommand, 3, false},
 }
+
+// codexHookCommand runs the shim by Codex's plugin root. Codex hashes it
+// as written, so the trust survives a reinstall to another path.
+const codexHookCommand = `/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook`
 
 func TestCodexPluginHooks(t *testing.T) {
 	var hf struct {
@@ -135,7 +139,7 @@ func TestCodexPluginHooks(t *testing.T) {
 		if g.Matcher != want.matcher || h.Type != "command" || h.Command != want.command || h.Timeout != want.timeout || h.Async != want.async {
 			t.Errorf("%s: matcher %q command %q timeout %d async %v; the contract is %+v", ev, g.Matcher, h.Command, h.Timeout, h.Async, want)
 		}
-		if f := strings.Fields(h.Command); len(f) < 2 || f[0] != "flopwire" || !cmds[f[1]] || f[1] != "hook" {
+		if m := pluginCommandRe.FindStringSubmatch(h.Command); m == nil || m[1] != "hook" || !cmds[m[1]] {
 			t.Errorf("%s runs %q: not flopwire hook", ev, h.Command)
 		}
 	}
@@ -170,8 +174,17 @@ func TestCodexStopHookSurvivesShellNoise(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := hf.Hooks["Stop"][0].Hooks[0]
+	// A flopwire hook that prints nothing: the noise is all there is.
+	quiet := t.TempDir()
+	if err := os.WriteFile(filepath.Join(quiet, "flopwire"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs(codexPluginDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(noisy, "-c", h.Command)
-	cmd.Env = []string{"PATH=" + t.TempDir()} // no flopwire: the noise is all there is
+	cmd.Env = []string{"PATH=" + quiet, "HOME=" + t.TempDir(), "FLOPWIRE_CONFIG=" + filepath.Join(t.TempDir(), "config.json"), "PLUGIN_ROOT=" + root}
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","session_id":"s"}`)
 	out, err := cmd.Output()
 	if err != nil || len(bytes.TrimSpace(out)) == 0 {
@@ -199,8 +212,8 @@ func codexStopFailure(async bool, stdout []byte) string {
 	return ""
 }
 
-func TestCodexPluginHooksWithoutBinary(t *testing.T) {
-	testHooksWithoutBinary(t, filepath.Join(codexPluginDir, "hooks", "hooks.json"))
+func TestCodexPluginHooksThroughShim(t *testing.T) {
+	testHooksThroughShim(t, codexPluginDir, "PLUGIN_ROOT")
 }
 
 // codexMCPEnvVars are the variables that choose where flopwire finds its
@@ -216,13 +229,21 @@ func TestCodexPluginMCP(t *testing.T) {
 		MCPServers map[string]struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			Cwd     string   `json:"cwd"`
 			EnvVars []string `json:"env_vars"`
 		} `json:"mcpServers"`
 	}
 	readJSONFile(t, filepath.Join(codexPluginDir, ".mcp.json"), &m)
 	s, ok := m.MCPServers["flopwire"]
-	if len(m.MCPServers) != 1 || !ok || s.Command != "flopwire" || !slices.Equal(s.Args, []string{"mcp"}) {
-		t.Fatalf(".mcp.json: want one server flopwire = flopwire mcp; got %+v", m)
+	// Codex does not expand ${PLUGIN_ROOT} in a plugin's .mcp.json, but
+	// resolves a relative cwd against the plugin root: the server runs the
+	// hook shim from there, not flopwire by bare name from Codex's PATH.
+	if len(m.MCPServers) != 1 || !ok || s.Command != "/bin/sh" || !slices.Equal(s.Args, []string{"./bin/flopwire-hook", "mcp"}) || s.Cwd != "." {
+		t.Fatalf(".mcp.json: want one server flopwire = /bin/sh ./bin/flopwire-hook mcp in cwd .; got %+v", m)
+	}
+	runMCPThroughShim(t, s.Command, s.Args, codexPluginDir)
+	if got := pluginCommands(codexPluginDir); !slices.Equal(got, []string{"hook", "mcp"}) {
+		t.Fatalf("pluginCommands = %q, want hook and mcp", got)
 	}
 	if got := slices.Sorted(slices.Values(s.EnvVars)); !slices.Equal(got, codexMCPEnvVars) {
 		t.Errorf(".mcp.json env_vars %q, want %q: Codex passes an MCP server no other variables", got, codexMCPEnvVars)
@@ -291,6 +312,7 @@ func TestCodexPluginLoads(t *testing.T) {
 		Transport struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			Cwd     string   `json:"cwd"`
 		} `json:"transport"`
 	}
 	if err := json.Unmarshal(run("mcp", "list", "--json"), &servers); err != nil || !slices.ContainsFunc(servers, func(s struct {
@@ -298,9 +320,11 @@ func TestCodexPluginLoads(t *testing.T) {
 		Transport struct {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
+			Cwd     string   `json:"cwd"`
 		} `json:"transport"`
 	}) bool {
-		return s.Name == "flopwire" && s.Transport.Command == "flopwire" && slices.Equal(s.Transport.Args, []string{"mcp"})
+		return s.Name == "flopwire" && s.Transport.Command == "/bin/sh" && slices.Equal(s.Transport.Args, []string{"./bin/flopwire-hook", "mcp"}) &&
+			samePath(s.Transport.Cwd, filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire", "flopwire", "local"))
 	}) {
 		t.Fatalf("codex mcp list has no flopwire server: %v %+v", err, servers)
 	}
@@ -328,8 +352,11 @@ func TestCodexPluginLoads(t *testing.T) {
 			continue
 		}
 		events = append(events, codexEventName(h.EventName))
-		if h.Command != "flopwire hook || true" || h.TrustStatus != "untrusted" || !h.Enabled {
-			t.Errorf("hook %+v", h)
+		// hooks/list shows the command with ${PLUGIN_ROOT} expanded to
+		// the cached copy; the hash covers it as written.
+		want := `/bin/sh "` + filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire", "flopwire", "local", "bin", "flopwire-hook") + `" hook`
+		if !samePath(strings.TrimSuffix(strings.TrimPrefix(h.Command, `/bin/sh "`), `" hook`), strings.TrimSuffix(strings.TrimPrefix(want, `/bin/sh "`), `" hook`)) || h.TrustStatus != "untrusted" || !h.Enabled {
+			t.Errorf("hook %+v, want command %s", h, want)
 		}
 		// The trust key is the plugin id and the hooks file's relative
 		// path, not the install path, so a reinstall keeps the trust.

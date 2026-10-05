@@ -239,11 +239,13 @@ The report has these parts:
 | Field | Means |
 |---|---|
 | `ok` | `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
-| `flopwire.path` | The `flopwire` binary that the plugin runs. Empty when `flopwire` is not on `PATH`. |
+| `flopwire.path` | The `flopwire` on `PATH`. Empty when `flopwire` is not on `PATH`. The plugins run the binary their shim finds (`hook_binary`). |
+| `flopwire.recorded` | The binary path recorded for the plugins' hooks. See [How the hooks find the binary](#how-the-hooks-find-the-binary). |
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
 | `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
 | `harnesses[].note` | How setup learned what it reports, when that limits the report. |
+| `harnesses[].hook_binary` | The `flopwire` that the installed plugin's hooks run: `path` and `via` (`recorded path`, `PATH` or `known dir`), or `error` with the fix. `shell` says how setup ran the plugin's shim: as the harness runs a hook. |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
@@ -296,6 +298,8 @@ Follow these steps in order.
 11. Run `flopwire setup --check`.
 12. Confirm that each detected harness has `installed: true` and
     `enabled: true`.
+13. Confirm that each installed harness has a `hook_binary.path`. If it
+    has `hook_binary.error`, tell your user the error. It names the fix.
 
 Run `flopwire setup` again at any time. It updates the plugin when a
 new version exists. It changes nothing when the plugin is current.
@@ -313,7 +317,7 @@ approval.
 3. Select "Review hooks".
 4. Trust the five Flopwire hooks. They are on `SessionStart`,
    `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and each
-   runs `flopwire hook || true`.
+   runs `/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook`.
 5. Run `flopwire setup --check`.
 6. Confirm that the Codex entry shows `hook_trust.trusted: 5`.
 
@@ -321,14 +325,17 @@ You can also type `/hooks` in a running Codex session to review the hooks.
 "Trust all and continue" also trusts every other hook that waits for
 review.
 
-What you approve: each hook runs the command `flopwire hook || true`
-outside the Codex sandbox. The timeout is 5 seconds, and 3 seconds for
-`SessionEnd`, the most that Codex allows for that event. The `Stop` hook
-is `async`: Codex does not wait for it. `flopwire hook` reads the
-hook input, asks the device agent for this session's messages, prints
-them into the session, and asks the agent to index the transcript. `|| true`
-keeps Codex from reporting a failed hook when `flopwire` is missing or too
-old.
+What you approve: each hook runs the plugin's shim,
+`/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook`, outside the Codex
+sandbox. The shim finds the `flopwire` binary and runs `flopwire hook`
+(see [How the hooks find the binary](#how-the-hooks-find-the-binary)).
+The timeout is 5 seconds, and 3 seconds for `SessionEnd`, the most that
+Codex allows for that event. The `Stop` hook is `async`: Codex does not
+wait for it. `flopwire hook` reads the hook input, asks the device agent
+for this session's messages, prints them into the session, and asks the
+agent to index the transcript. When the shim finds no binary, or the
+binary fails, the hook exits 1 with one line on stderr, and Codex reports
+a failed hook. It never exits 2, which would block the turn.
 
 Codex asks again for a hook when any of these change: its event, its
 matcher, its command, its timeout, its `async` flag, its `statusMessage`,
@@ -337,7 +344,11 @@ event. Codex stores the approval under a key that holds the event and the
 position, and a hash of the other fields. A plugin update that adds,
 removes or reorders hooks therefore asks again for each hook that moved.
 Flopwire changes these only when it must. A plugin update that changes a
-hook asks once more, for that hook. Until you trust a new `SessionEnd`
+hook asks once more, for that hook. The update that added the shim
+changed the command of all five hooks from `flopwire hook || true`, so
+Codex asks once more for all five. Codex hashes the command as written,
+with `${PLUGIN_ROOT}` unexpanded, so a reinstall to another path does not
+ask again. Until you trust a new `SessionEnd`
 hook, a Codex session that exits leaves presence when its writer lock is
 released, which the agent notices within seconds. Codex records the
 approval in `~/.codex/config.toml` under `hooks.state`, keyed by the
@@ -384,6 +395,78 @@ another user, or its mode changed.
 
 Codex's sandbox also keeps `.git` read-only, so `git commit` fails in
 a sandboxed shell command. See [Codex and git commits](#codex-and-git-commits).
+
+### How the hooks find the binary
+
+Every harness runs a hook command through a shell, and that shell's
+`PATH` is often not your terminal's:
+
+| Harness | Runs a hook command with | `PATH` |
+|---|---|---|
+| Claude Code | `/bin/sh -c` | The `PATH` Claude Code started with. A Claude Code started from the desktop has the desktop's. |
+| Codex | Your login shell, `zsh -lc` (Codex 0.160) | What your login files (`~/.zprofile`, `/etc/zprofile`) set, not the `PATH` Codex started with. |
+| Devin CLI | `bash -c` | What Devin read from your login shell. |
+| opencode | No shell: the plugin starts `flopwire` itself | The `PATH` opencode started with. |
+
+So a bare `flopwire` in a hook can find another binary than your
+terminal does, or none. Each failure stops delivery. The hooks therefore
+run a shim, `bin/flopwire-hook` in the Claude Code and Codex plugins
+(Devin loads the Claude Code plugin). The shim takes the first of these:
+
+1. The path in `<config dir>/binary-path`, if that file names an
+   executable file. `flopwire setup` writes this binary's absolute path
+   there, with symlinks resolved. Another `flopwire` command that you
+   run writes it only when no binary is recorded or the recorded one is
+   gone. So an upgrade that moves the binary corrects it at your next
+   command, and a scratch or CI build never replaces your install.
+   `flopwire hook`, `flopwire mcp`,
+   `flopwire version`, `flopwire probe`, `flopwire agent flush`, the
+   server commands and `flopwire setup --check` do not write it. The
+   config directory is the directory of `FLOPWIRE_CONFIG`, else
+   `~/Library/Application Support/flopwire` on macOS and
+   `~/.config/flopwire` (or `$XDG_CONFIG_HOME/flopwire`) on Linux.
+   When `flopwire` on the hook shell's `PATH` is a newer file than the
+   recorded one (an old `go install` or a kept Homebrew keg still exists),
+   the shim takes the one on `PATH`.
+2. `flopwire` on the hook shell's `PATH`.
+3. `flopwire` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin` or
+   `~/.local/bin`.
+
+The shim runs that binary with its own arguments and sets
+`FLOPWIRE_HOOK_VIA` to `recorded`, `path` or `known`. When it finds no
+binary, it writes one line to stderr that names the recorded path, the
+`PATH` it searched and the fix (`flopwire setup`), and exits 1. When the
+binary fails, for example a binary older than the plugin, it writes one
+line that says to run `flopwire setup --check`, and exits 1. It never
+exits 2, which blocks a prompt or a stop. The harness shows the failed
+hook. The opencode plugin searches in the same order and writes the
+same line.
+
+The hook commands start the shim by the harness's plugin root:
+`/bin/sh "${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook" hook` in Claude Code
+and Devin, `/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook` in Codex.
+`/bin/sh` runs the file, so its mode does not matter.
+
+The MCP server runs through the same shim, `flopwire-hook mcp`, so it
+finds the same binary. Claude Code and Devin expand `${CLAUDE_PLUGIN_ROOT}`
+in the plugin's `.mcp.json`. Codex 0.160 does not expand `${PLUGIN_ROOT}`
+there, so its `.mcp.json` sets `cwd` to `.` (Codex resolves it to the
+plugin directory) and runs `./bin/flopwire-hook mcp`. The shim `exec`s
+the binary for the MCP server. A missing binary shows as a failed MCP
+server in the harness.
+
+`flopwire setup --check` runs each installed plugin's shim the way its
+harness runs a hook: `/bin/sh -c` for Claude Code, `$SHELL -lc` for Codex
+and Devin, and the shim's search in setup itself for opencode. It reports
+the result as `hook_binary`, in the text form
+`hook binary: <path> (via recorded path)`, or the shim's error. setup
+compares the plugin with that binary, not with the one on `PATH`, and
+warns when the binary lacks a command the plugin runs. A plugin from
+before the shim gets a todo to update it.
+
+`flopwire probe --as-installed` runs the plugins' own hook commands in
+each harness and checks which binary they ran. See
+[probe.md](probe.md).
 
 ### Remove
 
@@ -650,13 +733,15 @@ is longer than the cap is cut, with a note that names the
 ### Claude Code
 
 Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
-The plugin it installs runs `flopwire hook` on `SessionStart`,
-`UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
-MCP tools.
+The plugin it installs runs `flopwire hook` through its shim on
+`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and
+`SessionEnd`, and serves the MCP tools. See
+[How the hooks find the binary](#how-the-hooks-find-the-binary).
 
 Use the manual configuration below only when you cannot install the
 plugin. Do not use both: each hook would then run twice.
-`flopwire setup` warns when it finds both.
+`flopwire setup` warns when it finds both. The manual hooks run
+`flopwire` from the hook shell's `PATH`.
 
 1. Open `~/.claude/settings.json`.
 2. Add these entries under `hooks`:
@@ -690,8 +775,8 @@ plugin. Do not use both: each hook would then run twice.
 Run `flopwire setup`, then approve the hooks. See
 [Install into the harnesses](#install-into-the-harnesses) and
 [Approve the Codex hooks](#approve-the-codex-hooks). The plugin runs
-`flopwire hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`,
-`Stop` and `SessionEnd`, and serves the MCP tools.
+`flopwire hook` through its shim on `SessionStart`, `UserPromptSubmit`,
+`PostToolUse`, `Stop` and `SessionEnd`, and serves the MCP tools.
 
 The plugin's `Stop` hook replaces the older
 `notify = ["flopwire", "agent", "flush"]` line: it asks the agent to index
@@ -711,9 +796,13 @@ At exit, Codex drops the async `Stop` hook of the last turn; the
 Keep your shell startup files silent when they are not interactive:
 on the other events the printed text goes into the session as context.
 
-Codex 0.160 runs hook commands with `zsh -lc`, so `flopwire` resolves
-through the `PATH` your login profile sets, not the `PATH` Codex started
-with; an isolated test must set `ZDOTDIR` or call `flopwire` by absolute path.
+Codex 0.160 runs hook commands with `zsh -lc`, so a bare `flopwire`
+resolves through the `PATH` your login profile sets, not the `PATH` Codex
+started with. The plugin's shim tries the recorded binary path first (see
+[How the hooks find the binary](#how-the-hooks-find-the-binary)). An
+isolated test must set `FLOPWIRE_CONFIG` to a directory whose
+`binary-path` names the binary under test, or the shim runs the binary
+your own setup recorded.
 
 #### Codex and git commits
 
@@ -776,12 +865,13 @@ event, the matcher, the command, the timeout, `async`, `statusMessage`,
 ### Devin CLI
 
 Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
-The plugin it installs runs `flopwire hook` on `SessionStart`,
-`UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
-MCP tools. A missing `flopwire` is silent; a `flopwire hook` that fails (a
-binary older than the plugin) exits 1 with a hint to run
-`flopwire setup --check` on stderr. Devin does not show that hint, in the
-TUI or in print mode. It writes only `Command exited with code 1` to its
+The plugin it installs runs `flopwire hook` through its shim on
+`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and
+`SessionEnd`, and serves the MCP tools. Devin sets `CLAUDE_PLUGIN_ROOT`
+for the plugin's hooks. When the shim finds no `flopwire`, or
+`flopwire hook` fails (a binary older than the plugin), the hook exits 1
+with one line on stderr that names the fix. Devin does not show that
+line, in the TUI or in print mode. It writes only `Command exited with code 1` to its
 own log, and the session continues without messages. After you update the
 plugin or the binary, run `flopwire setup --check`: it reports a binary on
 `PATH` that lacks a command the plugin runs. Devin has no hook approval

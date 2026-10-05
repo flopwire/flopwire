@@ -1,0 +1,96 @@
+#!/bin/sh
+# flopwire-hook runs the flopwire binary for the plugin's hooks. A harness
+# runs hook commands through a shell whose PATH can differ from your
+# terminal's (Codex uses a login shell; a harness started from the GUI has
+# the GUI's PATH), so the hooks do not rely on PATH alone. The binary is,
+# in order:
+#
+#   1. the path `flopwire setup` recorded in <config dir>/binary-path,
+#      when it is executable, unless flopwire on PATH is a newer file;
+#   2. flopwire on PATH;
+#   3. flopwire in /opt/homebrew/bin, /usr/local/bin, ~/go/bin or
+#      ~/.local/bin.
+#
+# It runs that binary with this script's arguments and tells it how it was
+# found in FLOPWIRE_HOOK_VIA (recorded, path or known). When nothing is
+# found, or the binary fails (`flopwire hook` itself always exits 0; an
+# older binary without the command exits 1, a crash 2), it prints one line
+# to stderr and exits 1: a hook error the harness shows. Never 2, which
+# would block the prompt or the stop.
+#
+# `flopwire-hook --which` prints "<via> <path>" and runs nothing; it is
+# what `flopwire setup --check` runs. `flopwire-hook mcp` runs the
+# plugin's MCP server the same way: Claude Code and Devin start it by
+# ${CLAUDE_PLUGIN_ROOT}, Codex from the plugin directory (cwd "."). This file is the same in the Claude
+# Code and Codex plugins; a test fails when they differ.
+
+if [ -n "${FLOPWIRE_CONFIG:-}" ]; then
+	case $FLOPWIRE_CONFIG in
+	*/*) dir=${FLOPWIRE_CONFIG%/*} ;;
+	*) dir=. ;;
+	esac
+elif [ "$(uname -s 2>/dev/null || /usr/bin/uname -s 2>/dev/null)" = Darwin ]; then
+	dir="${HOME:-}/Library/Application Support/flopwire"
+else
+	case ${XDG_CONFIG_HOME:-} in
+	/*) dir=$XDG_CONFIG_HOME/flopwire ;;
+	*) dir="${HOME:-}/.config/flopwire" ;;
+	esac
+fi
+
+recorded=
+if [ -r "$dir/binary-path" ]; then
+	IFS= read -r recorded <"$dir/binary-path" || :
+fi
+
+bin='' via=''
+if [ -n "$recorded" ] && [ -f "$recorded" ] && [ -x "$recorded" ]; then
+	bin=$recorded via=recorded
+fi
+p=$(command -v flopwire 2>/dev/null) || p=
+case $p in
+/*)
+	if [ -f "$p" ] && [ -x "$p" ] && [ "$p" != "$bin" ]; then
+		# A flopwire on PATH newer than the recorded one wins: the recorded
+		# path can name an older install that still exists (an old go
+		# install, a kept Homebrew keg). find -L compares the files that
+		# symlinks name, so Homebrew's link to the recorded binary is equal.
+		if [ -z "$bin" ] || [ -n "$(find -L "$p" -prune -newer "$bin" 2>/dev/null)" ]; then
+			bin=$p via=path
+		fi
+	fi
+	;;
+esac
+if [ -z "$bin" ]; then
+	for d in /opt/homebrew/bin /usr/local/bin "${HOME:-}/go/bin" "${HOME:-}/.local/bin"; do
+		if [ -f "$d/flopwire" ] && [ -x "$d/flopwire" ]; then
+			bin=$d/flopwire via=known
+			break
+		fi
+	done
+fi
+
+if [ -z "$bin" ]; then
+	echo "flopwire-hook: no flopwire binary: the recorded path (${recorded:-none}, from $dir/binary-path) is not executable, flopwire is not on PATH ($PATH), and not in /opt/homebrew/bin, /usr/local/bin, ~/go/bin or ~/.local/bin; fix: run flopwire setup" >&2
+	exit 1
+fi
+
+if [ "${1:-}" = --which ]; then
+	echo "$via $bin"
+	exit 0
+fi
+
+# The MCP server: the harness talks to the binary on stdin and stdout and
+# stops it with a signal, so the binary replaces this shell.
+if [ "${1:-}" = mcp ]; then
+	exec "$bin" "$@"
+fi
+
+FLOPWIRE_HOOK_VIA=$via
+export FLOPWIRE_HOOK_VIA
+"$bin" "$@"
+status=$?
+if [ "$status" -ne 0 ]; then
+	echo "flopwire-hook: $bin $* exited $status: the binary may be older than this plugin; run: flopwire setup --check" >&2
+	exit 1
+fi

@@ -109,6 +109,9 @@ func setupOpencode(ctx context.Context, env *setupEnv) harnessReport {
 	case ours && !current:
 		r.Todo = append(r.Todo, "the opencode plugin differs from this flopwire's; run flopwire setup to update it")
 	}
+	if ours && mode != setupRemove {
+		applyHookBinary(ctx, env, &r, opencodeHookBinary())
+	}
 	if len(r.Done) > 0 && mode != setupRemove {
 		r.Todo = append(r.Todo, "restart your opencode sessions: opencode loads plugins at start")
 	}

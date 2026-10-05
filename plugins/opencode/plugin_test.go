@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The plugin's delivery after a tool call, driven by node with a fake
@@ -126,6 +127,112 @@ console.log(JSON.stringify(sent))
 			// it carries its own id, and the message's wrapper and id.
 			if p := sent[0].Parts[0]; !strings.HasPrefix(p.ID, "prt_") || p.Metadata.Flopwire.ID != "m1" || !strings.HasPrefix(p.Text, `<flopwire-message id="m1"`) {
 				t.Fatalf("part: %+v", p)
+			}
+		})
+	}
+}
+
+// TestPluginFindsTheBinary: opencode runs no shell, so the plugin finds
+// flopwire itself, in the shim's order: the recorded path, PATH, then
+// known directories, and names how in FLOPWIRE_HOOK_VIA. With none it
+// prints one line naming what it searched and the fix, and stays out of
+// the way.
+func TestPluginFindsTheBinary(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("node is not installed; CI must run this test")
+		}
+		t.Skip("node is not installed")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake flopwire is a shell script")
+	}
+	for _, p := range []string{"/opt/homebrew/bin/flopwire", "/usr/local/bin/flopwire"} {
+		if _, err := os.Stat(p); err == nil {
+			t.Skip("a flopwire in a known directory would be found")
+		}
+	}
+	dir := t.TempDir()
+	write := func(p, s string, mode os.FileMode) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(s), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dir, "flopwire.js"), string(Source), 0o644)
+	write(filepath.Join(dir, "package.json"), `{"type":"module"}`, 0o644)
+	write(filepath.Join(dir, "node_modules/@opencode-ai/plugin/package.json"), `{"name":"@opencode-ai/plugin","type":"module","main":"index.js"}`, 0o644)
+	write(filepath.Join(dir, "node_modules/@opencode-ai/plugin/index.js"), "export const tool = (t) => t\ntool.schema = {}\n", 0o644)
+	write(filepath.Join(dir, "driver.mjs"), `import { Flopwire } from "./flopwire.js"
+const hooks = await Flopwire({ client: { session: {} } })
+console.log(Object.keys(hooks).length ? "loaded" : "empty")
+`, 0o644)
+	fake := func(at string) string {
+		write(at, "#!/bin/sh\ncat >/dev/null\necho \"$0 $FLOPWIRE_HOOK_VIA\" >> \"$RUN_LOG\"\necho '{\"instruction\":\"I\",\"tools\":[],\"registry\":\"\"}'\n", 0o755)
+		return at
+	}
+	age := func(p string) string { // an hour old: an older install
+		at := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, c := range []struct {
+		name  string
+		setup func(home, cfg string) (path, want string)
+	}{
+		{"recorded", func(home, cfg string) (string, string) {
+			want := fake(filepath.Join(home, "opt", "flopwire"))
+			write(filepath.Join(filepath.Dir(cfg), "binary-path"), want+"\n", 0o644)
+			return filepath.Dir(age(fake(filepath.Join(home, "onpath", "flopwire")))), want + " recorded"
+		}},
+		// A stale recorded install loses to a newer flopwire on PATH.
+		{"newer path", func(home, cfg string) (string, string) {
+			stale := age(fake(filepath.Join(home, "go", "bin", "flopwire")))
+			write(filepath.Join(filepath.Dir(cfg), "binary-path"), stale+"\n", 0o644)
+			want := fake(filepath.Join(home, "onpath", "flopwire"))
+			return filepath.Dir(want), want + " path"
+		}},
+		{"path", func(home, cfg string) (string, string) {
+			want := fake(filepath.Join(home, "onpath", "flopwire"))
+			return filepath.Dir(want), want + " path"
+		}},
+		{"known", func(home, cfg string) (string, string) {
+			return t.TempDir(), fake(filepath.Join(home, ".local", "bin", "flopwire")) + " known"
+		}},
+		{"none", func(home, cfg string) (string, string) {
+			write(filepath.Join(filepath.Dir(cfg), "binary-path"), "/gone/flopwire\n", 0o644)
+			return t.TempDir(), ""
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := filepath.Join(t.TempDir(), "config.json")
+			path, want := c.setup(home, cfg)
+			log := filepath.Join(t.TempDir(), "run.log")
+			cmd := exec.Command(node, "driver.mjs")
+			cmd.Dir = dir
+			cmd.Env = []string{"PATH=" + path, "HOME=" + home, "FLOPWIRE_CONFIG=" + cfg, "RUN_LOG=" + log}
+			var out, errb strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("node: %v\n%s", err, errb.String())
+			}
+			ran, _ := os.ReadFile(log)
+			if want == "" {
+				if strings.TrimSpace(out.String()) != "empty" || len(ran) != 0 || strings.Count(errb.String(), "\n") != 1 ||
+					!strings.Contains(errb.String(), "/gone/flopwire") || !strings.Contains(errb.String(), "("+path+")") || !strings.Contains(errb.String(), "fix: run flopwire setup") {
+					t.Fatalf("no binary: stdout %q, stderr %q, ran %q", out.String(), errb.String(), ran)
+				}
+				return
+			}
+			if strings.TrimSpace(out.String()) != "loaded" || strings.TrimSpace(string(ran)) != want {
+				t.Fatalf("stdout %q stderr %q; ran %q, want %q", out.String(), errb.String(), ran, want)
 			}
 		})
 	}

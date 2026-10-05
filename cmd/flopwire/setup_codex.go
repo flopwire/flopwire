@@ -554,6 +554,12 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 			r.Warnings = append(r.Warnings, codexManualEntries(env, hooks, cfg)...)
 		}
 	}
+	if r.Installed && mode != setupRemove {
+		if root := codexPluginRoot(env, r.Version); root != "" {
+			bin := applyHookBinary(ctx, env, &r, resolveHookBinary(ctx, env, "codex", shimIn(root)))
+			r.Warnings = append(r.Warnings, binaryLacks(bin, r.Version, pluginCommands(root))...)
+		}
+	}
 	return r
 }
 
@@ -585,7 +591,7 @@ func codexTrust(r *harnessReport, hooks []codexHook) {
 		return
 	}
 	if len(t.NeedReview) > 0 {
-		r.Todo = append(r.Todo, fmt.Sprintf("approve the plugin's hooks once in Codex: start codex; at \"Hooks need review\" choose Review hooks and trust the %d Flopwire hooks (%s; each runs `flopwire hook || true`), or run /hooks later. Until you do, Codex skips them: no messages arrive and no standing instruction. setup does not approve hooks for you", len(t.NeedReview), strings.Join(t.NeedReview, ", ")))
+		r.Todo = append(r.Todo, fmt.Sprintf("approve the plugin's hooks once in Codex: start codex; at \"Hooks need review\" choose Review hooks and trust the %d Flopwire hooks (%s; each runs the plugin's bin/flopwire-hook, which runs flopwire hook), or run /hooks later. Until you do, Codex skips them: no messages arrive and no standing instruction. setup does not approve hooks for you", len(t.NeedReview), strings.Join(t.NeedReview, ", ")))
 	}
 	if len(t.Disabled) > 0 {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("you disabled the Flopwire hooks for %s in Codex (/hooks); messages do not arrive through those events", strings.Join(t.Disabled, ", ")))

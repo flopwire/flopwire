@@ -45,6 +45,12 @@ type tapEntry struct {
 	AgentTranscript string   `json:"agent_transcript,omitempty"`
 	Printed         []string `json:"printed,omitempty"` // message ids in the additionalContext
 	Instruction     bool     `json:"instruction,omitempty"`
+	// Binary is the flopwire that ran the hook and Via how the plugin's
+	// shim found it (FLOPWIRE_HOOK_VIA: recorded, path or known); both are
+	// set only under probe --as-installed, where the plugin's own hook
+	// command runs `flopwire hook` and the hook taps itself.
+	Binary string `json:"binary,omitempty"`
+	Via    string `json:"via,omitempty"`
 }
 
 // tapInput is the part of a hook's input the tap logs.
@@ -82,6 +88,14 @@ func printedIDs(out []byte) (ids []string, instruction bool) {
 	return ids, instruction || strings.Contains(text, "<flopwire-instructions>")
 }
 
+// envProbeTap, set by probe --as-installed in a harness's environment,
+// makes `flopwire hook` run as the tap with this log, so the plugin's own
+// hook command (shim, shell and all) is what the probe exercises.
+const envProbeTap = "FLOPWIRE_PROBE_TAP"
+
+// envHookVia is how the plugin's shim found the binary it ran.
+const envHookVia = "FLOPWIRE_HOOK_VIA"
+
 func probeTap(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	signal.Ignore(syscall.SIGPIPE)
 	fs := flag.NewFlagSet("probe tap", flag.ContinueOnError)
@@ -100,6 +114,10 @@ func probeTap(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	_ = json.Unmarshal(raw, &in)
 	e := tapEntry{At: start.UnixMilli(), Event: in.Event, Session: in.SessionID, AgentID: in.AgentID, AgentType: in.AgentType,
 		Tool: in.ToolName, ToolUseID: in.ToolUseID, Transcript: in.TranscriptPath, AgentTranscript: in.AgentTranscriptPath}
+	if os.Getenv(envProbeTap) != "" {
+		e.Binary, _ = selfPath()
+		e.Via = os.Getenv(envHookVia)
+	}
 	if in.Harness == "opencode" && in.Event == evHello {
 		// The plugin loading: answered, never logged.
 		return hookCmd(ctx, []string{"--socket", *socket}, bytes.NewReader(raw), stdout, stderr, os.Getenv)

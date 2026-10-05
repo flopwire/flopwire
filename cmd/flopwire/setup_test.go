@@ -1281,3 +1281,106 @@ func TestSetupCheckBusyAgentRuns(t *testing.T) {
 		t.Fatalf("text report hides the unknown agent credential:\n%s", out)
 	}
 }
+
+// TestSetupReportsHookBinary: setup records this binary's path for the
+// hooks' shim, and --check runs the installed plugin's shim as Claude Code
+// runs a hook (/bin/sh -c) and reports the binary it finds and how. The
+// plugin/binary comparison uses that binary, not the one on PATH.
+func TestSetupReportsHookBinary(t *testing.T) {
+	f := newSetupFixture(t, true)
+	pluginDir := filepath.Join(f.repo, "plugins", "claude-code", "flopwire")
+	installed := func(dir string) {
+		f.setState(fakeClaudeState{
+			Available:    "aaaaaaaaaaaa",
+			Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
+			Plugins:      []claudePluginEntry{{ID: claudePlugin, Version: "aaaaaaaaaaaa", Scope: "user", Enabled: true, InstallPath: dir}},
+		})
+	}
+	self, err := selfPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	onPath := filepath.Join(f.dir, "bin", "flopwire")
+	recorded := filepath.Join(f.dir, "fw", binaryPathFile)
+
+	// Nothing recorded yet: the shim finds flopwire on PATH.
+	installed(pluginDir)
+	rep, _, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb := f.claude(rep).HookBinary
+	if hb == nil || hb.Path != onPath || hb.Via != "PATH" || hb.Error != "" || hb.Shim != filepath.Join(pluginDir, "bin", "flopwire-hook") || !strings.HasPrefix(hb.Shell, "/bin/sh -c") {
+		t.Fatalf("no recorded path: %+v", hb)
+	}
+	if rep.Flopwire.Recorded != "" || !hasString(rep.Todo, "no binary path is recorded for the plugins' hooks") {
+		t.Fatalf("--check wrote or did not report the recorded path: %q %q", rep.Flopwire.Recorded, rep.Todo)
+	}
+	if _, err := os.Stat(recorded); err == nil {
+		t.Fatal("--check wrote the recorded path")
+	}
+
+	// setup records this binary; the shim then takes it.
+	if _, _, err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	installed(pluginDir)
+	rep, out, err := f.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hb := f.claude(rep).HookBinary; hb == nil || hb.Path != self || hb.Via != "recorded path" || rep.Flopwire.Recorded != self {
+		t.Fatalf("after setup: recorded %q, %+v", rep.Flopwire.Recorded, hb)
+	}
+	_, out, _ = f.run("--check", "--text")
+	for _, want := range []string{"  recorded for the hooks: " + self + "\n", "  hook binary: " + self + " (via recorded path)\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--text lacks %q:\n%s", want, out)
+		}
+	}
+
+	// The recorded binary is older than the plugin, the one on PATH is
+	// current: the warning names the recorded one, which the hooks run.
+	old := filepath.Join(f.dir, "old", "flopwire")
+	script := "#!/bin/sh\ncase \"$1\" in\nversion) echo v0.1.0 ;;\n*) printf 'Usage: flopwire <command>\\n\\n  mcp         serve tools\\n  version     print version\\n' >&2; exit 1 ;;\nesac\n"
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordBinary(recorded, old); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, _ = f.run("--check")
+	if h := f.claude(rep); h.HookBinary == nil || h.HookBinary.Path != old || !hasString(h.Warnings, "runs flopwire hook, which "+old+" (version v0.1.0) does not know") {
+		t.Fatalf("older recorded binary: %+v %q", h.HookBinary, h.Warnings)
+	}
+
+	// Nothing anywhere: an error with the fix, and a todo.
+	if !knownFlopwireInstalled() {
+		if err := os.Remove(old); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(onPath); err != nil {
+			t.Fatal(err)
+		}
+		rep, _, _ = f.run("--check")
+		h := f.claude(rep)
+		if h.HookBinary == nil || h.HookBinary.Path != "" || !strings.Contains(h.HookBinary.Error, "fix: run flopwire setup") || !strings.Contains(h.HookBinary.Error, old) || !hasString(h.Todo, "the hooks find no flopwire binary") {
+			t.Fatalf("no binary: %+v %q", h.HookBinary, h.Todo)
+		}
+		_, out, _ = f.run("--check", "--text")
+		if !strings.Contains(out, "  hook binary: none, run through /bin/sh -c") {
+			t.Errorf("--text:\n%s", out)
+		}
+	}
+
+	// A plugin from before the shim.
+	oldPlugin := t.TempDir()
+	installed(oldPlugin)
+	rep, _, _ = f.run("--check")
+	if h := f.claude(rep); h.HookBinary == nil || !strings.Contains(h.HookBinary.Error, "predates the hook shim") || !hasString(h.Todo, "update the plugin: its hooks run flopwire from the hook shell's PATH") || hasString(h.Todo, "find no flopwire binary") {
+		t.Fatalf("plugin without the shim: %+v %q", h.HookBinary, h.Todo)
+	}
+}

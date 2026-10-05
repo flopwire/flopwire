@@ -43,6 +43,7 @@ import (
 var version = "dev"
 
 func main() {
+	recordSelf(os.Args[1:])
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		if !errors.Is(err, errReported) { // already written (JSON on stderr)
 			fmt.Fprintln(os.Stderr, "flopwire:", err)

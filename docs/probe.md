@@ -38,6 +38,7 @@ Each harness runs about eight short turns on its cheapest model: `haiku`,
 | `--case idle,mid-turn,...` | Run only these cases. |
 | `--model NAME` or `--model codex=NAME,...` | Use another model. |
 | `--local` | Start a local-only agent in the scratch directory. Without it the probe uses your running agent, and only Claude Code can run. |
+| `--as-installed` | Run the plugins' own hook commands instead of the tap by absolute path, and add the `hook-binary` case. See [Plugins as installed](#plugins-as-installed). |
 | `--json` | Print the report as JSON. |
 | `--notes` | Append the run to `notes/message-bus/probe-runs.md` (`--notes-file` changes the path). |
 | `--idle-wait 60s` | How long the idle case waits. |
@@ -103,6 +104,40 @@ between two people would expect `teammate`.
 The model's reply is corroboration only. Each case asks the model to
 quote the message, and the evidence says whether it did. A cheap model
 that answers the message instead of quoting it does not fail a case.
+
+## Plugins as installed
+
+By default the scratch project's hooks call this binary by absolute path
+(`<flopwire> probe tap`). That hides how a real install finds the binary:
+every harness runs the plugin's hook command through a shell, whose
+`PATH` can differ from yours ([agent.md](agent.md#how-the-hooks-find-the-binary)).
+
+With `--as-installed`, the probe installs this binary's own plugins the
+way `flopwire setup` does, and the delivery hooks are the plugins' own
+commands:
+
+| Harness | Install |
+|---|---|
+| Claude Code | `claude --plugin-dir` with the Claude Code plugin, for the probe's sessions only. |
+| Codex | `codex plugin marketplace add` and `codex plugin add` in the scratch `CODEX_HOME`. The probe trusts the plugin's hooks there. |
+| Devin | `devin plugins install --local` in the scratch `HOME`. |
+| opencode | The plugin file, without `FLOPWIRE_BIN`, so it searches for the binary. |
+
+The harness runs the shim by its plugin root, through its own shell. The
+shim finds this binary through the path recorded in the scratch config
+directory (`FLOPWIRE_CONFIG`), as `flopwire setup` records it. With
+`FLOPWIRE_PROBE_TAP` set, `flopwire hook` writes the hook log itself, with
+the binary that ran and how the shim found it. The project keeps only
+observing hooks (`PreToolUse`, `SubagentStart`, `SubagentStop`).
+
+| Case | What it proves |
+|---|---|
+| `hook-binary` | Every delivery hook ran this binary through the plugin's own hook command, and the shim (or the opencode plugin) said how it found it. |
+
+The plugins' Codex `Stop` hook is `async`, so Codex runs it after it
+reports the turn done. Before the idle wait and after each turn, the
+probe waits up to 15 s until every turn of the recipient has its `Stop`
+in the hook log.
 
 ## What it does not touch
 
