@@ -77,10 +77,14 @@ Flags
                      Codex, Devin and opencode install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note"},"agent":{"running",
-"socket"},"server":{"configured","url"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
+"socket"},"server":{"configured","url","credential","messaging","warning"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
 "need_review":[…],"disabled":[…]}}],"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
+server.credential is device login, FLOPWIRE_TOKEN, legacy login or none (the
+running agent's when it answers); server.messaging, when set, is why
+messaging is off and the fix; server.warning says FLOPWIRE_TOKEN hides a saved
+device login.
 A harness that fails is reported with "error"; setup carries on with the
 others, then sets ok false and exits 1. A harness setup cannot manage because
 you are not logged in to it (Devin) is reported with "skipped" instead; it
@@ -188,6 +192,16 @@ func localIndexState(ctx context.Context) setupIndex {
 type setupServer struct {
 	Configured bool   `json:"configured"`
 	URL        string `json:"url,omitempty"`
+	// Credential is the credential's source: "device login",
+	// "FLOPWIRE_TOKEN", "legacy login" or "none" (credentialSource). The
+	// running agent's when it answers (its environment decides), else
+	// this process's.
+	Credential string `json:"credential"`
+	// Messaging, when set, is why messaging is off with this credential,
+	// and the fix.
+	Messaging string `json:"messaging,omitempty"`
+	// Warning: FLOPWIRE_TOKEN hides a saved device login.
+	Warning string `json:"warning,omitempty"`
 }
 
 // harnessReport is one harness's state after setup ran.
@@ -375,15 +389,22 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	}
 	env.binary = &rep.Flopwire
 	rep.Agent.Socket, _ = defaultSocket()
+	var agentCred *agent.Credential
 	if rep.Agent.Socket != "" {
 		c, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
+		resp, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
 		cancel()
 		rep.Agent.Running = err == nil
+		agentCred = resp.Credential
 	}
 	if cfg, err := client.Load(); err == nil {
 		rep.Server = setupServer{Configured: true, URL: cfg.Server}
 	}
+	cred := credentialSource(client.Load, client.LoadFile)
+	if agentCred != nil {
+		cred = *agentCred
+	}
+	rep.Server.Credential, rep.Server.Messaging, rep.Server.Warning = cred.Source, cred.MessagingOff, cred.Warning
 	rep.Index = localIndexState(ctx)
 	if env.mode != setupRemove {
 		if (rep.Index.State == indexMissing || rep.Index.State == indexEmpty) && !rep.Agent.Running {
@@ -1102,6 +1123,13 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		fmt.Fprintf(&b, "server: %s\n", rep.Server.URL)
 	} else {
 		b.WriteString("server: none (messages stay on this device)\n")
+	}
+	fmt.Fprintf(&b, "credential: %s\n", rep.Server.Credential)
+	if rep.Server.Messaging != "" {
+		fmt.Fprintf(&b, "messaging: off: %s\n", rep.Server.Messaging)
+	}
+	if rep.Server.Warning != "" {
+		fmt.Fprintf(&b, "warning: %s\n", rep.Server.Warning)
 	}
 	for _, h := range rep.Harnesses {
 		if !h.Detected {

@@ -298,7 +298,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		var noDevice func() string
 		if ccErr == nil && cc.Server != "" && cc.Token != "" && !*noSync {
 			connect = busConnect(cc, client.Load)
-			noDevice = busNoDevice(client.Load)
+			noDevice = busNoDevice(client.Load, client.LoadFile)
 			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
@@ -307,6 +307,16 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			defer b.Close()
 			cfg.Bus = b
 		}
+	}
+	cfg.Credential = func() agent.Credential {
+		c := credentialSource(client.Load, client.LoadFile)
+		if *noSync {
+			c.MessagingOff = "" // messaging stays on the device by choice
+		}
+		return c
+	}
+	if c := cfg.Credential(); c.Warning != "" {
+		log.Warn("agent: " + c.Warning)
 	}
 	a = agent.New(store, cfg) // installs the path rules filter on sched
 	if startSyncRun != nil {
@@ -529,22 +539,10 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 
 // busNoDevice is devicebus's NoDevice: the server takes the bus only from
 // an enrolled device credential, so a minted FLOPWIRE_TOKEN or a login
-// from before device credentials (no device id) would have every poll
-// refused. A config that cannot be read says nothing: Connect keeps the
-// last one.
-func busNoDevice(load func() (client.Config, error)) func() string {
-	return func() string {
-		cc, err := load()
-		switch {
-		case err != nil || cc.Token == "":
-			return ""
-		case cc.FromEnv:
-			return "messaging needs an enrolled device credential, and FLOPWIRE_TOKEN is a minted token: unset FLOPWIRE_TOKEN and run flopwire login"
-		case cc.DeviceID == "":
-			return "messaging needs an enrolled device credential, and this login predates them: run flopwire login"
-		}
-		return ""
-	}
+// without a device id would have every poll refused (credentialSource). A
+// config that cannot be read says nothing: Connect keeps the last one.
+func busNoDevice(load, loadFile func() (client.Config, error)) func() string {
+	return func() string { return credentialSource(load, loadFile).MessagingOff }
 }
 
 // rotatingBus is client.Bus with one retry when a 401 raced a rotation:
@@ -803,11 +801,15 @@ func agentStatusOutput(ctx context.Context, w io.Writer, asJSON bool) error {
 	if err == nil {
 		printAgentStatus(w, resp)
 	}
-	if cfg, cfgErr := client.Load(); cfgErr == nil {
-		credentialStatus(w, cfg, time.Now())
+	// The running agent names its own credential: its environment, not
+	// this shell's, decides whether FLOPWIRE_TOKEN wins.
+	src := credentialSource(client.Load, client.LoadFile)
+	if resp.Credential != nil {
+		src = *resp.Credential
 	}
+	cfg, _ := client.LoadFile()
+	credentialStatus(w, src, cfg, time.Now())
 	return err
-
 }
 
 // placementOrder is how status lists placement methods.
@@ -844,7 +846,11 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 			}
 		}
 	}
-	printBusStatus(w, resp.Bus)
+	off := ""
+	if resp.Credential != nil {
+		off = resp.Credential.MessagingOff
+	}
+	printBusStatus(w, resp.Bus, off)
 	if st == nil {
 		fmt.Fprintln(w, "sync: off (no server configured)")
 		return
@@ -882,19 +888,25 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 	}
 }
 
-// printBusStatus renders the message bus state (devicebus.Status).
-func printBusStatus(w io.Writer, b *devicebus.Status) {
+// printBusStatus renders the message bus state (devicebus.Status). off
+// is the credential's messaging: off reason, which the credential lines
+// print: a bus stopped for that reason does not say it twice.
+func printBusStatus(w io.Writer, b *devicebus.Status, off string) {
 	if b == nil {
 		return
 	}
 	switch b.State {
+	case devicebus.StateStopped:
+		if off == "" || b.LastError != off {
+			fmt.Fprintf(w, "messaging: %s: %s\n", b.State, b.LastError)
+		}
 	case devicebus.StateLocal:
 		fmt.Fprintf(w, "messaging: local (no server: between this device's sessions); %d live sessions\n", b.Sessions)
 	case devicebus.StateConnected:
 		fmt.Fprintf(w, "messaging: connected; %d live sessions reported\n", b.Sessions)
 	case devicebus.StateBackoff:
 		fmt.Fprintf(w, "messaging: server unreachable, retry at %s: %s\n", b.RetryAt.Local().Format(time.TimeOnly), b.LastError)
-	case devicebus.StateStopped, devicebus.StateDisabled:
+	case devicebus.StateDisabled:
 		fmt.Fprintf(w, "messaging: %s: %s\n", b.State, b.LastError)
 	default:
 		fmt.Fprintf(w, "messaging: %s\n", b.State)
