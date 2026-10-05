@@ -203,7 +203,8 @@ Expected: Codex shows "Hooks need review".
 
 Expected: Codex lists five Flopwire hooks, on `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`. Each runs
-`flopwire hook || true`.
+`/bin/sh "<plugin cache>/bin/flopwire-hook" hook` (Codex shows the
+command with `${PLUGIN_ROOT}` expanded).
 
 12. Trust the five Flopwire hooks.
 13. Run `flopwire setup --check --text`.

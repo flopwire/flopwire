@@ -14,12 +14,17 @@ that the hooks and the MCP server do for the other harnesses:
 
 ## Requirements
 
-- The `flopwire` binary is on `PATH`. The plugin runs it by name.
+- A `flopwire` binary the plugin can find. It takes the path
+  `flopwire setup` recorded, then `flopwire` on `PATH`, then
+  `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin` and `~/.local/bin`,
+  as the other plugins' hook shim does
+  ([agent.md](agent.md#how-the-hooks-find-the-binary)).
 - The device agent runs (`flopwire agent run`).
 - opencode 1.18 or later.
 
-If `flopwire` is not on `PATH`, the plugin does nothing and adds no
-tools. If the agent is not running, no message arrives and the messaging
+If the plugin finds no `flopwire`, it writes one line to stderr that
+names what it searched and the fix (`flopwire setup`), does nothing more
+and adds no tools. If the agent is not running, no message arrives and the messaging
 tools return `agent_not_running`.
 
 ## Install

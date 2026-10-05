@@ -111,3 +111,37 @@ guardian (Codex only), cheapest models. Each wrapper was closed, uncut,
 followed by a model reply, and held once by the session's transcript. The
 same build also passed framing on all four harnesses and mid-turn on
 Devin and opencode (not recorded above).
+
+## 2026-10-05 15:40Z
+
+flopwire dev, local agent. Plugins as installed (`--as-installed`): the hooks ran the plugins' own commands through the shim. claude: 2.1.289 (Claude Code), model haiku. codex: codex-cli 0.160.0, model gpt-5.6-luna. devin: devin 3000.11.1 (cc4e349ca55e), model swe-2-medium. opencode: 1.18.30, model opencode/big-pickle.
+
+| Harness | Case | Result | Evidence |
+|---|---|---|---|
+| claude | idle | PASS | no turn in 1m0s; m68c21adb98e055eb still queued |
+| claude | prompt-submit | PASS | UserPromptSubmit printed m1957152c90f0c638; transcript hook context holds m1957152c90f0c638 with PROBE-PROMPTSUBMIT-4b5dae; model quoted PROBE-PROMPTSUBMIT-4b5dae |
+| claude | framing | PASS | UserPromptSubmit printed mbbfe0b0d40b27554; transcript hook context holds the whole wrapper: id, from=78b56ff7…, agent=claude, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| claude | mid-turn | PASS | PostToolUse Bash printed m6f8374e0934a3493, 5.886s before the turn's Stop; transcript hook context holds m6f8374e0934a3493 with PROBE-MIDTURN-361684; model quoted PROBE-MIDTURN-361684 |
+| claude | subagent | PASS | 8 hooks ran inside the subagent; the session's PostToolUse Agent printed m60ad6d089dc071b4 after SubagentStop agent_id=a27fc764bb08…; subagent transcript clean; transcript hook context holds m60ad6d089dc071b4 with PROBE-SUBAGENT-1773a2; model quoted PROBE-SUBAGENT-1773a2 |
+| claude | hook-binary | PASS | the plugin's hook command ran this probe's flopwire: 21 hooks via recorded path |
+| codex | idle | PASS | no turn in 1m0s; m1bf49e0a49949e4a still queued |
+| codex | prompt-submit | PASS | UserPromptSubmit printed m30373441818dd6c2; transcript hook context holds m30373441818dd6c2 with PROBE-PROMPTSUBMIT-46596d; model quoted PROBE-PROMPTSUBMIT-46596d |
+| codex | framing | PASS | UserPromptSubmit printed m4fe5ae1892d60905; transcript hook context holds the whole wrapper: id, from=01a10cb9…, agent=codex, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| codex | mid-turn | PASS | PostToolUse Bash printed md3531113bdc88532, 9.575s before the turn's Stop; transcript hook context holds md3531113bdc88532 with PROBE-MIDTURN-87759b; model quoted PROBE-MIDTURN-87759b |
+| codex | subagent | PASS | 9 hooks ran inside the subagent; the session's PostToolUse multi_agent_v1wait_agent printed m65d9876398eeffdb after SubagentStop agent_id=01a10cba-e61…; subagent transcript clean; transcript hook context holds m65d9876398eeffdb with PROBE-SUBAGENT-ebbb7a; model quoted PROBE-SUBAGENT-ebbb7a |
+| codex | guardian | PASS | review 10.027s; hooks during it: none; the session's PostToolUse Bash printed m2b7c152d66b14479 after the review; transcript hook context holds m2b7c152d66b14479 with PROBE-GUARDIAN-d11696; model quoted PROBE-GUARDIAN-d11696 |
+| codex | hook-binary | PASS | the plugin's hook command ran this probe's flopwire: 30 hooks via recorded path |
+| devin | idle | PASS | no turn in 1m0s; ma098d21e2ac0ae10 still queued |
+| devin | prompt-submit | PASS | UserPromptSubmit printed m0d3b6203dca8dcd1; transcript hook context holds m0d3b6203dca8dcd1 with PROBE-PROMPTSUBMIT-87b207; model quoted PROBE-PROMPTSUBMIT-87b207 |
+| devin | framing | PASS | UserPromptSubmit printed m07f58093fe4dc4f1; transcript hook context holds the whole wrapper: id, from=politica…, agent=devin, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| devin | mid-turn | PASS | PostToolUse exec printed m3aaafcab6f5c293c, 7.101s before the turn's Stop; transcript hook context holds m3aaafcab6f5c293c with PROBE-MIDTURN-9f36ca; model quoted PROBE-MIDTURN-9f36ca |
+| devin | subagent | PASS | 3 hooks ran inside the subagent; the session's PostToolUse run_subagent printed meee5ff7340fc0c6c after PostToolUse run_subagent; subagent transcript clean; transcript hook context holds meee5ff7340fc0c6c with PROBE-SUBAGENT-d2e0b6; model quoted PROBE-SUBAGENT-d2e0b6 |
+| devin | hook-binary | PASS | the plugin's hook command ran this probe's flopwire: 20 hooks via recorded path |
+| opencode | idle | PASS | no turn in 1m0s; mc0738069ade0282d still queued |
+| opencode | prompt-submit | PASS | UserPromptSubmit printed mc733d1cecc54ec85; transcript hook context holds mc733d1cecc54ec85 with PROBE-PROMPTSUBMIT-761d6b; model quoted PROBE-PROMPTSUBMIT-761d6b |
+| opencode | framing | PASS | UserPromptSubmit printed m3d96a6994dd2d2de; transcript hook context holds the whole wrapper: id, from=ses_ef34…, agent=opencode, sender=own, intent=request and the marker; model quoted id, from, intent and the marker |
+| opencode | mid-turn | PASS | PostToolUse bash printed m1615f2555bb82a68, 9.816s before the turn's Stop; transcript hook context holds m1615f2555bb82a68 with PROBE-MIDTURN-ac5afd; model did not quote PROBE-MIDTURN-ac5afd (reply: "No new `<flopwire-message>` tags arrived during or after either command. ID mc07…") |
+| opencode | subagent | PASS | 4 hooks ran inside the subagent; the session's PostToolUse task printed m15686aea040069c3 after PostToolUse task; subagent transcript clean; transcript hook context holds m15686aea040069c3 with PROBE-SUBAGENT-3ef673; model quoted PROBE-SUBAGENT-3ef673 |
+| opencode | hook-binary | PASS | the plugin's hook command ran this probe's flopwire: 20 hooks via recorded path |
+
+25 passed, 0 failed.
