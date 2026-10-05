@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -340,16 +342,84 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			return store.LockFile(), nil
 		}
 	}
+	// A server credential saved or removed while the agent runs restarts
+	// it (watchCredential): the server is wired only here. Sync-only mode
+	// needs its server, so it keeps the last credential instead.
+	runCtx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+	var restart atomic.Bool
+	if !*noSync && !*syncOnly {
+		wired := ccErr == nil && cc.Server != "" && cc.Token != ""
+		go watchCredential(runCtx, credentialWatchEvery, wired, client.Load, func(why string) {
+			log.Info("agent: " + why)
+			restart.Store(true)
+			stopRun()
+		})
+	}
+	served := make(chan struct{})
 	go func() {
-		if err := a.Serve(ctx, *socket); err != nil && ctx.Err() == nil {
+		defer close(served)
+		if err := a.Serve(runCtx, *socket); err != nil && runCtx.Err() == nil {
 			log.Error("agent: control socket", "err", err)
 		}
 	}()
 	log.Info("agent: running", "db", *dbPath, "socket", *socket, "sync", cfg.Sync != nil, "sync_only", *syncOnly)
-	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err = a.Run(runCtx)
+	stopRun()
+	<-served
+	if restart.Load() && ctx.Err() == nil {
+		return store.LockFile(), nil
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
 		return nil, err
 	}
 	return nil, nil
+}
+
+// credentialWatchEvery is how often a running agent re-reads the client
+// config for a server credential saved or removed since it started.
+var credentialWatchEvery = 2 * time.Second
+
+// savedServer reports whether the client config names a server and a
+// token, as runAgent wires them. known is false when the config cannot be
+// read for another reason (a damaged file): that changes nothing.
+func savedServer(load func() (client.Config, error)) (has, known bool) {
+	cc, err := load()
+	switch {
+	case err == nil:
+		return cc.Server != "" && cc.Token != "", true
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, client.ErrNoCredential):
+		return false, true
+	}
+	return false, false
+}
+
+// watchCredential calls restart once when a server credential appears in,
+// or disappears from, the client config (wired: the agent started with
+// one). The agent wires the server (upload, admin path rules, messaging)
+// only at startup: wiring messaging alone would report presence before
+// the admin path rules are known. So it re-executes itself, and starts
+// connected after a first login, or local after the credential is gone.
+func watchCredential(ctx context.Context, every time.Duration, wired bool, load func() (client.Config, error), restart func(why string)) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		has, known := savedServer(load)
+		if !known || has == wired {
+			continue
+		}
+		if has {
+			restart("a server credential was saved; restarting to connect to the server")
+		} else {
+			restart("the server credential was removed; restarting to run without a server")
+		}
+		return
+	}
 }
 
 // resolveSyncOnly settles the index mode: the --sync-only flag when given

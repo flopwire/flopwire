@@ -764,6 +764,7 @@ func enroll(ctx context.Context, args []string) error {
 		if err = client.Save(cfg); err != nil {
 			return err
 		}
+		notifyRepin(ctx) // a bus stopped for want of a device credential resumes
 		res := map[string]any{"device": out.Device, "config": "saved with mode 0600"}
 		if cfg.TLSFingerprint != "" {
 			res["tls_fingerprint"] = cfg.TLSFingerprint

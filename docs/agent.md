@@ -202,6 +202,18 @@ socket and prints these parts:
 | `messaging: stopped: ERR` | The server refused the credential or the certificate. Run `flopwire login`. Messaging resumes when the agent sees the new credential. |
 | `messaging: disabled: ERR` | The server has no message bus, or the credential is not an enrolled device. The agent asks again every 10 minutes. |
 | `messages: N pending delivery, N receipts unsent, N held for your acceptance` | Messages in the local inbox that no hook has confirmed yet, deliveries (and undelivered reports) the server has not taken yet, and messages from people you have not accepted. |
+| `credential: SOURCE` | The credential the agent uses. `device login`: an enrolled device. `FLOPWIRE_TOKEN`: a minted token from the agent's environment. `legacy login`: a login with no device credential. `none`: no server. A device login also shows `ok`, a deadline warning or `re-login required`. |
+| `messaging: off: REASON: FIX` | The credential cannot use the message bus. The agent does not poll. Do the fix; messaging resumes when the agent sees the new credential. |
+| `warning: FLOPWIRE_TOKEN in the environment hides the device login saved for URL` | `FLOPWIRE_TOKEN` wins over the saved config. Unset it in the agent's environment to use the device login. |
+
+`flopwire setup --check` shows the same `credential`, `messaging: off` and
+`warning` lines in its server section, for the running agent when it
+answers.
+
+The agent reads the server credential at startup. When a login is saved
+while it runs without one, or the saved credential is removed, the agent
+restarts itself within 2 seconds. It then uploads and polls the server, or
+runs local.
 
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
