@@ -168,6 +168,16 @@ func TestAgentStatusShowsStoppedSync(t *testing.T) {
 	}
 }
 
+// Admission cooldowns remain visible in the human-readable status.
+func TestAgentStatusShowsServerBusy(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{Sync: &devicesync.Status{ServerBusy: true, RetryAt: time.Now().Add(time.Minute), LastError: "flush_in_progress", Queued: 3}})
+	out := b.String()
+	if !strings.Contains(out, "sync: server busy, retry at") || !strings.Contains(out, "flush_in_progress") || strings.Contains(out, "sync: ok") {
+		t.Fatalf("status output:\n%s", out)
+	}
+}
+
 // D18: after a new deny, `agent status` says that server copies stay.
 func TestAgentStatusShowsServerCopies(t *testing.T) {
 	var b strings.Builder
