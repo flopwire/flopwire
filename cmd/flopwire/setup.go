@@ -895,22 +895,9 @@ func pluginBinaryMismatch(bin *setupBinary, pluginVersion, installPath string) [
 	if bin == nil || bin.Path == "" {
 		return nil
 	}
-	binVersion := bin.Version
-	if binVersion == "" {
-		binVersion = "unknown"
-	}
-	fix := "install a flopwire built from the same commit as the plugin or newer (git pull, then make build in a checkout of github.com/flopwire/flopwire) and put it on PATH in place of " + bin.Path + ", then restart your agent sessions"
 	var warn []string
-	if bin.commands != nil && installPath != "" {
-		var missing []string
-		for _, c := range pluginCommands(installPath) {
-			if !bin.commands[c] {
-				missing = append(missing, "flopwire "+c)
-			}
-		}
-		if len(missing) > 0 {
-			warn = append(warn, fmt.Sprintf("the plugin (version %s) runs %s, which %s (version %s) does not know: its hooks deliver nothing and its tools fail. Fix: %s", pluginVersion, strings.Join(missing, ", "), bin.Path, binVersion, fix))
-		}
+	if installPath != "" {
+		warn = binaryLacks(bin, pluginVersion, pluginCommands(installPath))
 	}
 	switch c, ok := compareSemver(pluginVersion, bin.Version); {
 	case !ok || c == 0:
@@ -920,6 +907,30 @@ func pluginBinaryMismatch(bin *setupBinary, pluginVersion, installPath string) [
 		warn = append(warn, fmt.Sprintf("the plugin is version %s but %s is version %s. Fix: run flopwire setup to update the plugin", pluginVersion, bin.Path, bin.Version))
 	}
 	return warn
+}
+
+// binaryLacks warns when the flopwire on PATH does not know one of cmds,
+// the commands a plugin of pluginVersion runs. It says nothing when the
+// binary's commands are unknown.
+func binaryLacks(bin *setupBinary, pluginVersion string, cmds []string) []string {
+	if bin == nil || bin.Path == "" || bin.commands == nil {
+		return nil
+	}
+	var missing []string
+	for _, c := range cmds {
+		if !bin.commands[c] {
+			missing = append(missing, "flopwire "+c)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	binVersion := bin.Version
+	if binVersion == "" {
+		binVersion = "unknown"
+	}
+	fix := "install a flopwire built from the same commit as the plugin or newer (git pull, then make build in a checkout of github.com/flopwire/flopwire) and put it on PATH in place of " + bin.Path + ", then restart your agent sessions"
+	return []string{fmt.Sprintf("the plugin (version %s) runs %s, which %s (version %s) does not know: its hooks deliver nothing and its tools fail. Fix: %s", pluginVersion, strings.Join(missing, ", "), bin.Path, binVersion, fix)}
 }
 
 // manualHookRe matches a hook that runs flopwire's hook or flush command.
