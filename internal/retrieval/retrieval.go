@@ -497,7 +497,8 @@ func setTimeout(ctx context.Context, tx pgx.Tx, d time.Duration) error {
 
 // cutShort reports err, just observed, as context.DeadlineExceeded when
 // ctx's deadline caused it: a connection i/o timeout while ctx's deadline
-// has passed. When ctx ends, pgx interrupts the read or write in flight by
+// has passed; and as context.Canceled when the caller's cancel did. When
+// ctx ends, pgx interrupts the read or write in flight by
 // setting a deadline on the net.Conn; it turns an interrupted read into a
 // context error but returns an interrupted write's i/o timeout as is
 // (#121). Any other error, an i/o timeout before the deadline included,
@@ -506,8 +507,11 @@ func setTimeout(ctx context.Context, tx pgx.Tx, d time.Duration) error {
 // while the two are close in time.
 func cutShort(ctx context.Context, err error) error {
 	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() && !errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %w", context.DeadlineExceeded, err)
+	if !errors.As(err, &ne) || !ne.Timeout() || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	if cause := ctx.Err(); cause != nil {
+		return fmt.Errorf("%w: %w", cause, err)
 	}
 	return err
 }
