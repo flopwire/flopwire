@@ -1,0 +1,6 @@
+m87e873eea6761420  sent  2026-10-05 14:39Z  to 01a10c80 (dev codex)  inform  read 2026-10-05 14:39Z  thread mfd8a363fd905ad00
+    GET /users cursor pagination contract:  (+12 lines)
+mfd8a363fd905ad00  received  2026-10-05 14:39Z  from 01a10c80 (dev codex app@main)  request  read 2026-10-05 14:39Z
+    I’m updating src/client/users.ts in the main checkout to match your GET /users pagination change from commit fc7114b on api-cursors. What exact request parame…
+[2 messages, newest first, end of list]
+[bodies show their first line; flopwire inbox --text --thread THREAD shows a thread's whole text]

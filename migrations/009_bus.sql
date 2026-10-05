@@ -62,6 +62,20 @@ CREATE SEQUENCE bus_messages_seq;
 -- session_ended, its session ended first; push_failed, a message to a
 -- cloud session whose pushes all failed).
 --
+-- A refused row stands for every refusal of its sending session, device
+-- and agent with the same reason (code), to the same recipient and in the
+-- same thread (a new thread for each root send), within an hour of its
+-- created_at: attempts counts them and last_at is the latest. The hourly
+-- send ceilings sum attempts, so a looping agent still reaches them while
+-- it writes one row (and one bus.send audit row) per code, recipient and
+-- thread per hour.
+--
+-- Retention: a row in a final state (delivered, read, expired, refused,
+-- undelivered) whose expires_at is more than the server's bus retention
+-- (FLOPWIRE_BUS_RETENTION, default 7 days) in the past is deleted, with
+-- its audit rows (Store.Sweep). A queued, held or claimed row is never
+-- deleted: the sweep first expires it at expires_at.
+--
 -- A message to a cloud session is addressed to that session and claimed
 -- (claimed_device, claimed_by = to_session) by the one device of the
 -- recipient that pushes it.
@@ -69,7 +83,9 @@ CREATE TABLE bus_messages (
   id text PRIMARY KEY,
   seq bigint NOT NULL DEFAULT nextval('bus_messages_seq'),
   thread_id text NOT NULL,
-  reply_to text REFERENCES bus_messages (id),
+  -- A reply outlives the message it answers when retention deletes that
+  -- one first.
+  reply_to text REFERENCES bus_messages (id) ON DELETE SET NULL,
   from_user uuid NOT NULL REFERENCES users (id),
   from_device uuid REFERENCES devices (id),
   from_agent text NOT NULL,
@@ -98,6 +114,9 @@ CREATE TABLE bus_messages (
   claimed_at timestamptz,
   delivered_at timestamptz,
   read_at timestamptz,
+  attempts integer NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+  last_at timestamptz,
+  CHECK (attempts = 1 OR state = 'refused'),
   CHECK (addressed = 'user' OR to_session IS NOT NULL),
   CHECK (addressed = 'session' OR (to_session IS NULL) = (claimed_by IS NULL)),
   CHECK ((to_session IS NULL) = (to_agent IS NULL))
@@ -123,6 +142,15 @@ CREATE INDEX bus_messages_reply_to_idx ON bus_messages (reply_to) WHERE reply_to
 -- The expiry sweep.
 CREATE INDEX bus_messages_expiry_idx ON bus_messages (expires_at)
   WHERE state IN ('queued', 'held', 'claimed');
+-- The retention sweep: final rows by expiry.
+CREATE INDEX bus_messages_retention_idx ON bus_messages (expires_at)
+  WHERE state IN ('delivered', 'read', 'expired', 'refused', 'undelivered');
+-- The retention sweep's audit rows: those of one message (send, claim) by
+-- its id, and those that name several (poll, deliver, read) by age.
+CREATE INDEX audit_bus_message_idx ON audit_events (target_id)
+  WHERE target_type = 'bus_message' AND target_id <> '';
+CREATE INDEX audit_bus_batch_idx ON audit_events (created_at)
+  WHERE target_type = 'bus_message' AND target_id = '';
 
 -- B7: recipient_user accepts messages from sender_user. Revoking deletes
 -- the row.

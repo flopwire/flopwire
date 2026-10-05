@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -342,6 +343,7 @@ func setupDevin(ctx context.Context, env *setupEnv) harnessReport {
 		}
 		if !foreign {
 			r.Warnings = append(r.Warnings, devinPluginProblems(installed)...)
+			r.Warnings = append(r.Warnings, binaryLacks(env.binary, r.Version, devinPluginCommands(installed))...)
 		}
 	}
 	switch {
@@ -396,6 +398,25 @@ func devinPluginProblems(info *devinPluginInfo) []string {
 		warn = append(warn, "Devin did not load the plugin's flopwire MCP server; reinstall it: flopwire setup --remove, then flopwire setup")
 	}
 	return warn
+}
+
+// devinPluginCommands are the flopwire commands the plugin Devin loaded
+// runs: its hooks and its MCP server, sorted.
+func devinPluginCommands(info *devinPluginInfo) []string {
+	set := map[string]bool{}
+	for _, cmds := range info.Hooks {
+		for _, c := range cmds {
+			if m := pluginCommandRe.FindStringSubmatch(c); m != nil {
+				set[m[1]] = true
+			}
+		}
+	}
+	for _, c := range info.MCP {
+		if m := pluginCommandRe.FindStringSubmatch(c); m != nil {
+			set[m[1]] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(set))
 }
 
 func isFlopwireHook(cmd string) bool { return manualHookRe.MatchString(cmd) }

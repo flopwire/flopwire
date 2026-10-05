@@ -121,6 +121,21 @@ type Config struct {
 	// Console is the web console page where the user reviews held
 	// messages ("" without a server); the held notice names it.
 	Console string
+	// Credential names the server credential the agent uses, for status;
+	// nil reports none.
+	Credential func() Credential
+}
+
+// Credential is the server credential the agent uses, as status shows it.
+type Credential struct {
+	// Source is "device login", "FLOPWIRE_TOKEN", "legacy login" or
+	// "none".
+	Source string `json:"source"`
+	// MessagingOff says why the credential cannot use the server's
+	// message bus, with the fix; "" when it can or there is no server.
+	MessagingOff string `json:"messaging_off,omitempty"`
+	// Warning: FLOPWIRE_TOKEN hides a saved device login.
+	Warning string `json:"warning,omitempty"`
 }
 
 func (c *Config) defaults() {
@@ -256,6 +271,9 @@ type Agent struct {
 	pidAlive  func(pid int) bool
 	procStart func(pid int) (time.Time, bool)
 	procName  func(pid int) string
+	// openFiles lists the files a process has open; nil when unknown,
+	// also when ctx ends first.
+	openFiles func(ctx context.Context, pid int) []string
 	// codexWriter probes a Codex writer lock (codexlock.go); tests replace it.
 	codexWriter func(lock string) int
 	now         func() time.Time
@@ -279,7 +297,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
-		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, codexWriter: codexWriter, now: time.Now}
+		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
 	a.idle = sync.NewCond(&a.mu)
 	a.devin.h, a.opencode.h = devinHarness, opencodeHarness
 	if cfg.DevinDB != "-" {
@@ -311,6 +329,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		cfg.Bus.SetSources(a.BusPresence, a.BusKnown)
 		cfg.Bus.SetWithheld(a.BusWithheld, a.BusRepoWithheld)
 		cfg.Bus.SetRepoKey(a.BusRepoKey)
+		cfg.Bus.SetPlace(a.BusPlace)
 	}
 	return a
 }

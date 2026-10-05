@@ -62,7 +62,10 @@ A message never starts a turn.
 - **The session runs a turn.** After the next tool call, the plugin
   stores the message in the session with `promptAsync` and `noReply`.
   opencode answers it with one more reply before the session goes idle.
-  The model does not see the message in the step that is already running.
+  The model does not see the message in the step that is already running:
+  opencode reads the stored message only after the current model stream
+  ends. This extra reply is accepted (decided 2026-10-04). The other
+  harnesses add the message to the running turn and need no extra reply.
 - **The session is idle.** The message waits. When the user sends the next
   prompt, the plugin adds the message to that prompt as one more text
   part. The model reads both in the same turn.
@@ -93,7 +96,10 @@ that you typed, or in a reply, does not count.
 opencode runs a subagent in a child session. The plugin never delivers a
 message into a child session. The message waits for the parent session's
 next tool call. A child session is not a peer. A tool call from a
-subagent runs as its parent session.
+subagent runs as its parent session: a `flopwire_send` from a subagent
+goes out as the parent session, and the reply goes to the parent session.
+The parent's human does not see the call. This is the same on every
+harness (decided 2026-10-04); see [agent.md](agent.md#send-and-read-messages).
 
 ## Presence
 

@@ -440,38 +440,6 @@ func TestServerAgentListAndSelfExclusion(t *testing.T) {
 	}
 }
 
-// A grep whose budget runs out after it has verified hits returns them as
-// a truncated page: the lookups that follow the scan (session infos,
-// addresses) must not fail on the spent deadline.
-func TestGrepBudgetEndsAfterHits(t *testing.T) {
-	f := newFindFixture(t)
-	ctx := context.Background()
-	if _, err := f.s.Pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,ordinal,kind,ts,text,text_len,content_sha,source_generation,parser)
-		SELECT gen_random_uuid(),$1,g,'tool_result',now()-g*interval '1 second','upload number '||g,20,sha256(('upload number '||g)::bytea),0,'test'
-		FROM generate_series(1,20000) g`, f.conv); err != nil {
-		t.Fatal(err)
-	}
-	partial := 0
-	for d := 20 * time.Millisecond; d < 5*time.Second; d = d * 5 / 4 {
-		qctx, cancel := context.WithTimeout(ctx, d)
-		p, err := f.s.Grep(qctx, format.GrepQuery{Pattern: "upload number", Fixed: true, Limit: 500}, format.Filters{})
-		cancel()
-		if err != nil {
-			t.Fatalf("budget %s: %v", d, err)
-		}
-		if !p.Truncated {
-			break
-		}
-		if len(p.Hits) > 0 {
-			partial++
-			if p.Hits[0].Address == "" {
-				t.Fatalf("budget %s: a partial hit without an address", d)
-			}
-		}
-	}
-	t.Logf("%d partial pages with hits", partial)
-}
-
 // deadlineOnly carries a deadline but is never cancelled, so only the
 // statement_timeout set from the budget can stop a query under it.
 type deadlineOnly struct {

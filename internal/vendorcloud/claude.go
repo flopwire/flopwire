@@ -347,7 +347,8 @@ func (c *Claude) gone(ctx context.Context, id string) bool {
 }
 
 // seqNum is a sequence number the route writes as a JSON string ("92");
-// a number is taken too, and null or anything unreadable is -1.
+// a number is taken too, and null, a missing field or anything unreadable
+// is -1.
 type seqNum int64
 
 func (n *seqNum) UnmarshalJSON(b []byte) error {
@@ -375,6 +376,18 @@ type claudeEvent struct {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	} `json:"payload"`
+}
+
+// UnmarshalJSON reads an event; one without a sequence_num is -1, as null
+// is, not 0, which would order it before every other event.
+func (e *claudeEvent) UnmarshalJSON(b []byte) error {
+	type plain claudeEvent
+	p := plain{Seq: -1}
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*e = claudeEvent(p)
+	return nil
 }
 
 // text is a user event's text: a string, or its text blocks.

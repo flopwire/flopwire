@@ -3,6 +3,7 @@
 package local
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,7 +28,7 @@ func procInfo(pid int) (int, string, bool) {
 	return ppid, s[open+1 : closeIdx], err == nil
 }
 
-func openFiles(pid int) []string {
+func openFiles(_ context.Context, pid int) []string {
 	dir := "/proc/" + strconv.Itoa(pid) + "/fd"
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -55,7 +56,7 @@ func codexOpenFiles() []string {
 			continue
 		}
 		if _, name, ok := procInfo(pid); ok && strings.Contains(strings.ToLower(name), "codex") {
-			out = append(out, openFiles(pid)...)
+			out = append(out, openFiles(context.Background(), pid)...)
 		}
 	}
 	return out

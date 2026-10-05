@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -295,16 +297,28 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		// Messaging (devicebus): through the server when this device syncs
 		// with one, else between the device's own sessions.
 		var connect func() (devicebus.Server, string)
+		var noDevice func() string
 		if ccErr == nil && cc.Server != "" && cc.Token != "" && !*noSync {
 			connect = busConnect(cc, client.Load)
+			noDevice = busNoDevice(client.Load, client.LoadFile)
 			cfg.Console = strings.TrimRight(cc.Server, "/") + consoleRoute
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
 		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
+		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
+	}
+	cfg.Credential = func() agent.Credential {
+		c := credentialSource(client.Load, client.LoadFile)
+		if *noSync {
+			c.MessagingOff = "" // messaging stays on the device by choice
+		}
+		return c
+	}
+	if c := cfg.Credential(); c.Warning != "" {
+		log.Warn("agent: " + c.Warning)
 	}
 	a = agent.New(store, cfg) // installs the path rules filter on sched
 	if startSyncRun != nil {
@@ -328,16 +342,84 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			return store.LockFile(), nil
 		}
 	}
+	// A server credential saved or removed while the agent runs restarts
+	// it (watchCredential): the server is wired only here. Sync-only mode
+	// needs its server, so it keeps the last credential instead.
+	runCtx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+	var restart atomic.Bool
+	if !*noSync && !*syncOnly {
+		wired := ccErr == nil && cc.Server != "" && cc.Token != ""
+		go watchCredential(runCtx, credentialWatchEvery, wired, client.Load, func(why string) {
+			log.Info("agent: " + why)
+			restart.Store(true)
+			stopRun()
+		})
+	}
+	served := make(chan struct{})
 	go func() {
-		if err := a.Serve(ctx, *socket); err != nil && ctx.Err() == nil {
+		defer close(served)
+		if err := a.Serve(runCtx, *socket); err != nil && runCtx.Err() == nil {
 			log.Error("agent: control socket", "err", err)
 		}
 	}()
 	log.Info("agent: running", "db", *dbPath, "socket", *socket, "sync", cfg.Sync != nil, "sync_only", *syncOnly)
-	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err = a.Run(runCtx)
+	stopRun()
+	<-served
+	if restart.Load() && ctx.Err() == nil {
+		return store.LockFile(), nil
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
 		return nil, err
 	}
 	return nil, nil
+}
+
+// credentialWatchEvery is how often a running agent re-reads the client
+// config for a server credential saved or removed since it started.
+var credentialWatchEvery = 2 * time.Second
+
+// savedServer reports whether the client config names a server and a
+// token, as runAgent wires them. known is false when the config cannot be
+// read for another reason (a damaged file): that changes nothing.
+func savedServer(load func() (client.Config, error)) (has, known bool) {
+	cc, err := load()
+	switch {
+	case err == nil:
+		return cc.Server != "" && cc.Token != "", true
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, client.ErrNoCredential):
+		return false, true
+	}
+	return false, false
+}
+
+// watchCredential calls restart once when a server credential appears in,
+// or disappears from, the client config (wired: the agent started with
+// one). The agent wires the server (upload, admin path rules, messaging)
+// only at startup: wiring messaging alone would report presence before
+// the admin path rules are known. So it re-executes itself, and starts
+// connected after a first login, or local after the credential is gone.
+func watchCredential(ctx context.Context, every time.Duration, wired bool, load func() (client.Config, error), restart func(why string)) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		has, known := savedServer(load)
+		if !known || has == wired {
+			continue
+		}
+		if has {
+			restart("a server credential was saved; restarting to connect to the server")
+		} else {
+			restart("the server credential was removed; restarting to run without a server")
+		}
+		return
+	}
 }
 
 // resolveSyncOnly settles the index mode: the --sync-only flag when given
@@ -523,6 +605,14 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 			return next, next.Token != b.Token
 		}}, key
 	}
+}
+
+// busNoDevice is devicebus's NoDevice: the server takes the bus only from
+// an enrolled device credential, so a minted FLOPWIRE_TOKEN or a login
+// without a device id would have every poll refused (credentialSource). A
+// config that cannot be read says nothing: Connect keeps the last one.
+func busNoDevice(load, loadFile func() (client.Config, error)) func() string {
+	return func() string { return credentialSource(load, loadFile).MessagingOff }
 }
 
 // rotatingBus is client.Bus with one retry when a 401 raced a rotation:
@@ -781,11 +871,20 @@ func agentStatusOutput(ctx context.Context, w io.Writer, asJSON bool) error {
 	if err == nil {
 		printAgentStatus(w, resp)
 	}
-	if cfg, cfgErr := client.Load(); cfgErr == nil {
-		credentialStatus(w, cfg, time.Now())
+	// The running agent names its own credential: its environment, not
+	// this shell's, decides whether FLOPWIRE_TOKEN wins.
+	src := credentialSource(client.Load, client.LoadFile)
+	differs := ""
+	if resp.Credential != nil {
+		differs = credentialDiffers(src, *resp.Credential)
+		src = *resp.Credential
+	}
+	cfg, _ := client.LoadFile()
+	credentialStatus(w, src, cfg, time.Now())
+	if differs != "" {
+		fmt.Fprintf(w, "note: %s\n", differs)
 	}
 	return err
-
 }
 
 // placementOrder is how status lists placement methods.
@@ -822,7 +921,11 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 			}
 		}
 	}
-	printBusStatus(w, resp.Bus)
+	off := ""
+	if resp.Credential != nil {
+		off = resp.Credential.MessagingOff
+	}
+	printBusStatus(w, resp.Bus, off)
 	if st == nil {
 		fmt.Fprintln(w, "sync: off (no server configured)")
 		return
@@ -860,19 +963,25 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 	}
 }
 
-// printBusStatus renders the message bus state (devicebus.Status).
-func printBusStatus(w io.Writer, b *devicebus.Status) {
+// printBusStatus renders the message bus state (devicebus.Status). off
+// is the credential's messaging: off reason, which the credential lines
+// print: a bus stopped for that reason does not say it twice.
+func printBusStatus(w io.Writer, b *devicebus.Status, off string) {
 	if b == nil {
 		return
 	}
 	switch b.State {
+	case devicebus.StateStopped:
+		if off == "" || b.LastError != off {
+			fmt.Fprintf(w, "messaging: %s: %s\n", b.State, b.LastError)
+		}
 	case devicebus.StateLocal:
 		fmt.Fprintf(w, "messaging: local (no server: between this device's sessions); %d live sessions\n", b.Sessions)
 	case devicebus.StateConnected:
 		fmt.Fprintf(w, "messaging: connected; %d live sessions reported\n", b.Sessions)
 	case devicebus.StateBackoff:
 		fmt.Fprintf(w, "messaging: server unreachable, retry at %s: %s\n", b.RetryAt.Local().Format(time.TimeOnly), b.LastError)
-	case devicebus.StateStopped, devicebus.StateDisabled:
+	case devicebus.StateDisabled:
 		fmt.Fprintf(w, "messaging: %s: %s\n", b.State, b.LastError)
 	default:
 		fmt.Fprintf(w, "messaging: %s\n", b.State)

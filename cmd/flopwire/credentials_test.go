@@ -93,8 +93,8 @@ func TestAgentRotationStolenTokenRequiresRelogin(t *testing.T) {
 		t.Fatal("rotated twice in a day")
 	}
 	var b strings.Builder
-	credentialStatus(&b, cfg, time.Now())
-	if !strings.HasPrefix(b.String(), "credential: ok") {
+	credentialStatus(&b, agent.Credential{Source: credDevice}, cfg, time.Now())
+	if !strings.HasPrefix(b.String(), "credential: device login; ok") {
 		t.Fatalf("status %q", b.String())
 	}
 
@@ -114,7 +114,7 @@ func TestAgentRotationStolenTokenRequiresRelogin(t *testing.T) {
 		t.Fatalf("relogin=%q", cfg.ReloginRequired)
 	}
 	b.Reset()
-	credentialStatus(&b, cfg, time.Now())
+	credentialStatus(&b, agent.Credential{Source: credDevice}, cfg, time.Now())
 	if !strings.Contains(b.String(), "re-login required (credential_rotated)") {
 		t.Fatalf("status %q", b.String())
 	}
@@ -239,12 +239,16 @@ func TestCredentialStatusWarnsBeforeDeadlines(t *testing.T) {
 	}{
 		{client.Config{DeviceID: "d", CredentialExpiresAt: now.Add(6 * 24 * time.Hour), IdleExpiresAt: now.Add(29 * 24 * time.Hour)}, "interactive re-login due by"},
 		{client.Config{DeviceID: "d", CredentialExpiresAt: now.Add(60 * 24 * time.Hour), IdleExpiresAt: now.Add(5 * 24 * time.Hour)}, "idle limit reached"},
-		{client.Config{DeviceID: "d", CredentialExpiresAt: now.Add(60 * 24 * time.Hour), IdleExpiresAt: now.Add(29 * 24 * time.Hour)}, "credential: ok"},
+		{client.Config{DeviceID: "d", CredentialExpiresAt: now.Add(60 * 24 * time.Hour), IdleExpiresAt: now.Add(29 * 24 * time.Hour)}, "credential: device login; ok"},
 		{client.Config{DeviceID: "d", ReloginRequired: "reauth_required"}, "re-login required (reauth_required)"},
-		{client.Config{FromEnv: true}, "FLOPWIRE_TOKEN"},
+		{client.Config{FromEnv: true}, "credential: FLOPWIRE_TOKEN (a minted token"},
 	} {
 		var b strings.Builder
-		credentialStatus(&b, c.cfg, now)
+		src := agent.Credential{Source: credDevice}
+		if c.cfg.FromEnv {
+			src.Source = credEnv
+		}
+		credentialStatus(&b, src, c.cfg, now)
 		if !strings.Contains(b.String(), c.want) {
 			t.Errorf("%+v: %q lacks %q", c.cfg, b.String(), c.want)
 		}

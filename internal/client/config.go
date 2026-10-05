@@ -194,6 +194,9 @@ func envConfig(token string) (Config, error) {
 	return Config{Server: normalized, Token: token, TLSFingerprint: pin, FromEnv: true}, nil
 }
 
+// ErrNoCredential: the config file names no server or no token.
+var ErrNoCredential = errors.New("config is missing server or token")
+
 // LoadFile reads the config file, ignoring FLOPWIRE_TOKEN: what login,
 // enroll and rotation change.
 func LoadFile() (Config, error) {
@@ -210,7 +213,7 @@ func LoadFile() (Config, error) {
 		return c, err
 	}
 	if c.Server == "" || c.Token == "" {
-		return c, errors.New("config is missing server or token")
+		return c, ErrNoCredential
 	}
 	return c, nil
 }

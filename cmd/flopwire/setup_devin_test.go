@@ -864,3 +864,40 @@ func TestDevinHookChanges(t *testing.T) {
 		t.Errorf("removed %q, want %q", removed, want)
 	}
 }
+
+// Devin shows no hook failure, so docs/agent.md sends a Devin user to
+// `setup --check`: its Devin entry names a command the plugin Devin
+// loaded runs that the flopwire on PATH does not know (#151 review).
+func TestSetupDevinCheckComparesPluginAndBinary(t *testing.T) {
+	d := newDevinFixture(t, false)
+	if _, _, err := d.run(); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := d.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := d.devin(rep); hasString(h.Warnings, "does not know") {
+		t.Fatalf("matching binary: %q", h.Warnings)
+	}
+	// An older flopwire on PATH: it knows mcp but not hook.
+	fw := filepath.Join(d.dir, "bin", "flopwire")
+	if err := os.Remove(fw); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$1\" in\nversion) echo v0.1.0 ;;\n*) printf 'Usage: flopwire <command>\\n\\n  mcp         serve tools\\n  agent       run the agent\\n  version     print version\\n' >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(fw, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err = d.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := d.devin(rep)
+	if !hasString(h.Warnings, "runs flopwire hook, which "+fw+" (version v0.1.0) does not know") {
+		t.Fatalf("binary without hook: %q", h.Warnings)
+	}
+	if hasString(h.Warnings, "flopwire mcp,") || hasString(h.Warnings, "runs flopwire mcp") {
+		t.Errorf("warned about mcp, which the binary knows: %q", h.Warnings)
+	}
+}

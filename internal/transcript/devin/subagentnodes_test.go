@@ -29,7 +29,7 @@ func TestSubagentNodesContain(t *testing.T) {
 	}
 	add("s", 1, nil, "user prompt")
 	add("s", 2, 1, "run_subagent call")
-	add("s", 3, nil, "subagent task")      // the subagent's own root
+	add("s", 3, nil, "subagent task")       // the subagent's own root
 	add("s", 4, 3, "subagent saw SUB-MARK") // inside the subagent
 	add("s", 5, 2, "Subagent result")
 	add("s", 6, 5, "<flopwire-message> MAIN-MARK")

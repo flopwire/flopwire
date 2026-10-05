@@ -63,6 +63,11 @@ type Session struct {
 	// Withheld: the path rules keep the session off the server, so it is
 	// not reported there; only routing on the device sees it.
 	Withheld bool
+	// Unplaced: the path rules cannot judge the session yet (its
+	// transcript has not named its directory: no complete line yet).
+	// Withheld is set too, so nothing about it reaches the server; a
+	// request naming it waits for the decision (PlaceWait).
+	Unplaced bool
 	// LastActive is the transcript's last write.
 	LastActive time.Time
 	// Cloud: a vendor cloud session (cloud.go); Busy means the vendor
@@ -77,6 +82,12 @@ type Config struct {
 	// re-login, a re-pin). nil: no server is configured, and the device
 	// routes between its own sessions.
 	Connect func() (Server, string)
+	// NoDevice says why the saved credential cannot use the bus (a login
+	// from before device credentials, a minted FLOPWIRE_TOKEN), with the
+	// fix; "" when it can. While it says so the bus does not poll: the
+	// server would refuse every poll (issue #71). It is asked again when
+	// the credential's key changes. nil: always a device credential.
+	NoDevice func() string
 	// Presence lists the device's live sessions. Known lists the sessions
 	// the device holds (live or not) whose id starts with a prefix, for
 	// addressing without a server. The agent sets both (SetSources).
@@ -100,6 +111,10 @@ type Config struct {
 	// when the device knows none. A name that fits two repositories is
 	// an error. The agent sets it (SetRepoKey); nil resolves nothing.
 	RepoKey func(ctx context.Context, repo string) (string, error)
+	// Place asks the agent to index and place a session now: a request
+	// names one presence does not list yet, or whose path rules are not
+	// decided yet. The agent sets it (SetPlace); nil asks nothing.
+	Place func(ctx context.Context, session string) error
 
 	// User is the device's person without a server: the name @user
 	// matches and envelopes carry. Default: the OS account name.
@@ -233,10 +248,26 @@ type Bus struct {
 	held     []busproto.HeldSender
 	presence presenceCache
 	recheck  chan struct{} // Recheck: re-read the saved credential now
-	ackWake  chan struct{} // a delivery owes a receipt
-	pushWake chan struct{} // a cloud message may be due
-	cloud    map[string]cloudList
-	localSeq int64
+	repoll   chan struct{} // Nudge: poll now with a fresh presence
+	// polled is closed when a poll starts, then replaced; reported is
+	// the presence that poll carries (awaitReported).
+	polled   chan struct{}
+	reported []busproto.PresenceSession
+	// nudged is when a Nudge last asked for a poll: at most one a
+	// nudgeEvery, so hooks of a session presence never lists cannot
+	// restart the long poll on every call.
+	nudged time.Time
+	// refusedAfterReport holds, until a time, the senders the server
+	// refused as not on the device although a poll had reported them: a
+	// send from one does not wait for another report (Send).
+	refusedAfterReport map[string]time.Time
+	ackWake            chan struct{} // a delivery owes a receipt
+	pushWake           chan struct{} // a cloud message may be due
+	cloud              map[string]cloudList
+	localSeq           int64
+	// skewLows are the recent poll answers' lower bounds on the clocks'
+	// skew (learnSkew); the poll loop alone uses them.
+	skewLows []time.Duration
 }
 
 // Open opens (creating) the local inbox at path.
@@ -246,7 +277,7 @@ func Open(path string, cfg Config) (*Bus, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bus{cfg: cfg, st: st, log: cfg.Logger, recheck: make(chan struct{}, 1), ackWake: make(chan struct{}, 1), pushWake: make(chan struct{}, 1),
+	b := &Bus{cfg: cfg, st: st, log: cfg.Logger, recheck: make(chan struct{}, 1), repoll: make(chan struct{}, 1), polled: make(chan struct{}), ackWake: make(chan struct{}, 1), pushWake: make(chan struct{}, 1),
 		cloud: map[string]cloudList{}}
 	b.status.State = StateConnecting
 	if cfg.Connect == nil {
@@ -271,6 +302,14 @@ func (b *Bus) SetWithheld(sessions func(context.Context, string) (string, error)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cfg.Withheld, b.cfg.RepoWithheld = sessions, repos
+}
+
+// SetPlace installs the agent's request to index and place a session
+// now (Config.Place).
+func (b *Bus) SetPlace(fn func(context.Context, string) error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cfg.Place = fn
 }
 
 // SetRepoKey installs the agent's resolution of an @user send's repo

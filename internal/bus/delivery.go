@@ -166,7 +166,7 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 		// changed since its last answer, maybe by shrinking (a revoke
 		// re-held a message), which the cursor cannot show.
 		if newest > req.Cursor || gen != req.Gen || timedOut {
-			out.Cursor, out.Gen, out.Ignored = max(newest, req.Cursor), gen, ignored
+			out.Cursor, out.Gen, out.Ignored, out.Now = max(newest, req.Cursor), gen, ignored, s.now().UTC()
 			return out, nil
 		}
 		select {
@@ -752,18 +752,20 @@ func (s *Store) Peers(ctx context.Context, c busproto.Caller, q busproto.PeersQu
 // optionally only sent ($3), in thread $4 (”), before the keyset
 // ($5 time, $6 id), newest first, $7 rows.
 const InboxSQL = `SELECT * FROM (
-	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'received' AS direction,m.state,m.reason,m.delivered_at,m.read_at,m.attempts,m.last_at FROM ` + envFrom + `
 	WHERE m.to_session=$1 AND m.to_user=$2 AND m.state NOT IN ('held','refused') AND NOT $3
 		AND (m.state<>'expired' OR m.sender='own' OR EXISTS(SELECT 1 FROM bus_accepts a WHERE a.recipient_user=$2 AND a.sender_user=m.from_user))
 	UNION ALL
-	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at FROM ` + envFrom + `
+	SELECT ` + envCols + `,'sent',m.state,m.reason,m.delivered_at,m.read_at,m.attempts,m.last_at FROM ` + envFrom + `
 	WHERE m.from_session=$1 AND m.from_user=$2) x
 	WHERE ($4='' OR thread_id=$4) AND ($5::timestamptz IS NULL OR (created_at,id)<($5,$6))
 	ORDER BY created_at DESC,id DESC LIMIT $7`
 
 // Inbox lists a session's threads, received and sent, newest first, with
 // each message's state. Undelivered messages past their expiry show as
-// expired before the sweep marks them.
+// expired before the sweep marks them. A message the retention sweep
+// deleted is not listed, on either side: the sweep deletes its audit rows
+// with it, so no final state is kept to show.
 func (s *Store) Inbox(ctx context.Context, c busproto.Caller, q busproto.InboxQuery) (busproto.InboxResponse, error) {
 	out := busproto.InboxResponse{Messages: []busproto.InboxItem{}}
 	limit := q.Limit
@@ -795,8 +797,14 @@ func (s *Store) Inbox(ctx context.Context, c busproto.Caller, q busproto.InboxQu
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (busproto.InboxItem, error) {
 		var it busproto.InboxItem
 		var state string
-		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt)
+		var attempts int
+		e, err := scanEnvelope(r, &it.Direction, &state, &it.Reason, &it.DeliveredAt, &it.ReadAt, &attempts, &it.LastAt)
 		it.Envelope, it.State = e, busproto.State(state)
+		if attempts > 1 {
+			it.Attempts = attempts
+		} else {
+			it.LastAt = nil
+		}
 		return it, err
 	})
 	if err != nil {
@@ -962,7 +970,10 @@ func (s *Store) Accept(ctx context.Context, c busproto.Caller, sender string) (b
 }
 
 // Revoke withdraws an acceptance: later messages from sender are held, and
-// so are its queued messages not yet delivered or claimed.
+// so are its queued messages not yet delivered or claimed. A queued
+// message a device's poll answered just before the revoke can still be
+// printed once; its receipt is then rejected (AckSQL). Accepted as
+// won't-fix (#70, notes/message-bus/plan.md §9).
 func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (busproto.AcceptResponse, error) {
 	var out busproto.AcceptResponse
 	now := s.now()
@@ -994,21 +1005,96 @@ func (s *Store) Revoke(ctx context.Context, c busproto.Caller, sender string) (b
 	return out, nil
 }
 
-// Sweep marks undelivered messages past their expiry expired and drops
-// presence a day stale. It returns how many messages expired.
-func (s *Store) Sweep(ctx context.Context) (int64, error) {
+// Retention statements. Each deletes at most $2 rows: a backlog is
+// worked off a batch at a time, so no statement holds many row locks.
+// ANY(ARRAY(...)) keeps each delete a probe by key: as a semi-join the
+// planner may scan a whole primary key index.
+const (
+	// PurgeSQL deletes the messages in a final state that expired before
+	// $1, with the audit rows of each (bus.send, bus.claim): at most $2.
+	// A reply to one keeps its row (reply_to is set to NULL).
+	PurgeSQL = `WITH gone AS (
+			DELETE FROM bus_messages WHERE id=ANY(ARRAY(SELECT id FROM bus_messages
+				WHERE state IN ('delivered','read','expired','refused','undelivered') AND expires_at<$1 LIMIT $2))
+			RETURNING id),
+		audit AS (DELETE FROM audit_events WHERE target_type='bus_message' AND target_id<>'' AND target_id=ANY(ARRAY(SELECT id FROM gone)) RETURNING 1)
+		SELECT (SELECT count(*) FROM gone),(SELECT count(*) FROM audit)`
+	// PurgeAuditSQL deletes the bus audit rows that name several messages
+	// (bus.poll, bus.deliver, bus.read) written before $1: at most $2.
+	// Sweep passes the message cutoff less DefaultTTL: every message such
+	// a row names was sent before it, so expired by then and is past
+	// retention too. None is still live.
+	PurgeAuditSQL = `DELETE FROM audit_events WHERE id=ANY(ARRAY(SELECT id FROM audit_events
+		WHERE target_type='bus_message' AND target_id='' AND created_at<$1 LIMIT $2))`
+)
+
+// purgeBatch is the rows one retention statement deletes; purgeBatches
+// the statements of each kind one sweep runs. The rest wait for the next
+// sweep, a minute later.
+const (
+	purgeBatch   = 1000
+	purgeBatches = 10
+)
+
+// SweepResult is what one sweep did.
+type SweepResult struct {
+	// Expired is the undelivered messages it marked expired.
+	Expired int64
+	// Deleted is the messages past retention it deleted; Audit the audit
+	// rows deleted with them or by age.
+	Deleted, Audit int64
+}
+
+// RetentionPeriod is how long a message in a final state is kept after its
+// expiry: s.Retention, or busproto.DefaultRetention when that is 0.
+func (s *Store) RetentionPeriod() time.Duration {
+	if s.Retention <= 0 {
+		return busproto.DefaultRetention
+	}
+	return s.Retention
+}
+
+// Sweep marks undelivered messages past their expiry expired, drops
+// presence a day stale, and deletes messages in a final state whose
+// expiry is more than the retention past, with their audit rows. A
+// queued, held or claimed message is never deleted: it expires first.
+// Deletes are capped per sweep (purgeBatch, purgeBatches).
+func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 	now := s.now()
-	var n int64
+	var out SweepResult
 	for {
 		tag, err := s.Pool.Exec(ctx, expireSQL, now)
 		if err != nil {
-			return n, err
+			return out, err
 		}
-		n += tag.RowsAffected()
+		out.Expired += tag.RowsAffected()
 		if tag.RowsAffected() < 1000 {
 			break
 		}
 	}
-	_, err := s.Pool.Exec(ctx, dropPresenceSQL, now.Add(-24*time.Hour))
-	return n, err
+	if _, err := s.Pool.Exec(ctx, dropPresenceSQL, now.Add(-24*time.Hour)); err != nil {
+		return out, err
+	}
+	cutoff := now.Add(-s.RetentionPeriod())
+	for range purgeBatches {
+		var n, a int64
+		if err := s.Pool.QueryRow(ctx, PurgeSQL, cutoff, purgeBatch).Scan(&n, &a); err != nil {
+			return out, err
+		}
+		out.Deleted, out.Audit = out.Deleted+n, out.Audit+a
+		if n < purgeBatch {
+			break
+		}
+	}
+	for range purgeBatches {
+		tag, err := s.Pool.Exec(ctx, PurgeAuditSQL, cutoff.Add(-busproto.DefaultTTL), purgeBatch)
+		if err != nil {
+			return out, err
+		}
+		out.Audit += tag.RowsAffected()
+		if tag.RowsAffected() < purgeBatch {
+			break
+		}
+	}
+	return out, nil
 }

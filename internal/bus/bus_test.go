@@ -699,8 +699,8 @@ func TestExpiry(t *testing.T) {
 		t.Fatalf("inbox %+v", in.Messages)
 	}
 	n, err := tm.s.Sweep(context.Background())
-	if err != nil || n != 2 || tm.state(out.ID) != "expired" {
-		t.Fatalf("sweep %d %v", n, err)
+	if err != nil || n.Expired != 2 || n.Deleted != 0 || tm.state(out.ID) != "expired" {
+		t.Fatalf("sweep %+v %v", n, err)
 	}
 }
 

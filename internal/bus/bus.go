@@ -40,7 +40,10 @@ type Store struct {
 	// answers at once, as if its wait ended, so the server's shutdown
 	// grace outlasts it. Nil never closes.
 	Stopping <-chan struct{}
-	hub      hub
+	// Retention is how long Sweep keeps a message in a final state after
+	// its expiry, with its audit rows; 0 is busproto.DefaultRetention.
+	Retention time.Duration
+	hub       hub
 }
 
 func (s *Store) now() time.Time {
@@ -451,7 +454,9 @@ func RouteRepo(repo, fromRepo, fromRemote string) string {
 
 // Send stores a message from one of the caller's sessions and reports where
 // it is going. A send a limit refuses is stored as refused (the sender's
-// inbox lists it) and returned as a *busproto.Error carrying its id.
+// inbox lists it) and returned as a *busproto.Error carrying its id; a
+// refusal with the code of one the session had within the hour adds to
+// that row (coalesceRefusal) and carries its id.
 func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRequest) (busproto.SendResponse, error) {
 	var out busproto.SendResponse
 	intent, err := busproto.ParseIntent(req.Intent)
@@ -556,6 +561,19 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 				m.state = busproto.StateHeld
 			}
 		}
+		if refusal != nil {
+			// A refusal like one this session had within the hour adds to
+			// that row: a looping agent writes one row per code, recipient
+			// and thread per hour.
+			id, err := coalesceRefusal(ctx, tx, c, m, now)
+			if err != nil {
+				return err
+			}
+			if id != "" {
+				refusal.MessageID = id
+				return nil
+			}
+		}
 		if err := m.insert(ctx, tx, c); err != nil {
 			return err
 		}
@@ -639,6 +657,41 @@ func (m *message) insert(ctx context.Context, tx pgx.Tx, c busproto.Caller) erro
 	return err
 }
 
+// RefusedRowSQL finds the refused row that a new refusal of the session $1
+// (agent $2, device $3) with code $4 adds to: one created since $5, to
+// the same recipient ($6 person, $7 addressing, $8 session) and in the
+// same thread ($9, a reply's thread, or empty for a root send: another root).
+// A refusal to another recipient or in another thread is its own row, so
+// the sender's inbox lists it there.
+const RefusedRowSQL = `SELECT id FROM bus_messages WHERE from_session=$1 AND created_at>$5 AND state='refused' AND reason=$4
+	AND from_agent=$2 AND from_device IS NOT DISTINCT FROM NULLIF($3,'')::uuid
+	AND to_user=$6 AND addressed=$7 AND to_session IS NOT DISTINCT FROM NULLIF($8,'')
+	AND CASE WHEN $9='' THEN thread_id=id ELSE thread_id=$9 END ORDER BY created_at DESC LIMIT 1`
+
+// coalesceRefusal adds a refusal to the session's refused row with the
+// same code, recipient and thread from the last hour, if there is one,
+// and returns its id. The
+// row keeps its first attempt's recipient, body and audit row; attempts
+// counts the refusals and last_at is the latest. The caller holds the
+// session's send lock (lockSend), so two refusals cannot both miss the row.
+func coalesceRefusal(ctx context.Context, tx pgx.Tx, c busproto.Caller, m message, now time.Time) (string, error) {
+	var id string
+	thread := ""
+	if m.replyTo != "" {
+		thread = m.thread
+	}
+	err := tx.QueryRow(ctx, RefusedRowSQL, m.from.id, m.from.agent, c.DeviceID, m.refused, now.Add(-time.Hour),
+		m.toUser, m.addressed, m.toSession, thread).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	_, err = tx.Exec(ctx, `UPDATE bus_messages SET attempts=attempts+1,last_at=$2 WHERE id=$1`, id, now)
+	return id, err
+}
+
 // lockSend serializes sends from one session, from one person (which
 // covers the per-device and per-person ceilings) and to one recipient, so
 // two concurrent sends cannot both pass a limit with one slot left. The
@@ -682,14 +735,15 @@ const (
 	// the ceiling, but not a refusal by one of these ceilings: counting
 	// it would keep a retrying session's window full for as long as it
 	// retries, and let one session at its own ceiling use up its
-	// device's and person's quota.
+	// device's and person's quota. A refused row counts its attempts,
+	// which leave the window together an hour after the first.
 	counted = ` AND (state<>'refused' OR reason NOT IN ('` + busproto.CodeSessionRate + `','` + busproto.CodeDeviceRate + `','` + busproto.CodeUserRate + `'))`
 	// SessionSendsSQL counts the session $1's send attempts since $2.
-	SessionSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_session=$1 AND created_at>$2` + counted
+	SessionSendsSQL = `SELECT COALESCE(sum(attempts),0) FROM bus_messages WHERE from_session=$1 AND created_at>$2` + counted
 	// DeviceSendsSQL counts the device $1's send attempts since $2.
-	DeviceSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_device=$1 AND created_at>$2` + counted
+	DeviceSendsSQL = `SELECT COALESCE(sum(attempts),0) FROM bus_messages WHERE from_device=$1 AND created_at>$2` + counted
 	// UserSendsSQL counts the person $1's send attempts since $2.
-	UserSendsSQL = `SELECT count(*) FROM bus_messages WHERE from_user=$1 AND created_at>$2` + counted
+	UserSendsSQL = `SELECT COALESCE(sum(attempts),0) FROM bus_messages WHERE from_user=$1 AND created_at>$2` + counted
 	// ThreadSendsSQL counts the thread $1's messages since $2.
 	ThreadSendsSQL = `SELECT count(*) FROM bus_messages WHERE thread_id=$1 AND created_at>$2 AND state<>'refused'`
 	// SessionPendingSQL counts the session $1's undelivered messages

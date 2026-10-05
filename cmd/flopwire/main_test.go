@@ -549,3 +549,18 @@ func TestBootstrapIdentityMigratesAndCreatesExactlyOneAdmin(t *testing.T) {
 		t.Fatalf("admins=%d failures=%d err=%v", admins, failures, err)
 	}
 }
+
+// FLOPWIRE_BUS_RETENTION takes a duration or days; a value that does not
+// parse, or is under an hour, stops the server rather than falling back.
+func TestBusRetention(t *testing.T) {
+	for v, want := range map[string]time.Duration{"": 7 * 24 * time.Hour, "7d": 7 * 24 * time.Hour, " 30d ": 30 * 24 * time.Hour, "168h": 168 * time.Hour, "1h": time.Hour} {
+		if got, err := busRetention(v); err != nil || got != want {
+			t.Errorf("busRetention(%q) = %v, %v; want %v", v, got, err, want)
+		}
+	}
+	for _, v := range []string{"7", "seven days", "0d", "-1h", "30m", "1.5d", "300000d"} {
+		if got, err := busRetention(v); err == nil {
+			t.Errorf("busRetention(%q) = %v, want an error", v, got)
+		}
+	}
+}

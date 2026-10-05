@@ -202,6 +202,23 @@ socket and prints these parts:
 | `messaging: stopped: ERR` | The server refused the credential or the certificate. Run `flopwire login`. Messaging resumes when the agent sees the new credential. |
 | `messaging: disabled: ERR` | The server has no message bus, or the credential is not an enrolled device. The agent asks again every 10 minutes. |
 | `messages: N pending delivery, N receipts unsent, N held for your acceptance` | Messages in the local inbox that no hook has confirmed yet, deliveries (and undelivered reports) the server has not taken yet, and messages from people you have not accepted. |
+| `credential: SOURCE` | The credential the agent uses. `device login`: an enrolled device. `FLOPWIRE_TOKEN`: a minted token from the agent's environment. `legacy login`: a login with no device credential. `none`: no server. A device login also shows `ok`, a deadline warning or `re-login required`. |
+| `messaging: off: REASON: FIX` | The credential cannot use the message bus. The agent does not poll. Do the fix; messaging resumes when the agent sees the new credential. |
+| `warning: FLOPWIRE_TOKEN in the environment hides the device login saved for URL` | `FLOPWIRE_TOKEN` wins over the saved config. Unset it in the agent's environment to use the device login. |
+| `note: this shell's credential is X, the running agent's is Y: WHY` | This shell and the agent have different environments: `FLOPWIRE_TOKEN` is set in only one of them. The agent's credential decides uploads and messaging. |
+
+`flopwire setup --check` shows the same `credential`, `messaging: off`,
+`warning` and `note` lines in its server section, for the running agent when
+it answers.
+
+The agent reads the server credential at startup. When a login is saved
+while it runs without one, or the saved credential is removed, the agent
+restarts itself within 2 seconds. It then uploads and polls the server, or
+runs local.
+
+A login to a different server while the agent runs does not restart it.
+Restart the agent yourself after you switch servers (see
+[Stop the agent](#stop-the-agent)).
 
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
@@ -226,10 +243,26 @@ The report has these parts:
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
 | `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
 | `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
+| `harnesses[].note` | How setup learned what it reports, when that limits the report. |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
 
 Use `--check` to report and change nothing. Use `--remove` to uninstall.
+
+For Codex, `--check` runs only `codex plugin marketplace list` and
+`codex plugin list --marketplace flopwire`, which read local state. It
+does not start `codex app-server`: the app server upgrades the
+configured plugin marketplaces and fetches the plugin catalog in the
+background when it starts. Instead, `--check` reads Codex's files in
+`$CODEX_HOME` (default `~/.codex`): `config.toml`, `hooks.json` and the
+plugin's cached hooks file. It computes each plugin hook's hash as Codex
+0.160.0 does and compares it with the `trusted_hash` that Codex stored
+when you approved the hook. When Codex is newer than 0.160.0 and a hook
+looks unapproved, `--check` warns that Codex may have changed its hash and
+says to run `flopwire setup`, which asks Codex. It looks for older manual Flopwire entries in
+the user config only, not in a project's `.codex` folder. The Codex entry
+says this in `note`. `flopwire setup` without `--check` asks the app
+server.
 Run `flopwire setup --help` for every flag.
 
 ### Set up a device (for an agent)
@@ -377,6 +410,13 @@ scope; Codex has only user installs. Use `--source` or
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
+The source's Claude Code marketplace must be named `flopwire`. When it
+has another name, Claude Code adds the marketplace under that name.
+setup names it in `done`, sets `error`, and installs nothing from it.
+When setup added that marketplace, setup removes it again. When a
+marketplace with that name was already configured, setup keeps it. Run
+`claude plugin marketplace remove NAME` to remove it.
+
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace
 repository, Devin 3000.10.21 and later recognizes the marketplace and
@@ -418,8 +458,105 @@ Devin reads hooks from Claude Code's settings files, but not from Claude
 Code's plugins. The Claude Code plugin and the Devin plugin therefore never
 run in the same Devin session.
 
+Installing the Codex plugin from GitHub was checked with Codex 0.160.0 on
+2026-10-04, in an empty `CODEX_HOME`, with `flopwire` and `codex` the only
+harness commands on `PATH`:
+
+```sh
+flopwire setup --text
+```
+
+The result:
+
+- setup ran `codex plugin marketplace add flopwire/flopwire --json
+  --sparse .agents/plugins --sparse plugins/codex`, then
+  `codex plugin add flopwire@flopwire --json`.
+- `config.toml` got `[marketplaces.flopwire]` with
+  `source_type = "git"`, `source = "https://github.com/flopwire/flopwire.git"`
+  and both sparse paths, and `[plugins."flopwire@flopwire"]` with
+  `enabled = true`.
+- Codex copied the plugin to
+  `plugins/cache/flopwire/flopwire/local`, and listed five plugin hooks,
+  all waiting for review.
+- A second `flopwire setup` ran `codex plugin marketplace upgrade
+  flopwire` and reinstalled the plugin. It reported nothing to change.
+- `flopwire setup --check` reported the plugin installed and enabled, and
+  the five hooks waiting for approval.
+
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
-with the plugin.
+with the plugin. To check them by hand, see
+[manual-checks.md](manual-checks.md).
+
+### Test a Claude Code install in a scratch configuration
+
+Use this procedure to test `flopwire setup` at user scope without a
+change to your own Claude Code configuration. It works on macOS, where
+Claude Code keeps its login in the keychain.
+
+A scratch `CLAUDE_CONFIG_DIR` alone does not log in. Claude Code then
+looks for a keychain item with another name, and prints
+`Not logged in · Please run /login`. `CLAUDE_CODE_OAUTH_TOKEN` supplies
+the login. Do not copy any files from `~/.claude`.
+
+The access token is a secret. It must not show on the screen, in a
+file, in a log or in the shell history:
+
+- Never type or paste the token. Read it from the keychain inside a
+  command substitution, as in step 3. The history then holds the
+  `security` command, not the token.
+- Never run `security find-generic-password -w` alone. It prints the
+  whole keychain item, the refresh token too.
+- Do not run `echo`, `env`, `printenv`, `set` or `set -x` while the
+  token is set.
+
+1. Start a new shell (`zsh`) for the test. The token goes away when you
+   exit it.
+2. Make an empty directory for the scratch configuration. Set
+   `CLAUDE_CONFIG_DIR` to it.
+3. Read the access token from the keychain item
+   `Claude Code-credentials` straight into the environment:
+
+   ```sh
+   export CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s 'Claude Code-credentials' -w | /usr/bin/jq -r .claudeAiOauth.accessToken)"
+   ```
+
+4. Set `FLOPWIRE_CONFIG` and `FLOPWIRE_INDEX` to paths in scratch.
+5. Set `PATH` to a directory that holds only `claude`, `flopwire` and
+   `git`, then `/usr/bin:/bin`. setup then finds no other harness.
+6. Run `flopwire setup --source <checkout>`, then
+   `flopwire setup --check`.
+7. Run `claude -p --setting-sources user`. Ask the model to quote the
+   hook output and to list the `flopwire` tools.
+8. Run `flopwire setup --remove`, then `flopwire setup --check`.
+9. Exit the shell from step 1. Delete the scratch directory.
+
+To prove that the hooks reach the model, put a `flopwire` script first
+on `PATH` for step 7. For `flopwire hook`, the script prints
+`{"hookSpecificOutput":{"hookEventName":EV,"additionalContext":MARKER}}`
+on `SessionStart` and `PostToolUse`. For every other command it runs
+the real `flopwire`.
+
+What was verified, with Claude Code 2.1.289 on macOS 26 on 2026-10-04:
+
+- `flopwire setup` with a local checkout as the source added the
+  marketplace and installed `flopwire@flopwire` at user scope. Claude
+  Code wrote `extraKnownMarketplaces` and `enabledPlugins` to the
+  scratch `settings.json`. `--check` reported the plugin installed and
+  enabled.
+- `claude -p --model haiku --setting-sources user` with a marker
+  script quoted the `SessionStart` and `PostToolUse` markers. It listed
+  the seven `mcp__plugin_flopwire_flopwire__*` tools and the
+  `flopwire:messaging` skill. The same prompt with
+  `--setting-sources project` saw no marker and no tool, so the user
+  settings loaded the plugin.
+- `--remove` uninstalled the plugin and removed the marketplace, and
+  `--check` then reported it not installed.
+- A source whose `marketplace.json` names another marketplace: setup
+  reported the name that Claude Code added in `done`, set `error`, and
+  installed nothing.
+- `shasum` of `~/.claude/settings.json` and of
+  `installed_plugins.json` and `known_marketplaces.json` in
+  `~/.claude/plugins` was the same before and after.
 
 ## Connect the harness hooks
 
@@ -574,6 +711,10 @@ At exit, Codex drops the async `Stop` hook of the last turn; the
 Keep your shell startup files silent when they are not interactive:
 on the other events the printed text goes into the session as context.
 
+Codex 0.160 runs hook commands with `zsh -lc`, so `flopwire` resolves
+through the `PATH` your login profile sets, not the `PATH` Codex started
+with; an isolated test must set `ZDOTDIR` or call `flopwire` by absolute path.
+
 #### Codex and git commits
 
 Codex's `workspace-write` sandbox keeps `.git` read-only, so a sandboxed
@@ -639,7 +780,12 @@ The plugin it installs runs `flopwire hook` on `SessionStart`,
 `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and serves the
 MCP tools. A missing `flopwire` is silent; a `flopwire hook` that fails (a
 binary older than the plugin) exits 1 with a hint to run
-`flopwire setup --check`. Devin has no hook approval step.
+`flopwire setup --check` on stderr. Devin does not show that hint, in the
+TUI or in print mode. It writes only `Command exited with code 1` to its
+own log, and the session continues without messages. After you update the
+plugin or the binary, run `flopwire setup --check`: it reports a binary on
+`PATH` that lacks a command the plugin runs. Devin has no hook approval
+step.
 
 On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
@@ -693,6 +839,47 @@ plugin.
 
 Do not add `flopwire hook` to `PreToolUse`. Devin does not show that
 event's output to the model, and the messages would be lost.
+
+How Devin CLI 3000.11.1 holds sessions (live checks, 2026-10-04):
+
+- The TUI runs each session in a child `devin acp` process. That process
+  writes the session's lock and keeps the lock file open, with an
+  exclusive `flock`. `/clear` and `/resume` start a new child for the next
+  session. The old child exits, and the old session's `SessionEnd` hook
+  runs (reason `clear` or `resume`).
+- One `devin acp` process holds several sessions when an ACP client calls
+  `session/new` more than once. Each session has its own lock that names
+  the same pid. ACP has no `session/close` in this version.
+  `session/delete` closes the session's lock file and removes the session
+  from `sessions.db`. The lock file stays, and no `SessionEnd` hook runs.
+  The agent reads both signals: `peers` drops the deleted session within
+  about 1 second and keeps the other session live.
+- An interrupted turn runs no `Stop` hook. `peers` shows it idle at the
+  next presence check from the store's marker. Measured: idle 0.7 seconds
+  after Esc twice during a tool, 1.3 seconds after Ctrl-C during the
+  answer, and 1.2 seconds after an ACP `session/cancel`. Before this
+  check, the session read busy for 15 minutes.
+- Esc during a foreground `run_subagent` call cancels the call (its
+  result is `Canceled due to user interrupt`). The subagent continues in
+  the background, and the TUI stays in its working state: it queues new
+  prompts until the subagent ends. `peers` shows the session idle for
+  that time: the call's result is an interrupt marker, and the hooks of
+  the background subagent are not the session's own, so they do not mark
+  it busy.
+- When the `devin acp` process dies while a subagent runs, the
+  `run_subagent` call keeps no result. `devin -r` continues the session
+  from the call's parent, so the next node is the call's sibling. The
+  hook then treats the call as abandoned, and the session's `Stop` makes
+  it idle.
+
+To repeat the checks: run the agent with `--no-sync` and
+`FLOPWIRE_CLOUD=off`, with `HOME` set to a scratch directory that holds a
+copy of `~/.local/share/devin/credentials.toml`. Install the plugin there
+with `devin plugins install --local <checkout>/plugins/claude-code/flopwire -y`.
+Drive the TUI in `tmux` (`send-keys Escape`, `send-keys C-c`) and poll
+`flopwire peers`. For one process with several sessions, run `devin acp`
+and send `initialize`, two `session/new`, a `session/prompt` for each,
+then `session/delete` for one, as JSON-RPC lines on its stdin.
 
 ### opencode
 
@@ -750,7 +937,7 @@ them:
 |---|---|---|
 | Claude Code | `~/.claude/sessions/<pid>.json` | Open while the process runs and started when `procStart` says. Busy when `status` is `busy`. |
 | Codex | `~/.codex/thread-writer-locks/<thread>.lock` | Open while a Codex process holds the file's lock. The file stays after the process exits. Busy from the last task event in the rollout. |
-| Devin | `session_locks/<session>.lock` beside `sessions.db` | Open while the named process runs and is `devin`. A Devin session without such a lock is not live, even when it wrote a moment ago. |
+| Devin | `session_locks/<session>.lock` beside `sessions.db`, and `sessions.db` | Open while the named process runs, is `devin`, and started before the lock was written. The session must still be in `sessions.db`. When one process is named by several locks, it must also hold this lock file open. A Devin session without such a lock is not live, even when it wrote a moment ago. |
 
 To see whether a Codex process holds a thread's lock, the agent does what
 Codex's own cleanup does. It takes `.coordination.lock` in the same
@@ -767,6 +954,14 @@ events instead: each `flopwire hook` call tells the agent its event. After
 it is idle. A session with no hook event for 15 minutes is idle. A session
 is idle until its first hook event after the agent starts.
 
+Devin runs no `Stop` hook for a turn that you interrupt (Esc twice or
+Ctrl-C in the TUI, `session/cancel` over ACP). Devin then writes a marker
+as the turn's last node in `sessions.db`: the system node
+`[Response interrupted by user]`, or the tool result
+`Canceled due to user interrupt`. While a session is busy, each presence
+check reads the session's 16 newest nodes. A marker written after the
+hook that made the session busy makes it idle.
+
 A message waits for 24 hours. Then it expires.
 
 To see the messaging state, run `flopwire agent status`.
@@ -780,7 +975,7 @@ agent takes these signals:
 |---|---|
 | Claude Code | Its `SessionEnd` hook runs. Or its `sessions/<pid>.json` names a process that is not running or that started at another time (a killed process leaves the file). Or the file that named it is gone at two reads 1 second apart (a clean exit removes it). |
 | Codex | Its `SessionEnd` hook runs. Or no process holds its writer lock (the kernel releases the lock when the process exits, also when it is killed). Or the lock file is gone at two reads 1 second apart. |
-| Devin | Its `SessionEnd` hook runs. Or its `session_locks/<session>.lock` names a process that is not running or is not `devin`. |
+| Devin | Its `SessionEnd` hook runs. Or its `session_locks/<session>.lock` names a process that is not running, is not `devin`, or started after the lock was written. Or, about 1 second after it happens, the session is gone from `sessions.db`, or a process named by several locks closes this one. |
 
 The agent reads the harness files on each 2-second presence check and on
 each `peers` call (presence is cached for 1 second). An ended session
@@ -952,10 +1147,32 @@ the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
 A subagent is not a session, so it gets no messages. A hook that runs in
 a subagent prints nothing and takes nothing. The session's own next hook
 delivers the messages. A message that a subagent sends goes out as its
-parent session, and the reply goes to the parent session.
+parent session, and the reply goes to the parent session. The parent's
+human does not see the call. This is the same on Claude Code, Codex,
+Devin CLI and opencode (decided 2026-10-04).
+
+In Codex, a subagent's `flopwire_send` call names the subagent's own
+thread in `_meta.threadId`. The agent follows the index's parent links
+from that thread to the top-level session and sends as that session.
+Checked live with Codex 0.160.0 on 2026-10-04: a `codex exec` session
+spawned one subagent, and the subagent called `flopwire_send`. The receipt
+and the recipient's inbox showed the parent session as the sender. A
+message for the parent, queued while the subagent ran, printed in none of
+the subagent's seven hooks (one `UserPromptSubmit` and six
+`PostToolUse`). It printed once, at the parent's next `PostToolUse`.
 
 A session that a path rule keeps off the server cannot send. The agent
-refuses the request before anything leaves the device.
+refuses the request before anything leaves the device. The agent also
+refuses a send whose recipient or ref names such a session
+(`withheld_session`). The agent does not check the message text: a
+withheld session id written in the text reaches the server. Do not write
+one there.
+
+A new session can send before the agent has indexed it, or before its
+transcript names its directory. The agent then indexes the session and
+waits up to 2 seconds. If the session is still not ready, the agent
+refuses the send with `session_not_on_device` and "not indexed yet". Send
+again after a few seconds. `flopwire send` retries once by itself.
 
 ### Known limits
 
@@ -963,16 +1180,46 @@ refuses the request before anything leaves the device.
   receive. Claude Code cloud sessions and Devin cloud sessions only
   receive, while they run a turn. See [docs/cloud.md](cloud.md). For
   opencode, see [opencode.md](opencode.md#known-limits).
-- A Devin hook finds a subagent's tool call in Devin's session store. If
-  the hook cannot read the store, it delivers messages only at a prompt.
-  It writes the cause to stderr.
-- Without a server, the agent applies the per-session, per-thread,
-  duplicate and recipient limits. It does not apply the per-device and
-  per-person ceilings of the server (#71).
+- A Devin hook finds a subagent's tool call in Devin's session store. A
+  background subagent (`run_subagent` in the background, or a foreground
+  one that Esc moved there) writes its nodes to the store as it runs, on
+  a root of its own. Its tool call is then in the store, but not on the
+  session's main chain (`sessions.main_chain_id`), so its hook delivers
+  nothing. If the hook cannot read the store, it delivers messages only
+  at a prompt. It writes the cause to stderr.
+- Without a server, the agent applies the server's per-session,
+  per-device, per-thread, duplicate and recipient limits. It does not
+  apply the per-person ceiling: it is higher than the per-device ceiling,
+  and without a server the person has one device.
 - `@user` messages are routed by repo name. With `--server`, `--repo`
   does not match another machine's checkout at another path (#102).
 - Devin CLI shows no held-message notice. `codex exec` does not show it
   either.
+- A Devin session held by a `devin acp` process with several sessions
+  costs one `lsof` call (about 30 ms) for that process at each presence
+  check. A process with one session needs none. The calls of one check
+  stop after 500 ms. When `lsof` is missing, fails or is stopped, the
+  check keeps every lock of that process.
+- A background Devin subagent fires a `Stop` hook when it ends. That
+  `Stop` reads as the session's own and makes the session idle, also
+  while the session's own turn still runs. A message waits for the
+  session's next own hook.
+- The live mark of retrieval (`flopwire sessions`, the live sessions
+  each sync reports to the server, and `--exclude-live`) still takes a
+  Devin lock of a running `devin` as live without the per-session checks
+  that `peers` makes. A session that a `devin acp` process deleted, or a
+  lock whose pid a later `devin` reuses, reads live there until that
+  process exits. Messages are not affected: they follow `peers`.
+- On Linux, the agent computes a process's start from the boot time in
+  `/proc/stat`, and the boot time moves when the wall clock steps. A
+  forward step of more than 2 seconds (for example, a VM or WSL resume
+  that resyncs the clock) makes a running Claude Code, Devin or opencode
+  process look as if it started after the file that names it. A backward
+  step of more than 2 seconds also affects Claude Code: its session file
+  records the process's start, and the two must agree within 2 seconds.
+  The sessions then end, and they read as ended until that process exits.
+  Restart the harness to resume them. Codex sessions are not affected:
+  their writer lock does not use the start time.
 
 ## How the agent finds changes
 
