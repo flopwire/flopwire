@@ -299,7 +299,7 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 			if g.open(e, h) {
 				sep = false
 			}
-			groupedHit(e, h, sep)
+			groupedHit(e, h, sep, st)
 			sep = hasContext(h)
 			return
 		}
@@ -731,7 +731,7 @@ func hasContext(h *Hit) bool {
 // groupedHit prints a grep hit under its session header: ORDINAL:LINE
 // kind/tool: text on its first matching line, ORDINAL:LINE: text on the
 // others, ORDINAL-LINE- text for context.
-func groupedHit(e *errWriter, h *Hit, sep bool) {
+func groupedHit(e *errWriter, h *Hit, sep bool, st Style) {
 	if sep {
 		e.printf("--\n")
 	}
@@ -755,7 +755,7 @@ func groupedHit(e *errWriter, h *Hit, sep bool) {
 		}
 	}
 	if h.MoreLines > 0 {
-		e.printf("%s: [+%d more matching %s; flopwire read %s]\n", ord, h.MoreLines, plural(h.MoreLines, "line", "lines"), h.Address)
+		e.printf("%s: [+%d more matching %s; %s]\n", ord, h.MoreLines, plural(h.MoreLines, "line", "lines"), st.read(h.Address))
 	}
 }
 

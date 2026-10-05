@@ -1,6 +1,10 @@
 package format
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestReadContinuationsUseSelectedCommand(t *testing.T) {
 	st := Style{CLIReadCommand: "flopwire read --local --index '/tmp/archive.db'"}
@@ -22,5 +26,30 @@ func TestReadContinuationsUseSelectedCommand(t *testing.T) {
 		if pair[0] != pair[1] {
 			t.Fatalf("MCP got %q, want %q", pair[0], pair[1])
 		}
+	}
+}
+
+func TestGroupedGrepMoreLinesKeepsReadScope(t *testing.T) {
+	p := &Page{Hits: []Hit{{Address: "session/1:2", SessionID: "session", Agent: "claude", Kind: "user", Lines: []Line{{N: 2, Text: "match", Match: true}}, MoreLines: 3}}, Total: 1, Exact: true}
+	for _, command := range []string{
+		"flopwire read --local",
+		"flopwire read --index '/tmp/archive.db'",
+		"flopwire read --local --index '/tmp/archive.db'",
+	} {
+		var out bytes.Buffer
+		if err := WriteGrep(&out, p, "", Style{CLIReadCommand: command}); err != nil {
+			t.Fatal(err)
+		}
+		want := "[+3 more matching lines; " + command + " session/1:2]"
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing scoped grouped continuation %q: %s", want, out.String())
+		}
+	}
+	var out bytes.Buffer
+	if err := WriteGrep(&out, p, "", Style{MCP: true, CLIReadCommand: "flopwire read --local"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "[+3 more matching lines; flopwire_read address=session/1:2]") {
+		t.Fatalf("MCP grouped continuation used CLI scope: %s", out.String())
 	}
 }
