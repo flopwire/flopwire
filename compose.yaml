@@ -1,6 +1,7 @@
 name: flopwire
 services:
   postgres:
+    restart: unless-stopped
     image: ${POSTGRES_IMAGE:-postgres:17.6-bookworm}
     environment:
       POSTGRES_DB: flopwire
@@ -15,6 +16,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   minio:
+    restart: unless-stopped
     image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:71674988a1c7ddd5724928633199152b11e4ddefd6c6ce2d60772ff4a8f22ca9}
     command: server /data --console-address :9001
     environment:
