@@ -81,3 +81,78 @@ func TestExportCursorCarriesAcrossGenerations(t *testing.T) {
 		t.Fatalf("empty export: %+v", c3)
 	}
 }
+
+// An export kept up to date by appends loads to the same store, and
+// parses to the same rows, as a whole export of the session taken at the
+// end; each append carries only what changed.
+func TestExportAppendsMatchWholeExport(t *testing.T) {
+	ctx := context.Background()
+	path, db := buildDB(t)
+	const id = "big"
+	growSession(t, db, id, 200)
+	log, appended, state, err := ExportFrom(ctx, path, id, nil)
+	if err != nil || appended {
+		t.Fatalf("first export: appended %v, %v", appended, err)
+	}
+	step := func(name string, wantAppend bool, maxBytes int) {
+		t.Helper()
+		data, appended, next, err := ExportFrom(ctx, path, id, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if appended != wantAppend {
+			t.Fatalf("%s: appended %v, want %v", name, appended, wantAppend)
+		}
+		if len(data) > maxBytes {
+			t.Fatalf("%s: %d bytes, want at most %d:\n%s", name, len(data), maxBytes, data)
+		}
+		if appended {
+			log = append(log, data...)
+		} else {
+			log = data
+		}
+		state = next
+		whole, err := Export(ctx, path, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := parseExport(t, log, id, transcript.Cursor{})
+		want, _ := parseExport(t, whole, id, transcript.Cursor{})
+		direct := snapshotStore(t, path)
+		gs, ws := store{}, store{}
+		gs.apply(got)
+		ws.apply(want)
+		assertSame(t, gs, ws)
+		for k, m := range direct {
+			if m.SessionID == id && gs[k] == nil {
+				t.Errorf("%s: %s missing from the appended export", name, k)
+			}
+		}
+		if t.Failed() {
+			t.Fatalf("after %s", name)
+		}
+	}
+
+	step("no change", true, 0)
+	addNode(t, db, id, 201, `{"message_id":"big-201","role":"assistant","content":"","tool_calls":[{"id":"call_a","name":"exec","arguments":{"command":"ls"}}]}`)
+	exec(t, db, `INSERT INTO tool_call_state VALUES (?, 'call_a', '{"kind":"execute","rawInput":{"command":"ls"}}', NULL)`, id)
+	step("node with a pending tool call", true, 1024)
+	step("pending, unchanged", true, 0)
+	addNode(t, db, id, 202, `{"message_id":"big-202","role":"tool","tool_call_id":"call_a","content":"a b"}`)
+	exec(t, db, `UPDATE tool_call_state SET tool_call_update_json = '{"status":"failed"}' WHERE tool_call_id = 'call_a'`)
+	step("tool settled in place", true, 1024)
+	exec(t, db, `INSERT INTO tool_call_state VALUES (?, 'call_b', '{"kind":"read"}', NULL)`, id)
+	step("pending tool row", true, 512)
+	exec(t, db, `INSERT OR REPLACE INTO tool_call_state VALUES (?, 'call_b', '{"kind":"read"}', '{"status":"completed"}')`, id)
+	step("tool settled by replace", true, 512)
+	exec(t, db, `UPDATE sessions SET title = 'renamed', main_chain_id = 100 WHERE id = ?`, id)
+	step("main chain moved", true, 512)
+	exec(t, db, `DELETE FROM message_nodes WHERE session_id = ? AND node_id = 150`, id)
+	step("deleted node", false, 1<<20)
+	addNode(t, db, id, 203, `{"message_id":"big-203","role":"assistant","content":"after delete"}`)
+	step("node after the restart", true, 1024)
+	exec(t, db, `DELETE FROM message_nodes WHERE session_id = ?`, id)
+	exec(t, db, `DELETE FROM sessions WHERE id = ?`, id)
+	step("vanished", false, 256)
+	step("still gone", true, 0)
+}

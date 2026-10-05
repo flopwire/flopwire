@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS devsync_sources (
   path         TEXT NOT NULL UNIQUE,
   spec         TEXT NOT NULL,         -- SourceSpec JSON
   generation   INTEGER NOT NULL,      -- current generation, -1 before the first
-  watermark    TEXT                   -- transcript.Watermark JSON of the current generation
+  watermark    TEXT                   -- storedWatermark JSON of the current generation
 );
 CREATE TABLE IF NOT EXISTS devsync_gens (
   source_id     INTEGER NOT NULL,
@@ -106,6 +106,9 @@ type sourceRow struct {
 	Spec      SourceSpec
 	Gen       int64
 	Watermark *transcript.Watermark
+	// ExportState is the exporter's state saved with the watermark
+	// (Export.State); nil without a watermark.
+	ExportState []byte
 	// RepoSent is Spec.repoKey as a flush last reported it, "" before
 	// any (storedSpec).
 	RepoSent string
@@ -175,12 +178,28 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 		row.Spec = *spec
 	}
 	if wm.Valid {
-		row.Watermark = &transcript.Watermark{}
-		if err := json.Unmarshal([]byte(wm.String), row.Watermark); err != nil {
+		var st storedWatermark
+		if err := json.Unmarshal([]byte(wm.String), &st); err != nil {
 			return nil, err
 		}
+		row.Watermark, row.ExportState = &st.Watermark, st.Export
 	}
 	return row, nil
+}
+
+// storedWatermark is the watermark column: the change-detection watermark
+// and, for an export source, the state its exporter resumes from.
+type storedWatermark struct {
+	transcript.Watermark
+	Export []byte `json:",omitempty"`
+}
+
+func watermarkJSON(wm *transcript.Watermark, exportState []byte) any {
+	if wm == nil {
+		return nil
+	}
+	raw, _ := json.Marshal(storedWatermark{Watermark: *wm, Export: exportState})
+	return string(raw)
 }
 
 // repoSent records that a flush reported src's current repository.
@@ -301,7 +320,7 @@ func (s *Store) entries(ctx context.Context, sid, gen, from int64, limit int) ([
 // saveCapture commits one chunking pass atomically: new manifest entries,
 // the generation row, the source's current generation and watermark, and
 // (when a new generation starts) the previous generation's closing.
-func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add []syncproto.Entry, wm *transcript.Watermark) error {
+func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add []syncproto.Entry, wm *transcript.Watermark, exportState []byte) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -329,18 +348,13 @@ func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add 
 	if _, err := tx.ExecContext(ctx, `UPDATE devsync_gens SET closed = 1 WHERE source_id = ? AND generation < ?`, g.SourceID, g.Gen); err != nil {
 		return err
 	}
-	var wmJSON any
-	if wm != nil {
-		raw, _ := json.Marshal(wm)
-		wmJSON = string(raw)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE devsync_sources SET generation = ?, watermark = ? WHERE id = ?`, g.Gen, wmJSON, g.SourceID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE devsync_sources SET generation = ?, watermark = ? WHERE id = ?`, g.Gen, watermarkJSON(wm, exportState), g.SourceID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	src.Gen, src.Watermark = g.Gen, wm
+	src.Gen, src.Watermark, src.ExportState = g.Gen, wm, exportState
 	return nil
 }
 
@@ -398,15 +412,13 @@ func insertKnown(ctx context.Context, db execer, hs []syncproto.Hash) error {
 // setWatermark replaces the current generation's watermark; nil forces the
 // next capture to start a new generation after floor.
 func (s *Store) setWatermark(ctx context.Context, src *sourceRow, wm *transcript.Watermark) error {
-	var v any
-	if wm != nil {
-		raw, _ := json.Marshal(wm)
-		v = string(raw)
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET generation = ?, watermark = ? WHERE id = ?`, src.Gen, v, src.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET generation = ?, watermark = ? WHERE id = ?`, src.Gen, watermarkJSON(wm, src.ExportState), src.ID); err != nil {
 		return err
 	}
 	src.Watermark = wm
+	if wm == nil {
+		src.ExportState = nil
+	}
 	return nil
 }
 
@@ -472,12 +484,15 @@ func referencedSQL(n int) string {
 	  WHERE m.hash IN (` + placeholders(n) + `) AND m.ordinal >= g.acked AND m.ordinal < g.entries AND g.lost = 0`
 }
 
-// pendingTail reports whether generation gen of source sid still has an
-// unacknowledged tail, so its spooled copy is needed.
-func (s *Store) pendingTail(ctx context.Context, sid, gen int64) (bool, error) {
+// keepTail reports whether generation gen of source sid still has an
+// unacknowledged tail, or is the current generation of an export source
+// whose exporter appends (it saved a state) and has a tail, which the next
+// append resumes from, so its spooled copy is needed.
+func (s *Store) keepTail(ctx context.Context, sid, gen int64) (bool, error) {
 	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM devsync_gens WHERE source_id = ? AND generation = ?
-	  AND lost = 0 AND tail_acked = 0 AND tail_size > 0`, sid, gen).Scan(&one)
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM devsync_gens g JOIN devsync_sources s ON s.id = g.source_id
+	  WHERE g.source_id = ? AND g.generation = ? AND g.lost = 0 AND g.tail_size > 0
+	  AND (g.tail_acked = 0 OR s.generation = g.generation AND json_extract(s.watermark, '$.Export') IS NOT NULL)`, sid, gen).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

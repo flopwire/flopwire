@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/redact"
@@ -131,6 +132,20 @@ type Syncer struct {
 
 	refMu   sync.Mutex
 	refused map[string]string // path -> the admin path rule the server refused it under
+
+	captures, exported, scanned atomic.Int64 // CaptureStats
+}
+
+// CaptureStats counts the work of captures since the syncer started.
+type CaptureStats struct {
+	Captures int64 // capture passes that finished
+	Exported int64 // bytes export functions returned
+	Scanned  int64 // bytes read through the redactor and chunked
+}
+
+// CaptureStats returns the work captures did so far.
+func (s *Syncer) CaptureStats() CaptureStats {
+	return CaptureStats{Captures: s.captures.Load(), Exported: s.exported.Load(), Scanned: s.scanned.Load()}
 }
 
 // maxRefused bounds the refused sources Status lists.
@@ -197,7 +212,7 @@ func (s *Syncer) sweepSpool(ctx context.Context) error {
 			ref, err := s.store.referenced(ctx, []syncproto.Hash{*h})
 			return ref[*h], err
 		}
-		return s.store.pendingTail(ctx, sid, gen)
+		return s.store.keepTail(ctx, sid, gen)
 	})
 }
 
@@ -243,14 +258,43 @@ func (s *Syncer) SyncUpTo(ctx context.Context, spec SourceSpec, upTo int64) erro
 }
 
 // SyncExport syncs bytes that exist only in memory, such as rows exported
-// from a SQLite source (Devin). data is the whole current export; when it
-// extends the previous export it appends, otherwise it starts a new
+// from a SQLite source (opencode). data is the whole current export; when
+// it extends the previous export it appends, otherwise it starts a new
 // generation. Every unacknowledged byte is spooled.
 func (s *Syncer) SyncExport(ctx context.Context, spec SourceSpec, data []byte) error {
 	if data == nil {
 		data = []byte{}
 	}
-	return s.run(ctx, spec, data, -1, nil)
+	return s.run(ctx, spec, func(context.Context, []byte) (Export, error) { return Export{Data: data}, nil }, -1, nil)
+}
+
+// Export is one version of an export source's bytes (SyncExportFunc).
+type Export struct {
+	// Data is the whole export, or with Append what the export gained
+	// since the one the prev state describes.
+	Data   []byte
+	Append bool
+	// State is what the exporter resumes from after Data. It is saved
+	// with the capture and passed back as prev.
+	State []byte
+}
+
+// ExportFunc produces an export source's bytes. prev is the State saved
+// with the source's last capture, nil when there is none (a first sync, a
+// new generation): the function must then return the whole export. With
+// prev it may return an append; when the syncer cannot use the append
+// (the generation it extends ended, or the provisional tail is gone) it
+// asks again with nil. An append must end a line, like the export it
+// extends: the syncer redacts it on its own, which is the whole export's
+// redaction only from a line start.
+type ExportFunc func(ctx context.Context, prev []byte) (Export, error)
+
+// SyncExportFunc syncs an export produced by fn. An exporter that appends
+// (Devin's devin-export@2) costs what the source gained since the last
+// capture: only the appended bytes, and the provisional tail before them,
+// are redacted and chunked.
+func (s *Syncer) SyncExportFunc(ctx context.Context, spec SourceSpec, fn ExportFunc) error {
+	return s.run(ctx, spec, fn, -1, nil)
 }
 
 // Resume uploads what is pending for a source without capturing it again.
@@ -264,7 +308,7 @@ func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error {
 	return s.upload(ctx, src)
 }
 
-func (s *Syncer) run(ctx context.Context, spec SourceSpec, export []byte, upTo int64, snapshot *snapshotSource) error {
+func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src, err := s.store.source(ctx, spec.Path, &spec)
@@ -292,15 +336,21 @@ func (s *Syncer) run(ctx context.Context, spec SourceSpec, export []byte, upTo i
 
 // capture chunks whatever the source gained since the last capture, up
 // to upTo bytes of a file when upTo >= 0.
-func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upTo int64, snapshot *snapshotSource) error {
+func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
 	var (
 		r  io.ReaderAt
 		id transcript.Identity
 		f  *os.File
+		ex *exportRead
 	)
 	now := s.cfg.Now()
+	defer s.captures.Add(1)
 	if export != nil {
-		r, id = bytes.NewReader(export), transcript.Identity{Size: int64(len(export))}
+		var err error
+		if ex, err = s.readExport(ctx, src, export); err != nil {
+			return err
+		}
+		r, id = ex.r, transcript.Identity{Size: ex.size}
 	} else {
 		var err error
 		path := src.Spec.Path
@@ -362,15 +412,15 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 		return err
 	}
 	var change transcript.Change
-	if export != nil {
-		change = decideExport(src.Watermark, export)
+	if ex != nil {
+		change = ex.change
 	} else if change, err = transcript.Decide(src.Watermark, id, r); err != nil {
 		return err
 	}
 	if cur == nil && change.Decision != transcript.Rewrite {
 		change = transcript.Change{Decision: transcript.Rewrite, Reason: "no generation"}
 	}
-	if export != nil {
+	if ex != nil {
 		// An export has no file change time: it changed when its bytes last
 		// did, so an unchanged export keeps the time of its last change and
 		// seals like a quiet file (D21).
@@ -383,6 +433,11 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	g := cur
 	switch change.Decision {
 	case transcript.Unchanged:
+		if ex != nil {
+			if err := s.keepExport(ctx, src, cur, ex); err != nil {
+				return err
+			}
+		}
 		if cur.Tail.Size == 0 || !s.idle(id, now) {
 			return nil
 		}
@@ -390,11 +445,13 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	case transcript.Rewrite:
 		if cur != nil && !cur.done() {
 			s.salvage(ctx, src, cur, change.Reason)
+		} else if cur != nil && ex != nil {
+			s.spool.DropTail(src.ID, cur.Gen) // kept for appends (keepTail)
 		}
 		g = &genRow{SourceID: src.ID, Gen: src.Gen + 1, FileID: fileID(id), TailAcked: true}
 		if cur != nil && cur.FileID != g.FileID {
 			g.Previous = &syncproto.SourceRef{Path: src.Spec.Path, FileID: cur.FileID}
-		} else if cur == nil && export == nil {
+		} else if cur == nil && ex == nil {
 			// A file new at this path may be one that moved here: link it
 			// to the old path so the server supersedes that copy. Its
 			// chunks are known, so only the manifest is sent.
@@ -418,8 +475,9 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	// is always captured up to its last newline, even when idle, so a line is
 	// never redacted (and uploaded) half-written.
 	rr := src.Spec.redacted(r)
+	var scan io.ReaderAt = rr
 	end := id.Size
-	if src.Spec.StorageKind == transcript.StorageJSONLAppend && export == nil {
+	if src.Spec.StorageKind == transcript.StorageJSONLAppend && ex == nil {
 		if end, err = lastLineEnd(r, from, id.Size); err != nil {
 			return err
 		}
@@ -431,6 +489,15 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 		g.Redactions = nil
 	}
 	rr.CountFrom(counted)
+	if ex != nil && ex.appended && g == cur {
+		// An append: the bytes before it are the generation's provisional
+		// tail, already redacted; only the appended bytes go through the
+		// redactor. They start a line, so they redact as they would in
+		// the whole export.
+		rr = src.Spec.redacted(bytes.NewReader(ex.data))
+		rr.CountFrom(0)
+		scan = &appendReader{off: cur.Tail.Offset, tail: ex.tail, base: ex.base, rest: rr}
+	}
 	if src.Spec.rewriteProne() {
 		// Worst case: every new byte is a chunk the spool lacks.
 		if err := s.spool.Reserve(end - from); err != nil {
@@ -467,7 +534,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 		pend, pendBytes = pend[:0], 0
 		return nil
 	}
-	tail, err := Scan(s.cfg.Chunk, rr, from, end, s.buf, func(c Chunk, data []byte) error {
+	tail, err := Scan(s.cfg.Chunk, scan, from, end, s.buf, func(c Chunk, data []byte) error {
 		add = append(add, syncproto.Entry{Ordinal: g.Entries + int64(len(add)), Hash: c.Hash, Offset: c.Offset, Size: c.Size})
 		if !src.Spec.rewriteProne() {
 			return nil
@@ -484,10 +551,11 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	if err != nil {
 		return fmt.Errorf("devicesync: chunk %s: %w", src.Spec.Path, err)
 	}
+	s.scanned.Add(end - from)
 	newTail := syncproto.Tail{Offset: tail, Size: end - tail}
 	if newTail.Size > 0 {
 		data := make([]byte, newTail.Size)
-		if _, err := rr.ReadAt(data, tail); err != nil && !(errors.Is(err, io.EOF) && tail+newTail.Size == end) {
+		if _, err := scan.ReadAt(data, tail); err != nil && !(errors.Is(err, io.EOF) && tail+newTail.Size == end) {
 			return fmt.Errorf("devicesync: read tail %s: %w", src.Spec.Path, err)
 		}
 		newTail.Hash = syncproto.Sum(data)
@@ -521,8 +589,9 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 	}
 
 	var wm *transcript.Watermark
-	if export != nil {
-		wm = exportWatermark(export)
+	var exportState []byte
+	if ex != nil {
+		wm, exportState = ex.watermark(), ex.state
 	} else {
 		w, err := transcript.NewWatermark(r, id, now, transcript.Cursor{Offset: end})
 		if err != nil {
@@ -530,7 +599,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export []byte, upT
 		}
 		wm = &w
 	}
-	if err := s.store.saveCapture(ctx, src, g, add, wm); err != nil {
+	if err := s.store.saveCapture(ctx, src, g, add, wm, exportState); err != nil {
 		return err
 	}
 	if f != nil && !src.Spec.rewriteProne() && !g.done() {
@@ -709,14 +778,168 @@ func fileID(id transcript.Identity) string {
 	return id.ID.String()
 }
 
+// exportRead is one export as capture reads it.
+type exportRead struct {
+	r      io.ReaderAt // the export's raw bytes (from the tail offset on for an append)
+	size   int64
+	change transcript.Change
+	state  []byte
+	// appended: data extends the generation's captured bytes at base, and
+	// tail is their redacted provisional tail, from the generation's tail
+	// offset to base. Otherwise data is the whole export.
+	appended bool
+	data     []byte
+	base     int64
+	tail     []byte
+}
+
+// watermark is the watermark after capturing the export. A whole export's
+// anchor is its hash, so a later whole export that extends it appends
+// (decideExport); after an append the anchor is unknown (AnchorLen 0) and
+// only the exporter's state continues the generation.
+func (e *exportRead) watermark() *transcript.Watermark {
+	if e.appended {
+		return &transcript.Watermark{Offset: e.size}
+	}
+	return exportWatermark(e.data)
+}
+
+// readExport asks fn for the source's export: an append to the current
+// generation when the saved state, the generation and its spooled tail
+// allow one, else the whole export.
+//
+// An append is redacted on its own, after the already redacted tail, so it
+// must start a line of a line-redacted source: otherwise a secret across
+// the boundary would be split between two redactions and missed. A state
+// is therefore kept only while the captured bytes end a line (lineEnd),
+// and an append that does not end a line is not used.
+func (s *Syncer) readExport(ctx context.Context, src *sourceRow, fn ExportFunc) (*exportRead, error) {
+	cur, err := s.store.gen(ctx, src.ID, src.Gen)
+	if err != nil {
+		return nil, err
+	}
+	if src.Watermark != nil && src.ExportState != nil && cur != nil && !cur.Lost && cur.Size == src.Watermark.Offset {
+		e, err := fn(ctx, src.ExportState)
+		if err != nil {
+			return nil, err
+		}
+		s.exported.Add(int64(len(e.Data)))
+		if !e.Append {
+			return wholeExport(src, e), nil
+		}
+		if tail, ok := s.exportTail(src, cur); ok && lineEnd(e.Data) {
+			base := src.Watermark.Offset
+			ex := &exportRead{size: base + int64(len(e.Data)), state: e.State, appended: true, data: e.Data, base: base, tail: tail,
+				change: transcript.Change{Decision: transcript.Append}}
+			ex.r = &appendReader{off: cur.Tail.Offset, tail: tail, base: base, rest: bytes.NewReader(e.Data)}
+			if len(e.Data) == 0 {
+				ex.change = transcript.Change{Decision: transcript.Unchanged}
+			}
+			return ex, nil
+		}
+	}
+	e, err := fn(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	s.exported.Add(int64(len(e.Data)))
+	if e.Append {
+		return nil, fmt.Errorf("devicesync: export %s: an append without a previous state", src.Spec.Path)
+	}
+	return wholeExport(src, e), nil
+}
+
+func wholeExport(src *sourceRow, e Export) *exportRead {
+	if e.Data == nil {
+		e.Data = []byte{}
+	}
+	if redact.ModeFor(string(src.Spec.StorageKind), src.Spec.Path) != redact.Lines || !lineEnd(e.Data) {
+		e.State = nil // no append may follow (readExport)
+	}
+	return &exportRead{r: bytes.NewReader(e.Data), size: int64(len(e.Data)), change: decideExport(src.Watermark, e.Data), state: e.State, data: e.Data}
+}
+
+// lineEnd reports whether b is empty or ends a line.
+func lineEnd(b []byte) bool { return len(b) == 0 || b[len(b)-1] == '\n' }
+
+// exportTail returns the redacted bytes of the generation's provisional
+// tail from the spool (keepTail keeps an export's after it is
+// acknowledged), when they are there and match the generation.
+func (s *Syncer) exportTail(src *sourceRow, g *genRow) ([]byte, bool) {
+	if g.Tail.Offset+g.Tail.Size != src.Watermark.Offset {
+		return nil, false // a gap cut the tail
+	}
+	if g.Tail.Size == 0 {
+		return []byte{}, true
+	}
+	data, ok, err := s.spool.Tail(src.ID, g.Gen)
+	if err != nil || !ok || int64(len(data)) != g.Tail.Size || syncproto.Sum(data) != g.Tail.Hash {
+		return nil, false
+	}
+	return data, true
+}
+
+// keepExport, for an unchanged export, saves the exporter's state when it
+// moved (the first capture since the state was dropped), and spools the
+// provisional tail again when the spool lost it, so the next change can
+// append.
+func (s *Syncer) keepExport(ctx context.Context, src *sourceRow, g *genRow, ex *exportRead) error {
+	if !bytes.Equal(ex.state, src.ExportState) {
+		src.ExportState = ex.state
+		if err := s.store.setWatermark(ctx, src, src.Watermark); err != nil {
+			return err
+		}
+	}
+	if ex.appended || g.Tail.Size == 0 || g.Lost || src.ExportState == nil {
+		return nil
+	}
+	if _, ok := s.exportTail(src, g); ok {
+		return nil
+	}
+	data := make([]byte, g.Tail.Size)
+	if _, err := src.Spec.redacted(ex.r).ReadAt(data, g.Tail.Offset); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if syncproto.Sum(data) != g.Tail.Hash {
+		return nil
+	}
+	return s.spool.PutTail(src.ID, g.Gen, data)
+}
+
+// appendReader serves an appended export from the generation's tail
+// offset: the spooled (redacted) tail, then rest from base on.
+type appendReader struct {
+	off  int64
+	tail []byte
+	base int64
+	rest io.ReaderAt
+}
+
+func (a *appendReader) ReadAt(p []byte, off int64) (int, error) {
+	if off < a.off {
+		return 0, fmt.Errorf("devicesync: read at %d before the export tail at %d", off, a.off)
+	}
+	n := 0
+	if off < a.base {
+		n = copy(p, a.tail[off-a.off:])
+		if n == len(p) {
+			return n, nil
+		}
+		off += int64(n)
+	}
+	m, err := a.rest.ReadAt(p[n:], off-a.base)
+	return n + m, err
+}
+
 // decideExport: an export that extends the previous one appends; any other
 // change is a rewrite. The watermark's anchor holds the hash of the whole
-// previous export.
+// previous export (none after an appended export).
 func decideExport(prev *transcript.Watermark, data []byte) transcript.Change {
 	switch {
 	case prev == nil:
 		return transcript.Change{Decision: transcript.Rewrite, Reason: "no watermark"}
-	case int64(len(data)) < prev.Offset || syncproto.Sum(data[:prev.Offset]) != syncproto.Hash(prev.AnchorSum):
+	case prev.AnchorLen != prev.Offset || int64(len(data)) < prev.Offset || syncproto.Sum(data[:prev.Offset]) != syncproto.Hash(prev.AnchorSum):
+
 		return transcript.Change{Decision: transcript.Rewrite, Reason: "export changed"}
 	case int64(len(data)) == prev.Offset:
 		return transcript.Change{Decision: transcript.Unchanged}

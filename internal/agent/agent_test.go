@@ -38,12 +38,12 @@ var ctx = context.Background()
 type recorder struct {
 	mu      sync.Mutex
 	notify  map[string]devicesync.SourceSpec
-	exports map[string]func(context.Context) ([]byte, error)
+	exports map[string]devicesync.ExportFunc
 	flushed []string
 }
 
 func newRecorder() *recorder {
-	return &recorder{notify: map[string]devicesync.SourceSpec{}, exports: map[string]func(context.Context) ([]byte, error){}}
+	return &recorder{notify: map[string]devicesync.SourceSpec{}, exports: map[string]devicesync.ExportFunc{}}
 }
 
 func (r *recorder) Notify(s devicesync.SourceSpec) {
@@ -52,7 +52,7 @@ func (r *recorder) Notify(s devicesync.SourceSpec) {
 	r.mu.Unlock()
 }
 
-func (r *recorder) NotifyExportFunc(s devicesync.SourceSpec, fn func(context.Context) ([]byte, error)) {
+func (r *recorder) NotifyExportFunc(s devicesync.SourceSpec, fn devicesync.ExportFunc) {
 	r.mu.Lock()
 	r.notify[s.Path], r.exports[s.Path] = s, fn
 	r.mu.Unlock()
@@ -427,9 +427,9 @@ func TestDevinSessionDeletion(t *testing.T) {
 	if fn == nil {
 		t.Fatal("deleted session not handed to sync")
 	}
-	data, err := fn(ctx)
-	if err != nil || !strings.Contains(string(data), `"gone"`) {
-		t.Errorf("export of a deleted session: %q %v", data, err)
+	e, err := fn(ctx, nil)
+	if err != nil || !strings.Contains(string(e.Data), `"gone"`) {
+		t.Errorf("export of a deleted session: %q %v", e.Data, err)
 	}
 	if spec := f.rec.notify[gone]; spec.Parser != devin.ExportFormat || !spec.Export {
 		t.Errorf("export spec %+v", spec)

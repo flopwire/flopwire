@@ -280,8 +280,8 @@ func (s *Syncer) release(ctx context.Context, src *sourceRow, g *genRow, acked [
 			}
 		}
 	}
-	if g.TailAcked {
-		s.spool.DropTail(src.ID, g.Gen)
+	if g.TailAcked && !(src.ExportState != nil && g.Gen == src.Gen && g.Tail.Size > 0) {
+		s.spool.DropTail(src.ID, g.Gen) // an appending export's current tail is kept (keepTail)
 	}
 }
 

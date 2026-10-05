@@ -57,7 +57,7 @@ import (
 // returns at once; the network never blocks indexing.
 type Sync interface {
 	Notify(devicesync.SourceSpec)
-	NotifyExportFunc(devicesync.SourceSpec, func(context.Context) ([]byte, error))
+	NotifyExportFunc(devicesync.SourceSpec, devicesync.ExportFunc)
 	Flush(devicesync.SourceSpec)
 }
 
