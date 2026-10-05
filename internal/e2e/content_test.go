@@ -27,6 +27,23 @@ type contentRow struct {
 	TextSHA, FullSHA                                        string
 }
 
+// Companion reads must see the same redaction as archived server reads.
+// Wrapping the main JSONL alone misses persisted tool output and sidecars.
+type contentFS struct{ claude.OSFS }
+type contentFile struct {
+	claude.File
+	reader *redact.ReaderAt
+}
+
+func (f contentFile) ReadAt(p []byte, off int64) (int, error) { return f.reader.ReadAt(p, off) }
+func (fs contentFS) Open(path string) (claude.File, error) {
+	f, err := fs.OSFS.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return contentFile{File: f, reader: redact.NewReaderAt(f, redact.ModeFor(string(transcript.StorageCompanion), path))}, nil
+}
+
 func (r contentRow) fingerprint() string {
 	b, _ := json.Marshal(r)
 	return fmt.Sprintf("%x", sha256.Sum256(b))
@@ -118,7 +135,7 @@ func (h *harness) expectedContent(path string, agent transcript.Agent, session s
 		}
 		input = transcript.Input{Source: src, R: redact.NewReaderAt(f, redact.Lines), Size: fi.Size()}
 		if agent == transcript.AgentClaude {
-			p = &claude.Parser{Caps: uncapped}
+			p = &claude.Parser{Caps: uncapped, FS: contentFS{}}
 		} else {
 			p = &codex.Parser{Caps: uncapped}
 		}

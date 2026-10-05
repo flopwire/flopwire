@@ -15,6 +15,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 
+	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
@@ -522,7 +523,8 @@ func TestTwoDeviceSync(t *testing.T) {
 		}
 		headMark := fmt.Sprintf("e2e companion head marker %d", nonce)
 		midMark := fmt.Sprintf("deep middle needle %d", nonce)
-		big := headMark + "\n" + noise(150<<10) + midMark + "\n" + noise(150<<10) + "e2e companion tail marker\n"
+		secret := "ghp_" + strings.Repeat("aB3dE5", 6) // synthetic token; never a credential
+		big := headMark + "\n" + secret + "\n" + noise(150<<10) + midMark + "\n" + noise(150<<10) + "e2e companion tail marker\n"
 		bigPath := filepath.Join(trDir, "e2ebig01.txt")
 		writeFile(t, bigPath, big)
 		preview := fmt.Sprintf("<persisted-output>\nOutput too large (%dKB). Full output saved to: %s\n\nPreview (first 2KB):\npreview only text\n</persisted-output>", len(big)>>10, bigPath)
@@ -572,7 +574,15 @@ func TestTwoDeviceSync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != big {
+		wantRaw := make([]byte, len(big))
+		rr := redact.NewReaderAt(strings.NewReader(big), redact.ModeFor(string(transcript.StorageCompanion), bigPath))
+		if n, err := rr.ReadAt(wantRaw, 0); n != len(wantRaw) || err != nil {
+			t.Fatalf("redact companion fixture: n=%d err=%v", n, err)
+		}
+		if strings.Contains(got, secret) || strings.Contains(string(wantRaw), secret) {
+			t.Fatal("synthetic secret survived companion redaction")
+		}
+		if got != string(wantRaw) {
 			t.Fatalf("raw companion: %d bytes, want %d identical", len(got), len(big))
 		}
 		// meta.json reached the server and linked the subagent.
