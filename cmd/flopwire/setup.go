@@ -41,6 +41,10 @@ const envPluginSource = "FLOPWIRE_PLUGIN_SOURCE"
 // from GitHub clones it.
 var harnessCommandTimeout = 3 * time.Minute
 
+// setupStatusBudget bounds the status request setup --check makes for the
+// running agent's credential.
+var setupStatusBudget = 5 * time.Second
+
 const setupHelp = `flopwire setup — install Flopwire into the coding-agent harnesses on this machine
 
   flopwire setup            install or update the plugin in each harness found
@@ -397,11 +401,19 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep.Agent.Socket, _ = defaultSocket()
 	var agentCred *agent.Credential
 	if rep.Agent.Socket != "" {
+		// Liveness is ping, which the agent answers without its index:
+		// status can take seconds on a busy agent, and a timed-out status
+		// is not a stopped agent.
 		c, cancel := context.WithTimeout(ctx, 2*time.Second)
-		resp, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
+		_, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "ping"})
 		cancel()
 		rep.Agent.Running = err == nil
-		agentCred = resp.Credential
+		if rep.Agent.Running {
+			c, cancel := context.WithTimeout(ctx, setupStatusBudget)
+			resp, _ := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
+			cancel()
+			agentCred = resp.Credential
+		}
 	}
 	if cfg, err := client.Load(); err == nil {
 		rep.Server = setupServer{Configured: true, URL: cfg.Server}

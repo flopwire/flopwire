@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -1240,5 +1241,31 @@ func TestClaudeMarketplaceAddResult(t *testing.T) {
 	}
 	if r.Outcome != "ok" || r.Marketplace != "notflop" {
 		t.Fatalf("decoded %+v", r)
+	}
+}
+
+// An agent busy enough that its status answer takes seconds (the index
+// summary queued behind a long write) still answers ping at once: setup
+// --check says it runs, not "not running".
+func TestSetupCheckBusyAgentRuns(t *testing.T) {
+	fx := newSetupFixture(t, false)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(shortSockDir(t), "config.json"))
+	release := make(chan struct{})
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Op == "status" {
+			<-release
+		}
+		return agent.Response{OK: true}
+	})
+	t.Cleanup(func() { close(release) })
+	t.Setenv("FLOPWIRE_SOCKET", fa.sock)
+	defer func(d time.Duration) { setupStatusBudget = d }(setupStatusBudget)
+	setupStatusBudget = 50 * time.Millisecond
+	rep, _, err := fx.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Agent.Running {
+		t.Fatalf("a busy agent reads as not running: %+v", rep.Agent)
 	}
 }
