@@ -414,8 +414,11 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep.Server.Credential, rep.Server.Messaging, rep.Server.Warning = cred.Source, cred.MessagingOff, cred.Warning
 	shared, scopeErr := retrievalServer(false, false, "")
 	if scopeErr != nil {
-		rep.OK = false
-		rep.Todo = append(rep.Todo, "fix the search configuration: "+scopeErr.Error())
+		// Removing harness integrations does not require a working search config.
+		if env.mode != setupRemove {
+			rep.OK = false
+			rep.Todo = append(rep.Todo, "fix the search configuration: "+scopeErr.Error())
+		}
 	} else if shared {
 		rep.SearchScope = &format.Scope{Kind: "shared", Server: rep.Server.URL}
 	} else {

@@ -1121,6 +1121,27 @@ func TestSetupReportsInvalidSearchConfiguration(t *testing.T) {
 	}
 }
 
+func TestSetupRemoveWithInvalidSearchConfiguration(t *testing.T) {
+	f := newSetupFixture(t, true)
+	if _, _, err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	p := os.Getenv("FLOPWIRE_CONFIG")
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("broken config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := f.run("--remove")
+	if err != nil || !rep.OK || rep.SearchScope != nil || strings.Contains(strings.Join(rep.Todo, "\n"), "fix the search configuration") {
+		t.Fatalf("removal must not require a working search config: err=%v report=%+v", err, rep)
+	}
+	if st := f.getState(); len(st.Plugins) != 0 || len(st.Marketplaces) != 0 {
+		t.Fatalf("removal left harness integrations: %+v", st)
+	}
+}
+
 // TestSetupComparesPluginAndBinary: a plugin that runs a command the
 // flopwire on PATH does not know (an older binary) gets a warning naming
 // the command, both versions and the fix; so does a plugin whose release
