@@ -937,6 +937,8 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		fmt.Fprintf(w, "sync: stopped until the server is re-pinned (flopwire login --fingerprint): %s\n", st.Stopped)
 	case st.ServerDown:
 		fmt.Fprintf(w, "sync: server unreachable, retry at %s: %s\n", st.RetryAt.Local().Format(time.TimeOnly), st.LastError)
+	case st.ServerBusy:
+		fmt.Fprintf(w, "sync: server busy, retry at %s: %s\n", st.RetryAt.Local().Format(time.TimeOnly), st.LastError)
 	default:
 		fmt.Fprintln(w, "sync: ok")
 	}
