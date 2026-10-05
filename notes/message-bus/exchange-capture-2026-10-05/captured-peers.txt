@@ -1,0 +1,2 @@
+fda51669  dev  claude  live busy  app-api@api-cursors  "You are the API agent for this repository (current branch: api-cursors). Do thes…"
+[1 live session (1 yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]

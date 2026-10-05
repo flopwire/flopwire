@@ -711,6 +711,10 @@ At exit, Codex drops the async `Stop` hook of the last turn; the
 Keep your shell startup files silent when they are not interactive:
 on the other events the printed text goes into the session as context.
 
+Codex 0.160 runs hook commands with `zsh -lc`, so `flopwire` resolves
+through the `PATH` your login profile sets, not the `PATH` Codex started
+with; an isolated test must set `ZDOTDIR` or call `flopwire` by absolute path.
+
 #### Codex and git commits
 
 Codex's `workspace-write` sandbox keeps `.git` read-only, so a sandboxed

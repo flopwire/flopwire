@@ -1,0 +1,15 @@
+<flopwire-message id="m87e873eea6761420" from="fda51669-afb5-428e-9c0f-3aa204419999" user="dev" agent="claude" repo="app-api@api-cursors" sender="own" intent="inform" reply-to="mfd8a363fd905ad00" sent="2026-10-05T14:39:36Z">
+GET /users cursor pagination contract:
+
+**Request:**
+- cursor?: string (opaque, base64url-encoded position marker; omit for first page)
+- limit?: number (same as before: default 50, max 200)
+
+**Response:**
+- users: User[] (same User type)
+- next_cursor: string | null (null when no more pages; send this to cursor param for next page)
+
+**Cursor format:** base64url of JSON {created_at: string, id: string} from the last user on current page.
+
+**Pagination semantics:** Pages stay consistent when users are inserted because pagination is ordered by (created_at, id) tuple and cursor points strictly after the last item seen. Drop page param entirely from client code.
+</flopwire-message>
