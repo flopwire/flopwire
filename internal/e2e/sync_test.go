@@ -66,6 +66,7 @@ func TestTwoDeviceSync(t *testing.T) {
 			r.Timings["corpus_synced"] = ms(time.Since(start))
 		}
 		for _, d := range h.devs {
+			h.checkInitialFixtures(t, d)
 			el := h.waitSessionSynced(t, d, transcript.AgentClaude, d.claudePath, d.claudeSID, 60*time.Second)
 			r.Timings[d.name+"_claude"] = ms(el)
 			el = h.waitSessionSynced(t, d, transcript.AgentCodex, d.codexPath, d.codexSID, 60*time.Second)
@@ -306,6 +307,11 @@ func TestTwoDeviceSync(t *testing.T) {
 		r.Timings["resync_after_restart"] = ms(time.Since(restart))
 		h.checkRaw(t, d2, p)
 		h.checkLocal(t, d2, transcript.AgentClaude, p, sid)
+		identity, err := transcript.StatIdentity(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.checkFixtureProvenance(t, d2, "claude", sid, p, identity.ID.String(), 0)
 		var gens int
 		_ = h.pg.QueryRow(h.ctx, `SELECT count(*) FROM generations g JOIN sources s ON s.id=g.source_id WHERE s.device_id=$1 AND s.path=$2`, d2.id, p).Scan(&gens)
 		r.Notes = append(r.Notes, fmt.Sprintf("%d generation(s) on the server", gens))
@@ -349,6 +355,7 @@ func TestTwoDeviceSync(t *testing.T) {
 		if hits, _ := d1.serverFind(post); len(hitsOn(hits, d1)) != 1 {
 			t.Fatalf("post-boundary line: %d live hits", len(hitsOn(hits, d1)))
 		}
+		h.checkFixtureProvenance(t, d1, "claude", d1.claudeSID, d1.claudePath, cur.ID.String(), 1)
 		var gens, srcs int
 		_ = h.pg.QueryRow(h.ctx, `SELECT count(*), count(DISTINCT s.id) FROM generations g JOIN sources s ON s.id=g.source_id WHERE s.device_id=$1 AND s.path=$2`,
 			d1.id, d1.claudePath).Scan(&gens, &srcs)
