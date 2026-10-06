@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -91,6 +92,7 @@ type chainCapabilityServer struct {
 type chainTrace struct {
 	mu    sync.Mutex
 	lines []string
+	holds []syncproto.PolicyPlacementsResponse
 }
 
 func (s *chainTrace) note(v any) {
@@ -123,6 +125,22 @@ func (s chainCapabilityServer) ServeSync(w http.ResponseWriter, r *http.Request,
 			}{device, request})
 		}
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(consumed.Bytes()), r.Body))
+		if request.ScopeStatus == syncproto.ScopeLimitHeld {
+			recorded := httptest.NewRecorder()
+			s.server.ServeSync(recorded, r, device)
+			var ack syncproto.PolicyPlacementsResponse
+			if recorded.Code == http.StatusOK && json.Unmarshal(recorded.Body.Bytes(), &ack) == nil {
+				s.trace.mu.Lock()
+				s.trace.holds = append(s.trace.holds, ack)
+				s.trace.mu.Unlock()
+			}
+			for name, values := range recorded.Header() {
+				w.Header()[name] = values
+			}
+			w.WriteHeader(recorded.Code)
+			_, _ = w.Write(recorded.Body.Bytes())
+			return
+		}
 	}
 	if !s.override || r.URL.Path != syncproto.PathCapabilities {
 		s.server.ServeSync(w, r, device)
@@ -154,6 +172,7 @@ type chainEnv struct {
 	objects ingest.MinIO
 	store   *store.Postgres
 	userID  string
+	trace   *chainTrace
 }
 
 func newChainEnv(t *testing.T) *chainEnv {
@@ -202,6 +221,7 @@ func newChainAPI(t *testing.T, e *chainEnv, override bool) *httptest.Server {
 	server := &ingest.Server{Pool: e.pool, Objects: e.objects, Log: log, Queue: e.queue}
 	r := &retrieval.Store{Pool: e.pool, Objects: e.objects, RefreshSession: func(ctx context.Context, id string) { e.queue.RefreshSession(ctx, id) }}
 	trace := &chainTrace{}
+	e.trace = trace
 	t.Cleanup(func() {
 		if t.Failed() {
 			trace.mu.Lock()
@@ -387,6 +407,15 @@ func chainHits(d *chainDevice, text string) (*format.Page, error) {
 	return c.Grep(context.Background(), format.GrepQuery{Pattern: text, Fixed: true}, format.Filters{})
 }
 
+func chainRequireRawHeld(t *testing.T, c client.HTTP, source string, gen, size int64) {
+	t.Helper()
+	_, err := c.Raw(context.Background(), source, gen, 0, size)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusForbidden && apiErr.StatusCode != http.StatusNotFound) {
+		t.Fatalf("held raw response %v, want authenticated403/404", err)
+	}
+}
+
 func (e *chainEnv) familyRows(t *testing.T, d *chainDevice, deviceID string) {
 	t.Helper()
 	firstLen := int64(len(chainNativeRecord(chainNativeID, "qualification-main", "full chain mapped parent evidence")))
@@ -422,14 +451,26 @@ func (e *chainEnv) familyRows(t *testing.T, d *chainDevice, deviceID string) {
 		t.Fatalf("native semantic rows %d, want 3", count)
 	}
 	for _, path := range []string{d.main, d.child, d.companion} {
-		var generation, entries, acked, tailSize int64
-		var tailAcked bool
-		if err := d.syncDB.QueryRow(`SELECT g.generation,g.entries,g.acked,g.tail_size,g.tail_acked FROM devsync_gens g JOIN devsync_sources s ON s.id=g.source_id WHERE s.path=?`, path).Scan(&generation, &entries, &acked, &tailSize, &tailAcked); err != nil {
-			t.Fatal(err)
-		}
-		if generation != 0 || entries != acked || (tailSize > 0 && !tailAcked) {
-			t.Fatalf("native generation not exactly acknowledged: generation=%d entries=%d acked=%d tail=%d/%v", generation, entries, acked, tailSize, tailAcked)
-		}
+		chainEventually(t, "durable exact capture ACK "+path, func() error {
+			var generation, size, entries, acked, tailSize int64
+			var tailAcked, lost bool
+			if err := d.syncDB.QueryRow(`SELECT g.generation,g.size,g.entries,g.acked,g.tail_size,g.tail_acked,g.lost FROM devsync_gens g JOIN devsync_sources s ON s.id=g.source_id WHERE s.path=?`, path).Scan(&generation, &size, &entries, &acked, &tailSize, &tailAcked, &lost); err != nil {
+				return err
+			}
+			wantSize := len(d.mainBytes)
+			if path == d.child {
+				wantSize = len(d.childBytes)
+			}
+			if path == d.companion {
+				wantSize = len(d.companionBytes)
+			}
+			// All three literal fixtures are shorter than the configured1024-byte
+			// minimum chunk, and automatic sealing is disabled.
+			if generation != 0 || size != int64(wantSize) || entries != 0 || acked != 0 || tailSize != int64(wantSize) || !tailAcked || lost {
+				return fmt.Errorf("native generation not exactly acknowledged: generation=%d size=%d entries=%d acked=%d tail=%d/%v lost=%v", generation, size, entries, acked, tailSize, tailAcked, lost)
+			}
+			return nil
+		})
 	}
 }
 
@@ -485,9 +526,7 @@ func TestCoworkAgentFullChainMappedFamily(t *testing.T) {
 			t.Fatal(err)
 		}
 		c := client.HTTP{Server: h.URL, Token: firstToken, Client: h.Client()}
-		if _, err := c.Raw(context.Background(), source, gen, 0, size); err == nil {
-			t.Fatal("revoked device raw evidence remained accessible")
-		}
+		chainRequireRawHeld(t, c, source, gen, size)
 	}
 	e.familyRaw(t, second, secondID)
 	first.writeMapping(t, []string{first.selected})
@@ -542,15 +581,31 @@ func TestCoworkAgentFullChainMappedFamily(t *testing.T) {
 	})
 	second.writeMapping(t, []string{second.selected})
 	second.once(t)
+	e.trace.mu.Lock()
+	acks := append([]syncproto.PolicyPlacementsResponse(nil), e.trace.holds...)
+	e.trace.mu.Unlock()
+	if len(acks) == 0 {
+		t.Fatal("agent overflow did not reach actual compact policy endpoint")
+	}
+	for _, ack := range acks {
+		if ack.Allowed || ack.EvidenceScope != syncproto.EvidenceMapped || ack.Revision < 1 || len(ack.RequestDigest) != 64 {
+			t.Fatalf("invalid actual compact hold ACK: %+v", ack)
+		}
+	}
+	var scope string
+	if err := e.pool.QueryRow(context.Background(), `SELECT scope_status FROM session_policy_placements WHERE device_id=$1 AND agent='claude' AND session_id=$2`, secondID, chainNativeID).Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != syncproto.ScopeLimitHeld {
+		t.Fatalf("durable compact scope %q, want limit-held", scope)
+	}
 	for _, path := range []string{second.main, second.child, second.companion} {
 		source, gen, size, err := e.source(second, secondID, path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		c := client.HTTP{Server: h.URL, Token: secondToken, Client: h.Client()}
-		if _, err := c.Raw(context.Background(), source, gen, 0, size); err == nil {
-			t.Fatal("compact overflow hold was cleared by smaller current mapping")
-		}
+		chainRequireRawHeld(t, c, source, gen, size)
 	}
 }
 
@@ -586,6 +641,44 @@ type chainOutage struct {
 	calls atomic.Int64
 }
 
+// Observe the real callbacks installed by Agent.New without replacing them.
+type chainObservedScheduler struct {
+	*devicesync.Scheduler
+	filterDone     chan bool
+	authorizeDone  chan error
+	afterAuthorize func() error
+}
+
+func (s *chainObservedScheduler) SetFilter(fn func(devicesync.SourceSpec) bool) {
+	s.Scheduler.SetFilter(func(sp devicesync.SourceSpec) bool {
+		ok := fn(sp)
+		select {
+		case s.filterDone <- ok:
+		default:
+		}
+		return ok
+	})
+}
+
+func (s *chainObservedScheduler) SetAuthorize(fn func(context.Context, devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error)) {
+	s.Scheduler.SetAuthorize(func(ctx context.Context, sp devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error) {
+		a, err := fn(ctx, sp)
+		if err == nil && a != nil && s.afterAuthorize != nil {
+			if hookErr := s.afterAuthorize(); hookErr != nil {
+				if a.Release != nil {
+					a.Release()
+				}
+				return nil, hookErr
+			}
+		}
+		select {
+		case s.authorizeDone <- err:
+		default:
+		}
+		return a, err
+	})
+}
+
 func (o *chainOutage) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Path == syncproto.PathHas || r.URL.Path == syncproto.PathFlush {
 		o.calls.Add(1)
@@ -597,7 +690,7 @@ func (o *chainOutage) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
-	for _, mode := range []string{"rule change", "disabled root and raw repair swap"} {
+	for _, mode := range []string{"rule change", "disabled root", "active authorized raw repair swap"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newChainEnv(t)
 			h := newChainAPI(t, e, os.Getenv("FLOPWIRE_CHAIN_REAL_CAPABILITY") != "1")
@@ -631,16 +724,9 @@ func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
 			if mode == "rule change" {
 				d.config.UserRules = filepath.Join(d.home, "pending-rules")
 				chainWrite(t, d.config.UserRules, []byte("deny "+d.selected+"\n"))
-			} else {
+			} else if mode == "disabled root" {
 				d.config.CoworkRoot = "-"
-				outside := filepath.Join(d.home, "outside-native.jsonl")
-				chainWrite(t, outside, d.mainBytes)
-				if err := os.Remove(d.main); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(outside, d.main); err != nil {
-					t.Fatal(err)
-				}
+			} else {
 				// A real missing spool forces any resume to need a fresh raw read.
 				if err := os.RemoveAll(filepath.Join(d.home, "spool")); err != nil {
 					t.Fatal(err)
@@ -660,15 +746,48 @@ func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
 			}
 			t.Cleanup(d.sy.Close)
 			d.scheduler = devicesync.NewScheduler(d.sy, devicesync.SchedulerConfig{})
-			d.config.Sync = d.scheduler
+			observed := &chainObservedScheduler{Scheduler: d.scheduler, filterDone: make(chan bool, 8), authorizeDone: make(chan error, 8)}
+			if mode == "active authorized raw repair swap" {
+				outside := filepath.Join(d.home, "outside-native.jsonl")
+				chainWrite(t, outside, d.mainBytes)
+				observed.afterAuthorize = func() error {
+					if err := os.Remove(d.main); err != nil {
+						return err
+					}
+					return os.Symlink(outside, d.main)
+				}
+			}
+			d.config.Sync = observed
 			d.start(t)
 			d.once(t)
-			chainEventually(t, "restarted pending capture authorization barrier", func() error {
-				if queued := d.scheduler.Status().Queued; queued != 0 {
-					return fmt.Errorf("%d queued/running capture jobs", queued)
+			select {
+			case <-observed.filterDone:
+			case <-time.After(20 * time.Second):
+				t.Fatal("persisted pending job never evaluated real agent filter")
+			}
+			if mode == "active authorized raw repair swap" {
+				select {
+				case err := <-observed.authorizeDone:
+					if err != nil {
+						t.Fatalf("active repair did not receive real authorization: %v", err)
+					}
+				case <-time.After(20 * time.Second):
+					t.Fatal("active repair did not evaluate actual authorizer")
 				}
-				return nil
-			})
+				chainEventually(t, "contained raw repair rejects source swapped after authorization", func() error {
+					if len(d.scheduler.Status().Failing) == 0 {
+						return fmt.Errorf("raw repair rejection not yet recorded")
+					}
+					return nil
+				})
+			} else {
+				chainEventually(t, "restarted pending capture authorization barrier", func() error {
+					if queued := d.scheduler.Status().Queued; queued != 0 {
+						return fmt.Errorf("%d queued/running capture jobs", queued)
+					}
+					return nil
+				})
+			}
 			d.halt(t)
 			var sources int
 			if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM sources WHERE device_id=$1`, id).Scan(&sources); err != nil {
