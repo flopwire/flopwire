@@ -164,14 +164,26 @@ Run the A/B comparison locally with two binaries:
   --scratch /tmp/synth-ab --out /tmp/synth-ab-out --runs 3
 ```
 
-A baseline binary must accept the commands and flags that the harness
-calls: `agent run`, `grep`, `search` and `read`. If a change renames one
-of them, the baseline cannot run. The verdict is then `BASELINE_FAILED`,
-not `REGRESSED`: nothing was compared, the summary shows A's error, and
-the run opens an issue labelled `perf-baseline-broken`. Move the pin
-(see [Accept a regression](#accept-a-regression)) to the commit that
-changed the flag, and compare that commit with the old baseline by hand
-first so the change does not hide a regression.
+Before measured runs, the benchmark probes each binary once with a bounded
+`agent run -h` command. It recognizes the exact help flag `-opencode-db`.
+Go help can exit nonzero. Valid help without that flag identifies a legacy
+binary; only that binary runs without `--opencode-db -`. Supporting binaries
+receive the flag on every agent launch, including freshness. The probe and
+child commands use scratch HOME, XDG directories and config paths.
+Vendor-cloud collection is disabled, and Flopwire credentials are cleared.
+A/B comparisons apply the same environment to both binaries.
+
+The baseline must still accept `agent run`, `grep`, `search`, `read` and all
+other flags used by the benchmark. Failed starts, help timeouts, malformed
+help and incompatible agent launches remain `BASELINE_FAILED` for A.
+Retrieval command failures appear in A-side query checks and fail the
+compatibility smoke gate, even if the A/B verdict is `CLEAN`.
+Measured launches are never retried to remove flags. The summary shows A's
+error, and the run opens an issue labelled `perf-baseline-broken`.
+
+The historical pin remains `9e4193da7c346ff14a377128920f3943ff14f523`.
+Use the [compatibility smoke commands](issue-136-smoke.md) to compare that
+actual baseline with the current source before drawing performance conclusions.
 
 ## Local acceptance records
 
