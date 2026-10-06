@@ -1039,7 +1039,7 @@ func TestPresenceUncertainHoldersStayBoundedWithoutEnding(t *testing.T) {
 					}
 				}
 				// Returning to a recent clock exposes uncertain evidence, without a fake end.
-				now = session.last.Add(5 * time.Minute)
+				now = session.last.Add(30 * time.Minute)
 				if _, ok := f.presence(now)[session.id]; !ok {
 					t.Fatal("uncertain recent holder disappeared")
 				}
