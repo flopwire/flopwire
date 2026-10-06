@@ -398,7 +398,7 @@ func TestPolicyOppositeDeviceTreesDoNotInvertNativeLockOrder(t *testing.T) {
 func TestPolicyMetadataReportsHomeBeforeFolderEvaluation(t *testing.T) {
 	e := newEnv(t)
 	e.exec(`UPDATE devices SET home=NULL WHERE id=$1`, e.deviceID)
-	e.setRules("allow", "deny ~/Code/private")
+	e.setRules("", "deny ~/Code/private")
 	req := policyRequest()
 	req.EvidenceScope = "none"
 	req.Placements = []syncproto.PolicyPlacement{{CWD: "/Users/test/Code"}}
