@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -560,5 +561,106 @@ func TestCoworkAgentFullChainCapabilityZeroHolds(t *testing.T) {
 	}
 	if local != 3 || server != 0 || captured != 0 {
 		t.Fatalf("capability-zero local=%d server=%d captured=%d, want 3/0/0", local, server, captured)
+	}
+}
+
+type chainOutage struct {
+	base  http.RoundTripper
+	deny  atomic.Bool
+	calls atomic.Int64
+}
+
+func (o *chainOutage) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == syncproto.PathHas || r.URL.Path == syncproto.PathFlush {
+		o.calls.Add(1)
+		if o.deny.Load() {
+			return nil, fmt.Errorf("synthetic evidence transport outage")
+		}
+	}
+	return o.base.RoundTrip(r)
+}
+
+func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
+	for _, mode := range []string{"rule change", "disabled root and raw repair swap"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newChainEnv(t)
+			h := newChainAPI(t, e, os.Getenv("FLOPWIRE_CHAIN_REAL_CAPABILITY") != "1")
+			id, token := e.credential(t, "pending-restart")
+			d := newChainDevice(t, id, token, h)
+			// Keep this fixture to one real protected native file so each queued
+			// byte is attributable to the exact root and rule change below.
+			for _, path := range []string{d.child, d.companion} {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			outage := &chainOutage{base: http.DefaultTransport}
+			outage.deny.Store(true)
+			d.client.HTTP = &http.Client{Transport: outage}
+			d.start(t)
+			d.once(t)
+			chainEventually(t, "genuine protected pending native capture", func() error {
+				var size int64
+				var proof bool
+				if err := d.syncDB.QueryRow(`SELECT size,capture_proof IS NOT NULL FROM devsync_gens WHERE acked<entries OR tail_acked=0`).Scan(&size, &proof); err != nil {
+					return err
+				}
+				if !proof || size != int64(len(d.mainBytes)) || outage.calls.Load() == 0 {
+					return fmt.Errorf("capture size=%d proof=%v calls=%d", size, proof, outage.calls.Load())
+				}
+				return nil
+			})
+			d.halt(t)
+			d.sy.Close()
+			if mode == "rule change" {
+				d.config.UserRules = filepath.Join(d.home, "pending-rules")
+				chainWrite(t, d.config.UserRules, []byte("deny "+d.selected+"\n"))
+			} else {
+				d.config.CoworkRoot = "-"
+				outside := filepath.Join(d.home, "outside-native.jsonl")
+				chainWrite(t, outside, d.mainBytes)
+				if err := os.Remove(d.main); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, d.main); err != nil {
+					t.Fatal(err)
+				}
+				// A real missing spool forces any resume to need a fresh raw read.
+				if err := os.RemoveAll(filepath.Join(d.home, "spool")); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				d.spool, err = devicesync.OpenSpool(filepath.Join(d.home, "spool"), 4<<20)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			outage.deny.Store(false)
+			before := outage.calls.Load()
+			var err error
+			d.sy, err = devicesync.NewSyncer(devicesync.Config{Logger: d.config.Logger, SealAfter: -1}, d.syncStore, d.spool, d.client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.sy.Close)
+			d.scheduler = devicesync.NewScheduler(d.sy, devicesync.SchedulerConfig{})
+			d.config.Sync = d.scheduler
+			d.start(t)
+			d.once(t)
+			chainEventually(t, "restarted pending capture authorization barrier", func() error {
+				if queued := d.scheduler.Status().Queued; queued != 0 {
+					return fmt.Errorf("%d queued/running capture jobs", queued)
+				}
+				return nil
+			})
+			d.halt(t)
+			var sources int
+			if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM sources WHERE device_id=$1`, id).Scan(&sources); err != nil {
+				t.Fatal(err)
+			}
+			if sources != 0 || outage.calls.Load() != before {
+				t.Fatalf("held pending bytes reached transport/server: calls=%d->%d sources=%d", before, outage.calls.Load(), sources)
+			}
+		})
 	}
 }
