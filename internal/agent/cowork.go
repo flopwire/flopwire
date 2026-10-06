@@ -123,21 +123,25 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 			parents[link.NativeSessionID] = link
 		}
 	}
-	cliSessions, cliErr := claude.Discover(a.cfg.ClaudeProjects)
-	if cliErr != nil {
-		registrationFailed = true
-		a.log.Warn("agent: Cowork CLI child discovery failed", "error", cliErr)
-	}
-	for _, session := range cliSessions {
-		link, ok := parents[session.SessionID]
-		if !ok {
-			continue
+	// Ordinary CLI sweeps already discover this tree; inspect it here only
+	// when a verified Cowork parent can establish additional child scope.
+	if len(parents) > 0 {
+		cliSessions, cliErr := claude.Discover(a.cfg.ClaudeProjects)
+		if cliErr != nil {
+			registrationFailed = true
+			a.log.Warn("agent: Cowork CLI child discovery failed", "error", cliErr)
 		}
-		for _, sa := range session.Subagents {
-			child := link
-			child.NativeSessionID = claude.SubagentSessionID(sa.AgentID)
-			scopes = append(scopes, child)
-			addMember(session.SessionID, child.NativeSessionID)
+		for _, session := range cliSessions {
+			link, ok := parents[session.SessionID]
+			if !ok {
+				continue
+			}
+			for _, sa := range session.Subagents {
+				child := link
+				child.NativeSessionID = claude.SubagentSessionID(sa.AgentID)
+				scopes = append(scopes, child)
+				addMember(session.SessionID, child.NativeSessionID)
+			}
 		}
 	}
 	for root, link := range parents {
