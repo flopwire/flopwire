@@ -74,9 +74,10 @@ func (a *Agent) policy() *policyView {
 
 // fileStamp is enough of a stat to notice that a rules file changed.
 type fileStamp struct {
-	ok   bool
-	size int64
-	mod  int64
+	ok    bool
+	size  int64
+	mod   int64
+	ctime int64
 }
 
 func stampOf(path string) fileStamp {
@@ -84,7 +85,7 @@ func stampOf(path string) fileStamp {
 	if err != nil {
 		return fileStamp{}
 	}
-	return fileStamp{true, fi.Size(), fi.ModTime().UnixNano()}
+	return fileStamp{true, fi.Size(), fi.ModTime().UnixNano(), transcript.IdentityOf(fi).CTime}
 }
 
 // refreshPolicy re-reads the user rules file when it changed and, with
@@ -105,6 +106,8 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 			fetched = &rules
 		}
 	}
+	a.captureScopeMu.Lock()
+	defer a.captureScopeMu.Unlock()
 	a.polMu.Lock()
 	defer a.polMu.Unlock()
 	changed := !a.polApplied
@@ -545,7 +548,7 @@ func (t *target) placeKeyOf() (placeKey, string) {
 // the transcript later names one, so its decision must not be cached.
 func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, known, final bool) {
 	defer func() {
-		if a.desktopCodeScoped(t.path) && known {
+		if a.desktopCodeScoped(t.path) && known && !a.desktopCodeSharingConfigured() && !a.coworkMaySchedule(pv, t) {
 			if d.Mode < pathpolicy.Local {
 				d.Mode = pathpolicy.Local
 			}
@@ -553,6 +556,9 @@ func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, kn
 		}
 	}()
 	if d, ok := a.coworkMode(pv, t); ok {
+		if d.Mode != pathpolicy.Deny && a.coworkMaySchedule(pv, t) {
+			d.Mode = pathpolicy.Allow
+		}
 		return d, true, false
 	}
 	a.mu.Lock()
@@ -601,6 +607,9 @@ func (a *Agent) modeOf(t *target) (mode pathpolicy.Mode, known bool) {
 		return d.Mode, k
 	}
 	if d, ok := a.coworkMode(pv, t); ok {
+		if d.Mode != pathpolicy.Deny && a.coworkMaySchedule(pv, t) {
+			d.Mode = pathpolicy.Allow
+		}
 		a.mu.Lock()
 		t.mode, t.modeGen = d.Mode, pv.gen
 		a.mu.Unlock()
@@ -714,14 +723,14 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	if spec.Agent == transcript.AgentClaude && historyReadErr != nil {
 		return false
 	}
-	if a.desktopCodeScoped(spec.Path) {
-		return false
-	}
 	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}
 	if spec.Parent != "" {
 		nt.kind, nt.owner, nt.parent = kindCompanion, spec.SessionKey, spec.Parent
 	}
 	if _, ok := a.coworkMode(a.policy(), nt); ok {
+		return a.coworkMaySchedule(a.policy(), nt)
+	}
+	if a.desktopCodeScoped(spec.Path) && !a.desktopCodeSharingConfigured() {
 		return false
 	}
 	if a.policy().pol.Empty() {
@@ -1023,7 +1032,7 @@ func (a *Agent) recordCwds(ctx context.Context, t *target, cwds []string) (*tigh
 	tt := &tightening{pv: pv, was: was, now: d, name: fmt.Sprintf("%s:%s (%s)", key.agent, key.session, d.Reason())}
 	// Only an allowed session was handed to sync; one never placed before
 	// was not (uploadBound refuses it).
-	if wasKnown && was.Mode == pathpolicy.Allow && a.cfg.Sync != nil && a.cfg.Withhold != nil {
+	if wasKnown && was.Mode == pathpolicy.Allow && a.cfg.Sync != nil && a.cfg.Withhold != nil && !a.coworkOrigin(key, owner) {
 		if err := a.store.SetWithhold(ctx, owner.agent, owner.session, d.Mode.String(), d.Reason()); err != nil {
 			return nil, err
 		}
@@ -1058,7 +1067,7 @@ func (a *Agent) tighten(ctx context.Context, t *target, sourceID int64, tt *tigh
 	switch {
 	case tt.withhold:
 		a.log.Warn("agent: path rules: asking the server to delete what was uploaded of this session", "session", tt.name)
-		a.kickWithholds(ctx)
+		a.kickWithholdsLocked(ctx)
 	case a.cfg.Sync != nil && tt.was.Mode == pathpolicy.Allow:
 		a.noteServerCopies(1, []string{tt.name})
 		a.log.Warn("agent: path rules: what was uploaded of this session before stays on the server; " +
@@ -1070,6 +1079,15 @@ func (a *Agent) tighten(ctx context.Context, t *target, sourceID int64, tt *tigh
 // kickWithholds sends the server deletions owed (sendWithholds): in the
 // background while Run runs, else now.
 func (a *Agent) kickWithholds(ctx context.Context) {
+	a.kickWithholdsScope(ctx, false)
+}
+
+// kickWithholdsLocked runs while indexing holds the capture scope gate.
+func (a *Agent) kickWithholdsLocked(ctx context.Context) {
+	a.kickWithholdsScope(ctx, true)
+}
+
+func (a *Agent) kickWithholdsScope(ctx context.Context, gateHeld bool) {
 	if a.cfg.Withhold == nil {
 		return
 	}
@@ -1080,7 +1098,11 @@ func (a *Agent) kickWithholds(ctx context.Context) {
 	}
 	a.mu.Unlock()
 	if !bg {
-		a.sendWithholds(ctx)
+		if gateHeld {
+			a.sendWithholdsLocked(ctx)
+		} else {
+			a.sendWithholds(ctx)
+		}
 		return
 	}
 	go func() {
@@ -1094,7 +1116,18 @@ func (a *Agent) kickWithholds(ctx context.Context) {
 // fails stays owed: it is sent again at the next admin refresh and at
 // start.
 func (a *Agent) sendWithholds(ctx context.Context) {
-	if a.cfg.Withhold == nil || !a.withholdMu.TryLock() {
+	a.captureScopeMu.RLock()
+	defer a.captureScopeMu.RUnlock()
+	a.sendWithholdsLocked(ctx)
+}
+
+// sendWithholdsLocked keeps durable origin classification stable through the
+// legacy RPC. Its caller holds the capture scope gate.
+func (a *Agent) sendWithholdsLocked(ctx context.Context) {
+	if a.cfg.Withhold == nil {
+		return
+	}
+	if !a.withholdMu.TryLock() {
 		return
 	}
 	defer a.withholdMu.Unlock()
@@ -1103,7 +1136,38 @@ func (a *Agent) sendWithholds(ctx context.Context) {
 		a.log.Warn("agent: reading the server deletions owed", "err", err)
 		return
 	}
+	placements, err := a.store.Placements(ctx)
+	if err != nil {
+		a.log.Warn("agent: reading durable origins before server deletions", "err", err)
+		return
+	}
+	coworkOrigins := map[placeKey]bool{}
+	facts, historyErr := a.store.CoworkHistoricalUnknownFacts(ctx)
+	for _, session := range facts {
+		coworkOrigins[placeKey{transcript.AgentClaude, session}] = true
+	}
+	a.mu.Lock()
+	for key, p := range a.places {
+		if localindex.IsCoworkPlacement(p.how) {
+			coworkOrigins[key] = true
+		}
+	}
+	for key := range a.coworkPendingUnknown {
+		coworkOrigins[key] = true
+	}
+	a.mu.Unlock()
+	for _, p := range placements {
+		if localindex.IsCoworkPlacement(p.How) {
+			coworkOrigins[placeKey{p.Agent, p.SessionID}] = true
+		}
+	}
 	for _, w := range ws {
+		// Old owed deletions must never escalate a device-bound Cowork scope
+		// into the legacy user-scoped tombstone. Metadata reconciliation owns it.
+		key := placeKey{w.Agent, w.SessionID}
+		if coworkOrigins[key] || w.Agent == transcript.AgentClaude && (historyErr != nil || a.coworkScopePresent([]placeKey{key})) {
+			continue
+		}
 		wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.cfg.Withhold(wctx, w)
 		cancel()

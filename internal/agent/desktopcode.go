@@ -14,18 +14,19 @@ import (
 )
 
 type DesktopCodeStatus struct {
-	Root            string                `json:"root,omitempty"`
-	State           string                `json:"state"`
-	Sessions        int                   `json:"scoped_native_sessions"`
-	NormalLinks     int                   `json:"normal_root_links"`
-	NormalRootState desktopcode.RootState `json:"normal_root_state,omitempty"`
-	MetadataOnly    int                   `json:"missing_linked_transcripts"`
-	OutOfScope      int                   `json:"outside_local_code_scope"`
-	InvalidMetadata int                   `json:"invalid_metadata"`
-	Excluded        int                   `json:"excluded_paths"`
-	CoworkAliases   int                   `json:"cowork_origin_aliases"`
-	SharedHold      string                `json:"scoped_shared_hold,omitempty"`
-	Error           string                `json:"error,omitempty"`
+	Root                string                `json:"root,omitempty"`
+	State               string                `json:"state"`
+	Sessions            int                   `json:"scoped_native_sessions"`
+	NormalLinks         int                   `json:"normal_root_links"`
+	NormalRootState     desktopcode.RootState `json:"normal_root_state,omitempty"`
+	MetadataOnly        int                   `json:"missing_linked_transcripts"`
+	OutOfScope          int                   `json:"outside_local_code_scope"`
+	InvalidMetadata     int                   `json:"invalid_metadata"`
+	Excluded            int                   `json:"excluded_paths"`
+	CoworkAliases       int                   `json:"cowork_origin_aliases"`
+	SharedAuthorization string                `json:"scoped_shared_authorization,omitempty"`
+	SharedHold          string                `json:"scoped_shared_hold,omitempty"`
+	Error               string                `json:"error,omitempty"`
 }
 
 // Called under the shared desktop registration/capture writer lease. Both
@@ -190,7 +191,11 @@ func (a *Agent) desktopCodeStatus() *DesktopCodeStatus {
 		st.State = "excluded"
 	}
 	if st.Sessions > 0 {
-		st.SharedHold = "contained sync authorization support pending"
+		if a.desktopCodeSharingConfigured() {
+			st.SharedAuthorization = "each capture requires fresh contained indexed proof; Cowork origins retain folder-policy holds"
+		} else {
+			st.SharedHold = "contained sync authorization support pending"
+		}
 	}
 	return st
 }

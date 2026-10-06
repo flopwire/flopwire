@@ -150,6 +150,8 @@ func (a *Agent) repoChanged(key placeKey) {
 // placement, enforces the rules again with them. It reports whether it
 // did.
 func (a *Agent) recoverAndEnforce(ctx context.Context) bool {
+	a.captureScopeMu.Lock()
+	defer a.captureScopeMu.Unlock()
 	r := a.recoverPass(ctx)
 	n := 0
 	for _, v := range r.Found {

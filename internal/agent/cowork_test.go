@@ -1206,11 +1206,14 @@ func TestCoworkTaintPersistenceFailureRetriesBeforeIndexing(t *testing.T) {
 		t.Fatal("unknown bytes indexed despite persistence rejection")
 	}
 	p, _ := f.a.storedPlace(placeKey{transcript.AgentClaude, coworkNativeID})
-	if p.how != localindex.PlacedByCowork {
-		t.Fatal("failed durable taint published to memory and would skip retry")
+	if p.how != localindex.PlacedByCoworkUnknown {
+		t.Fatal("committed historical fact was weakened by compatibility failure")
+	}
+	if have, err := f.store.CoworkHistoricalUnknown(ctx, coworkNativeID); err != nil || !have {
+		t.Fatalf("historical fact was not committed before compatibility failure: %v %v", have, err)
 	}
 	if len(f.find("retry unknown needle", false)) != 0 {
-		t.Fatal("unknown appended content indexed before marker persisted")
+		t.Fatal("unknown appended content indexed despite failed compatibility write")
 	}
 	if err := f.store.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -1486,5 +1489,98 @@ func TestCoworkPhysicalSelectedSubtreePolicyPersists(t *testing.T) {
 	f.once()
 	if len(f.find("cowork main needle", false)) != 0 {
 		t.Fatal("historical physical subtree deny lost on restart")
+	}
+}
+
+func TestCoworkVerifiedHistoricalEvidenceMarksKnownFamilyBeforePurge(t *testing.T) {
+	f := newCoworkFixture(t)
+	f.cfg.Unplaceable = "exclude"
+	f.restart()
+	coworkMetadata(t, f, []string{"/host/public"}, nil, nil)
+	path := coworkTranscript(t, f)
+	child, _ := coworkChildren(t, path)
+	sibling := filepath.Join(filepath.Dir(child), "agent-beef.jsonl")
+	coworkWrite(t, sibling, coworkRecord("agent-beef", "sibling-message", "known sibling history"))
+	f.once()
+	ids := []string{coworkNativeID, "agent-cafe", "agent-beef"}
+	for _, id := range ids {
+		if p, _ := f.a.storedPlace(placeKey{transcript.AgentClaude, id}); p.how != localindex.PlacedByCowork {
+			t.Fatalf("current family was not known %s: %+v", id, p)
+		}
+	}
+	if n := f.count(`SELECT count(*) FROM companions`); n == 0 {
+		t.Fatal("missing companion proof fixture")
+	}
+	if err := f.store.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", f.store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{`CREATE TABLE cowork_history(device_id TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(device_id,session_id)) WITHOUT ROWID`, `CREATE TRIGGER fail_fact BEFORE INSERT ON cowork_history BEGIN SELECT RAISE(FAIL,'synthetic fact failure'); END`} {
+		if _, err = db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark := func() error {
+		f.a.captureScopeMu.Lock()
+		defer f.a.captureScopeMu.Unlock()
+		// This is verified historical evidence, independent of current readiness.
+		return f.a.markCoworkHistoricalUnknown(ctx, []placeKey{{transcript.AgentClaude, "agent-cafe"}})
+	}
+	if err = mark(); err == nil {
+		t.Fatal("fact failure ignored")
+	}
+	for _, id := range ids {
+		target := &target{path: path, src: transcript.Source{Agent: transcript.AgentClaude, SessionKey: id}}
+		if d, _ := f.a.coworkMode(f.a.policy(), target); d.Mode != pathpolicy.Deny {
+			t.Fatalf("failed verified history did not restrict family %s: %+v", id, d)
+		}
+	}
+	if err = f.a.purgeDenied(ctx); err == nil {
+		t.Fatal("failed fact commit allowed last proof purge")
+	}
+	if n := f.count(`SELECT count(*) FROM companions`); n == 0 {
+		t.Fatal("failed fact commit erased companion proof")
+	}
+	if _, err = db.Exec(`DROP TRIGGER fail_fact`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`CREATE TRIGGER fail_how BEFORE INSERT ON placements WHEN NEW.how='cowork-unknown' BEGIN SELECT RAISE(FAIL,'synthetic compatibility failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err = mark(); err == nil {
+		t.Fatal("compatibility failure fixture did not fire")
+	}
+	for _, id := range ids {
+		if have, err := f.store.CoworkHistoricalUnknown(ctx, id); err != nil || !have {
+			t.Fatalf("verified family fact missing %s: %v %v", id, have, err)
+		}
+		if p, _ := f.a.storedPlace(placeKey{transcript.AgentClaude, id}); p.how != localindex.PlacedByCoworkUnknown || p.pl.Cwd != "/host/public" {
+			t.Fatalf("fact authority lost after compatibility failure %s: %+v", id, p)
+		}
+	}
+	if err = f.a.purgeDenied(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(`SELECT count(*) FROM companions`); n != 0 {
+		t.Fatalf("durable facts did not release proof purge %d", n)
+	}
+	if err = f.store.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`DROP TRIGGER fail_how`); err != nil {
+		t.Fatal(err)
+	}
+	if err = mark(); err != nil {
+		t.Fatal(err)
+	}
+	f.restart()
+	for _, id := range ids {
+		if p, _ := f.a.storedPlace(placeKey{transcript.AgentClaude, id}); p.how != localindex.PlacedByCoworkUnknown {
+			t.Fatalf("restart lost verified historical origin %s", id)
+		}
 	}
 }
