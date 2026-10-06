@@ -56,6 +56,7 @@ type PolicyPlacementsRequest struct {
 	Placements          []PolicyPlacement `json:"placements"`
 	Sources             []PolicySource    `json:"sources,omitempty"`
 	ClientMode          string            `json:"client_mode"`
+	Device              *DeviceDirs       `json:"device,omitempty"`
 }
 
 // PolicyPlacementsResponse acknowledges the durably reconciled restriction union.
