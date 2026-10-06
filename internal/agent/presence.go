@@ -3,10 +3,11 @@ package agent
 // Presence for the message bus (notes/message-bus/plan.md §4): the device's
 // live sessions with their harness, repo, branch, and busy or idle.
 //
-// Live is what `flopwire sessions` prints as live (local.MarkLive): written
-// within format.LiveWindow, or held open by its harness and written within
-// local.LiveCap. The evidence that a harness holds a session open is read
-// here, read-only:
+// The bus uses recent activity (local.MarkLive) or confirmed evidence that
+// the harness holds the session open. Historical `sessions` retains its
+// recency cap; bus presence keeps confirmed holders until real end.
+// Uncertain registry evidence remains bounded by local.LiveCap.
+// The harness evidence is read here, read-only:
 //
 //   - Claude Code: <claude config dir>/sessions/<pid>.json whose pid runs
 //     and started when procStart says (a reused pid does not count). Its
@@ -120,7 +121,8 @@ func (a *Agent) registries() harnessLive {
 			continue
 		}
 		ref := devicebus.Ref{Agent: claude, Session: v.SessionID}
-		if !a.pidAlive(pid) || !a.sameProcess(pid, v.ProcStart) {
+		matches, known := a.sameProcess(pid, v.ProcStart)
+		if !a.pidAlive(pid) || known && !matches {
 			// The file of a process that is gone (killed: a clean exit
 			// removes it), or of a pid now reused.
 			h.reg.Gone = append(h.reg.Gone, ref)
@@ -132,6 +134,10 @@ func (a *Agent) registries() harnessLive {
 		}
 		add(v.SessionID, at)
 		h.busy[v.SessionID] = h.busy[v.SessionID] || v.Status == "busy"
+		if !known {
+			h.reg.Unknown = append(h.reg.Unknown, ref)
+			continue
+		}
 		started, _ := a.procStart(pid)
 		h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d:%s", pid, v.ProcStart), Start: started}
 	}
@@ -187,7 +193,9 @@ func (a *Agent) registries() harnessLive {
 				// plugin's cleanup) is removed; its sessions end below.
 				_ = os.Remove(f)
 			}
-			alive := running && local.IsOpencodeProcess(a.procName(pid)) && a.startedAt(pid, v.Started)
+			name := a.procName(pid)
+			matches, known := a.startedAt(pid, v.Started)
+			alive := running && (name == "" || local.IsOpencodeProcess(name)) && (!known || matches)
 			for _, id := range v.Sessions {
 				if id == "" {
 					continue
@@ -198,6 +206,10 @@ func (a *Agent) registries() harnessLive {
 					continue
 				}
 				add(id, time.Time{})
+				if !known || name == "" {
+					h.reg.Unknown = append(h.reg.Unknown, ref)
+					continue
+				}
 				h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", pid), Start: time.UnixMilli(v.Started)}
 			}
 		}
@@ -217,8 +229,8 @@ func (a *Agent) registries() harnessLive {
 // A session that fails only these per-session checks is left out of Held
 // rather than reported Gone: the bus ends a session missing from two reads
 // EndDebounce apart, and a session Devin has not stored yet is not marked
-// ended. What cannot be read leaves the session held: presence must not
-// empty on a read error.
+// ended. What cannot be read leaves the lifecycle unknown and presence bounded
+// by recency, without reporting a session end.
 func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRead func(string) bool) {
 	harness := string(transcript.AgentDevin)
 	dir := filepath.Join(filepath.Dir(a.devin.path), "session_locks")
@@ -227,6 +239,7 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 	type held struct {
 		pid     int
 		started time.Time
+		unknown bool
 	}
 	cand := map[string]held{}
 	perPid := map[int][]string{}
@@ -243,16 +256,18 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 			h.reg.Unknown = append(h.reg.Unknown, ref)
 			continue
 		}
-		if !a.pidAlive(pid) || !local.IsDevinProcess(a.procName(pid)) {
+		name := a.procName(pid)
+		if !a.pidAlive(pid) || name != "" && !local.IsDevinProcess(name) {
 			h.reg.Gone = append(h.reg.Gone, ref) // a dead pid, or reused by another program
 			continue
 		}
 		started, ok := a.procStart(pid)
-		if fi, err := fsprobe.Stat(f); ok && err == nil && started.Sub(fi.ModTime()) > 2*time.Second {
+		fi, statErr := fsprobe.Stat(f)
+		if ok && statErr == nil && started.Sub(fi.ModTime()) > 2*time.Second {
 			h.reg.Gone = append(h.reg.Gone, ref) // a devin that started after the lock was written
 			continue
 		}
-		cand[id] = held{pid, started}
+		cand[id] = held{pid: pid, started: started, unknown: !ok || started.IsZero() || statErr != nil || name == ""}
 		perPid[pid] = append(perPid[pid], id)
 	}
 	ids := make([]string, 0, len(cand))
@@ -263,7 +278,7 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 	inStore, err := devin.Sessions(ctx, a.devin.path, ids)
 	cancel()
 	if err != nil {
-		inStore = nil // unknown: every lock stands
+		inStore = nil // unknown: retain lifecycle, bounded presence
 	}
 	// lsof can be slow or missing: one budget bounds the reads, and a pid
 	// not read by then is unknown.
@@ -275,6 +290,11 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 		}
 		files := a.openFiles(octx, pid)
 		if len(files) == 0 {
+			for _, id := range sids {
+				c := cand[id]
+				c.unknown = true
+				cand[id] = c
+			}
 			continue // unknown
 		}
 		open := map[string]bool{}
@@ -294,6 +314,10 @@ func (a *Agent) devinRegistry(h *harnessLive, add func(string, time.Time), dirRe
 			continue // deleted from Devin
 		}
 		add(id, time.Time{})
+		if c.unknown || inStore == nil {
+			h.reg.Unknown = append(h.reg.Unknown, devicebus.Ref{Agent: harness, Session: id})
+			continue
+		}
 		h.reg.Held[devicebus.Ref{Agent: harness, Session: id}] = devicebus.Holder{ID: fmt.Sprintf("pid:%d", c.pid), Start: c.started}
 	}
 }
@@ -309,7 +333,7 @@ const devinStoreBudget = 200 * time.Millisecond
 // (hookTurns), unless the store shows the turn interrupted since that
 // event's hook started. Devin fires no Stop for an interrupted turn.
 func (a *Agent) devinTurnBusy(ctx context.Context, session string) bool {
-	busy, start := a.hookBusy(session)
+	busy, start := a.hookBusy(transcript.AgentDevin, session)
 	if !busy || a.devin.path == "" {
 		return busy
 	}
@@ -321,50 +345,38 @@ func (a *Agent) devinTurnBusy(ctx context.Context, session string) bool {
 		return true
 	}
 	if stopped {
-		a.hookTurnEnded(session, start)
+		a.hookTurnEnded(transcript.AgentDevin, session, start)
 		return false
 	}
 	return true
 }
 
-// startedAt reports whether pid is the process that wrote a registry
-// file recording unix ms as its start: it started no later than that
-// (within 2s). The plugin records performance.timeOrigin, which in
-// opencode's TUI is its worker's start, later than the process's by an
-// unbounded delay; a process that reused the pid started after the
-// writer ended, so after ms. A platform that cannot tell, or a file
-// without the time, takes the pid alone.
-func (a *Agent) startedAt(pid int, ms int64) bool {
-	if ms <= 0 {
-		return true
-	}
+// startedAt compares the process start to the plugin's timeOrigin. The
+// worker can start later than its process. Missing proof remains unknown.
+func (a *Agent) startedAt(pid int, ms int64) (matches, known bool) {
 	started, ok := a.procStart(pid)
-	if !ok {
-		return true
+	if ms <= 0 || !ok || started.IsZero() {
+		return false, false
 	}
-	return started.Sub(time.UnixMilli(ms)) < 2*time.Second
+	return started.Sub(time.UnixMilli(ms)) < 2*time.Second, true
 }
 
-// sameProcess reports whether pid is the process a Claude session file
-// describes: its start time matches procStart (within 2s, read as UTC or
-// local time). A file without procStart, or a platform that cannot tell,
-// takes the pid alone.
-func (a *Agent) sameProcess(pid int, procStart string) bool {
-	if procStart == "" {
-		return true
-	}
+// sameProcess compares a known process start to Claude's procStart,
+// within 2s, read as UTC or local time. Missing proof remains unknown.
+func (a *Agent) sameProcess(pid int, procStart string) (matches, known bool) {
 	started, ok := a.procStart(pid)
-	if !ok {
-		return true
+	if procStart == "" || !ok || started.IsZero() {
+		return false, false
 	}
 	for _, loc := range []*time.Location{time.UTC, time.Local} {
 		if t, err := time.ParseInLocation(procStartLayout, procStart, loc); err == nil {
+			known = true
 			if d := started.Sub(t); d > -2*time.Second && d < 2*time.Second {
-				return true
+				return true, true
 			}
 		}
 	}
-	return false
+	return false, known
 }
 
 // rolloutState caches codexBusy by the file's size and change time:
@@ -375,9 +387,10 @@ type rolloutState struct {
 }
 
 type rolloutBusy struct {
-	size int64
-	mod  time.Time
-	busy bool
+	size      int64
+	mod       time.Time
+	busy      bool
+	idleSince time.Time
 }
 
 // busy is codexBusy for path, read again only when the file changed. keep
@@ -385,6 +398,9 @@ type rolloutBusy struct {
 func (r *rolloutState) busy(path string, keep map[string]bool) bool {
 	fi, err := fsprobe.Stat(path)
 	if err != nil {
+		r.mu.Lock()
+		delete(r.m, path)
+		r.mu.Unlock()
 		return false
 	}
 	r.mu.Lock()
@@ -398,12 +414,12 @@ func (r *rolloutState) busy(path string, keep map[string]bool) bool {
 	if ok && c.size == fi.Size() && c.mod.Equal(fi.ModTime()) {
 		return c.busy
 	}
-	b := codexBusy(path)
+	b, idle := codexTurnState(path)
 	r.mu.Lock()
 	if r.m == nil {
 		r.m = map[string]rolloutBusy{}
 	}
-	r.m[path] = rolloutBusy{size: fi.Size(), mod: fi.ModTime(), busy: b}
+	r.m[path] = rolloutBusy{size: fi.Size(), mod: fi.ModTime(), busy: b, idleSince: idle}
 	r.mu.Unlock()
 	return b
 }
@@ -411,20 +427,25 @@ func (r *rolloutState) busy(path string, keep map[string]bool) bool {
 // codexBusy reads the end of a rollout for its last task event: a turn is
 // running after task_started until task_complete or turn_aborted.
 func codexBusy(path string) bool {
+	busy, _ := codexTurnState(path)
+	return busy
+}
+
+func codexTurnState(path string) (bool, time.Time) {
 	const tail = 256 << 10
 	f, err := fsprobe.Open(path)
 	if err != nil {
-		return false
+		return false, time.Time{}
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return false
+		return false, time.Time{}
 	}
 	off := max(fi.Size()-tail, 0)
 	buf := make([]byte, fi.Size()-off)
 	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
-		return false
+		return false, time.Time{}
 	}
 	lines := bytes.Split(buf, []byte{'\n'})
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -433,8 +454,9 @@ func codexBusy(path string) bool {
 			continue
 		}
 		var rec struct {
-			Type    string `json:"type"`
-			Payload struct {
+			Timestamp time.Time `json:"timestamp"`
+			Type      string    `json:"type"`
+			Payload   struct {
 				Type string `json:"type"`
 			} `json:"payload"`
 		}
@@ -443,17 +465,19 @@ func codexBusy(path string) bool {
 		}
 		switch rec.Payload.Type {
 		case "task_started":
-			return true
+			return true, time.Time{}
 		case "task_complete", "turn_aborted":
-			return false
+			return false, rec.Timestamp
 		}
 	}
-	return false
+	return false, time.Time{}
 }
 
 // presenceSQL is every top-level session written since $1 (unix ms).
-const presenceSQL = `SELECT agent, session_id, COALESCE(repo_root, cwd, ''), COALESCE(branches, ''), COALESCE(title, ''), last_activity_at
-	FROM conversations WHERE depth = 0 AND deleted_in_generation IS NULL AND last_activity_at >= ?`
+const presenceSelect = `SELECT agent, session_id, COALESCE(repo_root, cwd, ''), COALESCE(branches, ''), COALESCE(title, ''), COALESCE(last_activity_at,0)
+	FROM conversations WHERE depth = 0 AND deleted_in_generation IS NULL`
+const presenceSQL = presenceSelect + ` AND last_activity_at >= ?`
+const heldPresenceSQL = presenceSelect + ` AND agent = ? AND session_id = ?`
 
 // knownSQL is the top-level sessions whose id is in [$1, $2): a prefix.
 const knownSQL = `SELECT agent, session_id, COALESCE(repo_root, cwd, ''), COALESCE(branches, ''), COALESCE(title, ''), COALESCE(last_activity_at, 0)
@@ -493,6 +517,22 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		return nil, err
 	}
 	reg := a.registries()
+	// Fetch old held sessions by exact key, rather than scanning unbounded
+	// history. Uncertain locks retain the recency bound.
+	seen := map[devicebus.Ref]bool{}
+	for _, s := range all {
+		seen[devicebus.Ref{Agent: s.Agent, Session: s.SessionID}] = true
+	}
+	for ref := range reg.reg.Held {
+		if seen[ref] {
+			continue
+		}
+		rows, err := a.sessionRows(ctx, heldPresenceSQL, ref.Agent, ref.Session)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+	}
 	// The bus records what the registries say and answers which sessions
 	// ended (a dead or missing entry, a SessionEnd hook); they are not
 	// live, however recently they wrote. Without an answer none is left
@@ -523,7 +563,8 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		last := s.LastActive
 		info := format.ConversationInfo{SessionID: s.SessionID, LastActivityAt: &last}
 		local.MarkLive(&info, reg.at, now)
-		if !info.Live {
+		_, confirmed := reg.reg.Held[devicebus.Ref{Agent: s.Agent, Session: s.SessionID}]
+		if !info.Live && !confirmed {
 			continue
 		}
 		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
@@ -551,9 +592,36 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		case transcript.AgentDevin:
 			out[i].Busy = a.devinTurnBusy(ctx, s.SessionID)
 		case transcript.AgentOpencode:
-			out[i].Busy, _ = a.hookBusy(s.SessionID)
+			out[i].Busy, _ = a.hookBusy(transcript.AgentOpencode, s.SessionID)
+		}
+		if !out[i].Busy {
+			out[i].IdleSince = a.hookIdleSince(key)
+			if key.agent == transcript.AgentCodex {
+				if t := paths[key]; t != nil {
+					a.rollouts.mu.Lock()
+					out[i].IdleSince = a.rollouts.m[t.path].idleSince
+					a.rollouts.mu.Unlock()
+				}
+			}
+			if out[i].IdleSince.After(now) {
+				out[i].IdleSince = time.Time{}
+			}
+			out[i].IdleKnown = !out[i].IdleSince.IsZero()
 		}
 	}
+	// Retain Stop evidence for live idle sessions; bound the hook cache by
+	// the sessions we actually expose, including confirmed old holders.
+	liveKeys := map[placeKey]bool{}
+	for _, s := range out {
+		liveKeys[placeKey{transcript.Agent(s.Agent), s.SessionID}] = true
+	}
+	a.turns.mu.Lock()
+	for id, v := range a.turns.m {
+		if now.Sub(v.at) > hookBusyCap && !liveKeys[id] {
+			delete(a.turns.m, id)
+		}
+	}
+	a.turns.mu.Unlock()
 	return out, nil
 }
 

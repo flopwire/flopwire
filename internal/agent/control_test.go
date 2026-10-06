@@ -576,3 +576,45 @@ func TestStatusRequestCancelledWhenClientLeaves(t *testing.T) {
 		t.Fatal("the client closed and its status kept running")
 	}
 }
+
+// A terminal delivery failure must reach its sender at the next normal
+// pending boundary, including inform and done. No message body is needed.
+func TestControlFailureNoticeAtSenderBoundary(t *testing.T) {
+	f, b := busFixture(t)
+	out, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "synthetic-private-body", Intent: "inform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.End(ctx, devicebus.Ref{Agent: "claude", Session: "to-2222"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	r := ask(t, f.a, Request{Op: "pending", Session: "from-1111", Agent: "claude"})
+	encoded, _ := json.Marshal(r)
+	if !strings.Contains(string(encoded), out.ID) || !strings.Contains(string(encoded), "session_ended") {
+		t.Fatalf("sender boundary omitted failure %s: %s", out.ID, encoded)
+	}
+	if strings.Contains(string(encoded), "synthetic-private-body") {
+		t.Fatal("failure notice leaked body")
+	}
+}
+
+func TestControlFailureNoticeSenderResumeDoesNotRenewAcknowledgement(t *testing.T) {
+	f, b := busFixture(t)
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "from-1111", To: "to-2222", Body: "synthetic resume"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.End(ctx, devicebus.Ref{Agent: "claude", Session: "to-2222"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	r := ask(t, f.a, Request{Op: "pending", Session: "from-1111", Agent: "claude"})
+	if len(r.Failures) != 1 {
+		t.Fatalf("failure: %+v", r)
+	}
+	if c := ask(t, f.a, Request{Op: "confirm", Session: "from-1111", IDs: []string{r.Failures[0].LeaseID}, Instruction: r.Instruct}); !c.OK {
+		t.Fatal(c.Error)
+	}
+	r = ask(t, f.a, Request{Op: "pending", Session: "from-1111", Agent: "claude", Start: "resume", HookStart: time.Now().Add(time.Second).UnixMilli()})
+	if len(r.Failures) != 0 {
+		t.Fatalf("resume renewed a settled failure: %+v", r.Failures)
+	}
+}

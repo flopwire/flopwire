@@ -97,8 +97,9 @@ type Response struct {
 	// Sent, Peers, Inbox: the answers to send, peers and inbox. BusError: a
 	// refusal with its code (and candidates or the refused message id);
 	// Call returns it as the error. Bus (status): the bus state.
-	Messages []busproto.Envelope   `json:"messages,omitempty"`
-	Held     []busproto.HeldSender `json:"held,omitempty"`
+	Failures []busproto.DeliveryFailure `json:"failures,omitempty"`
+	Messages []busproto.Envelope        `json:"messages,omitempty"`
+	Held     []busproto.HeldSender      `json:"held,omitempty"`
 	// Notice (pending with Notice): the held senders to tell the user
 	// about now, at most once a day each; Console the web console page
 	// for them.
@@ -257,7 +258,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Error = err.Error()
 		}
 	case req.Op == "flush":
-		a.noteHookEvent(req.Session, req.Event, hookStart(req, a.now()))
+		a.noteHookEvent(req.Agent, req.Session, req.Event, hookStart(req, a.now()))
 		a.hookLifecycle(ctx, req)
 		if d := a.storeOf(transcript.AgentOpencode); d != nil && req.Agent == string(transcript.AgentOpencode) {
 			// opencode's store holds every session: poll it (at most once a
@@ -318,7 +319,15 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 	switch req.Op {
 	case "pending":
 		b.Nudge(req.Session, req.Agent) // a new session: report it now
-		lim := devicebus.Limit{Count: req.Limit, Bytes: req.MaxBytes, Sep: busrender.SepLen, Size: busrender.Size}
+		resp.Failures, err = b.TakeFailures(ctx, req.Session, req.Agent)
+		if err != nil {
+			break
+		}
+		budget := req.MaxBytes
+		if len(resp.Failures) > 0 && budget > 2000 {
+			budget -= 2000
+		}
+		lim := devicebus.Limit{Count: req.Limit, Bytes: budget, Sep: busrender.SepLen, Size: busrender.Size}
 		ins := &devicebus.Instruction{Source: req.Start, HookStart: hookStart(req, a.now()),
 			Bytes: busrender.EncodedLen(busrender.StandingInstruction) + busrender.SepLen}
 		resp.Instruct, resp.Messages, err = b.TakeWith(ctx, req.Session, req.Agent, lim, ins)

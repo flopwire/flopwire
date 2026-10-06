@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/agent"
+	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
 )
 
@@ -117,7 +118,7 @@ func opencodeHook(ctx context.Context, in hookInput, socket string, stdout io.Wr
 func opencodeDeliver(ctx context.Context, in hookInput, socket string, started time.Time, stdout io.Writer, warn func(string, ...any)) {
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
 	defer cancel()
-	resp, err := agent.Call(pctx, socket, agent.Request{Op: "pending", Session: in.SessionID,
+	resp, err := agent.Call(pctx, socket, agent.Request{Op: "pending", Session: in.SessionID, Agent: "opencode",
 		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, HookStart: started.UnixMilli()})
 	if err != nil {
 		warn("%s; nothing delivered", hookReason(err))
@@ -126,6 +127,9 @@ func opencodeDeliver(ctx context.Context, in hookInput, socket string, started t
 	out := opencodeOutput{Instruction: resp.Instruct}
 	for _, m := range resp.Messages {
 		out.Messages = append(out.Messages, opencodeMessage{ID: m.ID, Text: busrender.Render(m, resp.Excerpts, busrender.HookBytes)})
+	}
+	for _, n := range resp.Failures {
+		out.Messages = append(out.Messages, opencodeMessage{ID: n.LeaseID, Text: deliveryStatus([]busproto.DeliveryFailure{n})})
 	}
 	if len(out.Messages) == 0 && !out.Instruction {
 		return

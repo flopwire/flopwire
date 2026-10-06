@@ -33,9 +33,9 @@ type store struct {
 	skew atomic.Int64
 }
 
-// schemaVersion is the inbox's PRAGMA user_version. An inbox with another
-// version is from an earlier build (pre-release: no migration) and is
-// recreated empty: messages from a server come back with the next poll.
+// schemaVersion stays 5: status uses only an additive table, so older v5
+// agents do not invoke their destructive version-mismatch reset on rollback.
+// Unsupported versions fail closed without deleting durable data.
 const schemaVersion = 5
 
 const schema = `
@@ -126,13 +126,11 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("devicebus: schema: %w", err)
 	}
-	if version != schemaVersion {
-		if _, err := db.Exec(`DROP TABLE IF EXISTS devbus_messages; DROP TABLE IF EXISTS devbus_notices; DROP TABLE IF EXISTS devbus_sessions; DROP TABLE IF EXISTS devbus_instruct;`); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("devicebus: schema: %w", err)
-		}
+	if version != 0 && version != schemaVersion {
+		db.Close()
+		return nil, fmt.Errorf("devicebus: unsupported schema version %d; inbox preserved", version)
 	}
-	if _, err := db.Exec(schema + fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion)); err != nil {
+	if _, err := db.Exec(schema + failureSchema + fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion)); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("devicebus: schema: %w", err)
 	}
@@ -562,10 +560,21 @@ const (
 
 // purge drops messages past their retention.
 func (s *store) purge(ctx context.Context, now time.Time) error {
+	if err := captureLocalFailures(ctx, s.db, now); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM devbus_messages WHERE (origin='server' AND expires_at<? AND ack NOT IN ('owed','report') AND NOT (ack='done' AND read_ack='owed'))
 		OR (origin='local' AND expires_at<?)`,
 		ms(now.Add(-serverKeep)), ms(now.Add(-localKeep)))
 	if err != nil {
+		return err
+	}
+	// Keep unprinted/unacknowledged status indefinitely. Completed metadata
+	// can go only after its source envelope is gone, so capture cannot
+	// recreate a notice on the next hook.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM devbus_failures WHERE id IN (
+		SELECT f.id FROM devbus_failures f WHERE f.ack='done' AND f.confirmed_at<?
+		AND NOT EXISTS(SELECT 1 FROM devbus_messages m WHERE m.id=f.id) LIMIT 1000)`, ms(now.Add(-localKeep))); err != nil {
 		return err
 	}
 	// A session row matters while a message to it can arrive and while its

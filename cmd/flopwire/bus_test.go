@@ -186,7 +186,7 @@ func TestSendOutcomeLines(t *testing.T) {
 			"sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at its next tool call"},
 		{busproto.SendResponse{ID: "m7f3b", State: busproto.StateQueued, ExpiresAt: exp,
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/home/g/api", Branch: "main", Live: true}},
-			"sent m7f3b to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt"},
+			"sent m7f3b to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt (idle duration unknown)"},
 		{busproto.SendResponse{ID: "m7f3c", State: busproto.StateHeld, ExpiresAt: exp, To: busproto.Recipient{User: "sam@example.test", Repo: "api", Live: true}},
 			"held m7f3c for @sam: sam has not accepted messages from you; expires 2026-10-02T14:02Z"},
 		{busproto.SendResponse{ID: "m7f3d", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Repo: "api"}},
@@ -206,7 +206,7 @@ func TestSendOutcomeLines(t *testing.T) {
 			"sent m7f42 to session_01AbCd (gary claude cloud api@claude/fix): running, pushed now and read at its next tool call; a cloud session cannot reply"},
 		{busproto.SendResponse{ID: "m7f43", State: busproto.StateQueued, ExpiresAt: exp,
 			To: busproto.Recipient{Session: "devin-0a1b2c3d", Agent: "devin", User: "gary@example.test", Live: true, Cloud: true}},
-			"sent m7f43 to devin-0a1b2c3d (gary devin cloud -): not running a turn, pushed when it next runs one; a cloud session cannot reply; expires 2026-10-02T14:02Z"},
+			"sent m7f43 to devin-0a1b2c3d (gary devin cloud -): not running a turn, pushed when it next runs one; a cloud session cannot reply; expires 2026-10-02T14:02Z (idle duration unknown)"},
 	} {
 		if got := sendOutcome(c.r); got != c.want {
 			t.Errorf("outcome\n got %s\nwant %s", got, c.want)
@@ -405,7 +405,7 @@ func TestBusAgentNotRunning(t *testing.T) {
 		// The default: a JSON error with a stable code.
 		out.Reset()
 		err = busCmd(t.Context(), args[0], append([]string{"--socket", sock}, args[1:]...), strings.NewReader(""), &out, &errOut)
-		if e := jsonErr(t, errOut.String(), err); e.Code != codeAgentNotRunning || e.Fix == "" || e.Example == "" || out.Len() != 0 {
+		if e := jsonErr(t, errOut.String(), err); e.Code != codeAgentNotRunning || !strings.Contains(e.Detail, "unverified") || !strings.Contains(e.Detail, "cannot send or receive") || e.Fix == "" || e.Example == "" || out.Len() != 0 {
 			t.Fatalf("%v JSON: %+v %q", args, e, out.String())
 		}
 		errOut.Reset()
@@ -431,7 +431,7 @@ func TestPeersOutput(t *testing.T) {
 		return agent.Response{OK: true, Peers: &busproto.PeersResponse{Peers: peers}}
 	})
 	out, err := cli(t, fa, "", "peers", "--repo", "api", "--user", "@alex", "--agent", "claude")
-	want := `4c19e0d2  gary  codex  live idle  api@main  "add cursor to list endpoint"
+	want := `4c19e0d2  gary  codex  live idle (idle duration unknown)  api@main  "add cursor to list endpoint"
 9d00e0d2  alex  claude  live busy  api@main  "refactor client pagination"
 [2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]
 `
@@ -441,7 +441,7 @@ func TestPeersOutput(t *testing.T) {
 	// A cloud session is marked, and the footer says what that means.
 	peers = append(peers, busproto.Peer{Session: "session_01AbCdEf", Agent: "claude", User: "gary@example.test", Repo: "acme/api", Branch: "claude/fix", Title: "cloud task", Own: true, Cloud: true})
 	out, err = cli(t, fa, "", "peers", "--text")
-	if err != nil || !strings.Contains(out, "session_01AbCdEf  gary  claude  cloud idle  api@claude/fix  \"cloud task\"\n") ||
+	if err != nil || !strings.Contains(out, "session_01AbCdEf  gary  claude  cloud idle (idle duration unknown)  api@claude/fix  \"cloud task\"\n") ||
 		!strings.Contains(out, "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply.") {
 		t.Fatalf("peers with a cloud session:\n%s%v", out, err)
 	}
@@ -1273,5 +1273,40 @@ func TestInboxReplyWithItsParentDeleted(t *testing.T) {
 	text, err := cli(t, fa, "", "inbox", "--thread", "m1")
 	if err != nil || !strings.Contains(text, "m3  received") || !strings.Contains(text, "m4  sent") || strings.Count(text, "read  thread m1\n") != 2 {
 		t.Fatalf("inbox --text: %q %v", text, err)
+	}
+}
+
+func TestSendReceiptTextIdleEvidence(t *testing.T) {
+	idle := t0.Add(48 * time.Hour) // deliberately disagrees with the provider age
+	age := int64(7200)
+	r := busproto.SendResponse{ID: "msynthetic", State: busproto.StateQueued, Sent: t0, To: busproto.Recipient{Session: "synthetic-session", User: "synthetic@example.test", Agent: "claude", Live: true, IdleSince: idle, IdleKnown: true, IdleSeconds: &age}}
+	if line := sendOutcome(r); !strings.Contains(line, "idle for 2h0m0s") || !strings.Contains(line, idle.UTC().Format(time.RFC3339)) {
+		t.Fatalf("idle receipt: %s", line)
+	}
+	r.To.IdleSince = time.Time{}
+	r.To.IdleKnown = false
+	r.To.IdleSeconds = nil
+	if line := sendOutcome(r); !strings.Contains(line, "idle duration unknown") {
+		t.Fatalf("unknown idle: %s", line)
+	}
+}
+
+func TestPeersTextUsesAuthoritativeIdleAge(t *testing.T) {
+	age := int64(7200)
+	peer := busproto.Peer{Session: "synthetic-session", Agent: "claude", IdleSince: t0.Add(48 * time.Hour), IdleKnown: true, IdleSeconds: &age}
+	var out strings.Builder
+	if err := writePeers(&out, peersJSON{Peers: []busproto.Peer{peer}}, peersArgs{}, busStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "idle for 2h0m0s") {
+		t.Fatal(out.String())
+	}
+	peer.IdleSeconds = nil // a timestamp alone must not fabricate an age
+	out.Reset()
+	if err := writePeers(&out, peersJSON{Peers: []busproto.Peer{peer}}, peersArgs{}, busStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "idle duration unknown") {
+		t.Fatal(out.String())
 	}
 }

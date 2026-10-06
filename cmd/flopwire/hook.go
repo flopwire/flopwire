@@ -268,7 +268,7 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
 	defer cancel()
 	notice := in.Event == evUserPromptSubmit && noticeChannel(harness)
-	resp, err := agent.Call(pctx, *socket, agent.Request{Op: "pending", Session: in.SessionID,
+	resp, err := agent.Call(pctx, *socket, agent.Request{Op: "pending", Session: in.SessionID, Agent: string(harness),
 		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, Start: start, Notice: notice, HookStart: started.UnixMilli()})
 	if err != nil {
 		warn("%s; nothing delivered", hookReason(err))
@@ -281,7 +281,8 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if notice {
 		out.SystemMessage = heldNotice(resp.Notice, resp.Console)
 	}
-	if text := busrender.Context(resp.Instruct, resp.Messages, resp.Excerpts, busrender.HookBytes); text != "" {
+	status := deliveryStatus(resp.Failures)
+	if text := busrender.Context(resp.Instruct, resp.Messages, resp.Excerpts, busrender.HookBytes-len(status)) + status; text != "" {
 		out.HookSpecificOutput = hookSpecific{HookEventName: in.Event, AdditionalContext: text}
 	}
 	if out == (hookOutput{}) {
@@ -294,13 +295,17 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		warn("could not encode the output")
 		return nil
 	}
-	if _, err := stdout.Write(buf.Bytes()); err != nil {
+	if n, err := stdout.Write(buf.Bytes()); err != nil || n != buf.Len() {
 		warn("could not write the output; %d messages wait for the next hook", len(resp.Messages))
 		return nil
 	}
 	instructed := resp.Instruct && out.HookSpecificOutput.AdditionalContext != ""
-	if len(resp.Messages) > 0 || instructed {
-		hookConfirm(ctx, *socket, in.SessionID, resp.Messages, instructed, started, warn)
+	confirmed := append([]busproto.Envelope{}, resp.Messages...)
+	for _, n := range resp.Failures {
+		confirmed = append(confirmed, busproto.Envelope{ID: n.LeaseID})
+	}
+	if len(confirmed) > 0 || instructed {
+		hookConfirm(ctx, *socket, in.SessionID, confirmed, instructed, started, warn)
 	}
 	return nil
 }

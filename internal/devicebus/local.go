@@ -814,7 +814,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		}
 		to, toKey = v, "session:"+v.Agent+":"+v.SessionID
 		e.Addressed = "session"
-		out.To = busproto.Recipient{Session: v.SessionID, Agent: v.Agent, User: b.cfg.User, UserID: b.localUserID(), Repo: v.Repo, Branch: v.Branch, Live: isLive, Busy: isLive && v.Busy, Cloud: v.Cloud}
+		out.To = busproto.Recipient{Session: v.SessionID, Agent: v.Agent, User: b.cfg.User, UserID: b.localUserID(), Repo: v.Repo, Branch: v.Branch, Live: isLive, Busy: isLive && v.Busy, Cloud: v.Cloud, IdleSince: v.IdleSince, IdleKnown: busproto.IdleAge(v.Busy, v.IdleSince, now) != nil, IdleSeconds: busproto.IdleAge(v.Busy, v.IdleSince, now)}
 	}
 	e.ToSession, e.ToAgent = to.SessionID, to.Agent
 	var refusal *busproto.Error
@@ -1022,7 +1022,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 			continue
 		}
 		p := busproto.Peer{Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
-			Device: host, Repo: s.Repo, Remote: s.Remote, Main: s.Main, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now}
+			Device: host, Repo: s.Repo, Remote: s.Remote, Main: s.Main, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now, IdleSince: s.IdleSince, IdleKnown: busproto.IdleAge(s.Busy, s.IdleSince, now) != nil, IdleSeconds: busproto.IdleAge(s.Busy, s.IdleSince, now)}
 		if s.Cloud {
 			p.Device = ""
 		}

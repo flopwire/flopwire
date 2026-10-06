@@ -231,6 +231,7 @@ type session struct {
 	remote                  string
 	busy, live, cloud       bool
 	deviceID                string
+	idleSince               time.Time
 }
 
 // SessionOnDeviceSQL finds a session the device $1 reported live since $4
@@ -335,12 +336,12 @@ func resolvePerson(ctx context.Context, q querier, name string) (person, error) 
 // hidden by the path rules (peers leaves those out too).
 // Subagent transcripts and service identities' uploads are left out: no
 // hook delivers to them.
-const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true,p.cloud
+const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true,p.cloud,p.idle_since
 	FROM bus_presence p JOIN users u ON u.id=p.user_id LEFT JOIN devices d ON d.id=p.device_id
 	WHERE p.session_id COLLATE "C" LIKE $1 AND p.seen_at>$2 AND (p.device_id IS NULL OR d.revoked_at IS NULL) AND NOT u.disabled AND u.identity_type='human'
 		AND NOT COALESCE((SELECT c.hidden_at IS NOT NULL FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),false)
 	UNION ALL
-	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false,false
+	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false,false,NULL::timestamptz
 	FROM conversations c JOIN users u ON u.id=c.user_id
 	WHERE c.session_id COLLATE "C" LIKE $1 AND c.hidden_at IS NULL AND c.depth=0 AND NOT u.disabled AND u.identity_type='human'
 	LIMIT 500`
@@ -361,7 +362,12 @@ func resolveSession(ctx context.Context, q querier, prefix string, now time.Time
 	}
 	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (session, error) {
 		var v session
-		return v, r.Scan(&v.id, &v.agent, &v.userID, &v.user, &v.repo, &v.branch, &v.title, &v.busy, &v.live, &v.cloud)
+		var idle *time.Time
+		err := r.Scan(&v.id, &v.agent, &v.userID, &v.user, &v.repo, &v.branch, &v.title, &v.busy, &v.live, &v.cloud, &idle)
+		if idle != nil && !v.busy {
+			v.idleSince = *idle
+		}
+		return v, err
 	})
 	if err != nil {
 		return session{}, err
@@ -531,7 +537,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 				return badRequest("a session cannot message itself")
 			}
 			m.addressed, m.toUser, m.toEmail, m.toSession, m.toAgent = "session", v.userID, v.user, v.id, v.agent
-			out.To = busproto.Recipient{Session: v.id, Agent: v.agent, User: v.user, UserID: v.userID, Repo: v.repo, Branch: v.branch, Live: v.live, Busy: v.busy, Cloud: v.cloud}
+			out.To = busproto.Recipient{Session: v.id, Agent: v.agent, User: v.user, UserID: v.userID, Repo: v.repo, Branch: v.branch, Live: v.live, Busy: v.busy, Cloud: v.cloud, IdleSince: v.idleSince, IdleKnown: busproto.IdleAge(v.busy, v.idleSince, now) != nil, IdleSeconds: busproto.IdleAge(v.busy, v.idleSince, now)}
 		}
 		if err := lockSend(ctx, tx, m); err != nil {
 			return err

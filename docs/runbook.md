@@ -403,10 +403,21 @@ process sees the message only at its next poll. Before you run more than one
 process, replace the in-process wake-up with Postgres `LISTEN/NOTIFY`.
 
 Database migrations are forward-only and run in one transaction at startup.
-Before the first release, migration files are edited in place, so the server
-refuses a database made by an earlier pre-release build. Back it up and start
-from an empty database. Restore the verified pre-upgrade backup to roll back
-durable state.
+Applied files and ledger checksums are immutable. The supported upgrade from
+`661a48b` preserves its historical `009_bus.sql` checksum and applies the
+additive `013_bus_retention_upgrade.sql`. Migrations 011, 012, and 013 ship
+together. See
+[the bus migration upgrade procedure](operations-migration-upgrade.md) for
+the exact checksum contract and PostgreSQL checks. Unknown checksums and
+incomplete ledger prefixes are refused. Investigate a refusal before changing
+the deployment. Preserve its database and verified backup.
+
+If migration is refused or its transaction fails, no pending changes commit.
+The old build can restart without a restore. After a successful migration,
+rollback requires the matching verified pre-upgrade database backup and its
+coordinated object storage state. Stop the new server before restoring them.
+Start the matching old binary only after the restore. The old binary must
+not run against the upgraded database.
 
 A new build that changes a parser version re-parses on the devices: each
 agent re-indexes affected sources in the background. A new local index

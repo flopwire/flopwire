@@ -87,3 +87,23 @@ func TestHookOpencodeHello(t *testing.T) {
 		t.Fatalf("Hello asked the agent: %+v", fa.reqs)
 	}
 }
+
+func TestHookOpencodeFailureStatusUsesExistingConfirmProtocol(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Failures = []busproto.DeliveryFailure{{ID: "mfailed", Session: opencodeSID, Agent: "opencode", Reason: "unconfirmed", LeaseID: "status:lease"}}
+	out, _ := runHook(t, fa.sock, opencodeIn(evPostToolUse, nil), nil)
+	var got opencodeOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].ID != "status:lease" || !strings.Contains(got.Messages[0].Text, "flopwire-delivery-status") || strings.Contains(got.Messages[0].Text, "flopwire-message") {
+		t.Fatalf("status: %+v", got)
+	}
+	if len(fa.requests("confirm")) != 0 {
+		t.Fatal("confirmed before the plugin stored output")
+	}
+	runHook(t, fa.sock, opencodeIn(evConfirm, map[string]any{"ids": []string{"status:lease"}}), nil)
+	if c := fa.requests("confirm"); len(c) != 1 || len(c[0].IDs) != 1 || c[0].IDs[0] != "status:lease" {
+		t.Fatalf("status confirm: %+v", c)
+	}
+}

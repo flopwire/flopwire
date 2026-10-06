@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +21,8 @@ import (
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/devin"
+	"github.com/flopwire/flopwire/internal/transcript/opencode/opencodetest"
 )
 
 // indexed is a top-level session in the index and its last write.
@@ -94,8 +99,8 @@ func writeFile(t *testing.T, path, s string) {
 	}
 }
 
-// Presence is what `sessions` prints as live: written in the last ten
-// minutes, or held open by its harness and written within the hour. The
+// Presence uses recency for uncertain evidence and keeps confirmed
+// harness holders until a real end. The
 // harness registries are synthetic files here; pids are stubbed.
 func TestPresenceFromHarnessRegistries(t *testing.T) {
 	devinPath, _ := buildDevin(t)
@@ -132,9 +137,9 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 	if !ok || !s.Busy {
 		t.Fatalf("Claude session held open and busy: %+v %v", s, ok)
 	}
-	// An hour and more without a write: not live, held open or not.
-	if _, ok := f.presence(cl.last.Add(61 * time.Minute))[cl.id]; ok {
-		t.Fatal("held open past LiveCap")
+	// A confirmed running holder stays live after transcript inactivity.
+	if _, ok := f.presence(cl.last.Add(61 * time.Minute))[cl.id]; !ok {
+		t.Fatal("confirmed holder disappeared past LiveCap")
 	}
 	// The pid was reused by another process: the file does not count.
 	started[4242] = start.Add(time.Hour)
@@ -173,9 +178,13 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 		t.Fatal("Devin lock naming a reused pid (not devin) counted")
 	}
 	names[5151] = "devin"
+	started[5151] = start
 	s, ok = f.presence(dv.last.Add(30 * time.Minute))[dv.id]
 	if !ok || s.Busy {
 		t.Fatalf("Devin session held open: %+v %v", s, ok)
+	}
+	if _, ok := f.presence(dv.last.Add(2 * time.Hour))[dv.id]; !ok {
+		t.Fatal("confirmed Devin holder disappeared past LiveCap")
 	}
 	// The registries were only read.
 	if fi, err := os.Stat(lock); err != nil || fi.Size() != 5 {
@@ -219,13 +228,13 @@ func TestPresenceDevinBusyFromHookEvents(t *testing.T) {
 		{"PostToolUse", true},
 		{"SessionEnd", false},
 	} {
-		f.a.noteHookEvent(dv.id, c.event, at)
+		f.a.noteHookEvent("devin", dv.id, c.event, at)
 		if got := busy(); got != c.busy {
 			t.Fatalf("after %s: busy %v, want %v", c.event, got, c.busy)
 		}
 	}
-	f.a.noteHookEvent(dv.id, "PostToolUse", at)
-	f.a.noteHookEvent("", "PostToolUse", at) // no session: ignored
+	f.a.noteHookEvent("devin", dv.id, "PostToolUse", at)
+	f.a.noteHookEvent("devin", "", "PostToolUse", at) // no session: ignored
 	at = at.Add(hookBusyCap + time.Second)
 	if busy() {
 		t.Fatal("busy past hookBusyCap with no hook event")
@@ -346,13 +355,38 @@ func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
 	dv := f.pick("devin")
 	writeFile(t, filepath.Join(filepath.Dir(devinPath), "session_locks", dv.id+".lock"), "5151\n")
 	at := dv.last.Add(time.Minute)
+	var interruptLog bytes.Buffer
+	f.a.log = slog.New(slog.NewTextHandler(&interruptLog, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	busy := func() bool {
 		t.Helper()
+		interruptLog.Reset()
 		s, ok := f.presence(at)[dv.id]
 		if !ok {
 			t.Fatal("Devin session not live")
 		}
 		return s.Busy
+	}
+	waitIdle := func() {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for busy() {
+			// A failed read deliberately retains busy until the next presence
+			// tick. Retry only a witnessed deadline, never a successful read
+			// that missed the marker or an unrelated store error.
+			if !strings.Contains(interruptLog.String(), `msg="agent: devin interrupt"`) || !strings.Contains(interruptLog.String(), "context deadline exceeded") {
+				t.Fatalf("busy after interrupt without a read deadline: %s", interruptLog.String())
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("interrupt not observed within 2s: %s", interruptLog.String())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if marked, _ := f.a.hookBusy(transcript.AgentDevin, dv.id); marked {
+			t.Fatal("idle presence did not clear Devin's hook state")
+		}
+		if marked, _ := f.a.hookBusy(transcript.AgentOpencode, dv.id); !marked {
+			t.Fatal("Devin interrupt cleared another harness's hook state")
+		}
 	}
 	node := func(id int, msg string) {
 		t.Helper()
@@ -362,25 +396,39 @@ func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
 		}
 	}
 	hook := time.Date(2026, 10, 4, 20, 10, 19, 0, time.UTC)
-	f.a.noteHookEvent(dv.id, "PostToolUse", hook)
+	f.a.noteHookEvent("opencode", dv.id, "PostToolUse", hook)
+	f.a.noteHookEvent("devin", dv.id, "PostToolUse", hook)
 	if !busy() {
 		t.Fatal("not busy after PostToolUse")
 	}
 	// Esc twice while the next tool ran: its result is the marker, no Stop.
 	node(1, `{"role":"tool","content":"Canceled due to user interrupt","tool_call_id":"get_output_0#1","metadata":{"created_at":"2026-10-04T20:10:28.937439Z","extensions":{"chisel/tool_failure":{"reason":"Canceled"}}}}`)
-	if busy() {
-		t.Fatal("busy after an interrupt the store shows")
+	// Prove the timeout path: a marker exists, but an expired read must
+	// retain busy state so an uncertain read cannot announce an idle turn.
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := devin.InterruptedSince(expired, devinPath, dv.id, hook); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired interrupt read: %v", err)
 	}
+	if !f.a.devinTurnBusy(expired, dv.id) {
+		t.Fatal("failed interrupt read announced idle")
+	}
+	if !strings.Contains(interruptLog.String(), "context deadline exceeded") {
+		t.Fatalf("interrupt deadline was not logged: %s", interruptLog.String())
+	}
+	if marked, start := f.a.hookBusy(transcript.AgentDevin, dv.id); !marked || !start.Equal(hook) {
+		t.Fatal("failed interrupt read changed hook state")
+	}
+	waitIdle()
 	// The next prompt starts a turn after the interrupt: busy.
-	f.a.noteHookEvent(dv.id, "UserPromptSubmit", hook.Add(30*time.Second))
+	f.a.noteHookEvent("devin", dv.id, "UserPromptSubmit", hook.Add(30*time.Second))
+	f.a.hookTurnEnded(transcript.AgentDevin, dv.id, hook) // late completion of the old read
 	if !busy() {
 		t.Fatal("a turn after the interrupt is not busy")
 	}
 	// Interrupted while the model answered.
 	node(2, `{"role":"system","content":"[Response interrupted by user]","metadata":{"created_at":"2026-10-04T20:10:55.035344Z"}}`)
-	if busy() {
-		t.Fatal("busy after a response interrupt")
-	}
+	waitIdle()
 }
 
 // A session the path rules keep off the server is marked withheld, so the
@@ -840,5 +888,162 @@ func TestKnownUnplacedSession(t *testing.T) {
 	}
 	if err := f.a.BusPlace(ctx, "no-such-session"); err == nil {
 		t.Fatal("placing an unknown session")
+	}
+}
+
+func TestPresenceConfirmedCodexHolderBeyondCapAndIdleEvidence(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cx := f.pick("codex")
+	writeFile(t, filepath.Join(f.home, ".codex", "thread-writer-locks", cx.id+".lock"), "")
+	rollout := f.a.transcriptsBySession()[placeKey{transcript.AgentCodex, cx.id}].path
+	at := cx.last.Add(2 * time.Hour).UTC().Truncate(time.Millisecond)
+	appendFile(t, rollout, fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"task_complete"}}`+"\n", at.Format(time.RFC3339Nano)))
+	f.a.codexWriter = func(string) int { return codexHeld }
+	s, ok := f.presence(at.Add(time.Hour))[cx.id]
+	if !ok || s.Busy || !s.IdleKnown || !s.IdleSince.Equal(at) {
+		t.Fatalf("held idle Codex: %+v %v", s, ok)
+	}
+	f.a.codexWriter = func(string) int { return codexUnknown }
+	if _, ok := f.presence(at.Add(time.Hour))[cx.id]; ok {
+		t.Fatal("uncertain lock bypassed LiveCap")
+	}
+	f.a.codexWriter = func(string) int { return codexReleased }
+	if _, ok := f.presence(at.Add(time.Hour))[cx.id]; ok {
+		t.Fatal("released writer held session live")
+	}
+}
+
+func TestPresenceIdleSinceIsStopNotLastActivity(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cl := f.pick("claude")
+	f.a.pidAlive = func(int) bool { return true }
+	start := cl.last.Add(-time.Hour).UTC().Truncate(time.Second)
+	f.a.procStart = func(int) (time.Time, bool) { return start, true }
+	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"idle","procStart":%q}`, cl.id, start.Format(time.ANSIC)))
+	at := cl.last.Add(10 * time.Minute)
+	f.a.now = func() time.Time { return at }
+	if s := f.presence(at)[cl.id]; s.IdleKnown || !s.IdleSince.IsZero() {
+		t.Fatal("invented idle time from activity/registry")
+	}
+	f.a.noteHookEvent("claude", cl.id, "Stop", at)
+	later := at.Add(3 * time.Hour)
+	if s := f.presence(later)[cl.id]; !s.IdleSince.Equal(at) || !s.IdleKnown {
+		t.Fatalf("lost witnessed stop: %+v", s)
+	}
+	f.a.noteHookEvent("claude", cl.id, "UserPromptSubmit", later)
+	f.a.noteHookEvent("claude", cl.id, "Stop", at) // delayed hook of the old turn
+	if s := f.presence(later)[cl.id]; s.IdleKnown {
+		t.Fatal("stale stop replaced newer turn")
+	}
+}
+
+func TestPresenceIdleEvidenceDoesNotCrossHarnesses(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cl := f.pick("claude")
+	f.a.pidAlive = func(int) bool { return true }
+	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"idle"}`, cl.id))
+	at := cl.last.Add(time.Minute)
+	f.a.now = func() time.Time { return at }
+	f.a.noteHookEvent("opencode", cl.id, "Stop", at)
+	if s := f.presence(at)[cl.id]; s.IdleKnown || !s.IdleSince.IsZero() {
+		t.Fatal("other harness's Stop became Claude idle evidence")
+	}
+}
+
+func TestPresenceUncertainHoldersStayBoundedWithoutEnding(t *testing.T) {
+	for _, harness := range []string{"claude", "devin", "opencode"} {
+		for _, missing := range []string{"process-start", "registry-start", "store", "open-files"} {
+			if harness == "devin" && missing == "registry-start" || harness != "devin" && (missing == "store" || missing == "open-files") {
+				continue
+			}
+			t.Run(harness+"/"+missing, func(t *testing.T) {
+				devinPath, _ := buildDevin(t)
+				f := newFixture(t, devinPath)
+				pickHarness := harness
+				if harness == "opencode" {
+					oc := opencodetest.New(t, "")
+					const id = "ses_synthetic0000000000000A"
+					oc.Session(id, "", "/work/opencode-demo", "Presence", opencodetest.T0)
+					oc.Prompt(id, opencodetest.T0, "hello")
+					f.cfg.OpencodeDB = oc.Path
+					f.cfg.OpencodeRegistry = filepath.Join(t.TempDir(), "opencode")
+					f.a = New(f.store, f.cfg)
+				}
+				f.once()
+				session := f.pick(pickHarness)
+				start := session.last.Add(-time.Hour).UTC().Truncate(time.Second)
+				f.a.pidAlive = func(int) bool { return true }
+				f.a.procName = func(int) string { return harness }
+				known := true
+				f.a.procStart = func(int) (time.Time, bool) { return start, known }
+				writeRegistry := func(withStart bool) {
+					switch harness {
+					case "claude":
+						proof := start.Format(time.ANSIC)
+						if !withStart {
+							proof = ""
+						}
+						writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"procStart":%q,"status":"idle"}`, session.id, proof))
+					case "devin":
+						dir := filepath.Join(filepath.Dir(devinPath), "session_locks")
+						writeFile(t, filepath.Join(dir, session.id+".lock"), "4242")
+						if missing == "open-files" {
+							writeFile(t, filepath.Join(dir, "second-session.lock"), "4242")
+						}
+						f.a.openFiles = func(context.Context, int) []string { return []string{filepath.Join(dir, session.id+".lock")} }
+					case "opencode":
+						ms := start.UnixMilli()
+						if !withStart {
+							ms = 0
+						}
+						writeFile(t, filepath.Join(f.cfg.OpencodeRegistry, "4242.json"), fmt.Sprintf(`{"started":%d,"sessions":[%q]}`, ms, session.id))
+					}
+				}
+				writeRegistry(true)
+				now := session.last.Add(3 * time.Hour)
+				b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Now: func() time.Time { return now }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer b.Close()
+				f.a.cfg.Bus = b
+				if _, ok := f.presence(now)[session.id]; !ok {
+					t.Fatal("confirmed old holder disappeared")
+				}
+				switch missing {
+				case "process-start":
+					known = false
+				case "registry-start":
+					writeRegistry(false)
+				case "store":
+					f.a.devin.path = filepath.Join(filepath.Dir(devinPath), "missing.db")
+				case "open-files":
+					f.a.openFiles = func(context.Context, int) []string { return nil }
+				}
+				for i := 0; i < 2; i++ {
+					now = now.Add(2 * time.Second)
+					if _, ok := f.presence(now)[session.id]; ok {
+						t.Fatal("uncertain old holder bypassed LiveCap")
+					}
+					reg := f.a.registries().reg
+					ref := devicebus.Ref{Agent: harness, Session: session.id}
+					if !slices.Contains(reg.Unknown, ref) {
+						t.Fatalf("not unknown: %+v", reg)
+					}
+					ended, err := b.Observe(ctx, reg)
+					if err != nil || ended[ref] {
+						t.Fatalf("uncertainty ended lifecycle: %v %v", ended, err)
+					}
+				}
+				// Returning to a recent clock exposes uncertain evidence, without a fake end.
+				now = session.last.Add(30 * time.Minute)
+				if _, ok := f.presence(now)[session.id]; !ok {
+					t.Fatal("uncertain recent holder disappeared")
+				}
+			})
+		}
 	}
 }
