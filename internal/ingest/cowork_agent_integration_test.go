@@ -646,7 +646,8 @@ type chainObservedScheduler struct {
 	*devicesync.Scheduler
 	filterDone     chan bool
 	authorizeDone  chan error
-	afterAuthorize func() error
+	repairDone     chan error
+	afterAuthorize func(*devicesync.CaptureAuthorization) error
 }
 
 func (s *chainObservedScheduler) SetFilter(fn func(devicesync.SourceSpec) bool) {
@@ -664,11 +665,21 @@ func (s *chainObservedScheduler) SetAuthorize(fn func(context.Context, devicesyn
 	s.Scheduler.SetAuthorize(func(ctx context.Context, sp devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error) {
 		a, err := fn(ctx, sp)
 		if err == nil && a != nil && s.afterAuthorize != nil {
-			if hookErr := s.afterAuthorize(); hookErr != nil {
+			if hookErr := s.afterAuthorize(a); hookErr != nil {
 				if a.Release != nil {
 					a.Release()
 				}
 				return nil, hookErr
+			}
+			original := a.OnError
+			a.OnError = func(ctx context.Context, err error) {
+				if original != nil {
+					original(ctx, err)
+				}
+				select {
+				case s.repairDone <- err:
+				default:
+				}
 			}
 		}
 		select {
@@ -746,15 +757,34 @@ func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
 			}
 			t.Cleanup(d.sy.Close)
 			d.scheduler = devicesync.NewScheduler(d.sy, devicesync.SchedulerConfig{})
-			observed := &chainObservedScheduler{Scheduler: d.scheduler, filterDone: make(chan bool, 8), authorizeDone: make(chan error, 8)}
+			observed := &chainObservedScheduler{Scheduler: d.scheduler, filterDone: make(chan bool, 8), authorizeDone: make(chan error, 8), repairDone: make(chan error, 8)}
+			repairOpen := make(chan error, 1)
 			if mode == "active authorized raw repair swap" {
 				outside := filepath.Join(d.home, "outside-native.jsonl")
 				chainWrite(t, outside, d.mainBytes)
-				observed.afterAuthorize = func() error {
-					if err := os.Remove(d.main); err != nil {
-						return err
+				observed.afterAuthorize = func(a *devicesync.CaptureAuthorization) error {
+					actualOpen := a.Open
+					opens := 0
+					a.Open = func(ctx context.Context, sp devicesync.SourceSpec) (*os.File, error) {
+						opens++
+						// The first actual contained open captures the unchanged file.
+						// The second belongs to payload.readSource after its fresh Check,
+						// because the genuinely pending tail is absent from the spool.
+						if opens == 2 {
+							if err := os.Remove(d.main); err != nil {
+								return nil, err
+							}
+							if err := os.Symlink(outside, d.main); err != nil {
+								return nil, err
+							}
+						}
+						f, err := actualOpen(ctx, sp)
+						if opens == 2 {
+							repairOpen <- err
+						}
+						return f, err
 					}
-					return os.Symlink(outside, d.main)
+					return nil
 				}
 			}
 			d.config.Sync = observed
@@ -777,12 +807,22 @@ func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
 						return fmt.Errorf("actual ready authorization not yet observed")
 					}
 				})
-				chainEventually(t, "contained raw repair rejects source swapped after authorization", func() error {
-					if len(d.scheduler.Status().Failing) == 0 {
-						return fmt.Errorf("raw repair rejection not yet recorded")
+				select {
+				case err := <-repairOpen:
+					if err == nil || errors.Is(err, context.Canceled) {
+						t.Fatalf("actual contained payload repair opener did not reject swap: %v", err)
 					}
-					return nil
-				})
+				case <-time.After(20 * time.Second):
+					t.Fatal("actual second contained open in payload raw repair was never observed")
+				}
+				select {
+				case err := <-observed.repairDone:
+					if err == nil || errors.Is(err, context.Canceled) {
+						t.Fatalf("raw repair was not actually rejected: %v", err)
+					}
+				case <-time.After(20 * time.Second):
+					t.Fatal("actual authorized raw repair never completed rejection")
+				}
 			} else {
 				chainEventually(t, "restarted pending capture authorization barrier", func() error {
 					if queued := d.scheduler.Status().Queued; queued != 0 {
