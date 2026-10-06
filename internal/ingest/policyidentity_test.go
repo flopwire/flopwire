@@ -263,7 +263,7 @@ func TestPolicyIdentifiedCoworkCannotChangeAgentToBypassGate(t *testing.T) {
 	}
 }
 
-func TestPolicySourceParentPlaceholderRefinesOnFirstMainCapture(t *testing.T) {
+func TestPolicyProtectedCompanionFirstMainCapture(t *testing.T) {
 	e := newEnv(t)
 	req := policyRequest()
 	req.EvidenceScope = "none"
@@ -279,23 +279,23 @@ func TestPolicySourceParentPlaceholderRefinesOnFirstMainCapture(t *testing.T) {
 	req.Sources = []syncproto.PolicySource{{Path: artifact, FileID: fileIDOf(t, artifact)}}
 	applyPolicy(t, e, req)
 	sync1(t, sy, companion)
-	if e.count(`SELECT count(*) FROM sources s WHERE s.device_id=$1 AND s.path=$2 AND s.storage_kind='' AND COALESCE(s.session_key,'')='' AND NOT EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id)`, e.deviceID, main.Path) != 1 {
-		t.Fatal("companion did not create an uncaptured parent placeholder")
+	if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2`, e.deviceID, main.Path) != 0 {
+		t.Fatal("companion invented a captured parent source")
 	}
 	req.Sources = []syncproto.PolicySource{{Path: artifact, FileID: fileIDOf(t, artifact)}, {Path: main.Path, FileID: fileIDOf(t, main.Path)}}
 	if r := applyPolicy(t, e, req); !r.Allowed || r.EvidenceScope != "mapped" {
-		t.Fatalf("known companion capture tainted parent placeholder: %+v", r)
+		t.Fatalf("known companion capture was held: %+v", r)
 	}
 	if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2`, e.deviceID, main.Path) != 0 {
-		t.Fatal("placeholder froze empty capture attributes")
+		t.Fatal("parent metadata invented capture attributes")
 	}
 	sync1(t, sy, main)
 	e.drain()
 	if e.count(`SELECT count(*) FROM sources s JOIN generations g ON g.source_id=s.id WHERE s.device_id=$1 AND s.path=$2 AND s.storage_kind='jsonl_append' AND g.size>0`, e.deviceID, main.Path) != 1 {
-		t.Fatal("first main capture failed to refine placeholder")
+		t.Fatal("first main capture failed")
 	}
 	if e.count(`SELECT count(*) FROM conversations WHERE device_id=$1 AND session_id=$2 AND hidden_at IS NULL`, e.deviceID, req.SessionID) != 1 {
-		t.Fatal("refined known main capture is not shared")
+		t.Fatal("known main capture is not shared")
 	}
 	sibling := policyRequest()
 	sibling.SessionID = uuid.NewString()
@@ -305,29 +305,43 @@ func TestPolicySourceParentPlaceholderRefinesOnFirstMainCapture(t *testing.T) {
 	identityWantConflict(t, err)
 }
 
-func TestPolicyEmptyCapturedOrForeignAgentSourceCannotRefine(t *testing.T) {
+func TestPolicyCapturedOrForeignAgentSourceIdentity(t *testing.T) {
 	for _, kind := range []string{"captured generation", "foreign agent", "partial descriptor"} {
 		t.Run(kind, func(t *testing.T) {
 			e := newEnv(t)
 			native := uuid.NewString()
 			ref := syncproto.PolicySource{Path: "/placeholder/" + native + ".jsonl", FileID: "parent"}
 			id := uuid.NewString()
-			agent, parser := "claude", ""
+			agent, parser, storage := "claude", "", "jsonl_append"
 			if kind == "foreign agent" {
 				agent = "codex"
 			}
 			if kind == "partial descriptor" {
 				parser = "claude@1"
+				storage = "companion"
 			}
-			e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)VALUES($1,$2,$3,$4,$5,'',$6,now())`, id, e.deviceID, agent, ref.Path, ref.FileID, parser)
+			e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)VALUES($1,$2,$3,$4,$5,$6,$7,now())`, id, e.deviceID, agent, ref.Path, ref.FileID, storage, parser)
 			if kind == "captured generation" {
 				e.exec(`INSERT INTO generations(source_id,generation,size,captured_at,complete)VALUES($1,0,0,now(),true)`, id)
 			}
-			identityWantConflict(t, identityTransaction(e, func(tx pgx.Tx) error {
+			err := identityTransaction(e, func(tx pgx.Tx) error {
 				return bindPolicySourceOwner(e.ctx, tx, e.deviceID, "claude", native, ref, false)
-			}))
-			if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, ref.Path) != 0 {
-				t.Fatal("ambiguous placeholder acquired owner")
+			})
+			if kind == "captured generation" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2 AND storage_kind='jsonl_append'`, e.deviceID, ref.Path) != 1 {
+					t.Fatal("zero-byte capture was not frozen")
+				}
+				identityWantConflict(t, identityTransaction(e, func(tx pgx.Tx) error {
+					return bindPolicySourceOwner(e.ctx, tx, e.deviceID, "claude", uuid.NewString(), ref, false)
+				}))
+			} else {
+				identityWantConflict(t, err)
+				if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, ref.Path) != 0 {
+					t.Fatal("conflicting source acquired owner")
+				}
 			}
 		})
 	}
@@ -350,7 +364,7 @@ func TestPolicyProtectedCompanionMissingParentProof(t *testing.T) {
 			case "empty parent file":
 				src.Parent.FileID = ""
 			case "different known parent file", "foreign parent descriptor", "partial parent descriptor":
-				agent, file, parser := "claude", "parent", ""
+				agent, file, parser, storage := "claude", "parent", "", "jsonl_append"
 				if kind == "different known parent file" {
 					file = "different"
 				}
@@ -359,8 +373,9 @@ func TestPolicyProtectedCompanionMissingParentProof(t *testing.T) {
 				}
 				if kind == "partial parent descriptor" {
 					parser = "claude@1"
+					storage = "companion"
 				}
-				e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at) VALUES($1,$2,$3,$4,$5,'',$6,now())`, uuid.NewString(), e.deviceID, agent, src.Parent.Path, file, parser)
+				e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,now())`, uuid.NewString(), e.deviceID, agent, src.Parent.Path, file, storage, parser)
 			}
 			err := identityTransaction(e, func(tx pgx.Tx) error {
 				if _, err := tx.Exec(e.ctx, `INSERT INTO source_policy_identity(device_id,path,file_id,owner_agent,owner_session_id) VALUES($1,$2,$3,$4,$5)`, e.deviceID, src.Path, src.FileID, p.Agent, p.Owner); err != nil {
