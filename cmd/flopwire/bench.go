@@ -401,7 +401,16 @@ func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResul
 	exited := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
-		<-scanned
+		// A descendant may retain stderr after the agent exits. Allow normal
+		// output to drain, then close our reader to interrupt a blocked scan.
+		drainTimer := time.NewTimer(2 * time.Second)
+		select {
+		case <-scanned:
+		case <-drainTimer.C:
+			_ = pipe.Close()
+			<-scanned
+		}
+		drainTimer.Stop()
 		exited <- err
 	}()
 	idleFailure := func(err error) error {

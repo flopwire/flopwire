@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -278,6 +279,89 @@ func TestBenchIndexIdleShutdown(t *testing.T) {
 				t.Fatalf("planned shutdown: result=%+v err=%v", result, err)
 			} else if len(result.SweepCPUMs) != 1 || result.SweepCPUMs[0] != 2 {
 				t.Fatalf("sweeps were not drained: %+v", result)
+			}
+		})
+	}
+}
+
+func TestBenchIndexIdleInheritedStderr(t *testing.T) {
+	for _, mode := range []string{"exit", "signal", "parentDeadline"} {
+		t.Run(mode, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "descendant.pid")
+			t.Setenv("BENCH_IDLE_DESCENDANT_PID", pidFile)
+			// Kill only the descendant this fixture records. In particular, the
+			// harness must return while that process still holds stderr open.
+			t.Cleanup(func() {
+				data, err := os.ReadFile(pidFile)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+				if err != nil || pid <= 0 {
+					t.Errorf("invalid fixture PID %q: %v", data, err)
+					return
+				}
+				process, err := os.FindProcess(pid)
+				if err == nil {
+					err = process.Kill()
+				}
+				if err != nil && !errors.Is(err, os.ErrProcessDone) {
+					t.Errorf("kill fixture descendant %d: %v", pid, err)
+				}
+			})
+			body := `sleep 30 &
+echo "$!" > "$BENCH_IDLE_DESCENDANT_PID"
+echo 'agent: sweep cpu=1ms files=1' >&2
+echo 'agent: sweep cpu=2ms files=1' >&2
+`
+			if mode == "exit" {
+				body += "echo '" + strings.Repeat("x", 3000) + "' >&2\necho 'inherited stderr failure' >&2\nexit 2\n"
+			} else {
+				body += "exec sleep 30\n"
+			}
+			exe, _ := fakeBenchIdleBinary(t, body)
+			b := &bench{exe: exe, scratch: t.TempDir(), opencodeDB: true}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			idleAfter := 10 * time.Second
+			if mode == "signal" {
+				idleAfter = 500 * time.Millisecond
+			} else if mode == "parentDeadline" {
+				var deadlineCancel context.CancelFunc
+				ctx, deadlineCancel = context.WithTimeout(ctx, 500*time.Millisecond)
+				defer deadlineCancel()
+			}
+			type outcome struct {
+				result *indexResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			start := time.Now()
+			go func() {
+				result, err := b.index(ctx, idleAfter)
+				done <- outcome{result, err}
+			}()
+			select {
+			case got := <-done:
+				t.Logf("returned after %s", time.Since(start))
+				switch mode {
+				case "exit":
+					var exit interface{ ExitCode() int }
+					if got.result != nil || !errors.As(got.err, &exit) || exit.ExitCode() != 2 || !strings.Contains(got.err.Error(), "inherited stderr failure") || len(got.err.Error()) > 2100 {
+						t.Fatalf("exit status/tail: result=%+v err=%v", got.result, got.err)
+					}
+				case "signal":
+					if got.err != nil || got.result == nil || len(got.result.SweepCPUMs) != 1 || got.result.SweepCPUMs[0] != 2 {
+						t.Fatalf("planned SIGTERM/sweep drain: result=%+v err=%v", got.result, got.err)
+					}
+				case "parentDeadline":
+					if got.result != nil || !errors.Is(got.err, context.DeadlineExceeded) {
+						t.Fatalf("parent deadline: result=%+v err=%v", got.result, got.err)
+					}
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("index did not return within 5s with inherited stderr")
 			}
 		})
 	}
