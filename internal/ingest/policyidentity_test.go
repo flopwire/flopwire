@@ -404,79 +404,85 @@ func TestPolicyProtectedCompanionMissingParentProof(t *testing.T) {
 
 // Two server instances can reach manifest commit concurrently despite each
 // instance's single-flush admission guard. Exercise both transaction orders.
-func TestPolicyProtectedCompanionParentManifestRace(t *testing.T) {
-	for _, companionFirst := range []bool{true, false} {
-		t.Run(fmt.Sprint("companion-first=", companionFirst), func(t *testing.T) {
-			e := newEnv(t)
-			req := policyRequest()
-			req.EvidenceScope = "mapped"
-			parent := syncproto.SourceRef{Path: "/native/" + req.SessionID + ".jsonl", FileID: "parent"}
-			companion := syncproto.Source{Path: "/companion/result.txt", FileID: "companion", Agent: "claude", StorageKind: "companion", SessionKey: req.SessionID, Parser: "claude@1", Parent: &parent}
-			foreign := syncproto.Source{Path: parent.Path, FileID: parent.FileID, Agent: "codex", StorageKind: "jsonl_append", SessionKey: req.SessionID, Parser: "codex@1"}
-			req.Sources = []syncproto.PolicySource{{Path: companion.Path, FileID: companion.FileID}}
-			applyPolicy(t, e, req)
-			otherDevice := uuid.NewString()
-			e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'other','darwin',now())`, otherDevice, e.userID)
-			first, second := companion, foreign
-			if !companionFirst {
-				first, second = foreign, companion
-			}
-			commit := func(tx pgx.Tx, src syncproto.Source) error {
-				f := flush{s: &Server{Pool: e.pool, Objects: e.objects}, deviceID: e.deviceID, h: &syncproto.FlushHeader{Source: src, CapturedAt: time.Now()}}
-				_, _, err := f.commit(e.ctx, tx, nil)
-				return err
-			}
-			tx, err := e.pool.Begin(e.ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback(e.ctx)
-			if err := commit(tx, first); err != nil {
-				t.Fatal(err)
-			}
-			done := make(chan error, 1)
-			go func() { done <- pgx.BeginFunc(e.ctx, e.pool, func(next pgx.Tx) error { return commit(next, second) }) }()
-			waitForLockWait(t, e, "opposite parent manifest")
-			otherDone := make(chan error, 1)
-			go func() {
-				otherDone <- pgx.BeginFunc(e.ctx, e.pool, func(other pgx.Tx) error {
-					f := flush{s: &Server{Pool: e.pool, Objects: e.objects}, deviceID: otherDevice, h: &syncproto.FlushHeader{Source: foreign, CapturedAt: time.Now()}}
-					_, _, err := f.commit(e.ctx, other, nil)
+func TestPolicyProtectedSourceManifestRace(t *testing.T) {
+	for _, kind := range []string{"companion", "native-main"} {
+		for _, companionFirst := range []bool{true, false} {
+			t.Run(fmt.Sprint(kind, "-protected-first=", companionFirst), func(t *testing.T) {
+				e := newEnv(t)
+				req := policyRequest()
+				req.EvidenceScope = "mapped"
+				parent := syncproto.SourceRef{Path: "/native/" + req.SessionID + ".jsonl", FileID: "parent"}
+				companion := syncproto.Source{Path: "/companion/result.txt", FileID: "companion", Agent: "claude", StorageKind: "companion", SessionKey: req.SessionID, Parser: "claude@1", Parent: &parent}
+				foreign := syncproto.Source{Path: parent.Path, FileID: parent.FileID, Agent: "codex", StorageKind: "jsonl_append", SessionKey: req.SessionID, Parser: "codex@1"}
+				req.Sources = []syncproto.PolicySource{{Path: companion.Path, FileID: companion.FileID}}
+				if kind == "native-main" {
+					companion = syncproto.Source{Path: parent.Path, FileID: parent.FileID, Agent: "claude", StorageKind: "jsonl_append", SessionKey: req.SessionID, Parser: "claude@1"}
+					req.Sources = nil
+				}
+				applyPolicy(t, e, req)
+				otherDevice := uuid.NewString()
+				e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'other','darwin',now())`, otherDevice, e.userID)
+				first, second := companion, foreign
+				if !companionFirst {
+					first, second = foreign, companion
+				}
+				commit := func(tx pgx.Tx, src syncproto.Source) error {
+					f := flush{s: &Server{Pool: e.pool, Objects: e.objects}, deviceID: e.deviceID, h: &syncproto.FlushHeader{Source: src, CapturedAt: time.Now()}}
+					_, _, err := f.commit(e.ctx, tx, nil)
 					return err
-				})
-			}()
-			select {
-			case err := <-otherDone:
+				}
+				tx, err := e.pool.Begin(e.ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("unrelated device manifest blocked on another device gate")
-			}
-			if err := tx.Commit(e.ctx); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case err := <-done:
-				identityWantConflict(t, err)
-			case <-time.After(10 * time.Second):
-				t.Fatal("second manifest did not finish")
-			}
-			if companionFirst {
-				if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2 AND agent='codex'`, e.deviceID, parent.Path) != 0 {
-					t.Fatal("foreign capture bypassed new parent owner")
+				defer tx.Rollback(e.ctx)
+				if err := commit(tx, first); err != nil {
+					t.Fatal(err)
 				}
-				if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2 AND owner_agent='claude'`, e.deviceID, parent.Path) != 1 {
-					t.Fatal("parent ownership missing")
+				done := make(chan error, 1)
+				go func() { done <- pgx.BeginFunc(e.ctx, e.pool, func(next pgx.Tx) error { return commit(next, second) }) }()
+				waitForLockWait(t, e, "opposite parent manifest")
+				otherDone := make(chan error, 1)
+				go func() {
+					otherDone <- pgx.BeginFunc(e.ctx, e.pool, func(other pgx.Tx) error {
+						f := flush{s: &Server{Pool: e.pool, Objects: e.objects}, deviceID: otherDevice, h: &syncproto.FlushHeader{Source: foreign, CapturedAt: time.Now()}}
+						_, _, err := f.commit(e.ctx, other, nil)
+						return err
+					})
+				}()
+				select {
+				case err := <-otherDone:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("unrelated device manifest blocked on another device gate")
 				}
-			} else {
-				if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2`, e.deviceID, companion.Path) != 0 {
-					t.Fatal("companion bypassed existing foreign parent")
+				if err := tx.Commit(e.ctx); err != nil {
+					t.Fatal(err)
 				}
-				if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, parent.Path) != 0 {
-					t.Fatal("failed companion invented parent ownership")
+				select {
+				case err := <-done:
+					identityWantConflict(t, err)
+				case <-time.After(10 * time.Second):
+					t.Fatal("second manifest did not finish")
 				}
-			}
-		})
+				if companionFirst {
+					if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2 AND agent='codex'`, e.deviceID, parent.Path) != 0 {
+						t.Fatal("foreign capture bypassed new parent owner")
+					}
+					if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2 AND owner_agent='claude'`, e.deviceID, parent.Path) != 1 {
+						t.Fatal("parent ownership missing")
+					}
+				} else {
+					if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2 AND agent='claude'`, e.deviceID, companion.Path) != 0 {
+						t.Fatal("companion bypassed existing foreign parent")
+					}
+					if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, parent.Path) != 0 {
+						t.Fatal("failed companion invented parent ownership")
+					}
+				}
+			})
+		}
 	}
 }

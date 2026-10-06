@@ -466,11 +466,11 @@ func (f *flush) unlock() {
 func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncproto.FlushResponse, []string, error) {
 	h := f.h
 	src := h.Source
-	// A protected companion may establish ownership of its as-yet absent
-	// parent. Serialize that decision against every same-device manifest,
+	// A Claude main or companion can establish physical source ownership.
+	// Serialize that decision against every same-device manifest,
 	// before checking identity or acquiring source and session locks.
 	gateSQL := `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`
-	if src.Parent != nil {
+	if src.Parent != nil || src.Agent == "claude" && src.StorageKind != "cass_export" {
 		gateSQL = `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`
 	}
 	if _, err := tx.Exec(ctx, gateSQL, policyDeviceLockKey(f.deviceID)); err != nil {
