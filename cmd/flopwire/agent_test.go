@@ -360,7 +360,7 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runAgent(ctx, []string{"--socket", sock, "--cowork-root", "-", "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
+		_, err := runAgent(ctx, []string{"--socket", sock, "--desktop-code-root", "-", "--cowork-root", "-", "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
 		done <- err
 	}()
 	deadline := time.Now().Add(30 * time.Second)
@@ -395,4 +395,14 @@ func shortSockDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(d) })
 	return d
+}
+
+func TestAgentStatusDesktopCodeScopeAndHold(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{DesktopCode: &agent.DesktopCodeStatus{State: "supported", Sessions: 2, NormalLinks: 3, MetadataOnly: 1, OutOfScope: 4, CoworkAliases: 1, SharedHold: "contained sync authorization support pending"}})
+	for _, want := range []string{"Claude Desktop Code (Local): supported", "2 scoped native sessions", "3 normal-root links", "1 missing linked transcripts", "4 outside local Code scope", "scoped shared uploads held: contained sync authorization support pending", "1 Cowork import aliases retain folder-policy holds"} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatalf("status missing %q", want)
+		}
+	}
 }

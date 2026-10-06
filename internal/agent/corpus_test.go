@@ -68,7 +68,7 @@ func TestCorpusAppendLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	a := New(store, Config{CoworkRoot: "-", ClaudeProjects: filepath.Join(scratch, "projects"), CodexHome: filepath.Join(scratch, "nocodex"), DevinDB: "-", OpencodeDB: "-",
+	a := New(store, Config{DesktopCodeRoot: "-", CoworkRoot: "-", ClaudeProjects: filepath.Join(scratch, "projects"), CodexHome: filepath.Join(scratch, "nocodex"), DevinDB: "-", OpencodeDB: "-",
 		Sweep: time.Hour, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -174,7 +174,7 @@ func TestCorpusPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	a := New(store, Config{CoworkRoot: "-", ClaudeProjects: claude.ProjectsRoot(os.Getenv, home), CodexHome: codex.Home(), DevinDB: "-", OpencodeDB: "-",
+	a := New(store, Config{DesktopCodeRoot: "-", CoworkRoot: "-", ClaudeProjects: claude.ProjectsRoot(os.Getenv, home), CodexHome: codex.Home(), DevinDB: "-", OpencodeDB: "-",
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	f, err := a.discoverAll()
 	if err != nil {

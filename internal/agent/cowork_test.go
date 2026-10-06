@@ -30,7 +30,7 @@ func newCoworkFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { store.Close() })
 	f := &fixture{t: t, home: home, store: store, rec: newRecorder()}
-	f.cfg = Config{ClaudeProjects: filepath.Join(home, "cli-projects"), CoworkRoot: filepath.Join(home, "cowork"), CodexHome: filepath.Join(home, "codex"), DevinDB: "-", OpencodeDB: "-", OpencodeRegistry: "-", Home: home, Workers: 2, Sync: f.rec, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	f.cfg = Config{ClaudeProjects: filepath.Join(home, "cli-projects"), DesktopCodeRoot: "-", CoworkRoot: filepath.Join(home, "cowork"), CodexHome: filepath.Join(home, "codex"), DevinDB: "-", OpencodeDB: "-", OpencodeRegistry: "-", Home: home, Workers: 2, Sync: f.rec, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	f.restart()
 	return f
 }

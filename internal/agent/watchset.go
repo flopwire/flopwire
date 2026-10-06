@@ -42,6 +42,7 @@ func (a *Agent) watchDirs(now time.Time) []string {
 	}
 	a.mu.Lock()
 	cw := a.coworkResult
+	dc := a.desktopCodeResult
 	a.mu.Unlock()
 	add(a.cfg.ClaudeProjects)
 	sessions := filepath.Join(a.cfg.CodexHome, "sessions")
@@ -58,6 +59,9 @@ func (a *Agent) watchDirs(now time.Time) []string {
 	}
 
 	for _, d := range cw.WatchDirs {
+		add(d)
+	}
+	for _, d := range dc.WatchDirs {
 		add(d)
 	}
 	// Hot transcripts: their directory, and the session directory beside a

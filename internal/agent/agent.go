@@ -50,6 +50,7 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/cowork"
+	"github.com/flopwire/flopwire/internal/transcript/desktopcode"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
 	"github.com/flopwire/flopwire/internal/transcript/opencode"
 )
@@ -66,11 +67,12 @@ var _ Sync = (*devicesync.Scheduler)(nil)
 
 // Config configures an Agent. Zero fields take defaults.
 type Config struct {
-	CoworkRoot     string // Claude Desktop Cowork container; Darwin app default, "-" disables
-	ClaudeProjects string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
-	CodexHome      string // default codex.Home() (CODEX_HOME or ~/.codex)
-	DevinDB        string // default devin.DefaultPath; "-" disables Devin
-	OpencodeDB     string // default opencode.DefaultPath; "-" disables opencode
+	DesktopCodeRoot string // local Code metadata/scoped container; Darwin default, "-" disables
+	CoworkRoot      string // Claude Desktop Cowork container; Darwin app default, "-" disables
+	ClaudeProjects  string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
+	CodexHome       string // default codex.Home() (CODEX_HOME or ~/.codex)
+	DevinDB         string // default devin.DefaultPath; "-" disables Devin
+	OpencodeDB      string // default opencode.DefaultPath; "-" disables opencode
 	// OpencodeRegistry is the directory where the Flopwire opencode plugin
 	// names each opencode process's sessions (presence.go); default
 	// <client config dir>/opencode, "-" none.
@@ -155,6 +157,16 @@ func (c *Config) defaults() {
 	} else if c.CoworkRoot == "-" {
 		c.CoworkRoot = ""
 	}
+	if c.DesktopCodeRoot != "" && c.DesktopCodeRoot != "-" {
+		if root, err := filepath.Abs(c.DesktopCodeRoot); err == nil {
+			c.DesktopCodeRoot = root
+		}
+	}
+	if c.DesktopCodeRoot == "" {
+		c.DesktopCodeRoot = desktopcode.DefaultRoot(home)
+	} else if c.DesktopCodeRoot == "-" {
+		c.DesktopCodeRoot = ""
+	}
 	if c.CodexHome == "" {
 		c.CodexHome = codex.Home()
 	}
@@ -218,6 +230,9 @@ type Agent struct {
 	placeWriteMu          sync.Mutex   // orders placement memory and durable writes together
 	cfg                   Config
 	coworkMu              sync.Mutex
+	desktopCodeResult     desktopcode.Result
+	desktopCodeError      string
+	desktopCodeParser     transcript.Parser
 	coworkResult          cowork.Result              // immutable discovery snapshot; guarded by mu
 	coworkError           string                     // guarded by mu
 	coworkPendingUnknown  map[placeKey]bool          // expected historical provenance, guarded by mu
@@ -321,6 +336,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
 		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
 	a.coworkParser = &claude.Parser{FS: cowork.FS{Root: cfg.CoworkRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
+	a.desktopCodeParser = &claude.Parser{FS: cowork.FS{Root: cfg.DesktopCodeRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
 	a.idle = sync.NewCond(&a.mu)
 	a.devin.h, a.opencode.h = devinHarness, opencodeHarness
 	if cfg.DevinDB != "-" {

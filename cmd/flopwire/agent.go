@@ -162,6 +162,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
+	desktopCodeRoot := fs.String("desktop-code-root", "", `Claude Desktop local Code metadata/scoped history container (macOS default; "-" disables); configured normal Claude root remains separate`)
 	coworkRoot := fs.String("cowork-root", "", `Cowork session container (default Claude Desktop app storage on macOS; "-" disables); shared uploads held pending server policy support`)
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
@@ -264,7 +265,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
@@ -895,6 +896,18 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	if c := resp.DesktopCode; c != nil {
+		fmt.Fprintf(w, "Claude Desktop Code (Local): %s (%d scoped native sessions, %d normal-root links, %d missing linked transcripts, %d outside local Code scope)\n", c.State, c.Sessions, c.NormalLinks, c.MetadataOnly, c.OutOfScope)
+		if c.SharedHold != "" {
+			fmt.Fprintf(w, "  scoped shared uploads held: %s\n", c.SharedHold)
+		}
+		if c.Error != "" {
+			fmt.Fprintf(w, "  %s\n", c.Error)
+		}
+		if c.CoworkAliases > 0 {
+			fmt.Fprintf(w, "  %d Cowork import aliases retain folder-policy holds\n", c.CoworkAliases)
+		}
+	}
 	if c := resp.Cowork; c != nil {
 		fmt.Fprintf(w, "Cowork: %s (%d native sessions, %d metadata-only, %d excluded paths)\n", c.State, c.Sessions, c.MetadataOnly, c.Excluded)
 		if c.RepositoryScopeUnknown > 0 {
