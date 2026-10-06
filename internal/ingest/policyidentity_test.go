@@ -2,7 +2,11 @@ package ingest
 
 import (
 	"errors"
+	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/transcript"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/pathpolicy"
@@ -256,5 +260,72 @@ func TestPolicyIdentifiedCoworkCannotChangeAgentToBypassGate(t *testing.T) {
 		if !errors.As(err, &held) || held.Code != "policy_placements_required" {
 			t.Fatalf("identified Cowork agent=%s bypassed gate: %v", agent, err)
 		}
+	}
+}
+
+func TestPolicySourceParentPlaceholderRefinesOnFirstMainCapture(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	main := claudeAt(t, t.TempDir(), "-vm-work", req.SessionID, "/sessions/vm/work")
+	applyPolicy(t, e, req)
+	artifact := filepath.Join(filepath.Dir(main.Path), "tool-result.txt")
+	if err := os.WriteFile(artifact, []byte("synthetic companion output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	companion := devicesync.SourceSpec{Path: artifact, Agent: transcript.AgentClaude, StorageKind: transcript.StorageCompanion, SessionKey: req.SessionID, Parser: "claude@1", Parent: main.Path}
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	sync1(t, sy, companion)
+	if e.count(`SELECT count(*) FROM sources s WHERE s.device_id=$1 AND s.path=$2 AND s.storage_kind='' AND COALESCE(s.session_key,'')='' AND NOT EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id)`, e.deviceID, main.Path) != 1 {
+		t.Fatal("companion did not create an uncaptured parent placeholder")
+	}
+	req.Sources = []syncproto.PolicySource{{Path: artifact, FileID: fileIDOf(t, artifact)}, {Path: main.Path, FileID: fileIDOf(t, main.Path)}}
+	if r := applyPolicy(t, e, req); !r.Allowed || r.EvidenceScope != "mapped" {
+		t.Fatalf("known companion capture tainted parent placeholder: %+v", r)
+	}
+	if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2`, e.deviceID, main.Path) != 0 {
+		t.Fatal("placeholder froze empty capture attributes")
+	}
+	sync1(t, sy, main)
+	e.drain()
+	if e.count(`SELECT count(*) FROM sources s JOIN generations g ON g.source_id=s.id WHERE s.device_id=$1 AND s.path=$2 AND s.storage_kind='jsonl_append' AND g.size>0`, e.deviceID, main.Path) != 1 {
+		t.Fatal("first main capture failed to refine placeholder")
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE device_id=$1 AND session_id=$2 AND hidden_at IS NULL`, e.deviceID, req.SessionID) != 1 {
+		t.Fatal("refined known main capture is not shared")
+	}
+	sibling := policyRequest()
+	sibling.SessionID = uuid.NewString()
+	sibling.ParentSessionID = req.SessionID
+	sibling.Sources = req.Sources
+	_, err := (&Server{Pool: e.pool, Objects: e.objects}).PolicyPlacements(e.ctx, e.deviceID, sibling)
+	identityWantConflict(t, err)
+}
+
+func TestPolicyEmptyCapturedOrForeignAgentSourceCannotRefine(t *testing.T) {
+	for _, kind := range []string{"captured generation", "foreign agent", "partial descriptor"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t)
+			native := uuid.NewString()
+			ref := syncproto.PolicySource{Path: "/placeholder/" + native + ".jsonl", FileID: "parent"}
+			id := uuid.NewString()
+			agent, parser := "claude", ""
+			if kind == "foreign agent" {
+				agent = "codex"
+			}
+			if kind == "partial descriptor" {
+				parser = "claude@1"
+			}
+			e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)VALUES($1,$2,$3,$4,$5,'',$6,now())`, id, e.deviceID, agent, ref.Path, ref.FileID, parser)
+			if kind == "captured generation" {
+				e.exec(`INSERT INTO generations(source_id,generation,size,captured_at,complete)VALUES($1,0,0,now(),true)`, id)
+			}
+			identityWantConflict(t, identityTransaction(e, func(tx pgx.Tx) error {
+				return bindPolicySourceOwner(e.ctx, tx, e.deviceID, "claude", native, ref, false)
+			}))
+			if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, ref.Path) != 0 {
+				t.Fatal("ambiguous placeholder acquired owner")
+			}
+		})
 	}
 }

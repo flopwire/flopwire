@@ -159,21 +159,17 @@ func bindPolicySourceOwner(ctx context.Context, tx pgx.Tx, device, agent, native
 	if !exists {
 		p = policySourceIdentity{Agent: agent, Owner: native}
 	}
-	var src syncproto.Source
-	var parentPath, parentFile string
-	src.Path, src.FileID = ref.Path, ref.FileID
-	err = tx.QueryRow(ctx, `SELECT s.agent,COALESCE(s.session_key,''),s.storage_kind,COALESCE(s.parser,''),COALESCE(s.parent_path,parent.path,''),COALESCE(s.parent_file_id,parent.file_id,'') FROM sources s LEFT JOIN sources parent ON parent.id=s.parent_source_id AND parent.device_id=s.device_id WHERE s.device_id=$1 AND s.path=$2 AND s.file_id=$3`, device, ref.Path, ref.FileID).Scan(&src.Agent, &src.SessionKey, &src.StorageKind, &src.Parser, &parentPath, &parentFile)
-	observed := err == nil
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	src, observed, err := observedPolicySource(ctx, tx, device, physical)
+	if err != nil {
 		return err
+	}
+	if !observed && src.Agent != "" && src.Agent != agent {
+		return policyIdentityConflict()
 	}
 	if recovered && (!observed || src.StorageKind != "cass_export") {
 		return policyIdentityConflict()
 	}
 	if observed {
-		if parentPath != "" {
-			src.Parent = &syncproto.SourceRef{Path: parentPath, FileID: parentFile}
-		}
 		// A verified physical CASS alias is frozen as capture identity. It remains
 		// distinct from the canonical native owner and never provides folder grants.
 		if recovered && p.Capture == nil {
@@ -210,17 +206,27 @@ func bindPolicySourceOwner(ctx context.Context, tx pgx.Tx, device, agent, native
 	return nil
 }
 
+// A companion may create an empty parent row before the main upload. That
+// row proves physical linkage, not capture attributes. Only an entirely empty
+// descriptor without generations or messages may be refined on first capture.
 func observedPolicySource(ctx context.Context, q policyQuerier, device string, physical syncproto.SourceRef) (syncproto.Source, bool, error) {
 	src := syncproto.Source{Path: physical.Path, FileID: physical.FileID}
 	var parentPath, parentFile string
-	err := q.QueryRow(ctx, `SELECT s.agent,COALESCE(s.session_key,''),s.storage_kind,COALESCE(s.parser,''),COALESCE(s.parent_path,parent.path,''),COALESCE(s.parent_file_id,parent.file_id,'') FROM sources s LEFT JOIN sources parent ON parent.id=s.parent_source_id AND parent.device_id=s.device_id WHERE s.device_id=$1 AND s.path=$2 AND s.file_id=$3`, device, physical.Path, physical.FileID).Scan(&src.Agent, &src.SessionKey, &src.StorageKind, &src.Parser, &parentPath, &parentFile)
+	var captured bool
+	err := q.QueryRow(ctx, `SELECT s.agent,COALESCE(s.session_key,''),s.storage_kind,COALESCE(s.parser,''),COALESCE(s.parent_path,parent.path,''),COALESCE(s.parent_file_id,parent.file_id,''),
+ EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id) OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=s.id)
+ FROM sources s LEFT JOIN sources parent ON parent.id=s.parent_source_id AND parent.device_id=s.device_id WHERE s.device_id=$1 AND s.path=$2 AND s.file_id=$3`, device, physical.Path, physical.FileID).Scan(&src.Agent, &src.SessionKey, &src.StorageKind, &src.Parser, &parentPath, &parentFile, &captured)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return src, false, nil
+	}
+	if err != nil {
+		return src, false, err
 	}
 	if parentPath != "" {
 		src.Parent = &syncproto.SourceRef{Path: parentPath, FileID: parentFile}
 	}
-	return src, err == nil, err
+	placeholder := !captured && src.SessionKey == "" && src.StorageKind == "" && src.Parser == "" && parentPath == "" && parentFile == ""
+	return src, !placeholder, nil
 }
 
 func checkPolicySourceIdentity(ctx context.Context, q policyQuerier, device string, src syncproto.Source) error {
@@ -242,6 +248,9 @@ func checkPolicySourceIdentity(ctx context.Context, q policyQuerier, device stri
 		old, observed, err := observedPolicySource(ctx, q, device, physical)
 		if err != nil {
 			return err
+		}
+		if !observed && old.Agent != "" && old.Agent != p.Agent {
+			return policyIdentityConflict()
 		}
 		if observed {
 			if err := checkPolicyCapture(ctx, q, device, p, old); err != nil {
