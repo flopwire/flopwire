@@ -1,7 +1,7 @@
 # Device agent
 
 The device agent keeps the local index current. It reads Claude Code, Codex,
-Devin, opencode and local Cowork transcripts. It never writes to the harness directories. When the
+Devin, opencode, local Cowork and Claude Desktop Local Code transcripts. It never writes to the harness directories. When the
 device has a server configuration, the agent also uploads the transcripts.
 
 ## Run the agent
@@ -28,6 +28,7 @@ The agent uses these paths:
 | User path rules | `<config dir>/flopwire/path-rules` | none |
 | Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json` | none |
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
+| Desktop Local Code container | `~/Library/Application Support/Claude/claude-code-sessions` on macOS; no default on other platforms | `--desktop-code-root`; `-` disables |
 | Cowork container | `~/Library/Application Support/Claude/local-agent-mode-sessions` on macOS; no default on other platforms | `--cowork-root`; `-` disables |
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
@@ -55,9 +56,28 @@ historical evidence unknown. Evidence indexed under unknown mapping retains
 a historical unknown scope. A later valid metadata file does not clear that scope.
 App metadata and audit streams are excluded from transcript collection.
 
-This is a local collection prerequisite for ongoing shared Cowork history.
-It does not reconcile earlier server copies, establish Claude Desktop Code-tab
-coverage, or collect ordinary Claude chat. Those checks remain separate.
+Desktop Local Code collection links verified app session metadata to native
+Claude session IDs in the configured Claude projects root. It also reads
+matched native transcripts under
+`<code-container>/<account>/<organization>/<app-session>/.claude/projects`.
+Native children and companions keep their original IDs and paths. The agent
+watches new app metadata and nested native history directories. It excludes
+unrelated native parents, ordinary chat, SSH sessions and WSL sessions.
+
+Normal-root Local Code history uses existing Claude collection and sharing
+rules. Scoped Code history remains local until contained sync authorization
+supports indexed byte bounds, source identity and pending generations.
+Imported Cowork session IDs retain Cowork folder-policy holds, including
+copies whose original Cowork container is absent. Code metadata supplies
+identity evidence only. It does not establish Cowork Mac-folder mapping.
+Historical unknown imports follow the configured unplaceable policy, including
+`exclude`, even when current Mac-folder mapping is complete.
+
+These are local collection prerequisites. They do not reconcile earlier
+server copies. The installed Claude 2.19675.1 Local flow was qualified with
+an approved synthetic session in the default Claude projects root. Scoped
+fallback storage is covered by synthetic fixtures; it was not observed in
+that live session.
 
 Use `--once` to index what changed and exit. Use `--no-sync` to index
 without upload. `flopwire agent run -h` lists every flag.
@@ -211,6 +231,8 @@ socket and prints these parts:
 | Line | Means |
 |---|---|
 | `agent: running` | The agent answered. |
+| `Claude Desktop Code (Local): STATE` | Local Code discovery, scoped native sessions, normal-root links, missing linked transcripts and excluded backend records. |
+| `scoped shared uploads held: contained sync authorization support pending` | Scoped Code history remains local until its sync authorization is qualified. |
 | `Cowork: STATE` | Current local discovery state, native sessions, metadata-only sessions and excluded paths. JSON status also includes mapping reasons, historical unknown scopes and watch candidates. |
 | `shared uploads held: server host-folder policy support pending` | Cowork evidence remains local. Empty sync queues do not establish shared Cowork coverage. |
 | `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](#keep-sessions-out-with-path-rules). |

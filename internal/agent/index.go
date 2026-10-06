@@ -15,7 +15,6 @@ import (
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
-	"github.com/flopwire/flopwire/internal/transcript/cowork"
 )
 
 // indexTranscript brings the index up to date with one JSONL transcript
@@ -35,17 +34,7 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	if t.parser == nil {
 		return false, nil // a loaded placeholder not listed by discovery yet
 	}
-	var f *os.File
-	var err error
-	if a.cfg.CoworkRoot != "" {
-		if _, ok := under(a.cfg.CoworkRoot, t.path); ok {
-			f, err = cowork.OpenFile(a.cfg.CoworkRoot, t.path)
-		} else {
-			f, err = fsprobe.Open(t.path)
-		}
-	} else {
-		f, err = fsprobe.Open(t.path)
-	}
+	f, err := a.openNativeEvidence(t.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil // the next full pass retires it
 	} else if err != nil {
@@ -418,13 +407,9 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 	newEvidence := id != t.seen
 	a.mu.Unlock()
 	var digest []byte
-	if _, scoped := a.coworkMode(a.policy(), t); scoped {
-		var file *os.File
-		if _, bounded := under(a.cfg.CoworkRoot, t.path); a.cfg.CoworkRoot != "" && bounded {
-			file, err = cowork.OpenFile(a.cfg.CoworkRoot, t.path)
-		} else {
-			file, err = fsprobe.Open(t.path)
-		}
+	if _, scoped := a.coworkMode(a.policy(), t); scoped || a.desktopCodeScoped(t.path) {
+		file, openErr := a.openNativeEvidence(t.path)
+		err = openErr
 		if err != nil {
 			return err
 		}

@@ -49,7 +49,7 @@ func TestCorpusSyncOnlySize(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a := New(store, Config{CoworkRoot: "-", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		a := New(store, Config{DesktopCodeRoot: "-", CoworkRoot: "-", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 		t0, cpu0 := time.Now(), cpuTime()
 		if err := a.Once(ctx); err != nil {
 			t.Fatal(err)

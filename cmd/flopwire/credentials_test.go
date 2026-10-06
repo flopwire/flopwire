@@ -190,7 +190,7 @@ func TestEnvTokenAgentUploadWithoutConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(sock)
-	if err := run(ctx, []string{"agent", "run", "--once", "--cowork-root", "-", "--claude-projects", filepath.Join(home, ".claude", "projects"), "--codex-home", filepath.Join(home, ".codex"),
+	if err := run(ctx, []string{"agent", "run", "--once", "--desktop-code-root", "-", "--cowork-root", "-", "--claude-projects", filepath.Join(home, ".claude", "projects"), "--codex-home", filepath.Join(home, ".codex"),
 		"--devin-db", "-", "--opencode-db", "-", "--mem-limit", "0", "--gc-percent", "100", "--socket", filepath.Join(sock, "a.sock"), "--sync-timeout", "2m"}); err != nil {
 		t.Fatal(err)
 	}

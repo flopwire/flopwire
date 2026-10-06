@@ -167,11 +167,20 @@ func (a *Agent) discoverAll() (*found, error) {
 	f.claudeSessions(sessions, a.claude)
 	a.mu.Lock()
 	cw := a.coworkResult
+	dc := a.desktopCodeResult
 	a.mu.Unlock()
 	for _, entry := range cw.Sessions {
 		f.claudeSessions([]*claude.Session{entry.Session}, a.coworkParser)
 	}
+	for _, entry := range dc.Sessions {
+		f.claudeSessions([]*claude.Session{entry.Session}, a.desktopCodeParser)
+	}
 	for _, t := range f.targets {
+		if t.kind == kindTranscript && a.cfg.DesktopCodeRoot != "" {
+			if _, ok := under(a.cfg.DesktopCodeRoot, t.path); ok {
+				t.parser = a.desktopCodeParser
+			}
+		}
 		if t.kind == kindTranscript && a.cfg.CoworkRoot != "" {
 			if _, ok := under(a.cfg.CoworkRoot, t.path); ok {
 				t.parser = a.coworkParser
@@ -191,7 +200,10 @@ func (a *Agent) discoverAll() (*found, error) {
 // in it. It reports whether dir is under a known root.
 func (a *Agent) discoverDir(dir string) (*found, bool) {
 	f := &found{}
-	if a.coworkDirectory(dir) {
+	if parent := a.nativeClaudeParent(dir); parent != "" && a.desktopCodeCoworkAlias([]placeKey{{transcript.AgentClaude, parent}}) {
+		return nil, true
+	}
+	if a.coworkDirectory(dir) || a.desktopCodeDirectory(dir) {
 		return nil, true // ancestor or nested session changed: refresh the bounded container
 	}
 	if rel, ok := under(a.cfg.ClaudeProjects, dir); ok {
