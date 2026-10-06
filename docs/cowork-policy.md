@@ -2,7 +2,7 @@
 
 The server accepts authenticated policy metadata before transcript content. The upload credential determines the device. A native session UUID on another device does not establish a policy association.
 
-`GET /v1/sync/capabilities` currently advertises `policyplacements_version: 0` and one concurrent flush. Collection clients must keep Cowork uploads held until the advertised policy version is 1. Enabling that version requires qualification of the real client and server together.
+This build advertises `policyplacements_version: 1` and one concurrent flush through authenticated `GET /v1/sync/capabilities`. Each protected capture requires a fresh matching durable policy acknowledgement and a current local evidence proof. Clients hold Cowork uploads when the advertised version is unsupported or the acknowledgement is missing or stale. Production rollout requires separate approval of the qualified build.
 
 `POST /v1/sync/policyplacements` accepts host folder placements, canonical native session and verified parent identities, captured-history scope, current mapping readiness, source-generation references, and an optional device directory snapshot. Its successful response contains the exact typed request digest. Clients must verify that digest and recheck their local capture revision before releasing content.
 
