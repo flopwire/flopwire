@@ -208,6 +208,22 @@ func (a *Agent) recoveryPolicyEvidence(ctx context.Context, t *target) ([]syncpr
 		if err != nil {
 			return nil, err
 		}
+		if a.cfg.RecoveredPolicySources != nil {
+			receipts, err := a.cfg.RecoveredPolicySources(ctx, key.session)
+			if err != nil {
+				return nil, err
+			}
+			seen := make(map[syncproto.PolicyRecoverySource]bool, len(refs))
+			for _, ref := range refs {
+				seen[ref] = true
+			}
+			for _, ref := range receipts {
+				if !seen[ref] {
+					refs = append(refs, ref)
+					seen[ref] = true
+				}
+			}
+		}
 		historical = historical || len(refs) > 0
 		if i == 0 {
 			own = refs

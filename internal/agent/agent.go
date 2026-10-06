@@ -46,6 +46,7 @@ import (
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
+	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
@@ -90,9 +91,10 @@ type Config struct {
 	// across workers (Codex rollouts have lines up to 14MB); default 16MB.
 	LineBudget int64
 
-	Sync         Sync               // nil: local indexing only
-	CoworkPolicy CoworkPolicyClient // nil: Cowork sharing remains held
-	Logger       *slog.Logger
+	Sync                   Sync                                                                    // nil: local indexing only
+	CoworkPolicy           CoworkPolicyClient                                                      // nil: Cowork sharing remains held
+	RecoveredPolicySources func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) // restriction-only receipts for the bound device
+	Logger                 *slog.Logger
 
 	// Path rules (D18, see policy.go). UserRules is a file of user rules,
 	// one per line, re-read when it changes; UserRuleList holds more user

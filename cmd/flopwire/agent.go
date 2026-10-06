@@ -37,6 +37,7 @@ import (
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/recoveryreceipt"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -270,18 +271,30 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
 	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
+	loadSyncConfig := client.Load
 	if ccErr == nil {
+		loadSyncConfig = deviceBoundConfig(cc, client.Load)
 		cfg.UserRuleList = cc.Denylist
 		cfg.Unplaceable = cc.Unplaceable
 		if cc.Server != "" && cc.Token != "" && !*noSync {
 			cfg.AdminRules = adminRules(cc)
 			cfg.Withhold = withholdSession(cc, client.Load)
+			cfg.CoworkPolicy = coworkPolicyClient(cc, loadSyncConfig)
+			cfg.RecoveredPolicySources = recoveredPolicySources(cc, loadSyncConfig)
 		}
 	}
 	var startSyncRun func()
 	var sched *devicesync.Scheduler
 	if !*noSync {
-		s, tr, start, closeSync, err := startSync(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log)
+		var s *devicesync.Scheduler
+		var tr *syncTransport
+		var start, closeSync func()
+		var err error
+		if ccErr == nil {
+			s, tr, start, closeSync, err = startSyncFrom(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log, cc, loadSyncConfig)
+		} else {
+			s, tr, start, closeSync, err = startSync(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -559,6 +572,74 @@ func withholdSession(cc client.Config, load func() (client.Config, error)) func(
 	}
 }
 
+type coworkPolicyClientFunc func(context.Context, *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error)
+
+func (f coworkPolicyClientFunc) PolicyPlacements(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+	return f(ctx, req)
+}
+
+// Cowork policy registration follows credentials and TLS pins saved for this
+// server. Every call still checks the server's durable-policy capability.
+func coworkPolicyClient(cc client.Config, load func() (client.Config, error)) agent.CoworkPolicyClient {
+	var mu sync.Mutex
+	load = deviceBoundConfig(cc, load)
+	server, _ := client.NormalizeServer(cc.Server)
+	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
+	return coworkPolicyClientFunc(func(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+		loaded, loadErr := load()
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if loaded.DeviceID != cc.DeviceID {
+			return nil, errDeviceChanged
+		}
+		mu.Lock()
+		cur := cc
+		if c, same := savedConfig(server, func() (client.Config, error) { return loaded, loadErr }); same {
+			cur = c
+		}
+		if cur.TLSFingerprint != pin {
+			pin, hc = cur.TLSFingerprint, cur.HTTPClient()
+		}
+		policy := devicesync.PolicyClient{Server: cur.Server, Token: cur.Token, HTTP: hc}
+		mu.Unlock()
+		return policy.PolicyPlacements(ctx, req)
+	})
+}
+
+func recoveredPolicySources(cc client.Config, load func() (client.Config, error)) func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) {
+	load = deviceBoundConfig(cc, load)
+	configPath, pathErr := client.Path()
+	binding := recoveryreceipt.Binding{Server: cc.Server, DeviceID: cc.DeviceID}
+	return func(ctx context.Context, nativeUUID string) ([]syncproto.PolicyRecoverySource, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		current, err := load()
+		if err != nil {
+			return nil, err
+		}
+		if current.DeviceID != cc.DeviceID {
+			return nil, errDeviceChanged
+		}
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		receipts, err := recoveryreceipt.Read(filepath.Dir(configPath), binding, nativeUUID)
+		if errors.Is(err, recoveryreceipt.ErrAbsent) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		refs := make([]syncproto.PolicyRecoverySource, 0, len(receipts))
+		for _, r := range receipts {
+			refs = append(refs, syncproto.PolicyRecoverySource{Source: r.Source, OriginalPath: r.OriginalPath})
+		}
+		return refs, nil
+	}
+}
+
 // openBus opens the local message inbox. One that cannot be opened (a
 // damaged file, a full disk) turns messaging off with an error in the
 // log; it never stops indexing and upload.
@@ -725,6 +806,12 @@ func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCa
 		log.Info("agent: no server configured; indexing locally only", "reason", err)
 		return nil, nil, nil, nil, nil
 	}
+	return startSyncFrom(ctx, store, dir, spoolCap, dev, log, cfg, client.Load)
+}
+
+// Use the agent's initial credential snapshot for both sync and policy
+// registration. A second config read at construction could select a new device.
+func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, dev syncproto.DeviceDirs, log *slog.Logger, cfg client.Config, load func() (client.Config, error)) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
 	db, err := sql.Open("sqlite", "file:"+store.Path()+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -740,7 +827,7 @@ func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCa
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	tr := newSyncTransport(cfg, client.Load, log)
+	tr := newSyncTransport(cfg, load, log)
 	live := local.LiveReporter(local.NewDetector(), 30*time.Second, syncproto.MaxLive)
 	sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log, Device: dev, Live: live}, st, spool, tr)
 	if err != nil {
