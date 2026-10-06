@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -437,6 +438,25 @@ type freshResult struct {
 	Max     float64   `json:"max_ms"`
 }
 
+// benchLogBuffer permits stderr snapshots while exec is still copying output.
+// Keep buf named so io.Copy cannot bypass Write through Buffer.ReadFrom.
+type benchLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *benchLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *benchLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	// The newest real Claude session of 1-64MB, copied into a scratch
 	// projects root; the real harness directories are never written.
@@ -476,7 +496,7 @@ func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	cmd := exec.CommandContext(rctx, b.exe, b.withAgentCapabilities([]string{"agent", "run", "--no-sync", "--db", db, "--claude-projects", filepath.Join(dir, "projects"),
 		"--codex-home", filepath.Join(dir, "nocodex"), "--devin-db", "-", "--socket", filepath.Join(dir, "agent.sock")})...)
 	cmd.Env = env
-	var logBuf bytes.Buffer
+	var logBuf benchLogBuffer
 	cmd.Stderr = &logBuf
 	if err := cmd.Start(); err != nil {
 		return nil, err
