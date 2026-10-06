@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/flopwire/flopwire/internal/perfguard"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -398,33 +397,27 @@ func TestGrepRepoShareScalingConstant(t *testing.T) {
 	})
 }
 
-// activityFromMessages sets each conversation's last activity to its
-// newest message's time, as ingest keeps it (perfCorpus staggers them
-// for the keyset tests).
-func activityFromMessages(t testing.TB, pool *pgxpool.Pool) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(), `UPDATE conversation_activity a SET last_activity_at=(SELECT max(m.ts) FROM messages m WHERE m.conversation_id=a.conversation_id)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(context.Background(), `VACUUM ANALYZE`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// A grep since a time reads the messages of the sessions active since
-// then, through conversation_activity_idx, not every message the
-// pattern's trigrams admit: a broad pattern since the five newest sessions
-// costs the same however many older sessions there are. Without the
-// conversation step the trigram bitmap covers the whole table and m.ts,
-// unindexed by design (TestNoMessagesTSIndex), filters it afterwards.
-func TestGrepSinceScalingConstant(t *testing.T) {
+// A grep filtered to a branch reads that branch's messages, through the
+// conversations the filter admits, not every message the pattern's
+// trigrams admit: a broad pattern over a branch five sessions ran on
+// costs the same however many other sessions there are. Without the
+// conversation step the branch test (an EXISTS over c.branches, which
+// the planner cannot estimate as selective) is checked on the join after
+// a scan of every message. An agent or repo filter does not show this at
+// perfCorpus scale: the planner reaches their few conversations first on
+// its own (TestGrepRepoShareScalingConstant).
+func TestGrepBranchScalingConstant(t *testing.T) {
 	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
 		n = max(n, 5)
 		s, counter := perfCorpus(t, n, 4)
-		activityFromMessages(t, s.Pool)
-		since := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(n-4) * time.Minute)
+		if _, err := s.Pool.Exec(context.Background(), `UPDATE conversations SET branches=ARRAY['feature-x'] WHERE id IN (SELECT md5('c'||i)::uuid FROM generate_series($1::int-4,$1::int) i)`, n); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Pool.Exec(context.Background(), `VACUUM ANALYZE`); err != nil {
+			t.Fatal(err)
+		}
 		cost := perfguard.Measure(t, s.Pool, counter, func() {
-			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: broadPattern, Limit: 500}, format.Filters{Since: since})
+			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: broadPattern, Limit: 500}, format.Filters{Branch: "feature-x"})
 			if err != nil || page.Truncated || page.Total != 20 {
 				t.Fatalf("grep: %v (page %+v)", err, page)
 			}
@@ -436,7 +429,10 @@ func TestGrepSinceScalingConstant(t *testing.T) {
 
 // The conversation list a filtered grep resolves first walks indexes, and
 // the candidate query it narrows probes the messages' conversation index
-// (ANDed with the trigram bitmap, or alone with the text filtered).
+// (ANDed with the trigram bitmap, or alone with the text filtered). The
+// probe is the planner's choice: it prefers the conversation index while
+// the trigram condition is unselective, as broadPattern's is, and that
+// holds at perfCorpus scale.
 func TestGrepFilteredCandidatesPlanIndexed(t *testing.T) {
 	s, _ := perfCorpus(t, 200, 8)
 	rareRepo(t, s.Pool)

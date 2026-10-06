@@ -214,21 +214,7 @@ func filters(q *query, f format.Filters) error {
 	if !f.IncludeBranches {
 		q.where("m.on_active_path IS NOT FALSE")
 	}
-	if f.ExcludeSubagents {
-		q.where("c.depth=0 AND c.parent_native_session_id IS NULL")
-	}
-	if f.Agent != "" {
-		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
-	}
-	repoWhere(q, f)
-	if f.Device != "" {
-		a := q.arg(f.Device)
-		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))
-	}
-	if f.User != "" {
-		a := q.arg(f.User)
-		q.where(fmt.Sprintf("(u.id::text=%s OR lower(u.email)=lower(%s))", a, a))
-	}
+	convWhere(q, f)
 	if len(f.Kinds) > 0 {
 		q.where("m.kind=ANY(" + q.arg(f.Kinds) + ")")
 	}
@@ -265,6 +251,27 @@ func filters(q *query, f format.Filters) error {
 	}
 	convFilters(q, f)
 	return nil
+}
+
+// convWhere adds the conditions on a conversation c, its device d and
+// its user u that grep, search and sessions share: the agent, the repo
+// (repoWhere), the device, the user, and top-level sessions only.
+func convWhere(q *query, f format.Filters) {
+	if f.Agent != "" {
+		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
+	}
+	repoWhere(q, f)
+	if f.Device != "" {
+		a := q.arg(f.Device)
+		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))
+	}
+	if f.User != "" {
+		a := q.arg(f.User)
+		q.where(fmt.Sprintf("(u.id::text=%s OR lower(u.email)=lower(%s))", a, a))
+	}
+	if f.ExcludeSubagents {
+		q.where("c.depth=0 AND c.parent_native_session_id IS NULL")
+	}
 }
 
 // convFilters adds the conditions on conversation columns that grep,

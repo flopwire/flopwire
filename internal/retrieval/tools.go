@@ -93,6 +93,9 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err != nil {
 				return err
 			}
+			if ok && len(ids) == 0 {
+				return nil // no conversation passes the filters: nothing to scan
+			}
 			if ok {
 				q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
 			}
@@ -148,12 +151,16 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	if timedOut(err) {
 		page.Truncated = true
 		if checked == 0 {
-			page.Reason = fmt.Sprintf("timed out after %s before the candidate query returned its first page (checked 0 candidates); raise the timeout (--timeout, or the timeout argument, up to %ds) or narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), int(MaxBudget.Seconds()))
+			raise := ""
+			if b < MaxBudget {
+				raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
+			}
+			page.Reason = fmt.Sprintf("timed out after %s before the candidate query returned its first page (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), raise)
 		} else {
 			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked)
 		}
 		if broad {
-			page.Notes = append(page.Notes, fmt.Sprintf("the filters admit more than %d sessions, so the scan was not narrowed to them first", grepConvCap))
+			page.Notes = append(page.Notes, fmt.Sprintf("the filters admit more than %d conversations, so the scan was not narrowed to them first", grepConvCap))
 		}
 	} else if err != nil {
 		return nil, err
@@ -232,7 +239,7 @@ const grepConvCap = 5000
 
 // grepNarrows reports whether f has a filter on conversations that
 // grepConversations resolves first: agent, repo, device, user, session,
-// subagents, branch or since.
+// subagents or branch.
 func grepNarrows(f format.Filters) bool {
 	q := &query{}
 	grepConvWhere(q, f)
@@ -240,39 +247,22 @@ func grepNarrows(f format.Filters) bool {
 }
 
 // grepConvWhere adds f's conditions on conversations, as sessionsPage
-// has them, over listed c with devices d and users u joined. since bounds
-// the last activity: a conversation whose last activity precedes it holds
-// no message after it, and one with no activity recorded may hold any,
-// so it stays. The message predicates (m.ts among them) stay in the
-// candidate query, so the hits are the same with or without this step.
+// has them, over listed c with devices d and users u joined (convWhere,
+// the session tree, and convFilters, whose live-session conditions read
+// as true for a conversation whose device is missing). since is not
+// among them: last activity comes from the harness, not from message
+// times (ingest refreshDigest), so it may precede a message's ts. The
+// message predicates (m.ts among them) stay in the candidate query, so
+// the hits are the same with or without this step.
 func grepConvWhere(q *query, f format.Filters) {
-	if f.Agent != "" {
-		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
-	}
-	repoWhere(q, f)
-	if f.Device != "" {
-		a := q.arg(f.Device)
-		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))
-	}
-	if f.User != "" {
-		a := q.arg(f.User)
-		q.where(fmt.Sprintf("(u.id::text=%s OR lower(u.email)=lower(%s))", a, a))
-	}
-	if f.ExcludeSubagents {
-		q.where("c.depth=0 AND c.parent_native_session_id IS NULL")
-	}
+	convWhere(q, f)
 	if f.Session != "" {
 		q.where("c.session_id IN (" + sessionTree(q, f.Session) + ")")
 		if f.Self {
 			q.where("c.user_id=" + q.arg(f.Owner) + "::uuid")
 		}
 	}
-	if f.Branch != "" {
-		q.where("EXISTS (SELECT 1 FROM unnest(c.branches) b WHERE b ILIKE " + q.arg(format.BranchMatch(f.Branch)) + ")")
-	}
-	if !f.Since.IsZero() {
-		q.where("(c.last_activity_at>=" + q.arg(f.Since) + " OR c.last_activity_at IS NULL)")
-	}
+	convFilters(q, f)
 }
 
 // grepConvQuery selects the ids of the visible conversations q admits,
@@ -545,21 +535,7 @@ func (s *Store) sessions(ctx context.Context, glob, cursor string, f format.Filt
 // join to the page's rows only.
 func sessionsPage(glob string, f format.Filters, oldest bool, after *format.SessionKey, limit int) (string, []any) {
 	q := &query{}
-	if f.Agent != "" {
-		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
-	}
-	repoWhere(q, f)
-	if f.Device != "" {
-		a := q.arg(f.Device)
-		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))
-	}
-	if f.User != "" {
-		a := q.arg(f.User)
-		q.where(fmt.Sprintf("(u.id::text=%s OR lower(u.email)=lower(%s))", a, a))
-	}
-	if f.ExcludeSubagents {
-		q.where("c.depth=0 AND c.parent_native_session_id IS NULL")
-	}
+	convWhere(q, f)
 	if f.ExcludeSession != "" {
 		q.where(excludeSessionTree(q, f.ExcludeSession))
 	}
