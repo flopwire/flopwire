@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,9 +82,45 @@ func (d *chainDevice) writeMapping(t *testing.T, folders []string) {
 type chainCapabilityServer struct {
 	server   *ingest.Server
 	override bool
+	trace    *chainTrace
+}
+
+type chainTrace struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (s *chainTrace) note(v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.lines) < 24 {
+		b, _ := json.Marshal(v)
+		s.lines = append(s.lines, string(b))
+	}
 }
 
 func (s chainCapabilityServer) ServeSync(w http.ResponseWriter, r *http.Request, device string) {
+	if r.URL.Path == syncproto.PathFlush {
+		var consumed bytes.Buffer
+		header, _, err := syncproto.DecodeFlush(io.TeeReader(r.Body, &consumed))
+		if err == nil {
+			s.trace.note(struct {
+				Device string
+				Source syncproto.Source
+			}{device, header.Source})
+		}
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(consumed.Bytes()), r.Body))
+	} else if r.URL.Path == syncproto.PathPolicyPlacements {
+		var consumed bytes.Buffer
+		var request syncproto.PolicyPlacementsRequest
+		if json.NewDecoder(io.TeeReader(r.Body, &consumed)).Decode(&request) == nil {
+			s.trace.note(struct {
+				Device  string
+				Request syncproto.PolicyPlacementsRequest
+			}{device, request})
+		}
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(consumed.Bytes()), r.Body))
+	}
 	if !s.override || r.URL.Path != syncproto.PathCapabilities {
 		s.server.ServeSync(w, r, device)
 		return
@@ -161,7 +198,31 @@ func newChainAPI(t *testing.T, e *chainEnv, override bool) *httptest.Server {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := &ingest.Server{Pool: e.pool, Objects: e.objects, Log: log, Queue: e.queue}
 	r := &retrieval.Store{Pool: e.pool, Objects: e.objects, RefreshSession: func(ctx context.Context, id string) { e.queue.RefreshSession(ctx, id) }}
-	h := httptest.NewServer(api.New(e.store, api.Config{Logger: log, Sync: chainCapabilityServer{server: server, override: override}, Parse: e.queue, Retrieval: r}).Handler(nil))
+	trace := &chainTrace{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			trace.mu.Lock()
+			defer trace.mu.Unlock()
+			for _, line := range trace.lines {
+				t.Log("synthetic wire " + line)
+			}
+			rows, err := e.pool.Query(context.Background(), `SELECT device_id::text,path,file_id,owner_agent,owner_session_id FROM source_policy_identity ORDER BY path`)
+			if err != nil {
+				t.Log(err)
+				return
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var d, p, f, a, s string
+				if err := rows.Scan(&d, &p, &f, &a, &s); err != nil {
+					t.Log(err)
+					return
+				}
+				t.Logf("synthetic owner device=%s path=%s file=%s agent=%s session=%s", d, p, f, a, s)
+			}
+		}
+	})
+	h := httptest.NewServer(api.New(e.store, api.Config{Logger: log, Sync: chainCapabilityServer{server: server, override: override, trace: trace}, Parse: e.queue, Retrieval: r}).Handler(nil))
 	t.Cleanup(h.Close)
 	return h
 }
