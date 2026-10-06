@@ -514,3 +514,168 @@ func TestPolicyMetadataPinsAdminRulesThroughRestoreWait(t *testing.T) {
 		t.Fatal("completed admin deny sweep left metadata-restored row visible")
 	}
 }
+
+func TestPolicyHistoricalUnknownExcludeReconcilesAndPurgesKnownCurrentScope(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	applyPolicy(t, e, req)
+	conv := policyStoredConversation(e, e.deviceID, req.SessionID, "")
+	req.EvidenceScope = "unmapped"
+	e.setRules("exclude")
+	if ack := applyPolicy(t, e, req); ack.Allowed || ack.EvidenceScope != "unmapped" {
+		t.Fatalf("historical exclusion ack: %+v", ack)
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND hidden_at IS NOT NULL`, conv) != 1 {
+		t.Fatal("explicit exclusion did not hide stored history")
+	}
+	e.exec(`UPDATE conversations SET hidden_at=now()-interval '8 days' WHERE id=$1`, conv)
+	e.enforce()
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1`, conv) != 0 {
+		t.Fatal("explicit exclusion was treated as nonpurgeable unknown hold")
+	}
+}
+
+func TestPolicyRecoveredSourceReferenceHandlesMissingNativeTranscript(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	original := "/gone/cowork/" + req.SessionID + ".jsonl"
+	archive := "/recovery/missing-native.jsonl"
+	src := uuid.NewString()
+	e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,session_key,storage_kind,parser,first_seen_at) VALUES($1,$2,'claude',$3,'cass-file','cass-only','cass_export','cass-export@1',now())`, src, e.deviceID, archive)
+	e.exec(`INSERT INTO generations(source_id,generation,size,captured_at,complete) VALUES($1,0,1,now(),true)`, src)
+	conv := policyStoredConversation(e, e.deviceID, "cass-only", "")
+	e.exec(`UPDATE conversations SET source_id=$2,extra=jsonb_build_object('recovered_history',true,'cass_external_id',$3::text,'cass_source_path',$4::text) WHERE id=$1`, conv, src, req.SessionID, original)
+	req.RecoverySources = []syncproto.PolicyRecoverySource{{Source: syncproto.PolicySource{Path: archive, FileID: "cass-file", Generation: 0}, OriginalPath: original}}
+	if ack := applyPolicy(t, e, req); ack.Allowed || ack.EvidenceScope != "unmapped" {
+		t.Fatalf("recovered proof permittedsharing: %+v", ack)
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND hidden_at IS NOT NULL`, conv) != 1 {
+		t.Fatal("missing-native recovered copy remained visible")
+	}
+	if e.count(`SELECT count(*) FROM source_policy_placements WHERE device_id=$1 AND session_id=$2 AND path=$3`, e.deviceID, req.SessionID, archive) != 1 {
+		t.Fatal("recovery restriction not durably bound")
+	}
+	for _, change := range []func(*syncproto.PolicyRecoverySource){
+		func(r *syncproto.PolicyRecoverySource) { r.Source.Generation = 1 },
+		func(r *syncproto.PolicyRecoverySource) { r.Source.FileID = "unrelated-file" },
+		func(r *syncproto.PolicyRecoverySource) { r.OriginalPath = "/different/native.jsonl" },
+	} {
+		bad := *req
+		bad.RecoverySources = append([]syncproto.PolicyRecoverySource(nil), req.RecoverySources...)
+		change(&bad.RecoverySources[0])
+		_, err := (&Server{Pool: e.pool}).PolicyPlacements(e.ctx, e.deviceID, &bad)
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != "recovery_proof_missing" {
+			t.Fatalf("unproven recovery reference accepted: %v", err)
+		}
+	}
+	other := uuid.NewString()
+	e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'other','darwin',now())`, other, e.userID)
+	if _, err := (&Server{Pool: e.pool}).PolicyPlacements(e.ctx, other, req); err == nil {
+		t.Fatal("another device reused recovery reference")
+	}
+}
+
+func TestPolicyCapturedChildRestrictionsProtectWholeVerifiedSession(t *testing.T) {
+	for _, floor := range []string{"", "exclude"} {
+		t.Run(floor, func(t *testing.T) {
+			e := newEnv(t)
+			e.setRules(floor)
+			root := policyRequest()
+			root.EvidenceScope = "none"
+			applyPolicy(t, e, root)
+			conv := policyStoredConversation(e, e.deviceID, root.SessionID, "")
+			child := policyRequest()
+			child.SessionID = uuid.NewString()
+			child.ParentSessionID = root.SessionID
+			child.EvidenceScope = "none"
+			child.CurrentMappingKnown = false
+			child.Placements = nil
+			applyPolicy(t, e, child)
+			if ack := applyPolicy(t, e, root); !ack.Allowed {
+				t.Fatalf("metadata-only child tainted complete first capture: %+v", ack)
+			}
+			child.EvidenceScope = "unmapped"
+			applyPolicy(t, e, child)
+			if ack := applyPolicy(t, e, root); ack.Allowed || ack.EvidenceScope != "unmapped" {
+				t.Fatalf("root escaped captured child scope: %+v", ack)
+			}
+			if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND hidden_at IS NOT NULL`, conv) != 1 {
+				t.Fatal("child history failed to reconcile root")
+			}
+			rootPath := "/synthetic/" + root.SessionID + ".jsonl"
+			_, err := checkFlushPolicy(e.ctx, e.pool, e.deviceID, syncproto.Source{Agent: "claude", Path: rootPath, FileID: "root-file", SessionKey: root.SessionID})
+			var refused *Error
+			if !errors.As(err, &refused) || refused.Code != "policy_placements_held" {
+				t.Fatalf("root flush escaped component: %v", err)
+			}
+			rows, err := e.queue.convRows(e.ctx, `c.id=$1`, conv)
+			if err != nil || len(rows) != 1 {
+				t.Fatal(err)
+			}
+			d := mustRules(t, e).decideConv(rows[0])
+			if floor == "exclude" {
+				if d.Mode != pathpolicy.Deny || !d.Unplaceable {
+					t.Fatalf("group exclusion weakened: %+v", d)
+				}
+			} else if !isPolicyHold(d) {
+				t.Fatalf("group unknown not retained: %+v", d)
+			}
+		})
+	}
+}
+
+func TestPolicyCompanionUnknownParentReadinessCannotUpload(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	req.CurrentMappingKnown = false
+	req.Placements = nil
+	applyPolicy(t, e, req)
+	parentPath := "/synthetic/" + req.SessionID + ".jsonl"
+	src := syncproto.Source{Agent: "claude", StorageKind: "companion", Path: "/synthetic/output.txt", FileID: "output-file", Parent: &syncproto.SourceRef{Path: parentPath, FileID: "parent-file"}}
+	_, err := checkFlushPolicy(e.ctx, e.pool, e.deviceID, src)
+	var refused *Error
+	if !errors.As(err, &refused) || refused.Code != "policy_placements_held" {
+		t.Fatalf("unknown parent allowed companion bytes: %v", err)
+	}
+	if e.count(`SELECT count(*) FROM session_policy_placements WHERE session_id=$1 AND evidence_scope='none'`, req.SessionID) != 1 {
+		t.Fatal("held companion marked history captured")
+	}
+}
+
+func TestPolicyParentCaptureDoesNotMarkMetadataChildrenCaptured(t *testing.T) {
+	e := newEnv(t)
+	root := policyRequest()
+	root.EvidenceScope = "none"
+	applyPolicy(t, e, root)
+	children := make([]*syncproto.PolicyPlacementsRequest, 0, 2)
+	for _, known := range []bool{true, false} {
+		child := policyRequest()
+		child.SessionID = uuid.NewString()
+		child.ParentSessionID = root.SessionID
+		child.EvidenceScope = "none"
+		child.CurrentMappingKnown = known
+		if !known {
+			child.Placements = nil
+		}
+		applyPolicy(t, e, child)
+		children = append(children, child)
+	}
+	sp := claudeAt(t, t.TempDir(), "-vm-work", root.SessionID, "/sessions/vm/work")
+	sync1(t, e.syncer(devicesync.Config{SealAfter: -1}), sp)
+	e.drain()
+	for _, child := range children {
+		if e.count(`SELECT count(*) FROM session_policy_placements WHERE session_id=$1 AND evidence_scope='none'`, child.SessionID) != 1 {
+			t.Fatal("parent upload marked child as captured")
+		}
+		child.CurrentMappingKnown = false
+		child.Placements = nil
+		applyPolicy(t, e, child)
+	}
+	root.EvidenceScope = "mapped"
+	if ack := applyPolicy(t, e, root); !ack.Allowed {
+		t.Fatalf("uncaptured child readiness held parent history: %+v", ack)
+	}
+}

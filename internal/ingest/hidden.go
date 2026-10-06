@@ -73,9 +73,9 @@ const convRowsSQL = `SELECT c.id::text,c.agent,COALESCE(c.cwd,''),COALESCE(c.ext
 		UNION SELECT session_key FROM source_ancestors UNION SELECT binding.session_id
 		FROM source_policy_placements binding JOIN source_ancestors source ON binding.path=source.path AND binding.file_id=source.file_id
 		WHERE binding.device_id=c.device_id AND binding.agent=c.agent),
-		policy_keys AS (SELECT session_id FROM keys UNION SELECT link.policy_session_id FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id WHERE link.device_id=c.device_id AND link.agent=c.agent)
+		policy_keys AS (SELECT session_id FROM keys UNION SELECT CASE WHEN link.session_id=k.session_id THEN link.policy_session_id ELSE link.session_id END FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id OR link.policy_session_id=k.session_id WHERE link.device_id=c.device_id AND link.agent=c.agent)
 		SELECT jsonb_agg(jsonb_build_object(
-		'Placements',p.placements,'CurrentMappingKnown',p.current_mapping_known,
+		'SessionID',p.session_id,'Placements',p.placements,'CurrentMappingKnown',p.current_mapping_known,
 		'EvidenceScope',p.evidence_scope,'ClientMode',p.client_mode)) AS states
 		FROM session_policy_placements p WHERE p.device_id=c.device_id AND p.agent=c.agent
 		AND p.session_id IN (SELECT session_id FROM policy_keys)) p ON true`
@@ -92,6 +92,9 @@ func scanConvRow(row pgx.CollectableRow) (convRow, error) {
 	var c convRow
 	err := row.Scan(&c.id, &c.agent, &c.cwd, &c.remote, &c.path, &c.source, &c.user, &c.device, &c.dev.home, &c.dev.claudeProjects,
 		&c.hiddenAt, &c.root, &c.rule, &c.by, &c.others, &c.session, &c.scope, &c.policies)
+	for i := range c.policies {
+		c.policies[i] = policyForSession(c.policies[i], c.session)
+	}
 	c.hasPolicy = len(c.policies) > 0
 	return c, err
 }

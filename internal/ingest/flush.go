@@ -215,7 +215,7 @@ func (s *Server) Flush(ctx context.Context, deviceID string, h *syncproto.FlushH
 	if err := recordLive(ctx, conn, deviceID, h.Live); err != nil {
 		return nil, err
 	}
-	if _, err := checkFlushPolicy(ctx, conn, deviceID, h.Source, false, nil); err != nil {
+	if _, err := checkFlushPolicy(ctx, conn, deviceID, h.Source); err != nil {
 		return nil, err
 	}
 	var tombstoned bool
@@ -471,12 +471,16 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 			return nil, nil, err
 		}
 	}
-	policyIDs, err := checkFlushPolicy(ctx, tx, f.deviceID, src, true, tx)
+	policyIDs, err := checkFlushPolicy(ctx, tx, f.deviceID, src)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(policyIDs) > 0 && (len(h.Entries) > 0 || h.Tail != nil && h.Tail.Size > 0) {
-		if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET evidence_scope=CASE WHEN evidence_scope='none' THEN 'mapped' ELSE evidence_scope END WHERE device_id=$1 AND agent=$2 AND session_id=ANY($3)`, f.deviceID, src.Agent, policyIDs); err != nil {
+		ownSession, err := policySourceSession(ctx, tx, f.deviceID, src)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET evidence_scope=CASE WHEN evidence_scope='none' THEN 'mapped' ELSE evidence_scope END WHERE device_id=$1 AND agent=$2 AND session_id=$3 AND current_mapping_known AND jsonb_array_length(placements)>0`, f.deviceID, src.Agent, ownSession); err != nil {
 			return nil, nil, err
 		}
 	}

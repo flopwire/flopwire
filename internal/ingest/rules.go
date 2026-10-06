@@ -523,18 +523,18 @@ func parentRefused(ctx context.Context, pool *pgxpool.Pool, parentID *string) (s
 // current ones, so a rule change that the stored-session sweep ran before
 // this parse committed still covers it.
 func recheckStored(ctx context.Context, pool *pgxpool.Pool, r serverRules, src source, path string, dev deviceDirs) (*refusal, []string, error) {
-	rows, err := pool.Query(ctx, `SELECT session_id,COALESCE(cwd,''),COALESCE(extra->'git'->>'repository_url',''),other_cwds FROM conversations
+	rows, err := pool.Query(ctx, `SELECT session_id,COALESCE(cwd,''),COALESCE(extra->'git'->>'repository_url',''),other_cwds,device_id::text FROM conversations
 		WHERE source_id=$1 ORDER BY session_id`, src.id)
 	if err != nil {
 		return nil, nil, err
 	}
 	type conv struct {
-		session, cwd, remote string
-		others               []string
+		session, cwd, remote, device string
+		others                       []string
 	}
 	convs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (conv, error) {
 		var c conv
-		return c, row.Scan(&c.session, &c.cwd, &c.remote, &c.others)
+		return c, row.Scan(&c.session, &c.cwd, &c.remote, &c.others, &c.device)
 	})
 	if err != nil {
 		return nil, nil, err
@@ -544,7 +544,7 @@ func recheckStored(ctx context.Context, pool *pgxpool.Pool, r serverRules, src s
 	for _, c := range convs {
 		sessions = append(sessions, c.session)
 		d := r.decideAll(dev, src.agent, path, c.cwd, c.others, c.remote)
-		policies, err := loadSessionPolicies(ctx, pool, src.deviceID, src.agent, c.session, "", src.id)
+		policies, err := loadSessionPolicies(ctx, pool, c.device, src.agent, c.session, "", src.id)
 		if err != nil {
 			return nil, nil, err
 		}

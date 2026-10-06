@@ -63,11 +63,21 @@ func recordPolicyDeviceDirs(ctx context.Context, tx pgx.Tx, device string, d *sy
 var policyChildID = regexp.MustCompile(`^agent-[a-zA-Z0-9_-]{1,128}$`)
 
 type policyPlacementState struct {
+	SessionID           string
 	Placements          []syncproto.PolicyPlacement
 	CurrentMappingKnown bool
 	EvidenceScope       string
 	ClientMode          string
 	Revision            int64
+}
+
+// Metadata-only placeholders contribute actual restrictions, but their
+// readiness belongs only to their own source and cannot taint first capture.
+func policyForSession(p policyPlacementState, session string) policyPlacementState {
+	if validPolicySession(session) && p.SessionID != "" && p.SessionID != session && p.EvidenceScope == syncproto.EvidenceNone {
+		p.CurrentMappingKnown = true
+	}
+	return p
 }
 
 func validPolicySession(id string) bool {
@@ -94,7 +104,7 @@ func validatePolicyRequest(req *syncproto.PolicyPlacementsRequest) error {
 	if req.CurrentMappingKnown && len(req.Placements) == 0 {
 		return badRequest("known mapping requires host placements")
 	}
-	if len(req.Placements) > maxPolicyPlacements || len(req.Sources) > maxPolicyPlacements {
+	if len(req.Placements) > maxPolicyPlacements || len(req.Sources) > maxPolicyPlacements || len(req.RecoverySources) > maxPolicyPlacements {
 		return badRequest("too many policy placements or source references")
 	}
 	for _, p := range req.Placements {
@@ -118,6 +128,12 @@ func validatePolicyRequest(req *syncproto.PolicyPlacementsRequest) error {
 	for _, src := range req.Sources {
 		if !absPath(src.Path) || len(src.Path) > syncproto.MaxRepoField || len(src.FileID) > 512 || strings.ContainsAny(src.Path+src.FileID, "\x00\r\n") || src.Generation < 0 {
 			return badRequest("invalid source reference")
+		}
+	}
+	for _, ref := range req.RecoverySources {
+		src := ref.Source
+		if !absPath(src.Path) || len(src.Path) > syncproto.MaxRepoField || src.FileID == "" || len(src.FileID) > 512 || src.Generation < 0 || !absPath(ref.OriginalPath) || len(ref.OriginalPath) > syncproto.MaxRepoField || strings.ContainsAny(src.Path+src.FileID+ref.OriginalPath, "\x00\r\n\t") {
+			return badRequest("invalid recovered source reference")
 		}
 	}
 	return nil
@@ -173,6 +189,9 @@ func (r serverRules) decidePolicy(dev deviceDirs, p policyPlacementState) pathpo
 			}
 		}
 	}
+	if p.EvidenceScope == syncproto.EvidenceUnmapped && r.unplaceable == pathpolicy.Deny && d.Mode < pathpolicy.Deny {
+		d = pol.Decide(pathpolicy.Placement{})
+	}
 	mode, _ := pathpolicy.ParseMode(p.ClientMode)
 	if mode > d.Mode || mode == d.Mode && isPolicyHold(d) {
 		d = pathpolicy.Decision{Mode: mode, Rule: pathpolicy.Rule{Mode: mode, Pattern: "cowork-client-policy"}}
@@ -192,7 +211,7 @@ func isPolicyHold(d pathpolicy.Decision) bool {
 }
 
 func stricterPolicyDecision(a, b pathpolicy.Decision) pathpolicy.Decision {
-	if b.Mode > a.Mode || b.Mode == a.Mode && (isPolicyHold(a) && !isPolicyHold(b) || b.Admin && !a.Admin) {
+	if b.Mode > a.Mode || b.Mode == a.Mode && (isPolicyHold(a) && !isPolicyHold(b) || a.Unplaceable && !b.Unplaceable || b.Admin && !a.Admin) {
 		return b
 	}
 	return a
@@ -202,8 +221,9 @@ func stricterPolicyDecision(a, b pathpolicy.Decision) pathpolicy.Decision {
 // Actual rules matched by native fields remain part of the strictest decision.
 func decideWithPolicies(r serverRules, dev deviceDirs, native pathpolicy.Decision, policies []policyPlacementState) pathpolicy.Decision {
 	d := native
+	unmapped := slices.ContainsFunc(policies, func(p policyPlacementState) bool { return p.EvidenceScope == syncproto.EvidenceUnmapped })
 	for _, p := range policies {
-		if d.Unplaceable && p.CurrentMappingKnown && len(p.Placements) > 0 {
+		if d.Unplaceable && p.CurrentMappingKnown && len(p.Placements) > 0 && (d.Mode != pathpolicy.Deny || !unmapped) {
 			d = pathpolicy.Decision{}
 		}
 	}
@@ -233,9 +253,9 @@ func loadSessionPolicies(ctx context.Context, q policyQuerier, device, agent, se
  UNION SELECT c.id,c.session_id,c.parent_native_session_id,c.parent_conversation_id FROM conversations c JOIN conversation_ancestors a ON c.id=a.parent_conversation_id OR c.session_id=a.parent_native_session_id WHERE c.device_id=$1 AND c.agent=$2),
  keys AS (SELECT $3::text session_id UNION SELECT NULLIF($4,'') UNION SELECT session_id FROM conversation_ancestors UNION SELECT parent_native_session_id FROM conversation_ancestors UNION SELECT session_key FROM ancestry
  UNION SELECT b.session_id FROM source_policy_placements b JOIN ancestry a ON b.path=a.path AND b.file_id=a.file_id WHERE b.device_id=$1 AND b.agent=$2),
- policy_keys AS(SELECT session_id FROM keys UNION SELECT link.policy_session_id FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id WHERE link.device_id=$1 AND link.agent=$2)
- SELECT p.placements,p.current_mapping_known,p.evidence_scope,p.client_mode,p.revision FROM session_policy_placements p
- WHERE p.device_id=$1 AND p.agent=$2 AND p.session_id IN (SELECT session_id FROM policy_keys)`, device, agent, session, parent, sourceID)
+ policy_keys AS(SELECT session_id FROM keys UNION SELECT CASE WHEN link.session_id=k.session_id THEN link.policy_session_id ELSE link.session_id END FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id OR link.policy_session_id=k.session_id WHERE link.device_id=$1 AND link.agent=$2)
+ SELECT p.session_id,p.placements,p.current_mapping_known,p.evidence_scope,p.client_mode,p.revision FROM session_policy_placements p
+ WHERE p.device_id=$1 AND p.agent=$2 AND p.session_id IN (SELECT session_id FROM policy_keys) LIMIT 1025`, device, agent, session, parent, sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,13 +264,16 @@ func loadSessionPolicies(ctx context.Context, q policyQuerier, device, agent, se
 	for rows.Next() {
 		var p policyPlacementState
 		var raw []byte
-		if err := rows.Scan(&raw, &p.CurrentMappingKnown, &p.EvidenceScope, &p.ClientMode, &p.Revision); err != nil {
+		if err := rows.Scan(&p.SessionID, &raw, &p.CurrentMappingKnown, &p.EvidenceScope, &p.ClientMode, &p.Revision); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(raw, &p.Placements); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		out = append(out, policyForSession(p, session))
+		if len(out) > 1024 {
+			return nil, &Error{http.StatusRequestEntityTooLarge, "policy_component_limit", "Cowork policy component exceeds supported bound; uploads remain held"}
+		}
 	}
 	return out, rows.Err()
 }
@@ -300,7 +323,7 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 			return err
 		}
 
-		p, err := mergePolicy(old, req, legacy)
+		p, err := mergePolicy(old, req, legacy || len(req.RecoverySources) > 0)
 		if err != nil {
 			return err
 		}
@@ -390,11 +413,11 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 // child whose own historical scope or rules still forbid sharing.
 func reconcileSessionPolicy(ctx context.Context, tx pgx.Tx, r serverRules, user, device, agent, session string) error {
 	rows, err := tx.Query(ctx, `WITH RECURSIVE affected AS (
- SELECT $3::text session_id UNION SELECT link.session_id FROM session_policy_links link JOIN affected p ON link.policy_session_id=p.session_id WHERE link.device_id=$1 AND link.agent=$2),
+ SELECT $3::text session_id UNION SELECT CASE WHEN link.session_id=p.session_id THEN link.policy_session_id ELSE link.session_id END FROM session_policy_links link JOIN affected p ON link.policy_session_id=p.session_id OR link.session_id=p.session_id WHERE link.device_id=$1 AND link.agent=$2),
  tree AS (
  SELECT id,session_id,parent_native_session_id FROM conversations WHERE device_id=$1 AND agent=$2 AND (session_id IN(SELECT session_id FROM affected) OR source_id IN (SELECT s.id FROM sources s JOIN source_policy_placements b ON s.device_id=b.device_id AND s.path=b.path AND s.file_id=b.file_id WHERE b.device_id=$1 AND b.agent=$2 AND b.session_id IN(SELECT session_id FROM affected)))
  UNION SELECT c.id,c.session_id,c.parent_native_session_id FROM conversations c JOIN tree t ON c.parent_conversation_id=t.id OR c.parent_native_session_id=t.session_id WHERE c.device_id=$1 AND c.agent=$2)
- SELECT c.id::text,c.session_id,COALESCE(c.parent_native_session_id,''),COALESCE(c.cwd,''),c.other_cwds,COALESCE(c.extra->'git'->>'repository_url',''),COALESCE(c.source_id::text,''),COALESCE(s.path,''),COALESCE(d.home,''),COALESCE(d.claude_projects,'') FROM tree t JOIN conversations c ON c.id=t.id JOIN devices d ON d.id=c.device_id LEFT JOIN sources s ON s.id=c.source_id ORDER BY c.depth,c.session_id`, device, agent, session)
+ SELECT c.id::text,c.session_id,COALESCE(c.parent_native_session_id,''),COALESCE(c.cwd,''),c.other_cwds,COALESCE(c.extra->'git'->>'repository_url',''),COALESCE(c.source_id::text,''),COALESCE(s.path,''),COALESCE(d.home,''),COALESCE(d.claude_projects,'') FROM tree t JOIN conversations c ON c.id=t.id JOIN devices d ON d.id=c.device_id LEFT JOIN sources s ON s.id=c.source_id ORDER BY c.depth,c.session_id LIMIT 4097`, device, agent, session)
 	if err != nil {
 		return err
 	}
@@ -411,6 +434,10 @@ func reconcileSessionPolicy(ctx context.Context, tx pgx.Tx, r serverRules, user,
 			return err
 		}
 		list = append(list, c)
+		if len(list) > 4096 {
+			rows.Close()
+			return &Error{http.StatusRequestEntityTooLarge, "policy_reconciliation_limit", "Cowork policy reconciliation exceeds supported bound; uploads remain held"}
+		}
 	}
 	err = rows.Err()
 	rows.Close()
@@ -436,17 +463,28 @@ func reconcileSessionPolicy(ctx context.Context, tx pgx.Tx, r serverRules, user,
 	return nil
 }
 
-// checkFlushPolicy runs once before reading content and again under natural-key
-// locks in the manifest transaction. The latter closes restriction-vs-upload
-// races while the former avoids receiving content already known to be held.
-func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src syncproto.Source, lock bool, tx pgx.Tx) ([]string, error) {
+// checkFlushPolicy runs before receiving content and again in the manifest
+// transaction under the shared device gate. Registration takes the exclusive
+// gate, so an acknowledged restriction cannot race the committed manifest.
+func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src syncproto.Source) ([]string, error) {
 	if src.Agent != "claude" {
 		return nil, nil
 	}
-	native := src.SessionKey
-	if native == "" && src.Agent == "claude" && strings.HasSuffix(src.Path, ".jsonl") {
-		parts := strings.Split(strings.ReplaceAll(src.Path, `\`, "/"), "/")
-		native = strings.TrimSuffix(parts[len(parts)-1], ".jsonl")
+	// Upgrade fixtures seed historical archives through the current uploader
+	// before migration 014. Such schemas cannot contain Cowork policy records.
+	var supported bool
+	if err := q.QueryRow(ctx, `SELECT to_regclass('session_policy_placements') IS NOT NULL`).Scan(&supported); err != nil {
+		return nil, err
+	}
+	if !supported {
+		if strings.Contains(strings.ReplaceAll(src.Path, `\`, "/"), "/local-agent-mode-sessions/") {
+			return nil, &Error{http.StatusConflict, "policy_placements_required", "Cowork host policy is unavailable on this schema; uploads remain held"}
+		}
+		return nil, nil
+	}
+	native, err := policySourceSession(ctx, q, device, src)
+	if err != nil {
+		return nil, err
 	}
 	parentPath, parentID := "", ""
 	if src.Parent != nil {
@@ -457,7 +495,7 @@ func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src s
  UNION SELECT s.id,s.path,s.file_id,s.session_key,s.parent_source_id FROM sources s JOIN ancestry a ON s.id=a.parent_source_id WHERE s.device_id=$1),
  keys AS(SELECT $7::text session_id UNION SELECT session_key FROM ancestry
  UNION SELECT session_id FROM source_policy_placements WHERE device_id=$1 AND agent=$2 AND ((path=$3 AND file_id=$4) OR (path=$5 AND ($6='' OR file_id=$6)))),
- policy_keys AS(SELECT session_id FROM keys UNION SELECT link.policy_session_id FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id WHERE link.device_id=$1 AND link.agent=$2)
+ policy_keys AS(SELECT session_id FROM keys UNION SELECT CASE WHEN link.session_id=k.session_id THEN link.policy_session_id ELSE link.session_id END FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id OR link.policy_session_id=k.session_id WHERE link.device_id=$1 AND link.agent=$2)
  SELECT p.session_id FROM session_policy_placements p WHERE p.device_id=$1 AND p.agent=$2 AND p.session_id IN(SELECT session_id FROM policy_keys) ORDER BY p.session_id COLLATE "C"`, device, src.Agent, src.Path, src.FileID, parentPath, parentID, native)
 	if err != nil {
 		return nil, err
@@ -480,25 +518,6 @@ func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src s
 	if strings.Contains(strings.ReplaceAll(src.Path, `\`, "/"), "/local-agent-mode-sessions/") && len(ids) == 0 {
 		return nil, &Error{http.StatusConflict, "policy_placements_required", "Cowork host policy must be acknowledged before content"}
 	}
-	if lock {
-		var user string
-		if err := q.QueryRow(ctx, `SELECT user_id::text FROM devices WHERE id=$1`, device).Scan(&user); err != nil {
-			return nil, err
-		}
-		locks := slices.Clone(ids)
-		if validPolicySession(native) && !slices.Contains(locks, native) {
-			locks = append(locks, native)
-		}
-		slices.Sort(locks)
-		for _, id := range locks {
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(user, src.Agent, id)); err != nil {
-				return nil, err
-			}
-		}
-		// A restriction may have been registered while this flush waited for its
-		// lock, so repeat lookup and decision after acquisition.
-		return checkFlushPolicy(ctx, q, device, src, false, nil)
-	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -516,7 +535,7 @@ func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src s
 			return nil, err
 		}
 		for _, p := range states {
-			if d := rules.decidePolicy(deviceDirs{home: home}, p); d.Mode != pathpolicy.Allow {
+			if d := rules.decidePolicy(deviceDirs{home: home}, policyForSession(p, native)); d.Mode != pathpolicy.Allow {
 				return nil, &Error{http.StatusConflict, "policy_placements_held", "Cowork content is held by host policy or unresolved historical scope"}
 			}
 		}
@@ -524,10 +543,38 @@ func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src s
 	return ids, nil
 }
 
+// A companion's owning identity is its actual parent, never an arbitrary
+// member of the connected policy component.
+func policySourceSession(ctx context.Context, q policyQuerier, device string, src syncproto.Source) (string, error) {
+	if src.SessionKey != "" {
+		return src.SessionKey, nil
+	}
+	path := src.Path
+	if src.StorageKind == "companion" && src.Parent != nil {
+		var session string
+		err := q.QueryRow(ctx, `SELECT COALESCE(session_key,'') FROM sources WHERE device_id=$1 AND path=$2 AND ($3='' OR file_id=$3) ORDER BY first_seen_at DESC LIMIT 1`, device, src.Parent.Path, src.Parent.FileID).Scan(&session)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", err
+		}
+		if session != "" {
+			return session, nil
+		}
+		path = src.Parent.Path
+	}
+	if strings.HasSuffix(path, ".jsonl") {
+		parts := strings.Split(strings.ReplaceAll(path, `\`, "/"), "/")
+		session := strings.TrimSuffix(parts[len(parts)-1], ".jsonl")
+		if validPolicySession(session) {
+			return session, nil
+		}
+	}
+	return "", nil
+}
+
 // checkSessionPolicy is called after the sink holds the session's natural-key
 // lock, so an acknowledged restriction cannot be bypassed by a stale parse.
 func (s *sink) checkSessionPolicy(tx pgx.Tx, session, parent string) error {
-	if s.src.agent != "claude" {
+	if s.src.agent != "claude" || !s.devicePolicy {
 		return nil
 	}
 	policies, err := loadSessionPolicies(s.ctx, tx, s.src.deviceID, s.src.agent, session, parent, s.src.id)
@@ -580,8 +627,24 @@ func (s *sink) checkSessionPolicy(tx pgx.Tx, session, parent string) error {
 // path supplied as device evidence. A CASS alias or another device's same UUID
 // alone cannot establish a link to this Cowork session.
 func recoveryPolicyAliases(ctx context.Context, q policyQuerier, device string, req *syncproto.PolicyPlacementsRequest) ([]string, error) {
+	var ids []string
+	for _, ref := range req.RecoverySources {
+		var id string
+		err := q.QueryRow(ctx, `SELECT s.id::text FROM sources s JOIN generations g ON g.source_id=s.id AND g.generation=$5 JOIN conversations c ON c.source_id=s.id
+ WHERE s.device_id=$1 AND c.device_id=$1 AND s.agent=$2 AND c.agent=$2 AND s.path=$3 AND s.file_id=$4 AND s.storage_kind='cass_export'
+ AND c.extra->>'recovered_history'='true' AND c.extra->>'cass_external_id'=$6 AND c.extra->>'cass_source_path'=$7 LIMIT 1`, device, req.Agent, ref.Source.Path, ref.Source.FileID, ref.Source.Generation, req.SessionID, ref.OriginalPath).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, &Error{http.StatusConflict, "recovery_proof_missing", "recovered source generation and same-device native/path provenance must already be stored; uploads remain held"}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
 	if len(req.Sources) == 0 {
-		return nil, nil
+		return ids, nil
 	}
 	paths := make([]string, 0, len(req.Sources))
 	for _, ref := range req.Sources {
@@ -589,18 +652,22 @@ func recoveryPolicyAliases(ctx context.Context, q policyQuerier, device string, 
 	}
 	rows, err := q.Query(ctx, `SELECT DISTINCT s.id::text FROM conversations c JOIN sources s ON s.id=c.source_id
  WHERE c.device_id=$1 AND s.device_id=$1 AND c.agent=$2 AND s.agent=$2 AND s.storage_kind='cass_export'
- AND c.extra->>'recovered_history'='true' AND c.extra->>'cass_external_id'=$3 AND c.extra->>'cass_source_path'=ANY($4)`, device, req.Agent, req.SessionID, paths)
+ AND c.extra->>'recovered_history'='true' AND c.extra->>'cass_external_id'=$3 AND c.extra->>'cass_source_path'=ANY($4) LIMIT 1025`, device, req.Agent, req.SessionID, paths)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+		if len(ids) > 1024 {
+			return nil, &Error{http.StatusRequestEntityTooLarge, "policy_recovery_limit", "Cowork recovered copy set exceeds supported bound; uploads remain held"}
+		}
 	}
 	return ids, rows.Err()
 }

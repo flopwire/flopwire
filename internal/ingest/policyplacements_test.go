@@ -146,3 +146,24 @@ func TestPolicyMissingHomeHoldsWithoutErasingKnownDeny(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyHistoricalUnknownHonorsExplicitUnplaceableExclude(t *testing.T) {
+	p := policyPlacementState{Placements: []syncproto.PolicyPlacement{{CWD: "/Users/test/work"}}, CurrentMappingKnown: true, EvidenceScope: "unmapped", ClientMode: "allow"}
+	for _, floor := range []pathpolicy.Mode{pathpolicy.Allow, pathpolicy.Local, pathpolicy.Deny} {
+		r := serverRules{unplaceable: floor}
+		native := r.decideAll(deviceDirs{}, "claude", "/native/session.jsonl", "", nil, "")
+		d := decideWithPolicies(r, deviceDirs{}, native, []policyPlacementState{p})
+		if floor == pathpolicy.Deny {
+			if d.Mode != pathpolicy.Deny || !d.Unplaceable || isPolicyHold(d) {
+				t.Fatalf("explicit exclusion weakened: %+v", d)
+			}
+		} else if !isPolicyHold(d) {
+			t.Fatalf("unknown history was not retained: floor=%v decision=%+v", floor, d)
+		}
+	}
+	rules, _ := pathpolicy.ParseRules([]string{"deny /Users/test/work/private"})
+	r := serverRules{admin: rules, unplaceable: pathpolicy.Deny}
+	if d := r.decidePolicy(deviceDirs{}, p); d.Mode != pathpolicy.Deny || d.Unplaceable || d.Rule.Pattern != pathpolicy.Normalize("/Users/test/work/private") {
+		t.Fatalf("actual known folder deny lost priority: %+v", d)
+	}
+}

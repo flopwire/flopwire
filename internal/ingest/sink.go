@@ -78,6 +78,10 @@ type sink struct {
 	// reads through. masksMoved is set when a write found it stale.
 	maskRevision int64
 	masksMoved   bool
+	// devicePolicy is a transaction-local ledger-presence snapshot, read
+	// after the shared device gate. It avoids per-conversation policy reads
+	// for ordinary CLI devices; the gate prevents registration until commit.
+	devicePolicy bool
 }
 
 func newSink(ctx context.Context, pool *pgxpool.Pool, src source) *sink {
@@ -265,14 +269,14 @@ func (s *sink) flush() error {
 func (s *sink) checkMasks(tx pgx.Tx) error {
 	b := &pgx.Batch{}
 	b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
-	b.Queue(`SELECT revision FROM redacted_lines_revision WHERE singleton`)
+	b.Queue(`SELECT revision,EXISTS(SELECT 1 FROM session_policy_placements WHERE device_id=NULLIF($1,'')::uuid AND $2='claude') FROM redacted_lines_revision WHERE singleton`, s.src.deviceID, s.src.agent)
 	br := tx.SendBatch(s.ctx, b)
 	if _, err := br.Exec(); err != nil {
 		br.Close()
 		return err
 	}
 	var rev int64
-	if err := br.QueryRow().Scan(&rev); err != nil {
+	if err := br.QueryRow().Scan(&rev, &s.devicePolicy); err != nil {
 		br.Close()
 		return err
 	}
