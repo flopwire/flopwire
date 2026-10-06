@@ -529,7 +529,7 @@ func TestPolicyClientLimitHeldCompactsAndRevokesRecoveryBatches(t *testing.T) {
 					return
 				}
 				compactPosts++
-				if len(raw) >= syncproto.MaxPolicyPlacementsBytes || len(got.RecoverySources) > 256 || len(got.Placements) != 0 || len(got.Sources) > 256 || got.CurrentMappingKnown || got.ClientMode != req.ClientMode || got.EvidenceScope != req.EvidenceScope || got.SessionID != req.SessionID || got.ParentSessionID != req.ParentSessionID || got.Device.Home != req.Device.Home || got.Device.ClaudeProjects != "" {
+				if len(raw) >= syncproto.MaxPolicyPlacementsBytes || len(got.RecoverySources) > 256 || len(got.Placements) != 0 || len(got.Sources) > 256 || got.CurrentMappingKnown || got.ClientMode != req.ClientMode || got.EvidenceScope != req.EvidenceScope || got.SessionID != req.SessionID || got.ParentSessionID != req.ParentSessionID || got.Device != nil {
 					t.Errorf("invalid compact restriction: %+v", got)
 				}
 				if compactPosts == 1 && (len(got.RecoverySources) != 0 || len(got.Sources) != 0) {
@@ -610,8 +610,8 @@ func TestPolicyClientLimitHeldRejectsUnsafeCompactAcknowledgement(t *testing.T) 
 	}
 }
 
-func TestPolicyClientLimitHeldCannotInventIdentityOrHome(t *testing.T) {
-	for _, kind := range []string{"session", "parent", "agent", "home", "missing home", "oversized recovery"} {
+func TestPolicyClientLimitHeldCannotInventIdentity(t *testing.T) {
+	for _, kind := range []string{"session", "parent", "agent", "oversized recovery"} {
 		t.Run(kind, func(t *testing.T) {
 			req := policyRequest("local", "none")
 			req.SessionID = "c6cb1b71-e23e-4482-9c48-65bfd186ac43"
@@ -624,10 +624,6 @@ func TestPolicyClientLimitHeldCannotInventIdentityOrHome(t *testing.T) {
 				req.ParentSessionID = "arbitrary"
 			case "agent":
 				req.Agent = "other"
-			case "home":
-				req.Device.Home = "relative"
-			case "missing home":
-				req.Device = nil
 			case "oversized recovery":
 				req.RecoverySources = []syncproto.PolicyRecoverySource{{OriginalPath: strings.Repeat("x", syncproto.MaxPolicyPlacementsBytes)}}
 			}
@@ -882,5 +878,74 @@ func TestPolicyClientLimitHeldSourceByteBoundAndAckFailure(t *testing.T) {
 				t.Error("continued after unverified source acknowledgement")
 			}
 		})
+	}
+}
+
+func TestPolicyClientLimitHeldRetainsRecordedHome(t *testing.T) {
+	for _, device := range []*syncproto.DeviceDirs{nil, {}, {Home: "relative"}, {Home: "/synthetic/moved-home", ClaudeProjects: "/synthetic/moved-projects"}} {
+		for _, server413 := range []bool{false, true} {
+			t.Run(fmt.Sprintf("device=%v/server413=%v", device, server413), func(t *testing.T) {
+				req := policyRequest("deny", "mapped")
+				req.SessionID = "c6cb1b71-e23e-4482-9c48-65bfd186ac43"
+				req.Device = device
+				if !server413 {
+					req.Placements = make([]syncproto.PolicyPlacement, 257)
+				}
+				req.RecoverySources = []syncproto.PolicyRecoverySource{{Source: syncproto.PolicySource{Path: "/synthetic/export", FileID: "1:3", Generation: 2}, OriginalPath: "/synthetic/native"}}
+				fullPosts, heldPosts := 0, 0
+				recordedHome := "/synthetic/recorded-home"
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == syncproto.PathCapabilities {
+						io.WriteString(w, `{"version":1,"policyplacements_version":1,"max_concurrent_flushes":1}`)
+						return
+					}
+					raw, _ := io.ReadAll(r.Body)
+					var got syncproto.PolicyPlacementsRequest
+					if err := json.Unmarshal(raw, &got); err != nil {
+						t.Error(err)
+						return
+					}
+					if got.ScopeStatus == "" {
+						fullPosts++
+						if (device == nil) != (got.Device == nil) || (device != nil && *got.Device != *device) {
+							t.Error("full request changed actual device directories")
+						}
+						w.WriteHeader(413)
+						return
+					}
+					heldPosts++
+					var fields map[string]json.RawMessage
+					json.Unmarshal(raw, &fields)
+					if _, present := fields["device"]; present {
+						t.Error("compact restriction included device directories")
+					}
+					// Model the server's immutable home check: including the moved home
+					// would reject this restriction and leave old copies visible.
+					if got.Device != nil && got.Device.Home != recordedHome {
+						w.WriteHeader(409)
+						io.WriteString(w, `{"code":"device_home_conflict"}`)
+						return
+					}
+					if got.SessionID != req.SessionID || got.ClientMode != req.ClientMode || got.EvidenceScope != req.EvidenceScope || got.CurrentMappingKnown {
+						t.Error("identity restriction changed")
+					}
+					digest, _ := syncproto.PolicyPlacementsDigest(&got)
+					json.NewEncoder(w).Encode(syncproto.PolicyPlacementsResponse{Version: 1, Revision: int64(heldPosts), EvidenceScope: got.EvidenceScope, RequestDigest: digest})
+				}))
+				defer server.Close()
+				c := &PolicyClient{Server: server.URL, Token: "device-token", HTTP: server.Client()}
+				out, err := c.PolicyPlacements(context.Background(), req)
+				var held *PolicyLimitHeldError
+				if out != nil || !errors.As(err, &held) || !held.Reconciled || held.Cause != nil || heldPosts != 2 {
+					t.Fatalf("original authorization released or revocation blocked: out=%+v err=%v compact=%d", out, err, heldPosts)
+				}
+				if server413 != (fullPosts == 1) {
+					t.Errorf("full posts=%d", fullPosts)
+				}
+				if recordedHome != "/synthetic/recorded-home" {
+					t.Error("recorded home changed during revocation")
+				}
+			})
+		}
 	}
 }
