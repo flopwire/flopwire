@@ -147,6 +147,9 @@ func TestDesktopCodeScopedAuthorizationUploadsMatchedNativeFamily(t *testing.T) 
 			t.Fatal("missing durable Code boundary")
 		}
 	}
+	if x.a.desktopCodeStatus().SharedAuthorization == "" {
+		t.Fatal("configured proof hook must report required scoped authorization")
+	}
 	if x.a.desktopCodeStatus().SharedHold != "" {
 		t.Fatal("configured scoped authorization still advertised prerequisite hold")
 	}
