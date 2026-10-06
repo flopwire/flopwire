@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +21,7 @@ import (
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/devin"
 )
 
 // indexed is a top-level session in the index and its last write.
@@ -349,13 +353,38 @@ func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
 	dv := f.pick("devin")
 	writeFile(t, filepath.Join(filepath.Dir(devinPath), "session_locks", dv.id+".lock"), "5151\n")
 	at := dv.last.Add(time.Minute)
+	var interruptLog bytes.Buffer
+	f.a.log = slog.New(slog.NewTextHandler(&interruptLog, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	busy := func() bool {
 		t.Helper()
+		interruptLog.Reset()
 		s, ok := f.presence(at)[dv.id]
 		if !ok {
 			t.Fatal("Devin session not live")
 		}
 		return s.Busy
+	}
+	waitIdle := func() {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for busy() {
+			// A failed read deliberately retains busy until the next presence
+			// tick. Retry only a witnessed deadline, never a successful read
+			// that missed the marker or an unrelated store error.
+			if !strings.Contains(interruptLog.String(), `msg="agent: devin interrupt"`) || !strings.Contains(interruptLog.String(), "context deadline exceeded") {
+				t.Fatalf("busy after interrupt without a read deadline: %s", interruptLog.String())
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("interrupt not observed within 2s: %s", interruptLog.String())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if marked, _ := f.a.hookBusy(transcript.AgentDevin, dv.id); marked {
+			t.Fatal("idle presence did not clear Devin's hook state")
+		}
+		if marked, _ := f.a.hookBusy(transcript.AgentOpencode, dv.id); !marked {
+			t.Fatal("Devin interrupt cleared another harness's hook state")
+		}
 	}
 	node := func(id int, msg string) {
 		t.Helper()
@@ -365,25 +394,39 @@ func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
 		}
 	}
 	hook := time.Date(2026, 10, 4, 20, 10, 19, 0, time.UTC)
+	f.a.noteHookEvent("opencode", dv.id, "PostToolUse", hook)
 	f.a.noteHookEvent("devin", dv.id, "PostToolUse", hook)
 	if !busy() {
 		t.Fatal("not busy after PostToolUse")
 	}
 	// Esc twice while the next tool ran: its result is the marker, no Stop.
 	node(1, `{"role":"tool","content":"Canceled due to user interrupt","tool_call_id":"get_output_0#1","metadata":{"created_at":"2026-10-04T20:10:28.937439Z","extensions":{"chisel/tool_failure":{"reason":"Canceled"}}}}`)
-	if busy() {
-		t.Fatal("busy after an interrupt the store shows")
+	// Prove the timeout path: a marker exists, but an expired read must
+	// retain busy state so an uncertain read cannot announce an idle turn.
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := devin.InterruptedSince(expired, devinPath, dv.id, hook); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired interrupt read: %v", err)
 	}
+	if !f.a.devinTurnBusy(expired, dv.id) {
+		t.Fatal("failed interrupt read announced idle")
+	}
+	if !strings.Contains(interruptLog.String(), "context deadline exceeded") {
+		t.Fatalf("interrupt deadline was not logged: %s", interruptLog.String())
+	}
+	if marked, start := f.a.hookBusy(transcript.AgentDevin, dv.id); !marked || !start.Equal(hook) {
+		t.Fatal("failed interrupt read changed hook state")
+	}
+	waitIdle()
 	// The next prompt starts a turn after the interrupt: busy.
 	f.a.noteHookEvent("devin", dv.id, "UserPromptSubmit", hook.Add(30*time.Second))
+	f.a.hookTurnEnded(transcript.AgentDevin, dv.id, hook) // late completion of the old read
 	if !busy() {
 		t.Fatal("a turn after the interrupt is not busy")
 	}
 	// Interrupted while the model answered.
 	node(2, `{"role":"system","content":"[Response interrupted by user]","metadata":{"created_at":"2026-10-04T20:10:55.035344Z"}}`)
-	if busy() {
-		t.Fatal("busy after a response interrupt")
-	}
+	waitIdle()
 }
 
 // A session the path rules keep off the server is marked withheld, so the

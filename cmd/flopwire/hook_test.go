@@ -183,14 +183,15 @@ func decodeHook(t *testing.T, out string) hookOutput {
 // of these events: a SessionStart hook may have been killed, #101).
 func TestHookEventsPerHarness(t *testing.T) {
 	inputs := map[string]struct {
-		in  func(string) string
-		env map[string]string
+		in    func(string) string
+		env   map[string]string
+		agent string
 	}{
-		"claude":               {claudeIn, map[string]string{"CLAUDECODE": "1"}},
-		"codex":                {codexIn, map[string]string{"CODEX_THREAD_ID": codexSID}},
-		"devin":                {devinIn, devinHookEnv(t)},
-		"devin-claude-config":  {claudeIn, devinHookEnv(t)}, // Devin running a hook from .claude/settings.json
-		"claude-no-env-at-all": {claudeIn, nil},
+		"claude":               {claudeIn, map[string]string{"CLAUDECODE": "1"}, "claude"},
+		"codex":                {codexIn, map[string]string{"CODEX_THREAD_ID": codexSID}, "codex"},
+		"devin":                {devinIn, devinHookEnv(t), "devin"},
+		"devin-claude-config":  {claudeIn, devinHookEnv(t), "devin"}, // Devin running a hook from .claude/settings.json
+		"claude-no-env-at-all": {claudeIn, nil, "claude"},
 	}
 	for name, h := range inputs {
 		for _, ev := range []string{evSessionStart, evUserPromptSubmit, evPostToolUse} {
@@ -213,7 +214,7 @@ func TestHookEventsPerHarness(t *testing.T) {
 				t.Fatalf("%s %s: stderr %q", name, ev, errOut)
 			}
 			p := fa.requests("pending")
-			if len(p) != 1 || p[0].Limit != busrender.HookMessages || p[0].MaxBytes != busrender.HookBytes || p[0].Agent != "" {
+			if len(p) != 1 || p[0].Limit != busrender.HookMessages || p[0].MaxBytes != busrender.HookBytes || p[0].Agent != h.agent {
 				t.Fatalf("%s %s: pending requests %+v", name, ev, p)
 			}
 			if (p[0].Start != "") != (ev == evSessionStart) || p[0].HookStart == 0 {

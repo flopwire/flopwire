@@ -40,20 +40,27 @@ func TestDeliveryReliabilityUpgradePreservesProductionState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checksums := make(map[string]string)
+	priorCount := 0
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".sql") || name >= "011_" {
+		if entry.IsDir() || !strings.HasSuffix(name, ".sql") {
 			continue
 		}
 		raw, err := migrations.Files.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
+		sha := sha256.Sum256(raw)
+		checksums[name] = hex.EncodeToString(sha[:])
+		if name >= "011_" {
+			continue
+		}
+		priorCount++
 		if _, err := tx.Exec(ctx, string(raw)); err != nil {
 			t.Fatalf("prior migration %s: %v", name, err)
 		}
-		sha := sha256.Sum256(raw)
-		if _, err := tx.Exec(ctx, `INSERT INTO flopwire_schema_migrations(name,checksum) VALUES($1,$2)`, name, hex.EncodeToString(sha[:])); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO flopwire_schema_migrations(name,checksum) VALUES($1,$2)`, name, checksums[name]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -70,14 +77,34 @@ func TestDeliveryReliabilityUpgradePreservesProductionState(t *testing.T) {
    VALUES($1,$1,$2,$3,'claude','source-1111',$2,'codex','dest-2222','session','own','inform','synthetic-upgrade-private',decode(repeat('00',32),'hex'),$4,$5,$6,$7)`, n.id, user, device.DeviceID, n.state, n.reason, f.now, f.now.Add(busproto.DefaultTTL))
 	}
 	before := f.count(`SELECT count(*) FROM flopwire_schema_migrations`)
+	if before != priorCount {
+		t.Fatalf("prior migration count: got %d, want %d", before, priorCount)
+	}
 	if err := store.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(ctx, pool); err != nil {
 		t.Fatalf("idempotent migration: %v", err)
 	}
-	if f.count(`SELECT count(*) FROM flopwire_schema_migrations`) != before+2 {
-		t.Fatal("migration ledger changed unexpectedly")
+	if got := f.count(`SELECT count(*) FROM flopwire_schema_migrations`); got != len(checksums) {
+		t.Fatalf("migration count: got %d, want %d embedded migrations", got, len(checksums))
+	}
+	rows, err := pool.Query(ctx, `SELECT name,checksum FROM flopwire_schema_migrations ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, checksum string
+		if err := rows.Scan(&name, &checksum); err != nil {
+			t.Fatal(err)
+		}
+		if want, ok := checksums[name]; !ok || checksum != want {
+			t.Fatalf("migration %s: checksum %q, want embedded %q (known=%t)", name, checksum, want, ok)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if f.count(`SELECT count(*) FROM bus_messages WHERE body='synthetic-upgrade-private'`) != 2 || f.count(`SELECT count(*) FROM bus_presence WHERE session_id='source-1111'`) != 1 {
 		t.Fatal("upgrade lost durable state")
