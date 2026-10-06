@@ -880,3 +880,94 @@ func TestInitialAuthorizationRejectsNonNativeSources(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizedCaptureQualifiesOrdinaryEmptyCurrentGeneration(t *testing.T) {
+	for _, appendBytes := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unchanged empty", true: "append"}[appendBytes], func(t *testing.T) {
+			e := newEnv(t, Config{}, 1<<20)
+			sp := authorizedSpec(e, "empty-then-native.jsonl", transcript.StorageJSONLAppend)
+			sp.SessionKey = "ordinary-empty-owner"
+			appendFile(t, sp.Path, nil)
+			if err := e.sy.Sync(context.Background(), sp); err != nil {
+				t.Fatal(err)
+			}
+			src, err := e.store.source(context.Background(), sp.Path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, err := e.store.gen(context.Background(), src.ID, src.Gen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if old == nil || old.Size != 0 || old.Proof != nil {
+				t.Fatalf("ordinary empty fixture: %+v", old)
+			}
+			var data []byte
+			if appendBytes {
+				data = jsonlLines(117, 20, 100)
+				appendFile(t, sp.Path, data)
+			}
+			a := fileAuthorization(t, sp, int64(len(data)))
+			tr := &authTransport{Transport: e.client}
+			e.sy.tr = tr
+			// Resume must hold until capture qualifies the empty generation, and must
+			// not label this zero-byte history as captured evidence requiring taint.
+			err = e.sy.ResumeAuthorized(context.Background(), sp, a)
+			var hold *UnprovenCaptureError
+			if !errors.As(err, &hold) || hold.Captured || tr.has+tr.flush != 0 {
+				t.Fatalf("empty resume bypass: %v transport=%d", err, tr.has+tr.flush)
+			}
+			if err := e.sy.Sync(context.Background(), sp); !errors.Is(err, ErrUnprovenCapture) {
+				t.Fatalf("protected ordinary fallback: %v", err)
+			}
+			if err := e.sy.SyncAuthorized(context.Background(), sp, a); err != nil {
+				t.Fatal(err)
+			}
+			src, err = e.store.source(context.Background(), sp.Path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := e.store.gen(context.Background(), src.ID, src.Gen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current == nil || current.Gen <= old.Gen || !generationProofValid(sp, current) || current.Size != int64(len(data)) {
+				t.Fatalf("new proved capture: %+v", current)
+			}
+			if err := e.sy.ResumeAuthorized(context.Background(), sp, a); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.sy.Sync(context.Background(), sp); !errors.Is(err, ErrUnprovenCapture) {
+				t.Fatalf("proved source lost ordinary hold: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuthorizedEmptyCurrentAllowanceDoesNotQualifyNonemptyPendingHistory(t *testing.T) {
+	e := newEnv(t, Config{}, 1<<20)
+	sp := authorizedSpec(e, "nonempty-history.jsonl", transcript.StorageJSONLAppend)
+	data := jsonlLines(118, 20, 100)
+	appendFile(t, sp.Path, data)
+	tr := &authTransport{Transport: e.client, fail: true}
+	e.sy.tr = tr
+	if err := e.sy.Sync(context.Background(), sp); err == nil {
+		t.Fatal("expected pending outage")
+	}
+	src, err := e.store.source(context.Background(), sp.Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Synthesize an empty current generation while an older generation retains
+	// pending bytes: the current can be empty, but its history is not.
+	oldGeneration := src.Gen
+	if err = e.store.saveCapture(context.Background(), src, &genRow{SourceID: src.ID, Gen: src.Gen + 1, FileID: "empty-current", TailAcked: true}, nil, src.Watermark, nil); err != nil {
+		t.Fatal(err)
+	}
+	before := tr.has + tr.flush
+	err = e.sy.SyncAuthorized(context.Background(), sp, fileAuthorization(t, sp, int64(len(data))))
+	var hold *UnprovenCaptureError
+	if !errors.As(err, &hold) || !hold.Captured || hold.Generation != oldGeneration || tr.has+tr.flush != before {
+		t.Fatalf("pending legacy bytes recertified: %v", err)
+	}
+}
