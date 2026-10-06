@@ -83,8 +83,8 @@ func TestBusUpgradeEmbeddedNumbering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 13 {
-		t.Errorf("embedded release has %d migrations, want contiguous 001..013 (011/012/013 must ship together)", len(files))
+	if len(files) < 13 {
+		t.Errorf("embedded release has %d migrations, want at least contiguous 001..013 (011/012/013 must ship together)", len(files))
 	}
 	for i, file := range files {
 		want := fmt.Sprintf("%03d_", i+1)

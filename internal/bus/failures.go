@@ -13,7 +13,7 @@ import (
 // another device resuming this sender can take it after the lease ends.
 // Latest trusted presence routes resumes, otherwise the sending device
 // retains the notice while its sender is idle or temporarily absent.
-const failureLease = 2 * time.Minute
+const failureLease = busproto.FailureLease
 const leaseFailuresSQL = `WITH candidates AS (
  SELECT n.message_id FROM bus_delivery_failures n
  WHERE n.from_user=$1 AND n.acked_at IS NULL

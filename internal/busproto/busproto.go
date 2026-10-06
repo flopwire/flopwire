@@ -700,6 +700,9 @@ func IdleAge(busy bool, since, now time.Time) *int64 {
 	return &n
 }
 
+// FailureLease bounds ownership of a status batch on one device.
+const FailureLease = 2 * time.Minute
+
 // DeliveryFailure is system delivery status, never a peer message. No body
 // or reference is carried. Token/ValidUntil coordinate device ownership;
 // LeaseID/Attempt coordinate concurrent hooks on the owning device.

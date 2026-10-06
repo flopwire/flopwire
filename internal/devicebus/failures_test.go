@@ -383,3 +383,22 @@ func TestFailureNoticeAckBatchAndMissingServerSupport(t *testing.T) {
 		})
 	}
 }
+
+func TestFailureNoticeLeaseRecoversAfterClockStepBack(t *testing.T) {
+	lb := newLocalBus(t)
+	if _, err := lb.send(t, "aaaa1111", "bbbb", "synthetic clock rollback"); err != nil {
+		t.Fatal(err)
+	}
+	if err := lb.End(ctx, refB, lb.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first := takeFailures(t, lb.Bus, "aaaa1111", "claude")
+	if len(first) != 1 {
+		t.Fatal("missing initial status")
+	}
+	lb.advance(-time.Hour)
+	second := takeFailures(t, lb.Bus, "aaaa1111", "claude")
+	if len(second) != 1 || second[0].Attempt != 2 || second[0].LeaseID == first[0].LeaseID {
+		t.Fatalf("clock rollback blocked notice: %+v", second)
+	}
+}

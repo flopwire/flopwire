@@ -47,8 +47,8 @@ func (b *Bus) TakeFailures(ctx context.Context, session, agent string) ([]buspro
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT id,session_id,agent,state,reason,attempts FROM devbus_failures
    WHERE session_id=? AND (?='' OR agent=?) AND confirmed_at IS NULL
-   AND (lease_until IS NULL OR lease_until<=?)
-   AND (origin='local' OR valid_until>?) ORDER BY created_at,id LIMIT 10`, session, agent, agent, ms(now), ms(now.Add(b.cfg.Lease)))
+   AND (lease_until IS NULL OR lease_until<=? OR lease_until>?)
+   AND (origin='local' OR (valid_until>? AND valid_until<=?)) ORDER BY created_at,id LIMIT 10`, session, agent, agent, ms(now), ms(now.Add(2*b.cfg.Lease)), ms(now.Add(b.cfg.Lease)), ms(now.Add(2*busproto.FailureLease)))
 		if err != nil {
 			return err
 		}

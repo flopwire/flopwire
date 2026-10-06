@@ -441,7 +441,7 @@ func TestPeersOutput(t *testing.T) {
 	// A cloud session is marked, and the footer says what that means.
 	peers = append(peers, busproto.Peer{Session: "session_01AbCdEf", Agent: "claude", User: "gary@example.test", Repo: "acme/api", Branch: "claude/fix", Title: "cloud task", Own: true, Cloud: true})
 	out, err = cli(t, fa, "", "peers", "--text")
-	if err != nil || !strings.Contains(out, "session_01AbCdEf  gary  claude  cloud idle  api@claude/fix  \"cloud task\"\n") ||
+	if err != nil || !strings.Contains(out, "session_01AbCdEf  gary  claude  cloud idle (idle duration unknown)  api@claude/fix  \"cloud task\"\n") ||
 		!strings.Contains(out, "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply.") {
 		t.Fatalf("peers with a cloud session:\n%s%v", out, err)
 	}
