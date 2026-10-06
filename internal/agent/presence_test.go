@@ -94,8 +94,8 @@ func writeFile(t *testing.T, path, s string) {
 	}
 }
 
-// Presence is what `sessions` prints as live: written in the last ten
-// minutes, or held open by its harness and written within the hour. The
+// Presence uses recency for uncertain evidence and keeps confirmed
+// harness holders until a real end. The
 // harness registries are synthetic files here; pids are stubbed.
 func TestPresenceFromHarnessRegistries(t *testing.T) {
 	devinPath, _ := buildDevin(t)
@@ -132,9 +132,9 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 	if !ok || !s.Busy {
 		t.Fatalf("Claude session held open and busy: %+v %v", s, ok)
 	}
-	// An hour and more without a write: not live, held open or not.
-	if _, ok := f.presence(cl.last.Add(61 * time.Minute))[cl.id]; ok {
-		t.Fatal("held open past LiveCap")
+	// A confirmed running holder stays live after transcript inactivity.
+	if _, ok := f.presence(cl.last.Add(61 * time.Minute))[cl.id]; !ok {
+		t.Fatal("confirmed holder disappeared past LiveCap")
 	}
 	// The pid was reused by another process: the file does not count.
 	started[4242] = start.Add(time.Hour)
@@ -176,6 +176,9 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 	s, ok = f.presence(dv.last.Add(30 * time.Minute))[dv.id]
 	if !ok || s.Busy {
 		t.Fatalf("Devin session held open: %+v %v", s, ok)
+	}
+	if _, ok := f.presence(dv.last.Add(2 * time.Hour))[dv.id]; !ok {
+		t.Fatal("confirmed Devin holder disappeared past LiveCap")
 	}
 	// The registries were only read.
 	if fi, err := os.Stat(lock); err != nil || fi.Size() != 5 {
@@ -219,13 +222,13 @@ func TestPresenceDevinBusyFromHookEvents(t *testing.T) {
 		{"PostToolUse", true},
 		{"SessionEnd", false},
 	} {
-		f.a.noteHookEvent(dv.id, c.event, at)
+		f.a.noteHookEvent("devin", dv.id, c.event, at)
 		if got := busy(); got != c.busy {
 			t.Fatalf("after %s: busy %v, want %v", c.event, got, c.busy)
 		}
 	}
-	f.a.noteHookEvent(dv.id, "PostToolUse", at)
-	f.a.noteHookEvent("", "PostToolUse", at) // no session: ignored
+	f.a.noteHookEvent("devin", dv.id, "PostToolUse", at)
+	f.a.noteHookEvent("devin", "", "PostToolUse", at) // no session: ignored
 	at = at.Add(hookBusyCap + time.Second)
 	if busy() {
 		t.Fatal("busy past hookBusyCap with no hook event")
@@ -362,7 +365,7 @@ func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
 		}
 	}
 	hook := time.Date(2026, 10, 4, 20, 10, 19, 0, time.UTC)
-	f.a.noteHookEvent(dv.id, "PostToolUse", hook)
+	f.a.noteHookEvent("devin", dv.id, "PostToolUse", hook)
 	if !busy() {
 		t.Fatal("not busy after PostToolUse")
 	}
@@ -372,7 +375,7 @@ func TestPresenceDevinInterruptedTurnIsIdle(t *testing.T) {
 		t.Fatal("busy after an interrupt the store shows")
 	}
 	// The next prompt starts a turn after the interrupt: busy.
-	f.a.noteHookEvent(dv.id, "UserPromptSubmit", hook.Add(30*time.Second))
+	f.a.noteHookEvent("devin", dv.id, "UserPromptSubmit", hook.Add(30*time.Second))
 	if !busy() {
 		t.Fatal("a turn after the interrupt is not busy")
 	}
@@ -840,5 +843,65 @@ func TestKnownUnplacedSession(t *testing.T) {
 	}
 	if err := f.a.BusPlace(ctx, "no-such-session"); err == nil {
 		t.Fatal("placing an unknown session")
+	}
+}
+
+func TestPresenceConfirmedCodexHolderBeyondCapAndIdleEvidence(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cx := f.pick("codex")
+	writeFile(t, filepath.Join(f.home, ".codex", "thread-writer-locks", cx.id+".lock"), "")
+	rollout := f.a.transcriptsBySession()[placeKey{transcript.AgentCodex, cx.id}].path
+	at := cx.last.Add(2 * time.Hour).UTC().Truncate(time.Millisecond)
+	appendFile(t, rollout, fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"task_complete"}}`+"\n", at.Format(time.RFC3339Nano)))
+	f.a.codexWriter = func(string) int { return codexHeld }
+	s, ok := f.presence(at.Add(time.Hour))[cx.id]
+	if !ok || s.Busy || !s.IdleKnown || !s.IdleSince.Equal(at) {
+		t.Fatalf("held idle Codex: %+v %v", s, ok)
+	}
+	f.a.codexWriter = func(string) int { return codexUnknown }
+	if _, ok := f.presence(at.Add(time.Hour))[cx.id]; ok {
+		t.Fatal("uncertain lock bypassed LiveCap")
+	}
+	f.a.codexWriter = func(string) int { return codexReleased }
+	if _, ok := f.presence(at.Add(time.Hour))[cx.id]; ok {
+		t.Fatal("released writer held session live")
+	}
+}
+
+func TestPresenceIdleSinceIsStopNotLastActivity(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cl := f.pick("claude")
+	f.a.pidAlive = func(int) bool { return true }
+	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"idle"}`, cl.id))
+	at := cl.last.Add(10 * time.Minute)
+	f.a.now = func() time.Time { return at }
+	if s := f.presence(at)[cl.id]; s.IdleKnown || !s.IdleSince.IsZero() {
+		t.Fatal("invented idle time from activity/registry")
+	}
+	f.a.noteHookEvent("claude", cl.id, "Stop", at)
+	later := at.Add(3 * time.Hour)
+	if s := f.presence(later)[cl.id]; !s.IdleSince.Equal(at) || !s.IdleKnown {
+		t.Fatalf("lost witnessed stop: %+v", s)
+	}
+	f.a.noteHookEvent("claude", cl.id, "UserPromptSubmit", later)
+	f.a.noteHookEvent("claude", cl.id, "Stop", at) // delayed hook of the old turn
+	if s := f.presence(later)[cl.id]; s.IdleKnown {
+		t.Fatal("stale stop replaced newer turn")
+	}
+}
+
+func TestPresenceIdleEvidenceDoesNotCrossHarnesses(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cl := f.pick("claude")
+	f.a.pidAlive = func(int) bool { return true }
+	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"idle"}`, cl.id))
+	at := cl.last.Add(time.Minute)
+	f.a.now = func() time.Time { return at }
+	f.a.noteHookEvent("opencode", cl.id, "Stop", at)
+	if s := f.presence(at)[cl.id]; s.IdleKnown || !s.IdleSince.IsZero() {
+		t.Fatal("other harness's Stop became Claude idle evidence")
 	}
 }

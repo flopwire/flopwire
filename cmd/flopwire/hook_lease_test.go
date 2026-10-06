@@ -269,3 +269,37 @@ func TestHookEndToEndKilledSessionStart(t *testing.T) {
 		}
 	}
 }
+
+func TestHookFailureStatusPrintAckAndPrivacy(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Failures = []busproto.DeliveryFailure{{ID: "mfailed", Session: claudeSID, Agent: "claude", Reason: "session_ended", LeaseID: "status:lease", Attempt: 1}}
+	out, errOut := runHook(t, fa.sock, claudeIn(evPostToolUse), nil)
+	if errOut != "" || !strings.Contains(out, "flopwire-delivery-status") || !strings.Contains(out, "mfailed") || !strings.Contains(out, "session_ended") || strings.Contains(out, "flopwire-message") {
+		t.Fatalf("status output: %s stderr: %s", out, errOut)
+	}
+	c := fa.requests("confirm")
+	if len(c) != 1 || !slices.Equal(c[0].IDs, []string{"status:lease"}) {
+		t.Fatalf("status confirmation: %+v", c)
+	}
+	fa = newHookAgent(t)
+	fa.resp.Failures = []busproto.DeliveryFailure{{ID: "mfailed", Reason: "expired", LeaseID: "status:lease", Attempt: 2}}
+	var errBuf strings.Builder
+	hookCmd(t.Context(), []string{"--socket", fa.sock}, strings.NewReader(claudeIn(evPostToolUse)), failWriter{}, &errBuf, func(string) string { return "" })
+	if c := fa.requests("confirm"); len(c) != 0 {
+		t.Fatalf("acknowledged failed print: %+v", c)
+	}
+	out, _ = runHook(t, fa.sock, claudeIn(evPostToolUse), nil)
+	if !strings.Contains(out, "Status redelivery") {
+		t.Fatalf("ambiguous print did not mark redelivery: %s", out)
+	}
+}
+
+func TestHookFailureStatusSubagentIsolation(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Failures = []busproto.DeliveryFailure{{ID: "mparent", Reason: "expired", LeaseID: "status:parent"}}
+	in := strings.TrimSuffix(claudeIn(evPostToolUse), "}") + `,"agent_id":"synthetic-child"}`
+	out, _ := runHook(t, fa.sock, in, nil)
+	if out != "" || len(fa.requests("pending")) != 0 || len(fa.requests("confirm")) != 0 {
+		t.Fatalf("subagent took parent status: %s", out)
+	}
+}

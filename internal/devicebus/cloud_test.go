@@ -161,6 +161,10 @@ func TestCloudPushFailureRetriesThenUndelivered(t *testing.T) {
 	if st := cloudSent(t, b, "aaaa1111", out.ID); st.Reason != busproto.ReasonPushFailed {
 		t.Fatalf("reason = %q", st.Reason)
 	}
+	n := takeFailures(t, b, "aaaa1111", "claude")
+	if len(n) != 1 || n[0].ID != out.ID || n[0].Reason != "push_failed" {
+		t.Fatalf("cloud sender status: %+v", n)
+	}
 	got := fc.pushed()
 	if len(got) != MaxAttempts {
 		t.Fatalf("pushed %d times, want %d", len(got), MaxAttempts)

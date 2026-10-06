@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -88,6 +89,8 @@ func serverPresence(all []Session) []busproto.PresenceSession {
 func sameButBusy(a, b []busproto.PresenceSession) bool {
 	return slices.EqualFunc(a, b, func(x, y busproto.PresenceSession) bool {
 		x.Busy = y.Busy
+		x.IdleSince = y.IdleSince
+		x.IdleKnown = y.IdleKnown
 		return x == y
 	})
 }
@@ -362,6 +365,19 @@ func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked ti
 	for i, c := range resp.Claimable {
 		offered[i] = c.Message.ID
 	}
+	failures := slices.Clone(resp.Failures)
+	if len(failures) > 0 && (asked.IsZero() || resp.Now.IsZero()) {
+		return fmt.Errorf("delivery-status lease needs server time and request start")
+	}
+	for i := range failures {
+		// Ownership leases use the request start as a conservative bound,
+		// unlike message TTL's learned lower skew bound. Even a slow poll
+		// cannot leave two devices entitled to print the same status.
+		failures[i].ValidUntil = asked.Add(failures[i].ValidUntil.Sub(resp.Now))
+	}
+	if err := b.st.importFailures(ctx, failures, now); err != nil {
+		return err
+	}
 	if err := b.st.reconcile(ctx, resp.Messages, offered, now); err != nil {
 		return err
 	}
@@ -555,11 +571,15 @@ func (b *Bus) sendAcks(ctx context.Context) (int, string, error) {
 	ids, err := b.st.owed(ctx, "owed", busproto.MaxAck)
 	var gone, ended, failed []string
 	var reads []busproto.ReadReceipt
+	var statuses []busproto.FailureAck
 	if err == nil && len(ids) < busproto.MaxAck {
 		gone, ended, failed, err = b.st.reports(ctx, busproto.MaxAck-len(ids))
 	}
 	if err == nil {
 		reads, err = b.st.owedReads(ctx, busproto.MaxAck-len(ids)-len(gone)-len(ended)-len(failed))
+	}
+	if err == nil {
+		statuses, err = b.st.failureAcks(ctx, busproto.MaxAck-len(ids)-len(gone)-len(ended)-len(failed)-len(reads))
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -567,19 +587,30 @@ func (b *Bus) sendAcks(ctx context.Context) (int, string, error) {
 		}
 		return 0, "", nil // the store failed; the next kick tries again
 	}
-	n := len(ids) + len(gone) + len(ended) + len(failed) + len(reads)
+	n := len(ids) + len(gone) + len(ended) + len(failed) + len(reads) + len(statuses)
 	if n == 0 {
 		return 0, "", nil
 	}
 	srv, key := b.cfg.Connect()
 	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, PushFailed: failed, Read: reads})
+	resp, err := srv.Ack(actx, busproto.AckRequest{IDs: ids, Undelivered: gone, SessionEnded: ended, PushFailed: failed, Read: reads, Failures: statuses})
 	cancel()
 	if err == nil {
 		err = b.st.acked(ctx, resp.Acked, resp.Rejected)
 	}
 	if err == nil {
 		err = b.st.readAcked(ctx, resp.Read, resp.ReadRejected)
+	}
+	if err == nil {
+		for _, n := range statuses {
+			if !slices.Contains(resp.Failures, n.ID) && !slices.Contains(resp.FailureRejected, n.ID) {
+				return 0, key, fmt.Errorf("server omitted delivery-status acknowledgement")
+			}
+		}
+		err = b.st.failureAcked(ctx, resp.Failures, statuses)
+	}
+	if err == nil {
+		err = b.st.failureRejected(ctx, resp.FailureRejected, statuses)
 	}
 	if err != nil {
 		return 0, key, err

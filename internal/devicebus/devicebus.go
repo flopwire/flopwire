@@ -404,6 +404,9 @@ func (b *Bus) Confirm(ctx context.Context, session string, ids []string) error {
 	if session == "" {
 		return errors.New("confirm: a session id is required")
 	}
+	if err := b.ConfirmFailures(ctx, session, ids); err != nil {
+		return err
+	}
 	n, err := b.st.confirm(ctx, session, ids, b.cfg.Now())
 	if err == nil && n > 0 && !b.Local() {
 		b.kickAcks()

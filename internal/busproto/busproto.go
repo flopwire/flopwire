@@ -291,6 +291,11 @@ type Recipient struct {
 	// running a turn, so the message arrives at its next tool call.
 	Live bool `json:"live"`
 	Busy bool `json:"busy"`
+	// IdleSince is a witnessed idle/turn-stop transition, never last activity.
+	// Zero means unknown (or busy). IdleKnown makes unknown explicit.
+	IdleSince   time.Time `json:"idle_since,omitzero"`
+	IdleKnown   bool      `json:"idle_known"`
+	IdleSeconds *int64    `json:"idle_seconds"`
 	// Cloud: the session is a vendor cloud session. It gets the message
 	// pushed while it runs a turn, and it cannot reply.
 	Cloud bool `json:"cloud,omitempty"`
@@ -362,6 +367,10 @@ type PresenceSession struct {
 	Title  string `json:"title,omitempty"`
 	// Busy: a turn is running.
 	Busy bool `json:"busy"`
+	// IdleSince is a witnessed idle/turn-stop transition, never last activity.
+	// Zero means unknown (or busy). IdleKnown makes unknown explicit.
+	IdleSince time.Time `json:"idle_since,omitzero"`
+	IdleKnown bool      `json:"idle_known"`
 }
 
 // PollRequest is POST /v1/bus/poll.
@@ -408,7 +417,8 @@ type HeldSender struct {
 
 // PollResponse is the device's whole deliverable set.
 type PollResponse struct {
-	Cursor int64 `json:"cursor"`
+	Failures []DeliveryFailure `json:"failures,omitempty"`
+	Cursor   int64             `json:"cursor"`
 	// Gen is the person's change generation; the next poll sends it back.
 	Gen int64 `json:"gen"`
 	// Messages are addressed to sessions on this device (or claimed by
@@ -449,6 +459,7 @@ type ClaimResponse struct {
 // ReasonPushFailed; those in Read were read. Together at most MaxAck
 // entries.
 type AckRequest struct {
+	Failures     []FailureAck  `json:"failures,omitempty"`
 	IDs          []string      `json:"ids"`
 	Undelivered  []string      `json:"undelivered,omitempty"`
 	SessionEnded []string      `json:"session_ended,omitempty"`
@@ -476,27 +487,32 @@ type ReadReceipt struct {
 // a message delivered to that session on this device); neither is sent
 // again.
 type AckResponse struct {
-	Acked        []string `json:"acked"`
-	Rejected     []string `json:"rejected"`
-	Read         []string `json:"read"`
-	ReadRejected []string `json:"read_rejected"`
+	Failures        []string `json:"failures,omitempty"`
+	FailureRejected []string `json:"failure_rejected,omitempty"`
+	Acked           []string `json:"acked"`
+	Rejected        []string `json:"rejected"`
+	Read            []string `json:"read"`
+	ReadRejected    []string `json:"read_rejected"`
 }
 
 // Peer is one live session, the row `flopwire peers` prints.
 type Peer struct {
-	Session  string `json:"session"`
-	Agent    string `json:"agent"`
-	User     string `json:"user"`
-	UserID   string `json:"user_id"`
-	UserName string `json:"user_name,omitempty"`
-	Device   string `json:"device,omitempty"`
-	Repo     string `json:"repo,omitempty"`
-	Remote   string `json:"remote,omitempty"`
-	Main     string `json:"main,omitempty"`
-	Branch   string `json:"branch,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Busy     bool   `json:"busy"`
-	Own      bool   `json:"own"` // the caller's own person
+	Session     string    `json:"session"`
+	Agent       string    `json:"agent"`
+	User        string    `json:"user"`
+	UserID      string    `json:"user_id"`
+	UserName    string    `json:"user_name,omitempty"`
+	Device      string    `json:"device,omitempty"`
+	Repo        string    `json:"repo,omitempty"`
+	Remote      string    `json:"remote,omitempty"`
+	Main        string    `json:"main,omitempty"`
+	Branch      string    `json:"branch,omitempty"`
+	Title       string    `json:"title,omitempty"`
+	Busy        bool      `json:"busy"`
+	IdleSince   time.Time `json:"idle_since,omitzero"`
+	IdleKnown   bool      `json:"idle_known"`
+	IdleSeconds *int64    `json:"idle_seconds"`
+	Own         bool      `json:"own"` // the caller's own person
 	// Cloud: a vendor cloud session, owned by User and on no device
 	// (Device is empty). A message is pushed into it while it is busy;
 	// it cannot reply.
@@ -673,4 +689,33 @@ type Caller struct {
 	UserID   string
 	DeviceID string // "" for a login session
 	ClientIP string
+}
+
+// IdleAge returns seconds since a witnessed idle transition; nil is unknown.
+func IdleAge(busy bool, since, now time.Time) *int64 {
+	if busy || since.IsZero() || since.After(now) {
+		return nil
+	}
+	n := int64(now.Sub(since) / time.Second)
+	return &n
+}
+
+// DeliveryFailure is system delivery status, never a peer message. No body
+// or reference is carried. Token/ValidUntil coordinate device ownership;
+// LeaseID/Attempt coordinate concurrent hooks on the owning device.
+type DeliveryFailure struct {
+	ID         string    `json:"id"`
+	Session    string    `json:"session"`
+	Agent      string    `json:"agent"`
+	State      State     `json:"state"`
+	Reason     string    `json:"reason"`
+	Token      string    `json:"token,omitempty"`
+	ValidUntil time.Time `json:"valid_until,omitzero"`
+	LeaseID    string    `json:"lease_id,omitempty"`
+	Attempt    int       `json:"attempt,omitempty"`
+}
+
+type FailureAck struct {
+	ID    string `json:"id"`
+	Token string `json:"token"`
 }

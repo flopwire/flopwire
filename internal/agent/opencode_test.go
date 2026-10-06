@@ -176,6 +176,15 @@ func TestPresenceOpencode(t *testing.T) {
 	if s := f.presence(at)[a]; !s.Busy {
 		t.Fatalf("busy after a PreToolUse: %+v", s)
 	}
+	ask(t, f.a, Request{Op: "flush", Session: a, Agent: "opencode", Event: "Stop", HookStart: at.UnixMilli()})
+	stop := at
+	at = at.Add(2 * time.Hour)
+	if !f.present(clock, at, a) {
+		t.Fatal("confirmed opencode holder disappeared past LiveCap")
+	}
+	if s := f.presence(at)[a]; s.Busy || !s.IdleKnown || !s.IdleSince.Equal(stop) {
+		t.Fatalf("opencode idle evidence: %+v", s)
+	}
 	// B deleted in opencode: the plugin drops it from the file.
 	write(a)
 	if f.present(clock, at.Add(time.Second), b) {

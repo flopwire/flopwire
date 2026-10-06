@@ -224,7 +224,7 @@ func (c *busClient) call(ctx context.Context, req agent.Request) (agent.Response
 		return resp, &busErr{Code: codeSandboxBlocked, Detail: fmt.Sprintf("this process is not permitted to connect to the device agent's socket %s; a harness sandbox around shell commands causes this (Codex's, when it has no network access)", c.socket),
 			Fix: "use the flopwire_send, flopwire_peers or flopwire_inbox tool instead: the MCP server runs outside the sandbox", Example: `flopwire_send to="SESSION" message="…"`}
 	case strings.HasPrefix(msg, "agent not running"):
-		return resp, &busErr{Code: codeAgentNotRunning, Detail: fmt.Sprintf("the Flopwire device agent is not running (nothing answers on %s); messages go through it", c.socket),
+		return resp, &busErr{Code: codeAgentNotRunning, Detail: fmt.Sprintf("the Flopwire device agent is not running (nothing answers on %s); historical sessions output's live= is unverified while it is down; this session cannot send or receive through it", c.socket),
 			Fix: "start it with flopwire agent run, or start the service the installer set up", Example: "flopwire agent status"}
 	case msg == "messaging is off in this agent":
 		return resp, &busErr{Code: codeMessagingOff, Detail: "the device agent runs with messaging off: its local inbox (bus.db) could not be opened",
@@ -487,6 +487,9 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 		case p.Busy:
 			state = "live busy"
 		}
+		if !p.Busy {
+			state += idleDescription(p.IdleSince, time.Now())
+		}
 		fields := []string{sessionLabel(p.Session, p.Cloud, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
 		if t := quoted(p.Title, 80); t != "" {
 			fields = append(fields, t)
@@ -675,7 +678,12 @@ func expiry(t time.Time) string { return t.UTC().Format("2006-01-02T15:04Z") }
 
 // sendOutcome is the one line a send prints with --text (plan §3), so the
 // sender never polls: where the message went and when it arrives.
-func sendOutcome(r busproto.SendResponse) string {
+func sendOutcome(r busproto.SendResponse) (out string) {
+	defer func() {
+		if r.To.Live && !r.To.Busy && r.To.Session != "" {
+			out += idleDescription(r.To.IdleSince, r.Sent)
+		}
+	}()
 	to := r.To
 	var line string
 	switch {
@@ -1227,4 +1235,12 @@ Output   --limit N (20, max 200)  --cursor C (next)  --text  --max-bytes N (text
 Errors   JSON on stderr, exit 1
 Socket   --socket PATH (default <config dir>/agent.sock)
 `
+}
+
+func idleDescription(since, now time.Time) string {
+	age := busproto.IdleAge(false, since, now)
+	if age == nil {
+		return " (idle duration unknown)"
+	}
+	return fmt.Sprintf(" (idle for %s; idle_since %s)", (time.Duration(*age) * time.Second).String(), since.UTC().Format(time.RFC3339))
 }

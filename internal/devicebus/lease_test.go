@@ -282,26 +282,30 @@ func TestServerAckAfterConfirmAndUndeliveredReport(t *testing.T) {
 	}
 }
 
-// An inbox from an earlier build (another schema version) is recreated:
-// the agent keeps messaging instead of failing on a missing column.
-func TestInboxFromAnEarlierBuildIsRecreated(t *testing.T) {
+// An unsupported old inbox fails closed without deleting durable messages.
+func TestInboxFromAnEarlierBuildIsPreserved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bus.db")
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE devbus_messages (id TEXT PRIMARY KEY, origin TEXT NOT NULL, state TEXT NOT NULL, refuse_reason TEXT);
-		INSERT INTO devbus_messages VALUES('mold','local','queued','')`); err != nil {
+	if _, err = db.Exec(`CREATE TABLE devbus_messages (id TEXT PRIMARY KEY, origin TEXT NOT NULL, state TEXT NOT NULL, refuse_reason TEXT);
+	INSERT INTO devbus_messages VALUES('mold','local','queued',''); PRAGMA user_version=1;`); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
-	lb := newLocalBus(t)
-	b := openBus(t, path, lb.cfg, lb.p)
-	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "aaaa1111", To: "bbbb", Body: "after the upgrade"}); err != nil {
+	if b, err := Open(path, Config{}); err == nil {
+		b.Close()
+		t.Fatal("unsupported inbox opened")
+	}
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := deliver(b, "bbbb3333", "", Limit{}); err != nil || len(got) != 1 {
-		t.Fatalf("take on a recreated inbox: %v %v", ids(got), err)
+	defer db.Close()
+	var id string
+	if err := db.QueryRow(`SELECT id FROM devbus_messages`).Scan(&id); err != nil || id != "mold" {
+		t.Fatalf("old message lost: %s %v", id, err)
 	}
 }
 
