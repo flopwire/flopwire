@@ -253,7 +253,7 @@ func (b *bench) withAgentCapabilities(args []string) []string {
 // Probe outside measured launches. Go's flag help may exit nonzero; only
 // recognizable agent-run help permits treating a missing flag as legacy.
 func (b *bench) probeAgent(ctx context.Context) (bool, error) {
-	return b.probeAgentTimeout(ctx, 3*time.Second)
+	return b.probeAgentTimeout(ctx, 10*time.Second)
 }
 
 func (b *bench) probeAgentTimeout(ctx context.Context, timeout time.Duration) (bool, error) {
@@ -306,7 +306,10 @@ func (b *bench) agentEnv() []string {
 	_ = os.MkdirAll(home, 0o700)
 	return append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
+		"CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"), "CODEX_HOME="+filepath.Join(home, ".codex"),
 		"FLOPWIRE_CONFIG="+filepath.Join(home, ".config", "flopwire", "config.json"),
+		"FLOPWIRE_CLOUD=off", "FLOPWIRE_TOKEN=", "FLOPWIRE_SERVER=", "FLOPWIRE_FINGERPRINT=",
 		"FLOPWIRE_OPENCODE_DB=-", "OPENCODE_DB=-", "FLOPWIRE_INDEX=")
 }
 
@@ -469,9 +472,10 @@ func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	db := filepath.Join(dir, "index.db")
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	env := b.agentEnv()
 	cmd := exec.CommandContext(rctx, b.exe, b.withAgentCapabilities([]string{"agent", "run", "--no-sync", "--db", db, "--claude-projects", filepath.Join(dir, "projects"),
 		"--codex-home", filepath.Join(dir, "nocodex"), "--devin-db", "-", "--socket", filepath.Join(dir, "agent.sock")})...)
-	cmd.Env = b.agentEnv()
+	cmd.Env = env
 	var logBuf bytes.Buffer
 	cmd.Stderr = &logBuf
 	if err := cmd.Start(); err != nil {
@@ -480,7 +484,7 @@ func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	defer func() { _ = cmd.Process.Signal(syscall.SIGTERM); _ = cmd.Wait() }()
 	findable := func(needle string) (bool, error) {
 		query := exec.CommandContext(ctx, b.exe, "grep", "-F", "--index", db, "--include-self", "--json", needle)
-		query.Env = b.agentEnv()
+		query.Env = env
 		out, err := query.Output()
 		if err != nil {
 			return false, nil // the index may not exist yet

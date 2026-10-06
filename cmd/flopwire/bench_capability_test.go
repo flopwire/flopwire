@@ -64,7 +64,7 @@ func TestBenchCapabilityLaunches(t *testing.T) {
 			dir := t.TempDir()
 			log := filepath.Join(dir, "launches")
 			t.Setenv("BENCH_LAUNCH_LOG", log)
-			for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FLOPWIRE_CONFIG", "FLOPWIRE_OPENCODE_DB", "OPENCODE_DB"} {
+			for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FLOPWIRE_CONFIG", "FLOPWIRE_OPENCODE_DB", "OPENCODE_DB", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "FLOPWIRE_TOKEN", "FLOPWIRE_SERVER", "FLOPWIRE_FINGERPRINT", "FLOPWIRE_CLOUD"} {
 				t.Setenv(k, "/do-not-use-user-path")
 			}
 			flag := "db"
@@ -72,7 +72,8 @@ func TestBenchCapabilityLaunches(t *testing.T) {
 				flag = "opencode-db"
 			}
 			exe := fakeBenchBinary(t, `printf '%s\n' "$*" >> "$BENCH_LAUNCH_LOG"
-case "$HOME:$XDG_CONFIG_HOME:$XDG_DATA_HOME:$FLOPWIRE_CONFIG:$FLOPWIRE_OPENCODE_DB:$OPENCODE_DB" in
+[ "$FLOPWIRE_CLOUD" = off ] || exit 91
+case "$HOME:$XDG_CONFIG_HOME:$XDG_DATA_HOME:$FLOPWIRE_CONFIG:$FLOPWIRE_OPENCODE_DB:$OPENCODE_DB:$XDG_STATE_HOME:$CLAUDE_CONFIG_DIR:$CODEX_HOME:$FLOPWIRE_TOKEN:$FLOPWIRE_SERVER:$FLOPWIRE_FINGERPRINT" in
  *do-not-use-user-path*) exit 90;;
 esac
 if [ "$3" = '-h' ]; then

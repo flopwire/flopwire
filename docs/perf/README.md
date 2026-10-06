@@ -169,7 +169,9 @@ Before measured runs, the benchmark probes each binary once with a bounded
 Go help can exit nonzero. Valid help without that flag identifies a legacy
 binary; only that binary runs without `--opencode-db -`. Supporting binaries
 receive the flag on every agent launch, including freshness. The probe and
-child commands use scratch HOME, XDG directories and Flopwire config paths.
+child commands use scratch HOME, XDG directories and config paths.
+Vendor-cloud collection is disabled, and Flopwire credentials are cleared.
+A/B comparisons apply the same environment to both binaries.
 
 The baseline must still accept `agent run`, `grep`, `search`, `read` and all
 other flags used by the benchmark. Failed starts, help timeouts, malformed
