@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/flopwire/flopwire/internal/cassimport"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/recoveryreceipt"
 )
 
 func importCommand(ctx context.Context, args []string, out io.Writer) error {
@@ -82,6 +84,14 @@ func importCommand(ctx context.Context, args []string, out io.Writer) error {
 			if cfg.DeviceID == "" || cfg.Token == "" {
 				return fmt.Errorf("enroll a recovery device before uploading")
 			}
+			binding, err := recoveryreceipt.NormalizeBinding(recoveryreceipt.Binding{Server: cfg.Server, DeviceID: cfg.DeviceID})
+			if err != nil {
+				return err
+			}
+			configPath, err := client.Path()
+			if err != nil {
+				return err
+			}
 			// Per-device state prevents acknowledged work under one credential from
 			// being mistaken for work uploaded by a different device.
 			stateKey := sha256.Sum256([]byte(cfg.Server + "\x00" + cfg.DeviceID))
@@ -99,15 +109,18 @@ func importCommand(ctx context.Context, args []string, out io.Writer) error {
 				return err
 			}
 			log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-			sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log}, st, spool, newSyncTransport(cfg, client.Load, log))
+			sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log}, st, spool, newSyncTransport(cfg, recoveryCredentialLoader(binding, client.Load), log))
 			if err != nil {
 				return err
 			}
 			defer sy.Close()
-			var uploaded int
+			var uploaded, unreconciled int
 			for _, snapshot := range snapshots {
-				e := snapshot.entry
-				if err = sy.SyncSnapshot(ctx, devicesync.SourceSpec{Path: filepath.Join(root, e.File), Agent: e.Agent, StorageKind: cassimport.StorageKind, SessionKey: e.SessionID, Parser: cassimport.Name}, snapshot.path, snapshot.identity); err != nil {
+				err = uploadRecoverySnapshot(ctx, root, filepath.Dir(configPath), binding, st, sy, snapshot)
+				if errors.Is(err, recoveryreceipt.ErrNotQualifying) {
+					unreconciled++
+					log.Warn("recovery upload succeeded without a restriction receipt; prior recovery remains unreconciled", "reason", "restriction proof unavailable")
+				} else if err != nil {
 					return err
 				}
 				uploaded++
@@ -116,7 +129,7 @@ func importCommand(ctx context.Context, args []string, out io.Writer) error {
 			if n > 0 {
 				return fmt.Errorf("server collection policy refused %d recovery sources", n)
 			}
-			return json.NewEncoder(out).Encode(map[string]any{"uploaded_conversations": uploaded, "origin": m.Origin, "indexing": "asynchronous; verify server counts before retiring CASS"})
+			return json.NewEncoder(out).Encode(map[string]any{"uploaded_conversations": uploaded, "unreconciled_recovery_sources": unreconciled, "origin": m.Origin, "indexing": "asynchronous; verify server counts before retiring CASS"})
 		})
 	default:
 		return fmt.Errorf("unknown import command %q", args[0])
