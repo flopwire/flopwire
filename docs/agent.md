@@ -65,8 +65,13 @@ watches new app metadata and nested native history directories. It excludes
 unrelated native parents, ordinary chat, SSH sessions and WSL sessions.
 
 Normal-root Local Code history uses existing Claude collection and sharing
-rules. Scoped Code history remains local until contained sync authorization
-supports indexed byte bounds, source identity and pending generations.
+rules. Scoped Code uploads require current verified app linkage and a contained
+source lease for exactly the indexed bytes. Each captured generation stores
+its file identity, byte bound and companion digest. The source retains its
+protected container boundary after generation cleanup or a restart. Unknown
+linkage, changed rules, unavailable indexed proof and earlier unproven captures
+hold sharing. Disabling or changing the Code root does not release old pending
+captures through the ordinary CLI path.
 Imported Cowork session IDs retain Cowork folder-policy holds, including
 copies whose original Cowork container is absent. Code metadata supplies
 identity evidence only. It does not establish Cowork Mac-folder mapping.
@@ -232,7 +237,7 @@ socket and prints these parts:
 |---|---|
 | `agent: running` | The agent answered. |
 | `Claude Desktop Code (Local): STATE` | Local Code discovery, scoped native sessions, normal-root links, missing linked transcripts and excluded backend records. |
-| `scoped shared uploads held: contained sync authorization support pending` | Scoped Code history remains local until its sync authorization is qualified. |
+| `scoped shared uploads held: contained sync authorization support pending` | The active sync implementation cannot acquire scoped Code authorization. Native collection continues locally. |
 | `Cowork: STATE` | Current local discovery state, native sessions, metadata-only sessions and excluded paths. JSON status also includes mapping reasons, historical unknown scopes and watch candidates. |
 | `shared uploads held: server host-folder policy support pending` | Cowork evidence remains local. Empty sync queues do not establish shared Cowork coverage. |
 | `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](#keep-sessions-out-with-path-rules). |

@@ -548,7 +548,7 @@ func (t *target) placeKeyOf() (placeKey, string) {
 // the transcript later names one, so its decision must not be cached.
 func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, known, final bool) {
 	defer func() {
-		if a.desktopCodeScoped(t.path) && known && !a.coworkMaySchedule(pv, t) {
+		if a.desktopCodeScoped(t.path) && known && !a.desktopCodeSharingConfigured() && !a.coworkMaySchedule(pv, t) {
 			if d.Mode < pathpolicy.Local {
 				d.Mode = pathpolicy.Local
 			}
@@ -730,7 +730,7 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	if _, ok := a.coworkMode(a.policy(), nt); ok {
 		return a.coworkMaySchedule(a.policy(), nt)
 	}
-	if a.desktopCodeScoped(spec.Path) {
+	if a.desktopCodeScoped(spec.Path) && !a.desktopCodeSharingConfigured() {
 		return false
 	}
 	if a.policy().pol.Empty() {

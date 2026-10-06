@@ -189,7 +189,7 @@ func (a *Agent) desktopCodeStatus() *DesktopCodeStatus {
 	case r.Excluded > 0 && len(r.WatchDirs) == 0:
 		st.State = "excluded"
 	}
-	if st.Sessions > 0 {
+	if st.Sessions > 0 && !a.desktopCodeSharingConfigured() {
 		st.SharedHold = "contained sync authorization support pending"
 	}
 	return st
