@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -353,11 +354,12 @@ func (s *Store) CompanionDigest(ctx context.Context, path string) ([]byte, error
 
 // SessionHasEvidence reports captured evidence predating app scope proof.
 // Parsing can commit message batches before saving the source watermark;
-// orphaned sessions can have only companion files. Both count as evidence.
+// orphaned sessions can have only companion files. The device-sync store can
+// capture bytes before extraction creates index rows. All count as evidence.
 func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, session string) (bool, error) {
 	var have bool
 	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
-		return q.QueryRowContext(ctx, `SELECT
+		if err := q.QueryRowContext(ctx, `SELECT
    EXISTS(SELECT 1 FROM sources WHERE device_id=? AND agent=? AND session_key=? AND (wm_size>0 OR wm_offset>0))
    OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=? AND c.agent=? AND c.session_id=?
      AND (EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id)
@@ -365,7 +367,32 @@ func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, 
    OR EXISTS(SELECT 1 FROM companions p JOIN sources src ON src.id=p.source_id
      WHERE src.device_id=? AND src.agent=? AND src.session_key=? AND p.size>0)`,
 			s.opts.DeviceID, string(agent), session, s.opts.DeviceID, string(agent), session,
-			s.opts.DeviceID, string(agent), session).Scan(&have)
+			s.opts.DeviceID, string(agent), session).Scan(&have); err != nil {
+			return err
+		}
+		if have {
+			return nil
+		}
+		// The sync tables are optional and share this device-bound database.
+		// Check existence before referring to them; older/read-only index files
+		// need not have initialized the scheduler store.
+		var tables int
+		if err := q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('devsync_sources','devsync_gens')`).Scan(&tables); err != nil {
+			return err
+		}
+		if tables == 0 {
+			return nil
+		}
+		if tables != 2 {
+			return fmt.Errorf("localindex: incomplete device sync evidence schema")
+		}
+		// Do not restrict to the current generation: earlier, closed, lost or
+		// acknowledged captures still prove evidence existed before scope proof.
+		return q.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM devsync_sources src JOIN devsync_gens g ON g.source_id=src.id
+  WHERE g.size>0
+    AND json_extract(src.spec,'$.Agent')=?
+    AND json_extract(src.spec,'$.SessionKey')=?)`, string(agent), session).Scan(&have)
 	})
 	return have, err
 }

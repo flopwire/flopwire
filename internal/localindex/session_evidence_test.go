@@ -2,6 +2,7 @@ package localindex
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -132,5 +133,143 @@ func TestCompanionDigestSeesPendingWritesAndUpdates(t *testing.T) {
 	}
 	if digest, err := s.CompanionDigest(ctx, path); err != nil || digest != nil {
 		t.Fatalf("absent digest=%x,%v", digest, err)
+	}
+}
+
+func TestSessionEvidenceOptionalSyncTables(t *testing.T) {
+	for _, tables := range []int{0, 1, 2} {
+		t.Run(string(rune('0'+tables)), func(t *testing.T) {
+			s := openEvidenceTest(t)
+			if err := s.write(ctx, func(w *writeTx) error {
+				if tables > 0 {
+					if _, err := w.exec(`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,spec TEXT NOT NULL,generation INTEGER NOT NULL)`); err != nil {
+						return err
+					}
+				}
+				if tables > 1 {
+					if _, err := w.exec(`CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,lost INTEGER,acked INTEGER)`); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tables == 1 {
+				if _, err := s.SessionHasEvidence(ctx, transcript.AgentClaude, "native"); err == nil {
+					t.Fatal("partial device sync evidence schema ignored")
+				}
+			} else {
+				requireSessionEvidence(t, s, transcript.AgentClaude, "native", false)
+			}
+		})
+	}
+}
+
+func TestSessionEvidenceSyncCapturesBeforeExtraction(t *testing.T) {
+	cases := []struct {
+		name                string
+		size                int64
+		addGen              bool
+		generation          int
+		closed, lost, acked int
+		want                bool
+	}{
+		{"metadata only", 0, false, 3, 0, 0, 0, false},
+		{"empty capture", 0, true, 3, 0, 0, 0, false},
+		{"current pending", 7, true, 3, 0, 0, 0, true},
+		{"earlier closed", 7, true, 1, 1, 0, 0, true},
+		{"earlier acknowledged", 7, true, 1, 1, 0, 1, true},
+		{"earlier lost", 7, true, 1, 1, 1, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			// SourceSpec fields have Go's default uppercase JSON names. These are
+			// scheduler-only rows: no local-index source, conversation or watermark.
+			spec, err := json.Marshal(struct {
+				Agent      transcript.Agent
+				SessionKey string
+			}{transcript.AgentClaude, "native"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,spec TEXT NOT NULL,generation INTEGER NOT NULL)`, `CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,lost INTEGER,acked INTEGER)`} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,?,3)`, string(spec)); err != nil {
+					return err
+				}
+				if tc.addGen {
+					_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,?,?,?,?,?)`, tc.generation, tc.size, tc.closed, tc.lost, tc.acked)
+					return err
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireSessionEvidence(t, s, transcript.AgentClaude, "native", tc.want)
+			requireSessionEvidence(t, s, transcript.AgentCodex, "native", false)
+			requireSessionEvidence(t, s, transcript.AgentClaude, "other", false)
+			if err = s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Open(s.Path(), Options{DeviceID: "local-device", ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			requireSessionEvidence(t, r, transcript.AgentClaude, "native", tc.want)
+		})
+	}
+}
+
+func TestSessionEvidenceSyncMissingOrMalformedIdentity(t *testing.T) {
+	for _, spec := range []string{`{}`, `{"Agent":"claude"}`, `{"SessionKey":"native"}`, `{"agent":"claude","sessionKey":"native"}`, `not-json`} {
+		t.Run(spec, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			if err := s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,spec TEXT NOT NULL)`, `CREATE TABLE devsync_gens(source_id INTEGER,size INTEGER)`} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,?)`, spec); err != nil {
+					return err
+				}
+				_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,7)`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if spec == "not-json" {
+				if _, err := s.SessionHasEvidence(ctx, transcript.AgentClaude, "native"); err == nil {
+					t.Fatal("corrupt captured source identity ignored")
+				}
+			} else {
+				requireSessionEvidence(t, s, transcript.AgentClaude, "native", false)
+			}
+		})
+	}
+}
+
+func TestSessionEvidenceSyncQueryFailurePropagates(t *testing.T) {
+	s := openEvidenceTest(t)
+	if err := s.write(ctx, func(w *writeTx) error {
+		if _, err := w.exec(`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,spec TEXT NOT NULL)`); err != nil {
+			return err
+		}
+		// An incomplete/corrupt optional schema must hold collection through an
+		// error, rather than report that an unknown evidence store is empty.
+		_, err := w.exec(`CREATE TABLE devsync_gens(source_id INTEGER)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionHasEvidence(ctx, transcript.AgentClaude, "native"); err == nil {
+		t.Fatal("sync evidence query failure ignored")
 	}
 }
