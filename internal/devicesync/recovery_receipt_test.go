@@ -114,3 +114,22 @@ func TestAcknowledgedRecoveryRejectsUnrelatedSource(t *testing.T) {
 		t.Fatalf("uncaptured source=%+v,%v", refs, err)
 	}
 }
+
+func TestAcknowledgedRecoveryEmptySnapshotDoesNotQualify(t *testing.T) {
+	e := newEnv(t, Config{}, 1<<20)
+	spec := receiptSpec(e)
+	if err := os.WriteFile(spec.Path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := transcript.StatIdentity(spec.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.sy.SyncSnapshot(context.Background(), spec, spec.Path, identity); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := e.store.AcknowledgedSourceRefs(context.Background(), spec, identity)
+	if err != nil || len(refs) != 0 {
+		t.Fatalf("empty snapshot receipt=%+v,%v", refs, err)
+	}
+}

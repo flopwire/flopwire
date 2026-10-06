@@ -41,7 +41,7 @@ func (s *Store) AcknowledgedSourceRefs(ctx context.Context, spec SourceSpec, ide
 	if g.FileID != fileID(identity) || g.Size != identity.Size || g.ChangeTime != identity.CTime {
 		return nil, fmt.Errorf("devicesync: acknowledged recovery snapshot changed")
 	}
-	if g.Size <= 0 || g.Lost || g.Closed || g.Acked != g.Entries || !g.TailAcked {
+	if g.Size <= 0 || (g.Entries == 0 && g.Tail.Size == 0) || g.Lost || g.Closed || g.Acked != g.Entries || !g.TailAcked {
 		return nil, nil
 	}
 	return []syncproto.PolicySource{{Path: spec.Path, FileID: g.FileID, Generation: g.Gen}}, nil
