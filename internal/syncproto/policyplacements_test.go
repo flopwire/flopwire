@@ -27,6 +27,9 @@ func TestPolicyPlacementsDigestBindsExactBatch(t *testing.T) {
 		t.Fatalf("unstable digest: %q %q %v", original, same, err)
 	}
 	mutations := []func(*PolicyPlacementsRequest){
+		func(r *PolicyPlacementsRequest) {
+			r.RecoverySources = []PolicyRecoverySource{{Source: PolicySource{Path: "/recovery/export.jsonl", FileID: "1:2", Generation: 3}, OriginalPath: "/gone/native.jsonl"}}
+		},
 		func(r *PolicyPlacementsRequest) { r.Device = &DeviceDirs{Home: "/Users/test"} },
 		func(r *PolicyPlacementsRequest) {
 			r.Placements = append(r.Placements, PolicyPlacement{CWD: "/private"})
@@ -45,6 +48,28 @@ func TestPolicyPlacementsDigestBindsExactBatch(t *testing.T) {
 		digest, err := PolicyPlacementsDigest(&changed)
 		if err != nil || digest == original {
 			t.Fatalf("changed batch reused ack digest: %+v %v", changed, err)
+		}
+	}
+}
+
+func TestPolicyRecoveryDigestBindsEveryProofField(t *testing.T) {
+	req := &PolicyPlacementsRequest{Version: 1, Agent: "claude", SessionID: "session", RecoverySources: []PolicyRecoverySource{{Source: PolicySource{Path: "/recovery/export.jsonl", FileID: "1:2", Generation: 3}, OriginalPath: "/gone/native.jsonl"}}}
+	original, err := PolicyPlacementsDigest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*PolicyRecoverySource){
+		func(r *PolicyRecoverySource) { r.Source.Path = "/other/export.jsonl" },
+		func(r *PolicyRecoverySource) { r.Source.FileID = "1:3" },
+		func(r *PolicyRecoverySource) { r.Source.Generation = 4 },
+		func(r *PolicyRecoverySource) { r.OriginalPath = "/other/native.jsonl" },
+	} {
+		changed := *req
+		changed.RecoverySources = append([]PolicyRecoverySource(nil), req.RecoverySources...)
+		change(&changed.RecoverySources[0])
+		digest, err := PolicyPlacementsDigest(&changed)
+		if err != nil || digest == original {
+			t.Fatalf("recovery provenance reused acknowledgement: %v", err)
 		}
 	}
 }
