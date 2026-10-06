@@ -79,11 +79,25 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	}
 	col := grep.NewCollector(plan.Re, gq)
 	checked := 0
+	narrows, broad := grepNarrows(f), false
 	b := budget(ctx)
 	deadline := time.Now().Add(b)
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
 	err = s.read(ctx, b, func(tx pgx.Tx) error {
+		if narrows {
+			// The filtered conversations first, so the candidate query
+			// reads their messages and not every trigram match
+			// (grepConvCap).
+			ids, ok, err := grepConversations(ctx, tx, f)
+			if err != nil {
+				return err
+			}
+			if ok {
+				q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
+			}
+			broad = !ok
+		}
 		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+grepCandidates(q, gq.Sort == format.SortOldest), q.args...); err != nil {
 			return err
 		}
@@ -133,7 +147,14 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	})
 	if timedOut(err) {
 		page.Truncated = true
-		page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked)
+		if checked == 0 {
+			page.Reason = fmt.Sprintf("timed out after %s before the candidate query returned its first page (checked 0 candidates); raise the timeout (--timeout, or the timeout argument, up to %ds) or narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), int(MaxBudget.Seconds()))
+		} else {
+			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked)
+		}
+		if broad {
+			page.Notes = append(page.Notes, fmt.Sprintf("the filters admit more than %d sessions, so the scan was not narrowed to them first", grepConvCap))
+		}
 	} else if err != nil {
 		return nil, err
 	}
@@ -196,6 +217,93 @@ func grepCandidates(q *query, oldest bool) string {
 		order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
 	}
 	return `SELECT ` + hitCols + `,m.content_sha,m.text FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
+}
+
+// grepConvCap bounds the conversations grep resolves before its scan
+// when a filter names them (grepConversations). Under it, the candidate
+// query ANDs messages_conversation_ordinal_idx with the trigram index
+// and reads only those conversations' messages, so a repo that holds a
+// small share of a large corpus costs its share and not the whole
+// trigram bitmap (a broad pattern over 2.2M messages took 35 s before
+// its first row: docs/perf/shared-stack-2026-10-03.md). Over it, the
+// filter is broad, the list itself is work, and the trigram bitmap alone
+// is the better plan, so the query keeps its shape.
+const grepConvCap = 5000
+
+// grepNarrows reports whether f has a filter on conversations that
+// grepConversations resolves first: agent, repo, device, user, session,
+// subagents, branch or since.
+func grepNarrows(f format.Filters) bool {
+	q := &query{}
+	grepConvWhere(q, f)
+	return len(q.conds) > 0
+}
+
+// grepConvWhere adds f's conditions on conversations, as sessionsPage
+// has them, over listed c with devices d and users u joined. since bounds
+// the last activity: a conversation whose last activity precedes it holds
+// no message after it, and one with no activity recorded may hold any,
+// so it stays. The message predicates (m.ts among them) stay in the
+// candidate query, so the hits are the same with or without this step.
+func grepConvWhere(q *query, f format.Filters) {
+	if f.Agent != "" {
+		q.where("c.agent=ANY(" + q.arg(format.List(f.Agent)) + ")")
+	}
+	repoWhere(q, f)
+	if f.Device != "" {
+		a := q.arg(f.Device)
+		q.where(fmt.Sprintf("(d.id::text=%s OR d.name=%s)", a, a))
+	}
+	if f.User != "" {
+		a := q.arg(f.User)
+		q.where(fmt.Sprintf("(u.id::text=%s OR lower(u.email)=lower(%s))", a, a))
+	}
+	if f.ExcludeSubagents {
+		q.where("c.depth=0 AND c.parent_native_session_id IS NULL")
+	}
+	if f.Session != "" {
+		q.where("c.session_id IN (" + sessionTree(q, f.Session) + ")")
+		if f.Self {
+			q.where("c.user_id=" + q.arg(f.Owner) + "::uuid")
+		}
+	}
+	if f.Branch != "" {
+		q.where("EXISTS (SELECT 1 FROM unnest(c.branches) b WHERE b ILIKE " + q.arg(format.BranchMatch(f.Branch)) + ")")
+	}
+	if !f.Since.IsZero() {
+		q.where("(c.last_activity_at>=" + q.arg(f.Since) + " OR c.last_activity_at IS NULL)")
+	}
+}
+
+// grepConvQuery selects the ids of the visible conversations q admits,
+// newest activity first, at most limit. It walks the sessions list's
+// indexes (conversation_activity_idx, conversations_source_idx,
+// sources_remote_idx), never messages.
+func grepConvQuery(q *query, limit int) string {
+	return `SELECT c.id::text FROM ` + listed + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql() +
+		` ORDER BY c.last_activity_at DESC NULLS LAST,c.aid DESC LIMIT ` + strconv.Itoa(limit)
+}
+
+// grepConversations resolves the conversations f's conversation filters
+// admit (grepConvWhere; the caller checks grepNarrows), for the candidate
+// query to read only their messages. It returns false when they admit
+// more than grepConvCap conversations: the scan then keeps its shape.
+// The query runs in grep's transaction, under its statement timeout.
+func grepConversations(ctx context.Context, tx pgx.Tx, f format.Filters) ([]string, bool, error) {
+	q := &query{}
+	grepConvWhere(q, f)
+	rows, err := tx.Query(ctx, grepConvQuery(q, grepConvCap+1), q.args...)
+	if err != nil {
+		return nil, false, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ids) > grepConvCap {
+		return nil, false, nil
+	}
+	return ids, true, nil
 }
 
 // Search ranks messages matching the query (websearch syntax: words,
