@@ -123,9 +123,10 @@ type Syncer struct {
 	spool *Spool
 	tr    syncproto.Transport
 
-	mu   sync.Mutex
-	held map[int64]*os.File
-	buf  []byte
+	mu            sync.Mutex
+	held          map[int64]*os.File
+	buf           []byte
+	authorization *CaptureAuthorization
 	// zkeep is a body compressed for a request it did not fit: the next
 	// request starts with it.
 	zkeep part
@@ -230,7 +231,7 @@ func (s *Syncer) Close() {
 // it. A transport error leaves the capture persisted: the watermark is the
 // queue, and the next Sync resumes from the acknowledged offset.
 func (s *Syncer) Sync(ctx context.Context, spec SourceSpec) error {
-	return s.run(ctx, spec, nil, -1, nil)
+	return s.run(ctx, spec, nil, -1, nil, nil)
 }
 
 // SyncSnapshot captures an immutable staged file under the original source's
@@ -241,7 +242,7 @@ func (s *Syncer) SyncSnapshot(ctx context.Context, spec SourceSpec, snapshot str
 	if snapshot == "" || identity.Size < 0 {
 		return errors.New("devicesync: invalid snapshot")
 	}
-	return s.run(ctx, spec, nil, -1, &snapshotSource{path: snapshot, identity: identity})
+	return s.run(ctx, spec, nil, -1, &snapshotSource{path: snapshot, identity: identity}, nil)
 }
 
 type snapshotSource struct {
@@ -254,7 +255,7 @@ type snapshotSource struct {
 // name a directory a path rule covers, D18). The rest waits for a later
 // sync with a higher bound.
 func (s *Syncer) SyncUpTo(ctx context.Context, spec SourceSpec, upTo int64) error {
-	return s.run(ctx, spec, nil, upTo, nil)
+	return s.run(ctx, spec, nil, upTo, nil, nil)
 }
 
 // SyncExport syncs bytes that exist only in memory, such as rows exported
@@ -265,7 +266,7 @@ func (s *Syncer) SyncExport(ctx context.Context, spec SourceSpec, data []byte) e
 	if data == nil {
 		data = []byte{}
 	}
-	return s.run(ctx, spec, func(context.Context, []byte) (Export, error) { return Export{Data: data}, nil }, -1, nil)
+	return s.run(ctx, spec, func(context.Context, []byte) (Export, error) { return Export{Data: data}, nil }, -1, nil, nil)
 }
 
 // Export is one version of an export source's bytes (SyncExportFunc).
@@ -294,30 +295,56 @@ type ExportFunc func(ctx context.Context, prev []byte) (Export, error)
 // capture: only the appended bytes, and the provisional tail before them,
 // are redacted and chunked.
 func (s *Syncer) SyncExportFunc(ctx context.Context, spec SourceSpec, fn ExportFunc) error {
-	return s.run(ctx, spec, fn, -1, nil)
+	return s.run(ctx, spec, fn, -1, nil, nil)
 }
 
 // Resume uploads what is pending for a source without capturing it again.
-func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error {
+func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error { return s.resume(ctx, spec, nil) }
+func (s *Syncer) resume(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.authorization = auth
+	defer func() { s.authorization = nil }()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
+		return err
+	}
+	if err := s.validateAuthorization(src); err != nil {
+		return err
+	}
+	if err := s.protect(ctx, src); err != nil {
+		return err
+	}
+	if err := s.preflight(ctx, src); err != nil {
 		return err
 	}
 	return s.upload(ctx, src)
 }
 
-func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
+func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.authorization = auth
+	defer func() { s.authorization = nil }()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
+		return err
+	}
+	if err := s.validateAuthorization(src); err != nil {
+		return err
+	}
+	if err := s.protect(ctx, src); err != nil {
+		return err
+	}
+	if err := s.preflight(ctx, src); err != nil {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
 		if err := s.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
 			// Uploading what is pending is what frees the spool.
+			if uerr := s.checkAuthorization(ctx); uerr != nil {
+				return errors.Join(err, uerr)
+			}
 			if uerr := s.upload(ctx, src); uerr != nil {
 				return errors.Join(err, uerr)
 			}
@@ -360,14 +387,27 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 			}
 			path = snapshot.path
 		}
-		f, err = os.Open(path)
+		if s.authorization != nil {
+			f, err = s.authorization.Open(ctx, src.Spec)
+		} else {
+			f, err = os.Open(path)
+		}
 		if errors.Is(err, os.ErrNotExist) {
+			if s.authorization != nil {
+				return err
+			}
 			if snapshot != nil {
 				return err
 			}
 			return s.vanish(ctx, src)
 		} else if err != nil {
 			return err
+		}
+		if s.authorization != nil {
+			if err := validateProofFile(f, &s.authorization.Proof); err != nil {
+				f.Close()
+				return err
+			}
 		}
 		fi, err := f.Stat()
 		if err != nil {
@@ -416,6 +456,11 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 		change = ex.change
 	} else if change, err = transcript.Decide(src.Watermark, id, r); err != nil {
 		return err
+	}
+	if s.authorization != nil && cur != nil {
+		if err := s.validateGeneration(src, cur); err != nil {
+			return err
+		}
 	}
 	if cur == nil && change.Decision != transcript.Rewrite {
 		change = transcript.Change{Decision: transcript.Rewrite, Reason: "no generation"}
@@ -599,8 +644,30 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 		}
 		wm = &w
 	}
-	if err := s.store.saveCapture(ctx, src, g, add, wm, exportState); err != nil {
+	if s.authorization != nil {
+		if err := s.checkAuthorization(ctx); err != nil {
+			return err
+		}
+		if err := validateProofFile(f, &s.authorization.Proof); err != nil {
+			return err
+		}
+		proof := s.authorization.Proof
+		proof.ContentSHA = bytes.Clone(proof.ContentSHA)
+		g.Proof = &proof
+	}
+	var guards []func() error
+	if s.authorization != nil {
+		guards = append(guards, func() error {
+			return validateProofIdentity(f, &s.authorization.Proof)
+		})
+	}
+	if err := s.store.saveCapture(ctx, src, g, add, wm, exportState, guards...); err != nil {
 		return err
+	}
+	if s.authorization != nil {
+		if err := validateProofFile(f, &s.authorization.Proof); err != nil {
+			return err // verified capture remains a fact; a changed live source requires reindexing
+		}
 	}
 	if f != nil && !src.Spec.rewriteProne() && !g.done() {
 		if old := s.held[src.ID]; old != nil {
@@ -635,6 +702,10 @@ func (s *Syncer) vanish(ctx context.Context, src *sourceRow) error {
 // recovered (in-place rewrite, spool full, no held descriptor) are recorded
 // as a gap: the generation is cut back to the recoverable prefix.
 func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why string) {
+	if s.authorization != nil {
+		return
+	} // retain pending generation; raw repair requires a fresh verified open
+
 	f := s.held[src.ID]
 	defer func() {
 		if f != nil {

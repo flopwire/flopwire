@@ -83,23 +83,24 @@ type Scheduler struct {
 	sy  *Syncer
 	cfg SchedulerConfig
 
-	mu      sync.Mutex
-	waiting map[string]*job // debouncing
-	ready   map[string]*job // due now (or at retryAt)
-	order   []string        // ready paths in arrival order
-	wake    chan struct{}
-	backoff time.Duration
-	retryAt time.Time // server backoff: no flush before this
-	lastErr error
-	down    bool
-	running int // 1 while a flush is in progress
-	seal    map[string]*time.Timer
-	failing map[string]*failure // per-source backoff, by path
-	halted  error               // a permanent error (TLS pin mismatch): no flush until Repin succeeds
-	recheck bool                // Recheck asked for a Repin now
-	repinAt time.Time           // while halted: the next periodic Repin
-	filter  func(SourceSpec) bool
-	bound   func(SourceSpec) (int64, bool)
+	mu        sync.Mutex
+	waiting   map[string]*job // debouncing
+	ready     map[string]*job // due now (or at retryAt)
+	order     []string        // ready paths in arrival order
+	wake      chan struct{}
+	backoff   time.Duration
+	retryAt   time.Time // server backoff: no flush before this
+	lastErr   error
+	down      bool
+	running   int // 1 while a flush is in progress
+	seal      map[string]*time.Timer
+	failing   map[string]*failure // per-source backoff, by path
+	halted    error               // a permanent error (TLS pin mismatch): no flush until Repin succeeds
+	recheck   bool                // Recheck asked for a Repin now
+	repinAt   time.Time           // while halted: the next periodic Repin
+	filter    func(SourceSpec) bool
+	bound     func(SourceSpec) (int64, bool)
+	authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)
 }
 
 // SetFilter installs a check run before each flush: a source it rejects
@@ -118,6 +119,15 @@ func (s *Scheduler) SetFilter(fn func(SourceSpec) bool) {
 func (s *Scheduler) SetBound(fn func(SourceSpec) (int64, bool)) {
 	s.mu.Lock()
 	s.bound = fn
+	s.mu.Unlock()
+}
+
+// SetAuthorize installs a lease acquired for each flush, including retries.
+// Returning nil authorization leaves ordinary collectors unchanged. Any
+// returned lease is released even when acquisition also returns an error.
+func (s *Scheduler) SetAuthorize(fn func(context.Context, SourceSpec) (*CaptureAuthorization, error)) {
+	s.mu.Lock()
+	s.authorize = fn
 	s.mu.Unlock()
 }
 
@@ -434,7 +444,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		j := s.ready[path]
 		delete(s.ready, path)
 		s.running = 1
-		filter, bound := s.filter, s.bound
+		filter, bound, authorize := s.filter, s.bound, s.authorize
 		s.mu.Unlock()
 
 		upTo, bounded := boundOf(bound, j.spec)
@@ -445,20 +455,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			s.mu.Unlock()
 			continue
 		}
-		var err error
-		if j.spec.Export {
-			if j.exportFn != nil {
-				err = s.sy.SyncExportFunc(ctx, j.spec, j.exportFn)
-			} else if j.export != nil {
-				err = s.sy.SyncExport(ctx, j.spec, j.export)
-			} else {
-				err = s.sy.Resume(ctx, j.spec)
-			}
-		} else if bounded {
-			err = s.sy.SyncUpTo(ctx, j.spec, upTo)
-		} else {
-			err = s.sy.Sync(ctx, j.spec)
-		}
+		err := s.syncJob(ctx, j, upTo, bounded, authorize)
 		tail := err == nil && s.sy.provisional(ctx, j.spec.Path)
 		s.mu.Lock()
 		s.running = 0
@@ -530,4 +527,46 @@ func boundOf(fn func(SourceSpec) (int64, bool), spec SourceSpec) (int64, bool) {
 		return 0, false
 	}
 	return fn(spec)
+}
+
+func (s *Scheduler) syncJob(ctx context.Context, j *job, upTo int64, bounded bool, authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)) (result error) {
+	var auth *CaptureAuthorization
+	if authorize != nil {
+		var err error
+		auth, err = authorize(ctx, j.spec)
+		if auth != nil {
+			if auth.Release != nil {
+				defer auth.Release()
+			}
+			if auth.OnError != nil {
+				defer func() {
+					if result != nil {
+						auth.OnError(ctx, result)
+					}
+				}()
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if auth != nil {
+		if j.spec.Export {
+			return errors.New("devicesync: authorized file capture cannot export")
+		}
+		return s.sy.SyncAuthorized(ctx, j.spec, auth)
+	}
+	if j.spec.Export {
+		if j.exportFn != nil {
+			return s.sy.SyncExportFunc(ctx, j.spec, j.exportFn)
+		}
+		if j.export != nil {
+			return s.sy.SyncExport(ctx, j.spec, j.export)
+		}
+		return s.sy.Resume(ctx, j.spec)
+	}
+	if bounded {
+		return s.sy.SyncUpTo(ctx, j.spec, upTo)
+	}
+	return s.sy.Sync(ctx, j.spec)
 }
