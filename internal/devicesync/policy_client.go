@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"regexp"
 
 	"github.com/google/uuid"
@@ -240,14 +239,12 @@ func (c *PolicyClient) limitHeld(ctx context.Context, original *syncproto.Policy
 	if original.Agent != "claude" {
 		return fail(errors.New("devicesync: compact restriction requires native Claude identity"))
 	}
-	if original.Device == nil || !filepath.IsAbs(original.Device.Home) || filepath.Clean(original.Device.Home) != original.Device.Home || original.Device.Home == "/" || strings.ContainsAny(original.Device.Home, "\x00\r\n") {
-		return fail(errors.New("devicesync: compact restriction requires the actual device home"))
-	}
+	// Identity-scoped revocation retains the server's recorded home. A moved
+	// or unavailable local home must not block restrictions on old copies.
 	compact := &syncproto.PolicyPlacementsRequest{
 		Version: original.Version, Agent: original.Agent, SessionID: id, ParentSessionID: parent,
 		CurrentMappingKnown: false, EvidenceScope: original.EvidenceScope, ClientMode: original.ClientMode,
 		ScopeStatus: syncproto.ScopeLimitHeld, Placements: []syncproto.PolicyPlacement{},
-		Device: &syncproto.DeviceDirs{Home: original.Device.Home},
 	}
 	historyScope := original.EvidenceScope
 	var revision int64
