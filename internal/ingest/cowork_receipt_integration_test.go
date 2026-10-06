@@ -272,7 +272,7 @@ func receiptChainReopen(t *testing.T, d *chainDevice, deviceID string) {
 // Existing production recovery-device archives remain deferred and unreconciled.
 func TestCoworkAgentRecoveredReceiptLifecycle(t *testing.T) {
 	e := newChainEnv(t)
-	h := newChainAPI(t, e, os.Getenv("FLOPWIRE_CHAIN_REAL_CAPABILITY") != "1")
+	h := newChainAPI(t, e, chainCapabilityOverride())
 	firstID, firstToken := e.credential(t, "receipt-current")
 	otherID, otherToken := e.credential(t, "receipt-other")
 	first := newChainDevice(t, firstID, firstToken, h)

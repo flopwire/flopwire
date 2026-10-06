@@ -464,7 +464,7 @@ func (e *chainEnv) familyRows(t *testing.T, d *chainDevice, deviceID string) {
 			if path == d.companion {
 				wantSize = len(d.companionBytes)
 			}
-			// All three literal fixtures are shorter than the configured1024-byte
+			// All three literal fixtures are shorter than the configured 1024-byte
 			// minimum chunk, and automatic sealing is disabled.
 			if generation != 0 || size != int64(wantSize) || entries != 0 || acked != 0 || tailSize != int64(wantSize) || !tailAcked || lost {
 				return fmt.Errorf("native generation not exactly acknowledged: generation=%d size=%d entries=%d acked=%d tail=%d/%v lost=%v", generation, size, entries, acked, tailSize, tailAcked, lost)
@@ -475,11 +475,15 @@ func (e *chainEnv) familyRows(t *testing.T, d *chainDevice, deviceID string) {
 }
 
 // Production remains at capability zero during implementation qualification.
-// The exact enablement candidate must rerun with FLOPWIRE_CHAIN_REAL_CAPABILITY=1
-// to use its real capability response, without the test-only override.
+// A compiled capability-one candidate always uses its real capability response.
+// FLOPWIRE_CHAIN_REAL_CAPABILITY=1 can also disable the development override.
+func chainCapabilityOverride() bool {
+	return syncproto.PolicyPlacementsVersion == 0 && os.Getenv("FLOPWIRE_CHAIN_REAL_CAPABILITY") != "1"
+}
+
 func TestCoworkAgentFullChainMappedFamily(t *testing.T) {
 	e := newChainEnv(t)
-	h := newChainAPI(t, e, os.Getenv("FLOPWIRE_CHAIN_REAL_CAPABILITY") != "1")
+	h := newChainAPI(t, e, chainCapabilityOverride())
 	firstID, firstToken := e.credential(t, "chain-first")
 	secondID, secondToken := e.credential(t, "chain-second")
 	first := newChainDevice(t, firstID, firstToken, h)
@@ -704,7 +708,7 @@ func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
 	for _, mode := range []string{"rule change", "disabled root", "active authorized raw repair swap"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newChainEnv(t)
-			h := newChainAPI(t, e, os.Getenv("FLOPWIRE_CHAIN_REAL_CAPABILITY") != "1")
+			h := newChainAPI(t, e, chainCapabilityOverride())
 			id, token := e.credential(t, "pending-restart")
 			d := newChainDevice(t, id, token, h)
 			// Keep this fixture to one real protected native file so each queued
