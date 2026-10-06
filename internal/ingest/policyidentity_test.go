@@ -246,3 +246,15 @@ func TestPolicyHistoricalRawOnlyCompanionRequiresCaptureProof(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyIdentifiedCoworkCannotChangeAgentToBypassGate(t *testing.T) {
+	e := newEnv(t)
+	for _, agent := range []string{"claude", "codex"} {
+		src := syncproto.Source{Agent: agent, Path: "/Users/test/Claude/local-agent-mode-sessions/session/transcript.jsonl", FileID: "1:1", StorageKind: "jsonl_append", SessionKey: uuid.NewString()}
+		_, err := checkFlushPolicy(e.ctx, e.pool, e.deviceID, src)
+		var held *Error
+		if !errors.As(err, &held) || held.Code != "policy_placements_required" {
+			t.Fatalf("identified Cowork agent=%s bypassed gate: %v", agent, err)
+		}
+	}
+}

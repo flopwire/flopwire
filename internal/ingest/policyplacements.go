@@ -558,6 +558,9 @@ func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src s
 		return nil, err
 	}
 	if src.Agent != "claude" {
+		if strings.Contains(strings.ReplaceAll(src.Path, `\`, "/"), "/local-agent-mode-sessions/") {
+			return nil, &Error{http.StatusConflict, "policy_placements_required", "identified Cowork sources require Claude policy identity; uploads remain held"}
+		}
 		return nil, nil
 	}
 	native, err := policySourceSession(ctx, q, device, src)
