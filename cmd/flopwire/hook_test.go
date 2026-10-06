@@ -456,7 +456,7 @@ func TestHookHarness(t *testing.T) {
 		var in hookInput
 		json.Unmarshal([]byte(c.in), &in)
 		if got := hookHarness(in, func(k string) string { return c.env[k] }); got != c.want {
-			t.Errorf("%s with %v: %q, want %q", c.in[:60], c.env, got, c.want)
+			t.Errorf("%s with %v: %q, want %q", c.in, c.env, got, c.want)
 		}
 	}
 }
