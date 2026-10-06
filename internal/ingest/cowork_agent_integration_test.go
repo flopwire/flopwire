@@ -284,7 +284,7 @@ func (e *chainEnv) familyRaw(t *testing.T, d *chainDevice, deviceID string) {
 			}
 			source, generation, size, err := e.source(d, deviceID, fixture.path)
 			if err != nil {
-				return err
+				return fmt.Errorf("%w; scheduler status=%+v", err, d.scheduler.Status())
 			}
 			if size != int64(len(fixture.body)) {
 				return fmt.Errorf("archived size %d, want %d", size, len(fixture.body))
