@@ -65,17 +65,26 @@ watches new app metadata and nested native history directories. It excludes
 unrelated native parents, ordinary chat, SSH sessions and WSL sessions.
 
 Normal-root Local Code history uses existing Claude collection and sharing
-rules. Scoped Code history remains local until contained sync authorization
-supports indexed byte bounds, source identity and pending generations.
+rules. Scoped Code uploads require current verified app linkage and a contained
+source lease for exactly the indexed bytes. Each captured generation stores
+its file identity, byte bound and companion digest. The source retains its
+protected container boundary after generation cleanup or a restart. Unknown
+linkage, changed rules, unavailable indexed proof and earlier unproven captures
+hold sharing. Disabling or changing the Code root does not release old pending
+captures through the ordinary CLI path.
 Imported Cowork session IDs retain Cowork folder-policy holds, including
 copies whose original Cowork container is absent. Code metadata supplies
 identity evidence only. It does not establish Cowork Mac-folder mapping.
 Historical unknown imports follow the configured unplaceable policy, including
 `exclude`, even when current Mac-folder mapping is complete.
 
-These are local collection prerequisites. They do not reconcile earlier
-server copies. The installed Claude 2.19675.1 Local flow was qualified with
-an approved synthetic session in the default Claude projects root. Scoped
+Collection and scoped authorization are implemented. Earlier server copies
+require the separate Cowork policy reconciliation path. The scoped path has
+passed synthetic capture and restart tests through the unified dispatcher.
+The updated collectors have not been deployed to both Macs.
+
+The installed Claude 2.19675.1 Local flow was qualified with an approved
+synthetic session in the default Claude projects root. Scoped
 fallback storage is covered by synthetic fixtures; it was not observed in
 that live session.
 
@@ -232,7 +241,8 @@ socket and prints these parts:
 |---|---|
 | `agent: running` | The agent answered. |
 | `Claude Desktop Code (Local): STATE` | Local Code discovery, scoped native sessions, normal-root links, missing linked transcripts and excluded backend records. |
-| `scoped shared uploads held: contained sync authorization support pending` | Scoped Code history remains local until its sync authorization is qualified. |
+| `scoped shared uploads held: contained sync authorization support pending` | The active sync implementation cannot acquire scoped Code authorization. Native collection continues locally. |
+| `scoped shared authorization: each capture requires fresh contained indexed proof` | The sync authorization hook is available. Each capture must pass its current linkage, folder rules, indexed byte bound and contained source checks. Cowork origins keep their folder-policy holds. |
 | `Cowork: STATE` | Current local discovery state, native sessions, metadata-only sessions and excluded paths. JSON status also includes mapping reasons, historical unknown scopes and watch candidates. |
 | `shared uploads held: server host-folder policy support pending` | Cowork evidence remains local. Empty sync queues do not establish shared Cowork coverage. |
 | `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](#keep-sessions-out-with-path-rules). |
