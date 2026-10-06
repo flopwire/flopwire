@@ -11,8 +11,8 @@ const (
 	PathPolicyPlacements     = "/v1/sync/policyplacements"
 	MaxPolicyPlacementsBytes = 1 << 20
 
-	// Keep this disabled until every enforcement path supports the contract.
-	PolicyPlacementsVersion = 0
+	// Version 1 enforces durable device-bound policy placements for protected sources.
+	PolicyPlacementsVersion = 1
 
 	EvidenceNone     = "none"
 	EvidenceMapped   = "mapped"
