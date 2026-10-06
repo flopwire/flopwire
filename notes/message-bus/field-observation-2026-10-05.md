@@ -65,10 +65,11 @@ what each finding turned out to be and where the fix went.
    tell from `sessions` output that liveness is broken. *Verified:* by
    design. `peers`, `send` and `inbox` go through the device agent so the
    caller is identified and path rules apply before anything leaves the
-   device; the server's `live` flag in `sessions` is 10-minute recency
-   and does not need the agent. The gap is the error text, which does
+   device; the server's `live` flag in `sessions` is 10-minute recency,
+   or the device's last live report within an hour, and needs no agent. The gap is the error text, which does
    not say that `live=` in `sessions` is unverified while the agent is
-   down, or that this session can neither send nor receive.
+   down, or that this session can neither send nor receive. Taken by the
+   presence lane (below).
 2. **Both Codex sessions guessed the wrong SKILL.md path.** Both first
    tried `~/.codex/plugins/cache/flopwire/local/skills/messaging/SKILL.md`
    (missing the doubled `flopwire/flopwire` segment), then `rg --files`
@@ -102,7 +103,10 @@ what each finding turned out to be and where the fix went.
    the first `FETCH` must finish the whole scan, recheck and sort before
    row one returns. `checked 0` means that took longer than 10 s.
    `docs/perf/shared-stack-2026-10-03.md` had already measured a 35 s
-   broad grep on this corpus. The retry most likely won on a warm cache,
+   broad grep, without a repo filter, on this corpus. There is no
+   `EXPLAIN` of this exact query, so the scan-before-predicate reading is
+   the most likely cause, not a measured one. The retry probably won on
+   a warm cache,
    not on the narrower filters, since `since` is applied to the same
    unindexed column. Fix: resolve the matching conversation ids first
    when a conversation-level filter is set, and add them as a predicate
@@ -123,14 +127,19 @@ what each finding turned out to be and where the fix went.
    what `flopwire_inbox --sent` shows the sender. Exchange-capture
    finding 6 ("recency live window") predates ended-session tracking
    (2026-10-02, #67 and #82) and no longer applies. What remains true:
-   nothing told the sender. The `session_ended` outcome writes only an
-   audit row; the receipt's text does not repeat `expires_at`; and
+   nothing told the sender. The `session_ended` outcome changes the
+   message's state and writes an audit row, and nothing reaches the
+   sender's context; the receipt's `outcome` line leaves out the
+   `expires_at` the JSON carries; and
    neither `peers` nor the receipt says how long the recipient has been
    idle. A new side finding: a Claude Code session left idle at its
    prompt with a live process drops out of `peers` after `LiveCap`
-   (1 h) although it can still receive mail. The sender notice,
-   `idle_since` and the `LiveCap` rule are on the 2026-10-06 presence
-   lane.
+   (1 h) although it can still receive mail. All three are the scope of
+   the presence lane: the Codex session's 2026-10-06 reliability batch,
+   run `20261006095552-0b98288d`, which keeps confirmed-open idle
+   sessions in `peers`, adds `idle_since` to `peers` and receipts, and
+   sends the sender one failure notice at its next hook, for every
+   intent.
 5. **Message style was telegraphic past the point a cold reader can
    parse.** The 20:33 inform reads "Retention prepares privately
    on46b538+frozen4f4 now. No cronpause/currentmaintenance running …
@@ -142,15 +151,15 @@ what each finding turned out to be and where the fix went.
 
 6. **Instruction overhead is real in long sessions, but about half the
    size first reported.** The `<flopwire-instructions>` block was
-   injected 18 times across the 29 h session. The block is 1,298 bytes,
-   about 330 tokens, not ~700. The 18 copies are the startup delivery,
+   injected 18 times across the 29 h session. The block is 1,267 bytes,
+   about 320 tokens, not ~700. The 18 copies are the startup delivery,
    one after each of the 15 compactions, and about two after resumes;
    there is no timer. The compaction snapshots do not keep the block, so
    re-injection after `compact` is what keeps the trust rules in
    context. Over 29 h the copies total roughly 6k tokens, and only one is
    live after each compaction. The one lever is to stop renewing on
-   `resume` for Codex, which replays the rollout file; that is on the
-   presence lane as optional.
+   `resume` for Codex, which replays the rollout file. Deferred: not
+   worth the risk of losing the trust rules for two copies a day.
 
 No message was ignored, no send was retried, and nothing was asked of a
 peer that the sender couldn't do itself. The one functional loss was
@@ -160,9 +169,9 @@ finding 4, which was benign here only because the inform was advisory.
 
 | Finding | What it is | Where it went |
 |---|---|---|
-| 1 `peers` vs `sessions` | By design; error text gap | presence lane |
+| 1 `peers` vs `sessions` | By design; error text gap | presence lane (see finding 4) |
 | 2 SKILL.md path | Model error, set up by the `X/X` layout | #162 rename, later batch |
-| 3 grep timeout | Server cost, already measured | `fix/grep-conversation-prefilter` |
+| 3 grep timeout | Server cost; a broad grep measured 35 s | `fix/grep-conversation-prefilter` |
 | 4 idle inform | Wrong as first written; sender gets no notice | presence lane: notice, `idle_since`, `LiveCap` |
 | 5 telegraphic message | Model behaviour | example in both SKILL.md |
-| 6 instruction overhead | By design; figure corrected | presence lane, optional resume skip |
+| 6 instruction overhead | By design; figure corrected | resume skip deferred |

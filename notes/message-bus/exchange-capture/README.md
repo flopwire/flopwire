@@ -234,8 +234,8 @@ The fixtures are in `landing/coordination-preview/fixtures/` on
    sessions are now tracked on harness evidence (a `SessionEnd` hook, a
    dead pid, or a missing registry entry; #67, #82) and leave `peers` at
    once; their waiting messages become `undelivered` with
-   `session_ended`. Only idleness still counts as live, which is
-   intended (B3). See `field-observation-2026-10-05.md` finding 4.
+   `session_ended`. An idle session that is still open counts as live,
+   up to `LiveCap` (1 h), which is intended (B3). See `field-observation-2026-10-05.md` finding 4.
 7. **No model ignored a message.** No approval prompt appeared in Codex,
    because of the auto-approve table. B hit no sandbox block, because it
    used only MCP for Flopwire. Neither session retried.

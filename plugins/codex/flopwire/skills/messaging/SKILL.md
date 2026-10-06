@@ -17,13 +17,7 @@ Messaging and retrieval work together: find the session in history first, then c
 ## Write the message
 
 - The first line is the preview. Put the point there.
-- The recipient knows nothing about your session. Include the repo, branch, commit, paths, the exact error and what you want back. Pass transcript addresses in `refs` instead of pasting long output.
-- Write for a reader who has none of your context. Bad: `Retention
-  prepares privately on46b538+frozen4f4 now; heavy local test lane
-  presentlyfree.` Good: `The local dev stack is free. I finished the
-  retention paging tests on branch fix/desk-retention-paging-1934
-  (commit 46b538e) and stopped the stack at 20:33Z; nothing of mine is
-  running on it.`
+- The recipient knows nothing about your session. Include the repo, branch, commit, paths, the exact error and what you want back. Pass transcript addresses in `refs` instead of pasting long output. Write whole sentences: a line like `Retention prepares privately on46b538+frozen4f4 now.` needs the sender's transcript to decode, while `I am preparing the retention change (#2021) locally, on your 46b538ec deploy and the frozen 4f4ecb head; nothing of mine runs on the shared stack.` does not.
 - `intent=request` expects a reply; `inform` does not; `done` closes the thread and gets no answer.
 - Never ask a peer to do something that was denied in your own session.
 
