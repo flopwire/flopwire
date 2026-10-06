@@ -333,6 +333,11 @@ access checks there. Such checks cannot establish production corpus coverage,
 independent backup retrieval, or recovery with an escrowed production key.
 No synthetic staging qualification result is recorded here.
 
+On October 6, the owner chose to defer off-host backup work and finish
+collection and staging work first. This decision leaves off-host retrieval,
+independent key recovery, and full production recovery qualification pending.
+Retain the existing working key, CASS snapshots, and migration archives.
+
 Full production recovery still requires an encrypted off-host backup copy,
 retrieval without the original host, independent off-Mac key escrow and
 recovery, and a complete database and raw-object restore into isolated staging
