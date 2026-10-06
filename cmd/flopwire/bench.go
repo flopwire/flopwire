@@ -118,6 +118,13 @@ func benchAcceptance(ctx context.Context, args []string) error {
 	}
 	home, claudeDir, codexHome, devinDB := hf.resolve()
 	b := &bench{exe: exe, scratch: *scratch, claude: claudeDir, codex: codexHome, devin: devinDB, home: home}
+	if *only != "report" {
+		var err error
+		b.opencodeDB, err = b.probeAgent(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	res, err := b.load()
 	if err != nil {
 		return err
@@ -173,6 +180,7 @@ type bench struct {
 	exe, scratch         string
 	claude, codex, devin string
 	home                 string // what ~/ in a query's repo means
+	opencodeDB           bool   // set only after a valid capability probe
 }
 
 type accResults struct {
@@ -231,14 +239,75 @@ type indexResult struct {
 }
 
 func (b *bench) agentArgs(db string, extra ...string) []string {
-	return append([]string{"agent", "run", "--no-sync", "--db", db, "--claude-projects", b.claude, "--codex-home", b.codex,
-		"--devin-db", filepath.Join(b.scratch, "devin", "sessions.db"), "--opencode-db", "-"}, extra...)
+	return b.withAgentCapabilities(append([]string{"agent", "run", "--no-sync", "--db", db, "--claude-projects", b.claude, "--codex-home", b.codex,
+		"--devin-db", filepath.Join(b.scratch, "devin", "sessions.db")}, extra...))
+}
+
+func (b *bench) withAgentCapabilities(args []string) []string {
+	if b.opencodeDB {
+		return append(args, "--opencode-db", "-")
+	}
+	return args
+}
+
+// Probe outside measured launches. Go's flag help may exit nonzero; only
+// recognizable agent-run help permits treating a missing flag as legacy.
+func (b *bench) probeAgent(ctx context.Context) (bool, error) {
+	return b.probeAgentTimeout(ctx, 3*time.Second)
+}
+
+func (b *bench) probeAgentTimeout(ctx context.Context, timeout time.Duration) (bool, error) {
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(pctx, b.exe, "agent", "run", "-h")
+	cmd.Env = b.agentEnv()
+	cmd.WaitDelay = 100 * time.Millisecond
+	var out bytes.Buffer
+	// Limit retained output even if a broken binary floods its help stream.
+	cmd.Stdout = &benchHelpWriter{buf: &out}
+	cmd.Stderr = cmd.Stdout
+	err := cmd.Run()
+	if pctx.Err() != nil {
+		return false, fmt.Errorf("agent run help: %w", pctx.Err())
+	}
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() < 0) {
+		return false, fmt.Errorf("agent run help: %w", err)
+	}
+	help := out.String()
+	flags := regexp.MustCompile(`(?m)^  -([a-zA-Z0-9][a-zA-Z0-9-]*)(?:[ \t].*)?$`).FindAllStringSubmatch(help, -1)
+	if !strings.Contains(help, "Usage of agent run:\n") || len(flags) == 0 ||
+		strings.Contains(help, "flag provided but not defined:") || len(help) >= 64<<10 {
+		return false, fmt.Errorf("agent run help: malformed output (%v)\n%s", err, tail(help, 2000))
+	}
+	for _, f := range flags {
+		if f[1] == "opencode-db" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+type benchHelpWriter struct{ buf *bytes.Buffer }
+
+func (w *benchHelpWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if left := (64 << 10) - w.buf.Len(); left > 0 {
+		if len(p) > left {
+			p = p[:left]
+		}
+		_, _ = w.buf.Write(p)
+	}
+	return n, nil
 }
 
 func (b *bench) agentEnv() []string {
 	home := filepath.Join(b.scratch, "home")
 	_ = os.MkdirAll(home, 0o700)
-	return append(os.Environ(), "HOME="+home, "FLOPWIRE_INDEX=")
+	return append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		"FLOPWIRE_CONFIG="+filepath.Join(home, ".config", "flopwire", "config.json"),
+		"FLOPWIRE_OPENCODE_DB=-", "OPENCODE_DB=-", "FLOPWIRE_INDEX=")
 }
 
 func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResult, error) {
@@ -400,8 +469,8 @@ func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	db := filepath.Join(dir, "index.db")
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(rctx, b.exe, "agent", "run", "--no-sync", "--db", db, "--claude-projects", filepath.Join(dir, "projects"),
-		"--codex-home", filepath.Join(dir, "nocodex"), "--devin-db", "-", "--opencode-db", "-", "--socket", filepath.Join(dir, "agent.sock"))
+	cmd := exec.CommandContext(rctx, b.exe, b.withAgentCapabilities([]string{"agent", "run", "--no-sync", "--db", db, "--claude-projects", filepath.Join(dir, "projects"),
+		"--codex-home", filepath.Join(dir, "nocodex"), "--devin-db", "-", "--socket", filepath.Join(dir, "agent.sock")})...)
 	cmd.Env = b.agentEnv()
 	var logBuf bytes.Buffer
 	cmd.Stderr = &logBuf
@@ -410,7 +479,9 @@ func (b *bench) fresh(ctx context.Context) (*freshResult, error) {
 	}
 	defer func() { _ = cmd.Process.Signal(syscall.SIGTERM); _ = cmd.Wait() }()
 	findable := func(needle string) (bool, error) {
-		out, err := exec.CommandContext(ctx, b.exe, "grep", "-F", "--index", db, "--include-self", "--json", needle).Output()
+		query := exec.CommandContext(ctx, b.exe, "grep", "-F", "--index", db, "--include-self", "--json", needle)
+		query.Env = b.agentEnv()
+		out, err := query.Output()
 		if err != nil {
 			return false, nil // the index may not exist yet
 		}
@@ -567,6 +638,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 	if err := yaml.Unmarshal(data, &specs); err != nil {
 		return nil, err
 	}
+	env := b.agentEnv()
 	res := &queriesResult{At: time.Now()}
 	for _, q := range specs {
 		verb := q.Verb
@@ -594,7 +666,9 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 		var out []byte
 		for range 4 {
 			t0 := time.Now()
-			o, err := exec.CommandContext(ctx, b.exe, args...).Output()
+			cmd := exec.CommandContext(ctx, b.exe, args...)
+			cmd.Env = env
+			o, err := cmd.Output()
 			qr.Ms = append(qr.Ms, float64(time.Since(t0).Microseconds())/1000)
 			if err != nil {
 				qr.problem("query command: "+exitReason(err), fmt.Sprintf("%v: %s", err, errText(err)))
@@ -654,7 +728,9 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			}
 			qr.Reads++
 			t0 := time.Now()
-			o, err := exec.CommandContext(ctx, b.exe, "read", "--index", db, "--json", addr).Output()
+			cmd := exec.CommandContext(ctx, b.exe, "read", "--index", db, "--json", addr)
+			cmd.Env = env
+			o, err := cmd.Output()
 			qr.ReadMs = append(qr.ReadMs, float64(time.Since(t0).Microseconds())/1000)
 			var cx struct {
 				Focus string `json:"focus"`

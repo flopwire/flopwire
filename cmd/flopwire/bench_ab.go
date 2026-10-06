@@ -213,6 +213,23 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 		{"B", *binB, buildRecord{Version: "candidate", Commit: *labelB}},
 	}
 	machine := machineInfo()
+	// Cache by binary, outside every measured run (including A/A comparisons).
+	capabilities := map[string]bool{}
+	for _, sd := range sides {
+		if _, ok := capabilities[sd.bin]; ok {
+			continue
+		}
+		probe := &bench{exe: sd.bin, scratch: filepath.Join(*scratch, "probe-"+sd.name)}
+		supported, err := probe.probeAgent(ctx)
+		if err != nil {
+			err = fmt.Errorf("%s capability probe: %w", sd.name, err)
+			if sd.name != "A" || ctx.Err() != nil {
+				return err
+			}
+			return writeAB(*out, stdout, baselineFailed(sides[0].build, sides[1].build, machine, err), *strict)
+		}
+		capabilities[sd.bin] = supported
+	}
 	t0 := time.Now()
 	var all []abRun
 	if *warm {
@@ -234,7 +251,7 @@ func benchAB(ctx context.Context, args []string, stdout io.Writer) error {
 			if err := os.RemoveAll(dir); err != nil {
 				return err
 			}
-			b := &bench{exe: sd.bin, scratch: dir, claude: claudeDir, codex: codexHome, devin: devinDB, home: home}
+			b := &bench{exe: sd.bin, scratch: dir, claude: claudeDir, codex: codexHome, devin: devinDB, home: home, opencodeDB: capabilities[sd.bin]}
 			res := &accResults{}
 			rt := time.Now()
 			fmt.Fprintf(os.Stderr, "bench ab: run %d/%d, %s %d (%s)\n", k+1, 2**runs, sd.name, i, sd.bin)

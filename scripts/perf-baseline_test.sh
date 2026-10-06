@@ -41,8 +41,17 @@ git tag v0.1.0 "$c2"
 c3="$(c three)"
 expect "release newer than pin" "$c2"
 pin "$c3"
-c4="$(c four)"
 expect "pin moved after the release" "$c3"
+c4="$(c four)"
+expect "advancing HEAD keeps the fixed pin" "$c3"
+pin 0000000000000000000000000000000000000000
+expect "unknown pin cannot fall back to release" FAIL
+pin bad-pin
+expect "malformed pin cannot fall back to release" FAIL
+pin "$c3"
+echo "$c4" >override-pin
+expect "explicit pin file override" "$c4" PERF_BASELINE_FILE=override-pin
+expect "unknown input cannot fall back to pin" FAIL INPUT_BASELINE=0000000000000000000000000000000000000000
 expect "input sha" "$c1" INPUT_BASELINE="${c1:0:10}"
 expect "input tag" "$c2" INPUT_BASELINE=v0.1.0
 # shellcheck disable=SC2016 # literal on purpose
