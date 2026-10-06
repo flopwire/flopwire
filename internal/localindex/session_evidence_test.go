@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -271,5 +272,102 @@ func TestSessionEvidenceSyncQueryFailurePropagates(t *testing.T) {
 	}
 	if _, err := s.SessionHasEvidence(ctx, transcript.AgentClaude, "native"); err == nil {
 		t.Fatal("sync evidence query failure ignored")
+	}
+}
+
+func TestSessionEvidenceNativeCaptureWithoutSessionKey(t *testing.T) {
+	const nativeID = "12345678-abcd-4321-9876-123456789abc"
+	const otherID = "12345678-abcd-4321-9876-123456789abd"
+	transcriptPath := "/synthetic/project/" + nativeID + ".jsonl"
+	type captureCase struct {
+		name             string
+		mutate           func(map[string]any)
+		rowPath, session string
+		older            bool
+		want             bool
+	}
+	cases := []captureCase{
+		{name: "current transcript", want: true},
+		{name: "acked earlier transcript", older: true, want: true},
+		{name: "basename at root", rowPath: nativeID + ".jsonl", want: true},
+		{name: "normalized canonical case", rowPath: strings.ToUpper(transcriptPath), session: strings.ToUpper(nativeID), want: true},
+		{name: "companion parent", mutate: func(m map[string]any) { m["StorageKind"] = transcript.StorageCompanion; m["Parent"] = transcriptPath }, rowPath: "/synthetic/result.txt", want: true},
+		{name: "acked companion parent", mutate: func(m map[string]any) { m["StorageKind"] = transcript.StorageCompanion; m["Parent"] = transcriptPath }, rowPath: "/synthetic/result.txt", older: true, want: true},
+		{name: "missing key field", mutate: func(m map[string]any) { delete(m, "SessionKey") }, want: true},
+		{name: "conflicting explicit key", mutate: func(m map[string]any) { m["SessionKey"] = otherID }},
+		{name: "non UUID request", session: "arbitrary"},
+		{name: "noncanonical UUID request", session: "urn:uuid:" + nativeID},
+		{name: "other agent", mutate: func(m map[string]any) { m["Agent"] = transcript.AgentCodex }},
+		{name: "CASS parser", mutate: func(m map[string]any) { m["Parser"] = "cass@1" }},
+		{name: "missing native parser", mutate: func(m map[string]any) { delete(m, "Parser") }},
+		{name: "unversioned native parser", mutate: func(m map[string]any) { m["Parser"] = "claude@" }},
+		{name: "export", mutate: func(m map[string]any) { m["Export"] = true }},
+		{name: "wrong storage", mutate: func(m map[string]any) { m["StorageKind"] = transcript.StorageJSONDoc }},
+		{name: "other transcript basename", rowPath: "/synthetic/project/" + otherID + ".jsonl"},
+		{name: "UUID suffix", rowPath: "/synthetic/prefix-" + nativeID + ".jsonl"},
+		{name: "filename suffix", rowPath: transcriptPath + "-extra"},
+		{name: "spec path cannot override row", rowPath: "/synthetic/unrelated.jsonl"},
+		{name: "mismatched companion parent", mutate: func(m map[string]any) {
+			m["StorageKind"] = transcript.StorageCompanion
+			m["Parent"] = "/synthetic/" + otherID + ".jsonl"
+		}, rowPath: "/synthetic/result.txt"},
+		{name: "arbitrary companion parent", mutate: func(m map[string]any) {
+			m["StorageKind"] = transcript.StorageCompanion
+			m["Parent"] = "/synthetic/arbitrary.jsonl"
+		}, rowPath: "/synthetic/result.txt"},
+		{name: "missing companion parent", mutate: func(m map[string]any) { m["StorageKind"] = transcript.StorageCompanion }, rowPath: "/synthetic/result.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			spec := map[string]any{"Agent": transcript.AgentClaude, "SessionKey": "", "Parser": "claude@1", "StorageKind": transcript.StorageJSONLAppend, "Path": transcriptPath}
+			if tc.mutate != nil {
+				tc.mutate(spec)
+			}
+			encoded, err := json.Marshal(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rowPath := tc.rowPath
+			if rowPath == "" {
+				rowPath = transcriptPath
+			}
+			session := tc.session
+			if session == "" {
+				session = nativeID
+			}
+			gen, closed, acked := 3, 0, 0
+			if tc.older {
+				gen, closed, acked = 1, 1, 1
+			}
+			if err = s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT NOT NULL,spec TEXT NOT NULL,generation INTEGER NOT NULL)`, `CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,acked INTEGER)`} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,?,?,3)`, rowPath, string(encoded)); err != nil {
+					return err
+				}
+				_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,?,7,?,?)`, gen, closed, acked)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			requireSessionEvidence(t, s, transcript.AgentClaude, session, tc.want)
+			requireSessionEvidence(t, s, transcript.AgentClaude, "12345678-abcd-4321-9876-123456789abe", false)
+			requireSessionEvidence(t, s, transcript.AgentCodex, session, false)
+			if tc.want {
+				if err = s.Sync(ctx); err != nil {
+					t.Fatal(err)
+				}
+				r, err := Open(s.Path(), Options{DeviceID: "local-device", ReadOnly: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				requireSessionEvidence(t, r, transcript.AgentClaude, session, true)
+			}
+		})
 	}
 }

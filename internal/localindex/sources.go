@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/google/uuid"
 )
 
 // SourceState is a source row with its watermark.
@@ -388,11 +390,41 @@ func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, 
 		}
 		// Do not restrict to the current generation: earlier, closed, lost or
 		// acknowledged captures still prove evidence existed before scope proof.
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM devsync_sources src JOIN devsync_gens g ON g.source_id=src.id
+  WHERE g.size>0
+    AND json_extract(src.spec,'$.Agent')=?
+    AND json_extract(src.spec,'$.SessionKey')=?)`, string(agent), session).Scan(&have); err != nil {
+			return err
+		}
+		if have || agent != transcript.AgentClaude {
+			return nil
+		}
+		id, err := uuid.Parse(session)
+		if err != nil || id == uuid.Nil || id.String() != strings.ToLower(session) {
+			return nil
+		}
+		filename := id.String() + ".jsonl"
+		// Historical raw capture APIs could omit SessionKey. Restriction-only
+		// fallback uses native Claude provenance plus an exact UUID basename;
+		// explicit conflicting keys, exports and non-native parsers never infer
+		// identity. The scheduler's row path, not spec.Path, is authoritative.
 		return q.QueryRowContext(ctx, `SELECT EXISTS(
   SELECT 1 FROM devsync_sources src JOIN devsync_gens g ON g.source_id=src.id
   WHERE g.size>0
     AND json_extract(src.spec,'$.Agent')=?
-    AND json_extract(src.spec,'$.SessionKey')=?)`, string(agent), session).Scan(&have)
+    AND coalesce(json_extract(src.spec,'$.SessionKey'),'')=''
+    AND substr(json_extract(src.spec,'$.Parser'),1,7)='claude@'
+    AND length(json_extract(src.spec,'$.Parser'))>7
+    AND coalesce(json_extract(src.spec,'$.Export'),0)=0
+    AND (
+      (json_extract(src.spec,'$.StorageKind')=?
+       AND (lower(src.path)=? OR substr(lower(src.path),-(length(?)+1))='/'||?))
+      OR (json_extract(src.spec,'$.StorageKind')=?
+       AND (lower(json_extract(src.spec,'$.Parent'))=?
+         OR substr(lower(json_extract(src.spec,'$.Parent')),-(length(?)+1))='/'||?))
+    ))`, string(agent), string(transcript.StorageJSONLAppend), filename, filename, filename,
+			string(transcript.StorageCompanion), filename, filename, filename).Scan(&have)
 	})
 	return have, err
 }
