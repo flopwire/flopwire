@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/pgtest"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/migrations"
@@ -110,7 +112,7 @@ func TestCowork014DumpRestoreUpgrade(t *testing.T) {
  INSERT INTO chunk_redirects(old_hash,new_hash,redaction_id) VALUES(decode(repeat('01',32),'hex'),decode(repeat('02',32),'hex'),'10000000-0000-0000-0000-000000000003');
  INSERT INTO redacted_lines(line_sha,spans,redaction_id) VALUES(decode(repeat('03',32),'hex'),'[[0,4]]','10000000-0000-0000-0000-000000000003');
  INSERT INTO conversation_tombstones(id,user_id,device_id,agent,session_id,conversation_id,requested_by,requested_at) VALUES('10000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000003','claude','deleted-synthetic','10000000-0000-0000-0000-000000000006','00000000-0000-0000-0000-000000000001','2026-01-01');
- UPDATE collection_policy SET path_rules='[{"path":"/synthetic/private","mode":"exclude"}]',unplaceable='local',max_storage_bytes=100000,updated_by='00000000-0000-0000-0000-000000000001',updated_at='2026-01-01';`
+ UPDATE collection_policy SET path_rules='["deny /synthetic/private"]',unplaceable='local',max_storage_bytes=100000,updated_by='00000000-0000-0000-0000-000000000001',updated_at='2026-01-01';`
 	if _, err = source.Exec(ctx, archiveFixture); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +181,18 @@ func TestCowork014DumpRestoreUpgrade(t *testing.T) {
 	}
 	if got := coworkUpgradeSnapshot(t, restored, tables); !reflect.DeepEqual(got, before) {
 		t.Fatal("014 changed existing rows,checksums,or applied_at")
+	}
+	var storedRules []byte
+	var ruleLines []string
+	if err = restored.QueryRow(ctx, `SELECT path_rules FROM collection_policy WHERE singleton`).Scan(&storedRules); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(storedRules, &ruleLines); err != nil {
+		t.Fatal("restored collection policy is not valid stored rule strings")
+	}
+	parsedRules, err := pathpolicy.ParseRules(ruleLines)
+	if err != nil || len(parsedRules) != 1 || parsedRules[0].Mode != pathpolicy.Deny {
+		t.Fatalf("restored restrictive collection policy invalid: %v", err)
 	}
 	var wrong, count int
 	if err = restored.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE hidden_scope<>'user'`).Scan(&wrong); err != nil || wrong != 0 {
