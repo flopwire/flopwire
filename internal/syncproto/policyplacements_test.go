@@ -27,6 +27,7 @@ func TestPolicyPlacementsDigestBindsExactBatch(t *testing.T) {
 		t.Fatalf("unstable digest: %q %q %v", original, same, err)
 	}
 	mutations := []func(*PolicyPlacementsRequest){
+		func(r *PolicyPlacementsRequest) { r.ScopeStatus = ScopeLimitHeld },
 		func(r *PolicyPlacementsRequest) {
 			r.RecoverySources = []PolicyRecoverySource{{Source: PolicySource{Path: "/recovery/export.jsonl", FileID: "1:2", Generation: 3}, OriginalPath: "/gone/native.jsonl"}}
 		},
