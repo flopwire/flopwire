@@ -43,10 +43,12 @@ Retain both binaries and the generated corpus, per-run records, median records,
 `ab.json` and `ab.md`. Record the candidate checkout and its diff if the label
 ends in `working-tree`.
 
-Check that A completes indexing, freshness and queries without an unknown
-`-opencode-db` error. Focused launch tests cover idle startup arguments. A `REGRESSED` verdict reports measured drift;
+Check that A completes indexing (including idle startup), freshness and
+queries without an unknown `-opencode-db` error. A `REGRESSED` verdict reports
+measured drift;
 it is separate from a compatibility failure on this one-run smoke.
-Check the query results and indexed row counts for both binaries. Report other incompatibilities as failures.
+Check the query results and indexed row counts for both binaries.
+Report other incompatibilities as failures.
 
 On 2026-10-06, the pinned baseline and candidate `5f7ba257fc5a` completed
 this 40 MiB comparison from a clean QA checkout. That candidate is a
@@ -60,6 +62,7 @@ comparison with the normal idle interval before evaluating performance drift.
 
 The [standard 1.5 GB, three-run comparison](https://github.com/flopwire/flopwire/actions/runs/37481232252)
 also completed on 2026-10-06. Baseline A was `9e4193d`; candidate B was
-`1ff90a2`, before the later logging mutex and documentation changes. Each
-run indexed 224,574 rows. All 12 queries passed on both sides. The verdict
+`1ff90a2`. This result applies to that candidate; it does not measure
+subsequent source changes. Each run indexed 224,574 rows. All 12 queries
+passed on both sides. The verdict
 was `CLEAN`, with zero regressions.
