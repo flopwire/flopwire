@@ -11,6 +11,8 @@ CREATE TABLE bus_delivery_failures (
   lease_device uuid REFERENCES devices(id),
   lease_token text,
   lease_until timestamptz,
+  -- Scheduling metadata only: offering does not acknowledge printing.
+  last_offered_at timestamptz,
   acked_at timestamptz
 );
 CREATE INDEX bus_delivery_failures_sender ON bus_delivery_failures(from_user, from_device, created_at) WHERE acked_at IS NULL;
