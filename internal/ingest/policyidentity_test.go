@@ -181,7 +181,7 @@ func TestPolicySourceIdentityUnresolvedParentPreserved(t *testing.T) {
 // only an empty generation, and the companion has stored bytes but no derived
 // conversations/messages. Today's host folders cannot certify that capture.
 func TestPolicyHistoricalRawOnlyCompanionRequiresCaptureProof(t *testing.T) {
-	for _, floor := range []string{"allow", "exclude"} {
+	for _, floor := range []string{"upload", "exclude"} {
 		for _, linked := range []bool{false, true} {
 			name := floor + "/retained-parent"
 			if linked {

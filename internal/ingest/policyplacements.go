@@ -424,17 +424,7 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 			return err
 		}
 		if withheld != nil || p.ScopeStatus == syncproto.ScopeLimitHeld {
-			// Capacity loses enumeration, never a verified incoming restriction.
-			// Retain the actual Deny as a restriction-only floor; it provides no
-			// independent permission to purge when its path proof was omitted.
-			incoming := policyPlacementState{Placements: req.Placements, CurrentMappingKnown: true, EvidenceScope: syncproto.EvidenceNone, ClientMode: "allow"}
-			if rules.decidePolicy(deviceDirs{home: home}, incoming).Mode == pathpolicy.Deny && p.ClientMode != "deny" {
-				p.ClientMode = "deny"
-				if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET client_mode='deny' WHERE device_id=$1 AND agent=$2 AND session_id=$3`, device, req.Agent, req.SessionID); err != nil {
-					return err
-				}
-			}
-			if err := holdSessionPolicyLimit(ctx, tx, rules, user, device, req); err != nil {
+			if err := holdSessionPolicyLimit(ctx, tx, rules, user, device, home, req); err != nil {
 				return err
 			}
 			if withheld != nil {
@@ -456,7 +446,7 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 				return err
 			}
 			withheld = limit
-			return holdSessionPolicyLimit(ctx, tx, rules, user, device, req)
+			return holdSessionPolicyLimit(ctx, tx, rules, user, device, home, req)
 		}
 		d := rules.decidePolicy(deviceDirs{home: home}, p)
 		states, err := loadSessionPolicies(ctx, tx, device, req.Agent, req.SessionID, req.ParentSessionID, "")
@@ -466,7 +456,7 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 				return err
 			}
 			withheld = limit
-			return holdSessionPolicyLimit(ctx, tx, rules, user, device, req)
+			return holdSessionPolicyLimit(ctx, tx, rules, user, device, home, req)
 		}
 		for _, state := range states {
 			if state.EvidenceScope == "unmapped" {

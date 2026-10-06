@@ -277,3 +277,88 @@ func TestPolicyLimitPurgeRequiresRetainedAdminProof(t *testing.T) {
 		t.Fatal("actual historical unknown lost configured exclude precedence")
 	}
 }
+
+// A missing native cwd is not an admin placement proof when verified host
+// folders already place mapped history. The compact Deny keeps sharing held,
+// but cannot turn that overridden native floor into permission to erase it.
+func TestPolicyLimitMissingNativePlacementDoesNotAuthorizePurge(t *testing.T) {
+	for _, floor := range []string{"local", "exclude"} {
+		t.Run(floor, func(t *testing.T) {
+			e := newEnv(t)
+			e.setRules(floor)
+			session := uuid.NewString()
+			id := policyStoredConversation(e, e.deviceID, session, "")
+			e.exec(`UPDATE conversations SET cwd=NULL WHERE id=$1`, id)
+			policyStoredLedger(e, e.deviceID, session, true, "mapped", "deny")
+			e.exec(`UPDATE session_policy_placements SET scope_status='limit-held' WHERE device_id=$1 AND session_id=$2`, e.deviceID, session)
+			e.exec(hideDeviceTreeSQL, id, time.Now().UTC().Add(-8*24*time.Hour), "cowork-client-policy", int64(1), e.userID)
+			rows, err := e.queue.convRows(e.ctx, `c.id=$1`, id)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("load capacity-held copy: %v", err)
+			}
+			before := rows[0]
+			rules, err := loadRules(e.ctx, e.pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if native := rules.decideAll(before.dev, before.agent, before.path, before.cwd, before.others, before.remote); !native.Unplaceable {
+				t.Fatalf("fixture has native placement: %+v", native)
+			}
+			if d := rules.decideConv(before); d.Mode != pathpolicy.Deny {
+				t.Fatalf("capacity weakened compact Deny: %+v", d)
+			}
+			cutoff := time.Now()
+			purged, restored, err := e.queue.purgeHidden(e.ctx, rules, &cutoff, "", "", "", "hidden_expired")
+			if err != nil || purged != 0 || restored != 0 {
+				t.Fatalf("overridden native floor authorized expiry: purged=%d restored=%d err=%v", purged, restored, err)
+			}
+			if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND hidden_at IS NOT NULL`, id) != 1 || e.count(`SELECT count(*) FROM conversation_tombstones WHERE session_id=$1`, session) != 0 {
+				t.Fatal("mapped capacity-held copy was erased or tombstoned")
+			}
+		})
+	}
+}
+
+func TestPolicyLimitLateComponentOverflowPreservesIncomingDeny(t *testing.T) {
+	e, root, _ := limitSharedFixture(t, 1)
+	e.setRules("", "deny /Users/test/private")
+	// The component fits before the new child's request. The denied child's
+	// identity sorts last, outside the root copy's bounded path projection.
+	e.exec(`WITH added AS (
+ INSERT INTO session_policy_placements(device_id,agent,session_id,placements,current_mapping_known,evidence_scope,client_mode)
+ SELECT $1,'claude',gen_random_uuid()::text,'[{"cwd":"/Users/test/allowed"}]'::jsonb,true,'none','allow' FROM generate_series(1,1023)
+ RETURNING session_id)
+ INSERT INTO session_policy_links(device_id,agent,session_id,policy_session_id) SELECT $1,'claude',session_id,$2 FROM added`, e.deviceID, root.SessionID)
+	child := policyRequest()
+	child.SessionID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+	child.ParentSessionID = root.SessionID
+	child.EvidenceScope = syncproto.EvidenceNone
+	child.Placements = []syncproto.PolicyPlacement{{CWD: "/Users/test/private/project"}}
+	response, err := (&Server{Pool: e.pool, Objects: e.objects}).PolicyPlacements(e.ctx, e.deviceID, child)
+	limitWantStatus(t, err, http.StatusRequestEntityTooLarge)
+	if response != nil {
+		t.Fatalf("late component overflow returned success: %+v", response)
+	}
+	if e.count(`SELECT count(*) FROM session_policy_placements WHERE device_id=$1 AND session_id=$2 AND scope_status='limit-held' AND client_mode='deny' AND evidence_scope='none'`, e.deviceID, child.SessionID) != 1 {
+		t.Fatal("late capacity catch lost incoming Deny or fabricated capture")
+	}
+	rows, err := e.queue.convRows(e.ctx, `c.device_id=$1 AND c.session_id=$2`, e.deviceID, root.SessionID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("load root capacity projection: %v", err)
+	}
+	for _, state := range rows[0].policies {
+		if state.SessionID == child.SessionID {
+			t.Fatal("fixture failed to omit denied child from bounded projection")
+		}
+	}
+	rules, err := loadRules(e.ctx, e.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := rules.decideConv(rows[0]); d.Mode != pathpolicy.Deny {
+		t.Fatalf("late capacity catch weakened omitted child's Deny: %+v", d)
+	}
+	if rows[0].hiddenAt == nil || rows[0].scope != "device" {
+		t.Fatal("late capacity failure left existing captured root visible")
+	}
+}

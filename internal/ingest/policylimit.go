@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/domain"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/google/uuid"
@@ -28,8 +29,12 @@ const policyLimitComponent = `WITH RECURSIVE component AS (
  FROM session_policy_links link JOIN component k ON link.session_id=k.session_id OR link.policy_session_id=k.session_id
  WHERE link.device_id=$1 AND link.agent=$2)`
 
-func holdSessionPolicyLimit(ctx context.Context, tx pgx.Tx, r serverRules, user, device string, req *syncproto.PolicyPlacementsRequest) error {
-	if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET scope_status='limit-held',revision=revision+CASE WHEN scope_status='limit-held' THEN 0 ELSE 1 END,updated_at=now() WHERE device_id=$1 AND agent=$2 AND session_id=$3`, device, req.Agent, req.SessionID); err != nil {
+func holdSessionPolicyLimit(ctx context.Context, tx pgx.Tx, r serverRules, user, device, home string, req *syncproto.PolicyPlacementsRequest) error {
+	// Retain a verified incoming Deny even when enumeration fails later in
+	// reconciliation. This floor grants no deletion permission by itself.
+	incoming := policyPlacementState{Placements: req.Placements, CurrentMappingKnown: true, EvidenceScope: syncproto.EvidenceNone, ClientMode: "allow"}
+	denied := r.decidePolicy(deviceDirs{home: home}, incoming).Mode == pathpolicy.Deny
+	if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET scope_status='limit-held',client_mode=CASE WHEN $4 THEN 'deny' ELSE client_mode END,revision=revision+CASE WHEN scope_status='limit-held' THEN 0 ELSE 1 END,updated_at=now() WHERE device_id=$1 AND agent=$2 AND session_id=$3`, device, req.Agent, req.SessionID, denied); err != nil {
 		return err
 	}
 	refs := req.Sources
