@@ -275,6 +275,9 @@ func TestPolicySourceParentPlaceholderRefinesOnFirstMainCapture(t *testing.T) {
 	}
 	companion := devicesync.SourceSpec{Path: artifact, Agent: transcript.AgentClaude, StorageKind: transcript.StorageCompanion, SessionKey: req.SessionID, Parser: "claude@1", Parent: main.Path}
 	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	req.EvidenceScope = "mapped"
+	req.Sources = []syncproto.PolicySource{{Path: artifact, FileID: fileIDOf(t, artifact)}}
+	applyPolicy(t, e, req)
 	sync1(t, sy, companion)
 	if e.count(`SELECT count(*) FROM sources s WHERE s.device_id=$1 AND s.path=$2 AND s.storage_kind='' AND COALESCE(s.session_key,'')='' AND NOT EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id)`, e.deviceID, main.Path) != 1 {
 		t.Fatal("companion did not create an uncaptured parent placeholder")
@@ -325,6 +328,58 @@ func TestPolicyEmptyCapturedOrForeignAgentSourceCannotRefine(t *testing.T) {
 			}))
 			if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, ref.Path) != 0 {
 				t.Fatal("ambiguous placeholder acquired owner")
+			}
+		})
+	}
+}
+
+func TestPolicyProtectedCompanionMissingParentProof(t *testing.T) {
+	for _, kind := range []string{"valid", "wrong path", "wrong session", "wrong agent", "empty parent file", "different known parent file", "foreign parent descriptor", "partial parent descriptor"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t)
+			owner := uuid.NewString()
+			p := policySourceIdentity{Agent: "claude", Owner: owner}
+			src := syncproto.Source{Agent: "claude", Path: "/companion/result.txt", FileID: "companion", SessionKey: owner, StorageKind: "companion", Parser: "claude@1", Parent: &syncproto.SourceRef{Path: "/native/" + owner + ".jsonl", FileID: "parent"}}
+			switch kind {
+			case "wrong path":
+				src.Parent.Path = "/native/" + uuid.NewString() + ".jsonl"
+			case "wrong session":
+				src.SessionKey = uuid.NewString()
+			case "wrong agent":
+				src.Agent = "codex"
+			case "empty parent file":
+				src.Parent.FileID = ""
+			case "different known parent file", "foreign parent descriptor", "partial parent descriptor":
+				agent, file, parser := "claude", "parent", ""
+				if kind == "different known parent file" {
+					file = "different"
+				}
+				if kind == "foreign parent descriptor" {
+					agent = "codex"
+				}
+				if kind == "partial parent descriptor" {
+					parser = "claude@1"
+				}
+				e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at) VALUES($1,$2,$3,$4,$5,'',$6,now())`, uuid.NewString(), e.deviceID, agent, src.Parent.Path, file, parser)
+			}
+			err := identityTransaction(e, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(e.ctx, `INSERT INTO source_policy_identity(device_id,path,file_id,owner_agent,owner_session_id) VALUES($1,$2,$3,$4,$5)`, e.deviceID, src.Path, src.FileID, p.Agent, p.Owner); err != nil {
+					return err
+				}
+				return bindPolicyCaptureIdentity(e.ctx, tx, e.deviceID, src)
+			})
+			if kind == "valid" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2 AND owner_session_id=$3`, e.deviceID, src.Parent.Path, owner) != 1 {
+					t.Fatal("missing immutable parent owner")
+				}
+				if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2`, e.deviceID, src.Parent.Path) != 0 {
+					t.Fatal("missing parent invented capture attributes")
+				}
+			} else {
+				identityWantConflict(t, err)
 			}
 		})
 	}

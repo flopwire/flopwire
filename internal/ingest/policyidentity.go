@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -74,6 +75,30 @@ func policyParentOwner(ctx context.Context, q policyQuerier, device string, pare
 	return agent, owner, err
 }
 
+// A protected companion can be the first physical upload. Its explicit
+// canonical parent and session prove ownership only, not capture or placement.
+func policyCaptureParent(ctx context.Context, q policyQuerier, device string, p policySourceIdentity, src syncproto.Source) (string, string, error) {
+	agent, owner, err := policyParentOwner(ctx, q, device, *src.Parent)
+	if err == nil {
+		return agent, owner, nil
+	}
+	var conflict *Error
+	if !errors.As(err, &conflict) || conflict.Code != "policy_source_identity_conflict" {
+		return "", "", err
+	}
+	if p.Agent != "claude" || src.Agent != p.Agent || src.SessionKey == "" || src.SessionKey != p.Owner || !validPolicySession(p.Owner) || src.Parent.FileID == "" || filepath.Base(src.Parent.Path) != p.Owner+".jsonl" {
+		return "", "", policyIdentityConflict()
+	}
+	var existing bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sources WHERE device_id=$1 AND path=$2) OR EXISTS(SELECT 1 FROM source_policy_identity WHERE device_id=$1 AND path=$2)`, device, src.Parent.Path).Scan(&existing); err != nil {
+		return "", "", err
+	}
+	if existing {
+		return "", "", policyIdentityConflict()
+	}
+	return p.Agent, p.Owner, nil
+}
+
 func policyCaptureAttributes(src syncproto.Source) policyCaptureIdentity {
 	c := policyCaptureIdentity{Session: src.SessionKey, Storage: src.StorageKind, ParserFamily: policyParserFamily(src.Parser)}
 	if src.Parent != nil {
@@ -84,10 +109,10 @@ func policyCaptureAttributes(src syncproto.Source) policyCaptureIdentity {
 	return c
 }
 
-func policyCanonicalCapture(ctx context.Context, q policyQuerier, device string, src syncproto.Source) (policyCaptureIdentity, error) {
+func policyCanonicalCapture(ctx context.Context, q policyQuerier, device string, p policySourceIdentity, src syncproto.Source) (policyCaptureIdentity, error) {
 	c := policyCaptureAttributes(src)
 	if src.Parent != nil {
-		agent, owner, err := policyParentOwner(ctx, q, device, *src.Parent)
+		agent, owner, err := policyCaptureParent(ctx, q, device, p, src)
 		if err != nil {
 			return c, err
 		}
@@ -106,7 +131,7 @@ func policyCanonicalCapture(ctx context.Context, q policyQuerier, device string,
 }
 
 func checkPolicyCapture(ctx context.Context, q policyQuerier, device string, p policySourceIdentity, src syncproto.Source) error {
-	c, err := policyCanonicalCapture(ctx, q, device, src)
+	c, err := policyCanonicalCapture(ctx, q, device, p, src)
 	if err != nil {
 		return err
 	}
@@ -115,7 +140,7 @@ func checkPolicyCapture(ctx context.Context, q policyQuerier, device string, p p
 	}
 	recoveredAlias := p.Capture != nil && p.Capture.Storage == "cass_export" && c.Session == p.Capture.Session
 	if src.Parent != nil {
-		agent, owner, err := policyParentOwner(ctx, q, device, *src.Parent)
+		agent, owner, err := policyCaptureParent(ctx, q, device, p, src)
 		if err != nil {
 			return err
 		}
@@ -173,7 +198,7 @@ func bindPolicySourceOwner(ctx context.Context, tx pgx.Tx, device, agent, native
 		// A verified physical CASS alias is frozen as capture identity. It remains
 		// distinct from the canonical native owner and never provides folder grants.
 		if recovered && p.Capture == nil {
-			c, err := policyCanonicalCapture(ctx, tx, device, src)
+			c, err := policyCanonicalCapture(ctx, tx, device, p, src)
 			if err != nil {
 				return err
 			}
@@ -197,7 +222,7 @@ func bindPolicySourceOwner(ctx context.Context, tx pgx.Tx, device, agent, native
 		return policyIdentityConflict()
 	}
 	if observed {
-		capture, err := policyCanonicalCapture(ctx, tx, device, src)
+		capture, err := policyCanonicalCapture(ctx, tx, device, p, src)
 		if err != nil {
 			return err
 		}
@@ -256,7 +281,7 @@ func checkPolicySourceIdentity(ctx context.Context, q policyQuerier, device stri
 			if err := checkPolicyCapture(ctx, q, device, p, old); err != nil {
 				return err
 			}
-			c, err := policyCanonicalCapture(ctx, q, device, old)
+			c, err := policyCanonicalCapture(ctx, q, device, p, old)
 			if err != nil {
 				return err
 			}
@@ -295,10 +320,22 @@ func bindPolicyCaptureIdentity(ctx context.Context, tx pgx.Tx, device string, sr
 	if !exists {
 		return nil
 	}
+	if src.Parent != nil {
+		agent, owner, err := policyCaptureParent(ctx, tx, device, p, src)
+		if err != nil {
+			return err
+		}
+		if agent != p.Agent || owner != p.Owner {
+			return policyIdentityConflict()
+		}
+		if err := bindPolicySourceOwner(ctx, tx, device, agent, owner, syncproto.PolicySource{Path: src.Parent.Path, FileID: src.Parent.FileID}, false); err != nil {
+			return err
+		}
+	}
 	if err := checkPolicyCapture(ctx, tx, device, p, src); err != nil {
 		return err
 	}
-	capture, err := policyCanonicalCapture(ctx, tx, device, src)
+	capture, err := policyCanonicalCapture(ctx, tx, device, p, src)
 	if err != nil {
 		return err
 	}
