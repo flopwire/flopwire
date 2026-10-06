@@ -81,9 +81,11 @@ test "$e2e_member_token" != "$e2e_old_member_token"
 test "$(status "$e2e_api/v1/policy" -H "Authorization: Bearer $e2e_old_member_token")" = 401
 test "$(status "$e2e_api/v1/policy" -H "Authorization: Bearer $e2e_member_token")" = 200
 
-# Upload and search are rebuilt on chunks and message rows (B2/B3). Until
-# then the endpoints answer 501.
-test "$(status "$e2e_api/v1/search?q=cobalt" -H "Authorization: Bearer $e2e_member_token")" = 501
+# No messages have been uploaded to this isolated stack. Ranked search
+# must return a complete empty page, not an error or a truncated result.
+test "$(curl -sS -o "$e2e_root/search.json" -w '%{http_code}' \
+  "$e2e_api/v1/search?q=cobalt" -H "Authorization: Bearer $e2e_member_token")" = 200
+jq -e -s -f "$(dirname "$0")/e2e-search.jq" "$e2e_root/search.json" >/dev/null
 
 if command -v pg_dump >/dev/null 2>&1; then
   DATABASE_URL="$e2e_database" \

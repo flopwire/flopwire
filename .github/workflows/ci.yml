@@ -143,6 +143,7 @@ jobs:
       - run: pnpm --dir web build
       - run: scripts/validate-release-tag_test.sh
       - run: scripts/perf-baseline_test.sh
+      - run: sh scripts/e2e-search_test.sh
       - name: Build the image with the release version
         env:
           FLOPWIRE_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
