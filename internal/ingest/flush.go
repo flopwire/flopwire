@@ -215,6 +215,9 @@ func (s *Server) Flush(ctx context.Context, deviceID string, h *syncproto.FlushH
 	if err := recordLive(ctx, conn, deviceID, h.Live); err != nil {
 		return nil, err
 	}
+	if _, err := checkFlushPolicy(ctx, conn, deviceID, h.Source, false, nil); err != nil {
+		return nil, err
+	}
 	var tombstoned bool
 	var refused *string
 	err = conn.QueryRow(ctx, `SELECT tombstoned_at IS NOT NULL,refused_rule FROM sources WHERE device_id=$1 AND path=$2 AND file_id=$3`,
@@ -449,6 +452,20 @@ func (f *flush) unlock() {
 func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncproto.FlushResponse, []string, error) {
 	h := f.h
 	src := h.Source
+	if src.Agent == "claude" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(f.deviceID)); err != nil {
+			return nil, nil, err
+		}
+	}
+	policyIDs, err := checkFlushPolicy(ctx, tx, f.deviceID, src, true, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(policyIDs) > 0 && (len(h.Entries) > 0 || h.Tail != nil && h.Tail.Size > 0) {
+		if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET evidence_scope=CASE WHEN evidence_scope='none' THEN 'mapped' ELSE evidence_scope END WHERE device_id=$1 AND agent=$2 AND session_id=ANY($3)`, f.deviceID, src.Agent, policyIDs); err != nil {
+			return nil, nil, err
+		}
+	}
 	var parentPath, parentFileID *string
 	if src.Parent != nil {
 		parentPath, parentFileID = &src.Parent.Path, &src.Parent.FileID
@@ -497,6 +514,11 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 		resp := swallow(h)
 		resp.Refused = deref(refused)
 		return resp, nil, nil
+	}
+	for _, policyID := range policyIDs {
+		if _, err := tx.Exec(ctx, `INSERT INTO source_policy_placements(device_id,agent,session_id,path,file_id,generation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, f.deviceID, src.Agent, policyID, src.Path, src.FileID, h.Generation); err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := f.link(ctx, tx, sourceID); err != nil {
 		return nil, nil, err

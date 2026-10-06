@@ -3,6 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ var syncMinRate int64 = 64 << 10 // bytes per second; client.MinRate
 // and chunk locks a flush takes, for longer by declaring a large body.
 const syncDeadlineBytes = 4<<20 + 1<<20
 
-// ServeSync answers POST /v1/sync/has and /v1/sync/flush for an
+// ServeSync answers device sync and policy-placement requests for an
 // authenticated device. Errors use the syncproto ErrorResponse shape.
 func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID string) {
 	if r.Header.Get(syncproto.HeaderVersion) != strconv.Itoa(syncproto.Version) {
@@ -53,6 +54,30 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, MaxFlushBytes)
 	switch r.URL.Path {
+	case syncproto.PathCapabilities:
+		writeJSON(w, http.StatusOK, syncproto.CapabilitiesResponse{
+			Version: syncproto.Version, PolicyPlacementsVersion: syncproto.PolicyPlacementsVersion,
+			MaxConcurrentFlushes: 1,
+		})
+	case syncproto.PathPolicyPlacements:
+		r.Body = http.MaxBytesReader(w, r.Body, syncproto.MaxPolicyPlacementsBytes)
+		var req syncproto.PolicyPlacementsRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeErr(w, badRequest("bad policy placements request"))
+			return
+		}
+		if err := dec.Decode(new(any)); err != io.EOF {
+			writeErr(w, badRequest("trailing policy placements data"))
+			return
+		}
+		resp, err := s.PolicyPlacements(r.Context(), deviceID, &req)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case syncproto.PathHas:
 		var req syncproto.HasRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

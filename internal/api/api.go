@@ -157,6 +157,8 @@ func (a *API) Handler(reg *prometheus.Registry) http.Handler {
 		r.Get("/v1/policy", a.getPolicy)
 		r.Post(syncproto.PathHas, a.syncDevice)
 		r.Post(syncproto.PathFlush, a.syncDevice)
+		r.Get(syncproto.PathCapabilities, a.syncDevice)
+		r.Post(syncproto.PathPolicyPlacements, a.syncDevice)
 		a.retrievalRoutes(r)
 		a.busRoutes(r)
 		r.Delete("/v1/conversations/{id}", a.memberOnly(a.deleteOwnConversation))

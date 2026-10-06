@@ -135,6 +135,11 @@ func (s *sink) flush() error {
 	defer func() { s.held = nil }()
 	var learned map[string]bool // sessions found with (false) or without a parent
 	err := pgx.BeginTxFunc(s.ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if s.src.agent == "claude" {
+			if _, err := tx.Exec(s.ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(s.src.deviceID)); err != nil {
+				return err
+			}
+		}
 		if err := s.checkMasks(tx); err != nil {
 			return err
 		}
@@ -361,6 +366,11 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 		s.convIDs[sessionID] = ""
 		return "", nil
 	}
+	if create {
+		if err := s.checkSessionPolicy(tx, sessionID, parent); err != nil {
+			return "", err
+		}
+	}
 	if !create {
 		var id string
 		err := tx.QueryRow(ctx, `SELECT id::text FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=$3`, s.src.deviceID, s.src.agent, sessionID).Scan(&id)
@@ -429,6 +439,13 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 		return "", err
 	}
 	if newlyHidden {
+		if policies, err := loadSessionPolicies(ctx, tx, s.src.deviceID, s.src.agent, sessionID, parent, s.src.id); err != nil {
+			return "", err
+		} else if len(policies) > 0 {
+			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_scope='device' WHERE id=$1`, id); err != nil {
+				return "", err
+			}
+		}
 		if err := store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: hideBy, DeviceID: s.src.deviceID,
 			Action: "conversation.hidden", TargetType: "conversation", TargetID: id,
 			Metadata: map[string]any{"rule": hideRule, "mode": hideD.Mode.String(), "unplaceable": hideD.Unplaceable, "rules_version": hideVersion,

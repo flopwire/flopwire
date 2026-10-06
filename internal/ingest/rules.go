@@ -340,6 +340,17 @@ func (g *gate) check(ctx context.Context, s *sink) error {
 	for _, id := range ids {
 		h := g.hint(ctx, s, id)
 		d := g.rules.decideAll(g.dev, g.src.agent, g.path, h.cwd, h.others, h.remote)
+		policies, err := loadSessionPolicies(ctx, g.pool, g.src.deviceID, g.src.agent, id, "", g.src.id)
+		if err != nil {
+			return err
+		}
+		d = decideWithPolicies(g.rules, g.dev, d, policies)
+		if len(policies) > 0 && d.Mode != pathpolicy.Allow {
+			// Policy is reread after the session lock by the sink. Readiness
+			// holds preserve captured evidence rather than refusing/purging it.
+			g.hide[id] = d
+			continue
+		}
 		if d.Mode == pathpolicy.Allow {
 			delete(g.hide, id)
 			continue
@@ -532,7 +543,19 @@ func recheckStored(ctx context.Context, pool *pgxpool.Pool, r serverRules, src s
 	var ref *refusal
 	for _, c := range convs {
 		sessions = append(sessions, c.session)
-		if d := r.decideAll(dev, src.agent, path, c.cwd, c.others, c.remote); d.Mode != pathpolicy.Allow && ref == nil {
+		d := r.decideAll(dev, src.agent, path, c.cwd, c.others, c.remote)
+		policies, err := loadSessionPolicies(ctx, pool, src.deviceID, src.agent, c.session, "", src.id)
+		if err != nil {
+			return nil, nil, err
+		}
+		effective := decideWithPolicies(r, dev, d, policies)
+		if !isPolicyHold(effective) {
+			d = effective
+		} else if d.Unplaceable {
+			d = pathpolicy.Decision{}
+		}
+
+		if d.Mode != pathpolicy.Allow && ref == nil {
 			ref = &refusal{d: d, session: c.session}
 		}
 	}
