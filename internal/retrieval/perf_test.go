@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/perfguard"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -418,6 +419,41 @@ func TestGrepBranchScalingConstant(t *testing.T) {
 		}
 		cost := perfguard.Measure(t, s.Pool, counter, func() {
 			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: broadPattern, Limit: 500}, format.Filters{Branch: "feature-x"})
+			if err != nil || page.Truncated || page.Total != 20 {
+				t.Fatalf("grep: %v (page %+v)", err, page)
+			}
+		})
+		cost.Tables = map[string]perfguard.TableCost{"public.messages": cost.Tables["public.messages"]}
+		return cost
+	})
+}
+
+// A grep with since reads the messages of the sessions active since
+// then, through the conversations the filter admits, not every message
+// the pattern's trigrams admit: a broad pattern over the 5 newest
+// sessions costs the same however many older sessions there are. m.ts
+// has no index of its own, so without the conversation step the since
+// predicate is checked after a scan of every message. perfCorpus sets
+// last_activity_at by hand (ties and undated rows for the sessions
+// list's cursor tests), below the newest message of each session; the
+// corpus here is first brought to the bound ingest keeps
+// (last_activity_at >= max(ts); refreshDigest).
+func TestGrepSinceScalingConstant(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		n = max(n, 5)
+		s, counter := perfCorpus(t, n, 4)
+		if _, err := s.Pool.Exec(context.Background(), `UPDATE conversation_activity a SET last_activity_at=GREATEST(a.last_activity_at,x.newest)
+			FROM (SELECT conversation_id,max(ts) newest FROM messages GROUP BY 1) x WHERE x.conversation_id=a.conversation_id`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Pool.Exec(context.Background(), `VACUUM ANALYZE`); err != nil {
+			t.Fatal(err)
+		}
+		// Session i's messages are at 2026-09-01 + i min (+ j ms): the 5
+		// newest start at n-4 minutes.
+		since := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(n-4) * time.Minute)
+		cost := perfguard.Measure(t, s.Pool, counter, func() {
+			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: broadPattern, Limit: 500}, format.Filters{Since: since})
 			if err != nil || page.Truncated || page.Total != 20 {
 				t.Fatalf("grep: %v (page %+v)", err, page)
 			}
