@@ -123,7 +123,7 @@ func (a *Agent) pollDevin(ctx context.Context, force, wait bool) {
 // tuple moved (or force), through the parser's incremental cursor: per
 // session watermarks in the cursor state, deleted sessions superseded
 // through the sink. Changed sessions are handed to sync as per-session
-// exports (devin-export@2, opencode-export@1), a deleted one as its "gone"
+// exports (devin-export@2, opencode-export@2), a deleted one as its "gone"
 // record. With wait it waits for a poll already running instead of
 // skipping.
 func (a *Agent) pollStore(ctx context.Context, d *storeState, force, wait bool) {
@@ -421,8 +421,8 @@ func devinExport(ctx context.Context, db, session string, prev []byte) (devicesy
 	return devicesync.Export{Data: data, Append: appended, State: state}, err
 }
 
-// opencodeExport is an opencode session's whole export.
-func opencodeExport(ctx context.Context, db, session string, _ []byte) (devicesync.Export, error) {
-	data, err := opencode.Export(ctx, db, session)
-	return devicesync.Export{Data: data}, err
+// opencodeExport appends new and changed rows of an opencode session.
+func opencodeExport(ctx context.Context, db, session string, prev []byte) (devicesync.Export, error) {
+	data, appended, state, err := opencode.ExportFrom(ctx, db, session, prev)
+	return devicesync.Export{Data: data, Append: appended, State: state}, err
 }
