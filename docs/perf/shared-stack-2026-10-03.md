@@ -270,16 +270,19 @@ ongoing discovery there.
 
 The read-only CASS snapshots and encrypted lab backup remain available. The
 full-corpus restore above used the earlier lab schema and corpus. It does not
-verify restoration of the current production deployment. Create and verify a
-coordinated production backup, then restore its database and raw object set to
-an isolated target before treating production recovery as proven.
+verify restoration of the current production deployment. The October 6
+production backup and database migration rehearsal are recorded below.
+Restore the complete database and raw object set from an independently
+retrieved backup before treating production recovery as proven.
 
 ## Operational follow-up
 
 Production currently occupies the VM originally provisioned for capacity
 testing on the shared Pandora host. Its name does not weaken the isolation,
 but future destructive trials and restore tests must use a separate staging
-VM. Record the production role, reserved memory, service configuration, and
+VM. The persistent `flopwire-staging-20261006` VM in the `flopwire` project
+now provides 4 GiB RAM, four virtual CPUs, and 100 GiB disk for separate staging
+work. Record the production role, reserved memory, service configuration, and
 recovery procedure before further capacity experiments.
 
 The private endpoint uses self-signed TLS with certificate pins retained by
@@ -299,6 +302,44 @@ plan. Establish an independent off-Mac recovery-key escrow before considering
 removal of the working key file. Keep encrypted production backups off the
 Pandora host, and keep key escrow separate from those backups. Verify recovery
 using the escrowed key. The existing local secret files and lab restore do not
-establish those operational recovery safeguards. Follow the proposed
+establish those operational recovery safeguards. Follow the
 [production recovery runbook](../operations/recovery.md) before changing the
 secret storage or retiring the migration archives.
+
+## Production backup and migration rehearsal, 2026-10-06
+
+The coordinated encrypted production backup completed between 14:32:30 and
+14:38:16 UTC. Its state reports `complete`. Backup verification reports
+`verified: true` for 66,213 objects. This updates the October 5 backup status;
+it does not establish independent off-host retrieval or key recovery.
+
+The isolated production database snapshot rehearsal completed at 15:58 UTC.
+The actual startup migrator applied migrations 011, 012, and 013 together.
+The original migration ledger entries remained byte-identical, and the
+recorded before and after count checks agreed. The older binary correctly
+refused the upgraded ledger. These outcomes complete the rehearsal described
+as running in [PR 168](https://github.com/flopwire/flopwire/pull/168).
+
+The candidate then failed to connect to its deliberately unavailable staging
+object endpoint. This rehearsal establishes the database migration behavior;
+it does not qualify raw-object restoration or a recovered server's readiness,
+retrieval, authentication, or certificate checks. The production readiness
+record after the upgrade reports the database, object store, and search ready.
+Production readiness is separate from recovery qualification.
+
+The persistent staging VM is available for synthetic qualification. Synthetic
+fixtures can verify deployment, backup, restore, object consistency, and
+access checks there. Such checks cannot establish production corpus coverage,
+independent backup retrieval, or recovery with an escrowed production key.
+No synthetic staging qualification result is recorded here.
+
+Full production recovery still requires an encrypted off-host backup copy,
+retrieval without the original host, independent off-Mac key escrow and
+recovery, and a complete database and raw-object restore into isolated staging
+targets. Complete the acceptance checks in the
+[production recovery runbook](../operations/recovery.md). The owner must select
+the off-host destination and escrow mechanism and set recovery targets,
+backup frequency, retention, and cutover policy before executing that procedure.
+Keep the working key, CASS snapshots, and migration archives until the
+replacement recovery path passes verification and retention decisions are
+recorded.
