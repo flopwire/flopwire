@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/perfguard"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
+	"github.com/flopwire/flopwire/internal/retrieval/grep"
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -343,6 +345,151 @@ func TestGrepCandidatesPlanIndexed(t *testing.T) {
 			t.Fatal(err)
 		}
 		perfguard.AssertIndexedPlanExcept(t, s.Pool, []string{"users", "devices"}, grepCandidates(q, oldest), q.args...)
+	}
+}
+
+// rareRepo places the five oldest sessions of a perfCorpus in a checkout
+// of one remote; no other session has a remote. With 250 or more
+// sessions they hold at most 2% of the messages.
+const rareRemote = "github.com/perf/rare"
+
+func rareRepo(t testing.TB, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE sources SET remote=$1,checkout='/src/rare'
+		WHERE id IN (SELECT md5('f'||i)::uuid FROM generate_series(1,5) i)`, rareRemote); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `VACUUM ANALYZE`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// broadPattern is an alternation of two literals every perfCorpus message
+// holds ("step j of session i"): its trigram condition admits every
+// message in every repo.
+const broadPattern = "step|session"
+
+// A grep filtered to a repo reads that repo's messages, not every message
+// the pattern's trigrams admit: a broad pattern over a repo holding a
+// fixed few sessions costs the same however many other sessions there
+// are. Only messages are gated, as in TestGrepOldMatchesScalingConstant.
+func TestGrepRepoShareScalingConstant(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		s, counter := perfCorpus(t, max(n, 5), 4)
+		rareRepo(t, s.Pool)
+		rare := map[string]bool{}
+		for i := 1; i <= 5; i++ {
+			rare[sessionAt(t, s.Pool, i)] = true
+		}
+		cost := perfguard.Measure(t, s.Pool, counter, func() {
+			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: broadPattern, Limit: 500}, format.Filters{RepoRemotes: []string{rareRemote}})
+			if err != nil || page.Truncated || page.Total != 20 {
+				t.Fatalf("grep: %v (page %+v)", err, page)
+			}
+			for _, h := range page.Hits {
+				if !rare[h.ConversationID] {
+					t.Fatalf("hit outside the repo: %+v", h)
+				}
+			}
+		})
+		cost.Tables = map[string]perfguard.TableCost{"public.messages": cost.Tables["public.messages"]}
+		return cost
+	})
+}
+
+// A grep filtered to a branch reads that branch's messages, through the
+// conversations the filter admits, not every message the pattern's
+// trigrams admit: a broad pattern over a branch five sessions ran on
+// costs the same however many other sessions there are. Without the
+// conversation step the branch test (an EXISTS over c.branches, which
+// the planner cannot estimate as selective) is checked on the join after
+// a scan of every message. An agent or repo filter does not show this at
+// perfCorpus scale: the planner reaches their few conversations first on
+// its own (TestGrepRepoShareScalingConstant).
+func TestGrepBranchScalingConstant(t *testing.T) {
+	perfguard.AssertScaling(t, perfguard.Constant, 500, 8, func(t testing.TB, n int) perfguard.Cost {
+		n = max(n, 5)
+		s, counter := perfCorpus(t, n, 4)
+		if _, err := s.Pool.Exec(context.Background(), `UPDATE conversations SET branches=ARRAY['feature-x'] WHERE id IN (SELECT md5('c'||i)::uuid FROM generate_series($1::int-4,$1::int) i)`, n); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Pool.Exec(context.Background(), `VACUUM ANALYZE`); err != nil {
+			t.Fatal(err)
+		}
+		cost := perfguard.Measure(t, s.Pool, counter, func() {
+			page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: broadPattern, Limit: 500}, format.Filters{Branch: "feature-x"})
+			if err != nil || page.Truncated || page.Total != 20 {
+				t.Fatalf("grep: %v (page %+v)", err, page)
+			}
+		})
+		cost.Tables = map[string]perfguard.TableCost{"public.messages": cost.Tables["public.messages"]}
+		return cost
+	})
+}
+
+// The conversation list a filtered grep resolves first walks indexes, and
+// the candidate query it narrows probes the messages' conversation index
+// (ANDed with the trigram bitmap, or alone with the text filtered). The
+// probe is the planner's choice: it prefers the conversation index while
+// the trigram condition is unselective, as broadPattern's is, and that
+// holds at perfCorpus scale.
+func TestGrepFilteredCandidatesPlanIndexed(t *testing.T) {
+	s, _ := perfCorpus(t, 200, 8)
+	rareRepo(t, s.Pool)
+	f := format.Filters{RepoRemotes: []string{rareRemote}}
+	cq := &query{}
+	grepConvWhere(cq, f)
+	perfguard.AssertIndexedPlanExcept(t, s.Pool, []string{"users", "devices"}, grepConvQuery(cq, grepConvCap+1), cq.args...)
+	tx, err := s.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, narrowed, err := grepConversations(context.Background(), tx, f)
+	_ = tx.Rollback(context.Background())
+	if err != nil || !narrowed || len(ids) != 5 {
+		t.Fatalf("grepConversations: %d ids, narrowed=%v, %v", len(ids), narrowed, err)
+	}
+	plan, err := grep.Compile(format.GrepQuery{Pattern: broadPattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, oldest := range []bool{false, true} {
+		q := &query{}
+		q.where(trigramCond(q, plan.Query))
+		if err := hitFilters(q, f); err != nil {
+			t.Fatal(err)
+		}
+		q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
+		sql := grepCandidates(q, oldest)
+		perfguard.AssertIndexedPlanExcept(t, s.Pool, []string{"users", "devices"}, sql, q.args...)
+		explained, err := perfguard.Explain(s.Pool, sql, q.args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probes := perfguard.IndexProbes(explained)
+		if !slices.Contains(probes, "messages_conversation_ordinal_idx") && !slices.Contains(probes, "messages_default_filter_idx") {
+			t.Errorf("oldest=%v: the narrowed candidate query does not probe the messages' conversation index; probes %v\nplan:\n%s", oldest, probes, explained)
+		}
+	}
+}
+
+// A filter admitting more than grepConvCap conversations leaves the
+// candidate query as it is; the hits are the same.
+func TestGrepConversationCapFallsBack(t *testing.T) {
+	s, _ := perfCorpus(t, grepConvCap+1, 1)
+	f := format.Filters{Agent: "claude"}
+	tx, err := s.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, ok, err := grepConversations(context.Background(), tx, f)
+	_ = tx.Rollback(context.Background())
+	if err != nil || ok || ids != nil {
+		t.Fatalf("grepConversations over the cap: %d ids, ok=%v, %v", len(ids), ok, err)
+	}
+	page, err := s.Grep(context.Background(), format.GrepQuery{Pattern: "step 0 of session " + strconv.Itoa(grepConvCap+1), Fixed: true}, f)
+	if err != nil || page.Truncated || page.Total != 1 || len(page.Notes) != 0 {
+		t.Fatalf("grep over the cap: %v (page %+v)", err, page)
 	}
 }
 
