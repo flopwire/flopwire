@@ -26,7 +26,7 @@ func deliveryStatus(in []busproto.DeliveryFailure) string {
 		}
 		fmt.Fprintf(&b, "Message %s delivery status: %s.", html.EscapeString(n.ID), reason)
 		if n.Attempt > 1 {
-			b.WriteString(" Status redelivery: an earlier print was not acknowledged.")
+			b.WriteString(" Status redelivery: may have been shown before.")
 		}
 		b.WriteByte('\n')
 	}

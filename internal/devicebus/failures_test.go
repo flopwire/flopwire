@@ -402,3 +402,111 @@ func TestFailureNoticeLeaseRecoversAfterClockStepBack(t *testing.T) {
 		t.Fatalf("clock rollback blocked notice: %+v", second)
 	}
 }
+
+func TestFailureNoticeServerLeaseRecoversAfterClockStepBackAndPoll(t *testing.T) {
+	lb := newLocalBus(t)
+	lb.advance(time.Date(2026, time.October, 6, 12, 0, 0, 0, time.UTC).Sub(lb.cfg.Now()))
+	asked := lb.cfg.Now()
+	serverNow := asked.Add(time.Hour)
+	n := busproto.DeliveryFailure{ID: "mrollback", Session: "aaaa1111", Agent: "claude", State: busproto.StateUndelivered, Reason: "unconfirmed", Token: "server-lease", ValidUntil: serverNow.Add(busproto.FailureLease)}
+	resp := busproto.PollResponse{Now: serverNow, Failures: []busproto.DeliveryFailure{n}}
+	if err := lb.answered(ctx, resp, asked, map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	first := takeFailures(t, lb.Bus, n.Session, n.Agent)
+	if len(first) != 1 || first[0].ID != n.ID || first[0].Attempt != 1 {
+		t.Fatalf("initial server notice: %+v", first)
+	}
+	// Both stored deadlines now look far ahead. The local hook lease may
+	// recover, but server ownership must wait for a normalized poll import.
+	lb.advance(-2 * busproto.FailureLease)
+	if got := takeFailures(t, lb.Bus, n.Session, n.Agent); len(got) != 0 {
+		t.Fatalf("server ownership survived large rollback: %+v", got)
+	}
+	asked = lb.cfg.Now()
+	resp.Now = serverNow.Add(time.Second)
+	resp.Failures[0].ValidUntil = resp.Now.Add(busproto.FailureLease)
+	if err := lb.answered(ctx, resp, asked, map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	var until int64
+	if err := lb.st.db.QueryRow(`SELECT valid_until FROM devbus_failures WHERE id=?`, n.ID).Scan(&until); err != nil {
+		t.Fatal(err)
+	}
+	if until != ms(asked.Add(busproto.FailureLease)) {
+		t.Fatalf("poll did not normalize ownership to request clock: %v", time.UnixMilli(until))
+	}
+	second := takeFailures(t, lb.Bus, n.Session, n.Agent)
+	if len(second) != 1 || second[0].ID != n.ID || second[0].Attempt != 2 || second[0].LeaseID == first[0].LeaseID {
+		t.Fatalf("poll did not recover server notice: %+v", second)
+	}
+	if err := lb.Confirm(ctx, n.Session, []string{first[0].LeaseID}); err != nil {
+		t.Fatal(err)
+	}
+	var confirmed sql.NullInt64
+	var leaseID string
+	if err := lb.st.db.QueryRow(`SELECT confirmed_at,lease_id FROM devbus_failures WHERE id=?`, n.ID).Scan(&confirmed, &leaseID); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed.Valid || leaseID != second[0].LeaseID {
+		t.Fatalf("stale hook cleared replacement: confirmed=%v lease=%q", confirmed, leaseID)
+	}
+	if got := takeFailures(t, lb.Bus, n.Session, n.Agent); len(got) != 0 {
+		t.Fatalf("replacement lease lost exclusivity: %+v", got)
+	}
+	if err := lb.Confirm(ctx, n.Session, []string{second[0].LeaseID}); err != nil {
+		t.Fatal(err)
+	}
+	if owed, err := lb.st.failureAcks(ctx, 10); err != nil || len(owed) != 1 || owed[0].ID != n.ID || owed[0].Token != n.Token {
+		t.Fatalf("replacement confirmation lost server ack: %+v %v", owed, err)
+	}
+}
+
+func TestFailureNoticeSmallClockStepBackPreservesLocalLease(t *testing.T) {
+	lb := newLocalBus(t)
+	lb.advance(time.Date(2026, time.October, 6, 12, 0, 0, 0, time.UTC).Sub(lb.cfg.Now()))
+	out, err := lb.send(t, "aaaa1111", "bbbb", "synthetic small clock rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lb.End(ctx, refB, lb.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first := takeFailures(t, lb.Bus, "aaaa1111", "claude")
+	if len(first) != 1 || first[0].ID != out.ID || first[0].Attempt != 1 {
+		t.Fatalf("initial local notice: %+v", first)
+	}
+	// A rollback of one lease duration puts the existing deadline exactly
+	// two lease durations ahead. It must remain exclusive through equality.
+	for _, step := range []time.Duration{-lb.cfg.Lease / 2, -lb.cfg.Lease / 2} {
+		lb.advance(step)
+		if got := takeFailures(t, lb.Bus, "aaaa1111", "claude"); len(got) != 0 {
+			t.Fatalf("small rollback prematurely reoffered local notice: %+v", got)
+		}
+	}
+	lb.advance(-time.Millisecond)
+	second := takeFailures(t, lb.Bus, "aaaa1111", "claude")
+	if len(second) != 1 || second[0].ID != out.ID || second[0].Attempt != 2 || second[0].LeaseID == first[0].LeaseID {
+		t.Fatalf("local notice did not recover beyond rollback cutoff: %+v", second)
+	}
+	if err := lb.Confirm(ctx, "aaaa1111", []string{first[0].LeaseID}); err != nil {
+		t.Fatal(err)
+	}
+	var confirmed sql.NullInt64
+	var leaseID string
+	if err := lb.st.db.QueryRow(`SELECT confirmed_at,lease_id FROM devbus_failures WHERE id=?`, out.ID).Scan(&confirmed, &leaseID); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed.Valid || leaseID != second[0].LeaseID {
+		t.Fatalf("stale hook cleared replacement: confirmed=%v lease=%q", confirmed, leaseID)
+	}
+	if got := takeFailures(t, lb.Bus, "aaaa1111", "claude"); len(got) != 0 {
+		t.Fatalf("replacement lease lost exclusivity: %+v", got)
+	}
+	if err := lb.Confirm(ctx, "aaaa1111", []string{second[0].LeaseID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := takeFailures(t, lb.Bus, "aaaa1111", "claude"); len(got) != 0 {
+		t.Fatalf("confirmed replacement reoffered: %+v", got)
+	}
+}

@@ -488,7 +488,7 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 			state = "live busy"
 		}
 		if !p.Busy {
-			state += idleDescription(p.IdleSince, time.Now())
+			state += idleDescription(p.IdleSince, p.IdleSeconds)
 		}
 		fields := []string{sessionLabel(p.Session, p.Cloud, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
 		if t := quoted(p.Title, 80); t != "" {
@@ -681,7 +681,7 @@ func expiry(t time.Time) string { return t.UTC().Format("2006-01-02T15:04Z") }
 func sendOutcome(r busproto.SendResponse) (out string) {
 	defer func() {
 		if r.To.Live && !r.To.Busy && r.To.Session != "" {
-			out += idleDescription(r.To.IdleSince, r.Sent)
+			out += idleDescription(r.To.IdleSince, r.To.IdleSeconds)
 		}
 	}()
 	to := r.To
@@ -1237,8 +1237,7 @@ Socket   --socket PATH (default <config dir>/agent.sock)
 `
 }
 
-func idleDescription(since, now time.Time) string {
-	age := busproto.IdleAge(false, since, now)
+func idleDescription(since time.Time, age *int64) string {
 	if age == nil {
 		return " (idle duration unknown)"
 	}

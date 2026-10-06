@@ -84,6 +84,20 @@ func serverPresence(all []Session) []busproto.PresenceSession {
 	return out
 }
 
+// pollPresence converts a copy to server time. Local comparisons keep
+// device time so learning skew does not trigger presence changes.
+func (b *Bus) pollPresence(local []busproto.PresenceSession) []busproto.PresenceSession {
+	out := slices.Clone(local)
+	for i := range out {
+		if !out[i].IdleKnown || out[i].IdleSince.IsZero() || len(b.skewLows) == 0 {
+			out[i].IdleSince, out[i].IdleKnown = time.Time{}, false
+			continue
+		}
+		out[i].IdleSince = out[i].IdleSince.Add(time.Duration(b.st.skew.Load()))
+	}
+	return out
+}
+
 // sameButBusy reports whether two presence reports differ at most in
 // whether sessions are busy.
 func sameButBusy(a, b []busproto.PresenceSession) bool {
@@ -180,7 +194,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
 			inflight, started = true, now
-			req := busproto.PollRequest{Sessions: sent, Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
+			req := busproto.PollRequest{Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
 			b.mu.Lock()
 			b.reported = sent

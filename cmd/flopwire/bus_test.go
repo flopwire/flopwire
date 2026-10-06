@@ -1277,14 +1277,36 @@ func TestInboxReplyWithItsParentDeleted(t *testing.T) {
 }
 
 func TestSendReceiptTextIdleEvidence(t *testing.T) {
-	idle := t0.Add(-2 * time.Hour)
-	r := busproto.SendResponse{ID: "msynthetic", State: busproto.StateQueued, Sent: t0, To: busproto.Recipient{Session: "synthetic-session", User: "synthetic@example.test", Agent: "claude", Live: true, IdleSince: idle, IdleKnown: true}}
+	idle := t0.Add(48 * time.Hour) // deliberately disagrees with the provider age
+	age := int64(7200)
+	r := busproto.SendResponse{ID: "msynthetic", State: busproto.StateQueued, Sent: t0, To: busproto.Recipient{Session: "synthetic-session", User: "synthetic@example.test", Agent: "claude", Live: true, IdleSince: idle, IdleKnown: true, IdleSeconds: &age}}
 	if line := sendOutcome(r); !strings.Contains(line, "idle for 2h0m0s") || !strings.Contains(line, idle.UTC().Format(time.RFC3339)) {
 		t.Fatalf("idle receipt: %s", line)
 	}
 	r.To.IdleSince = time.Time{}
 	r.To.IdleKnown = false
+	r.To.IdleSeconds = nil
 	if line := sendOutcome(r); !strings.Contains(line, "idle duration unknown") {
 		t.Fatalf("unknown idle: %s", line)
+	}
+}
+
+func TestPeersTextUsesAuthoritativeIdleAge(t *testing.T) {
+	age := int64(7200)
+	peer := busproto.Peer{Session: "synthetic-session", Agent: "claude", IdleSince: t0.Add(48 * time.Hour), IdleKnown: true, IdleSeconds: &age}
+	var out strings.Builder
+	if err := writePeers(&out, peersJSON{Peers: []busproto.Peer{peer}}, peersArgs{}, busStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "idle for 2h0m0s") {
+		t.Fatal(out.String())
+	}
+	peer.IdleSeconds = nil // a timestamp alone must not fabricate an age
+	out.Reset()
+	if err := writePeers(&out, peersJSON{Peers: []busproto.Peer{peer}}, peersArgs{}, busStyle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "idle duration unknown") {
+		t.Fatal(out.String())
 	}
 }

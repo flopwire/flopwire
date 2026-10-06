@@ -22,6 +22,7 @@ import (
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
+	"github.com/flopwire/flopwire/internal/transcript/opencode/opencodetest"
 )
 
 // indexed is a top-level session in the index and its last write.
@@ -177,6 +178,7 @@ func TestPresenceFromHarnessRegistries(t *testing.T) {
 		t.Fatal("Devin lock naming a reused pid (not devin) counted")
 	}
 	names[5151] = "devin"
+	started[5151] = start
 	s, ok = f.presence(dv.last.Add(30 * time.Minute))[dv.id]
 	if !ok || s.Busy {
 		t.Fatalf("Devin session held open: %+v %v", s, ok)
@@ -917,7 +919,9 @@ func TestPresenceIdleSinceIsStopNotLastActivity(t *testing.T) {
 	f.once()
 	cl := f.pick("claude")
 	f.a.pidAlive = func(int) bool { return true }
-	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"idle"}`, cl.id))
+	start := cl.last.Add(-time.Hour).UTC().Truncate(time.Second)
+	f.a.procStart = func(int) (time.Time, bool) { return start, true }
+	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"idle","procStart":%q}`, cl.id, start.Format(time.ANSIC)))
 	at := cl.last.Add(10 * time.Minute)
 	f.a.now = func() time.Time { return at }
 	if s := f.presence(at)[cl.id]; s.IdleKnown || !s.IdleSince.IsZero() {
@@ -946,5 +950,100 @@ func TestPresenceIdleEvidenceDoesNotCrossHarnesses(t *testing.T) {
 	f.a.noteHookEvent("opencode", cl.id, "Stop", at)
 	if s := f.presence(at)[cl.id]; s.IdleKnown || !s.IdleSince.IsZero() {
 		t.Fatal("other harness's Stop became Claude idle evidence")
+	}
+}
+
+func TestPresenceUncertainHoldersStayBoundedWithoutEnding(t *testing.T) {
+	for _, harness := range []string{"claude", "devin", "opencode"} {
+		for _, missing := range []string{"process-start", "registry-start", "store", "open-files"} {
+			if harness == "devin" && missing == "registry-start" || harness != "devin" && (missing == "store" || missing == "open-files") {
+				continue
+			}
+			t.Run(harness+"/"+missing, func(t *testing.T) {
+				devinPath, _ := buildDevin(t)
+				f := newFixture(t, devinPath)
+				pickHarness := harness
+				if harness == "opencode" {
+					oc := opencodetest.New(t, "")
+					const id = "ses_synthetic0000000000000A"
+					oc.Session(id, "", "/work/opencode-demo", "Presence", opencodetest.T0)
+					oc.Prompt(id, opencodetest.T0, "hello")
+					f.cfg.OpencodeDB = oc.Path
+					f.cfg.OpencodeRegistry = filepath.Join(t.TempDir(), "opencode")
+					f.a = New(f.store, f.cfg)
+				}
+				f.once()
+				session := f.pick(pickHarness)
+				start := session.last.Add(-time.Hour).UTC().Truncate(time.Second)
+				f.a.pidAlive = func(int) bool { return true }
+				f.a.procName = func(int) string { return harness }
+				known := true
+				f.a.procStart = func(int) (time.Time, bool) { return start, known }
+				writeRegistry := func(withStart bool) {
+					switch harness {
+					case "claude":
+						proof := start.Format(time.ANSIC)
+						if !withStart {
+							proof = ""
+						}
+						writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"procStart":%q,"status":"idle"}`, session.id, proof))
+					case "devin":
+						dir := filepath.Join(filepath.Dir(devinPath), "session_locks")
+						writeFile(t, filepath.Join(dir, session.id+".lock"), "4242")
+						if missing == "open-files" {
+							writeFile(t, filepath.Join(dir, "second-session.lock"), "4242")
+						}
+						f.a.openFiles = func(context.Context, int) []string { return []string{filepath.Join(dir, session.id+".lock")} }
+					case "opencode":
+						ms := start.UnixMilli()
+						if !withStart {
+							ms = 0
+						}
+						writeFile(t, filepath.Join(f.cfg.OpencodeRegistry, "4242.json"), fmt.Sprintf(`{"started":%d,"sessions":[%q]}`, ms, session.id))
+					}
+				}
+				writeRegistry(true)
+				now := session.last.Add(3 * time.Hour)
+				b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Now: func() time.Time { return now }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer b.Close()
+				f.a.cfg.Bus = b
+				if _, ok := f.presence(now)[session.id]; !ok {
+					t.Fatal("confirmed old holder disappeared")
+				}
+				switch missing {
+				case "process-start":
+					known = false
+				case "registry-start":
+					writeRegistry(false)
+				case "store":
+					f.a.devin.path = filepath.Join(filepath.Dir(devinPath), "missing.db")
+				case "open-files":
+					f.a.openFiles = func(context.Context, int) []string { return nil }
+				}
+				for i := 0; i < 2; i++ {
+					now = now.Add(2 * time.Second)
+					if _, ok := f.presence(now)[session.id]; ok {
+						t.Fatal("uncertain old holder bypassed LiveCap")
+					}
+					reg := f.a.registries().reg
+					ref := devicebus.Ref{Agent: harness, Session: session.id}
+					if !slices.Contains(reg.Unknown, ref) {
+						t.Fatalf("not unknown: %+v", reg)
+					}
+					ended, err := b.Observe(ctx, reg)
+					if err != nil || ended[ref] {
+						t.Fatalf("uncertainty ended lifecycle: %v %v", ended, err)
+					}
+				}
+				// Returning to a recent clock exposes uncertain evidence, without a fake end.
+				now = session.last.Add(5 * time.Minute)
+				if _, ok := f.presence(now)[session.id]; !ok {
+					t.Fatal("uncertain recent holder disappeared")
+				}
+			})
+		}
 	}
 }
