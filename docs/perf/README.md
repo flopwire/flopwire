@@ -175,7 +175,9 @@ A/B comparisons apply the same environment to both binaries.
 
 The baseline must still accept `agent run`, `grep`, `search`, `read` and all
 other flags used by the benchmark. Failed starts, help timeouts, malformed
-help and incompatible measured commands remain `BASELINE_FAILED` for A.
+help and incompatible agent launches remain `BASELINE_FAILED` for A.
+Retrieval command failures appear in A-side query checks and fail the
+compatibility smoke gate, even if the A/B verdict is `CLEAN`.
 Measured launches are never retried to remove flags. The summary shows A's
 error, and the run opens an issue labelled `perf-baseline-broken`.
 

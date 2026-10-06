@@ -10,6 +10,7 @@ The parent must schedule the builds and comparison in its serialized check slot.
 Use a new temporary directory for each comparison.
 
 ```sh
+set -eu
 smoke_dir="$(mktemp -d ${TMPDIR:-/tmp}/flopwire-136-smoke.XXXXXX)"
 baseline_sha=9e4193da7c346ff14a377128920f3943ff14f523
 candidate_label="$(git rev-parse HEAD)"
@@ -29,7 +30,11 @@ go build -o "$smoke_dir/flopwire-current" ./cmd/flopwire
   --out "$smoke_dir/results" --runs 1 --idle-after 1s \
   --only index,fresh,queries
 cat "$smoke_dir/results/ab.md"
-jq -e '.verdict != "BASELINE_FAILED" and (.error // "") == ""' "$smoke_dir/results/ab.json"
+jq -e '.verdict != "BASELINE_FAILED" and (.error // "") == ""
+  and (.checks | length > 0) and all(.checks[]; .a == "PASS" and .b == "PASS")
+  and (.a_index_rows | length > 0) and all(.a_index_rows[]; . > 0)
+  and (.b_index_rows | length > 0) and all(.b_index_rows[]; . > 0)' \
+  "$smoke_dir/results/ab.json"
 printf 'Smoke artifacts: %s\n' "$smoke_dir"
 ```
 
