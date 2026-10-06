@@ -19,6 +19,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"time"
@@ -345,6 +346,139 @@ func trigramCond(q *query, n *regexq.Query) string {
 		return ""
 	}
 	return renderCond(q, t)
+}
+
+// literalRegexpCond uses whole substrings instead of independent required
+// trigrams for small, finite ASCII literal alternatives. Parse the actual
+// compiled regexp so scoped case flags and captures retain their semantics.
+// Go's ASCII fold orbits also include long-s and Kelvin: include those
+// explicitly rather than relying on PostgreSQL's locale to fold them.
+// Unsupported syntax or more than 32 alternatives keeps the trigram path.
+func literalRegexpCond(q *query, re *regexp.Regexp) string {
+	for _, r := range re.String() {
+		if r > unicode.MaxASCII {
+			return ""
+		}
+	}
+	ast, err := syntax.Parse(re.String(), syntax.Perl)
+	if err != nil {
+		return ""
+	}
+	literals, ok := regexpLiterals(ast)
+	if !ok {
+		return ""
+	}
+	// Validate everything before adding parameters: fallback must leave q
+	// untouched, and every alternative must narrow the index.
+	for _, s := range literals {
+		if s == "" || strings.ContainsRune(s, 0) || !likeIndexable(s) {
+			return ""
+		}
+	}
+	parts := make([]string, 0, len(literals))
+	for _, s := range literals {
+		parts = append(parts, "m.text ILIKE "+q.arg("%"+likeEscape(s)+"%"))
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+const maxRegexpLiterals = 32
+
+// regexpLiterals enumerates only literal, capture, concat, alternate and
+// small character-class nodes (the parser factors foo|fop into fo[op]).
+// It never infers adjacency from unordered required trigrams.
+func regexpLiterals(re *syntax.Regexp) ([]string, bool) {
+	join := func(a, b []string) ([]string, bool) {
+		if len(a)*len(b) > maxRegexpLiterals {
+			return nil, false
+		}
+		out := make([]string, 0, len(a)*len(b))
+		for _, x := range a {
+			for _, y := range b {
+				out = append(out, x+y)
+			}
+		}
+		return out, true
+	}
+	switch re.Op {
+	case syntax.OpEmptyMatch:
+		return []string{""}, true
+	case syntax.OpCapture:
+		return regexpLiterals(re.Sub[0])
+	case syntax.OpLiteral:
+		out := []string{""}
+		for _, r := range re.Rune {
+			if r > unicode.MaxASCII {
+				return nil, false
+			}
+			variants := []string{string(r)}
+			if re.Flags&syntax.FoldCase != 0 {
+				for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+					if f > unicode.MaxASCII {
+						variants = append(variants, string(f))
+					}
+				}
+			}
+			var ok bool
+			out, ok = join(out, variants)
+			if !ok {
+				return nil, false
+			}
+		}
+		return out, true
+	case syntax.OpCharClass:
+		var out []string
+		seen := map[rune]bool{}
+		for i := 0; i < len(re.Rune); i += 2 {
+			for r := re.Rune[i]; r <= re.Rune[i+1]; r++ {
+				// Folded ASCII classes can contain these two non-ASCII
+				// runes. Other Unicode classes stay on the old path.
+				if r > unicode.MaxASCII && r != 'ſ' && r != 'K' {
+					return nil, false
+				}
+				v := r
+				if r <= unicode.MaxASCII {
+					v = unicode.ToLower(r) // ILIKE already covers ASCII case
+				}
+				if !seen[v] {
+					seen[v] = true
+					out = append(out, string(v))
+					if len(out) > maxRegexpLiterals {
+						return nil, false
+					}
+				}
+			}
+		}
+		return out, len(out) > 0
+	case syntax.OpConcat, syntax.OpAlternate:
+		out := []string{""}
+		if re.Op == syntax.OpAlternate {
+			out = nil
+		}
+		for _, sub := range re.Sub {
+			ss, ok := regexpLiterals(sub)
+			if !ok {
+				return nil, false
+			}
+			if re.Op == syntax.OpAlternate {
+				out = append(out, ss...)
+				if len(out) > maxRegexpLiterals {
+					return nil, false
+				}
+			} else {
+				out, ok = join(out, ss)
+				if !ok {
+					return nil, false
+				}
+			}
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 // cond is a trigram query reduced to what the index can answer.

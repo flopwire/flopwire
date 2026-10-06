@@ -32,9 +32,9 @@ func pageLimit(n int) int {
 // (internal/retrieval/grep): an RE2 pattern, multi-line, or a literal;
 // messages newest first, every matching line with context, identical
 // texts collapsed, -m and the offset applied, and totals for the footer.
-// The planner's required trigrams select candidates through the pg_trgm
-// index and Go's regexp verifies each one. A pattern with no trigram the
-// index can use would scan every message; it is refused.
+// Whole literal alternatives or the planner's required trigrams select
+// candidates through pg_trgm, and Go's regexp verifies each one. A pattern
+// with no trigram the index can use would scan every message; it is refused.
 //
 // The query budget (the context's deadline, else DefaultBudget) bounds the
 // scan; when it runs out, the hits verified so far come back with a reason.
@@ -59,7 +59,14 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	q := &query{}
 	var cond string
 	if !gq.Fixed {
-		cond = trigramCond(q, plan.Query)
+		// Preserve the existing refusal of regexes with no usable
+		// required trigram, even if a whole ILIKE could index them.
+		if indexable(plan.Query) != nil {
+			cond = literalRegexpCond(q, plan.Re)
+		}
+		if cond == "" {
+			cond = trigramCond(q, plan.Query)
+		}
 	} else if likeIndexable(gq.Pattern) {
 		// pg_trgm narrows the whole substring itself, including short
 		// words next to a space or punctuation ("go to"), which the
