@@ -20,6 +20,7 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -49,6 +50,48 @@ type convRow struct {
 	scope                                                       string
 	policies                                                    []policyPlacementState
 	hasPolicy                                                   bool
+	depth                                                       int
+}
+
+// A page holds at most sixteen individually bounded policy projections.
+// Stop before adding a row that exceeds the page budget; the caller resumes
+// after its last processed key, so that scanned row is fetched next time.
+const hiddenPageSize = 16
+const hiddenPagePolicyBytes = 4 * 1024 * 1024
+
+type hiddenCursor struct {
+	id    string
+	depth int
+	at    *time.Time
+}
+
+func hiddenPolicyPage(ctx context.Context, q policyQuerier, where string, args ...any) ([]convRow, bool, error) {
+	rows, err := q.Query(ctx, convRowsSQL+` WHERE `+where+` LIMIT 16`, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	var page []convRow
+	done := true
+	bytes := 0
+	for rows.Next() {
+		c, size, err := scanConvRowSized(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(page) > 0 && bytes+size > hiddenPagePolicyBytes {
+			done = false
+			break
+		}
+		page = append(page, c)
+		bytes += size
+		if bytes >= hiddenPagePolicyBytes {
+			done = false
+			break
+		}
+	}
+	rows.Close()
+	return page, done && len(page) < hiddenPageSize, rows.Err()
 }
 
 // isRoot reports whether the conversation is hidden as the one its rule
@@ -57,7 +100,7 @@ func (c convRow) isRoot() bool { return c.hiddenAt != nil && c.root == c.id }
 
 const convRowsSQL = `SELECT c.id::text,c.agent,COALESCE(c.cwd,''),COALESCE(c.extra->'git'->>'repository_url',''),
 		COALESCE(s.path,''),COALESCE(c.source_id::text,''),c.user_id::text,c.device_id::text,COALESCE(d.home,''),COALESCE(d.claude_projects,''),
-		c.hidden_at,COALESCE(c.hidden_root::text,''),COALESCE(c.hidden_rule,''),COALESCE(c.hidden_by::text,''),c.other_cwds,c.session_id,c.hidden_scope,COALESCE(p.states,'[]'::jsonb)
+		c.hidden_at,COALESCE(c.hidden_root::text,''),COALESCE(c.hidden_rule,''),COALESCE(c.hidden_by::text,''),c.other_cwds,c.session_id,c.hidden_scope,c.depth,COALESCE(p.states,'[]'::jsonb)
 	FROM conversations c JOIN devices d ON d.id=c.device_id LEFT JOIN sources s ON s.id=c.source_id
 	LEFT JOIN LATERAL (WITH RECURSIVE ancestors AS (
 		SELECT c.id,c.session_id,c.parent_native_session_id,c.parent_conversation_id
@@ -104,14 +147,26 @@ func (q *Queue) convRows(ctx context.Context, where string, args ...any) ([]conv
 }
 
 func scanConvRow(row pgx.CollectableRow) (convRow, error) {
+	c, _, err := scanConvRowSized(row)
+	return c, err
+}
+
+func scanConvRowSized(row pgx.CollectableRow) (convRow, int, error) {
 	var c convRow
+	var raw []byte
 	err := row.Scan(&c.id, &c.agent, &c.cwd, &c.remote, &c.path, &c.source, &c.user, &c.device, &c.dev.home, &c.dev.claudeProjects,
-		&c.hiddenAt, &c.root, &c.rule, &c.by, &c.others, &c.session, &c.scope, &c.policies)
+		&c.hiddenAt, &c.root, &c.rule, &c.by, &c.others, &c.session, &c.scope, &c.depth, &raw)
+	if err != nil {
+		return c, 0, err
+	}
+	if err := json.Unmarshal(raw, &c.policies); err != nil {
+		return c, 0, err
+	}
 	for i := range c.policies {
 		c.policies[i] = policyForSession(c.policies[i], c.session)
 	}
 	c.hasPolicy = len(c.policies) > 0
-	return c, err
+	return c, len(raw), nil
 }
 
 func (r serverRules) decideConv(c convRow) pathpolicy.Decision {
@@ -193,32 +248,43 @@ func (q *Queue) enforceRules(ctx context.Context, hiddenToo bool) (Enforcement, 
 // applyRules hides the conversations the rules cover and restores hidden
 // ones they no longer cover; sourceID limits it to one source's.
 func (q *Queue) applyRules(ctx context.Context, r serverRules, sourceID string) (hidden, restored int, err error) {
-	list, err := q.convRows(ctx, `($1='' OR c.source_id=$1::uuid) ORDER BY c.depth,c.id`, sourceID)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, c := range list {
-		d := r.decideConv(c)
-		switch {
-		case c.hiddenAt == nil && d.Mode != pathpolicy.Allow:
-			n, err := q.hide(ctx, r, c, d)
-			if err != nil {
-				return hidden, restored, err
+	var last hiddenCursor
+	for {
+		keys, done, err := hiddenPolicyPage(ctx, q.Pool, `($1='' OR c.source_id=$1::uuid) AND ($2='' OR (c.depth,c.id)>($3::int,NULLIF($2,'')::uuid)) ORDER BY c.depth,c.id`, sourceID, last.id, last.depth)
+		if err != nil {
+			return hidden, restored, err
+		}
+		if len(keys) == 0 {
+			break
+		}
+		for _, c := range keys {
+			last = hiddenCursor{id: c.id, depth: c.depth, at: c.hiddenAt}
+
+			d := r.decideConv(c)
+			switch {
+			case c.hiddenAt == nil && d.Mode != pathpolicy.Allow:
+				n, err := q.hide(ctx, r, c, d)
+				if err != nil {
+					return hidden, restored, err
+				}
+				if n > 0 {
+					hidden++
+				}
+			case c.isRoot() && d.Mode == pathpolicy.Allow:
+				if err := q.restore(ctx, r, c, "rules_changed"); err != nil {
+					return hidden, restored, err
+				}
+				restored++
+			case c.isRoot() && ruleName(d) != c.rule:
+				// Still covered, now by another rule: the window runs on.
+				if _, err := q.Pool.Exec(ctx, lockHideRoot+`UPDATE conversations SET hidden_rule=$2,hidden_rules_version=$3 WHERE id IN (SELECT id FROM l)`,
+					c.id, ruleName(d), r.version); err != nil {
+					return hidden, restored, err
+				}
 			}
-			if n > 0 {
-				hidden++
-			}
-		case c.isRoot() && d.Mode == pathpolicy.Allow:
-			if err := q.restore(ctx, r, c, "rules_changed"); err != nil {
-				return hidden, restored, err
-			}
-			restored++
-		case c.isRoot() && ruleName(d) != c.rule:
-			// Still covered, now by another rule: the window runs on.
-			if _, err := q.Pool.Exec(ctx, lockHideRoot+`UPDATE conversations SET hidden_rule=$2,hidden_rules_version=$3 WHERE id IN (SELECT id FROM l)`,
-				c.id, ruleName(d), r.version); err != nil {
-				return hidden, restored, err
-			}
+		}
+		if done {
+			break
 		}
 	}
 	return hidden, restored, nil
@@ -306,42 +372,48 @@ func (q *Queue) restore(ctx context.Context, r serverRules, c convRow, reason st
 		if _, err := tx.Exec(ctx, lockHideRoot+`SELECT id FROM l`, c.id); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, convRowsSQL+` WHERE c.hidden_root=$1 AND c.hidden_at IS NOT NULL ORDER BY c.depth,c.id`, c.id)
-		if err != nil {
-			return err
-		}
-		members, err := pgx.CollectRows(rows, scanConvRow)
-		if err != nil {
-			return err
-		}
-		var restoreIDs []string
-		for _, member := range members {
-			decision := r.decideConv(member)
-			if decision.Mode == pathpolicy.Allow {
-				restoreIDs = append(restoreIDs, member.id)
-				continue
-			}
-			// Preserve the original hiding time. Give every retained member
-			// a live root, so extension and expiry remain enforceable even
-			// after the previous root is restored.
-			scope := member.scope
-			if member.hasPolicy {
-				scope = "device"
-			}
-			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_root=id,hidden_rule=$2,hidden_rules_version=$3,hidden_scope=$4,
-				hidden_by=COALESCE(hidden_by,NULLIF($5,'')::uuid) WHERE id=$1`, member.id, ruleName(decision), r.version, scope, member.user); err != nil {
+		var last hiddenCursor
+		var restored int64
+		for {
+			keys, done, err := hiddenPolicyPage(ctx, tx, `c.hidden_root=$1 AND c.hidden_at IS NOT NULL AND ($2='' OR (c.depth,c.id)>($3::int,NULLIF($2,'')::uuid)) ORDER BY c.depth,c.id`, c.id, last.id, last.depth)
+			if err != nil {
 				return err
 			}
+			if len(keys) == 0 {
+				break
+			}
+			for _, member := range keys {
+				last = hiddenCursor{id: member.id, depth: member.depth, at: member.hiddenAt}
+				decision := r.decideConv(member)
+				if decision.Mode == pathpolicy.Allow {
+					tag, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=NULL,hidden_rule=NULL,hidden_rules_version=NULL,hidden_root=NULL,hidden_by=NULL,hidden_scope='user' WHERE id=$1`, member.id)
+					if err != nil {
+						return err
+					}
+					restored += tag.RowsAffected()
+					continue
+				}
+				// Preserve the hiding time while giving retained members a live
+				// root before the former root may be restored in this transaction.
+				scope := member.scope
+				if member.hasPolicy {
+					scope = "device"
+				}
+				if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_root=id,hidden_rule=$2,hidden_rules_version=$3,hidden_scope=$4,hidden_by=COALESCE(hidden_by,NULLIF($5,'')::uuid) WHERE id=$1`, member.id, ruleName(decision), r.version, scope, member.user); err != nil {
+					return err
+				}
+			}
+			if done {
+				break
+			}
 		}
-		tag, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=NULL,hidden_rule=NULL,hidden_rules_version=NULL,hidden_root=NULL,hidden_by=NULL,hidden_scope='user'
-			WHERE id=ANY($1::uuid[])`, restoreIDs)
-		if err != nil || tag.RowsAffected() == 0 {
-			return err
+		if restored == 0 {
+			return nil
 		}
 		return store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: who,
 			Action: "conversation.restored", TargetType: "conversation", TargetID: c.id,
 			Metadata: map[string]any{"reason": reason, "rule": c.rule, "hidden_at": c.hiddenAt, "rules_version": r.version,
-				"user_id": c.user, "device_id": c.device, "source_id": c.source, "conversations": tag.RowsAffected()},
+				"user_id": c.user, "device_id": c.device, "source_id": c.source, "conversations": restored},
 			CreatedAt: time.Now().UTC()})
 	})
 }
@@ -349,33 +421,40 @@ func (q *Queue) restore(ctx context.Context, r serverRules, c convRow, reason st
 // extendHidden hides, under each hide, the conversations that joined its
 // tree since (a subagent or another device's copy uploaded later).
 func (q *Queue) extendHidden(ctx context.Context) error {
-	rows, err := q.Pool.Query(ctx, `SELECT id::text,hidden_at,hidden_rule,hidden_rules_version,COALESCE(hidden_by::text,''),hidden_scope
-		FROM conversations WHERE hidden_at IS NOT NULL AND hidden_root=id`)
-	if err != nil {
-		return err
-	}
 	type root struct {
 		id, rule, by, scope string
 		at                  time.Time
 		version             int64
 	}
-	roots, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (root, error) {
-		var r root
-		return r, row.Scan(&r.id, &r.at, &r.rule, &r.version, &r.by, &r.scope)
-	})
-	if err != nil {
-		return err
-	}
-	for _, r := range roots {
-		tree := hideTreeSQL
-		if r.scope == "device" {
-			tree = hideDeviceTreeSQL
-		}
-		if _, err := q.Pool.Exec(ctx, tree, r.id, r.at, r.rule, r.version, r.by); err != nil {
+	last := ""
+	for {
+		rows, err := q.Pool.Query(ctx, `SELECT id::text,hidden_at,hidden_rule,hidden_rules_version,COALESCE(hidden_by::text,''),hidden_scope
+		 FROM conversations WHERE hidden_at IS NOT NULL AND hidden_root=id AND ($1='' OR id>NULLIF($1,'')::uuid) ORDER BY id LIMIT 64`, last)
+		if err != nil {
 			return err
 		}
+		roots, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (root, error) {
+			var r root
+			err := row.Scan(&r.id, &r.at, &r.rule, &r.version, &r.by, &r.scope)
+			return r, err
+		})
+		if err != nil {
+			return err
+		}
+		for _, r := range roots {
+			last = r.id
+			tree := hideTreeSQL
+			if r.scope == "device" {
+				tree = hideDeviceTreeSQL
+			}
+			if _, err := q.Pool.Exec(ctx, tree, r.id, r.at, r.rule, r.version, r.by); err != nil {
+				return err
+			}
+		}
+		if len(roots) < 64 {
+			return nil
+		}
 	}
-	return nil
 }
 
 // purgeHidden purges hidden sessions through the deletion machinery:
@@ -385,17 +464,26 @@ func (q *Queue) extendHidden(ctx context.Context) error {
 // confirming); "" means the administrator whose rule change hid it. It
 // returns how many it purged and restored.
 func (q *Queue) purgeHidden(ctx context.Context, r serverRules, cutoff *time.Time, rule, actor, deviceID, reason string) (purged, restored int, err error) {
-	list, err := q.convRows(ctx, `c.hidden_at IS NOT NULL AND c.hidden_root=c.id AND ($1::timestamptz IS NULL OR c.hidden_at<$1)
-		AND ($2='' OR c.hidden_rule=$2) ORDER BY c.hidden_at,c.id`, cutoff, rule)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, c := range list {
-		p, restoredOne, err := q.purgeHiddenOne(ctx, r, c, cutoff, rule, actor, deviceID, reason)
-		purged += p
-		restored += restoredOne
+	var last hiddenCursor
+	for {
+		keys, done, err := hiddenPolicyPage(ctx, q.Pool, `c.hidden_at IS NOT NULL AND c.hidden_root=c.id AND ($1::timestamptz IS NULL OR c.hidden_at<$1) AND ($2='' OR c.hidden_rule=$2) AND ($3='' OR (c.hidden_at,c.id)>($4::timestamptz,NULLIF($3,'')::uuid)) ORDER BY c.hidden_at,c.id`, cutoff, rule, last.id, last.at)
 		if err != nil {
 			return purged, restored, err
+		}
+		if len(keys) == 0 {
+			break
+		}
+		for _, c := range keys {
+			last = hiddenCursor{id: c.id, depth: c.depth, at: c.hiddenAt}
+			p, restoredOne, err := q.purgeHiddenOne(ctx, r, c, cutoff, rule, actor, deviceID, reason)
+			purged += p
+			restored += restoredOne
+			if err != nil {
+				return purged, restored, err
+			}
+		}
+		if done {
+			break
 		}
 	}
 	return purged, restored, nil
@@ -465,13 +553,23 @@ func (q *Queue) purgeHiddenOne(ctx context.Context, r serverRules, c convRow, cu
 	}
 	deviceOnly := c.scope == "device" || c.hasPolicy
 	if c.agent == "claude" && !deviceOnly {
-		members, err := q.convRows(ctx, `c.hidden_root=$1 AND c.hidden_at IS NOT NULL`, c.id)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, member := range members {
-			if member.hasPolicy {
-				deviceOnly = true
+		var last hiddenCursor
+		for !deviceOnly {
+			keys, done, err := hiddenPolicyPage(ctx, q.Pool, `c.hidden_root=$1 AND c.hidden_at IS NOT NULL AND ($2='' OR (c.depth,c.id)>($3::int,NULLIF($2,'')::uuid)) ORDER BY c.depth,c.id`, c.id, last.id, last.depth)
+			if err != nil {
+				return 0, 0, err
+			}
+			if len(keys) == 0 {
+				break
+			}
+			for _, member := range keys {
+				last = hiddenCursor{id: member.id, depth: member.depth, at: member.hiddenAt}
+				if member.hasPolicy {
+					deviceOnly = true
+					break
+				}
+			}
+			if done {
 				break
 			}
 		}
