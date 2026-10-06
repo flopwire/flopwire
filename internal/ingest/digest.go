@@ -30,9 +30,10 @@ const (
 // refreshDigest folds msgs, the rows a flush wrote for conversation conv,
 // into its stored digest and updates its parent's subagent count, in the
 // flush's transaction. A conversation without a digest yet is recounted.
-// last is the flush's last activity of conv (zero for none), written with
-// the digest when it is later than the stored one: one write of the
-// activity row per flush.
+// last is the flush's harness activity of conv (zero for none). The
+// newest written message (all stored messages on recount) also advances
+// activity. The stored timestamp never decreases, and the digest and
+// activity row use the same microsecond timestamp in one write per flush.
 func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.Message, mode digestMode, last time.Time) error {
 	var (
 		prev          []byte
@@ -50,6 +51,25 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 	if start != nil {
 		c.Started = *start
 	}
+	if prev == nil {
+		mode = digestRecount
+	}
+	for _, m := range msgs {
+		if m.TS.After(last) {
+			last = m.TS
+		}
+	}
+	if mode == digestRecount {
+		// Activity includes every ingested row, even superseded versions
+		// and rows outside the active path; only digest counts filter them.
+		var newest *time.Time
+		if err := tx.QueryRow(ctx, `SELECT max(ts) FROM messages WHERE conversation_id=$1`, conv).Scan(&newest); err != nil {
+			return err
+		}
+		if newest != nil && newest.After(last) {
+			last = *newest
+		}
+	}
 	// timestamptz keeps microseconds, as pgx sends them (truncated).
 	last = last.Truncate(time.Microsecond)
 	if stored != nil && stored.After(last) {
@@ -60,9 +80,6 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM conversations k JOIN conversations c ON c.id=$1
 		WHERE k.device_id=c.device_id AND k.agent=c.agent AND k.parent_native_session_id=c.session_id AND k.id<>c.id`, conv).Scan(&subagents); err != nil {
 		return err
-	}
-	if prev == nil {
-		mode = digestRecount
 	}
 	var out []byte
 	switch mode {

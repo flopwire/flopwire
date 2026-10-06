@@ -199,7 +199,12 @@ func (s *sink) flush() error {
 		// Every append refreshes the digests of the conversations it
 		// touched.
 		byConv := map[string][]*transcript.Message{}
+		// Unchanged repeats must advance activity without being counted again.
+		lastBySession := map[string]time.Time{}
 		for _, m := range s.msgs {
+			if m.TS.After(lastBySession[m.SessionID]) {
+				lastBySession[m.SessionID] = m.TS
+			}
 			if !s.repeated[m] {
 				byConv[m.SessionID] = append(byConv[m.SessionID], m)
 			}
@@ -219,8 +224,8 @@ func (s *sink) flush() error {
 			if s.dirty[conv] {
 				mode = digestFold // counted once at the end (dirtyConversations)
 			}
-			var last time.Time
-			if c := s.convs[id]; c != nil {
+			last := lastBySession[id]
+			if c := s.convs[id]; c != nil && c.LastActivityAt.After(last) {
 				last = c.LastActivityAt
 			}
 			if err := refreshDigest(s.ctx, tx, conv, byConv[id], mode, last); err != nil {
