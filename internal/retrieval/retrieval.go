@@ -355,6 +355,11 @@ func trigramCond(q *query, n *regexq.Query) string {
 // explicitly rather than relying on PostgreSQL's locale to fold them.
 // Unsupported syntax or more than 32 alternatives keeps the trigram path.
 func literalRegexpCond(q *query, re *regexp.Regexp) string {
+	// Enumeration copies partial strings. Keep that work bounded before
+	// parsing; longer expressions retain the existing trigram condition.
+	if len(re.String()) > maxRegexpLiteralSourceBytes {
+		return ""
+	}
 	for _, r := range re.String() {
 		if r > unicode.MaxASCII {
 			return ""
@@ -385,7 +390,10 @@ func literalRegexpCond(q *query, re *regexp.Regexp) string {
 	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
-const maxRegexpLiterals = 32
+const (
+	maxRegexpLiterals           = 32
+	maxRegexpLiteralSourceBytes = 1024
+)
 
 // regexpLiterals enumerates only literal, capture, concat, alternate and
 // small character-class nodes (the parser factors foo|fop into fo[op]).

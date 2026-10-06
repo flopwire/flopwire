@@ -61,7 +61,7 @@ func TestLiteralRegexpFallback(t *testing.T) {
 	for _, pattern := range []string{
 		"abc.*bcd", "abc.+bcd", "abc(def)?", "abc{2}", "^foobar$", `\bfoobar\b`,
 		"foo|", "foo|x", ".*", "a.b", "", "abc\\x00def", "café", `caf\x{e9}`,
-		"ssssss", "kkkkkk", "foo[0-9][0-9]", "[a-z][a-z]foobar",
+		strings.Repeat("z", maxRegexpLiteralSourceBytes+1), "ssssss", "kkkkkk", "foo[0-9][0-9]", "[a-z][a-z]foobar",
 	} {
 		t.Run(pattern, func(t *testing.T) {
 			plan, err := grep.Compile(format.GrepQuery{Pattern: pattern})
@@ -109,6 +109,12 @@ var literalEquivalenceQueries = []format.GrepQuery{
 	{Pattern: "1f877ad98|repo/additive-migrations-2049"},
 	{Pattern: "1f877ad98|repo/additive-migrations-2049", CaseSensitive: true},
 	{Pattern: "(foobar)|(foobaz)|quux"},
+	{Pattern: "(foo|bar)baz"},
+	{Pattern: "foo(|bar)"},
+	{Pattern: `\Qfoo.bar\E`},
+	{Pattern: `a(?i:\x{17f})k`},
+	{Pattern: `a(?i:[k])s`},
+	{Pattern: "(?i:a(?-i:S)b)", CaseSensitive: true},
 	{Pattern: "ask|sky"},
 	{Pattern: "ask|sky", CaseSensitive: true},
 	{Pattern: "(?i:ask)|(?-i:SKY)", CaseSensitive: true},
@@ -118,7 +124,7 @@ var literalEquivalenceQueries = []format.GrepQuery{
 var literalEquivalenceTexts = []string{
 	"prefix 1f877ad98 suffix", "1F877AD98", "repo/additive-migrations-2049", "REPO/ADDITIVE-MIGRATIONS-2049",
 	"repo/additive-migrationſ-2049", "repo additive migrations 2049", "1f8---877---ad9---98",
-	"foobar\nfoobaz", "FOOBAZ", "quux", "ASK", "aſk", "asK", "aſK", "ſKy", "SKY", "sky", "sKy",
+	"foobaz", "barbaz", "foo", "foo.bar", "aSb", "ASB", "asb", "AſB", "foobar\nfoobaz", "FOOBAZ", "quux", "ASK", "aſk", "asK", "aſK", "ſKy", "SKY", "sky", "sKy",
 	`foo%_\bar.baz`, `fooZZZbarXbaz`, "unrelated",
 }
 
