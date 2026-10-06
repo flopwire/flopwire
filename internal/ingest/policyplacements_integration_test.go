@@ -356,3 +356,161 @@ func TestPolicyEndpointKnownHostPlacementWithoutNativeCwd(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyOppositeDeviceTreesDoNotInvertNativeLockOrder(t *testing.T) {
+	e := newEnv(t)
+	other := uuid.NewString()
+	e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'other','darwin',now())`, other, e.userID)
+	r, c := uuid.NewString(), uuid.NewString()
+	ownRoot := policyStoredConversation(e, e.deviceID, r, "")
+	policyStoredConversation(e, e.deviceID, c, ownRoot)
+	otherRoot := policyStoredConversation(e, other, c, "")
+	policyStoredConversation(e, other, r, otherRoot)
+	server := &Server{Pool: e.pool, Objects: e.objects}
+	for range 5 {
+		ready := make(chan struct{})
+		done := make(chan error, 2)
+		for _, device := range []string{e.deviceID, other} {
+			go func(device string) {
+				req := policyRequest()
+				req.EvidenceScope = "none"
+				req.ClientMode = "local"
+				req.SessionID = r
+				if device == other {
+					req.SessionID = c
+				}
+				<-ready
+				ctx, cancel := context.WithTimeout(e.ctx, 5*time.Second)
+				defer cancel()
+				_, err := server.PolicyPlacements(ctx, device, req)
+				done <- err
+			}(device)
+		}
+		close(ready)
+		for range 2 {
+			if err := <-done; err != nil {
+				t.Fatalf("device-native collision caused metadata deadlock/retry: %v", err)
+			}
+		}
+	}
+}
+
+func TestPolicyMetadataReportsHomeBeforeFolderEvaluation(t *testing.T) {
+	e := newEnv(t)
+	e.exec(`UPDATE devices SET home=NULL WHERE id=$1`, e.deviceID)
+	e.setRules("allow", "deny ~/Code/private")
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	req.Placements = []syncproto.PolicyPlacement{{CWD: "/Users/test/Code"}}
+	if ack := applyPolicy(t, e, req); ack.Allowed {
+		t.Fatal("unknown home bypassed restrictive tilde rule")
+	}
+	conv := policyStoredConversation(e, e.deviceID, req.SessionID, "")
+	req.Device = &syncproto.DeviceDirs{Home: "/Users/test"}
+	if ack := applyPolicy(t, e, req); ack.Allowed {
+		t.Fatal("reported home failed to enforce selected descendant deny")
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND hidden_at IS NOT NULL`, conv) != 1 {
+		t.Fatal("metadata-only deny failed to hide existing copy")
+	}
+	if e.count(`SELECT count(*) FROM devices WHERE id=$1 AND home='/Users/test'`, e.deviceID) != 1 {
+		t.Fatal("home not durably registered")
+	}
+	for _, home := range []string{"", "/Users/other"} {
+		req.Device.Home = home
+		_, err := (&Server{Pool: e.pool}).PolicyPlacements(e.ctx, e.deviceID, req)
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != "device_home_conflict" {
+			t.Fatalf("changed home accepted: %q %v", home, err)
+		}
+		conn, err := e.pool.Acquire(e.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = recordDeviceDirs(e.ctx, conn, e.deviceID, req.Device)
+		conn.Release()
+		if !errors.As(err, &refused) || refused.Code != "device_home_conflict" {
+			t.Fatalf("flush changed home: %q %v", home, err)
+		}
+	}
+}
+
+func TestPolicyMetadataDoesNotWaitOnOtherDeviceNativeLocks(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	policyStoredConversation(e, e.deviceID, req.SessionID, "")
+	other := uuid.NewString()
+	e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'other','darwin',now())`, other, e.userID)
+	tx, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(e.ctx)
+	if _, err = tx.Exec(e.ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(other)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(e.ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(e.userID, "claude", req.SessionID)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, 2*time.Second)
+	defer cancel()
+	if _, err = (&Server{Pool: e.pool}).PolicyPlacements(ctx, e.deviceID, req); err != nil {
+		t.Fatalf("metadata waited for unrelated device's sink natural lock: %v", err)
+	}
+}
+
+func TestPolicyMetadataPinsAdminRulesThroughRestoreWait(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	applyPolicy(t, e, req)
+	conv := policyStoredConversation(e, e.deviceID, req.SessionID, "")
+	req.CurrentMappingKnown = false
+	applyPolicy(t, e, req)
+	tx, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(e.ctx)
+	if _, err = tx.Exec(e.ctx, `SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, conv); err != nil {
+		t.Fatal(err)
+	}
+	req.CurrentMappingKnown = true
+	ackDone := make(chan error, 1)
+	go func() { _, err := (&Server{Pool: e.pool}).PolicyPlacements(e.ctx, e.deviceID, req); ackDone <- err }()
+	waitForLockWait(t, e, "metadata restore row")
+	ruleDone := make(chan error, 1)
+	go func() {
+		_, err := e.pool.Exec(e.ctx, `UPDATE collection_policy SET path_rules='["deny /Users/test/work"]',rules_version=rules_version+1 WHERE singleton`)
+		ruleDone <- err
+	}()
+	select {
+	case err := <-ruleDone:
+		t.Fatalf("admin rule changed through metadata restore guard: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := tx.Commit(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-ackDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("metadata did not finish")
+	}
+	select {
+	case err := <-ruleDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("admin rule update did not finish")
+	}
+	e.enforce()
+	if e.count(`SELECT count(*) FROM conversations WHERE id=$1 AND hidden_at IS NOT NULL`, conv) != 1 {
+		t.Fatal("completed admin deny sweep left metadata-restored row visible")
+	}
+}

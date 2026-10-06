@@ -22,6 +22,44 @@ const maxPolicyPlacements = 256
 
 func policyDeviceLockKey(device string) string { return "cowork-policy-device:" + device }
 
+func validatePolicyDeviceDirs(d *syncproto.DeviceDirs) error {
+	if d == nil {
+		return nil
+	}
+	for _, v := range []string{d.Home, d.ClaudeProjects, d.CodexHome} {
+		if len(v) > maxDirLen || strings.ContainsAny(v, "\x00\r\n\t") || v != "" && !absPath(v) {
+			return badRequest("device directories must be bounded absolute host paths")
+		}
+	}
+	if strings.HasPrefix(d.Home, "/sessions/") {
+		return badRequest("device home must be a host path")
+	}
+	return nil
+}
+
+// Called under the exclusive device policy gate, before natural session locks.
+// Home changes would reinterpret all existing ~ rules; a new identity or a
+// separately controlled migration is required instead of silently doing so.
+func recordPolicyDeviceDirs(ctx context.Context, tx pgx.Tx, device string, d *syncproto.DeviceDirs) error {
+	if d == nil {
+		return nil
+	}
+	var home string
+	var ledger bool
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(home,''),EXISTS(SELECT 1 FROM session_policy_placements WHERE device_id=$1) FROM devices WHERE id=$1`, device).Scan(&home, &ledger); err != nil {
+		return err
+	}
+	if home != "" && home != d.Home {
+		return &Error{http.StatusConflict, "device_home_conflict", "Cowork policy binds this device to its recorded home; enroll a new device identity or use a controlled home migration"}
+	}
+	// An omitted home never clears the initial identity during registration.
+	if d.Home == "" && !ledger {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE devices SET home=NULLIF($2,''),claude_projects=NULLIF($3,''),codex_home=NULLIF($4,'') WHERE id=$1`, device, d.Home, d.ClaudeProjects, d.CodexHome)
+	return err
+}
+
 var policyChildID = regexp.MustCompile(`^agent-[a-zA-Z0-9_-]{1,128}$`)
 
 type policyPlacementState struct {
@@ -38,6 +76,9 @@ func validPolicySession(id string) bool {
 }
 
 func validatePolicyRequest(req *syncproto.PolicyPlacementsRequest) error {
+	if err := validatePolicyDeviceDirs(req.Device); err != nil {
+		return err
+	}
 	if req.Version != syncproto.Version || req.Agent != "claude" || !validPolicySession(req.SessionID) {
 		return badRequest("unsupported version, agent or native session identity")
 	}
@@ -112,6 +153,11 @@ func mergePolicy(old policyPlacementState, req *syncproto.PolicyPlacementsReques
 func (r serverRules) decidePolicy(dev deviceDirs, p policyPlacementState) pathpolicy.Decision {
 	d := pathpolicy.Decision{}
 	pol := r.policy(dev.home)
+	if dev.home == "" {
+		pol.Admin = slices.DeleteFunc(pol.Admin, func(rule pathpolicy.Rule) bool {
+			return rule.Pattern == "~" || strings.HasPrefix(rule.Pattern, "~/")
+		})
+	}
 	for _, v := range p.Placements {
 		sub := pol.DecideSubtree(pathpolicy.Placement{Cwd: v.CWD, Worktree: v.WorktreeRoot, Main: v.MainRoot, Remote: v.Remote})
 		next := sub.Decision
@@ -119,6 +165,13 @@ func (r serverRules) decidePolicy(dev deviceDirs, p policyPlacementState) pathpo
 			next.Rule = pathpolicy.Rule{Mode: pathpolicy.Local, Pattern: "cowork-repository-scope-unknown"}
 		}
 		d = stricterPolicyDecision(d, next)
+	}
+	if dev.home == "" {
+		for _, rule := range r.admin {
+			if rule.Mode > pathpolicy.Allow && (rule.Pattern == "~" || strings.HasPrefix(rule.Pattern, "~/")) {
+				d = stricterPolicyDecision(d, pathpolicy.Decision{Mode: pathpolicy.Local, Rule: pathpolicy.Rule{Mode: pathpolicy.Local, Pattern: "cowork-home-unknown"}})
+			}
+		}
 	}
 	mode, _ := pathpolicy.ParseMode(p.ClientMode)
 	if mode > d.Mode || mode == d.Mode && isPolicyHold(d) {
@@ -135,7 +188,7 @@ func (r serverRules) decidePolicy(dev deviceDirs, p policyPlacementState) pathpo
 }
 
 func isPolicyHold(d pathpolicy.Decision) bool {
-	return d.Mode == pathpolicy.Local && (d.Rule.Pattern == "cowork-mapping-pending" || d.Rule.Pattern == "cowork-historical-unmapped" || d.Rule.Pattern == "cowork-repository-scope-unknown")
+	return d.Mode == pathpolicy.Local && (d.Rule.Pattern == "cowork-mapping-pending" || d.Rule.Pattern == "cowork-historical-unmapped" || d.Rule.Pattern == "cowork-repository-scope-unknown" || d.Rule.Pattern == "cowork-home-unknown")
 }
 
 func stricterPolicyDecision(a, b pathpolicy.Decision) pathpolicy.Decision {
@@ -211,13 +264,13 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 	var out syncproto.PolicyPlacementsResponse
 	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
 		var user, home string
-		if err := tx.QueryRow(ctx, `SELECT user_id::text,COALESCE(home,'') FROM devices WHERE id=$1`, device).Scan(&user, &home); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, policyDeviceLockKey(device)); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(user, req.Agent, req.SessionID)); err != nil {
+		if err := recordPolicyDeviceDirs(ctx, tx, device, req.Device); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT user_id::text,COALESCE(home,'') FROM devices WHERE id=$1`, device).Scan(&user, &home); err != nil {
 			return err
 		}
 		var old policyPlacementState
@@ -293,6 +346,11 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 				return err
 			}
 		}
+		// Keep the rule version stable through row waits and restoration. An
+		// admin update cannot acknowledge a new Deny before this ack commits.
+		if _, err := tx.Exec(ctx, `SELECT singleton FROM collection_policy WHERE singleton FOR SHARE`); err != nil {
+			return err
+		}
 		rules, err := loadRules(ctx, tx)
 		if err != nil {
 			return err
@@ -324,7 +382,10 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 	return &out, nil
 }
 
-// Reconcile under the same session locks used by the sink. Each row becomes
+// Reconcile under the exclusive device gate, which excludes same-device sinks
+// and manifest commits before they acquire any natural or row lock. User-wide
+// natural keys would unnecessarily conflict with another device's parent tree.
+// Each row becomes
 // its own device-scoped hide root so restoring readiness cannot restore a
 // child whose own historical scope or rules still forbid sharing.
 func reconcileSessionPolicy(ctx context.Context, tx pgx.Tx, r serverRules, user, device, agent, session string) error {
@@ -357,20 +418,17 @@ func reconcileSessionPolicy(ctx context.Context, tx pgx.Tx, r serverRules, user,
 		return err
 	}
 	for _, c := range list {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, store.ConversationLockKey(user, agent, c.session)); err != nil {
-			return err
-		}
 		policies, err := loadSessionPolicies(ctx, tx, device, agent, c.session, c.parent, c.source)
 		if err != nil {
 			return err
 		}
 		d := decideWithPolicies(r, c.dev, r.decideAll(c.dev, agent, c.path, c.cwd, c.others, c.remote), policies)
 		if d.Mode != pathpolicy.Allow {
-			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=COALESCE(hidden_at,now()),hidden_rule=CASE WHEN hidden_at IS NULL THEN $2 ELSE hidden_rule END,hidden_rules_version=CASE WHEN hidden_at IS NULL THEN $3 ELSE hidden_rules_version END,hidden_root=CASE WHEN hidden_at IS NULL THEN id ELSE hidden_root END,hidden_by=CASE WHEN hidden_at IS NULL THEN $4::uuid ELSE hidden_by END,hidden_scope=CASE WHEN hidden_at IS NULL THEN 'device' ELSE hidden_scope END WHERE id=$1`, c.id, ruleName(d), r.version, user); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=COALESCE(hidden_at,now()),hidden_rule=CASE WHEN hidden_at IS NULL THEN $2 ELSE hidden_rule END,hidden_rules_version=CASE WHEN hidden_at IS NULL THEN $3 ELSE hidden_rules_version END,hidden_root=CASE WHEN hidden_at IS NULL THEN id ELSE hidden_root END,hidden_by=CASE WHEN hidden_at IS NULL THEN $4::uuid ELSE hidden_by END,hidden_scope=CASE WHEN hidden_at IS NULL THEN 'device' ELSE hidden_scope END WHERE id=$1 AND device_id=$5`, c.id, ruleName(d), r.version, user, device); err != nil {
 				return err
 			}
 		} else {
-			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=NULL,hidden_rule=NULL,hidden_rules_version=NULL,hidden_root=NULL,hidden_by=NULL,hidden_scope='user' WHERE id=$1 AND hidden_scope='device' AND hidden_root=id`, c.id); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_at=NULL,hidden_rule=NULL,hidden_rules_version=NULL,hidden_root=NULL,hidden_by=NULL,hidden_scope='user' WHERE id=$1 AND device_id=$2 AND hidden_scope='device' AND hidden_root=id`, c.id, device); err != nil {
 				return err
 			}
 		}

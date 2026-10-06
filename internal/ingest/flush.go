@@ -300,10 +300,24 @@ func recordDeviceDirs(ctx context.Context, conn *pgxpool.Conn, deviceID string, 
 	if len(d.Home) > maxDirLen || len(d.ClaudeProjects) > maxDirLen || len(d.CodexHome) > maxDirLen {
 		return badRequest("device directories longer than %d bytes", maxDirLen)
 	}
-	_, err := conn.Exec(ctx, `UPDATE devices SET home=NULLIF($2,''),claude_projects=NULLIF($3,''),codex_home=NULLIF($4,'')
-		WHERE id=$1 AND (home,claude_projects,codex_home) IS DISTINCT FROM (NULLIF($2,''),NULLIF($3,''),NULLIF($4,''))`,
-		deviceID, d.Home, d.ClaudeProjects, d.CodexHome)
-	return err
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, policyDeviceLockKey(deviceID)); err != nil {
+			return err
+		}
+		var ledger bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_policy_placements WHERE device_id=$1)`, deviceID).Scan(&ledger); err != nil {
+			return err
+		}
+		if ledger {
+			if err := validatePolicyDeviceDirs(d); err != nil {
+				return err
+			}
+			return recordPolicyDeviceDirs(ctx, tx, deviceID, d)
+		}
+		_, err := tx.Exec(ctx, `UPDATE devices SET home=NULLIF($2,''),claude_projects=NULLIF($3,''),codex_home=NULLIF($4,'')
+			WHERE id=$1 AND (home,claude_projects,codex_home) IS DISTINCT FROM (NULLIF($2,''),NULLIF($3,''),NULLIF($4,''))`, deviceID, d.Home, d.ClaudeProjects, d.CodexHome)
+		return err
+	})
 }
 
 // recordLive stores the sessions the device reports its harnesses hold

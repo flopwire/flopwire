@@ -125,3 +125,24 @@ func TestPolicyVerifiedHostOverridesOnlyNativeMissingPlacementFloor(t *testing.T
 		t.Fatalf("actual native deny erased: %+v", d)
 	}
 }
+
+func TestPolicyMissingHomeHoldsWithoutErasingKnownDeny(t *testing.T) {
+	rules, _ := pathpolicy.ParseRules([]string{"deny ~/private", "deny /absolute/private"})
+	r := serverRules{admin: rules}
+	p := policyPlacementState{CurrentMappingKnown: true, EvidenceScope: "mapped", ClientMode: "allow", Placements: []syncproto.PolicyPlacement{{CWD: "/somewhere"}}}
+	d := r.decidePolicy(deviceDirs{}, p)
+	if !isPolicyHold(d) || d.Rule.Pattern != "cowork-home-unknown" {
+		t.Fatalf("missing home allowed: %+v", d)
+	}
+	p.Placements = append(p.Placements, syncproto.PolicyPlacement{CWD: "/absolute/private"})
+	if d = r.decidePolicy(deviceDirs{}, p); d.Mode != pathpolicy.Deny {
+		t.Fatalf("known deny weakened: %+v", d)
+	}
+	for _, home := range []string{"relative", "/sessions/vm/home", "/Users/bad\npath"} {
+		req := policyRequest()
+		req.Device = &syncproto.DeviceDirs{Home: home}
+		if validatePolicyRequest(req) == nil {
+			t.Fatalf("invalid home accepted: %q", home)
+		}
+	}
+}
