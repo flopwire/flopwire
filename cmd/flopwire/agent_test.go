@@ -406,3 +406,14 @@ func TestAgentStatusDesktopCodeScopeAndHold(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentStatusDesktopCodeAuthorizationRequirement(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{DesktopCode: &agent.DesktopCodeStatus{State: "supported", Sessions: 1, SharedAuthorization: "each capture requires fresh contained indexed proof; Cowork origins retain folder-policy holds"}})
+	if !strings.Contains(b.String(), "scoped shared authorization: each capture requires fresh contained indexed proof") {
+		t.Fatalf("status does not report capture authorization requirement: %s", b.String())
+	}
+	if strings.Contains(b.String(), "scoped shared uploads held") {
+		t.Fatal("available proof hook must not report prerequisite support pending")
+	}
+}

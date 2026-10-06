@@ -985,6 +985,9 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
 	if c := resp.DesktopCode; c != nil {
 		fmt.Fprintf(w, "Claude Desktop Code (Local): %s (%d scoped native sessions, %d normal-root links, %d missing linked transcripts, %d outside local Code scope)\n", c.State, c.Sessions, c.NormalLinks, c.MetadataOnly, c.OutOfScope)
+		if c.SharedAuthorization != "" {
+			fmt.Fprintf(w, "  scoped shared authorization: %s\n", c.SharedAuthorization)
+		}
 		if c.SharedHold != "" {
 			fmt.Fprintf(w, "  scoped shared uploads held: %s\n", c.SharedHold)
 		}
