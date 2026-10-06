@@ -243,7 +243,8 @@ type Agent struct {
 	coworkHistoryReadErr  error                      // unidentified historical origins hold Claude sharing until read recovers
 	coworkFamilies        map[string]map[string]bool // immutable verified relation snapshot, guarded by mu
 	coworkParser          transcript.Parser
-	coworkReconcileCursor placeKey // fair metadata progress; guarded by mu
+	coworkPolicyAttempt   CoworkPolicyAttempt // latest registration diagnostic only; never authorizes capture
+	coworkReconcileCursor placeKey            // fair metadata progress; guarded by mu
 	store                 *localindex.Store
 	claude                transcript.Parser
 	codex                 transcript.Parser

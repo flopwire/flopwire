@@ -12,25 +12,6 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript/cowork"
 )
 
-// CoworkStatus distinguishes local coverage from shared readiness. The server
-// currently cannot persist/reapply multi-folder host policy, so all identified
-// Cowork evidence stays local, including overlapping CLI copies.
-type CoworkStatus struct {
-	Root                   string         `json:"root,omitempty"`
-	State                  string         `json:"state"`
-	Sessions               int            `json:"sessions"`
-	MetadataOnly           int            `json:"metadata_only"`
-	Excluded               int            `json:"excluded_paths"`
-	Unknown                int            `json:"unknown_mapping"`
-	RepositoryScopeUnknown int            `json:"unknown_repository_scopes"`
-	HistoricalUnknown      int            `json:"historical_unknown_mapping"`
-	MappingReasons         map[string]int `json:"mapping_reasons,omitempty"`
-	WatchCandidates        int            `json:"watch_candidates"`
-	Held                   int            `json:"shared_held"`
-	SharedHold             string         `json:"shared_hold"`
-	Error                  string         `json:"error,omitempty"`
-}
-
 // refreshCowork runs before files reach the worker pool. Host locations are
 // stored monotonically in placements: revoking an app grant must not remove
 // the rules protecting work already performed in that folder. The origin is
@@ -426,55 +407,6 @@ func (a *Agent) coworkSafe(t *target) bool {
 		return cowork.SafeFile(root, t.path)
 	}
 	return true
-}
-
-func (a *Agent) coworkStatus() *CoworkStatus {
-	a.mu.Lock()
-	r := a.coworkResult
-	st := &CoworkStatus{Root: a.cfg.CoworkRoot, State: "supported", Sessions: len(r.Sessions), MetadataOnly: r.MetadataOnly, Excluded: r.Excluded, Error: a.coworkError, SharedHold: "server host-folder policy support pending", WatchCandidates: len(r.WatchDirs), MappingReasons: map[string]int{}}
-	for _, p := range a.places {
-		if localindex.IsCoworkPlacement(p.how) {
-			st.Held++
-			if p.how == localindex.PlacedByCoworkUnknown {
-				st.HistoricalUnknown++
-			}
-		}
-	}
-	a.mu.Unlock()
-	switch {
-	case a.cfg.CoworkRoot == "":
-		st.State = "disabled"
-	case st.Error != "":
-		st.State = "unavailable"
-	case r.Unavailable > 0:
-		st.State = "unavailable"
-	case r.Excluded > 0 && len(r.WatchDirs) == 0:
-		st.State = "excluded"
-	}
-	seen := map[string]bool{}
-	links := append([]cowork.Link(nil), r.IdentityLinks...)
-	for _, entry := range r.Sessions {
-		links = append(links, entry.Link)
-	}
-	for _, link := range links {
-		key := link.MetadataPath + "\x00" + link.NativeSessionID
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		repoUnknown := false
-		for _, path := range coworkHostPaths(link) {
-			repoUnknown = repoUnknown || a.policy().pol.DecideSubtree(a.resolve(path, "")).RepoScopeUnknown
-		}
-		if repoUnknown {
-			st.RepositoryScopeUnknown++
-		}
-		if !link.Mapping.Known() {
-			st.Unknown++
-			st.MappingReasons[link.Mapping.Reason()]++
-		}
-	}
-	return st
 }
 
 // coworkCaptureScope separates current readiness from historical uncertainty.

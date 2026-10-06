@@ -26,18 +26,22 @@ func (a *Agent) coworkOrigin(keys ...placeKey) bool {
 // acknowledgeCoworkPolicy validates the durable response even when a custom
 // client implements Config.CoworkPolicy. Restrictions can be acknowledged
 // without granting capture permission.
-func (a *Agent) acknowledgeCoworkPolicy(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+func (a *Agent) acknowledgeCoworkPolicy(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (ack *syncproto.PolicyPlacementsResponse, err error) {
+	failure := ""
+	defer func() { a.noteCoworkPolicyAttempt(coworkPolicyAttemptState(req, ack, err, failure)) }()
 	if a.cfg.CoworkPolicy == nil {
+		failure = "unsupported"
 		return nil, errCoworkHeld
 	}
 	digest, err := syncproto.PolicyPlacementsDigest(req)
 	if err != nil {
 		return nil, err
 	}
-	ack, err := a.cfg.CoworkPolicy.PolicyPlacements(ctx, req)
+	ack, err = a.cfg.CoworkPolicy.PolicyPlacements(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	failure = "invalid_ack"
 	if ack == nil || ack.Version != 1 || ack.Revision <= 0 || ack.RequestDigest != digest {
 		return nil, errors.New("agent: invalid durable Cowork policy acknowledgement")
 	}
@@ -54,6 +58,7 @@ func (a *Agent) acknowledgeCoworkPolicy(ctx context.Context, req *syncproto.Poli
 	}
 	// The server may retain older shared bytes that this local index no longer
 	// knows about. Its durable historical fact must survive a client restart.
+	failure = "history_unknown"
 	if ack.EvidenceScope == syncproto.EvidenceUnmapped {
 		keys := []placeKey{{transcript.AgentClaude, req.SessionID}}
 		if req.ParentSessionID != "" && req.ParentSessionID != req.SessionID {
