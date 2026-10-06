@@ -3,6 +3,7 @@ package ingest_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/flopwire/flopwire/internal/syncproto"
+	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -268,6 +270,7 @@ func newChainDevice(t *testing.T, deviceID, token string, h *httptest.Server) *c
 	d.child = filepath.Join(project, chainNativeID, "subagents", "agent-cafe.jsonl")
 	d.companion = filepath.Join(project, chainNativeID, "tool-results", "qualification.txt")
 	d.mainBytes = chainNativeRecord(chainNativeID, "qualification-main", "full chain mapped parent evidence")
+	d.mainBytes = append(d.mainBytes, []byte(fmt.Sprintf(`{"parentUuid":"qualification-main","cwd":"/sessions/qualification-workspace","sessionId":%q,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"full chain mapped assistant evidence"}]},"uuid":"qualification-answer","timestamp":"2026-10-06T11:00:01.000Z"}`+"\n", chainNativeID))...)
 	d.childBytes = chainNativeRecord("agent-cafe", "qualification-child", "full chain mapped child evidence")
 	d.companionBytes = []byte("full chain mapped companion evidence\n")
 	if err := os.MkdirAll(d.selected, 0700); err != nil {
@@ -367,6 +370,52 @@ func chainHits(d *chainDevice, text string) (*format.Page, error) {
 	return c.Grep(context.Background(), format.GrepQuery{Pattern: text, Fixed: true}, format.Filters{})
 }
 
+func (e *chainEnv) familyRows(t *testing.T, d *chainDevice, deviceID string) {
+	t.Helper()
+	firstLen := int64(len(chainNativeRecord(chainNativeID, "qualification-main", "full chain mapped parent evidence")))
+	for _, want := range []struct {
+		path, session, native, parent, role, text string
+		line, offset, length                      int64
+	}{
+		{d.main, chainNativeID, "qualification-main#0", "", "user", "full chain mapped parent evidence", 1, 0, firstLen},
+		{d.main, chainNativeID, "qualification-answer#0", "qualification-main", "assistant", "full chain mapped assistant evidence", 2, firstLen, int64(len(d.mainBytes)) - firstLen},
+		{d.child, "agent-cafe", "qualification-child#0", "", "user", "full chain mapped child evidence", 1, 0, int64(len(d.childBytes))},
+	} {
+		var native, parent, kind, role, text, parser, path, file, sourceDevice, hash string
+		var generation, line, offset, length, ordinal int64
+		var part int
+		var genExists bool
+		err := e.pool.QueryRow(context.Background(), `SELECT m.native_id,COALESCE(m.parent_native_id,''),m.kind,COALESCE(m.role,''),m.text,m.parser,s.path,s.file_id,s.device_id::text,m.source_generation,m.line_no,m.byte_offset,m.byte_len,m.ordinal,m.part,encode(m.content_sha,'hex'),g.source_id IS NOT NULL FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id LEFT JOIN generations g ON g.source_id=m.source_id AND g.generation=m.source_generation WHERE c.device_id=$1 AND c.session_id=$2 AND m.native_id=$3 AND NOT m.superseded`, deviceID, want.session, want.native).Scan(&native, &parent, &kind, &role, &text, &parser, &path, &file, &sourceDevice, &generation, &line, &offset, &length, &ordinal, &part, &hash, &genExists)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := transcript.StatIdentity(want.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if native != want.native || parent != want.parent || kind != want.role || role != want.role || text != want.text || parser != "claude@4.1" || path != want.path || file != identity.ID.String() || sourceDevice != deviceID || generation != 0 || line != want.line || offset != want.offset || length != want.length || ordinal != want.offset*4096 || part != 0 || hash != fmt.Sprintf("%x", sha256.Sum256([]byte(want.text))) || !genExists {
+			t.Fatalf("literal content/address/provenance differs for %s", want.native)
+		}
+	}
+	var count int
+	if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.device_id=$1 AND NOT m.superseded`, deviceID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("native semantic rows %d, want 3", count)
+	}
+	for _, path := range []string{d.main, d.child, d.companion} {
+		var generation, entries, acked, tailSize int64
+		var tailAcked bool
+		if err := d.syncDB.QueryRow(`SELECT g.generation,g.entries,g.acked,g.tail_size,g.tail_acked FROM devsync_gens g JOIN devsync_sources s ON s.id=g.source_id WHERE s.path=?`, path).Scan(&generation, &entries, &acked, &tailSize, &tailAcked); err != nil {
+			t.Fatal(err)
+		}
+		if generation != 0 || entries != acked || (tailSize > 0 && !tailAcked) {
+			t.Fatalf("native generation not exactly acknowledged: generation=%d entries=%d acked=%d tail=%d/%v", generation, entries, acked, tailSize, tailAcked)
+		}
+	}
+}
+
 // Production remains at capability zero during implementation qualification.
 // The exact enablement candidate must rerun with FLOPWIRE_CHAIN_REAL_CAPABILITY=1
 // to use its real capability response, without the test-only override.
@@ -383,6 +432,8 @@ func TestCoworkAgentFullChainMappedFamily(t *testing.T) {
 	second.once(t)
 	e.familyRaw(t, first, firstID)
 	e.familyRaw(t, second, secondID)
+	e.familyRows(t, first, firstID)
+	e.familyRows(t, second, secondID)
 	for _, d := range []*chainDevice{first, second} {
 		var proofs int
 		if err := d.syncDB.QueryRow(`SELECT count(*) FROM devsync_gens WHERE capture_proof IS NOT NULL`).Scan(&proofs); err != nil {
