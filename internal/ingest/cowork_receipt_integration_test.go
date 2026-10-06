@@ -377,7 +377,7 @@ func TestCoworkAgentRecoveredReceiptLifecycle(t *testing.T) {
 	first.once(t)
 	receiptChainHistory(t, first, firstID, true)
 	var localMessages int
-	if err := first.index.DB().QueryRow(`SELECT count(*) FROM messages WHERE native_id='receipt-after-restart'`).Scan(&localMessages); err != nil || localMessages != 1 {
+	if err := first.index.DB().QueryRow(`SELECT count(*) FROM messages WHERE native_id='receipt-after-restart#0'`).Scan(&localMessages); err != nil || localMessages != 1 {
 		t.Fatalf("new native content was not retained locally: %d,%v", localMessages, err)
 	}
 	chainEventually(t, "historical recovery scheduler completion", func() error {
@@ -420,7 +420,7 @@ func TestCoworkAgentRecoveredReceiptLifecycle(t *testing.T) {
 	first.start(t)
 	first.once(t)
 	receiptChainHistory(t, first, firstID, true)
-	if err := first.index.DB().QueryRow(`SELECT count(*) FROM messages WHERE native_id='receipt-after-restart'`).Scan(&localMessages); err != nil || localMessages != 0 {
+	if err := first.index.DB().QueryRow(`SELECT count(*) FROM messages WHERE native_id='receipt-after-restart#0'`).Scan(&localMessages); err != nil || localMessages != 0 {
 		t.Fatalf("global exclude retained denied local content: %d,%v", localMessages, err)
 	}
 	var clientMode, historical string
