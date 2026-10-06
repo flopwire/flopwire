@@ -223,6 +223,22 @@ func newChainAPI(t *testing.T, e *chainEnv, override bool) *httptest.Server {
 				}
 				t.Logf("synthetic owner device=%s path=%s file=%s agent=%s session=%s", d, p, f, a, s)
 			}
+			rows.Close()
+			rows, err = e.pool.Query(context.Background(), `SELECT s.device_id::text,s.path,s.file_id,s.agent,COALESCE(s.session_key,''),s.storage_kind,COALESCE(s.parser,''),COALESCE(s.parent_path,p.path,''),COALESCE(s.parent_file_id,p.file_id,''),(SELECT count(*) FROM generations g WHERE g.source_id=s.id) FROM sources s LEFT JOIN sources p ON p.id=s.parent_source_id ORDER BY s.path`)
+			if err != nil {
+				t.Log(err)
+				return
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var d, p, f, a, s, k, v, parent, parentFile string
+				var gens int
+				if err := rows.Scan(&d, &p, &f, &a, &s, &k, &v, &parent, &parentFile, &gens); err != nil {
+					t.Log(err)
+					return
+				}
+				t.Logf("synthetic source device=%s path=%s file=%s agent=%s session=%s storage=%s parser=%s parent=%s/%s generations=%d", d, p, f, a, s, k, v, parent, parentFile, gens)
+			}
 		}
 	})
 	h := httptest.NewServer(api.New(e.store, api.Config{Logger: log, Sync: chainCapabilityServer{server: server, override: override, trace: trace}, Parse: e.queue, Retrieval: r}).Handler(nil))
