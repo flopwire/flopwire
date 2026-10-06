@@ -44,19 +44,28 @@ type PolicySource struct {
 	Generation int64  `json:"generation"`
 }
 
+// PolicyRecoverySource identifies an existing recovered copy, solely to add
+// restrictions. Stored same-device native/path provenance must match; these
+// references cannot establish historical folder grants or permit sharing.
+type PolicyRecoverySource struct {
+	Source       PolicySource `json:"source"`
+	OriginalPath string       `json:"original_path"`
+}
+
 // PolicyPlacementsRequest adds session restrictions without uploading content.
 // The server derives the user and device exclusively from the credential.
 type PolicyPlacementsRequest struct {
-	Version             int               `json:"version"`
-	Agent               string            `json:"agent"`
-	ParentSessionID     string            `json:"parent_session_id,omitempty"`
-	SessionID           string            `json:"session_id"`
-	CurrentMappingKnown bool              `json:"current_mapping_known"`
-	EvidenceScope       string            `json:"evidence_scope"`
-	Placements          []PolicyPlacement `json:"placements"`
-	Sources             []PolicySource    `json:"sources,omitempty"`
-	ClientMode          string            `json:"client_mode"`
-	Device              *DeviceDirs       `json:"device,omitempty"`
+	Version             int                    `json:"version"`
+	Agent               string                 `json:"agent"`
+	ParentSessionID     string                 `json:"parent_session_id,omitempty"`
+	SessionID           string                 `json:"session_id"`
+	CurrentMappingKnown bool                   `json:"current_mapping_known"`
+	EvidenceScope       string                 `json:"evidence_scope"`
+	Placements          []PolicyPlacement      `json:"placements"`
+	Sources             []PolicySource         `json:"sources,omitempty"`
+	RecoverySources     []PolicyRecoverySource `json:"recovery_sources,omitempty"`
+	ClientMode          string                 `json:"client_mode"`
+	Device              *DeviceDirs            `json:"device,omitempty"`
 }
 
 // PolicyPlacementsResponse acknowledges the durably reconciled restriction union.
