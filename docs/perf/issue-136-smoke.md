@@ -49,7 +49,9 @@ it is separate from a compatibility failure on this one-run smoke. Check the que
 both binaries. Report other incompatibilities as failures.
 
 On 2026-10-06, the pinned baseline and candidate `5f7ba257fc5a` completed
-this 40 MiB comparison. Both indexed 9,187 rows across 54 sources; all 12
+this 40 MiB comparison from a clean QA checkout. That candidate is a
+QA cherry-pick with the identical Git tree as `91068e3`; only its commit
+metadata differs. Both indexed 9,187 rows across 54 sources; all 12
 query checks passed on each side, and the verdict was `CLEAN`.
 Focused fake-binary tests also passed for capability selection and launch arguments. A successful smoke establishes
 compatibility on this small corpus. One run and a one-second idle interval do
