@@ -87,7 +87,7 @@ func (x *desktopCodeSyncFixture) capture(t *testing.T, spec devicesync.SourceSpe
 	if err := x.fixture.store.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := x.a.authorizeDesktopCode(ctx, spec)
+	auth, err := x.a.authorizeCapture(ctx, spec)
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func TestDesktopCodeAuthorizationBoundsIndexedPrefixAndRejectsAppReclassificatio
 	if err := x.fixture.store.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := x.a.authorizeDesktopCode(ctx, spec)
+	auth, err := x.a.authorizeCapture(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestDesktopCodeAuthorizationRejectsSwappedCaptureAndRawRepair(t *testing.T)
 			if err := x.fixture.store.Sync(ctx); err != nil {
 				t.Fatal(err)
 			}
-			auth, err := x.a.authorizeDesktopCode(ctx, spec)
+			auth, err := x.a.authorizeCapture(ctx, spec)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -303,7 +303,7 @@ func TestDesktopCodeLeaseRejectsFolderRuleChangeBeforeTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := x.sourceSpec(t, main)
-	auth, err := x.a.authorizeDesktopCode(ctx, spec)
+	auth, err := x.a.authorizeCapture(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestDesktopCodeAuthorizationRejectsAncestorSymlinkSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := x.sourceSpec(t, main)
-	auth, err := x.a.authorizeDesktopCode(ctx, spec)
+	auth, err := x.a.authorizeCapture(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestDesktopCodeDispatcherRechecksHistoricalReadFailureForOrdinaryCLI(t *tes
 		t.Fatal(err)
 	}
 	before := x.requests()
-	if err := x.capture(t, spec); !errors.Is(err, errDesktopCodeHeld) {
+	if err := x.capture(t, spec); !errors.Is(err, errCoworkHeld) {
 		t.Fatalf("fresh historical read failure must hold queued ordinary source: %v", err)
 	}
 	if x.requests() != before {
@@ -414,7 +414,7 @@ func TestDesktopCodeAuthorizationRequiresCurrentIndexedParser(t *testing.T) {
 	path := desktopTranscript(t, x.fixture)
 	x.once()
 	spec := x.sourceSpec(t, path)
-	auth, err := x.a.authorizeDesktopCode(ctx, spec)
+	auth, err := x.a.authorizeCapture(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestDesktopCodeAuthorizationRequiresCurrentIndexedParser(t *testing.T) {
 		t.Fatalf("retained old indexed parser must invalidate existing lease: %v", err)
 	}
 	auth.Release()
-	if _, err := x.a.authorizeDesktopCode(ctx, spec); !errors.Is(err, errDesktopCodeHeld) {
+	if _, err := x.a.authorizeCapture(ctx, spec); !errors.Is(err, errDesktopCodeHeld) {
 		t.Fatalf("retained old indexed parser must reject fresh authorization: %v", err)
 	}
 	if x.requests() != before {
@@ -441,7 +441,7 @@ func TestDesktopCodeActiveLeaseBlocksPolicyPublication(t *testing.T) {
 	path := desktopTranscript(t, x.fixture)
 	x.once()
 	spec := x.sourceSpec(t, path)
-	auth, err := x.a.authorizeDesktopCode(ctx, spec)
+	auth, err := x.a.authorizeCapture(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
