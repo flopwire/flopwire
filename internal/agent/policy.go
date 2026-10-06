@@ -375,8 +375,11 @@ func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) {
 	a.mu.Lock()
 	a.pol = &policyView{pol: pol, gen: a.pol.gen + 1, key: policyKey(pol)}
 	for _, t := range a.targets {
-		if t.modeGen != 0 && t.mode == pathpolicy.Deny {
+		key, _ := t.placeKeyOf()
+		cw := localindex.IsCoworkPlacement(a.places[key].how) || (t.root != "" && localindex.IsCoworkPlacement(a.places[placeKey{transcript.AgentClaude, t.root}].how))
+		if cw || t.modeGen != 0 && t.mode == pathpolicy.Deny {
 			t.seen, t.seenAt = transcript.Identity{}, 0
+			delete(a.companion, t.path)
 		}
 		t.modeGen = 0
 	}
@@ -442,7 +445,7 @@ func (a *Agent) reresolve() {
 		np := e.p
 		if np.pl.Main == "" && r.pl.Main != "" {
 			np.pl.Worktree, np.pl.Main = r.pl.Worktree, r.pl.Main
-			if e.p.how != localindex.PlacedByFolder {
+			if e.p.how != localindex.PlacedByFolder && !localindex.IsCoworkPlacement(e.p.how) {
 				np.how = cwdHow(np.pl) // the directory exists again: git places it
 			}
 		}
@@ -541,6 +544,9 @@ func (t *target) placeKeyOf() (placeKey, string) {
 // directory the transcript named: a fallback placement is replaced when
 // the transcript later names one, so its decision must not be cached.
 func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, known, final bool) {
+	if d, ok := a.coworkMode(pv, t); ok {
+		return d, true, false
+	}
 	a.mu.Lock()
 	var parent *target
 	if t.kind == kindCompanion {
@@ -579,6 +585,12 @@ func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, kn
 // it when a rule could deny it (worstMode), and ask again later.
 func (a *Agent) modeOf(t *target) (mode pathpolicy.Mode, known bool) {
 	pv := a.policy()
+	if d, ok := a.coworkMode(pv, t); ok {
+		a.mu.Lock()
+		t.mode, t.modeGen = d.Mode, pv.gen
+		a.mu.Unlock()
+		return d.Mode, true
+	}
 	if pv.pol.Empty() {
 		// Nothing to decide, but the placement is still recorded when the
 		// session is first seen, for rules added after its worktree is gone.
@@ -681,6 +693,19 @@ func (a *Agent) loadStoreModes(ctx context.Context, d *storeState, pv *policyVie
 // allowUpload is the sync scheduler's filter: it drops a queued flush the
 // rules no longer allow (a deny or local rule added after the capture).
 func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
+	a.mu.Lock()
+	historyReadErr := a.coworkHistoryReadErr
+	a.mu.Unlock()
+	if spec.Agent == transcript.AgentClaude && historyReadErr != nil {
+		return false
+	}
+	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}
+	if spec.Parent != "" {
+		nt.kind, nt.owner, nt.parent = kindCompanion, spec.SessionKey, spec.Parent
+	}
+	if _, ok := a.coworkMode(a.policy(), nt); ok {
+		return false
+	}
 	if a.policy().pol.Empty() {
 		return true
 	}
@@ -705,10 +730,6 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	// Not tracked (the file is gone, or not listed yet): place it the way
 	// a tracked file would be, from the stored placement, the transcript
 	// or a fallback.
-	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}
-	if spec.Parent != "" {
-		nt.kind, nt.owner, nt.parent = kindCompanion, spec.SessionKey, spec.Parent
-	}
 	pv := a.policy()
 	d, known, _ := a.decisionOf(pv, nt)
 	return known && d.Mode == pathpolicy.Allow
@@ -752,16 +773,23 @@ func (a *Agent) purgeDenied(ctx context.Context) error {
 			p.pl = a.resolve(c.cwd, "")
 			p.how = cwdHow(p.pl)
 		}
-		if !ok && !abs {
+		cw, coworkScoped := a.coworkMode(pv, &target{src: transcript.Source{Agent: transcript.Agent(c.agent), SessionKey: c.session}})
+		if !ok && !abs && !coworkScoped {
 			// Never placed (an orphan stub, or a row from before the
 			// placement was stored): not decided here; its files are.
 			continue
 		}
 		d := a.decide(pv.pol, p)
+		if coworkScoped {
+			d = cw
+		}
 		if pd, ok := denied[c.parent]; ok && d.Mode != pathpolicy.Deny {
 			d = pd // a subagent goes with its parent
 		}
 		if d.Mode == pathpolicy.Deny {
+			if err := a.coworkHistoryPurgeError([]placeKey{{transcript.Agent(c.agent), c.session}}); err != nil {
+				return err
+			}
 			denied[c.id] = d
 			c.why = d
 			todo = append(todo, c)
@@ -773,6 +801,11 @@ func (a *Agent) purgeDenied(ctx context.Context) error {
 // purgeSource removes the conversations recorded from one source (a
 // tracked file a deny rule now covers).
 func (a *Agent) purgeSource(ctx context.Context, sourceID int64, why pathpolicy.Decision) error {
+	if source, err := a.store.Source(ctx, sourceID); err != nil {
+		return err
+	} else if err := a.coworkHistoryPurgeError([]placeKey{{source.Source.Agent, source.Source.SessionKey}}); err != nil {
+		return err
+	}
 	rows, err := a.store.DB().QueryContext(ctx, `SELECT c.id, c.agent, c.session_id, ifnull(s.storage_kind, '')
 		FROM conversations c JOIN sources s ON s.id = c.source_id WHERE c.source_id = ?`, sourceID)
 	if err != nil {
@@ -812,6 +845,9 @@ func (a *Agent) purge(ctx context.Context, todo []purgeConv) error {
 	sources := map[int64]string{}
 	var names []string
 	for _, c := range todo {
+		a.mu.Lock()
+		delete(a.stubbed, c.session)
+		a.mu.Unlock()
 		if err := a.store.PurgeConversation(ctx, transcript.Agent(c.agent), c.session); err != nil {
 			return err
 		}

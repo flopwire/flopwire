@@ -162,6 +162,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
+	coworkRoot := fs.String("cowork-root", "", `Cowork session container (default Claude Desktop app storage on macOS; "-" disables); shared uploads held pending server policy support`)
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
 	opencodeDB := fs.String("opencode-db", "", `opencode.db (default FLOPWIRE_OPENCODE_DB, OPENCODE_DB, or opencode.db under XDG_DATA_HOME or ~/.local/share/opencode; "-" disables)`)
@@ -263,7 +264,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
@@ -894,6 +895,15 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	if c := resp.Cowork; c != nil {
+		fmt.Fprintf(w, "Cowork: %s (%d native sessions, %d metadata-only, %d excluded paths)\n", c.State, c.Sessions, c.MetadataOnly, c.Excluded)
+		if c.RepositoryScopeUnknown > 0 {
+			fmt.Fprintf(w, "  repository policy scope unresolved for %d native scopes; shared uploads held\n", c.RepositoryScopeUnknown)
+		}
+		if c.Sessions > 0 || c.Held > 0 {
+			fmt.Fprintf(w, "  shared uploads held: server host-folder policy support pending; %d current and %d historical native scopes have unknown mapping\n", c.Unknown, c.HistoricalUnknown)
+		}
+	}
 	if resp.Extraction != nil {
 		printExtractionSummary(w, resp.Extraction)
 	}

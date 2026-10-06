@@ -165,6 +165,19 @@ func (a *Agent) discoverAll() (*found, error) {
 		return nil, err
 	}
 	f.claudeSessions(sessions, a.claude)
+	a.mu.Lock()
+	cw := a.coworkResult
+	a.mu.Unlock()
+	for _, entry := range cw.Sessions {
+		f.claudeSessions([]*claude.Session{entry.Session}, a.coworkParser)
+	}
+	for _, t := range f.targets {
+		if t.kind == kindTranscript && a.cfg.CoworkRoot != "" {
+			if _, ok := under(a.cfg.CoworkRoot, t.path); ok {
+				t.parser = a.coworkParser
+			}
+		}
+	}
 	srcs, err := codex.Discover(a.cfg.CodexHome)
 	if err != nil {
 		return nil, err
@@ -178,6 +191,9 @@ func (a *Agent) discoverAll() (*found, error) {
 // in it. It reports whether dir is under a known root.
 func (a *Agent) discoverDir(dir string) (*found, bool) {
 	f := &found{}
+	if a.coworkDirectory(dir) {
+		return nil, true // ancestor or nested session changed: refresh the bounded container
+	}
 	if rel, ok := under(a.cfg.ClaudeProjects, dir); ok {
 		if rel == "." {
 			return nil, true // the project list changed: the caller runs a full pass

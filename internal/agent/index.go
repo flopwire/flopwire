@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
+	"github.com/flopwire/flopwire/internal/transcript/cowork"
 )
 
 // indexTranscript brings the index up to date with one JSONL transcript
@@ -21,12 +25,27 @@ import (
 // cursor state are saved in the transaction of the last batch. It reports
 // whether rows were written.
 func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
+	a.captureScopeMu.RLock()
+	defer a.captureScopeMu.RUnlock()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !a.coworkSafe(t) {
+		return false, nil
+	}
 	if t.parser == nil {
 		return false, nil // a loaded placeholder not listed by discovery yet
 	}
-	f, err := fsprobe.Open(t.path)
+	var f *os.File
+	var err error
+	if a.cfg.CoworkRoot != "" {
+		if _, ok := under(a.cfg.CoworkRoot, t.path); ok {
+			f, err = cowork.OpenFile(a.cfg.CoworkRoot, t.path)
+		} else {
+			f, err = fsprobe.Open(t.path)
+		}
+	} else {
+		f, err = fsprobe.Open(t.path)
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil // the next full pass retires it
 	} else if err != nil {
@@ -89,6 +108,19 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	}
 	if change.Decision == transcript.Append && st.Generation == 0 {
 		change = transcript.Change{Decision: transcript.Rewrite, Reason: "no generation"}
+	}
+	if id.Size > 0 && change.Decision != transcript.Unchanged {
+		if err := a.taintCoworkEvidence(ctx, t); err != nil {
+			return false, err
+		}
+		// Historical provenance can tighten an initially local capture to deny.
+		// Recheck after its durable write, before parsing any of these bytes.
+		if mode, known := a.modeOf(t); known && mode == pathpolicy.Deny {
+			if err := a.purgeDenied(ctx); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 	}
 	gen, cur := st.Generation, transcript.Cursor{}
 	switch change.Decision {
@@ -357,6 +389,11 @@ func (a *Agent) notify(t *target) bool {
 // index through the parser, which reads them when a transcript line
 // references them.
 func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
+	a.captureScopeMu.RLock()
+	defer a.captureScopeMu.RUnlock()
+	if !a.coworkSafe(t) {
+		return nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	id, err := transcript.StatIdentity(t.path)
@@ -378,9 +415,50 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 		parentID = p.sourceID
 	}
 	owner, role := t.owner, t.role // a discovery pass may update them (merge)
+	newEvidence := id != t.seen
 	a.mu.Unlock()
+	var digest []byte
+	if _, scoped := a.coworkMode(a.policy(), t); scoped {
+		var file *os.File
+		if _, bounded := under(a.cfg.CoworkRoot, t.path); a.cfg.CoworkRoot != "" && bounded {
+			file, err = cowork.OpenFile(a.cfg.CoworkRoot, t.path)
+		} else {
+			file, err = fsprobe.Open(t.path)
+		}
+		if err != nil {
+			return err
+		}
+		h := sha256.New()
+		fi, statErr := file.Stat()
+		if statErr == nil {
+			_, err = io.Copy(h, io.LimitReader(file, fi.Size()))
+		} else {
+			err = statErr
+		}
+		file.Close()
+		if err != nil {
+			return err
+		}
+		id = transcript.IdentityOf(fi)
+		digest = h.Sum(nil)
+		prior, err := a.store.CompanionDigest(ctx, t.path)
+		if err != nil {
+			return err
+		}
+		// Gate invalidation clears the in-memory sample, but does not erase
+		// mapping proof for exactly the bytes already captured.
+		newEvidence = !bytes.Equal(prior, digest)
+	}
+	if id.Size > 0 && newEvidence {
+		if err := a.taintCoworkEvidence(ctx, t); err != nil {
+			return err
+		}
+		if mode, known := a.modeOf(t); known && mode == pathpolicy.Deny {
+			return a.purgeDenied(ctx)
+		}
+	}
 	if err := a.store.UpsertCompanion(ctx, localindex.Companion{SessionID: owner, Agent: transcript.AgentClaude,
-		SourceID: parentID, Path: t.path, Kind: string(role), Size: id.Size}); err != nil {
+		SourceID: parentID, Path: t.path, Kind: string(role), Size: id.Size, ContentSHA: digest}); err != nil {
 		return err
 	}
 	a.stats.Companions.Add(1)
@@ -399,6 +477,9 @@ func (a *Agent) applyStubs(ctx context.Context, f *found) {
 		done := a.stubbed[c.SessionID]
 		a.mu.Unlock()
 		if done {
+			continue
+		}
+		if d, ok := a.coworkMode(pv, &target{path: f.stubAt[c.SessionID], src: transcript.Source{Agent: transcript.AgentClaude, SessionKey: c.SessionID}}); ok && d.Mode == pathpolicy.Deny {
 			continue
 		}
 		if !pv.pol.Empty() {
