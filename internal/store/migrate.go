@@ -25,6 +25,16 @@ import (
 const (
 	migrationLockClass = int32(0x54454d4d) // "TEMM"
 	migrationLockID    = int32(0x4d494752) // "MIGR"
+
+	// 661a48b shipped this authentic 009 before refusal coalescing and bus
+	// retention were edited into 009 on main. Only this exact historical
+	// checksum is recognized, and only with the exact canonical 009 and
+	// additive 013 below. Never rewrite an applied historical ledger row.
+	busMigrationName     = "009_bus.sql"
+	busLegacyChecksum    = "fd7ce62752862b6b566472e248247a849f07a6a39ae7f892237aa4af8ae927d7"
+	busCanonicalChecksum = "16150bac5be12b63ec029bcec5fc927956b7716c08a9fce292899b9c34db57f2"
+	busUpgradeName       = "013_bus_retention_upgrade.sql"
+	busUpgradeChecksum   = "bb979ebc3509eb893c50c02f97c01e6e6a4c0e4a0939b144b9bb4362cbc1668f"
 )
 
 // ErrLegacySchema reports a database that holds application tables but no
@@ -106,10 +116,17 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, files []migrationFile) err
 }
 
 // validateAppliedPrefix requires the ledger to be an unmodified, contiguous
-// prefix of the embedded files: no unknown, reordered, or edited migration.
+// prefix of the embedded files: no unknown, reordered, or edited migration,
+// except the exact deployed 009 whose delta is supplied by the pinned 013.
 func validateAppliedPrefix(files []migrationFile, applied map[string]string) error {
 	if len(applied) > len(files) {
 		return errors.New("migration ledger contains entries this binary does not know; refusing to run an older binary against a newer schema")
+	}
+	var busUpgradePresent bool
+	for _, file := range files {
+		if file.name == busUpgradeName && file.checksum == busUpgradeChecksum {
+			busUpgradePresent = true
+		}
 	}
 	for i, file := range files {
 		checksum, ok := applied[file.name]
@@ -120,6 +137,10 @@ func validateAppliedPrefix(files []migrationFile, applied map[string]string) err
 			return fmt.Errorf("migration ledger contains out-of-order entry %s", file.name)
 		}
 		if ok && checksum != file.checksum {
+			if file.name == busMigrationName && file.checksum == busCanonicalChecksum &&
+				checksum == busLegacyChecksum && busUpgradePresent {
+				continue
+			}
 			return fmt.Errorf("migration %s checksum mismatch: an applied migration was edited", file.name)
 		}
 	}
