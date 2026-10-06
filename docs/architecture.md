@@ -430,6 +430,11 @@ Routes and wire types are in `internal/busproto`.
 in one transaction under an advisory lock and records each file's checksum
 in `flopwire_schema_migrations`. It refuses a database whose ledger has
 edited, missing or unknown entries, and a database with application tables
-but no ledger. The product is pre-release, so the migration files are
-edited in place: a database made by an earlier pre-release build is
-refused. Back it up and start from an empty database.
+but no ledger. Applied historical files and ledger checksums are immutable;
+schema changes use additive migrations that preserve durable data. The
+supported upgrade from `661a48b` recognizes its exact historical
+`009_bus.sql` checksum only with the exact embedded current 009 and
+`013_bus_retention_upgrade.sql` checksums. It preserves the historical
+ledger row and applies the pending migrations. Migrations 011, 012, and 013
+ship together. See [the bus migration upgrade procedure](operations-migration-upgrade.md)
+for the recognition contract, validation, and rollback steps.

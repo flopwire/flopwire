@@ -60,6 +60,78 @@ func seedBusUpgrade(t *testing.T, legacy bool) (*pgxpool.Pool, []migrationFile) 
 	return pool, all
 }
 
+// Each path uses its own disposable database and the public schema created by
+// the migrator. Catalog OIDs and constraint names vary between installs; compare
+// definitions instead. DISTINCT removes current 009's duplicate refusal check
+// after 013 adds the same rule with an explicit name.
+const busUpgradeSchemaSnapshot = `SELECT jsonb_build_object(
+ 'columns', (
+   SELECT jsonb_agg(jsonb_build_object(
+     'name', a.attname, 'type', format_type(a.atttypid, a.atttypmod),
+     'not_null', a.attnotnull, 'default', pg_get_expr(d.adbin, d.adrelid)
+   ) ORDER BY a.attnum)
+   FROM pg_attribute a
+   LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+   WHERE a.attrelid='public.bus_messages'::regclass
+     AND a.attnum>0 AND NOT a.attisdropped
+ ),
+ 'indexes', (
+   SELECT jsonb_agg(jsonb_build_object(
+     'table', tbl.relname, 'definition', pg_get_indexdef(i.indexrelid),
+     'valid', i.indisvalid, 'ready', i.indisready
+   ) ORDER BY tbl.relname, idx.relname)
+   FROM pg_index i
+   JOIN pg_class tbl ON tbl.oid=i.indrelid
+   JOIN pg_class idx ON idx.oid=i.indexrelid
+   WHERE i.indrelid='public.bus_messages'::regclass
+      OR (i.indrelid='public.audit_events'::regclass
+          AND starts_with(idx.relname, 'audit_bus_'))
+ ),
+ 'foreign_keys', (
+   SELECT jsonb_agg(jsonb_build_object(
+     'definition', pg_get_constraintdef(oid), 'delete_action', confdeltype,
+     'validated', convalidated
+   ) ORDER BY pg_get_constraintdef(oid))
+   FROM pg_constraint
+   WHERE conrelid='public.bus_messages'::regclass AND contype='f'
+ ),
+ 'checks', (
+   SELECT jsonb_agg(jsonb_build_object(
+     'definition', definition, 'validated', validated
+   ) ORDER BY definition, validated)
+   FROM (
+     SELECT DISTINCT pg_get_constraintdef(oid) AS definition,
+       convalidated AS validated
+     FROM pg_constraint
+     WHERE conrelid='public.bus_messages'::regclass AND contype='c'
+   ) checks
+ )
+)::text`
+
+func TestBusUpgradeSchemaDefinitionsEquivalent(t *testing.T) {
+	ctx := context.Background()
+	fresh := newPool(t, pgtest.NewDatabase(t))
+	if err := Migrate(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	want := busUpgradeSnapshot(t, fresh, busUpgradeSchemaSnapshot)
+	for _, legacy := range []bool{true, false} {
+		name := "current009"
+		if legacy {
+			name = "old009"
+		}
+		t.Run(name, func(t *testing.T) {
+			pool, _ := seedBusUpgrade(t, legacy)
+			if err := Migrate(ctx, pool); err != nil {
+				t.Fatal(err)
+			}
+			if got := busUpgradeSnapshot(t, pool, busUpgradeSchemaSnapshot); got != want {
+				t.Fatalf("upgraded %s differs from fresh install\ngot:  %s\nwant: %s", name, got, want)
+			}
+		})
+	}
+}
+
 func TestBusUpgradePreservesDataAndLedger(t *testing.T) {
 	for _, legacy := range []bool{true, false} {
 		name := "current"

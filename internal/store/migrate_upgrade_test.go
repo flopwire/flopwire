@@ -76,6 +76,24 @@ func TestBusUpgradeHistoricalChecksums(t *testing.T) {
 	busUpgradeFiles(t, true) // Verify authentic fixture even without Postgres.
 }
 
+// Check the actual embedded release, rather than synthetic prefix-test files.
+// The presence migrations 011/012 and bus upgrade 013 must ship together.
+func TestBusUpgradeEmbeddedNumbering(t *testing.T) {
+	files, err := migrationFiles(migrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 13 {
+		t.Errorf("embedded release has %d migrations, want contiguous 001..013 (011/012/013 must ship together)", len(files))
+	}
+	for i, file := range files {
+		want := fmt.Sprintf("%03d_", i+1)
+		if !strings.HasPrefix(file.name, want) {
+			t.Errorf("embedded migration %d = %s, want prefix %s", i+1, file.name, want)
+		}
+	}
+}
+
 func TestBusUpgradeValidateAppliedPrefix(t *testing.T) {
 	all, old := busUpgradeFiles(t, true)
 	_, current := busUpgradeFiles(t, false)

@@ -3,8 +3,9 @@
 This forward upgrade preserves durable data in a database whose ledger is
 the contiguous prefix `001_schema.sql` through `010_cass_recovery.sql`.
 It also accepts a database built from the current version of `009_bus.sql`.
-Migrations 011 and 012 are supplied by the presence lane. They precede 013
-in the integrated release. Do not release this lane alone.
+Migrations 011 and 012 update presence and precede the bus upgrade in 013.
+Migrations 011, 012, and 013 ship together in one release. The embedded
+migration files must be numbered contiguously from 001 through 013.
 
 ## Recognition contract
 
@@ -54,8 +55,8 @@ also be replayed against either supported schema without changing data.
 
 ## Central PostgreSQL checks
 
-Run these commands from the integrated checkout. The parent operator must
-set `FLOPWIRE_TEST_DATABASE_URL` to a disposable PostgreSQL test service
+Run these commands from the release checkout.
+Set `FLOPWIRE_TEST_DATABASE_URL` to a disposable PostgreSQL test service
 with permission to create databases. The tests create and remove their own
 databases. Do not use a production connection. An unset variable causes
 the PostgreSQL tests to skip; a skip does not validate the upgrade.
@@ -63,16 +64,26 @@ the PostgreSQL tests to skip; a skip does not validate the upgrade.
 Run the lightweight checks without a database connection:
 
 ```sh
-env -u FLOPWIRE_TEST_DATABASE_URL go test ./internal/store -run '^TestBusUpgrade(HistoricalChecksums|ValidateAppliedPrefix)$' -count=1
+env -u FLOPWIRE_TEST_DATABASE_URL go test ./internal/store -run '^TestBusUpgrade(HistoricalChecksums|ValidateAppliedPrefix|EmbeddedNumbering)$' -count=1
 ```
 
 Run the upgrade regressions on the central test service:
 
 ```sh
-go test ./internal/store -run '^TestBusUpgrade(PreservesDataAndLedger|FailureIsAtomic|RejectsUnsafeBinaries)$' -count=1 -v
+go test ./internal/store -run '^TestBusUpgrade(SchemaDefinitionsEquivalent|PreservesDataAndLedger|FailureIsAtomic|RejectsUnsafeBinaries)$' -count=1 -v
 ```
 
-Both historical and current schemas must pass. These tests seed the schema
+The numbering check must pass before release. It rejects a release that
+includes 013 without 011 and 012.
+
+Both historical and current schemas must pass. The catalog comparison
+checks upgraded historical 009 and current 009 against a fresh current
+install. It compares bus-message column types, nullability, and defaults;
+bus-message and bus-audit index definitions; foreign keys and delete
+actions; and check definitions. It ignores constraint names and deduplicates
+equivalent checks.
+
+These tests seed the schema
 by running the actual migration bytes through the migrator. They preserve
 message bodies, hashes, references, replies, audit metadata, identities,
 devices, acceptance records, and existing presence fields. They check the
@@ -106,8 +117,9 @@ release against a verified backup in an isolated environment before cutover.
 6. Check startup migration results and `/healthz`.
 7. Check one known provenance search and a message/reply exchange.
 
-If startup migration fails, the pending schema changes and ledger inserts
-roll back together. Investigate the reported migration before retrying.
+If startup migration is refused or its transaction fails, it commits no
+pending schema changes or ledger inserts. The old build can restart without
+a restore. Investigate the reported error before retrying the upgrade.
 Do not edit ledger checksums to make startup succeed.
 
 After a successful migration, rollback to 661a48b requires restoring the
