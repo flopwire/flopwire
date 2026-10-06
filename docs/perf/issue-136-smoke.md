@@ -6,12 +6,13 @@ The commands below compare the actual pinned source with the current source
 using the current benchmark implementation.
 
 Run these commands from the source checkout containing the benchmark fix.
-The parent must schedule the builds and comparison in its serialized check slot.
+Schedule the builds and comparison separately from other heavy checks.
+The commands require Go, jq and the sqlite3 CLI.
 Use a new temporary directory for each comparison.
 
 ```sh
 set -eu
-smoke_dir="$(mktemp -d ${TMPDIR:-/tmp}/flopwire-136-smoke.XXXXXX)"
+smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/flopwire-136-smoke.XXXXXX")"
 baseline_sha=9e4193da7c346ff14a377128920f3943ff14f523
 candidate_label="$(git rev-parse HEAD)"
 if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -47,8 +48,10 @@ unknown `-opencode-db` error. A `REGRESSED` verdict reports measured drift;
 it is separate from a compatibility failure on this one-run smoke. Check the query results and indexed row counts for
 both binaries. Report other incompatibilities as failures.
 
-This lane has not run the real binary comparison. Focused fake-binary tests
-check capability selection and launch arguments. A successful smoke establishes
+On 2026-10-06, the pinned baseline and candidate `5f7ba257fc5a` completed
+this 40 MiB comparison. Both indexed 9,187 rows across 54 sources; all 12
+query checks passed on each side, and the verdict was `CLEAN`.
+Focused fake-binary tests also passed for capability selection and launch arguments. A successful smoke establishes
 compatibility on this small corpus. One run and a one-second idle interval do
 not establish performance confidence. Run the standard 1.5GB, three-run ABBA
 comparison with the normal idle interval before evaluating performance drift.
