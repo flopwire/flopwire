@@ -532,11 +532,27 @@ func samePath(a, b string) bool {
 
 // --- Claude Code ---
 
+// The plugin marketplace and the plugin in it. Both manifests
+// (.claude-plugin/marketplace.json and .agents/plugins/marketplace.json)
+// declare the marketplace name, and both harnesses install the plugin as
+// pluginName@marketplaceName into cache/<marketplace>/<plugin>/<version>.
+// The marketplace is publisher-collection over product (flopwire-plugins),
+// like openai-bundled/browser, so the path does not read flopwire/flopwire
+// (issue #162). The plugin, its MCP server and the binary are flopwire.
+const (
+	marketplaceName = "flopwire-plugins"
+	pluginName      = "flopwire"
+	pluginID        = pluginName + "@" + marketplaceName
+	// legacyMarketplace is the marketplace's name before #162. Pre-release,
+	// so there is no upgrade path: --check only names a stale install.
+	legacyMarketplace = "flopwire"
+)
+
 // The Claude Code marketplace and plugin names, from
 // .claude-plugin/marketplace.json and the plugin's manifest.
 const (
-	claudeMarketplace = "flopwire"
-	claudePlugin      = "flopwire@flopwire"
+	claudeMarketplace = marketplaceName
+	claudePlugin      = pluginID
 )
 
 // claudeResult is the last stdout line of a `claude plugin … --json` command.
@@ -646,6 +662,12 @@ func (c claudeCLI) plugin(ctx context.Context) (*claudePluginEntry, error) {
 // installsFrom lists the plugins Claude Code has installed from Flopwire's
 // marketplace, in any scope or project.
 func (c claudeCLI) installsFrom(ctx context.Context) ([]string, error) {
+	return c.installedFrom(ctx, claudeMarketplace)
+}
+
+// installedFrom lists the plugins installed from the named marketplace, in
+// any scope or project.
+func (c claudeCLI) installedFrom(ctx context.Context, marketplace string) ([]string, error) {
 	args := []string{"plugin", "list", "--json"}
 	out, errb, err := c.raw(ctx, args...)
 	var l []claudePluginEntry
@@ -654,7 +676,7 @@ func (c claudeCLI) installsFrom(ctx context.Context) ([]string, error) {
 	}
 	var ids []string
 	for _, p := range l {
-		if strings.HasSuffix(p.ID, "@"+claudeMarketplace) {
+		if strings.HasSuffix(p.ID, "@"+marketplace) {
 			id := p.ID + " (" + p.Scope + " scope"
 			if p.ProjectPath != "" {
 				id += ", " + p.ProjectPath
@@ -744,7 +766,7 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 	if mkt != nil {
 		r.Marketplace = mkt.location()
 	}
-	// A marketplace named flopwire from another source is a fork or a
+	// A marketplace of that name from another source is a fork or a
 	// name squatter: setup installs, updates and removes nothing through it.
 	foreign := mkt != nil && !sameSource(*mkt, env.source)
 	if foreign {
@@ -755,6 +777,23 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 		return fail(err)
 	}
 	scopeArgs := []string{"--scope", env.scope}
+
+	// An install from the marketplace's old name (legacyMarketplace, from
+	// any source) has no upgrade path (pre-release): --check and an install
+	// name the commands that remove it, since two installs run every hook
+	// twice; setup never runs them.
+	if env.mode != setupRemove {
+		if i := slices.IndexFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == legacyMarketplace }); i >= 0 {
+			oldID := pluginName + "@" + legacyMarketplace
+			old, err := c.installedFrom(ctx, legacyMarketplace)
+			if err != nil {
+				return fail(err)
+			}
+			if slices.ContainsFunc(old, func(s string) bool { return strings.HasPrefix(s, oldID+" ") }) {
+				r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s (from %s) is now %s; remove the old one and its %s, then install again: claude plugin marketplace remove %s --scope %s && flopwire setup", legacyMarketplace, mkts[i].location(), claudeMarketplace, oldID, legacyMarketplace, env.scope))
+			}
+		}
+	}
 
 	switch env.mode {
 	case setupInstall:

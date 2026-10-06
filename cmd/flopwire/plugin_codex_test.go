@@ -324,7 +324,7 @@ func TestCodexPluginLoads(t *testing.T) {
 		} `json:"transport"`
 	}) bool {
 		return s.Name == "flopwire" && s.Transport.Command == "/bin/sh" && slices.Equal(s.Transport.Args, []string{"./bin/flopwire-hook", "mcp"}) &&
-			samePath(s.Transport.Cwd, filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire", "flopwire", "local"))
+			samePath(s.Transport.Cwd, filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire-plugins", "flopwire", "local"))
 	}) {
 		t.Fatalf("codex mcp list has no flopwire server: %v %+v", err, servers)
 	}
@@ -354,13 +354,13 @@ func TestCodexPluginLoads(t *testing.T) {
 		events = append(events, codexEventName(h.EventName))
 		// hooks/list shows the command with ${PLUGIN_ROOT} expanded to
 		// the cached copy; the hash covers it as written.
-		want := `/bin/sh "` + filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire", "flopwire", "local", "bin", "flopwire-hook") + `" hook`
+		want := `/bin/sh "` + filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire-plugins", "flopwire", "local", "bin", "flopwire-hook") + `" hook`
 		if !samePath(strings.TrimSuffix(strings.TrimPrefix(h.Command, `/bin/sh "`), `" hook`), strings.TrimSuffix(strings.TrimPrefix(want, `/bin/sh "`), `" hook`)) || h.TrustStatus != "untrusted" || !h.Enabled {
 			t.Errorf("hook %+v, want command %s", h, want)
 		}
 		// The trust key is the plugin id and the hooks file's relative
 		// path, not the install path, so a reinstall keeps the trust.
-		if !strings.HasPrefix(h.Key, "flopwire@flopwire:hooks/hooks.json:") {
+		if !strings.HasPrefix(h.Key, "flopwire@flopwire-plugins:hooks/hooks.json:") {
 			t.Errorf("hook key %q", h.Key)
 		}
 	}

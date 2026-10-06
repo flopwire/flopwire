@@ -69,7 +69,7 @@ does not switch to local search.
 
 ```sh
 claude plugin marketplace add flopwire/flopwire --scope user --sparse .claude-plugin plugins
-claude plugin install flopwire@flopwire --scope user
+claude plugin install flopwire@flopwire-plugins --scope user
 ```
 
 You can run these two commands yourself instead.
@@ -80,7 +80,7 @@ You can run these two commands yourself instead.
 2. Restart your Claude Code sessions, or run `/reload-plugins` in each.
 
 `flopwire setup` refreshes the marketplace and runs
-`claude plugin update flopwire@flopwire --scope user`. The plugin has no
+`claude plugin update flopwire@flopwire-plugins --scope user`. The plugin has no
 pinned version, so Claude Code versions it by the repository's commit.
 
 ## Remove
@@ -88,13 +88,27 @@ pinned version, so Claude Code versions it by the repository's commit.
 1. Run `flopwire setup --remove`.
 2. Restart your Claude Code sessions.
 
-`flopwire setup --remove` runs `claude plugin uninstall flopwire@flopwire`
-and `claude plugin marketplace remove flopwire`. Run
+`flopwire setup --remove` runs `claude plugin uninstall flopwire@flopwire-plugins`
+and `claude plugin marketplace remove flopwire-plugins`. Run
 `flopwire setup --check` to confirm. It keeps the marketplace while
 Claude Code still has a plugin installed from it in another scope or
 project, since removing a marketplace uninstalls every plugin from it.
 
-setup trusts only a `flopwire` marketplace from its source (`--source`,
+## Upgrading an existing install
+
+The marketplace was named `flopwire` before issue #162, so older installs
+have `flopwire@flopwire` from the marketplace `flopwire`. There is no
+upgrade path (pre-release): `flopwire setup --check` names the stale
+marketplace and the commands below; run them, then install again:
+
+```sh
+claude plugin marketplace remove flopwire --scope user
+flopwire setup
+```
+
+Then restart your Claude Code sessions.
+
+setup trusts only a `flopwire-plugins` marketplace from its source (`--source`,
 default `flopwire/flopwire`). If a marketplace with that name comes from
 anywhere else, setup installs, updates and removes nothing through it,
 reports an error, and names the commands to switch. Pass the same

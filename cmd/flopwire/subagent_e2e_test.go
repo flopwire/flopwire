@@ -179,7 +179,7 @@ const (
 		`"parent_thread_id":"` + e2eCodexParent + `","model":"gpt-x","turn_started_at_unix_ms":1791146755430,"subagent_kind":"thread_spawn","thread_source":"subagent",` +
 		`"turn_trigger":"exec","sandbox":"seatbelt","sandbox_mode":"workspace-write","auto_review_enabled":false,"node_repl_auto_review_required":false,` +
 		`"node_repl_disabled":false,"workspaces":{"/tmp/e2e-api":{"has_changes":true}},"codex_version":"0.160.0"},` +
-		`"plugin_id":"flopwire@flopwire","threadId":"` + e2eCodexChild + `","sessionId":"` + e2eCodexParent + `","windowId":"` + e2eCodexChild + `:0",` +
+		`"plugin_id":"flopwire@flopwire-plugins","threadId":"` + e2eCodexChild + `","sessionId":"` + e2eCodexParent + `","windowId":"` + e2eCodexChild + `:0",` +
 		`"itemId":"ctc_0b6a2413066d3dd4","progressToken":1},` +
 		`"name":"flopwire_send","arguments":{"to":"e2e0aaaa","message":"sent by a Codex subagent through MCP","intent":"inform"}}}`
 )
