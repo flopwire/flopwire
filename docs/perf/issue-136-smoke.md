@@ -43,9 +43,10 @@ Retain both binaries and the generated corpus, per-run records, median records,
 `ab.json` and `ab.md`. Record the candidate checkout and its diff if the label
 ends in `working-tree`.
 
-Check that A completes indexing (including idle startup), freshness and
-queries without an unknown `-opencode-db` error. A `REGRESSED` verdict reports
-measured drift;
+Check that A completes indexing, freshness and queries without an unknown
+`-opencode-db` error. Idle startup uses the same capability-gated arguments.
+Focused launch tests cover idle startup arguments. A `REGRESSED` verdict
+reports measured drift;
 it is separate from a compatibility failure on this one-run smoke.
 Check the query results and indexed row counts for both binaries.
 Report other incompatibilities as failures.
