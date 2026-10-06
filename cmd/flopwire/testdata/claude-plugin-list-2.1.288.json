@@ -1,10 +1,10 @@
 [
   {
-    "id": "flopwire@flopwire",
+    "id": "flopwire@flopwire-plugins",
     "version": "0123456789ab",
     "scope": "user",
     "enabled": true,
-    "installPath": "/home/user/.claude/plugins/cache/flopwire/flopwire/0123456789ab",
+    "installPath": "/home/user/.claude/plugins/cache/flopwire-plugins/flopwire/0123456789ab",
     "installedAt": "2026-10-01T12:00:00.000Z",
     "lastUpdated": "2026-10-01T12:00:00.000Z",
     "mcpServers": {
@@ -20,7 +20,7 @@
       {
         "type": "hook-load-failed",
         "plugin": "flopwire",
-        "path": "/home/user/.claude/plugins/cache/flopwire/flopwire/0123456789ab/hooks/hooks.json"
+        "path": "/home/user/.claude/plugins/cache/flopwire-plugins/flopwire/0123456789ab/hooks/hooks.json"
       }
     ],
     "notes": [

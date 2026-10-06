@@ -35,8 +35,8 @@ import (
 // The Codex marketplace and plugin names, from .agents/plugins/marketplace.json
 // and plugins/codex/flopwire/.codex-plugin/plugin.json.
 const (
-	codexMarketplace = "flopwire"
-	codexPlugin      = "flopwire@flopwire"
+	codexMarketplace = marketplaceName
+	codexPlugin      = pluginID
 	// codexMarketplaceFile is where Codex looks for a repository's
 	// marketplace before .claude-plugin/marketplace.json.
 	codexMarketplaceFile = ".agents/plugins/marketplace.json"
@@ -177,7 +177,7 @@ func codexCacheDigest(env *setupEnv) string {
 	if home == "" {
 		return ""
 	}
-	root := filepath.Join(home, "plugins", "cache", codexMarketplace, "flopwire")
+	root := filepath.Join(home, "plugins", "cache", codexMarketplace, pluginName)
 	h := sha256.New()
 	n := 0
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -402,6 +402,35 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 		return fail(err)
 	}
 	installed := findCodexPlugin(list)
+	// An install from the marketplace's old name (legacyMarketplace, from
+	// this source) has no upgrade path: setup removes its plugin (Codex
+	// keeps a plugin whose marketplace went away) and the marketplace
+	// before installing from codexMarketplace; --check says how.
+	if slices.ContainsFunc(mkts, func(m codexMarketplaceEntry) bool {
+		return m.Name == legacyMarketplace && sameCodexSource(m, env.source)
+	}) {
+		oldID := pluginName + "@" + legacyMarketplace
+		if mode == setupCheck {
+			r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s is now %s; remove the old one and its %s, then install again: codex plugin remove %s; codex plugin marketplace remove %s; flopwire setup", legacyMarketplace, codexMarketplace, oldID, oldID, legacyMarketplace))
+		} else {
+			var old struct {
+				Installed []codexPluginEntry `json:"installed"`
+			}
+			var res json.RawMessage
+			if err := c.json(ctx, &old, "plugin", "list", "--marketplace", legacyMarketplace, "--json"); err != nil {
+				return fail(err)
+			}
+			if slices.ContainsFunc(old.Installed, func(p codexPluginEntry) bool { return p.PluginID == oldID && p.Installed }) {
+				if err := c.json(ctx, &res, "plugin", "remove", oldID, "--json"); err != nil {
+					return fail(err)
+				}
+			}
+			if err := c.json(ctx, &res, "plugin", "marketplace", "remove", legacyMarketplace, "--json"); err != nil {
+				return fail(err)
+			}
+			r.Done = append(r.Done, fmt.Sprintf("removed the old marketplace %s (now %s) and its %s", legacyMarketplace, codexMarketplace, oldID))
+		}
+	}
 	// Codex keeps loading a plugin whose marketplace was removed (its
 	// config entry and cache stay), and its hooks and MCP server still
 	// run, but plugin list no longer shows it. Read Codex's user config.
@@ -881,7 +910,7 @@ func codexDiskHooks(env *setupEnv, version string) ([]codexHook, json.RawMessage
 		return nil, nil, fmt.Errorf("unexpected plugin version %q", version)
 	}
 	home := codexHome(env)
-	root := filepath.Join(home, "plugins", "cache", codexMarketplace, "flopwire", version)
+	root := filepath.Join(home, "plugins", "cache", codexMarketplace, pluginName, version)
 	rel := "hooks/hooks.json"
 	if raw, err := os.ReadFile(filepath.Join(root, ".codex-plugin", "plugin.json")); err == nil {
 		var m struct {

@@ -182,7 +182,7 @@ the hooks only after you approve them.
 2. Make a backup: `cp ~/.codex/config.toml ~/.codex/config.toml.bak`.
 3. Open `~/.codex/config.toml` in an editor.
 4. Find each table whose header starts with
-   `[hooks.state."flopwire@flopwire:hooks/hooks.json:`. There are at most
+   `[hooks.state."flopwire@flopwire-plugins:hooks/hooks.json:`. There are at most
    five, one for each event.
 5. Delete each of these tables: the header line and the lines below it,
    up to the next header.
@@ -315,11 +315,11 @@ flopwire 0.9.0. Claude Code for VS Code 2.1.290, claude 2.1.290.
 
 | Check | Result | Evidence |
 |---|---|---|
-| install | PASS | plugin: flopwire@flopwire 0.9.0, user scope, enabled |
+| install | PASS | plugin: flopwire@flopwire-plugins 0.9.0, user scope, enabled |
 | load | PASS | model named flopwire_peers, flopwire_send, flopwire_inbox |
 | prompt-submit | PASS | m1a2b3c4d5e6f7a8 quoted with MANUAL-PROMPTSUBMIT-3f9a1c; read |
 | mid-turn | PASS | quoted MANUAL-MIDTURN-77b0e2 after sleep 30 |
 | busy | PASS | peers showed busy during sleep 30 |
 | idle | PASS | peers showed idle 2 s after the turn |
-| remove | PASS | plugin: flopwire@flopwire not installed; no flopwire tools |
+| remove | PASS | plugin: flopwire@flopwire-plugins not installed; no flopwire tools |
 ```

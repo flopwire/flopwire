@@ -69,7 +69,7 @@ func (p *prober) installPlugins() error {
 		return fmt.Errorf("probe: write the plugins: %w", err)
 	}
 	mkt := map[string]any{"name": codexMarketplace, "interface": map[string]any{"displayName": "Flopwire"},
-		"plugins": []any{map[string]any{"name": "flopwire", "source": map[string]any{"source": "local", "path": "./plugins/" + plugins.CodexDir},
+		"plugins": []any{map[string]any{"name": pluginName, "source": map[string]any{"source": "local", "path": "./plugins/" + plugins.CodexDir},
 			"policy": map[string]any{"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"}}}
 	b, _ := json.MarshalIndent(mkt, "", "  ")
 	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(codexMarketplaceFile)), 0o755); err != nil {

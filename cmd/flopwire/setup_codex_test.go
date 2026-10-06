@@ -90,7 +90,7 @@ func writeFakeCodexHome(st fakeCodexState) error {
 			continue
 		}
 		label := strings.ToLower(regexp.MustCompile(`([A-Z])`).ReplaceAllString(ev, "_$1"))
-		fmt.Fprintf(&b, "[hooks.state.\"flopwire@flopwire:hooks/hooks.json:%s:0:0\"]\n", label)
+		fmt.Fprintf(&b, "[hooks.state.\"flopwire@flopwire-plugins:hooks/hooks.json:%s:0:0\"]\n", label)
 		hash := codex0160HookHashes[ev]
 		if ts == "modified" {
 			hash = "sha256:0123"
@@ -110,7 +110,7 @@ func writeFakeCodexHome(st fakeCodexState) error {
 	if _, ok := st.Plugins[codexPlugin]; !ok || src == "" {
 		return nil
 	}
-	cache := filepath.Join(home, "plugins", "cache", "flopwire", "flopwire", "local")
+	cache := filepath.Join(home, "plugins", "cache", "flopwire-plugins", "flopwire", "local")
 	for _, f := range []string{"hooks/hooks.json", ".codex-plugin/plugin.json", "bin/flopwire-hook"} {
 		raw, err := os.ReadFile(filepath.Join(src, f))
 		if err != nil {
@@ -192,7 +192,7 @@ func fakeCodex(args []string) int {
 		fmt.Println(string(b))
 		return 0
 	}
-	cache := filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire", "flopwire", "local")
+	cache := filepath.Join(os.Getenv("CODEX_HOME"), "plugins", "cache", "flopwire-plugins", "flopwire", "local")
 	switch verb {
 	case "marketplace list":
 		l := []map[string]any{}
@@ -221,21 +221,21 @@ func fakeCodex(args []string) int {
 	case "marketplace add":
 		src := pos[0]
 		for _, m := range st.Marketplaces {
-			if m.Name == "flopwire" {
+			if m.Name == "flopwire-plugins" {
 				if m.Source != src {
-					fmt.Fprintln(os.Stderr, "Error: marketplace 'flopwire' is already added from a different source; remove it before adding this source")
+					fmt.Fprintln(os.Stderr, "Error: marketplace 'flopwire-plugins' is already added from a different source; remove it before adding this source")
 					return 1
 				}
-				return out(map[string]any{"marketplaceName": "flopwire", "installedRoot": "/r", "alreadyAdded": true})
+				return out(map[string]any{"marketplaceName": "flopwire-plugins", "installedRoot": "/r", "alreadyAdded": true})
 			}
 		}
-		m := fakeCodexMarketplace{Name: "flopwire", SourceType: "git", Source: "https://github.com/" + src + ".git"}
+		m := fakeCodexMarketplace{Name: "flopwire-plugins", SourceType: "git", Source: "https://github.com/" + src + ".git"}
 		if strings.HasPrefix(src, "/") {
-			m = fakeCodexMarketplace{Name: "flopwire", SourceType: "local", Source: src}
+			m = fakeCodexMarketplace{Name: "flopwire-plugins", SourceType: "local", Source: src}
 		}
 		st.Marketplaces = append(st.Marketplaces, m)
 		save()
-		return out(map[string]any{"marketplaceName": "flopwire", "installedRoot": "/r", "alreadyAdded": false})
+		return out(map[string]any{"marketplaceName": "flopwire-plugins", "installedRoot": "/r", "alreadyAdded": false})
 	case "marketplace upgrade":
 		return out(map[string]any{"selectedMarketplaces": []string{pos[0]}, "upgradedRoots": []string{}, "errors": []any{}})
 	case "marketplace remove":
@@ -248,8 +248,8 @@ func fakeCodex(args []string) int {
 		save()
 		return out(map[string]any{"marketplaceName": pos[0], "installedRoot": nil})
 	case "add":
-		if !slices.ContainsFunc(st.Marketplaces, func(m fakeCodexMarketplace) bool { return m.Name == "flopwire" }) {
-			fmt.Fprintln(os.Stderr, "Error: marketplace `flopwire` not found")
+		if !slices.ContainsFunc(st.Marketplaces, func(m fakeCodexMarketplace) bool { return m.Name == "flopwire-plugins" }) {
+			fmt.Fprintln(os.Stderr, "Error: marketplace `flopwire-plugins` not found")
 			return 1
 		}
 		if st.Plugins == nil {
@@ -259,7 +259,7 @@ func fakeCodex(args []string) int {
 		save()
 		_ = os.MkdirAll(cache, 0o755)
 		_ = os.WriteFile(filepath.Join(cache, "rev"), []byte(st.Available), 0o644)
-		return out(map[string]any{"pluginId": pos[0], "name": "flopwire", "marketplaceName": "flopwire", "version": "local", "installedPath": cache, "authPolicy": "ON_INSTALL"})
+		return out(map[string]any{"pluginId": pos[0], "name": "flopwire", "marketplaceName": "flopwire-plugins", "version": "local", "installedPath": cache, "authPolicy": "ON_INSTALL"})
 	case "remove":
 		if _, ok := st.Plugins[pos[0]]; !ok {
 			fmt.Fprintf(os.Stderr, "Error: plugin `%s` is not installed\n", pos[0])
@@ -267,7 +267,7 @@ func fakeCodex(args []string) int {
 		}
 		delete(st.Plugins, pos[0])
 		save()
-		return out(map[string]any{"pluginId": pos[0], "name": "flopwire", "marketplaceName": "flopwire"})
+		return out(map[string]any{"pluginId": pos[0], "name": "flopwire", "marketplaceName": "flopwire-plugins"})
 	}
 	fmt.Fprintln(os.Stderr, "fake codex: unknown command", args)
 	return 2
@@ -305,7 +305,7 @@ func fakeCodexAppServer(st fakeCodexState, logCall func(string)) int {
 					if ts == "" {
 						ts = "untrusted"
 					}
-					hooks = append(hooks, map[string]any{"key": "flopwire@flopwire:hooks/hooks.json:" + ev + ":0:0", "eventName": ev, "command": "flopwire hook || true",
+					hooks = append(hooks, map[string]any{"key": "flopwire@flopwire-plugins:hooks/hooks.json:" + ev + ":0:0", "eventName": ev, "command": "flopwire hook || true",
 						"source": "plugin", "pluginId": codexPlugin, "enabled": ts != "disabled", "trustStatus": strings.Replace(ts, "disabled", "trusted", 1)})
 				}
 			}
@@ -436,7 +436,7 @@ func TestSetupCodexInstall(t *testing.T) {
 	}
 	want := []string{
 		"plugin marketplace add " + c.repo + " --json",
-		"plugin add flopwire@flopwire --json",
+		"plugin add flopwire@flopwire-plugins --json",
 	}
 	calls := c.codexCalls()
 	if got := mutating(calls); !slices.Equal(got, want) {
@@ -446,7 +446,7 @@ func TestSetupCodexInstall(t *testing.T) {
 	if !slices.Contains(calls, "app-server hooks/list") || !slices.Contains(calls, "app-server config/read") {
 		t.Fatalf("setup did not ask Codex for the hook state: %q", calls)
 	}
-	if !slices.Equal(h.Done, []string{"added the marketplace flopwire from " + c.repo, "installed flopwire@flopwire"}) || !hasString(h.Todo, "restart running Codex sessions") {
+	if !slices.Equal(h.Done, []string{"added the marketplace flopwire-plugins from " + c.repo, "installed flopwire@flopwire-plugins"}) || !hasString(h.Todo, "restart running Codex sessions") {
 		t.Fatalf("install: done %q todo %q", h.Done, h.Todo)
 	}
 	// Trust is pending, reported plainly, and setup does not grant it.
@@ -467,7 +467,7 @@ func TestSetupCodexInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hb := h.HookBinary; hb == nil || hb.Path != self || hb.Via != "recorded path" || hb.Shim != filepath.Join(c.home, "plugins", "cache", "flopwire", "flopwire", "local", "bin", "flopwire-hook") || !strings.Contains(hb.Shell, " -lc") {
+	if hb := h.HookBinary; hb == nil || hb.Path != self || hb.Via != "recorded path" || hb.Shim != filepath.Join(c.home, "plugins", "cache", "flopwire-plugins", "flopwire", "local", "bin", "flopwire-hook") || !strings.Contains(hb.Shell, " -lc") {
 		t.Fatalf("hook binary: %+v", hb)
 	}
 }
@@ -489,7 +489,7 @@ func TestSetupCodexGitHubSourceIsSparse(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = json.Unmarshal(out.Bytes(), &rep)
-	want := []string{"plugin marketplace upgrade flopwire --json", "plugin add flopwire@flopwire --json"}
+	want := []string{"plugin marketplace upgrade flopwire-plugins --json", "plugin add flopwire@flopwire-plugins --json"}
 	if got := mutating(c.codexCalls()); !slices.Equal(got, want) || len(c.codex(rep).Done) != 0 {
 		t.Fatalf("second run: calls %q done %q", got, c.codex(rep).Done)
 	}
@@ -510,7 +510,7 @@ func TestSetupCodexAlreadyInstalledAndUpdate(t *testing.T) {
 	if len(h.Done) != 0 || !h.Installed || hasString(h.Todo, "restart") {
 		t.Fatalf("second run: %+v", h)
 	}
-	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin add flopwire@flopwire --json"}) {
+	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin add flopwire@flopwire-plugins --json"}) {
 		t.Fatalf("second run calls %q", got)
 	}
 	// The marketplace offers new files: the reinstall picks them up.
@@ -522,7 +522,7 @@ func TestSetupCodexAlreadyInstalledAndUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	h = c.codex(rep)
-	if !slices.Equal(h.Done, []string{"updated flopwire@flopwire (its files changed)"}) || !hasString(h.Todo, "restart running Codex sessions") {
+	if !slices.Equal(h.Done, []string{"updated flopwire@flopwire-plugins (its files changed)"}) || !hasString(h.Todo, "restart running Codex sessions") {
 		t.Fatalf("update: %+v", h)
 	}
 }
@@ -541,7 +541,7 @@ func TestSetupCodexRemove(t *testing.T) {
 	if h.Installed || h.Marketplace != "" || len(h.Done) != 2 || h.HookTrust != nil {
 		t.Fatalf("remove: %+v", h)
 	}
-	want := []string{"plugin remove flopwire@flopwire --json", "plugin marketplace remove flopwire --json"}
+	want := []string{"plugin remove flopwire@flopwire-plugins --json", "plugin marketplace remove flopwire-plugins --json"}
 	if got := mutating(c.codexCalls()); !slices.Equal(got, want) {
 		t.Fatalf("remove calls %q, want %q", got, want)
 	}
@@ -563,20 +563,20 @@ func TestSetupCodexRemove(t *testing.T) {
 func TestSetupCodexRemoveKeepsAMarketplaceInUse(t *testing.T) {
 	c := newCodexFixture(t, false)
 	c.setCodex(fakeCodexState{Available: "rev1",
-		Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "local", Source: c.repo}},
-		Plugins:      map[string]bool{codexPlugin: true, "extra@flopwire": true, "other@elsewhere": true}})
+		Marketplaces: []fakeCodexMarketplace{{Name: "flopwire-plugins", SourceType: "local", Source: c.repo}},
+		Plugins:      map[string]bool{codexPlugin: true, "extra@flopwire-plugins": true, "other@elsewhere": true}})
 	rep, _, err := c.run("--remove")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := c.codex(rep)
-	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin remove flopwire@flopwire --json"}) {
+	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin remove flopwire@flopwire-plugins --json"}) {
 		t.Fatalf("remove calls %q", got)
 	}
-	if h.Installed || !hasString(h.Warnings, "extra@flopwire is still installed") {
+	if h.Installed || !hasString(h.Warnings, "extra@flopwire-plugins is still installed") {
 		t.Fatalf("remove: %+v", h)
 	}
-	if st := c.getCodex(); len(st.Marketplaces) != 1 || !st.Plugins["extra@flopwire"] || !st.Plugins["other@elsewhere"] {
+	if st := c.getCodex(); len(st.Marketplaces) != 1 || !st.Plugins["extra@flopwire-plugins"] || !st.Plugins["other@elsewhere"] {
 		t.Fatalf("remove took another install with it: %+v", st)
 	}
 }
@@ -585,7 +585,7 @@ func TestSetupCodexForeignMarketplaceNotTrusted(t *testing.T) {
 	for _, installed := range []bool{false, true} {
 		t.Run(fmt.Sprint("installed=", installed), func(t *testing.T) {
 			c := newCodexFixture(t, false)
-			st := fakeCodexState{Available: "rev1", Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "git", Source: "https://github.com/someone/fork.git"}}}
+			st := fakeCodexState{Available: "rev1", Marketplaces: []fakeCodexMarketplace{{Name: "flopwire-plugins", SourceType: "git", Source: "https://github.com/someone/fork.git"}}}
 			if installed {
 				st.Plugins = map[string]bool{codexPlugin: true}
 			}
@@ -626,7 +626,7 @@ func TestSetupCodexForeignMarketplaceNotTrusted(t *testing.T) {
 
 func TestSetupCodexSameSource(t *testing.T) {
 	m := func(typ, src string) codexMarketplaceEntry {
-		e := codexMarketplaceEntry{Name: "flopwire"}
+		e := codexMarketplaceEntry{Name: "flopwire-plugins"}
 		e.MarketplaceSource = &struct {
 			SourceType string `json:"sourceType"`
 			Source     string `json:"source"`
@@ -646,7 +646,7 @@ func TestSetupCodexSameSource(t *testing.T) {
 		{m("local", "/a/b"), "/a/c", false},
 		{m("git", "https://github.com/a/b.git"), "/a/b", false},
 		{m("local", "a/b"), "a/b", false},
-		{codexMarketplaceEntry{Name: "flopwire"}, "flopwire/flopwire", false},
+		{codexMarketplaceEntry{Name: "flopwire-plugins"}, "flopwire/flopwire", false},
 	}
 	for _, c := range cases {
 		if got := sameCodexSource(c.m, c.src); got != c.want {
@@ -678,7 +678,7 @@ func TestSetupCodexCheckChangesNothing(t *testing.T) {
 			// the plugin catalog in the background as it starts, and a
 			// plugin list without --marketplace fetches the remote catalog.
 			for _, call := range calls {
-				if strings.HasPrefix(call, "app-server") || (strings.HasPrefix(call, "plugin list") && !strings.Contains(call, "--marketplace flopwire")) {
+				if strings.HasPrefix(call, "app-server") || (strings.HasPrefix(call, "plugin list") && !strings.Contains(call, "--marketplace flopwire-plugins")) {
 					t.Fatalf("--check ran codex %q, which has side effects", call)
 				}
 			}
@@ -868,7 +868,7 @@ command = "flopwire agent flush"
 func TestSetupCodexDisabledPluginStaysDisabled(t *testing.T) {
 	c := newCodexFixture(t, false)
 	c.setCodex(fakeCodexState{Available: "rev1",
-		Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "local", Source: c.repo}},
+		Marketplaces: []fakeCodexMarketplace{{Name: "flopwire-plugins", SourceType: "local", Source: c.repo}},
 		Plugins:      map[string]bool{codexPlugin: false}})
 	rep, _, err := c.run()
 	if err != nil {
@@ -926,7 +926,7 @@ func TestSetupCodexHarnessFails(t *testing.T) {
 	c.setCodex(st)
 	c.codexCalls()
 	rep, _, err := c.run()
-	if err != nil || !c.codex(rep).Installed || !slices.Equal(mutating(c.codexCalls()), []string{"plugin add flopwire@flopwire --json"}) {
+	if err != nil || !c.codex(rep).Installed || !slices.Equal(mutating(c.codexCalls()), []string{"plugin add flopwire@flopwire-plugins --json"}) {
 		t.Fatalf("rerun after a midway failure: %v %+v", err, c.codex(rep))
 	}
 }
@@ -1040,7 +1040,7 @@ func TestSetupCodexOrphanedPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h := c.codex(rep); !hasString(h.Warnings, "Codex still loads flopwire@flopwire") || len(mutating(c.codexCalls())) != 0 {
+	if h := c.codex(rep); !hasString(h.Warnings, "Codex still loads flopwire@flopwire-plugins") || len(mutating(c.codexCalls())) != 0 {
 		t.Fatalf("--check with an orphaned plugin: %+v", h)
 	}
 	rep, _, err = c.run("--remove")
@@ -1048,7 +1048,7 @@ func TestSetupCodexOrphanedPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := c.codex(rep)
-	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin remove flopwire@flopwire --json"}) || !slices.Equal(h.Done, []string{"uninstalled flopwire@flopwire"}) {
+	if got := mutating(c.codexCalls()); !slices.Equal(got, []string{"plugin remove flopwire@flopwire-plugins --json"}) || !slices.Equal(h.Done, []string{"uninstalled flopwire@flopwire-plugins"}) {
 		t.Fatalf("--remove with an orphaned plugin: calls %q, %+v", got, h)
 	}
 	if st := c.getCodex(); len(st.Plugins) != 0 {
@@ -1101,5 +1101,45 @@ func TestSetupCodexCheckNewerCodexHash(t *testing.T) {
 	}
 	if h := c.codex(rep); hasString(h.Warnings, "asks Codex directly") {
 		t.Errorf("all trusted, still warned: %q", h.Warnings)
+	}
+}
+
+// TestSetupCodexReplacesOldMarketplace: the marketplace was named flopwire
+// before flopwire-plugins (#162). setup removes the old plugin and
+// marketplace before installing; --check only says how.
+func TestSetupCodexReplacesOldMarketplace(t *testing.T) {
+	c := newCodexFixture(t, false)
+	c.setCodex(fakeCodexState{
+		Available:    "rev1",
+		Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "local", Source: c.repo}},
+		Plugins:      map[string]bool{"flopwire@flopwire": true},
+	})
+	rep, _, err := c.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := c.codex(rep)
+	if got := mutating(c.codexCalls()); len(got) != 0 || h.Installed || !hasString(h.Todo, "codex plugin remove flopwire@flopwire; codex plugin marketplace remove flopwire; flopwire setup") {
+		t.Fatalf("--check: calls %q, %+v", got, h)
+	}
+	if rep, _, err = c.run(); err != nil {
+		t.Fatal(err)
+	}
+	h = c.codex(rep)
+	want := []string{
+		"plugin remove flopwire@flopwire --json",
+		"plugin marketplace remove flopwire --json",
+		"plugin marketplace add " + c.repo + " --json",
+		"plugin add flopwire@flopwire-plugins --json",
+	}
+	if got := mutating(c.codexCalls()); !slices.Equal(got, want) {
+		t.Fatalf("install calls:\n got %q\nwant %q", got, want)
+	}
+	st := c.getCodex()
+	if !h.Installed || len(st.Marketplaces) != 1 || st.Marketplaces[0].Name != "flopwire-plugins" || len(st.Plugins) != 1 || !st.Plugins["flopwire@flopwire-plugins"] {
+		t.Fatalf("install: %+v\nstate %+v", h, st)
+	}
+	if !hasString(h.Done, "removed the old marketplace flopwire (now flopwire-plugins) and its flopwire@flopwire") {
+		t.Fatalf("done %q", h.Done)
 	}
 }

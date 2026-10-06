@@ -252,7 +252,7 @@ The report has these parts:
 Use `--check` to report and change nothing. Use `--remove` to uninstall.
 
 For Codex, `--check` runs only `codex plugin marketplace list` and
-`codex plugin list --marketplace flopwire`, which read local state. It
+`codex plugin list --marketplace flopwire-plugins`, which read local state. It
 does not start `codex app-server`: the app server upgrades the
 configured plugin marketplaces and fetches the plugin catalog in the
 background when it starts. Instead, `--check` reads Codex's files in
@@ -362,7 +362,7 @@ the session. `codex exec` cannot ask, so the call fails there. To allow
 yourself:
 
 ```toml
-[plugins."flopwire@flopwire".mcp_servers.flopwire.tools.flopwire_send]
+[plugins."flopwire@flopwire-plugins".mcp_servers.flopwire.tools.flopwire_send]
 approval_mode = "approve"
 ```
 
@@ -485,20 +485,32 @@ The repository is a plugin marketplace for both harnesses. Claude Code
 reads `.claude-plugin/marketplace.json`; its plugin is in
 `plugins/claude-code/flopwire`. Codex reads
 `.agents/plugins/marketplace.json`; its plugin is in
-`plugins/codex/flopwire`. Both marketplaces are named `flopwire`, and both
-plugins are `flopwire@flopwire`. `flopwire setup` adds the marketplace
+`plugins/codex/flopwire`. Both marketplaces are named `flopwire-plugins`
+(publisher-collection over product, like `openai-bundled/browser`), both
+plugins are `flopwire@flopwire-plugins`, and each harness caches the
+plugin at `plugins/cache/flopwire-plugins/flopwire/<version>`. The Go
+constants `marketplaceName` and `pluginName` in `cmd/flopwire/setup.go`
+must match the manifests; `TestClaudeMarketplaceManifest` and
+`TestCodexMarketplaceManifest` check that. `flopwire setup` adds the marketplace
 from `flopwire/flopwire` on GitHub. Claude Code installs the plugin at user
 scope; Codex has only user installs. Use `--source` or
 `FLOPWIRE_PLUGIN_SOURCE` to install from a local checkout. See the
 [Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
 the [Codex plugin README](../plugins/codex/flopwire/README.md).
 
-The source's Claude Code marketplace must be named `flopwire`. When it
+The source's Claude Code marketplace must be named `flopwire-plugins`. When it
 has another name, Claude Code adds the marketplace under that name.
 setup names it in `done`, sets `error`, and installs nothing from it.
 When setup added that marketplace, setup removes it again. When a
 marketplace with that name was already configured, setup keeps it. Run
 `claude plugin marketplace remove NAME` to remove it.
+
+The marketplace was named `flopwire` before issue #162, so the plugin was
+`flopwire@flopwire` and the cache path read `flopwire/flopwire`. There is
+no upgrade path (pre-release). When a marketplace named `flopwire` from
+setup's source is still configured, `flopwire setup` removes it, which
+uninstalls `flopwire@flopwire`, and installs from `flopwire-plugins`;
+`--check` names the removal commands in `todo`.
 
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace
@@ -553,13 +565,13 @@ The result:
 
 - setup ran `codex plugin marketplace add flopwire/flopwire --json
   --sparse .agents/plugins --sparse plugins/codex`, then
-  `codex plugin add flopwire@flopwire --json`.
-- `config.toml` got `[marketplaces.flopwire]` with
+  `codex plugin add flopwire@flopwire-plugins --json`.
+- `config.toml` got `[marketplaces.flopwire-plugins]` with
   `source_type = "git"`, `source = "https://github.com/flopwire/flopwire.git"`
-  and both sparse paths, and `[plugins."flopwire@flopwire"]` with
+  and both sparse paths, and `[plugins."flopwire@flopwire-plugins"]` with
   `enabled = true`.
 - Codex copied the plugin to
-  `plugins/cache/flopwire/flopwire/local`, and listed five plugin hooks,
+  `plugins/cache/flopwire-plugins/flopwire/local`, and listed five plugin hooks,
   all waiting for review.
 - A second `flopwire setup` ran `codex plugin marketplace upgrade
   flopwire` and reinstalled the plugin. It reported nothing to change.
@@ -622,13 +634,15 @@ the real `flopwire`.
 What was verified, with Claude Code 2.1.289 on macOS 26 on 2026-10-04:
 
 - `flopwire setup` with a local checkout as the source added the
-  marketplace and installed `flopwire@flopwire` at user scope. Claude
+  marketplace and installed `flopwire@flopwire-plugins` at user scope. Claude
   Code wrote `extraKnownMarketplaces` and `enabledPlugins` to the
   scratch `settings.json`. `--check` reported the plugin installed and
   enabled.
 - `claude -p --model haiku --setting-sources user` with a marker
   script quoted the `SessionStart` and `PostToolUse` markers. It listed
-  the seven `mcp__plugin_flopwire_flopwire__*` tools and the
+  the seven `mcp__plugin_flopwire_flopwire__*` tools (Claude Code names a
+  plugin's MCP server `plugin:<plugin>:<server>`; the marketplace is not
+  part of it) and the
   `flopwire:messaging` skill. The same prompt with
   `--setting-sources project` saw no marker and no tool, so the user
   settings loaded the plugin.

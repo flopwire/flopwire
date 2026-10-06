@@ -58,7 +58,7 @@ does not switch to local search.
 
 ```sh
 codex plugin marketplace add flopwire/flopwire --sparse .agents/plugins --sparse plugins/codex
-codex plugin add flopwire@flopwire
+codex plugin add flopwire@flopwire-plugins
 ```
 
 You can run these two commands yourself instead.
@@ -93,7 +93,7 @@ Codex asks before each `flopwire_send` call. `codex exec` cannot ask. To
 allow the tool without a question, add this to `~/.codex/config.toml`:
 
 ```toml
-[plugins."flopwire@flopwire".mcp_servers.flopwire.tools.flopwire_send]
+[plugins."flopwire@flopwire-plugins".mcp_servers.flopwire.tools.flopwire_send]
 approval_mode = "approve"
 ```
 
@@ -112,8 +112,8 @@ verified on each OS and the workarounds.
 2. Restart your Codex sessions.
 
 `flopwire setup` refreshes the marketplace
-(`codex plugin marketplace upgrade flopwire`) and runs
-`codex plugin add flopwire@flopwire` again, which copies the current files
+(`codex plugin marketplace upgrade flopwire-plugins`) and runs
+`codex plugin add flopwire@flopwire-plugins` again, which copies the current files
 into Codex's plugin cache. The plugin has no pinned version, so Codex
 lists it as `local`.
 
@@ -125,12 +125,29 @@ setup skips the update and tells you.
 1. Run `flopwire setup --remove`.
 2. Restart your Codex sessions.
 
-`flopwire setup --remove` runs `codex plugin remove flopwire@flopwire` and
-`codex plugin marketplace remove flopwire`. It keeps the marketplace while
+`flopwire setup --remove` runs `codex plugin remove flopwire@flopwire-plugins` and
+`codex plugin marketplace remove flopwire-plugins`. It keeps the marketplace while
 another plugin from it is installed. The hook approvals stay in
 `~/.codex/config.toml`, so a later install does not ask again.
 
-setup trusts only a `flopwire` marketplace from its source (`--source`,
+## Upgrading an existing install
+
+The marketplace was named `flopwire` before issue #162, so older installs
+have `flopwire@flopwire` from the marketplace `flopwire`. `flopwire setup`
+removes that plugin and marketplace and installs
+`flopwire@flopwire-plugins`. To do it by hand:
+
+```sh
+codex plugin remove flopwire@flopwire
+codex plugin marketplace remove flopwire
+flopwire setup
+```
+
+The hook approvals are keyed by plugin id, so approve the hooks once more
+(the "Hooks need review" prompt, or `/hooks`), then restart your Codex
+sessions.
+
+setup trusts only a `flopwire-plugins` marketplace from its source (`--source`,
 default `flopwire/flopwire`). If a marketplace with that name comes from
 anywhere else, setup installs, updates and removes nothing through it, and
 reports an error.
