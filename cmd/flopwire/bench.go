@@ -364,18 +364,28 @@ func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResul
 	defer cancel()
 	cmd = exec.CommandContext(rctx, b.exe, b.agentArgs(b.indexPath(), "--sweep", "5s", "-v", "--socket", filepath.Join(b.scratch, "agent.sock"))...)
 	cmd.Env = b.agentEnv()
-	pipe, err := cmd.StderrPipe()
+	// Own the pipe so Wait cannot close stderr before the scanner drains it.
+	pipe, stderr, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
+	defer pipe.Close()
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		_ = stderr.Close()
+		return nil, fmt.Errorf("agent idle: %w", err)
 	}
+	_ = stderr.Close()
 	sweeps := make(chan string, 64)
+	scanned := make(chan struct{})
+	var idleLog string
 	go func() {
+		defer close(scanned)
+		defer close(sweeps)
 		sc := bufio.NewScanner(pipe)
 		sc.Buffer(make([]byte, 1<<20), 1<<20)
 		for sc.Scan() {
+			idleLog = tail(idleLog+sc.Text()+"\n", 2000)
 			if strings.Contains(sc.Text(), "agent: sweep") {
 				select {
 				case sweeps <- sc.Text():
@@ -383,19 +393,75 @@ func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResul
 				}
 			}
 		}
+		if sc.Err() != nil {
+			// Drain oversized log lines so the child cannot block on stderr.
+			_, _ = io.Copy(io.Discard, pipe)
+		}
 	}()
+	exited := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		// A descendant may retain stderr after the agent exits. Allow normal
+		// output to drain, then close our reader to interrupt a blocked scan.
+		drainTimer := time.NewTimer(2 * time.Second)
+		select {
+		case <-scanned:
+		case <-drainTimer.C:
+			_ = pipe.Close()
+			<-scanned
+		}
+		drainTimer.Stop()
+		exited <- err
+	}()
+	idleFailure := func(err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if rctx.Err() != nil {
+			return rctx.Err()
+		}
+		if err == nil {
+			err = errors.New("unexpected exit status 0")
+		}
+		return fmt.Errorf("agent idle: %w\n%s", err, idleLog)
+	}
 	select {
+	case err := <-exited:
+		return nil, idleFailure(err)
 	case <-time.After(idleAfter):
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-rctx.Done():
+		cancel()
+		<-exited
+		return nil, rctx.Err()
 	}
 	pid := cmd.Process.Pid
 	r.IdleRSSMB = psRSSMB(pid)
 	r.IdleFootMB = footprintMB(pid)
 	r.IdleAnonMB = anonMB(pid, r.IdleFootMB, r.IdleRSSMB)
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	_ = cmd.Wait()
-	close(sweeps)
+	// Also catch an exit during memory sampling, before intentional shutdown.
+	select {
+	case err := <-exited:
+		return nil, idleFailure(err)
+	default:
+	}
+	signalErr := cmd.Process.Signal(syscall.SIGTERM)
+	err = <-exited
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if rctx.Err() != nil {
+		return nil, rctx.Err()
+	}
+	if signalErr != nil {
+		return nil, idleFailure(err)
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		// SIGTERM and a graceful code 0 are expected after our shutdown.
+		if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGTERM {
+			return nil, idleFailure(err)
+		}
+	}
 	cpuRe := regexp.MustCompile(`cpu=([0-9.]+)(µs|ms|s)`)
 	filesRe := regexp.MustCompile(`files=([0-9]+)`)
 	n := 0
