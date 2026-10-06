@@ -26,7 +26,11 @@ func TestPolicyPlacementsHTTPRejectsMalformedBeforeServer(t *testing.T) {
 			w := httptest.NewRecorder()
 			// No pool: malformed transport must never reach the server method.
 			new(Server).ServeSync(w, req, "authenticated-device")
-			if w.Code != http.StatusBadRequest {
+			want := http.StatusBadRequest
+			if strings.HasPrefix(tc.name, "oversize") {
+				want = http.StatusRequestEntityTooLarge
+			}
+			if w.Code != want {
 				t.Fatalf("status %d: %s", w.Code, w.Body.String())
 			}
 		})

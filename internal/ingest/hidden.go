@@ -133,7 +133,7 @@ func (r serverRules) capacityPurgeHeld(c convRow) bool {
 		return false
 	}
 	native := r.decideAll(c.dev, c.agent, c.path, c.cwd, c.others, c.remote)
-	if native.Mode != pathpolicy.Allow && !isPolicyHold(native) && native.Admin {
+	if native.Mode != pathpolicy.Allow && !isPolicyHold(native) && native.Admin && !native.Unplaceable {
 		return false
 	}
 	for _, state := range c.policies {
