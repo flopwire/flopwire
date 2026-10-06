@@ -133,9 +133,9 @@ another plugin from it is installed. The hook approvals stay in
 ## Upgrading an existing install
 
 The marketplace was named `flopwire` before issue #162, so older installs
-have `flopwire@flopwire` from the marketplace `flopwire`. `flopwire setup`
-removes that plugin and marketplace and installs
-`flopwire@flopwire-plugins`. To do it by hand:
+have `flopwire@flopwire` from the marketplace `flopwire`. There is no
+upgrade path (pre-release): `flopwire setup --check` names the stale
+marketplace and the commands below; run them, then install again:
 
 ```sh
 codex plugin remove flopwire@flopwire

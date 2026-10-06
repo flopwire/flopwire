@@ -508,9 +508,9 @@ marketplace with that name was already configured, setup keeps it. Run
 The marketplace was named `flopwire` before issue #162, so the plugin was
 `flopwire@flopwire` and the cache path read `flopwire/flopwire`. There is
 no upgrade path (pre-release). When a marketplace named `flopwire` from
-setup's source is still configured, `flopwire setup` removes it, which
-uninstalls `flopwire@flopwire`, and installs from `flopwire-plugins`;
-`--check` names the removal commands in `todo`.
+setup's source is still configured, `flopwire setup --check` names the
+removal commands in `todo`; setup itself never removes it (see the plugin
+READMEs, "Upgrading an existing install").
 
 Devin CLI has no marketplace of its own: `devin plugins install` takes
 one plugin source. Given the root of a Claude Code marketplace

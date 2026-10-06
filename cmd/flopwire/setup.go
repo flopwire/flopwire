@@ -544,8 +544,7 @@ const (
 	pluginName      = "flopwire"
 	pluginID        = pluginName + "@" + marketplaceName
 	// legacyMarketplace is the marketplace's name before #162. Pre-release,
-	// so there is no upgrade path: setup removes an install from it and
-	// installs from marketplaceName.
+	// so there is no upgrade path: --check only names a stale install.
 	legacyMarketplace = "flopwire"
 )
 
@@ -774,19 +773,11 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 	scopeArgs := []string{"--scope", env.scope}
 
 	// An install from the marketplace's old name (legacyMarketplace, from
-	// this source) has no upgrade path: setup removes it, which uninstalls
-	// its plugin, before installing from claudeMarketplace; --check says how.
-	if slices.ContainsFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == legacyMarketplace && sameSource(m, env.source) }) {
+	// this source) has no upgrade path (pre-release): --check names the
+	// commands that remove it; setup never runs them.
+	if env.mode == setupCheck && slices.ContainsFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == legacyMarketplace && sameSource(m, env.source) }) {
 		oldID := pluginName + "@" + legacyMarketplace
-		if env.mode == setupCheck {
-			r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s is now %s; remove the old one and its %s, then install again: claude plugin marketplace remove %s --scope %s && flopwire setup", legacyMarketplace, claudeMarketplace, oldID, legacyMarketplace, env.scope))
-		} else if res, err := c.result(ctx, append([]string{"plugin", "marketplace", "remove", legacyMarketplace, "--json"}, scopeArgs...)...); err != nil {
-			return fail(err)
-		} else if res.Outcome != "ok" {
-			return fail(fmt.Errorf("remove the old marketplace %s: %s", legacyMarketplace, res.Message))
-		} else {
-			r.Done = append(r.Done, fmt.Sprintf("removed the old marketplace %s (now %s) and its %s", legacyMarketplace, claudeMarketplace, oldID))
-		}
+		r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s is now %s; remove the old one and its %s, then install again: claude plugin marketplace remove %s --scope %s && flopwire setup", legacyMarketplace, claudeMarketplace, oldID, legacyMarketplace, env.scope))
 	}
 
 	switch env.mode {

@@ -97,9 +97,9 @@ project, since removing a marketplace uninstalls every plugin from it.
 ## Upgrading an existing install
 
 The marketplace was named `flopwire` before issue #162, so older installs
-have `flopwire@flopwire` from the marketplace `flopwire`. `flopwire setup`
-removes that marketplace (and with it the old plugin) and installs
-`flopwire@flopwire-plugins`. To do it by hand:
+have `flopwire@flopwire` from the marketplace `flopwire`. There is no
+upgrade path (pre-release): `flopwire setup --check` names the stale
+marketplace and the commands below; run them, then install again:
 
 ```sh
 claude plugin marketplace remove flopwire --scope user

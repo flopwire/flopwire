@@ -1104,10 +1104,10 @@ func TestSetupCodexCheckNewerCodexHash(t *testing.T) {
 	}
 }
 
-// TestSetupCodexReplacesOldMarketplace: the marketplace was named flopwire
-// before flopwire-plugins (#162). setup removes the old plugin and
-// marketplace before installing; --check only says how.
-func TestSetupCodexReplacesOldMarketplace(t *testing.T) {
+// TestSetupCodexReportsOldMarketplace: the marketplace was named flopwire
+// before flopwire-plugins (#162). Pre-release, so setup removes nothing
+// itself: --check names the commands, and only for our own source.
+func TestSetupCodexReportsOldMarketplace(t *testing.T) {
 	c := newCodexFixture(t, false)
 	c.setCodex(fakeCodexState{
 		Available:    "rev1",
@@ -1122,24 +1122,11 @@ func TestSetupCodexReplacesOldMarketplace(t *testing.T) {
 	if got := mutating(c.codexCalls()); len(got) != 0 || h.Installed || !hasString(h.Todo, "codex plugin remove flopwire@flopwire; codex plugin marketplace remove flopwire; flopwire setup") {
 		t.Fatalf("--check: calls %q, %+v", got, h)
 	}
-	if rep, _, err = c.run(); err != nil {
+	c.setCodex(fakeCodexState{Available: "rev1", Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "git", Source: "https://github.com/someone/fork.git"}}})
+	if rep, _, err = c.run("--check"); err != nil {
 		t.Fatal(err)
 	}
-	h = c.codex(rep)
-	want := []string{
-		"plugin remove flopwire@flopwire --json",
-		"plugin marketplace remove flopwire --json",
-		"plugin marketplace add " + c.repo + " --json",
-		"plugin add flopwire@flopwire-plugins --json",
-	}
-	if got := mutating(c.codexCalls()); !slices.Equal(got, want) {
-		t.Fatalf("install calls:\n got %q\nwant %q", got, want)
-	}
-	st := c.getCodex()
-	if !h.Installed || len(st.Marketplaces) != 1 || st.Marketplaces[0].Name != "flopwire-plugins" || len(st.Plugins) != 1 || !st.Plugins["flopwire@flopwire-plugins"] {
-		t.Fatalf("install: %+v\nstate %+v", h, st)
-	}
-	if !hasString(h.Done, "removed the old marketplace flopwire (now flopwire-plugins) and its flopwire@flopwire") {
-		t.Fatalf("done %q", h.Done)
+	if h = c.codex(rep); hasString(h.Todo, "marketplace remove flopwire;") {
+		t.Fatalf("other flopwire marketplace: todo %q", h.Todo)
 	}
 }
