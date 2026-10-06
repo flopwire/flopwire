@@ -468,9 +468,11 @@ the budget to at most 60 seconds. A query that runs out of budget prints
 what it found and one line that says what it checked. It is never an
 error. On the team server, `sessions`, `read` and raw reads have the
 same 10-second budget; one that runs out fails with 504 and says it
-timed out. A grep with a repo, agent, session, device, user or branch
-filter resolves those conversations first and scans only their
-messages, up to 5000 conversations.
+timed out. A grep with a repo, agent, session, device, user, branch or
+`--since` filter resolves those conversations first and scans only their
+messages, up to 5000 conversations. A session's last activity is never
+before its newest message, so `--since` admits every session with a
+message in range, whatever its agent reports.
 
 A regex with no run of 3 letters or digits that every match must contain
 cannot use the trigram index. The local index then checks only the

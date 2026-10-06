@@ -246,7 +246,7 @@ const grepConvCap = 5000
 
 // grepNarrows reports whether f has a filter on conversations that
 // grepConversations resolves first: agent, repo, device, user, session,
-// subagents or branch.
+// subagents, branch or since.
 func grepNarrows(f format.Filters) bool {
 	q := &query{}
 	grepConvWhere(q, f)
@@ -255,12 +255,16 @@ func grepNarrows(f format.Filters) bool {
 
 // grepConvWhere adds f's conditions on conversations, as sessionsPage
 // has them, over listed c with devices d and users u joined (convWhere,
-// the session tree, and convFilters, whose live-session conditions read
-// as true for a conversation whose device is missing). since is not
-// among them: last activity comes from the harness, not from message
-// times (ingest refreshDigest), so it may precede a message's ts. The
-// message predicates (m.ts among them) stay in the candidate query, so
-// the hits are the same with or without this step.
+// the session tree, since, and convFilters, whose live-session
+// conditions read as true for a conversation whose device is missing).
+// since bounds the last activity, which ingest keeps at or above every
+// message's ts (refreshDigest), so a conversation whose last activity
+// precedes since holds no message at or after it. No IS NULL arm: last
+// activity is NULL only when the harness gave none and no message has a
+// ts (old Codex rollouts without timestamps), and the candidate query's
+// m.ts>=since admits none of those rows either. The message predicates
+// (m.ts among them) stay in the candidate query, so the hits are the
+// same with or without this step.
 func grepConvWhere(q *query, f format.Filters) {
 	convWhere(q, f)
 	if f.Session != "" {
@@ -268,6 +272,9 @@ func grepConvWhere(q *query, f format.Filters) {
 		if f.Self {
 			q.where("c.user_id=" + q.arg(f.Owner) + "::uuid")
 		}
+	}
+	if !f.Since.IsZero() {
+		q.where("c.last_activity_at>=" + q.arg(f.Since))
 	}
 	convFilters(q, f)
 }
