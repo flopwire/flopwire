@@ -4,6 +4,8 @@ Status: proposed. This document scopes implementation; it does not enable parall
 
 Implementation status as of October 5, 2026: PR #148 delivered serial `Retry-After` handling, pressure labels, and hook cooldown protection. PR #149 strengthened the E2E content/address oracle. These are partial prerequisites; deterministic interruption barriers, parallel cooldown epochs, shared-state ownership, and concurrent uploads remain unimplemented.
 
+The October 6 Cowork policy work added authenticated `GET /v1/sync/capabilities` with `version`, `policyplacements_version`, and `max_concurrent_flushes`. Policy placements support authorizes protected evidence only after a matching durable policy acknowledgement. The route continues to advertise one concurrent flush. Request-limit negotiation, capability caching for a parallel worker pool, and parse-revision reporting remain proposed below.
+
 ## Outcome
 
 An enrolled Mac should upload separate sources concurrently, make recent history searchable first, and show whether missing search results could reflect incomplete synchronization. A large backfill must leave capacity for live sessions, search, and messaging.
@@ -42,7 +44,7 @@ This establishes throughput potential, not production correctness or peak memory
 
 ### 1. Server admission and capability negotiation
 
-Add an authenticated `GET /v1/sync/capabilities` response with protocol version, maximum concurrent flushes per device, and supported request limits. The existing version-1 flush codec stays intact. Cache capabilities per normalized server and credential/configuration epoch. Recheck after reconnect and configuration changes.
+Extend the authenticated `GET /v1/sync/capabilities` response with supported request limits. The existing protocol version, policy placements support, and serial flush limit stay intact. Cache concurrency capabilities per normalized server and credential/configuration epoch. Recheck after reconnect and configuration changes.
 
 Use one worker on an unsupported-endpoint/404 response and report that compatibility decision; a 404 cannot prove whether the server is old or a proxy route is wrong. Authentication, pin, network, and malformed-response failures must remain visible; they must not masquerade as an older server. If a flush returns the legacy `flush_in_progress` 429, clamp to one worker for that capability epoch as a defensive fallback. New admission errors should distinguish source contention, device capacity, and global capacity. Never infer concurrency from the binary version or deliberately provoke 429s to discover it.
 
@@ -162,7 +164,7 @@ This is a useful serial baseline, not sufficient coverage for enabling parallel 
 | Crash recovery at exact boundaries | Large-source kill/restart; component spool recovery | Explicit barriers after publication, after server commit before local ack, and during concurrent requests; hard-fail missed barriers; restart with the same durable state |
 | Pressure and stale completions | #148 serial `Retry-After`, pressure labels, and hook cooldown protection; failure isolation and pin/rotation component tests | Delayed success after newer 429/503; changed pin/token while several requests run; parallel cooldown epochs and drain safety |
 | Source ownership and server limits | Server test rejects a second same-device flush | Prove different paths overlap, same path cannot overlap across identities/generations/processes, device/global limits hold, and every slot releases on disconnect |
-| Version compatibility and progress | No capability or parse-revision acknowledgment contract yet | Old/new client/server combinations; endpoint errors; upload ack with parsing deliberately paused; correct incomplete/unknown retrieval scope notes |
+| Version compatibility and progress | Authenticated serial capability and policy placements contract; no parse-revision acknowledgment contract | Old/new client/server combinations; endpoint errors; upload ack with parsing deliberately paused; correct incomplete/unknown retrieval scope notes |
 | Capacity on the intended deployment | Separate private VM performance experiments | Sustained mixed-agent two-device backfill, latency/loss, searches and messaging; assert concurrency actually exceeds one; collect client and whole-stack peaks |
 
 Use deterministic barriers at component/integration level for spool races and stale completions. Use a test-controlled transport/proxy or equivalent explicit fault controls for process-level E2E interruption. Production builds must not expose an unauthenticated fault-injection API. Tests should prove the concurrency/boundary they exercise, rather than merely return a passing end state.
