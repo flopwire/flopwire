@@ -20,6 +20,7 @@ const (
 	ClientModeAllow  = "allow"
 	ClientModeLocal  = "local"
 	ClientModeDeny   = "deny"
+	ScopeLimitHeld   = "limit-held"
 )
 
 // CapabilitiesResponse describes enforced server features, not just accepted fields.
@@ -64,8 +65,11 @@ type PolicyPlacementsRequest struct {
 	Placements          []PolicyPlacement      `json:"placements"`
 	Sources             []PolicySource         `json:"sources,omitempty"`
 	RecoverySources     []PolicyRecoverySource `json:"recovery_sources,omitempty"`
-	ClientMode          string                 `json:"client_mode"`
-	Device              *DeviceDirs            `json:"device,omitempty"`
+	// ScopeStatus may request a compact restriction when full scope exceeds
+	// transport limits. It cannot clear a previously committed limit hold.
+	ScopeStatus string      `json:"scope_status,omitempty"`
+	ClientMode  string      `json:"client_mode"`
+	Device      *DeviceDirs `json:"device,omitempty"`
 }
 
 // PolicyPlacementsResponse acknowledges the durably reconciled restriction union.
