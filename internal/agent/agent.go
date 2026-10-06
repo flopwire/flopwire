@@ -90,8 +90,9 @@ type Config struct {
 	// across workers (Codex rollouts have lines up to 14MB); default 16MB.
 	LineBudget int64
 
-	Sync   Sync // nil: local indexing only
-	Logger *slog.Logger
+	Sync         Sync               // nil: local indexing only
+	CoworkPolicy CoworkPolicyClient // nil: Cowork sharing remains held
+	Logger       *slog.Logger
 
 	// Path rules (D18, see policy.go). UserRules is a file of user rules,
 	// one per line, re-read when it changes; UserRuleList holds more user
@@ -240,6 +241,7 @@ type Agent struct {
 	coworkHistoryReadErr  error                      // unidentified historical origins hold Claude sharing until read recovers
 	coworkFamilies        map[string]map[string]bool // immutable verified relation snapshot, guarded by mu
 	coworkParser          transcript.Parser
+	coworkReconcileCursor placeKey // fair metadata progress; guarded by mu
 	store                 *localindex.Store
 	claude                transcript.Parser
 	codex                 transcript.Parser
@@ -355,6 +357,9 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		a.log.Error("agent: reading stored placements; no upload until they load", "err", err)
 	}
 	a.refreshCowork(context.Background())
+	if f, ok := cfg.Sync.(captureAuthorizer); ok {
+		f.SetAuthorize(a.authorizeCapture)
+	}
 	if f, ok := cfg.Sync.(interface {
 		SetFilter(func(devicesync.SourceSpec) bool)
 	}); ok {
@@ -558,6 +563,7 @@ func (a *Agent) sweep(ctx context.Context) error {
 	t0, cpu0 := time.Now(), cpuTime()
 	a.refreshPolicy(ctx, false)
 	a.refreshCowork(ctx)
+	a.reconcileCoworkBounded(ctx)
 	f, err := a.discoverAll()
 	if err != nil {
 		return err
@@ -1057,6 +1063,7 @@ func (a *Agent) refreshAdmin(ctx context.Context) {
 	}
 	a.polMu.Unlock()
 	a.refreshPolicy(ctx, due)
+	a.reconcileCoworkBounded(ctx)
 }
 
 // shrinkIfIdle hands caches back when nothing is queued: an idle agent
