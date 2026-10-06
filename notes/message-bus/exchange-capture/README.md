@@ -230,7 +230,12 @@ The fixtures are in `landing/coordination-preview/fixtures/` on
    00:35, was still `live idle` at 00:39 and 00:41. Session A was still
    `live idle` at 00:41, after its process exited at 00:40:54. The cause is
    the transcript-recency live window. The default `peers` capture keeps
-   that probe session as it was printed.
+   that probe session as it was printed. *Superseded 2026-10-02:* ended
+   sessions are now tracked on harness evidence (a `SessionEnd` hook, a
+   dead pid, or a missing registry entry; #67, #82) and leave `peers` at
+   once; their waiting messages become `undelivered` with
+   `session_ended`. Only idleness still counts as live, which is
+   intended (B3). See `field-observation-2026-10-05.md` finding 4.
 7. **No model ignored a message.** No approval prompt appeared in Codex,
    because of the auto-approve table. B hit no sandbox block, because it
    used only MCP for Flopwire. Neither session retried.
