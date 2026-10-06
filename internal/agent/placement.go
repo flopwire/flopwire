@@ -78,7 +78,7 @@ type placed struct {
 // whose main checkout was linked through its remote but that named a
 // directory is final too.
 func (p placed) final() bool {
-	return localindex.PlacedFromCwd(p.how) || p.how == localindex.PlacedByRemote && p.pl.Cwd != ""
+	return localindex.IsCoworkPlacement(p.how) || localindex.PlacedFromCwd(p.how) || p.how == localindex.PlacedByRemote && p.pl.Cwd != ""
 }
 
 // cwdWait is how long a transcript that has not named its directory yet
@@ -140,7 +140,7 @@ func settled(pol pathpolicy.Policy, p placed) bool {
 func (a *Agent) decide(pol pathpolicy.Policy, p placed) pathpolicy.Decision {
 	d := a.decideOne(pol, p)
 	for _, o := range decodeOthers(p.others) {
-		if d2 := a.decideOne(pol, placed{pl: o, how: cwdHow(o)}); d2.Mode > d.Mode {
+		if d2 := a.decideOne(pol, placed{pl: o, how: otherPlacementHow(p.how, o)}); d2.Mode > d.Mode {
 			d = d2
 		}
 	}
@@ -155,6 +155,13 @@ func (a *Agent) decide(pol pathpolicy.Policy, p placed) pathpolicy.Decision {
 		}
 	}
 	return d
+}
+
+func otherPlacementHow(origin string, pl pathpolicy.Placement) string {
+	if localindex.IsCoworkPlacement(origin) {
+		return origin
+	}
+	return cwdHow(pl)
 }
 
 // candidate is one repository of an ambiguous recovery.
@@ -330,6 +337,9 @@ func physicalPath(p string) string {
 // (pathpolicy.Policy.DecideFolder).
 func decidePlaced(pol pathpolicy.Policy, p placed) pathpolicy.Decision {
 	d := pol.Decide(p.pl)
+	if localindex.IsCoworkPlacement(p.how) {
+		return pol.DecideSubtree(p.pl).Decision
+	}
 	if p.how != localindex.PlacedByFolder || p.pl.Cwd == "" {
 		return d
 	}
@@ -377,8 +387,18 @@ func (a *Agent) resolve(cwd, remote string) pathpolicy.Placement {
 // placement keeps when it was last checked, and every placement keeps the
 // candidates of an ambiguous recovery (they only tighten).
 func (a *Agent) savePlace(key placeKey, p placed) placed {
+	a.placeWriteMu.Lock()
+	defer a.placeWriteMu.Unlock()
 	a.mu.Lock()
 	old, ok := a.places[key]
+	if ok && localindex.IsCoworkPlacement(old.how) {
+		if old.pl != p.pl && old.pl.Cwd != "" {
+			p.others = mergeOthers(p.others, encodeOthers([]pathpolicy.Placement{old.pl}))
+		}
+		if old.how == localindex.PlacedByCoworkUnknown || !localindex.IsCoworkPlacement(p.how) {
+			p.how = old.how
+		}
+	}
 	if ok && old.cands != "" {
 		p.cands = encodeCandidates(append(candidates(old.cands), candidates(p.cands)...))
 	}
@@ -410,14 +430,37 @@ func (a *Agent) storePlace(key placeKey, p placed) {
 
 // loadPlaces reads the stored placements. Called from New and load.
 func (a *Agent) loadPlaces(ctx context.Context) error {
+	a.captureScopeMu.Lock()
+	defer a.captureScopeMu.Unlock()
+	a.placeWriteMu.Lock()
+	defer a.placeWriteMu.Unlock()
 	ps, err := a.store.Placements(ctx)
 	if err != nil {
 		return err
 	}
+	facts, err := a.store.CoworkHistoricalUnknownFacts(ctx)
+	// A provenance read error holds Claude sharing without preventing local
+	// indexing of ordinary placements. Existing historical origins still win.
+	historyErr := err
+	historical := map[string]bool{}
+	for _, session := range facts {
+		historical[session] = true
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.coworkHistoryReadErr = historyErr
 	for _, p := range ps {
-		a.places[placeKey{p.Agent, p.SessionID}] = placed{p.Placement, p.How, p.CheckedAt, p.Candidates, p.OtherCwds}
+		key := placeKey{p.Agent, p.SessionID}
+		if p.Agent == transcript.AgentClaude && (historical[p.SessionID] || a.places[key].how == localindex.PlacedByCoworkUnknown) {
+			p.How = localindex.PlacedByCoworkUnknown
+		}
+		a.places[key] = placed{p.Placement, p.How, p.CheckedAt, p.Candidates, p.OtherCwds}
+	}
+	for session := range historical {
+		key := placeKey{transcript.AgentClaude, session}
+		p := a.places[key]
+		p.how = localindex.PlacedByCoworkUnknown
+		a.places[key] = p
 	}
 	a.placesOK = true
 	return nil

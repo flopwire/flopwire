@@ -49,6 +49,7 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/transcript/cowork"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
 	"github.com/flopwire/flopwire/internal/transcript/opencode"
 )
@@ -65,6 +66,7 @@ var _ Sync = (*devicesync.Scheduler)(nil)
 
 // Config configures an Agent. Zero fields take defaults.
 type Config struct {
+	CoworkRoot     string // Claude Desktop Cowork container; Darwin app default, "-" disables
 	ClaudeProjects string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
 	CodexHome      string // default codex.Home() (CODEX_HOME or ~/.codex)
 	DevinDB        string // default devin.DefaultPath; "-" disables Devin
@@ -143,6 +145,16 @@ func (c *Config) defaults() {
 	if c.ClaudeProjects == "" {
 		c.ClaudeProjects = claude.ProjectsRoot(os.Getenv, home)
 	}
+	if c.CoworkRoot != "" && c.CoworkRoot != "-" {
+		if root, err := filepath.Abs(c.CoworkRoot); err == nil {
+			c.CoworkRoot = root
+		}
+	}
+	if c.CoworkRoot == "" {
+		c.CoworkRoot = cowork.DefaultRoot(home)
+	} else if c.CoworkRoot == "-" {
+		c.CoworkRoot = ""
+	}
 	if c.CodexHome == "" {
 		c.CodexHome = codex.Home()
 	}
@@ -202,11 +214,21 @@ func (c *Config) defaults() {
 // Agent indexes one device's transcripts. Create it with New, then call
 // Run (or Once).
 type Agent struct {
-	cfg    Config
-	store  *localindex.Store
-	claude transcript.Parser
-	codex  transcript.Parser
-	log    *slog.Logger
+	captureScopeMu        sync.RWMutex // orders app registration against in-flight native evidence
+	placeWriteMu          sync.Mutex   // orders placement memory and durable writes together
+	cfg                   Config
+	coworkMu              sync.Mutex
+	coworkResult          cowork.Result              // immutable discovery snapshot; guarded by mu
+	coworkError           string                     // guarded by mu
+	coworkPendingUnknown  map[placeKey]bool          // expected historical provenance, guarded by mu
+	coworkHistoryFailures map[placeKey]error         // failed durable fact operations, scoped to affected identities
+	coworkHistoryReadErr  error                      // unidentified historical origins hold Claude sharing until read recovers
+	coworkFamilies        map[string]map[string]bool // immutable verified relation snapshot, guarded by mu
+	coworkParser          transcript.Parser
+	store                 *localindex.Store
+	claude                transcript.Parser
+	codex                 transcript.Parser
+	log                   *slog.Logger
 	// onReads, when set (tests), takes the read sightings instead of
 	// the message bus.
 	onReads func([]devicebus.Read)
@@ -298,6 +320,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
 		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
+	a.coworkParser = &claude.Parser{FS: cowork.FS{Root: cfg.CoworkRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
 	a.idle = sync.NewCond(&a.mu)
 	a.devin.h, a.opencode.h = devinHarness, opencodeHarness
 	if cfg.DevinDB != "-" {
@@ -315,6 +338,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 	if err := a.loadPlaces(context.Background()); err != nil {
 		a.log.Error("agent: reading stored placements; no upload until they load", "err", err)
 	}
+	a.refreshCowork(context.Background())
 	if f, ok := cfg.Sync.(interface {
 		SetFilter(func(devicesync.SourceSpec) bool)
 	}); ok {
@@ -517,6 +541,7 @@ func (a *Agent) load(ctx context.Context) error {
 func (a *Agent) sweep(ctx context.Context) error {
 	t0, cpu0 := time.Now(), cpuTime()
 	a.refreshPolicy(ctx, false)
+	a.refreshCowork(ctx)
 	f, err := a.discoverAll()
 	if err != nil {
 		return err

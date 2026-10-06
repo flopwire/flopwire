@@ -75,6 +75,7 @@ type Request struct {
 
 // Response answers a Request.
 type Response struct {
+	Cowork     *CoworkStatus                 `json:"cowork,omitempty"`
 	Extraction *transcript.ExtractionSummary `json:"extraction,omitempty"`
 	OK         bool                          `json:"ok"`
 	Path       string                        `json:"path,omitempty"` // flush: the source indexed
@@ -227,6 +228,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		}
 		resp.ServerCopies = a.serverCopiesNotice()
 		resp.Placements = a.placementCounts()
+		resp.Cowork = a.coworkStatus()
 		if a.cfg.Bus != nil {
 			st := a.cfg.Bus.Status(ctx)
 			resp.Bus = &st

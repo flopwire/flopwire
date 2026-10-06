@@ -49,6 +49,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 )
 
 const (
@@ -65,7 +66,7 @@ const (
 // needsRecovery reports whether a placement is of a directory that is
 // gone (or of a remote alone) with no main checkout known.
 func needsRecovery(p placed) bool {
-	if p.pl.Main != "" || p.how == localindex.PlacedByNone {
+	if localindex.IsCoworkPlacement(p.how) || p.pl.Main != "" || p.how == localindex.PlacedByNone {
 		return false
 	}
 	if p.pl.Cwd == "" {
@@ -96,15 +97,25 @@ type recoverResult struct {
 
 // replacePlace stores next as key's placement if it still is old.
 func (a *Agent) replacePlace(key placeKey, old, next placed) bool {
+	a.placeWriteMu.Lock()
 	a.mu.Lock()
 	cur, ok := a.places[key]
 	if !ok || cur != old {
 		a.mu.Unlock()
+		a.placeWriteMu.Unlock()
 		return false
+	}
+	if localindex.IsCoworkPlacement(old.how) {
+		next.how = old.how
+		next.others = mergeOthers(old.others, next.others)
+		if old.pl != next.pl && old.pl.Cwd != "" {
+			next.others = mergeOthers(next.others, encodeOthers([]pathpolicy.Placement{old.pl}))
+		}
 	}
 	a.places[key] = next
 	a.mu.Unlock()
 	a.storePlace(key, next)
+	a.placeWriteMu.Unlock()
 	if old.pl.Main != next.pl.Main || old.pl.Remote != next.pl.Remote {
 		a.repoChanged(key)
 	}

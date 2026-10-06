@@ -131,7 +131,7 @@ func measureNoChangeSweep(t testing.TB, n int) sweepCost {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	cfg := Config{ClaudeProjects: filepath.Join(root, "claude", "projects"), CodexHome: filepath.Join(root, "codex"),
+	cfg := Config{CoworkRoot: "-", ClaudeProjects: filepath.Join(root, "claude", "projects"), CodexHome: filepath.Join(root, "codex"),
 		DevinDB: filepath.Join(root, "devin", "cli", "sessions.db"), OpencodeDB: "-", Workers: 3, Sync: newRecorder(), Home: root,
 		UserRuleList: []string{"local " + filepath.Join(root, "work", "p0")},
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil))}
