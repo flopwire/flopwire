@@ -516,7 +516,10 @@ func TestSessionsSinceIncludesCodex(t *testing.T) {
 		AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.ts IS NOT NULL)`); n != 0 {
 		t.Fatalf("%d Codex conversations with dated messages and no last_activity_at", n)
 	}
-	dated := s.count(`SELECT count(*) FROM conversations c WHERE c.agent='codex' AND c.hidden_at IS NULL AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.ts IS NOT NULL)`)
+	// The sessions list's own view (listed): every conversation whose
+	// activity row is not hidden, subagents included.
+	dated := s.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id
+		WHERE c.agent='codex' AND NOT a.hidden AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.ts IS NOT NULL)`)
 	ss, err := c.Sessions(ctx, "", "", format.Filters{Agent: "codex", Since: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), Limit: 100})
 	if err != nil || len(ss.Sessions) == 0 || len(ss.Sessions) != dated {
 		t.Fatalf("sessions --agent codex --since 2020: %d of %d dated sessions, %v", len(ss.Sessions), dated, err)
@@ -529,5 +532,38 @@ func TestSessionsSinceIncludesCodex(t *testing.T) {
 	ss, err = c.Sessions(ctx, "", "", format.Filters{Agent: "codex", Since: newest.Add(time.Second), Limit: 100})
 	if err != nil || len(ss.Sessions) != 0 {
 		t.Fatalf("sessions since after the newest message: %d sessions, %v", len(ss.Sessions), err)
+	}
+}
+
+// A grep with since finds exactly the messages at or after it: the
+// conversation step (grepConvWhere, c.last_activity_at>=since) drops no
+// session whose messages the m.ts predicate admits. Codex is the agent
+// without a harness value; its activity comes from the messages alone.
+// (Devin's message times are whole seconds, as its session value is, so
+// no fixture shows sub-second rounding.)
+func TestGrepSinceMatchesMessageTimes(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	s.ingestFixtures()
+	c := s.client
+	since := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	const pattern = "the"
+	want := s.count(`SELECT count(*) FROM messages m JOIN conversations c ON c.id=m.conversation_id
+		WHERE c.hidden_at IS NULL AND c.agent='codex' AND NOT m.superseded AND m.on_active_path IS NOT FALSE AND m.kind<>'injected'
+		AND m.ts>=$1 AND m.text ~* $2`, since, pattern)
+	if want == 0 {
+		t.Fatal("no Codex message matches the pattern")
+	}
+	page, err := c.Grep(ctx, format.GrepQuery{Pattern: pattern, Limit: 500}, format.Filters{Agent: "codex", Since: since})
+	if err != nil || page.Truncated {
+		t.Fatalf("grep: %v (page %+v)", err, page)
+	}
+	if len(page.Hits) != want {
+		t.Fatalf("grep --agent codex --since 2020: %d hits, %d messages match", len(page.Hits), want)
+	}
+	for _, h := range page.Hits {
+		if h.Agent != "codex" {
+			t.Fatalf("hit from %s: %+v", h.Agent, h)
+		}
 	}
 }
