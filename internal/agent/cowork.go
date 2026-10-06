@@ -8,6 +8,7 @@ import (
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/cowork"
 )
 
@@ -38,6 +39,28 @@ type CoworkStatus struct {
 func (a *Agent) refreshCowork(ctx context.Context) {
 	a.coworkMu.Lock()
 	defer a.coworkMu.Unlock()
+	a.captureScopeMu.Lock()
+	defer a.captureScopeMu.Unlock()
+	facts, historyErr := a.store.CoworkHistoricalUnknownFacts(ctx)
+	a.placeWriteMu.Lock()
+	a.mu.Lock()
+	a.coworkHistoryReadErr = historyErr
+	if historyErr == nil {
+		for _, session := range facts {
+			key := placeKey{transcript.AgentClaude, session}
+			p := a.places[key]
+			p.how = localindex.PlacedByCoworkUnknown
+			a.places[key] = p
+		}
+	}
+	a.mu.Unlock()
+	a.placeWriteMu.Unlock()
+	if historyErr != nil {
+		a.mu.Lock()
+		a.coworkError = "Cowork historical provenance unavailable; Claude sharing held"
+		a.mu.Unlock()
+		return
+	}
 	r, err := cowork.Discover(a.cfg.CoworkRoot)
 	if err != nil {
 		a.mu.Lock()
@@ -46,19 +69,167 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 		a.log.Warn("agent: Cowork discovery failed", "error", err)
 		return
 	}
-	a.captureScopeMu.Lock()
-	defer a.captureScopeMu.Unlock()
 	changed := false
 	registrationFailed := false
 	scopes := append([]cowork.Link(nil), r.IdentityLinks...)
+	historicalFacts := map[string]bool{}
+	for _, session := range facts {
+		historicalFacts[session] = true
+	}
+	a.mu.Lock()
+	for key, p := range a.places {
+		if key.agent == transcript.AgentClaude && p.how == localindex.PlacedByCoworkUnknown {
+			historicalFacts[key.session] = true
+		}
+	}
+	for key := range a.coworkPendingUnknown {
+		historicalFacts[key.session] = true
+	}
+	a.mu.Unlock()
+	for session := range historicalFacts {
+		scopes = append(scopes, cowork.Link{NativeSessionID: session, CLISessionID: session})
+	}
+	groups := map[string]map[string]bool{}
+	addMember := func(root, session string) {
+		if groups[root] == nil {
+			groups[root] = map[string]bool{}
+		}
+		groups[root][session] = true
+	}
+	for _, link := range r.IdentityLinks {
+		addMember(link.NativeSessionID, link.NativeSessionID)
+	}
+	for session := range historicalFacts {
+		addMember(session, session)
+	}
 	for _, entry := range r.Sessions {
 		s, link := entry.Session, entry.Link
 		scopes = append(scopes, link)
+		addMember(s.SessionID, s.SessionID)
 		for _, sa := range s.Subagents {
 			child := link
 			child.NativeSessionID = "agent-" + sa.AgentID
 			scopes = append(scopes, child)
+			addMember(s.SessionID, child.NativeSessionID)
 		}
+	}
+	// App metadata may be the only surviving parent evidence. Native captures
+	// under the same UUID's configured CLI subtree still establish child scope,
+	// even if the main stub and every child file have since been deleted.
+	capturedChildren := map[string]bool{}
+	parents := map[string]cowork.Link{}
+	for _, link := range scopes {
+		if link.NativeSessionID == link.CLISessionID {
+			parents[link.NativeSessionID] = link
+		}
+	}
+	cliSessions, cliErr := claude.Discover(a.cfg.ClaudeProjects)
+	if cliErr != nil {
+		registrationFailed = true
+		a.log.Warn("agent: Cowork CLI child discovery failed", "error", cliErr)
+	}
+	for _, session := range cliSessions {
+		link, ok := parents[session.SessionID]
+		if !ok {
+			continue
+		}
+		for _, sa := range session.Subagents {
+			child := link
+			child.NativeSessionID = claude.SubagentSessionID(sa.AgentID)
+			scopes = append(scopes, child)
+			addMember(session.SessionID, child.NativeSessionID)
+		}
+	}
+	for root, link := range parents {
+		children, err := a.store.CapturedClaudeChildren(ctx, []string{a.cfg.ClaudeProjects, link.ProjectsRoot}, root)
+		if err != nil {
+			registrationFailed = true
+			a.log.Warn("agent: Cowork historical child scope failed", "error", err)
+		}
+		for _, childID := range children {
+			addMember(root, childID)
+			child := link
+			child.NativeSessionID = childID
+			scopes = append(scopes, child)
+			capturedChildren[childID] = true
+		}
+	}
+	// Classify the whole verified parent/child group before writing any member.
+	// An orphan child's prior capture also predates proof of its parent's scope.
+	// Current metadata-only unknown mappings do not constitute historical bytes.
+	historical := map[string]bool{}
+	checked := map[string]bool{}
+	for _, members := range groups {
+		for session := range members {
+			if checked[session] {
+				continue
+			}
+			checked[session] = true
+			old, _ := a.storedPlace(placeKey{transcript.AgentClaude, session})
+			a.mu.Lock()
+			pending := a.coworkPendingUnknown[placeKey{transcript.AgentClaude, session}]
+			a.mu.Unlock()
+			historical[session] = historicalFacts[session] || old.how == localindex.PlacedByCoworkUnknown || pending
+			if !localindex.IsCoworkPlacement(old.how) {
+				have, err := a.store.SessionHasEvidence(ctx, transcript.AgentClaude, session)
+				if err != nil {
+					registrationFailed = true
+					a.log.Warn("agent: Cowork legacy evidence unavailable", "error", err)
+				}
+				historical[session] = historical[session] || have || capturedChildren[session]
+			}
+		}
+	}
+	groupUnknown := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for _, members := range groups {
+			unknown := false
+			for session := range members {
+				unknown = unknown || historical[session] || groupUnknown[session]
+			}
+			if unknown {
+				for session := range members {
+					if !groupUnknown[session] {
+						groupUnknown[session] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	var familyFacts []string
+	for session := range groupUnknown {
+		familyFacts = append(familyFacts, session)
+	}
+	historyErr = a.store.MarkCoworkHistoricalUnknown(ctx, familyFacts)
+	a.mu.Lock()
+	if a.coworkHistoryFailures == nil {
+		a.coworkHistoryFailures = map[placeKey]error{}
+	}
+	for _, session := range familyFacts {
+		key := placeKey{transcript.AgentClaude, session}
+		if historyErr != nil {
+			a.coworkHistoryFailures[key] = historyErr
+		} else {
+			delete(a.coworkHistoryFailures, key)
+		}
+	}
+	a.coworkFamilies = groups
+	a.mu.Unlock()
+	if historyErr != nil {
+		a.mu.Lock()
+		a.coworkResult = r
+		a.coworkError = "Cowork historical provenance commit failed; evidence held"
+		if a.coworkPendingUnknown == nil {
+			a.coworkPendingUnknown = map[placeKey]bool{}
+		}
+		for session := range groupUnknown {
+			a.coworkPendingUnknown[placeKey{transcript.AgentClaude, session}] = true
+		}
+		a.mu.Unlock()
+		a.log.Warn("agent: Cowork historical fact commit failed", "error", historyErr)
+		return // Last proof stays intact until the whole family fact commits.
 	}
 	for _, link := range scopes {
 		for _, session := range []string{link.NativeSessionID} {
@@ -83,12 +254,7 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 			}
 			p.others = mergeOthers(p.others, encodeOthers(add))
 			p.how = localindex.PlacedByCowork
-			legacyEvidence := false
-			if !localindex.IsCoworkPlacement(old.how) {
-				have, err := a.store.SessionHasEvidence(ctx, transcript.AgentClaude, session)
-				legacyEvidence = err != nil || have
-			}
-			if legacyEvidence || old.how == localindex.PlacedByCoworkUnknown {
+			if groupUnknown[session] || old.how == localindex.PlacedByCoworkUnknown {
 				p.how = localindex.PlacedByCoworkUnknown
 			}
 			// These locations come from host metadata, not a deleted VM checkout.
@@ -111,6 +277,19 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	}
 	a.mu.Lock()
 	a.coworkResult = r
+	pendingUnknown := map[placeKey]bool{}
+	for key := range a.coworkPendingUnknown {
+		if p, ok := a.places[key]; !ok || p.how != localindex.PlacedByCoworkUnknown {
+			pendingUnknown[key] = true
+		}
+	}
+	for session := range groupUnknown {
+		key := placeKey{transcript.AgentClaude, session}
+		if p, ok := a.places[key]; !ok || p.how != localindex.PlacedByCoworkUnknown {
+			pendingUnknown[key] = true
+		}
+	}
+	a.coworkPendingUnknown = pendingUnknown
 	a.coworkError = ""
 	if registrationFailed {
 		a.coworkError = "Cowork policy registration failed; evidence held"
@@ -171,16 +350,27 @@ func (a *Agent) coworkDirectory(dir string) bool {
 // coworkMode applies the stored union even if the app metadata disappeared.
 // The durable origin restricts only identified native session identities.
 func (a *Agent) coworkMode(pv *policyView, t *target) (pathpolicy.Decision, bool) {
-	a.mu.Lock()
-	key, _ := t.placeKeyOf()
-	root := t.root
-	a.mu.Unlock()
-	p, ok := a.storedPlace(key)
-	if (!ok || !localindex.IsCoworkPlacement(p.how)) && root != "" {
-		p, ok = a.storedPlace(placeKey{transcript.AgentClaude, root})
+	keys, known := a.coworkCaptureScope(t)
+	var d pathpolicy.Decision
+	found, historicalUnknown := false, false
+	for _, key := range keys {
+		a.mu.Lock()
+		pending := a.coworkPendingUnknown[key]
+		historicalUnknown = historicalUnknown || pending
+		a.mu.Unlock()
+		found = found || pending
+		p, ok := a.storedPlace(key)
+		if !ok || !localindex.IsCoworkPlacement(p.how) {
+			continue
+		}
+		found = true
+		historicalUnknown = historicalUnknown || p.how == localindex.PlacedByCoworkUnknown
+		next := a.decide(pv.pol, p)
+		if next.Mode > d.Mode || next.Mode == d.Mode && next.Admin && !d.Admin {
+			d = next
+		}
 	}
-	if ok && localindex.IsCoworkPlacement(p.how) {
-		d := a.decide(pv.pol, p)
+	if found {
 		for _, path := range a.coworkUnregisteredPaths(t) {
 			if path == "" {
 				continue
@@ -193,9 +383,12 @@ func (a *Agent) coworkMode(pv *policyView, t *target) (pathpolicy.Decision, bool
 		if d.Mode < pathpolicy.Local {
 			d.Mode = pathpolicy.Local
 		}
+		if historicalUnknown && pv.pol.Unplaceable == pathpolicy.Deny && d.Mode < pathpolicy.Deny {
+			d = pathpolicy.Decision{Mode: pathpolicy.Deny, Admin: pv.pol.UnplaceableAdmin, Unplaceable: true}
+		}
 		return d, true
 	}
-	if keys, known := a.coworkCaptureScope(t); known || a.coworkScopePresent(keys) {
+	if known || a.coworkScopePresent(keys) {
 		d := pathpolicy.Decision{Mode: pathpolicy.Local}
 		for _, path := range a.coworkUnregisteredPaths(t) {
 			next := pv.pol.DecideSubtree(a.resolve(path, "")).Decision
@@ -290,15 +483,19 @@ func (a *Agent) coworkCaptureScope(t *target) ([]placeKey, bool) {
 		keys = append(keys, placeKey{transcript.AgentClaude, root})
 	}
 	found, known := false, true
+	a.mu.Lock()
+	scopeError := a.coworkError != ""
+	a.mu.Unlock()
+	known = !scopeError
 	for _, link := range r.IdentityLinks {
-		if link.NativeSessionID == key.session {
+		if link.NativeSessionID == key.session || root != "" && link.NativeSessionID == root {
 			found = true
 			known = known && link.Mapping.Known()
 		}
 	}
 	for _, entry := range r.Sessions {
 		s := entry.Session
-		if s.SessionID == key.session {
+		if s.SessionID == key.session || root != "" && s.SessionID == root {
 			found = true
 			known = known && entry.Link.Mapping.Known()
 		}
@@ -403,20 +600,71 @@ func (a *Agent) coworkUnregisteredPaths(t *target) []string {
 // snapshot cannot establish the folder scope of that earlier work.
 func (a *Agent) taintCoworkEvidence(ctx context.Context, t *target) error {
 	keys, known := a.coworkCaptureScope(t)
+	keys = a.coworkFamilyKeys(keys)
+	for _, key := range keys {
+		p, ok := a.storedPlace(key)
+		a.mu.Lock()
+		pending := a.coworkPendingUnknown[key]
+		a.mu.Unlock()
+		if pending && (!ok || p.how != localindex.PlacedByCoworkUnknown) {
+			return fmt.Errorf("Cowork historical provenance is not durably registered")
+		}
+		if ok && p.how == localindex.PlacedByCoworkUnknown {
+			known = false
+		}
+	}
 	if len(a.coworkUnregisteredPaths(t)) > 0 {
 		return fmt.Errorf("Cowork policy scope is not durably registered")
 	}
 	if a.coworkScopePresent(keys) {
+		a.mu.Lock()
+		scopeError := a.coworkError != ""
+		a.mu.Unlock()
+		if scopeError {
+			return fmt.Errorf("Cowork policy scope registration is incomplete")
+		}
 		for _, key := range keys {
 			p, ok := a.storedPlace(key)
 			if !ok || !localindex.IsCoworkPlacement(p.how) {
 				return fmt.Errorf("Cowork policy provenance is not durably registered")
+			}
+			a.mu.Lock()
+			pending := a.coworkPendingUnknown[key]
+			a.mu.Unlock()
+			if pending && p.how != localindex.PlacedByCoworkUnknown {
+				return fmt.Errorf("Cowork historical provenance is not durably registered")
 			}
 		}
 	}
 	if known {
 		return nil
 	}
+	var sessions []string
+	for _, key := range keys {
+		p, ok := a.storedPlace(key)
+		if ok && localindex.IsCoworkPlacement(p.how) {
+			sessions = append(sessions, key.session)
+		}
+	}
+	if len(sessions) == 0 {
+		return nil
+	}
+	if err := a.store.MarkCoworkHistoricalUnknown(ctx, sessions); err != nil {
+		a.mu.Lock()
+		if a.coworkHistoryFailures == nil {
+			a.coworkHistoryFailures = map[placeKey]error{}
+		}
+		for _, session := range sessions {
+			a.coworkHistoryFailures[placeKey{transcript.AgentClaude, session}] = err
+		}
+		a.mu.Unlock()
+		return err
+	}
+	a.mu.Lock()
+	for _, session := range sessions {
+		delete(a.coworkHistoryFailures, placeKey{transcript.AgentClaude, session})
+	}
+	a.mu.Unlock()
 	a.placeWriteMu.Lock()
 	defer a.placeWriteMu.Unlock()
 	updates := map[placeKey]placed{}
@@ -444,5 +692,50 @@ func (a *Agent) taintCoworkEvidence(ctx context.Context, t *target) error {
 		a.places[key] = p
 	}
 	a.mu.Unlock()
+	return nil
+}
+
+func (a *Agent) coworkFamilyKeys(keys []placeKey) []placeKey {
+	a.mu.Lock()
+	groups := a.coworkFamilies
+	a.mu.Unlock()
+	seen := map[placeKey]bool{}
+	for _, key := range keys {
+		seen[key] = true
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, members := range groups {
+			hit := false
+			for session := range members {
+				hit = hit || seen[placeKey{transcript.AgentClaude, session}]
+			}
+			if hit {
+				for session := range members {
+					key := placeKey{transcript.AgentClaude, session}
+					if !seen[key] {
+						seen[key] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	out := make([]placeKey, 0, len(seen))
+	for key := range seen {
+		out = append(out, key)
+	}
+	return out
+}
+
+func (a *Agent) coworkHistoryPurgeError(keys []placeKey) error {
+	keys = a.coworkFamilyKeys(keys)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, key := range keys {
+		if err := a.coworkHistoryFailures[key]; err != nil {
+			return fmt.Errorf("Cowork historical fact must commit before purge: %w", err)
+		}
+	}
 	return nil
 }

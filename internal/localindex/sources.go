@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -362,7 +364,9 @@ func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, 
 	var have bool
 	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
 		if err := q.QueryRowContext(ctx, `SELECT
-   EXISTS(SELECT 1 FROM sources WHERE device_id=? AND agent=? AND session_key=? AND (wm_size>0 OR wm_offset>0))
+   EXISTS(SELECT 1 FROM sources WHERE device_id=? AND agent=? AND session_key=?
+     AND (wm_size>0 OR wm_offset>0
+       OR EXISTS(SELECT 1 FROM generations g WHERE g.source_id=sources.id AND g.size>0)))
    OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=? AND c.agent=? AND c.session_id=?
      AND (EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id)
        OR EXISTS(SELECT 1 FROM companions p WHERE p.conversation_id=c.id AND p.size>0)))
@@ -427,4 +431,99 @@ func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, 
 			string(transcript.StorageCompanion), filename, filename, filename).Scan(&have)
 	})
 	return have, err
+}
+
+// CapturedClaudeChildren returns restriction-only native child identities with
+// historical bytes under a verified parent UUID in configured projects roots.
+// The exact native path ancestry supplies the relation, never a global child-ID
+// lookup. Missing files are allowed because prior captures outlive their paths.
+func (s *Store) CapturedClaudeChildren(ctx context.Context, roots []string, parent string) ([]string, error) {
+	id, err := uuid.Parse(parent)
+	if err != nil || id == uuid.Nil || id.String() != strings.ToLower(parent) {
+		return nil, nil
+	}
+	parent = id.String()
+	seen := map[string]bool{}
+	err = s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+		read := func(query string, args ...any) error {
+			rows, err := q.QueryContext(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var path, key string
+				if err := rows.Scan(&path, &key); err != nil {
+					return err
+				}
+				if child := capturedClaudeChild(roots, parent, path, key); child != "" {
+					seen[child] = true
+				}
+			}
+			return rows.Err()
+		}
+		if err := read(`SELECT src.path,coalesce(src.session_key,'') FROM sources src
+ WHERE src.device_id=? AND src.agent=? AND src.storage_kind=?
+   AND substr(src.parser,1,7)='claude@' AND length(src.parser)>7
+   AND (src.wm_size>0 OR src.wm_offset>0
+     OR EXISTS(SELECT 1 FROM generations g WHERE g.source_id=src.id AND g.size>0)
+     OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=src.id)
+     OR EXISTS(SELECT 1 FROM companions c WHERE c.source_id=src.id AND c.size>0)
+     OR EXISTS(SELECT 1 FROM companions p JOIN conversations c ON c.id=p.conversation_id
+       WHERE c.source_id=src.id AND c.device_id=src.device_id AND c.agent=src.agent AND p.size>0))`, s.opts.DeviceID, string(transcript.AgentClaude), string(transcript.StorageJSONLAppend)); err != nil {
+			return err
+		}
+		var tables int
+		if err := q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('devsync_sources','devsync_gens')`).Scan(&tables); err != nil {
+			return err
+		}
+		if tables == 0 {
+			return nil
+		}
+		if tables != 2 {
+			return fmt.Errorf("localindex: incomplete device sync evidence schema")
+		}
+		return read(`SELECT DISTINCT CASE WHEN json_extract(src.spec,'$.StorageKind')=? THEN coalesce(json_extract(src.spec,'$.Parent'),'') ELSE src.path END,
+ coalesce(json_extract(src.spec,'$.SessionKey'),'')
+ FROM devsync_sources src JOIN devsync_gens g ON g.source_id=src.id
+ WHERE g.size>0 AND json_extract(src.spec,'$.Agent')=?
+   AND json_extract(src.spec,'$.StorageKind') IN (?,?)
+   AND substr(json_extract(src.spec,'$.Parser'),1,7)='claude@' AND length(json_extract(src.spec,'$.Parser'))>7
+   AND coalesce(json_extract(src.spec,'$.Export'),0)=0`, string(transcript.StorageCompanion), string(transcript.AgentClaude), string(transcript.StorageJSONLAppend), string(transcript.StorageCompanion))
+	})
+	out := make([]string, 0, len(seen))
+	for child := range seen {
+		out = append(out, child)
+	}
+	sort.Strings(out)
+	return out, err
+}
+
+func capturedClaudeChild(roots []string, parent, path, key string) string {
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	for _, root := range roots {
+		if !filepath.IsAbs(root) {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) < 4 || parts[0] == ".." || strings.ToLower(parts[1]) != parent || parts[2] != "subagents" {
+			continue
+		}
+		name := parts[len(parts)-1]
+		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		child := strings.TrimSuffix(name, ".jsonl")
+		if child == "agent-" || key != "" && key != child {
+			continue
+		}
+		return child
+	}
+	return ""
 }

@@ -214,17 +214,21 @@ func (c *Config) defaults() {
 // Agent indexes one device's transcripts. Create it with New, then call
 // Run (or Once).
 type Agent struct {
-	captureScopeMu sync.RWMutex // orders app registration against in-flight native evidence
-	placeWriteMu   sync.Mutex   // orders placement memory and durable writes together
-	cfg            Config
-	coworkMu       sync.Mutex
-	coworkResult   cowork.Result // immutable discovery snapshot; guarded by mu
-	coworkError    string        // guarded by mu
-	coworkParser   transcript.Parser
-	store          *localindex.Store
-	claude         transcript.Parser
-	codex          transcript.Parser
-	log            *slog.Logger
+	captureScopeMu        sync.RWMutex // orders app registration against in-flight native evidence
+	placeWriteMu          sync.Mutex   // orders placement memory and durable writes together
+	cfg                   Config
+	coworkMu              sync.Mutex
+	coworkResult          cowork.Result              // immutable discovery snapshot; guarded by mu
+	coworkError           string                     // guarded by mu
+	coworkPendingUnknown  map[placeKey]bool          // expected historical provenance, guarded by mu
+	coworkHistoryFailures map[placeKey]error         // failed durable fact operations, scoped to affected identities
+	coworkHistoryReadErr  error                      // unidentified historical origins hold Claude sharing until read recovers
+	coworkFamilies        map[string]map[string]bool // immutable verified relation snapshot, guarded by mu
+	coworkParser          transcript.Parser
+	store                 *localindex.Store
+	claude                transcript.Parser
+	codex                 transcript.Parser
+	log                   *slog.Logger
 	// onReads, when set (tests), takes the read sightings instead of
 	// the message bus.
 	onReads func([]devicebus.Read)

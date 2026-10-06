@@ -430,16 +430,37 @@ func (a *Agent) storePlace(key placeKey, p placed) {
 
 // loadPlaces reads the stored placements. Called from New and load.
 func (a *Agent) loadPlaces(ctx context.Context) error {
+	a.captureScopeMu.Lock()
+	defer a.captureScopeMu.Unlock()
 	a.placeWriteMu.Lock()
 	defer a.placeWriteMu.Unlock()
 	ps, err := a.store.Placements(ctx)
 	if err != nil {
 		return err
 	}
+	facts, err := a.store.CoworkHistoricalUnknownFacts(ctx)
+	// A provenance read error holds Claude sharing without preventing local
+	// indexing of ordinary placements. Existing historical origins still win.
+	historyErr := err
+	historical := map[string]bool{}
+	for _, session := range facts {
+		historical[session] = true
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.coworkHistoryReadErr = historyErr
 	for _, p := range ps {
-		a.places[placeKey{p.Agent, p.SessionID}] = placed{p.Placement, p.How, p.CheckedAt, p.Candidates, p.OtherCwds}
+		key := placeKey{p.Agent, p.SessionID}
+		if p.Agent == transcript.AgentClaude && (historical[p.SessionID] || a.places[key].how == localindex.PlacedByCoworkUnknown) {
+			p.How = localindex.PlacedByCoworkUnknown
+		}
+		a.places[key] = placed{p.Placement, p.How, p.CheckedAt, p.Candidates, p.OtherCwds}
+	}
+	for session := range historical {
+		key := placeKey{transcript.AgentClaude, session}
+		p := a.places[key]
+		p.how = localindex.PlacedByCoworkUnknown
+		a.places[key] = p
 	}
 	a.placesOK = true
 	return nil

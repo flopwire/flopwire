@@ -113,6 +113,14 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 		if err := a.taintCoworkEvidence(ctx, t); err != nil {
 			return false, err
 		}
+		// Historical provenance can tighten an initially local capture to deny.
+		// Recheck after its durable write, before parsing any of these bytes.
+		if mode, known := a.modeOf(t); known && mode == pathpolicy.Deny {
+			if err := a.purgeDenied(ctx); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 	}
 	gen, cur := st.Generation, transcript.Cursor{}
 	switch change.Decision {
@@ -444,6 +452,9 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 	if id.Size > 0 && newEvidence {
 		if err := a.taintCoworkEvidence(ctx, t); err != nil {
 			return err
+		}
+		if mode, known := a.modeOf(t); known && mode == pathpolicy.Deny {
+			return a.purgeDenied(ctx)
 		}
 	}
 	if err := a.store.UpsertCompanion(ctx, localindex.Companion{SessionID: owner, Agent: transcript.AgentClaude,

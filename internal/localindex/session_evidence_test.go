@@ -3,7 +3,9 @@ package localindex
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -368,6 +370,208 @@ func TestSessionEvidenceNativeCaptureWithoutSessionKey(t *testing.T) {
 				defer r.Close()
 				requireSessionEvidence(t, r, transcript.AgentClaude, session, true)
 			}
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenVerifiedStoredAncestry(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	path := root + "/project/" + parent + "/subagents/workflows/run/agent-cafe.jsonl"
+	for _, tc := range []struct {
+		name, path, key, parser string
+		foreign, want           bool
+	}{
+		{"native", path, "agent-cafe", "claude@1", false, true},
+		{"empty key", path, "", "claude@1", false, true},
+		{"other root", "/other/projects/project/" + parent + "/subagents/agent-cafe.jsonl", "agent-cafe", "claude@1", false, false},
+		{"other parent", strings.Replace(path, parent, "12345678-abcd-4321-9876-123456789abd", 1), "agent-cafe", "claude@1", false, false},
+		{"conflicting key", path, "agent-other", "claude@1", false, false},
+		{"non-native parser", path, "agent-cafe", "cass@1", false, false},
+		{"foreign device", path, "agent-cafe", "claude@1", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			src, err := s.EnsureSource(ctx, transcript.Source{Agent: transcript.AgentClaude, Path: tc.path, SessionKey: tc.key, StorageKind: transcript.StorageJSONLAppend, Parser: tc.parser})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.SaveWatermark(ctx, src.ID, transcript.Watermark{Offset: 9}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if tc.foreign {
+				if err = s.write(ctx, func(w *writeTx) error {
+					_, err := w.exec(`UPDATE sources SET device_id='foreign' WHERE id=?`, src.ID)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			children, err := s.CapturedClaudeChildren(ctx, []string{root}, parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want {
+				if !reflect.DeepEqual(children, []string{"agent-cafe"}) {
+					t.Fatal(children)
+				}
+			} else if len(children) != 0 {
+				t.Fatal("unverified relation", children)
+			}
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenSchedulerHistory(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	for _, older := range []bool{false, true} {
+		t.Run(fmt.Sprint(older), func(t *testing.T) {
+			s := openEvidenceTest(t)
+			root := "/synthetic/projects"
+			path := root + "/project/" + parent + "/subagents/agent-cafe.jsonl"
+			spec := `{"Agent":"claude","StorageKind":"jsonl_append","Parser":"claude@1","SessionKey":""}`
+			gen, closed, acked := 3, 0, 0
+			if older {
+				gen, closed, acked = 1, 1, 1
+			}
+			if err := s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`, `CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,acked INTEGER)`} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,?,?,3)`, path, spec); err != nil {
+					return err
+				}
+				_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,?,9,?,?)`, gen, closed, acked)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			children, err := s.CapturedClaudeChildren(ctx, []string{root}, parent)
+			if err != nil || !reflect.DeepEqual(children, []string{"agent-cafe"}) {
+				t.Fatalf("scheduler relation %v %v", children, err)
+			}
+			if err = s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Open(s.Path(), Options{DeviceID: "local-device", ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			children, err = r.CapturedClaudeChildren(ctx, []string{root}, parent)
+			if err != nil || !reflect.DeepEqual(children, []string{"agent-cafe"}) {
+				t.Fatalf("reopened relation %v %v", children, err)
+			}
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenCompanionOnly(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	childPath := root + "/project/" + parent + "/subagents/agent-cafe.jsonl"
+	for _, tc := range []struct {
+		name, key, parent, parser string
+		want                      bool
+	}{
+		{"empty key", "", childPath, "claude@1", true},
+		{"matching key", "agent-cafe", childPath, "claude@1", true},
+		{"conflicting key", "agent-other", childPath, "claude@1", false},
+		{"wrong ancestry", "", root + "/project/12345678-abcd-4321-9876-123456789abd/subagents/agent-cafe.jsonl", "claude@1", false},
+		{"non-native", "", childPath, "cass@1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			spec, err := json.Marshal(map[string]any{"Agent": "claude", "StorageKind": "companion", "Parser": tc.parser, "Parent": tc.parent, "SessionKey": tc.key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`, `CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,acked INTEGER)`} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,'/synthetic/result.txt',?,3)`, string(spec)); err != nil {
+					return err
+				}
+				_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,1,9,1,1)`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			children, err := s.CapturedClaudeChildren(ctx, []string{root}, parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want {
+				if !reflect.DeepEqual(children, []string{"agent-cafe"}) {
+					t.Fatal(children)
+				}
+			} else if len(children) != 0 {
+				t.Fatal(children)
+			}
+		})
+	}
+	// Local companion bytes can be the only evidence for an empty transcript.
+	for _, conversationOnly := range []bool{false, true} {
+		t.Run(fmt.Sprint("local conversation-only=", conversationOnly), func(t *testing.T) {
+			s := openEvidenceTest(t)
+			src, err := s.EnsureSource(ctx, transcript.Source{Agent: transcript.AgentClaude, Path: childPath, SessionKey: "agent-cafe", StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			companion := Companion{Agent: transcript.AgentClaude, SessionID: "agent-cafe", SourceID: src.ID, Path: "/synthetic/result.txt", Size: 9}
+			if conversationOnly {
+				apply(t, s, Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "agent-cafe"}}})
+				companion.SourceID = 0
+			}
+			if err = s.UpsertCompanion(ctx, companion); err != nil {
+				t.Fatal(err)
+			}
+			children, err := s.CapturedClaudeChildren(ctx, []string{root}, parent)
+			if err != nil || !reflect.DeepEqual(children, []string{"agent-cafe"}) {
+				t.Fatalf("local companion relation %v %v", children, err)
+			}
+		})
+	}
+}
+
+func TestSessionEvidenceCapturedGenerationSurvivesNoRowsOrWatermark(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	for _, size := range []int64{0, 9} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			s := openEvidenceTest(t)
+			root := "/synthetic/projects"
+			path := root + "/project/" + parent + "/subagents/agent-cafe.jsonl"
+			src, err := s.EnsureSource(ctx, transcript.Source{Agent: transcript.AgentClaude, Path: path, SessionKey: "agent-cafe", StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Generation creation can precede parsing. Nonempty byte capture is
+			// conservative historical proof even when extraction did not commit rows.
+			if err = s.StartGeneration(ctx, src.ID, transcript.Generation{Generation: 1, Size: size, Complete: false}, "synthetic capture before parse"); err != nil {
+				t.Fatal(err)
+			}
+			requireSessionEvidence(t, s, transcript.AgentClaude, "agent-cafe", size > 0)
+			children, err := s.CapturedClaudeChildren(ctx, []string{root}, parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(children) > 0) != (size > 0) {
+				t.Fatalf("generation children %v", children)
+			}
+			if err = s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Open(s.Path(), Options{DeviceID: "local-device", ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			requireSessionEvidence(t, r, transcript.AgentClaude, "agent-cafe", size > 0)
 		})
 	}
 }

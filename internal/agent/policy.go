@@ -693,6 +693,12 @@ func (a *Agent) loadStoreModes(ctx context.Context, d *storeState, pv *policyVie
 // allowUpload is the sync scheduler's filter: it drops a queued flush the
 // rules no longer allow (a deny or local rule added after the capture).
 func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
+	a.mu.Lock()
+	historyReadErr := a.coworkHistoryReadErr
+	a.mu.Unlock()
+	if spec.Agent == transcript.AgentClaude && historyReadErr != nil {
+		return false
+	}
 	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}
 	if spec.Parent != "" {
 		nt.kind, nt.owner, nt.parent = kindCompanion, spec.SessionKey, spec.Parent
@@ -781,6 +787,9 @@ func (a *Agent) purgeDenied(ctx context.Context) error {
 			d = pd // a subagent goes with its parent
 		}
 		if d.Mode == pathpolicy.Deny {
+			if err := a.coworkHistoryPurgeError([]placeKey{{transcript.Agent(c.agent), c.session}}); err != nil {
+				return err
+			}
 			denied[c.id] = d
 			c.why = d
 			todo = append(todo, c)
@@ -792,6 +801,11 @@ func (a *Agent) purgeDenied(ctx context.Context) error {
 // purgeSource removes the conversations recorded from one source (a
 // tracked file a deny rule now covers).
 func (a *Agent) purgeSource(ctx context.Context, sourceID int64, why pathpolicy.Decision) error {
+	if source, err := a.store.Source(ctx, sourceID); err != nil {
+		return err
+	} else if err := a.coworkHistoryPurgeError([]placeKey{{source.Source.Agent, source.Source.SessionKey}}); err != nil {
+		return err
+	}
 	rows, err := a.store.DB().QueryContext(ctx, `SELECT c.id, c.agent, c.session_id, ifnull(s.storage_kind, '')
 		FROM conversations c JOIN sources s ON s.id = c.source_id WHERE c.source_id = ?`, sourceID)
 	if err != nil {
