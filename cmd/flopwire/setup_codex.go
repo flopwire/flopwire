@@ -403,13 +403,21 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 	}
 	installed := findCodexPlugin(list)
 	// An install from the marketplace's old name (legacyMarketplace, from
-	// this source) has no upgrade path (pre-release): --check names the
-	// commands that remove it; setup never runs them.
-	if mode == setupCheck && slices.ContainsFunc(mkts, func(m codexMarketplaceEntry) bool {
-		return m.Name == legacyMarketplace && sameCodexSource(m, env.source)
-	}) {
+	// any source, or orphaned: Codex keeps a plugin whose marketplace went
+	// away) has no upgrade path (pre-release): --check and an install name
+	// the commands that remove it, since two installs run every hook twice;
+	// setup never runs them.
+	if mode != setupRemove {
 		oldID := pluginName + "@" + legacyMarketplace
-		r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s is now %s; remove the old one and its %s, then install again: codex plugin remove %s; codex plugin marketplace remove %s; flopwire setup", legacyMarketplace, codexMarketplace, oldID, oldID, legacyMarketplace))
+		if cfg, err := readCodexUserConfig(env); err == nil {
+			if _, stale := cfg.Plugins[oldID]; stale {
+				where, cmds := "whose marketplace "+legacyMarketplace+" is gone (the plugin still loads from the cache)", "codex plugin remove "+oldID
+				if i := slices.IndexFunc(mkts, func(m codexMarketplaceEntry) bool { return m.Name == legacyMarketplace }); i >= 0 {
+					where, cmds = "from the marketplace "+legacyMarketplace+" (from "+mkts[i].location()+")", cmds+"; codex plugin marketplace remove "+legacyMarketplace
+				}
+				r.Todo = append(r.Todo, fmt.Sprintf("Codex still has %s %s; the marketplace is now %s. Remove the old install, then install again: %s; flopwire setup", oldID, where, codexMarketplace, cmds))
+			}
+		}
 	}
 	// Codex keeps loading a plugin whose marketplace was removed (its
 	// config entry and cache stay), and its hooks and MCP server still

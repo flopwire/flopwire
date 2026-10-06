@@ -574,9 +574,11 @@ The result:
   `plugins/cache/flopwire-plugins/flopwire/local`, and listed five plugin hooks,
   all waiting for review.
 - A second `flopwire setup` ran `codex plugin marketplace upgrade
-  flopwire` and reinstalled the plugin. It reported nothing to change.
+  flopwire-plugins` and reinstalled the plugin. It reported nothing to change.
 - `flopwire setup --check` reported the plugin installed and enabled, and
   the five hooks waiting for approval.
+- The run used the marketplace `flopwire` and the plugin
+  `flopwire@flopwire`; the names above were updated for #162.
 
 The Codex desktop app, the IDE extension and Devin Desktop were not tested
 with the plugin. To check them by hand, see
@@ -646,6 +648,8 @@ What was verified, with Claude Code 2.1.289 on macOS 26 on 2026-10-04:
   `flopwire:messaging` skill. The same prompt with
   `--setting-sources project` saw no marker and no tool, so the user
   settings loaded the plugin.
+- The run used the marketplace `flopwire` and the plugin
+  `flopwire@flopwire`; the names above were updated for #162.
 - `--remove` uninstalled the plugin and removed the marketplace, and
   `--check` then reported it not installed.
 - A source whose `marketplace.json` names another marketplace: setup

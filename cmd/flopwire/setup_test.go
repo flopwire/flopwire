@@ -1389,28 +1389,40 @@ func TestSetupReportsHookBinary(t *testing.T) {
 
 // TestSetupReportsOldMarketplace: the marketplace was named flopwire
 // before flopwire-plugins (#162). Pre-release, so setup removes nothing
-// itself: --check names the commands, and only for our own source.
+// itself: --check and an install name the commands, for a flopwire
+// marketplace from any source that has flopwire@flopwire installed.
 func TestSetupReportsOldMarketplace(t *testing.T) {
 	f := newSetupFixture(t, true)
-	f.setState(fakeClaudeState{
-		Available:    "bbbbbbbbbbbb",
-		Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}},
-		Plugins:      []claudePluginEntry{{ID: "flopwire@flopwire", Version: "aaaaaaaaaaaa", Scope: "user", Enabled: true}},
-	})
+	old := claudePluginEntry{ID: "flopwire@flopwire", Version: "aaaaaaaaaaaa", Scope: "user", Enabled: true}
+	for _, mkt := range []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}, {Name: "flopwire", Source: "github", Repo: "someone/else"}} {
+		f.setState(fakeClaudeState{Available: "bbbbbbbbbbbb", Marketplaces: []claudeMarketplaceEntry{mkt}, Plugins: []claudePluginEntry{old}})
+		rep, _, err := f.run("--check")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := f.claude(rep)
+		want := "the marketplace flopwire (from " + mkt.location() + ") is now flopwire-plugins; remove the old one and its flopwire@flopwire, then install again: claude plugin marketplace remove flopwire --scope user && flopwire setup"
+		if got := mutating(f.calls()); len(got) != 0 || h.Installed || !slices.Contains(h.Todo, want) {
+			t.Fatalf("--check with %+v: calls %q, todo %q", mkt, got, h.Todo)
+		}
+		// An install says the same and removes nothing.
+		if rep, _, err = f.run(); err != nil {
+			t.Fatal(err)
+		}
+		h = f.claude(rep)
+		calls := []string{"plugin marketplace add " + f.repo + " --json --scope user", "plugin install flopwire@flopwire-plugins --json --scope user"}
+		st := f.getState()
+		if got := mutating(f.calls()); !slices.Equal(got, calls) || !h.Installed || !slices.Contains(h.Todo, want) || len(st.Marketplaces) != 2 || len(st.Plugins) != 2 {
+			t.Fatalf("install with %+v: calls %q, todo %q, state %+v", mkt, got, h.Todo, st)
+		}
+	}
+	// The old marketplace without the old plugin is not reported.
+	f.setState(fakeClaudeState{Available: "b", Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "directory", Path: f.repo}}})
 	rep, _, err := f.run("--check")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := f.claude(rep)
-	if got := mutating(f.calls()); len(got) != 0 || h.Installed || !hasString(h.Todo, "claude plugin marketplace remove flopwire --scope user && flopwire setup") {
-		t.Fatalf("--check: calls %q, %+v", got, h)
-	}
-	// A marketplace named flopwire from another source is not ours.
-	f.setState(fakeClaudeState{Available: "b", Marketplaces: []claudeMarketplaceEntry{{Name: "flopwire", Source: "github", Repo: "someone/else"}}})
-	if rep, _, err = f.run("--check"); err != nil {
-		t.Fatal(err)
-	}
-	if h = f.claude(rep); hasString(h.Todo, "marketplace remove flopwire ") {
-		t.Fatalf("other flopwire marketplace: todo %q", h.Todo)
+	if h := f.claude(rep); hasString(h.Todo, "marketplace remove flopwire ") {
+		t.Fatalf("old marketplace alone: todo %q", h.Todo)
 	}
 }

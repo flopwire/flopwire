@@ -207,7 +207,7 @@ func codexPluginRoot(env *setupEnv, version string) string {
 	if home == "" {
 		return ""
 	}
-	base := filepath.Join(home, "plugins", "cache", codexMarketplace, "flopwire")
+	base := filepath.Join(home, "plugins", "cache", codexMarketplace, pluginName)
 	if version != "" {
 		if d := filepath.Join(base, version); isDir(d) {
 			return d

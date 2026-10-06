@@ -1106,27 +1106,42 @@ func TestSetupCodexCheckNewerCodexHash(t *testing.T) {
 
 // TestSetupCodexReportsOldMarketplace: the marketplace was named flopwire
 // before flopwire-plugins (#162). Pre-release, so setup removes nothing
-// itself: --check names the commands, and only for our own source.
+// itself: --check and an install name the commands when config.toml has
+// flopwire@flopwire, from a flopwire marketplace of any source or orphaned.
 func TestSetupCodexReportsOldMarketplace(t *testing.T) {
 	c := newCodexFixture(t, false)
-	c.setCodex(fakeCodexState{
-		Available:    "rev1",
-		Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "local", Source: c.repo}},
-		Plugins:      map[string]bool{"flopwire@flopwire": true},
-	})
-	rep, _, err := c.run("--check")
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		mkts []fakeCodexMarketplace
+		want string
+	}{
+		{[]fakeCodexMarketplace{{Name: "flopwire", SourceType: "local", Source: c.repo}}, "from the marketplace flopwire (from " + c.repo + ")"},
+		{[]fakeCodexMarketplace{{Name: "flopwire", SourceType: "git", Source: "https://github.com/someone/fork.git"}}, "from the marketplace flopwire (from https://github.com/someone/fork.git)"},
+		{nil, "whose marketplace flopwire is gone (the plugin still loads from the cache)"},
 	}
-	h := c.codex(rep)
-	if got := mutating(c.codexCalls()); len(got) != 0 || h.Installed || !hasString(h.Todo, "codex plugin remove flopwire@flopwire; codex plugin marketplace remove flopwire; flopwire setup") {
-		t.Fatalf("--check: calls %q, %+v", got, h)
-	}
-	c.setCodex(fakeCodexState{Available: "rev1", Marketplaces: []fakeCodexMarketplace{{Name: "flopwire", SourceType: "git", Source: "https://github.com/someone/fork.git"}}})
-	if rep, _, err = c.run("--check"); err != nil {
-		t.Fatal(err)
-	}
-	if h = c.codex(rep); hasString(h.Todo, "marketplace remove flopwire;") {
-		t.Fatalf("other flopwire marketplace: todo %q", h.Todo)
+	for _, tc := range cases {
+		c.setCodex(fakeCodexState{Available: "rev1", Marketplaces: tc.mkts, Plugins: map[string]bool{"flopwire@flopwire": true}})
+		rep, _, err := c.run("--check")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmds := "codex plugin remove flopwire@flopwire"
+		if tc.mkts != nil {
+			cmds += "; codex plugin marketplace remove flopwire"
+		}
+		want := "Codex still has flopwire@flopwire " + tc.want + "; the marketplace is now flopwire-plugins. Remove the old install, then install again: " + cmds + "; flopwire setup"
+		h := c.codex(rep)
+		if got := mutating(c.codexCalls()); len(got) != 0 || h.Installed || !slices.Contains(h.Todo, want) {
+			t.Fatalf("--check with %+v: calls %q, todo %q", tc.mkts, got, h.Todo)
+		}
+		// An install says the same and removes nothing.
+		if rep, _, err = c.run(); err != nil {
+			t.Fatal(err)
+		}
+		h = c.codex(rep)
+		calls := []string{"plugin marketplace add " + c.repo + " --json", "plugin add flopwire@flopwire-plugins --json"}
+		st := c.getCodex()
+		if got := mutating(c.codexCalls()); !slices.Equal(got, calls) || !h.Installed || !slices.Contains(h.Todo, want) || len(st.Marketplaces) != len(tc.mkts)+1 || !st.Plugins["flopwire@flopwire"] {
+			t.Fatalf("install with %+v: calls %q, todo %q, state %+v", tc.mkts, got, h.Todo, st)
+		}
 	}
 }

@@ -662,6 +662,12 @@ func (c claudeCLI) plugin(ctx context.Context) (*claudePluginEntry, error) {
 // installsFrom lists the plugins Claude Code has installed from Flopwire's
 // marketplace, in any scope or project.
 func (c claudeCLI) installsFrom(ctx context.Context) ([]string, error) {
+	return c.installedFrom(ctx, claudeMarketplace)
+}
+
+// installedFrom lists the plugins installed from the named marketplace, in
+// any scope or project.
+func (c claudeCLI) installedFrom(ctx context.Context, marketplace string) ([]string, error) {
 	args := []string{"plugin", "list", "--json"}
 	out, errb, err := c.raw(ctx, args...)
 	var l []claudePluginEntry
@@ -670,7 +676,7 @@ func (c claudeCLI) installsFrom(ctx context.Context) ([]string, error) {
 	}
 	var ids []string
 	for _, p := range l {
-		if strings.HasSuffix(p.ID, "@"+claudeMarketplace) {
+		if strings.HasSuffix(p.ID, "@"+marketplace) {
 			id := p.ID + " (" + p.Scope + " scope"
 			if p.ProjectPath != "" {
 				id += ", " + p.ProjectPath
@@ -773,11 +779,20 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 	scopeArgs := []string{"--scope", env.scope}
 
 	// An install from the marketplace's old name (legacyMarketplace, from
-	// this source) has no upgrade path (pre-release): --check names the
-	// commands that remove it; setup never runs them.
-	if env.mode == setupCheck && slices.ContainsFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == legacyMarketplace && sameSource(m, env.source) }) {
-		oldID := pluginName + "@" + legacyMarketplace
-		r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s is now %s; remove the old one and its %s, then install again: claude plugin marketplace remove %s --scope %s && flopwire setup", legacyMarketplace, claudeMarketplace, oldID, legacyMarketplace, env.scope))
+	// any source) has no upgrade path (pre-release): --check and an install
+	// name the commands that remove it, since two installs run every hook
+	// twice; setup never runs them.
+	if env.mode != setupRemove {
+		if i := slices.IndexFunc(mkts, func(m claudeMarketplaceEntry) bool { return m.Name == legacyMarketplace }); i >= 0 {
+			oldID := pluginName + "@" + legacyMarketplace
+			old, err := c.installedFrom(ctx, legacyMarketplace)
+			if err != nil {
+				return fail(err)
+			}
+			if slices.ContainsFunc(old, func(s string) bool { return strings.HasPrefix(s, oldID+" ") }) {
+				r.Todo = append(r.Todo, fmt.Sprintf("the marketplace %s (from %s) is now %s; remove the old one and its %s, then install again: claude plugin marketplace remove %s --scope %s && flopwire setup", legacyMarketplace, mkts[i].location(), claudeMarketplace, oldID, legacyMarketplace, env.scope))
+			}
+		}
 	}
 
 	switch env.mode {
