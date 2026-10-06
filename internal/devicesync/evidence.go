@@ -28,10 +28,20 @@ type CaptureEvidence struct {
 // arbitrary matching filenames are not considered. Recovery exports are
 // excluded because their original-source association needs separate proof.
 func (s *Scheduler) CaptureEvidence(ctx context.Context, agent transcript.Agent, session string, paths ...string) (CaptureEvidence, error) {
-	return s.sy.store.captureEvidence(ctx, agent, session, paths)
+	return s.sy.store.captureEvidence(ctx, agent, session, "", paths)
 }
 
-func (s *Store) captureEvidence(ctx context.Context, agent transcript.Agent, session string, paths []string) (CaptureEvidence, error) {
+// CaptureEvidenceForOrigin requires every capture proof to attest the requested
+// collector origin. A proof for another origin retains its ledger reference,
+// but cannot qualify historical bytes for a newly discovered origin.
+func (s *Scheduler) CaptureEvidenceForOrigin(ctx context.Context, agent transcript.Agent, session, origin string, paths ...string) (CaptureEvidence, error) {
+	if origin != "cowork" && origin != "desktop-code" {
+		return CaptureEvidence{}, errors.New("devicesync: valid capture evidence origin required")
+	}
+	return s.sy.store.captureEvidence(ctx, agent, session, origin, paths)
+}
+
+func (s *Store) captureEvidence(ctx context.Context, agent transcript.Agent, session, expectedOrigin string, paths []string) (CaptureEvidence, error) {
 	var out CaptureEvidence
 	if agent == "" || session == "" {
 		return out, errors.New("devicesync: capture evidence session identity required")
@@ -99,7 +109,7 @@ func (s *Store) captureEvidence(ctx context.Context, agent transcript.Agent, ses
 		switch {
 		case sp.SessionKey == session:
 			out.Sources = append(out.Sources, ref)
-			if !generationProofValid(sp, g) || g.Proof.Origin != origin || g.Proof.Root != root {
+			if !generationProofValid(sp, g) || g.Proof.Origin != origin || g.Proof.Root != root || (expectedOrigin != "" && g.Proof.Origin != expectedOrigin) {
 				out.Unproven = true
 			}
 		case sp.SessionKey == "" && verified[path] && canonicalRestrictionSource(sp, session):
