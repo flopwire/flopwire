@@ -1,7 +1,7 @@
 # Device agent
 
 The device agent keeps the local index current. It reads Claude Code, Codex,
-Devin and opencode transcripts. It never writes to the harness directories. When the
+Devin, opencode and local Cowork transcripts. It never writes to the harness directories. When the
 device has a server configuration, the agent also uploads the transcripts.
 
 ## Run the agent
@@ -10,7 +10,7 @@ device has a server configuration, the agent also uploads the transcripts.
 2. Keep the process running. Use a login item, a launchd agent, or a
    terminal multiplexer.
 
-The first pass indexes every transcript on the device. On the reference
+The first pass indexes transcripts in the configured collection roots. On the reference
 laptop (about 18GB of transcripts) the first pass takes about 7 minutes.
 After a first pass of more than 200 sources, the agent restarts itself
 once to release the memory of the bulk load. It keeps the index lock
@@ -28,12 +28,36 @@ The agent uses these paths:
 | User path rules | `<config dir>/flopwire/path-rules` | none |
 | Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json` | none |
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
+| Cowork container | `~/Library/Application Support/Claude/local-agent-mode-sessions` on macOS; no default on other platforms | `--cowork-root`; `-` disables |
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
 | opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
 
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
+
+Cowork collection reads native Claude evidence under
+`<container>/<account>/<workspace>/<app-session>/.claude/projects`.
+It preserves native session IDs and original paths. It uses adjacent app
+metadata to apply path rules across verified selected and approved Mac folders.
+The strictest rule anywhere within each selected folder wins, including
+nested directory and glob rules. Logical and physical folder paths both apply.
+An unresolved nested repository scope holds sharing at local mode; an actual
+matching deny rule excludes indexing. Previously observed folders keep
+protecting the session after app permissions change or metadata disappears.
+
+All Cowork uploads remain held until the server supports stored host-folder
+policy evidence. The hold also covers identified CLI copies of those sessions.
+Status reports the server support hold separately from unknown folder mapping.
+VM paths, unresolved mount identifiers and missing mapping leave an unknown
+scope. Metadata-only sessions have a current mapping hold without marking
+historical evidence unknown. Evidence indexed under unknown mapping retains
+a historical unknown scope. A later valid metadata file does not clear that scope.
+App metadata and audit streams are excluded from transcript collection.
+
+This is a local collection prerequisite for ongoing shared Cowork history.
+It does not reconcile earlier server copies, establish Claude Desktop Code-tab
+coverage, or collect ordinary Claude chat. Those checks remain separate.
 
 Use `--once` to index what changed and exit. Use `--no-sync` to index
 without upload. `flopwire agent run -h` lists every flag.
@@ -187,6 +211,8 @@ socket and prints these parts:
 | Line | Means |
 |---|---|
 | `agent: running` | The agent answered. |
+| `Cowork: STATE` | Current local discovery state, native sessions, metadata-only sessions and excluded paths. JSON status also includes mapping reasons, historical unknown scopes and watch candidates. |
+| `shared uploads held: server host-folder policy support pending` | Cowork evidence remains local. Empty sync queues do not establish shared Cowork coverage. |
 | `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](#keep-sessions-out-with-path-rules). |
 | `sessions placed by (for path rules):` | How many sessions each placement method placed. See [Where a session ran](#where-a-session-ran). |
 | `sync: off (no server configured)` | The device is not enrolled, or the agent runs with `--no-sync`. |

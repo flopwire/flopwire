@@ -43,7 +43,7 @@ func runAgentAsync(t *testing.T, ctx context.Context, home, sock string) <-chan 
 	t.Helper()
 	done := make(chan *os.File, 1)
 	go func() {
-		lock, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", filepath.Join(home, ".claude", "projects"),
+		lock, err := runAgent(ctx, []string{"--socket", sock, "--cowork-root", "-", "--claude-projects", filepath.Join(home, ".claude", "projects"),
 			"--codex-home", filepath.Join(home, ".codex"), "--devin-db", "-", "--opencode-db", "-", "--mem-limit", "0", "--gc-percent", "100"})
 		if err != nil {
 			t.Errorf("agent: %v", err)

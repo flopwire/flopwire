@@ -336,3 +336,36 @@ type NotFoundError struct {
 }
 
 func (e *NotFoundError) Error() string { return "localindex: no " + e.What + " with id " + itoa(e.ID) }
+
+// CompanionDigest returns the stored content hash, including writes still in
+// the writer transaction. A missing companion or an absent hash returns nil.
+func (s *Store) CompanionDigest(ctx context.Context, path string) ([]byte, error) {
+	var digest []byte
+	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+		err := q.QueryRowContext(ctx, `SELECT content_sha FROM companions WHERE path = ?`, path).Scan(&digest)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	return digest, err
+}
+
+// SessionHasEvidence reports captured evidence predating app scope proof.
+// Parsing can commit message batches before saving the source watermark;
+// orphaned sessions can have only companion files. Both count as evidence.
+func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, session string) (bool, error) {
+	var have bool
+	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+		return q.QueryRowContext(ctx, `SELECT
+   EXISTS(SELECT 1 FROM sources WHERE device_id=? AND agent=? AND session_key=? AND (wm_size>0 OR wm_offset>0))
+   OR EXISTS(SELECT 1 FROM conversations c WHERE c.device_id=? AND c.agent=? AND c.session_id=?
+     AND (EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id)
+       OR EXISTS(SELECT 1 FROM companions p WHERE p.conversation_id=c.id AND p.size>0)))
+   OR EXISTS(SELECT 1 FROM companions p JOIN sources src ON src.id=p.source_id
+     WHERE src.device_id=? AND src.agent=? AND src.session_key=? AND p.size>0)`,
+			s.opts.DeviceID, string(agent), session, s.opts.DeviceID, string(agent), session,
+			s.opts.DeviceID, string(agent), session).Scan(&have)
+	})
+	return have, err
+}

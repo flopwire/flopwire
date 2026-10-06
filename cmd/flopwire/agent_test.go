@@ -360,7 +360,7 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
+		_, err := runAgent(ctx, []string{"--socket", sock, "--cowork-root", "-", "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
 		done <- err
 	}()
 	deadline := time.Now().Add(30 * time.Second)
