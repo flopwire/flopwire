@@ -215,6 +215,9 @@ func (s *Server) Flush(ctx context.Context, deviceID string, h *syncproto.FlushH
 	if err := recordLive(ctx, conn, deviceID, h.Live); err != nil {
 		return nil, err
 	}
+	if _, err := checkFlushPolicy(ctx, conn, deviceID, h.Source); err != nil {
+		return nil, err
+	}
 	var tombstoned bool
 	var refused *string
 	err = conn.QueryRow(ctx, `SELECT tombstoned_at IS NOT NULL,refused_rule FROM sources WHERE device_id=$1 AND path=$2 AND file_id=$3`,
@@ -297,10 +300,24 @@ func recordDeviceDirs(ctx context.Context, conn *pgxpool.Conn, deviceID string, 
 	if len(d.Home) > maxDirLen || len(d.ClaudeProjects) > maxDirLen || len(d.CodexHome) > maxDirLen {
 		return badRequest("device directories longer than %d bytes", maxDirLen)
 	}
-	_, err := conn.Exec(ctx, `UPDATE devices SET home=NULLIF($2,''),claude_projects=NULLIF($3,''),codex_home=NULLIF($4,'')
-		WHERE id=$1 AND (home,claude_projects,codex_home) IS DISTINCT FROM (NULLIF($2,''),NULLIF($3,''),NULLIF($4,''))`,
-		deviceID, d.Home, d.ClaudeProjects, d.CodexHome)
-	return err
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, policyDeviceLockKey(deviceID)); err != nil {
+			return err
+		}
+		var ledger bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_policy_placements WHERE device_id=$1)`, deviceID).Scan(&ledger); err != nil {
+			return err
+		}
+		if ledger {
+			if err := validatePolicyDeviceDirs(d); err != nil {
+				return err
+			}
+			return recordPolicyDeviceDirs(ctx, tx, deviceID, d)
+		}
+		_, err := tx.Exec(ctx, `UPDATE devices SET home=NULLIF($2,''),claude_projects=NULLIF($3,''),codex_home=NULLIF($4,'')
+			WHERE id=$1 AND (home,claude_projects,codex_home) IS DISTINCT FROM (NULLIF($2,''),NULLIF($3,''),NULLIF($4,''))`, deviceID, d.Home, d.ClaudeProjects, d.CodexHome)
+		return err
+	})
 }
 
 // recordLive stores the sessions the device reports its harnesses hold
@@ -449,6 +466,42 @@ func (f *flush) unlock() {
 func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncproto.FlushResponse, []string, error) {
 	h := f.h
 	src := h.Source
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(f.deviceID)); err != nil {
+		return nil, nil, err
+	}
+	policyIDs, err := checkFlushPolicy(ctx, tx, f.deviceID, src)
+	if err != nil {
+		return nil, nil, err
+	}
+	var policySchema bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('source_policy_identity') IS NOT NULL`).Scan(&policySchema); err != nil {
+		return nil, nil, err
+	}
+	if policySchema {
+		if len(policyIDs) > 0 && src.Agent == "claude" && src.Parent == nil && src.StorageKind != "cass_export" {
+			owner, err := policySourceSession(ctx, tx, f.deviceID, src)
+			if err != nil {
+				return nil, nil, err
+			}
+			if validPolicySession(owner) {
+				if err := bindPolicySourceOwner(ctx, tx, f.deviceID, src.Agent, owner, syncproto.PolicySource{Path: src.Path, FileID: src.FileID, Generation: h.Generation}, false); err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+		if err := bindPolicyCaptureIdentity(ctx, tx, f.deviceID, src); err != nil {
+			return nil, nil, err
+		}
+	}
+	if len(policyIDs) > 0 && (len(h.Entries) > 0 || h.Tail != nil && h.Tail.Size > 0) {
+		ownSession, err := policySourceSession(ctx, tx, f.deviceID, src)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET evidence_scope=CASE WHEN evidence_scope='none' THEN 'mapped' ELSE evidence_scope END WHERE device_id=$1 AND agent=$2 AND session_id=$3 AND current_mapping_known AND jsonb_array_length(placements)>0`, f.deviceID, src.Agent, ownSession); err != nil {
+			return nil, nil, err
+		}
+	}
 	var parentPath, parentFileID *string
 	if src.Parent != nil {
 		parentPath, parentFileID = &src.Parent.Path, &src.Parent.FileID
@@ -497,6 +550,11 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 		resp := swallow(h)
 		resp.Refused = deref(refused)
 		return resp, nil, nil
+	}
+	for _, policyID := range policyIDs {
+		if _, err := tx.Exec(ctx, `INSERT INTO source_policy_placements(device_id,agent,session_id,path,file_id,generation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, f.deviceID, src.Agent, policyID, src.Path, src.FileID, h.Generation); err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := f.link(ctx, tx, sourceID); err != nil {
 		return nil, nil, err

@@ -78,6 +78,10 @@ type sink struct {
 	// reads through. masksMoved is set when a write found it stale.
 	maskRevision int64
 	masksMoved   bool
+	// devicePolicy is a transaction-local ledger-presence snapshot, read
+	// after the shared device gate. It avoids per-conversation policy reads
+	// for ordinary CLI devices; the gate prevents registration until commit.
+	devicePolicy bool
 }
 
 func newSink(ctx context.Context, pool *pgxpool.Pool, src source) *sink {
@@ -132,7 +136,7 @@ func (s *sink) flush() error {
 			return err
 		}
 	}
-	defer func() { s.held = nil }()
+	defer func() { s.held = nil; s.devicePolicy = false }()
 	var learned map[string]bool // sessions found with (false) or without a parent
 	err := pgx.BeginTxFunc(s.ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if err := s.checkMasks(tx); err != nil {
@@ -259,15 +263,21 @@ func (s *sink) flush() error {
 // two statements go in one round trip; the second reads after the lock.
 func (s *sink) checkMasks(tx pgx.Tx) error {
 	b := &pgx.Batch{}
-	b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
-	b.Queue(`SELECT revision FROM redacted_lines_revision WHERE singleton`)
+	if s.src.agent == "claude" {
+		// MATERIALIZED makes device policy serialization precede the existing
+		// redaction lock, without another per-batch statement on CLI reparses.
+		b.Queue(`WITH device_gate AS MATERIALIZED (SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))) SELECT pg_advisory_xact_lock_shared(hashtextextended($2,0)) FROM device_gate`, policyDeviceLockKey(s.src.deviceID), redactedLinesLock)
+	} else {
+		b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
+	}
+	b.Queue(`SELECT revision,EXISTS(SELECT 1 FROM session_policy_placements WHERE device_id=NULLIF($1,'')::uuid AND $2='claude') FROM redacted_lines_revision WHERE singleton`, s.src.deviceID, s.src.agent)
 	br := tx.SendBatch(s.ctx, b)
 	if _, err := br.Exec(); err != nil {
 		br.Close()
 		return err
 	}
 	var rev int64
-	if err := br.QueryRow().Scan(&rev); err != nil {
+	if err := br.QueryRow().Scan(&rev, &s.devicePolicy); err != nil {
 		br.Close()
 		return err
 	}
@@ -361,6 +371,11 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 		s.convIDs[sessionID] = ""
 		return "", nil
 	}
+	if create {
+		if err := s.checkSessionPolicy(tx, sessionID, parent); err != nil {
+			return "", err
+		}
+	}
 	if !create {
 		var id string
 		err := tx.QueryRow(ctx, `SELECT id::text FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=$3`, s.src.deviceID, s.src.agent, sessionID).Scan(&id)
@@ -429,6 +444,13 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 		return "", err
 	}
 	if newlyHidden {
+		if policies, err := loadSessionPolicies(ctx, tx, s.src.deviceID, s.src.agent, sessionID, parent, s.src.id); err != nil {
+			return "", err
+		} else if len(policies) > 0 {
+			if _, err := tx.Exec(ctx, `UPDATE conversations SET hidden_scope='device' WHERE id=$1`, id); err != nil {
+				return "", err
+			}
+		}
 		if err := store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: hideBy, DeviceID: s.src.deviceID,
 			Action: "conversation.hidden", TargetType: "conversation", TargetID: id,
 			Metadata: map[string]any{"rule": hideRule, "mode": hideD.Mode.String(), "unplaceable": hideD.Unplaceable, "rules_version": hideVersion,
