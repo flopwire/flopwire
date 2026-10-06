@@ -14,14 +14,18 @@ import (
 
 type leaseRecorder struct {
 	*recorder
-	authorize func(context.Context, devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error)
-	evidence  devicesync.CaptureEvidence
+	authorize      func(context.Context, devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error)
+	evidence       devicesync.CaptureEvidence
+	beforeEvidence func()
 }
 
 func (r *leaseRecorder) SetAuthorize(fn func(context.Context, devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error)) {
 	r.authorize = fn
 }
 func (r *leaseRecorder) CaptureEvidenceForOrigin(context.Context, transcript.Agent, string, string, ...string) (devicesync.CaptureEvidence, error) {
+	if r.beforeEvidence != nil {
+		r.beforeEvidence()
+	}
 	return r.evidence, nil
 }
 
@@ -174,5 +178,55 @@ func TestCoworkLeaseRetargetedHostAliasInvalidatesCheck(t *testing.T) {
 	}
 	if err := auth.Check(ctx); err == nil {
 		t.Fatal("changed physical host policy scope retained lease")
+	}
+}
+
+func TestCoworkLeaseMappingChangesBeforeFirstSignatureHold(t *testing.T) {
+	for _, change := range []string{"unknown", "new denied folder", "physical alias"} {
+		t.Run(change, func(t *testing.T) {
+			f, recorder, policy, path := newCoworkLeaseFixture(t)
+			denied := filepath.Join(f.home, "denied-before-signature")
+			if err := os.MkdirAll(denied, 0700); err != nil {
+				t.Fatal(err)
+			}
+			f.a.cfg.UserRuleList = []string{"deny " + denied}
+			f.a.refreshPolicy(ctx, false)
+			alias := filepath.Join(f.home, "baseline-alias")
+			if change == "physical alias" {
+				allowed := filepath.Join(f.home, "allowed-before-signature")
+				if err := os.MkdirAll(allowed, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(allowed, alias); err != nil {
+					t.Fatal(err)
+				}
+				coworkMetadata(t, f, []string{alias}, nil, nil)
+				f.once()
+			}
+			sp, _ := recorder.spec(path)
+			before := len(policy.requests)
+			recorder.beforeEvidence = func() {
+				switch change {
+				case "unknown":
+					coworkMetadata(t, f, nil, nil, nil)
+				case "new denied folder":
+					coworkMetadata(t, f, []string{denied}, nil, nil)
+				case "physical alias":
+					if err := os.Remove(alias); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(denied, alias); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if auth, err := recorder.authorize(ctx, sp); err == nil {
+				auth.Release()
+				t.Fatal("changed refresh snapshot authorized")
+			}
+			if len(policy.requests) != before {
+				t.Fatal("unregistered changed grant reached policy acknowledgement")
+			}
+		})
 	}
 }

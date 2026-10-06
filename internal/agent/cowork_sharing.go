@@ -280,36 +280,71 @@ func (a *Agent) markCoworkHistoryUnknown(ctx context.Context, keys []placeKey) e
 
 // mappingSignature checks the app's current grants, independently of the
 // published in-memory snapshot. A changed grant invalidates an upload lease.
-func (a *Agent) mappingSignature(t *target) (string, error) {
+func (a *Agent) mappingSignature(t *target, req *syncproto.PolicyPlacementsRequest) (string, error) {
 	keys, _ := a.coworkCaptureScope(t)
-	r, err := cowork.Discover(a.cfg.CoworkRoot)
+	a.mu.Lock()
+	published := a.coworkResult
+	a.mu.Unlock()
+	fresh, err := cowork.Discover(a.cfg.CoworkRoot)
 	if err != nil {
 		return "", err
+	}
+	allowed := map[string]bool{}
+	for _, placement := range req.Placements {
+		allowed[placement.CWD] = true
 	}
 	type grant struct {
 		ID    string
-		Known bool
 		Paths []string
 	}
-	var grants []grant
-	for _, l := range r.IdentityLinks {
-		for _, k := range keys {
-			if l.NativeSessionID == k.session {
-				paths := coworkHostPaths(l)
+	collect := func(result cowork.Result, physical bool) (string, error) {
+		var grants []grant
+		for _, link := range result.IdentityLinks {
+			for _, key := range keys {
+				if link.NativeSessionID != key.session {
+					continue
+				}
+				if !link.Mapping.Known() {
+					return "", errCoworkHeld
+				}
+				paths := link.Mapping.HostPaths()
+				if physical {
+					paths = coworkHostPaths(link)
+					for _, path := range paths {
+						if !allowed[path] {
+							return "", errCoworkHeld
+						}
+					}
+				}
+				if len(paths) == 0 {
+					return "", errCoworkHeld
+				}
 				sort.Strings(paths)
-				grants = append(grants, grant{l.NativeSessionID, l.Mapping.Known(), paths})
+				grants = append(grants, grant{link.NativeSessionID, paths})
 			}
 		}
+		if len(grants) == 0 {
+			return "", errCoworkHeld
+		}
+		sort.Slice(grants, func(i, j int) bool { return grants[i].ID < grants[j].ID })
+		data, err := json.Marshal(grants)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 	}
-	if len(grants) == 0 {
-		return "", errCoworkHeld
-	}
-	sort.Slice(grants, func(i, j int) bool { return grants[i].ID < grants[j].ID })
-	b, err := json.Marshal(grants)
+	before, err := collect(published, false)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(b)), nil
+	now, err := collect(fresh, false)
+	if err != nil {
+		return "", err
+	}
+	if before != now {
+		return "", errCoworkHeld
+	}
+	return collect(fresh, true)
 }
 
 // authorizeCapture holds the outer scope gate until the scheduler finishes all
@@ -383,7 +418,7 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 	}
 	r.Sources = refs
 	r.RecoverySources = recovery
-	signature, err := a.mappingSignature(t)
+	signature, err := a.mappingSignature(t, r)
 	if err != nil {
 		release()
 		return nil, err
@@ -430,7 +465,7 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 		if !stillIndexed {
 			return errCoworkHeld
 		}
-		now, err := a.mappingSignature(t)
+		now, err := a.mappingSignature(t, r)
 		if err != nil {
 			return err
 		}
