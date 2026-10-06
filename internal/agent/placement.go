@@ -99,7 +99,7 @@ func (a *Agent) placeOf(key placeKey, path string) (placed, bool) {
 	if stored && p.final() {
 		return p, true
 	}
-	h := scanHints(path)
+	h := scanHintsWithOpen(path, a.openNativeEvidence)
 	if h.cwd != "" && filepath.IsAbs(h.cwd) {
 		pl := a.resolve(h.cwd, h.remote)
 		return a.savePlace(key, placed{pl: pl, how: cwdHow(pl)}), true
@@ -583,9 +583,11 @@ const cwdScanLines = 200
 // (git.repository_url on the first line of an old rollout, or
 // payload.git.repository_url in session_meta), within its first
 // cwdScanLines complete lines.
-func scanHints(path string) hints {
+func scanHints(path string) hints { return scanHintsWithOpen(path, fsprobe.Open) }
+
+func scanHintsWithOpen(path string, open func(string) (*os.File, error)) hints {
 	var h hints
-	f, err := fsprobe.Open(path)
+	f, err := open(path)
 	if err != nil {
 		return h
 	}

@@ -544,6 +544,14 @@ func (t *target) placeKeyOf() (placeKey, string) {
 // directory the transcript named: a fallback placement is replaced when
 // the transcript later names one, so its decision must not be cached.
 func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, known, final bool) {
+	defer func() {
+		if a.desktopCodeScoped(t.path) && known {
+			if d.Mode < pathpolicy.Local {
+				d.Mode = pathpolicy.Local
+			}
+			final = false
+		}
+	}()
 	if d, ok := a.coworkMode(pv, t); ok {
 		return d, true, false
 	}
@@ -585,6 +593,13 @@ func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, kn
 // it when a rule could deny it (worstMode), and ask again later.
 func (a *Agent) modeOf(t *target) (mode pathpolicy.Mode, known bool) {
 	pv := a.policy()
+	if a.desktopCodeScoped(t.path) {
+		d, k, _ := a.decisionOf(pv, t)
+		if !k && pv.pol.Empty() {
+			return pathpolicy.Local, true
+		}
+		return d.Mode, k
+	}
 	if d, ok := a.coworkMode(pv, t); ok {
 		a.mu.Lock()
 		t.mode, t.modeGen = d.Mode, pv.gen
@@ -697,6 +712,9 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	historyReadErr := a.coworkHistoryReadErr
 	a.mu.Unlock()
 	if spec.Agent == transcript.AgentClaude && historyReadErr != nil {
+		return false
+	}
+	if a.desktopCodeScoped(spec.Path) {
 		return false
 	}
 	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}

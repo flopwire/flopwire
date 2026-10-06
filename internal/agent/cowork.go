@@ -41,6 +41,11 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	defer a.coworkMu.Unlock()
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
+	a.refreshDesktopCodeLocked(ctx)
+	a.refreshCoworkLocked(ctx)
+}
+
+func (a *Agent) refreshCoworkLocked(ctx context.Context) {
 	facts, historyErr := a.store.CoworkHistoricalUnknownFacts(ctx)
 	a.placeWriteMu.Lock()
 	a.mu.Lock()
@@ -72,6 +77,8 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	changed := false
 	registrationFailed := false
 	scopes := append([]cowork.Link(nil), r.IdentityLinks...)
+	codeScopes, codeRoots := a.desktopCodeCoworkScopes(r)
+	scopes = append(scopes, codeScopes...)
 	historicalFacts := map[string]bool{}
 	for _, session := range facts {
 		historicalFacts[session] = true
@@ -99,6 +106,10 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	for _, link := range r.IdentityLinks {
 		addMember(link.NativeSessionID, link.NativeSessionID)
 	}
+	for _, link := range codeScopes {
+		addMember(link.NativeSessionID, link.NativeSessionID)
+	}
+	a.desktopCodeCoworkFamilies(groups)
 	for session := range historicalFacts {
 		addMember(session, session)
 	}
@@ -145,7 +156,7 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 		}
 	}
 	for root, link := range parents {
-		children, err := a.store.CapturedClaudeChildren(ctx, []string{a.cfg.ClaudeProjects, link.ProjectsRoot}, root)
+		children, err := a.store.CapturedClaudeChildren(ctx, append([]string{a.cfg.ClaudeProjects, link.ProjectsRoot}, codeRoots[root]...), root)
 		if err != nil {
 			registrationFailed = true
 			a.log.Warn("agent: Cowork historical child scope failed", "error", err)
@@ -411,13 +422,10 @@ func (a *Agent) coworkMode(pv *policyView, t *target) (pathpolicy.Decision, bool
 }
 
 func (a *Agent) coworkSafe(t *target) bool {
-	if a.cfg.CoworkRoot == "" {
-		return true
+	if root := a.nativeEvidenceRoot(t.path); root != "" {
+		return cowork.SafeFile(root, t.path)
 	}
-	if _, ok := under(a.cfg.CoworkRoot, t.path); !ok {
-		return true
-	}
-	return cowork.SafeFile(a.cfg.CoworkRoot, t.path)
+	return true
 }
 
 func (a *Agent) coworkStatus() *CoworkStatus {
@@ -482,6 +490,9 @@ func (a *Agent) coworkCaptureScope(t *target) ([]placeKey, bool) {
 		}
 	}
 	a.mu.Unlock()
+	if root == "" {
+		root = a.nativeClaudeParent(t.path)
+	}
 	keys := []placeKey{key}
 	if root != "" {
 		keys = append(keys, placeKey{transcript.AgentClaude, root})
@@ -513,10 +524,17 @@ func (a *Agent) coworkCaptureScope(t *target) ([]placeKey, bool) {
 			}
 		}
 	}
+	if !found && a.desktopCodeCoworkAlias(keys) {
+		found = true
+		known = false
+	}
 	return keys, found && known
 }
 
 func (a *Agent) coworkScopePresent(keys []placeKey) bool {
+	if a.desktopCodeCoworkAlias(keys) {
+		return true
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, key := range keys {
@@ -561,9 +579,17 @@ func coworkHostPaths(link cowork.Link) []string {
 // including failures extending an already registered session's folder union.
 func (a *Agent) coworkUnregisteredPaths(t *target) []string {
 	keys, _ := a.coworkCaptureScope(t)
+	alias := a.desktopCodeCoworkAlias(keys)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var missing []string
+	if alias {
+		for _, key := range keys {
+			if p, ok := a.places[key]; !ok || !localindex.IsCoworkPlacement(p.how) {
+				missing = append(missing, "")
+			}
+		}
+	}
 	for _, key := range keys {
 		p, ok := a.places[key]
 		have := map[string]bool{p.pl.Cwd: true}
