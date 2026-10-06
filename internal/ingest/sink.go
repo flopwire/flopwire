@@ -136,14 +136,9 @@ func (s *sink) flush() error {
 			return err
 		}
 	}
-	defer func() { s.held = nil }()
+	defer func() { s.held = nil; s.devicePolicy = false }()
 	var learned map[string]bool // sessions found with (false) or without a parent
 	err := pgx.BeginTxFunc(s.ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if s.src.agent == "claude" {
-			if _, err := tx.Exec(s.ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(s.src.deviceID)); err != nil {
-				return err
-			}
-		}
 		if err := s.checkMasks(tx); err != nil {
 			return err
 		}
@@ -268,7 +263,13 @@ func (s *sink) flush() error {
 // two statements go in one round trip; the second reads after the lock.
 func (s *sink) checkMasks(tx pgx.Tx) error {
 	b := &pgx.Batch{}
-	b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
+	if s.src.agent == "claude" {
+		// MATERIALIZED makes device policy serialization precede the existing
+		// redaction lock, without another per-batch statement on CLI reparses.
+		b.Queue(`WITH device_gate AS MATERIALIZED (SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))) SELECT pg_advisory_xact_lock_shared(hashtextextended($2,0)) FROM device_gate`, policyDeviceLockKey(s.src.deviceID), redactedLinesLock)
+	} else {
+		b.Queue(`SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, redactedLinesLock)
+	}
 	b.Queue(`SELECT revision,EXISTS(SELECT 1 FROM session_policy_placements WHERE device_id=NULLIF($1,'')::uuid AND $2='claude') FROM redacted_lines_revision WHERE singleton`, s.src.deviceID, s.src.agent)
 	br := tx.SendBatch(s.ctx, b)
 	if _, err := br.Exec(); err != nil {

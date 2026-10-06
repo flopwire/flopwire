@@ -286,7 +286,7 @@ func TestPolicyNewGrandchildWaitsForAncestorRegistration(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.flush() }()
 	waitForLockWait(t, e, "new grandchild policy gate")
-	if _, err := tx.Exec(e.ctx, `UPDATE session_policy_placements SET current_mapping_known=false WHERE device_id=$1 AND session_id=$2`, e.deviceID, req.SessionID); err != nil {
+	if _, err := tx.Exec(e.ctx, `UPDATE session_policy_placements SET current_mapping_known=false,evidence_scope='mapped' WHERE device_id=$1 AND session_id=$2`, e.deviceID, req.SessionID); err != nil {
 		t.Fatal(err)
 	}
 	if err := reconcileSessionPolicy(e.ctx, tx, serverRules{}, e.userID, e.deviceID, "claude", req.SessionID); err != nil {
@@ -324,6 +324,7 @@ func TestPolicyRegistrationReconcilesTransitiveMetadataParents(t *testing.T) {
 	grand.EvidenceScope = "none"
 	applyPolicy(t, e, grand)
 	conv := policyStoredConversation(e, e.deviceID, grand.SessionID, "")
+	root.EvidenceScope = "mapped" // Restrict captured parent history, not an empty readiness placeholder.
 	root.CurrentMappingKnown = false
 	if ack := applyPolicy(t, e, root); ack.Allowed {
 		t.Fatal("unknown root was allowed")

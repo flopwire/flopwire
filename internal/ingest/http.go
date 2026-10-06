@@ -65,10 +65,20 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
+			var size *http.MaxBytesError
+			if errors.As(err, &size) {
+				writeErr(w, &Error{http.StatusRequestEntityTooLarge, "policy_body_limit", "policy body exceeds supported bound; send a compact limit-held revocation before bounded reference batches"})
+				return
+			}
 			writeErr(w, badRequest("bad policy placements request"))
 			return
 		}
 		if err := dec.Decode(new(any)); err != io.EOF {
+			var size *http.MaxBytesError
+			if errors.As(err, &size) {
+				writeErr(w, &Error{http.StatusRequestEntityTooLarge, "policy_body_limit", "policy body exceeds supported bound; send a compact limit-held revocation before bounded reference batches"})
+				return
+			}
 			writeErr(w, badRequest("trailing policy placements data"))
 			return
 		}

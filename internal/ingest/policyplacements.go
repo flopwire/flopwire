@@ -67,6 +67,7 @@ type policyPlacementState struct {
 	Placements          []syncproto.PolicyPlacement
 	CurrentMappingKnown bool
 	EvidenceScope       string
+	ScopeStatus         string
 	ClientMode          string
 	Revision            int64
 }
@@ -104,8 +105,8 @@ func validatePolicyRequest(req *syncproto.PolicyPlacementsRequest) error {
 	if req.CurrentMappingKnown && len(req.Placements) == 0 {
 		return badRequest("known mapping requires host placements")
 	}
-	if len(req.Placements) > maxPolicyPlacements || len(req.Sources) > maxPolicyPlacements || len(req.RecoverySources) > maxPolicyPlacements {
-		return badRequest("too many policy placements or source references")
+	if req.ScopeStatus != "" && req.ScopeStatus != "complete" && req.ScopeStatus != syncproto.ScopeLimitHeld {
+		return badRequest("invalid scope_status")
 	}
 	for _, p := range req.Placements {
 		if !absPath(p.CWD) || strings.HasPrefix(p.CWD, "/sessions/") {
@@ -132,9 +133,12 @@ func validatePolicyRequest(req *syncproto.PolicyPlacementsRequest) error {
 	}
 	for _, ref := range req.RecoverySources {
 		src := ref.Source
-		if !absPath(src.Path) || len(src.Path) > syncproto.MaxRepoField || src.FileID == "" || len(src.FileID) > 512 || src.Generation < 0 || !absPath(ref.OriginalPath) || len(ref.OriginalPath) > syncproto.MaxRepoField || strings.ContainsAny(src.Path+src.FileID+ref.OriginalPath, "\x00\r\n\t") {
+		if !absPath(src.Path) || len(src.Path) > syncproto.MaxRepoField || len(src.FileID) > 512 || src.Generation < 0 || !absPath(ref.OriginalPath) || len(ref.OriginalPath) > syncproto.MaxRepoField || strings.ContainsAny(src.Path+src.FileID+ref.OriginalPath, "\x00\r\n\t") {
 			return badRequest("invalid recovered source reference")
 		}
+	}
+	if len(req.Placements) > maxPolicyPlacements || len(req.Sources) > maxPolicyPlacements || len(req.RecoverySources) > maxPolicyPlacements {
+		return &Error{http.StatusRequestEntityTooLarge, "policy_input_limit", "policy scope exceeds supported bound; committed copies will be held pending controlled scope remediation"}
 	}
 	return nil
 }
@@ -144,9 +148,15 @@ func validatePolicyRequest(req *syncproto.PolicyPlacementsRequest) error {
 // cannot remove its paths from the union protecting older generations.
 func mergePolicy(old policyPlacementState, req *syncproto.PolicyPlacementsRequest, legacy bool) (policyPlacementState, error) {
 	p := old
+	if p.ScopeStatus == "" {
+		p.ScopeStatus = "complete"
+	}
+	if req.ScopeStatus == syncproto.ScopeLimitHeld {
+		p.ScopeStatus = syncproto.ScopeLimitHeld
+	}
 	p.Placements = append([]syncproto.PolicyPlacement{}, old.Placements...)
 	for _, v := range req.Placements {
-		if !slices.Contains(p.Placements, v) {
+		if p.ScopeStatus != syncproto.ScopeLimitHeld && !slices.Contains(p.Placements, v) {
 			p.Placements = append(p.Placements, v)
 		}
 	}
@@ -155,6 +165,13 @@ func mergePolicy(old policyPlacementState, req *syncproto.PolicyPlacementsReques
 	}
 	p.CurrentMappingKnown = req.CurrentMappingKnown
 	p.ClientMode = req.ClientMode
+	if p.ScopeStatus == syncproto.ScopeLimitHeld {
+		oldMode, _ := pathpolicy.ParseMode(old.ClientMode)
+		newMode, _ := pathpolicy.ParseMode(p.ClientMode)
+		if oldMode > newMode {
+			p.ClientMode = old.ClientMode
+		}
+	}
 	if p.EvidenceScope == "unmapped" || req.EvidenceScope == "unmapped" || legacy {
 		p.EvidenceScope = "unmapped"
 	} else if p.EvidenceScope == "mapped" || req.EvidenceScope == "mapped" {
@@ -196,6 +213,9 @@ func (r serverRules) decidePolicy(dev deviceDirs, p policyPlacementState) pathpo
 	if mode > d.Mode || mode == d.Mode && isPolicyHold(d) {
 		d = pathpolicy.Decision{Mode: mode, Rule: pathpolicy.Rule{Mode: mode, Pattern: "cowork-client-policy"}}
 	}
+	if d.Mode < pathpolicy.Local && p.ScopeStatus == "limit-held" {
+		d = pathpolicy.Decision{Mode: pathpolicy.Local, Rule: pathpolicy.Rule{Mode: pathpolicy.Local, Pattern: "cowork-policy-limit"}}
+	}
 	if d.Mode < pathpolicy.Local && (!p.CurrentMappingKnown || p.EvidenceScope == "unmapped") {
 		reason := "cowork-mapping-pending"
 		if p.EvidenceScope == "unmapped" {
@@ -207,7 +227,7 @@ func (r serverRules) decidePolicy(dev deviceDirs, p policyPlacementState) pathpo
 }
 
 func isPolicyHold(d pathpolicy.Decision) bool {
-	return d.Mode == pathpolicy.Local && (d.Rule.Pattern == "cowork-mapping-pending" || d.Rule.Pattern == "cowork-historical-unmapped" || d.Rule.Pattern == "cowork-repository-scope-unknown" || d.Rule.Pattern == "cowork-home-unknown")
+	return d.Mode == pathpolicy.Local && (d.Rule.Pattern == "cowork-mapping-pending" || d.Rule.Pattern == "cowork-historical-unmapped" || d.Rule.Pattern == "cowork-repository-scope-unknown" || d.Rule.Pattern == "cowork-home-unknown" || d.Rule.Pattern == "cowork-policy-limit")
 }
 
 func stricterPolicyDecision(a, b pathpolicy.Decision) pathpolicy.Decision {
@@ -254,18 +274,23 @@ func loadSessionPolicies(ctx context.Context, q policyQuerier, device, agent, se
  keys AS (SELECT $3::text session_id UNION SELECT NULLIF($4,'') UNION SELECT session_id FROM conversation_ancestors UNION SELECT parent_native_session_id FROM conversation_ancestors UNION SELECT session_key FROM ancestry
  UNION SELECT b.session_id FROM source_policy_placements b JOIN ancestry a ON b.path=a.path AND b.file_id=a.file_id WHERE b.device_id=$1 AND b.agent=$2),
  policy_keys AS(SELECT session_id FROM keys UNION SELECT CASE WHEN link.session_id=k.session_id THEN link.policy_session_id ELSE link.session_id END FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id OR link.policy_session_id=k.session_id WHERE link.device_id=$1 AND link.agent=$2)
- SELECT p.session_id,p.placements,p.current_mapping_known,p.evidence_scope,p.client_mode,p.revision FROM session_policy_placements p
+ SELECT p.session_id,p.placements,p.current_mapping_known,p.evidence_scope,p.scope_status,p.client_mode,p.revision FROM session_policy_placements p
  WHERE p.device_id=$1 AND p.agent=$2 AND p.session_id IN (SELECT session_id FROM policy_keys) LIMIT 1025`, device, agent, session, parent, sourceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []policyPlacementState
+	var scopeBytes int
 	for rows.Next() {
 		var p policyPlacementState
 		var raw []byte
-		if err := rows.Scan(&p.SessionID, &raw, &p.CurrentMappingKnown, &p.EvidenceScope, &p.ClientMode, &p.Revision); err != nil {
+		if err := rows.Scan(&p.SessionID, &raw, &p.CurrentMappingKnown, &p.EvidenceScope, &p.ScopeStatus, &p.ClientMode, &p.Revision); err != nil {
 			return nil, err
+		}
+		scopeBytes += len(raw)
+		if scopeBytes > 4<<20 {
+			return nil, &Error{http.StatusRequestEntityTooLarge, "policy_component_limit", "Cowork component exceeds supported memory bound; uploads remain held"}
 		}
 		if err := json.Unmarshal(raw, &p.Placements); err != nil {
 			return nil, err
@@ -281,8 +306,11 @@ func loadSessionPolicies(ctx context.Context, q policyQuerier, device, agent, se
 // PolicyPlacements accepts metadata even when content is forbidden. The ack
 // follows the durable union and reconciliation of this device's stored copies.
 func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+	var withheld *Error
 	if err := validatePolicyRequest(req); err != nil {
-		return nil, err
+		if !errors.As(err, &withheld) || withheld.Code != "policy_input_limit" {
+			return nil, err
+		}
 	}
 	var out syncproto.PolicyPlacementsResponse
 	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
@@ -298,7 +326,7 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 		}
 		var old policyPlacementState
 		var raw []byte
-		err := tx.QueryRow(ctx, `SELECT placements,current_mapping_known,evidence_scope,client_mode,revision FROM session_policy_placements WHERE device_id=$1 AND agent=$2 AND session_id=$3 FOR UPDATE`, device, req.Agent, req.SessionID).Scan(&raw, &old.CurrentMappingKnown, &old.EvidenceScope, &old.ClientMode, &old.Revision)
+		err := tx.QueryRow(ctx, `SELECT placements,current_mapping_known,evidence_scope,scope_status,client_mode,revision FROM session_policy_placements WHERE device_id=$1 AND agent=$2 AND session_id=$3 FOR UPDATE`, device, req.Agent, req.SessionID).Scan(&raw, &old.CurrentMappingKnown, &old.EvidenceScope, &old.ScopeStatus, &old.ClientMode, &old.Revision)
 		fresh := errors.Is(err, pgx.ErrNoRows)
 		if err != nil && !fresh {
 			return err
@@ -308,31 +336,60 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 				return err
 			}
 		}
-		aliases, err := recoveryPolicyAliases(ctx, tx, device, req)
+		aliases, err := verifiedRecoveryAliases(ctx, tx, device, req)
 		if err != nil {
-			return err
+			var limit *Error
+			if !errors.As(err, &limit) || limit.Code != "policy_recovery_limit" {
+				return err
+			}
+			withheld = limit
 		}
 		var legacy bool
 		// Proof is per source generation, not inferred from another mapped
 		// copy or from today's grants. Late recovery of old bytes can taint an
 		// already mapped native session.
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sources s WHERE s.device_id=$1 AND s.agent=$2 AND
-		 (s.session_key=$3 OR right(s.path,length($3)+6)=$3||'.jsonl' OR s.id=ANY($4::uuid[]) OR EXISTS(SELECT 1 FROM conversations c WHERE c.source_id=s.id AND c.device_id=$1 AND c.agent=$2 AND c.session_id=$3))
-		 AND (EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id AND g.size>0 AND NOT EXISTS(SELECT 1 FROM source_policy_placements b JOIN session_policy_placements p ON p.device_id=b.device_id AND p.agent=b.agent AND p.session_id=b.session_id WHERE b.device_id=s.device_id AND b.path=s.path AND b.file_id=s.file_id AND b.generation=g.generation AND p.evidence_scope='mapped'))
-		 OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=s.id AND NOT EXISTS(SELECT 1 FROM source_policy_placements b JOIN session_policy_placements p ON p.device_id=b.device_id AND p.agent=b.agent AND p.session_id=b.session_id WHERE b.device_id=s.device_id AND b.path=s.path AND b.file_id=s.file_id AND b.generation=m.source_generation AND p.evidence_scope='mapped'))))`, device, req.Agent, req.SessionID, aliases).Scan(&legacy); err != nil {
+		proofRefs, err := json.Marshal(req.Sources)
+		if err != nil {
+			return err
+		}
+		if req.Sources == nil {
+			proofRefs = []byte("[]")
+		}
+		if err := tx.QueryRow(ctx, `WITH RECURSIVE owned AS (
+ SELECT s.id FROM sources s WHERE s.device_id=$1 AND s.agent=$2 AND (
+ s.session_key=$3 OR right(s.path,length($3)+6)=$3||'.jsonl' OR s.id=ANY($4::uuid[])
+ OR EXISTS(SELECT 1 FROM conversations c WHERE c.source_id=s.id AND c.device_id=$1 AND c.agent=$2 AND c.session_id=$3)
+ OR EXISTS(SELECT 1 FROM jsonb_array_elements($5::jsonb) ref WHERE s.path=ref->>'path' AND s.file_id=ref->>'file_id'))
+ UNION SELECT child.id FROM sources child JOIN owned parent_id ON true JOIN sources parent ON parent.id=parent_id.id
+ WHERE child.device_id=$1 AND child.agent=$2 AND (child.parent_source_id=parent.id OR (child.parent_path=parent.path AND (child.parent_file_id IS NULL OR child.parent_file_id=parent.file_id))))
+ SELECT EXISTS(SELECT 1 FROM sources s WHERE s.id IN(SELECT id FROM owned) AND (EXISTS(SELECT 1 FROM generations g WHERE g.source_id=s.id AND g.size>0 AND NOT EXISTS(SELECT 1 FROM source_policy_placements b JOIN session_policy_placements p ON p.device_id=b.device_id AND p.agent=b.agent AND p.session_id=b.session_id WHERE b.device_id=s.device_id AND b.path=s.path AND b.file_id=s.file_id AND b.generation=g.generation AND p.evidence_scope='mapped'))
+		 OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=s.id AND NOT EXISTS(SELECT 1 FROM source_policy_placements b JOIN session_policy_placements p ON p.device_id=b.device_id AND p.agent=b.agent AND p.session_id=b.session_id WHERE b.device_id=s.device_id AND b.path=s.path AND b.file_id=s.file_id AND b.generation=m.source_generation AND p.evidence_scope='mapped'))))`, device, req.Agent, req.SessionID, aliases, proofRefs).Scan(&legacy); err != nil {
 			return err
 		}
 
 		p, err := mergePolicy(old, req, legacy || len(req.RecoverySources) > 0)
 		if err != nil {
-			return err
+			var limit *Error
+			if !errors.As(err, &limit) || limit.Code != "policy_scope_limit" {
+				return err
+			}
+			withheld = limit
+			bounded := *req
+			bounded.Placements = nil
+			p, err = mergePolicy(old, &bounded, legacy || len(req.RecoverySources) > 0)
+			if err != nil {
+				return err
+			}
+		}
+		if withheld != nil {
+			p.ScopeStatus = syncproto.ScopeLimitHeld
 		}
 		raw, err = json.Marshal(p.Placements)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO session_policy_placements(device_id,agent,session_id,placements,current_mapping_known,evidence_scope,client_mode,revision)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(device_id,agent,session_id) DO UPDATE SET placements=excluded.placements,current_mapping_known=excluded.current_mapping_known,evidence_scope=excluded.evidence_scope,client_mode=excluded.client_mode,revision=excluded.revision,updated_at=now()`, device, req.Agent, req.SessionID, raw, p.CurrentMappingKnown, p.EvidenceScope, p.ClientMode, p.Revision); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO session_policy_placements(device_id,agent,session_id,placements,current_mapping_known,evidence_scope,scope_status,client_mode,revision)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(device_id,agent,session_id) DO UPDATE SET placements=excluded.placements,current_mapping_known=excluded.current_mapping_known,evidence_scope=excluded.evidence_scope,scope_status=excluded.scope_status,client_mode=excluded.client_mode,revision=excluded.revision,updated_at=now()`, device, req.Agent, req.SessionID, raw, p.CurrentMappingKnown, p.EvidenceScope, p.ScopeStatus, p.ClientMode, p.Revision); err != nil {
 			return err
 		}
 		if req.ParentSessionID != "" {
@@ -343,30 +400,18 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 				return err
 			}
 		}
-		for _, id := range aliases {
-			if _, err := tx.Exec(ctx, `INSERT INTO source_policy_placements(device_id,agent,session_id,path,file_id,generation)
-			 SELECT s.device_id,s.agent,$2,s.path,s.file_id,g.generation FROM sources s JOIN generations g ON g.source_id=s.id WHERE s.id=$1 AND s.device_id=$3 ON CONFLICT DO NOTHING`, id, req.SessionID, device); err != nil {
-				return err
-			}
+		if err := bindVerifiedRecoverySources(ctx, tx, device, req); err != nil {
+			return err
 		}
-		if len(aliases) > 0 {
-			if _, err := tx.Exec(ctx, `INSERT INTO session_policy_links(device_id,agent,session_id,policy_session_id) SELECT device_id,agent,session_id,$2 FROM conversations WHERE source_id=ANY($1::uuid[]) AND device_id=$3 AND agent=$4 ON CONFLICT DO NOTHING`, aliases, req.SessionID, device, req.Agent); err != nil {
-				return err
-			}
-		}
-		for _, ref := range req.Sources {
-			// A supplied identity may bind a future source, but must not relabel an
-			// existing unrelated native source or a recovered archive by coincidence.
-			var session string
-			err := tx.QueryRow(ctx, `SELECT COALESCE(session_key,'') FROM sources WHERE device_id=$1 AND path=$2 AND file_id=$3`, device, ref.Path, ref.FileID).Scan(&session)
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			if err == nil && session != req.SessionID {
-				return badRequest("source reference does not prove native session identity")
-			}
-			if _, err := tx.Exec(ctx, `INSERT INTO source_policy_placements(device_id,agent,session_id,path,file_id,generation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, device, req.Agent, req.SessionID, ref.Path, ref.FileID, ref.Generation); err != nil {
-				return err
+
+		if withheld == nil {
+			for _, ref := range req.Sources {
+				if err := bindPolicySourceOwner(ctx, tx, device, req.Agent, req.SessionID, ref, false); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `INSERT INTO source_policy_placements(device_id,agent,session_id,path,file_id,generation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, device, req.Agent, req.SessionID, ref.Path, ref.FileID, ref.Generation); err != nil {
+					return err
+				}
 			}
 		}
 		// Keep the rule version stable through row waits and restoration. An
@@ -378,13 +423,50 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 		if err != nil {
 			return err
 		}
-		if err := reconcileSessionPolicy(ctx, tx, rules, user, device, req.Agent, req.SessionID); err != nil {
-			return err
+		if withheld != nil || p.ScopeStatus == syncproto.ScopeLimitHeld {
+			// Capacity loses enumeration, never a verified incoming restriction.
+			// Retain the actual Deny as a restriction-only floor; it provides no
+			// independent permission to purge when its path proof was omitted.
+			incoming := policyPlacementState{Placements: req.Placements, CurrentMappingKnown: true, EvidenceScope: syncproto.EvidenceNone, ClientMode: "allow"}
+			if rules.decidePolicy(deviceDirs{home: home}, incoming).Mode == pathpolicy.Deny && p.ClientMode != "deny" {
+				p.ClientMode = "deny"
+				if _, err := tx.Exec(ctx, `UPDATE session_policy_placements SET client_mode='deny' WHERE device_id=$1 AND agent=$2 AND session_id=$3`, device, req.Agent, req.SessionID); err != nil {
+					return err
+				}
+			}
+			if err := holdSessionPolicyLimit(ctx, tx, rules, user, device, req); err != nil {
+				return err
+			}
+			if withheld != nil {
+				return nil
+			}
+			scope, err := policyLimitEvidence(ctx, tx, device, req.Agent, req.SessionID)
+			if err != nil {
+				return err
+			}
+			digest, err := syncproto.PolicyPlacementsDigest(req)
+			if err != nil {
+				return err
+			}
+			out = syncproto.PolicyPlacementsResponse{Version: syncproto.Version, Revision: p.Revision, EvidenceScope: scope, Allowed: false, RequestDigest: digest}
+			return nil
+		} else if err := reconcileSessionPolicy(ctx, tx, rules, user, device, req.Agent, req.SessionID); err != nil {
+			var limit *Error
+			if !errors.As(err, &limit) || !policyLimitError(limit) {
+				return err
+			}
+			withheld = limit
+			return holdSessionPolicyLimit(ctx, tx, rules, user, device, req)
 		}
 		d := rules.decidePolicy(deviceDirs{home: home}, p)
 		states, err := loadSessionPolicies(ctx, tx, device, req.Agent, req.SessionID, req.ParentSessionID, "")
 		if err != nil {
-			return err
+			var limit *Error
+			if !errors.As(err, &limit) || !policyLimitError(limit) {
+				return err
+			}
+			withheld = limit
+			return holdSessionPolicyLimit(ctx, tx, rules, user, device, req)
 		}
 		for _, state := range states {
 			if state.EvidenceScope == "unmapped" {
@@ -401,6 +483,9 @@ func (s *Server) PolicyPlacements(ctx context.Context, device string, req *syncp
 	})
 	if err != nil {
 		return nil, err
+	}
+	if withheld != nil {
+		return nil, withheld
 	}
 	return &out, nil
 }
@@ -467,9 +552,6 @@ func reconcileSessionPolicy(ctx context.Context, tx pgx.Tx, r serverRules, user,
 // transaction under the shared device gate. Registration takes the exclusive
 // gate, so an acknowledged restriction cannot race the committed manifest.
 func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src syncproto.Source) ([]string, error) {
-	if src.Agent != "claude" {
-		return nil, nil
-	}
 	// Upgrade fixtures seed historical archives through the current uploader
 	// before migration 014. Such schemas cannot contain Cowork policy records.
 	var supported bool
@@ -480,6 +562,12 @@ func checkFlushPolicy(ctx context.Context, q policyQuerier, device string, src s
 		if strings.Contains(strings.ReplaceAll(src.Path, `\`, "/"), "/local-agent-mode-sessions/") {
 			return nil, &Error{http.StatusConflict, "policy_placements_required", "Cowork host policy is unavailable on this schema; uploads remain held"}
 		}
+		return nil, nil
+	}
+	if err := checkPolicySourceIdentity(ctx, q, device, src); err != nil {
+		return nil, err
+	}
+	if src.Agent != "claude" {
 		return nil, nil
 	}
 	native, err := policySourceSession(ctx, q, device, src)
@@ -621,53 +709,4 @@ func (s *sink) checkSessionPolicy(tx pgx.Tx, session, parent string) error {
 	}
 	s.gate.hide[session] = d
 	return nil
-}
-
-// Recovery aliases require both stored native identity and the original source
-// path supplied as device evidence. A CASS alias or another device's same UUID
-// alone cannot establish a link to this Cowork session.
-func recoveryPolicyAliases(ctx context.Context, q policyQuerier, device string, req *syncproto.PolicyPlacementsRequest) ([]string, error) {
-	var ids []string
-	for _, ref := range req.RecoverySources {
-		var id string
-		err := q.QueryRow(ctx, `SELECT s.id::text FROM sources s JOIN generations g ON g.source_id=s.id AND g.generation=$5 JOIN conversations c ON c.source_id=s.id
- WHERE s.device_id=$1 AND c.device_id=$1 AND s.agent=$2 AND c.agent=$2 AND s.path=$3 AND s.file_id=$4 AND s.storage_kind='cass_export'
- AND c.extra->>'recovered_history'='true' AND c.extra->>'cass_external_id'=$6 AND c.extra->>'cass_source_path'=$7 LIMIT 1`, device, req.Agent, ref.Source.Path, ref.Source.FileID, ref.Source.Generation, req.SessionID, ref.OriginalPath).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, &Error{http.StatusConflict, "recovery_proof_missing", "recovered source generation and same-device native/path provenance must already be stored; uploads remain held"}
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !slices.Contains(ids, id) {
-			ids = append(ids, id)
-		}
-	}
-	if len(req.Sources) == 0 {
-		return ids, nil
-	}
-	paths := make([]string, 0, len(req.Sources))
-	for _, ref := range req.Sources {
-		paths = append(paths, ref.Path)
-	}
-	rows, err := q.Query(ctx, `SELECT DISTINCT s.id::text FROM conversations c JOIN sources s ON s.id=c.source_id
- WHERE c.device_id=$1 AND s.device_id=$1 AND c.agent=$2 AND s.agent=$2 AND s.storage_kind='cass_export'
- AND c.extra->>'recovered_history'='true' AND c.extra->>'cass_external_id'=$3 AND c.extra->>'cass_source_path'=ANY($4) LIMIT 1025`, device, req.Agent, req.SessionID, paths)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		if !slices.Contains(ids, id) {
-			ids = append(ids, id)
-		}
-		if len(ids) > 1024 {
-			return nil, &Error{http.StatusRequestEntityTooLarge, "policy_recovery_limit", "Cowork recovered copy set exceeds supported bound; uploads remain held"}
-		}
-	}
-	return ids, rows.Err()
 }

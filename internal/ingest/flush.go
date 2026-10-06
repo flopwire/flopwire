@@ -466,14 +466,32 @@ func (f *flush) unlock() {
 func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncproto.FlushResponse, []string, error) {
 	h := f.h
 	src := h.Source
-	if src.Agent == "claude" {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(f.deviceID)); err != nil {
-			return nil, nil, err
-		}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, policyDeviceLockKey(f.deviceID)); err != nil {
+		return nil, nil, err
 	}
 	policyIDs, err := checkFlushPolicy(ctx, tx, f.deviceID, src)
 	if err != nil {
 		return nil, nil, err
+	}
+	var policySchema bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('source_policy_identity') IS NOT NULL`).Scan(&policySchema); err != nil {
+		return nil, nil, err
+	}
+	if policySchema {
+		if len(policyIDs) > 0 && src.Agent == "claude" && src.Parent == nil && src.StorageKind != "cass_export" {
+			owner, err := policySourceSession(ctx, tx, f.deviceID, src)
+			if err != nil {
+				return nil, nil, err
+			}
+			if validPolicySession(owner) {
+				if err := bindPolicySourceOwner(ctx, tx, f.deviceID, src.Agent, owner, syncproto.PolicySource{Path: src.Path, FileID: src.FileID, Generation: h.Generation}, false); err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+		if err := bindPolicyCaptureIdentity(ctx, tx, f.deviceID, src); err != nil {
+			return nil, nil, err
+		}
 	}
 	if len(policyIDs) > 0 && (len(h.Entries) > 0 || h.Tail != nil && h.Tail.Size > 0) {
 		ownSession, err := policySourceSession(ctx, tx, f.deviceID, src)

@@ -74,11 +74,26 @@ const convRowsSQL = `SELECT c.id::text,c.agent,COALESCE(c.cwd,''),COALESCE(c.ext
 		FROM source_policy_placements binding JOIN source_ancestors source ON binding.path=source.path AND binding.file_id=source.file_id
 		WHERE binding.device_id=c.device_id AND binding.agent=c.agent),
 		policy_keys AS (SELECT session_id FROM keys UNION SELECT CASE WHEN link.session_id=k.session_id THEN link.policy_session_id ELSE link.session_id END FROM session_policy_links link JOIN policy_keys k ON link.session_id=k.session_id OR link.policy_session_id=k.session_id WHERE link.device_id=c.device_id AND link.agent=c.agent)
-		SELECT jsonb_agg(jsonb_build_object(
-		'SessionID',p.session_id,'Placements',p.placements,'CurrentMappingKnown',p.current_mapping_known,
-		'EvidenceScope',p.evidence_scope,'ClientMode',p.client_mode)) AS states
-		FROM session_policy_placements p WHERE p.device_id=c.device_id AND p.agent=c.agent
-		AND p.session_id IN (SELECT session_id FROM policy_keys)) p ON true`
+		, policy_stats AS (
+		 SELECT count(*) AS state_count,COALESCE(sum(octet_length(p.placements::text)),0) AS placement_bytes,
+		 CASE WHEN bool_or(p.evidence_scope='unmapped') THEN 'unmapped' WHEN bool_or(p.evidence_scope='mapped') THEN 'mapped' ELSE 'none' END AS evidence_scope,
+		 CASE WHEN bool_or(p.client_mode='deny') THEN 'deny' WHEN bool_or(p.client_mode='local') THEN 'local' ELSE 'allow' END AS client_mode
+		 FROM session_policy_placements p WHERE p.device_id=c.device_id AND p.agent=c.agent AND p.session_id IN(SELECT session_id FROM policy_keys)),
+		 candidates AS (
+		 SELECT p.* FROM session_policy_placements p WHERE p.device_id=c.device_id AND p.agent=c.agent AND p.session_id IN(SELECT session_id FROM policy_keys)
+		 ORDER BY (p.session_id=c.session_id) DESC,p.session_id COLLATE "C" LIMIT 1025),
+		 budgeted AS (
+		 SELECT p.*,row_number() OVER w AS position,sum(octet_length(p.placements::text)) OVER w AS placement_bytes
+		 FROM candidates p WINDOW w AS (ORDER BY (p.session_id=c.session_id) DESC,p.session_id COLLATE "C" ROWS UNBOUNDED PRECEDING))
+		 SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object(
+		 'SessionID',p.session_id,'Placements',p.placements,'CurrentMappingKnown',p.current_mapping_known,
+		 'EvidenceScope',p.evidence_scope,'ScopeStatus',p.scope_status,'ClientMode',p.client_mode) ORDER BY p.position)
+		 FROM budgeted p WHERE p.position<=CASE WHEN stats.state_count>1024 OR stats.placement_bytes>4194304 THEN 1023 ELSE 1024 END
+		 AND p.placement_bytes<=4194304),'[]'::jsonb)
+		 || CASE WHEN stats.state_count>1024 OR stats.placement_bytes>4194304 THEN jsonb_build_array(jsonb_build_object(
+		 'SessionID',c.session_id,'Placements','[]'::jsonb,'CurrentMappingKnown',true,
+		 'EvidenceScope',stats.evidence_scope,'ScopeStatus','limit-held','ClientMode',stats.client_mode)) ELSE '[]'::jsonb END AS states
+		 FROM policy_stats stats) p ON true`
 
 func (q *Queue) convRows(ctx context.Context, where string, args ...any) ([]convRow, error) {
 	rows, err := q.Pool.Query(ctx, convRowsSQL+` WHERE `+where, args...)
@@ -101,6 +116,36 @@ func scanConvRow(row pgx.CollectableRow) (convRow, error) {
 
 func (r serverRules) decideConv(c convRow) pathpolicy.Decision {
 	return decideWithPolicies(r, c.dev, r.decideAll(c.dev, c.agent, c.path, c.cwd, c.others, c.remote), c.policies)
+}
+
+// Capacity projection preserves visibility restrictions without authorizing
+// irreversible deletion from a compact client floor alone. Native/admin path
+// proof retained inside the budget can still authorize the existing purge.
+func (r serverRules) capacityPurgeHeld(c convRow) bool {
+	limited := false
+	for _, state := range c.policies {
+		if state.ScopeStatus == "limit-held" {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		return false
+	}
+	native := r.decideAll(c.dev, c.agent, c.path, c.cwd, c.others, c.remote)
+	if native.Mode != pathpolicy.Allow && !isPolicyHold(native) && native.Admin {
+		return false
+	}
+	for _, state := range c.policies {
+		state.ClientMode = "allow"
+		state.CurrentMappingKnown = true
+		state.ScopeStatus = "complete"
+		d := r.decidePolicy(c.dev, state)
+		if d.Mode != pathpolicy.Allow && !isPolicyHold(d) && d.Admin {
+			return false
+		}
+	}
+	return true
 }
 
 // EnforceRules applies changed admin path rules to the stored
@@ -441,7 +486,7 @@ func (q *Queue) purgeHiddenOne(ctx context.Context, r serverRules, c convRow, cu
 		return 0, 1, nil
 	}
 	// Missing mapping proof is a sharing hold, never expiry deletion.
-	if c.hasPolicy && isPolicyHold(r.decideConv(c)) {
+	if c.hasPolicy && (isPolicyHold(r.decideConv(c)) || r.capacityPurgeHeld(c)) {
 		return 0, 0, nil
 	}
 	who := actor
