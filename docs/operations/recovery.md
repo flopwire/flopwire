@@ -1,19 +1,28 @@
 # Production recovery plan
 
-Status: proposed procedure, 2026-10-05. This document does not authorize a
-maintenance outage, endpoint cutover, key deletion, or backup deletion.
+Status: procedure pending full production qualification, 2026-10-06.
+This document does not authorize a maintenance outage, endpoint cutover,
+key deletion, or backup deletion.
 
-The earlier lab backup passed a full restore test. The current production
-restore, independent key escrow, and off-host backup copies are not verified.
+The earlier lab backup passed a full restore test. On October 6, the coordinated
+production backup completed and verification passed for 66,213 objects. An
+isolated database restore and startup migration rehearsal also completed.
+The full production database and raw-object restore, independent key escrow,
+and off-host backup retrieval remain unverified. See the
+[recorded qualification status](../perf/shared-stack-2026-10-03.md#production-backup-and-migration-rehearsal-2026-10-06).
 The owner chose to keep the existing local secret files while preparing this
-plan. Keep the CASS snapshots and working recovery key until the replacement
-recovery path passes verification.
+plan. On October 6, the owner chose to defer off-host backup work and finish
+collection and staging work first. Off-host retrieval and independent key
+recovery remain pending. Keep the CASS snapshots and working recovery key
+until the replacement recovery path passes verification.
 
 ## Assign production and staging roles
 
 1. Record the existing capacity VM as the production deployment.
 2. Record its allocated memory and the shared host's reserved memory.
-3. Provision a separate staging VM for destructive tests and restore drills.
+3. Use the separate persistent staging VM for destructive tests and restore drills.
+   The `flopwire` project contains `flopwire-staging-20261006`, allocated
+   4 GiB RAM, four virtual CPUs, and 100 GiB disk.
 4. Restrict the staging endpoint to designated operators.
 5. Keep production collectors disconnected from staging.
 6. Give staging separate database and object-storage targets.
