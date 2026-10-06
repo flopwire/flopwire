@@ -2,9 +2,12 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -269,41 +272,128 @@ func TestTwoDeviceSync(t *testing.T) {
 			b.WriteString(d2.claudeLine(`"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + id + `","type":"tool_result","content":` + jsonStr(logText(i, 96<<10)) + `}]}`))
 		}
 		d2.claudeSID = saved
-		writeFile(t, p, b.String())
 		size := int64(b.Len())
+		d2.stop(false)
+		gate, err := newCrashProxy(h.cfg.server, h.cfg.pin, p, size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			gate.unblock()
+			d2.stop(false)
+			gate.close()
+			if err := setDeviceEndpoint(d2.cfg, h.cfg.server, h.cfg.pin); err != nil {
+				t.Error(err)
+				return
+			}
+			d2.start()
+		}()
+		if err := setDeviceEndpoint(d2.cfg, gate.server.URL, gate.fingerprint()); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, p, b.String())
 		start := time.Now()
-		// The hook call indexes the file before it returns; poll the server
-		// meanwhile.
+		d2.start()
+		eventually(t, 10*time.Second, 20*time.Millisecond, "restarted agent socket", func() (bool, error) {
+			c, err := net.DialTimeout("unix", d2.sock, time.Second)
+			if err != nil {
+				return false, err
+			}
+			c.Close()
+			return true, nil
+		})
 		flushed := make(chan error, 1)
 		go func() {
 			_, err := h.run(d2.env(), "", "agent", "flush", "--socket", d2.sock, "--timeout", "60s", "--path", p)
 			flushed <- err
 		}()
-		// Kill as soon as the server holds part of the file.
-		var acked int64
-		for time.Since(start) < 90*time.Second {
-			if err := h.pg.QueryRow(h.ctx, `SELECT COALESCE(sum(c.size),0) FROM manifest_entries e JOIN chunks c ON c.hash=e.chunk_hash
-				JOIN sources s ON s.id=e.source_id WHERE s.device_id=$1 AND s.path=$2`, d2.id, p).Scan(&acked); err != nil {
-				t.Fatal(err)
+		flushedJoined := false
+		defer func() {
+			if flushedJoined {
+				return
 			}
-			if acked > 0 {
-				break
+			gate.unblock()
+			d2.stop(true)
+			select {
+			case <-flushed:
+			case <-time.After(65 * time.Second):
+				t.Error("hook flush did not exit during cleanup")
 			}
-			time.Sleep(2 * time.Millisecond)
+		}()
+		var boundary crashBoundary
+		select {
+		case boundary = <-gate.reached:
+			if boundary.Err != nil {
+				t.Fatal(boundary.Err)
+			}
+		case <-time.After(60 * time.Second):
+			t.Fatal("agent did not reach the committed, unacknowledged flush boundary")
+		}
+		ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+		defer cancel()
+		var committedEntries, committedOffset int64
+		if err := h.pg.QueryRow(ctx, `SELECT count(*), COALESCE(max(e.byte_offset+c.size),0)
+			FROM manifest_entries e JOIN chunks c ON c.hash=e.chunk_hash JOIN sources s ON s.id=e.source_id
+			WHERE s.device_id=$1 AND s.path=$2 AND e.generation=$3`, d2.id, p, boundary.Header.Generation).Scan(&committedEntries, &committedOffset); err != nil {
+			t.Fatal(err)
+		}
+		if committedEntries != boundary.Response.AckedEntries || committedOffset != boundary.Response.AckedOffset {
+			t.Fatalf("server commit differs from held response: entries=%d offset=%d response=%+v", committedEntries, committedOffset, boundary.Response)
+		}
+		db, err := sql.Open("sqlite", "file:"+d2.index+"?mode=ro&_pragma=busy_timeout(5000)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var localAck int64
+		err = db.QueryRowContext(ctx, `SELECT g.acked FROM devsync_gens g JOIN devsync_sources s ON s.id=g.source_id WHERE s.path=? AND g.generation=?`, p, boundary.Header.Generation).Scan(&localAck)
+		db.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if localAck >= committedEntries {
+			t.Fatalf("agent already acknowledged held response: local=%d server=%d", localAck, committedEntries)
 		}
 		d2.stop(true)
 		r.Timings["killed_after"] = ms(time.Since(start))
-		if err := <-flushed; err != nil {
-			r.Notes = append(r.Notes, "the flush call saw the kill (expected)")
+		gate.unblock()
+		select {
+		case err := <-flushed:
+			flushedJoined = true
+			if err != nil {
+				r.Notes = append(r.Notes, "hook call interrupted by crash")
+			}
+		case <-time.After(65 * time.Second):
+			t.Fatal("hook flush did not exit after the crash")
 		}
-		mid := acked > 0 && acked < size
-		r.Notes = append(r.Notes, fmt.Sprintf("killed with %d of %d bytes acknowledged (mid-flush=%v)", acked, size, mid))
-		if !mid {
-			t.Logf("the kill did not land mid-flush (%d of %d acknowledged)", acked, size)
-		}
+		r.Notes = append(r.Notes, fmt.Sprintf("server committed %d/%d bytes; durable client acknowledged %d/%d entries before SIGKILL", committedOffset, size, localAck, committedEntries))
 		restart := time.Now()
 		d2.start()
 		h.waitSessionSynced(t, d2, transcript.AgentClaude, p, sid, 3*time.Minute)
+		// Server visibility alone does not prove the restarted agent persisted
+		// its acknowledgement. tail_acked includes absence of a tail, so it
+		// must also be true when an idle source has sealed its final chunk.
+		stateDB, err := sql.Open("sqlite", "file:"+d2.index+"?mode=ro&_pragma=busy_timeout(1000)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stateDB.Close()
+		eventually(t, 30*time.Second, 100*time.Millisecond, "durable client acknowledgement after restart", func() (bool, error) {
+			queryCtx, queryCancel := context.WithTimeout(h.ctx, 5*time.Second)
+			defer queryCancel()
+			var currentGen, capturedSize, entries, acked, tailOffset, tailSize, ackedBytes int64
+			var tailAcked, lost bool
+			err := stateDB.QueryRowContext(queryCtx, `SELECT s.generation,g.size,g.entries,g.acked,g.tail_acked,g.lost,g.tail_offset,g.tail_size,
+				COALESCE((SELECT sum(m.size) FROM devsync_manifest m WHERE m.source_id=g.source_id AND m.generation=g.generation AND m.ordinal<g.acked),0)
+				FROM devsync_gens g JOIN devsync_sources s ON s.id=g.source_id WHERE s.path=? AND g.generation=?`, p, boundary.Header.Generation).
+				Scan(&currentGen, &capturedSize, &entries, &acked, &tailAcked, &lost, &tailOffset, &tailSize, &ackedBytes)
+			if err != nil {
+				return false, err
+			}
+			if currentGen != boundary.Header.Generation || capturedSize != size || acked != entries || !tailAcked || lost || ackedBytes != tailOffset || ackedBytes+tailSize != size {
+				return false, fmt.Errorf("durable state: generation=%d original=%d size=%d expected=%d acked=%d entries=%d tail_acked=%v lost=%v manifest_bytes=%d tail_offset=%d tail_size=%d", currentGen, boundary.Header.Generation, capturedSize, size, acked, entries, tailAcked, lost, ackedBytes, tailOffset, tailSize)
+			}
+			return true, nil
+		})
 		r.Timings["resync_after_restart"] = ms(time.Since(restart))
 		h.checkRaw(t, d2, p)
 		h.checkLocal(t, d2, transcript.AgentClaude, p, sid)
@@ -313,8 +403,14 @@ func TestTwoDeviceSync(t *testing.T) {
 		}
 		h.checkFixtureProvenance(t, d2, "claude", sid, p, identity.ID.String(), 0)
 		var gens int
-		_ = h.pg.QueryRow(h.ctx, `SELECT count(*) FROM generations g JOIN sources s ON s.id=g.source_id WHERE s.device_id=$1 AND s.path=$2`, d2.id, p).Scan(&gens)
-		r.Notes = append(r.Notes, fmt.Sprintf("%d generation(s) on the server", gens))
+		var gen int64
+		if err := h.pg.QueryRow(h.ctx, `SELECT count(*),min(g.generation) FROM generations g JOIN sources s ON s.id=g.source_id WHERE s.device_id=$1 AND s.path=$2`, d2.id, p).Scan(&gens, &gen); err != nil {
+			t.Fatal(err)
+		}
+		if gens != 1 || gen != boundary.Header.Generation {
+			t.Fatalf("restart replaced generation: count=%d generation=%d original=%d", gens, gen, boundary.Header.Generation)
+		}
+		r.Notes = append(r.Notes, fmt.Sprintf("original generation %d retained after restart", gen))
 	})
 
 	h.scenario("e-claude-rewrite", func(t *testing.T, r *result) {
