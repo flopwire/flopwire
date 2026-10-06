@@ -2,8 +2,14 @@ package ingest
 
 import (
 	"errors"
+	"fmt"
+	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/transcript"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -255,6 +261,228 @@ func TestPolicyIdentifiedCoworkCannotChangeAgentToBypassGate(t *testing.T) {
 		var held *Error
 		if !errors.As(err, &held) || held.Code != "policy_placements_required" {
 			t.Fatalf("identified Cowork agent=%s bypassed gate: %v", agent, err)
+		}
+	}
+}
+
+func TestPolicyProtectedCompanionFirstMainCapture(t *testing.T) {
+	e := newEnv(t)
+	req := policyRequest()
+	req.EvidenceScope = "none"
+	main := claudeAt(t, t.TempDir(), "-vm-work", req.SessionID, "/sessions/vm/work")
+	applyPolicy(t, e, req)
+	artifact := filepath.Join(filepath.Dir(main.Path), "tool-result.txt")
+	if err := os.WriteFile(artifact, []byte("synthetic companion output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	companion := devicesync.SourceSpec{Path: artifact, Agent: transcript.AgentClaude, StorageKind: transcript.StorageCompanion, SessionKey: req.SessionID, Parser: "claude@1", Parent: main.Path}
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	req.EvidenceScope = "mapped"
+	req.Sources = []syncproto.PolicySource{{Path: artifact, FileID: fileIDOf(t, artifact)}}
+	applyPolicy(t, e, req)
+	sync1(t, sy, companion)
+	if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2`, e.deviceID, main.Path) != 0 {
+		t.Fatal("companion invented a captured parent source")
+	}
+	req.Sources = []syncproto.PolicySource{{Path: artifact, FileID: fileIDOf(t, artifact)}, {Path: main.Path, FileID: fileIDOf(t, main.Path)}}
+	if r := applyPolicy(t, e, req); !r.Allowed || r.EvidenceScope != "mapped" {
+		t.Fatalf("known companion capture was held: %+v", r)
+	}
+	if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2`, e.deviceID, main.Path) != 0 {
+		t.Fatal("parent metadata invented capture attributes")
+	}
+	sync1(t, sy, main)
+	e.drain()
+	if e.count(`SELECT count(*) FROM sources s JOIN generations g ON g.source_id=s.id WHERE s.device_id=$1 AND s.path=$2 AND s.storage_kind='jsonl_append' AND g.size>0`, e.deviceID, main.Path) != 1 {
+		t.Fatal("first main capture failed")
+	}
+	if e.count(`SELECT count(*) FROM conversations WHERE device_id=$1 AND session_id=$2 AND hidden_at IS NULL`, e.deviceID, req.SessionID) != 1 {
+		t.Fatal("known main capture is not shared")
+	}
+	sibling := policyRequest()
+	sibling.SessionID = uuid.NewString()
+	sibling.ParentSessionID = req.SessionID
+	sibling.Sources = req.Sources
+	_, err := (&Server{Pool: e.pool, Objects: e.objects}).PolicyPlacements(e.ctx, e.deviceID, sibling)
+	identityWantConflict(t, err)
+}
+
+func TestPolicyCapturedOrForeignAgentSourceIdentity(t *testing.T) {
+	for _, kind := range []string{"captured generation", "foreign agent", "partial descriptor"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t)
+			native := uuid.NewString()
+			ref := syncproto.PolicySource{Path: "/placeholder/" + native + ".jsonl", FileID: "parent"}
+			id := uuid.NewString()
+			agent, parser, storage := "claude", "", "jsonl_append"
+			if kind == "foreign agent" {
+				agent = "codex"
+			}
+			if kind == "partial descriptor" {
+				parser = "claude@1"
+				storage = "companion"
+			}
+			e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)VALUES($1,$2,$3,$4,$5,$6,$7,now())`, id, e.deviceID, agent, ref.Path, ref.FileID, storage, parser)
+			if kind == "captured generation" {
+				e.exec(`INSERT INTO generations(source_id,generation,size,captured_at,complete)VALUES($1,0,0,now(),true)`, id)
+			}
+			err := identityTransaction(e, func(tx pgx.Tx) error {
+				return bindPolicySourceOwner(e.ctx, tx, e.deviceID, "claude", native, ref, false)
+			})
+			if kind == "captured generation" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2 AND storage_kind='jsonl_append'`, e.deviceID, ref.Path) != 1 {
+					t.Fatal("zero-byte capture was not frozen")
+				}
+				identityWantConflict(t, identityTransaction(e, func(tx pgx.Tx) error {
+					return bindPolicySourceOwner(e.ctx, tx, e.deviceID, "claude", uuid.NewString(), ref, false)
+				}))
+			} else {
+				identityWantConflict(t, err)
+				if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, ref.Path) != 0 {
+					t.Fatal("conflicting source acquired owner")
+				}
+			}
+		})
+	}
+}
+
+func TestPolicyProtectedCompanionMissingParentProof(t *testing.T) {
+	for _, kind := range []string{"valid", "wrong path", "wrong session", "wrong agent", "empty parent file", "different known parent file", "foreign parent descriptor", "partial parent descriptor"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t)
+			owner := uuid.NewString()
+			p := policySourceIdentity{Agent: "claude", Owner: owner}
+			src := syncproto.Source{Agent: "claude", Path: "/companion/result.txt", FileID: "companion", SessionKey: owner, StorageKind: "companion", Parser: "claude@1", Parent: &syncproto.SourceRef{Path: "/native/" + owner + ".jsonl", FileID: "parent"}}
+			switch kind {
+			case "wrong path":
+				src.Parent.Path = "/native/" + uuid.NewString() + ".jsonl"
+			case "wrong session":
+				src.SessionKey = uuid.NewString()
+			case "wrong agent":
+				src.Agent = "codex"
+			case "empty parent file":
+				src.Parent.FileID = ""
+			case "different known parent file", "foreign parent descriptor", "partial parent descriptor":
+				agent, file, parser, storage := "claude", "parent", "", "jsonl_append"
+				if kind == "different known parent file" {
+					file = "different"
+				}
+				if kind == "foreign parent descriptor" {
+					agent = "codex"
+				}
+				if kind == "partial parent descriptor" {
+					parser = "claude@1"
+					storage = "companion"
+				}
+				e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,now())`, uuid.NewString(), e.deviceID, agent, src.Parent.Path, file, storage, parser)
+			}
+			err := identityTransaction(e, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(e.ctx, `INSERT INTO source_policy_identity(device_id,path,file_id,owner_agent,owner_session_id) VALUES($1,$2,$3,$4,$5)`, e.deviceID, src.Path, src.FileID, p.Agent, p.Owner); err != nil {
+					return err
+				}
+				return bindPolicyCaptureIdentity(e.ctx, tx, e.deviceID, src)
+			})
+			if kind == "valid" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2 AND owner_session_id=$3`, e.deviceID, src.Parent.Path, owner) != 1 {
+					t.Fatal("missing immutable parent owner")
+				}
+				if e.count(`SELECT count(*) FROM source_policy_capture_identity WHERE device_id=$1 AND path=$2`, e.deviceID, src.Parent.Path) != 0 {
+					t.Fatal("missing parent invented capture attributes")
+				}
+			} else {
+				identityWantConflict(t, err)
+			}
+		})
+	}
+}
+
+// Two server instances can reach manifest commit concurrently despite each
+// instance's single-flush admission guard. Exercise both transaction orders.
+func TestPolicyProtectedSourceManifestRace(t *testing.T) {
+	for _, kind := range []string{"companion", "native-main"} {
+		for _, companionFirst := range []bool{true, false} {
+			t.Run(fmt.Sprint(kind, "-protected-first=", companionFirst), func(t *testing.T) {
+				e := newEnv(t)
+				req := policyRequest()
+				req.EvidenceScope = "mapped"
+				parent := syncproto.SourceRef{Path: "/native/" + req.SessionID + ".jsonl", FileID: "parent"}
+				companion := syncproto.Source{Path: "/companion/result.txt", FileID: "companion", Agent: "claude", StorageKind: "companion", SessionKey: req.SessionID, Parser: "claude@1", Parent: &parent}
+				foreign := syncproto.Source{Path: parent.Path, FileID: parent.FileID, Agent: "codex", StorageKind: "jsonl_append", SessionKey: req.SessionID, Parser: "codex@1"}
+				req.Sources = []syncproto.PolicySource{{Path: companion.Path, FileID: companion.FileID}}
+				if kind == "native-main" {
+					companion = syncproto.Source{Path: parent.Path, FileID: parent.FileID, Agent: "claude", StorageKind: "jsonl_append", SessionKey: req.SessionID, Parser: "claude@1"}
+					req.Sources = nil
+				}
+				applyPolicy(t, e, req)
+				otherDevice := uuid.NewString()
+				e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) VALUES($1,$2,'other','darwin',now())`, otherDevice, e.userID)
+				first, second := companion, foreign
+				if !companionFirst {
+					first, second = foreign, companion
+				}
+				commit := func(tx pgx.Tx, src syncproto.Source) error {
+					f := flush{s: &Server{Pool: e.pool, Objects: e.objects}, deviceID: e.deviceID, h: &syncproto.FlushHeader{Source: src, CapturedAt: time.Now()}}
+					_, _, err := f.commit(e.ctx, tx, nil)
+					return err
+				}
+				tx, err := e.pool.Begin(e.ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(e.ctx)
+				if err := commit(tx, first); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- pgx.BeginFunc(e.ctx, e.pool, func(next pgx.Tx) error { return commit(next, second) }) }()
+				waitForLockWait(t, e, "opposite parent manifest")
+				otherDone := make(chan error, 1)
+				go func() {
+					otherDone <- pgx.BeginFunc(e.ctx, e.pool, func(other pgx.Tx) error {
+						f := flush{s: &Server{Pool: e.pool, Objects: e.objects}, deviceID: otherDevice, h: &syncproto.FlushHeader{Source: foreign, CapturedAt: time.Now()}}
+						_, _, err := f.commit(e.ctx, other, nil)
+						return err
+					})
+				}()
+				select {
+				case err := <-otherDone:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("unrelated device manifest blocked on another device gate")
+				}
+				if err := tx.Commit(e.ctx); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-done:
+					identityWantConflict(t, err)
+				case <-time.After(10 * time.Second):
+					t.Fatal("second manifest did not finish")
+				}
+				if companionFirst {
+					if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2 AND agent='codex'`, e.deviceID, parent.Path) != 0 {
+						t.Fatal("foreign capture bypassed new parent owner")
+					}
+					if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2 AND owner_agent='claude'`, e.deviceID, parent.Path) != 1 {
+						t.Fatal("parent ownership missing")
+					}
+				} else {
+					if e.count(`SELECT count(*) FROM sources WHERE device_id=$1 AND path=$2 AND agent='claude'`, e.deviceID, companion.Path) != 0 {
+						t.Fatal("companion bypassed existing foreign parent")
+					}
+					if e.count(`SELECT count(*) FROM source_policy_identity WHERE device_id=$1 AND path=$2`, e.deviceID, parent.Path) != 0 {
+						t.Fatal("failed companion invented parent ownership")
+					}
+				}
+			})
 		}
 	}
 }

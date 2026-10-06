@@ -20,4 +20,4 @@ The server limits each metadata array to 256 entries and request bodies to 1 MiB
 
 A recorded nonempty device home cannot change or clear while Cowork policy is bound to that identity. `409 device_home_conflict` requires a new device identity or a controlled home migration. Retrying the same conflicting snapshot cannot resolve it.
 
-Policy registration takes an exclusive device gate. Manifest commits and parsing take the shared gate and recheck current policy before publishing. Rule reconciliation retains the collection-rule lock through restoration and acknowledgement. Hiding and purging preserve unrelated devices and already deleted history.
+Policy registration, native Claude manifest commits, and companion manifest commits take an exclusive device gate. Other manifest commits and parsing take the shared gate and recheck current policy before publishing. Rule reconciliation retains the collection-rule lock through restoration and acknowledgement. Hiding and purging preserve unrelated devices and already deleted history.
