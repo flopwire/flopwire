@@ -501,4 +501,64 @@ func TestCoworkAgentFullChainMappedFamily(t *testing.T) {
 		return nil
 	})
 	e.familyRaw(t, second, secondID)
+	// The agent must compact an over-limit scope through its real typed client.
+	// Every folder here is a genuine synthetic host directory; none are VM paths.
+	folders := []string{second.selected}
+	for i := 0; i < 256; i++ {
+		folder := filepath.Join(second.home, fmt.Sprintf("scope-%03d", i))
+		if err := os.MkdirAll(folder, 0700); err != nil {
+			t.Fatal(err)
+		}
+		folders = append(folders, folder)
+	}
+	second.writeMapping(t, folders)
+	second.once(t)
+	chainEventually(t, "compact scope overflow revokes actual native family", func() error {
+		var hidden int
+		if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM conversations WHERE device_id=$1 AND hidden_at IS NOT NULL AND session_id IN ($2,'agent-cafe')`, secondID, chainNativeID).Scan(&hidden); err != nil {
+			return err
+		}
+		if hidden != 2 {
+			return fmt.Errorf("overflow-hidden native family %d, want 2", hidden)
+		}
+		return nil
+	})
+	second.writeMapping(t, []string{second.selected})
+	second.once(t)
+	for _, path := range []string{second.main, second.child, second.companion} {
+		source, gen, size, err := e.source(second, secondID, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := client.HTTP{Server: h.URL, Token: secondToken, Client: h.Client()}
+		if _, err := c.Raw(context.Background(), source, gen, 0, size); err == nil {
+			t.Fatal("compact overflow hold was cleared by smaller current mapping")
+		}
+	}
+}
+
+func TestCoworkAgentFullChainCapabilityZeroHolds(t *testing.T) {
+	if syncproto.PolicyPlacementsVersion != 0 {
+		t.Skip("capability-zero qualification applies to the disabled candidate")
+	}
+	e := newChainEnv(t)
+	h := newChainAPI(t, e, false)
+	id, token := e.credential(t, "capability-zero")
+	d := newChainDevice(t, id, token, h)
+	d.start(t)
+	d.once(t)
+	d.halt(t)
+	var local, server, captured int
+	if err := d.index.DB().QueryRow(`SELECT count(*) FROM messages WHERE NOT superseded`).Scan(&local); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM sources WHERE device_id=$1`, id).Scan(&server); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.syncDB.QueryRow(`SELECT count(*) FROM devsync_gens`).Scan(&captured); err != nil {
+		t.Fatal(err)
+	}
+	if local != 3 || server != 0 || captured != 0 {
+		t.Fatalf("capability-zero local=%d server=%d captured=%d, want 3/0/0", local, server, captured)
+	}
 }
