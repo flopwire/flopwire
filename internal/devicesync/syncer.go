@@ -315,7 +315,7 @@ func (s *Syncer) resume(ctx context.Context, spec SourceSpec, auth *CaptureAutho
 	if err := s.protect(ctx, src); err != nil {
 		return err
 	}
-	if err := s.preflight(ctx, src); err != nil {
+	if err := s.preflight(ctx, src, false); err != nil {
 		return err
 	}
 	return s.upload(ctx, src)
@@ -336,7 +336,7 @@ func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, up
 	if err := s.protect(ctx, src); err != nil {
 		return err
 	}
-	if err := s.preflight(ctx, src); err != nil {
+	if err := s.preflight(ctx, src, true); err != nil {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
@@ -457,7 +457,10 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	} else if change, err = transcript.Decide(src.Watermark, id, r); err != nil {
 		return err
 	}
-	if s.authorization != nil && cur != nil {
+	if s.canReplaceEmptyCurrent(src, cur) {
+		// Materialize and attest a fresh generation even when the file remains empty.
+		change = transcript.Change{Decision: transcript.Rewrite, Reason: "qualify empty native generation"}
+	} else if s.authorization != nil && cur != nil {
 		if err := s.validateGeneration(src, cur); err != nil {
 			return err
 		}
