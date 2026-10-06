@@ -1,6 +1,20 @@
 package syncproto
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"testing"
+)
+
+func TestPolicyDigestWithoutDeviceRetainsOriginalWireEncoding(t *testing.T) {
+	req := &PolicyPlacementsRequest{Version: 1, Agent: "claude", SessionID: "session", CurrentMappingKnown: true, EvidenceScope: EvidenceMapped, ClientMode: ClientModeAllow, Placements: []PolicyPlacement{{CWD: "/root"}}}
+	old := []byte(`{"version":1,"agent":"claude","session_id":"session","current_mapping_known":true,"evidence_scope":"mapped","placements":[{"cwd":"/root","worktree_root":"","main_root":"","remote":""}],"client_mode":"allow"}`)
+	sum := sha256.Sum256(old)
+	digest, err := PolicyPlacementsDigest(req)
+	if err != nil || digest != hex.EncodeToString(sum[:]) {
+		t.Fatalf("optional device changed an existing request digest: %s %v", digest, err)
+	}
+}
 
 func TestPolicyPlacementsDigestBindsExactBatch(t *testing.T) {
 	req := &PolicyPlacementsRequest{Version: 1, Agent: "claude", SessionID: "session", CurrentMappingKnown: true, EvidenceScope: EvidenceMapped, ClientMode: ClientModeAllow, Placements: []PolicyPlacement{{CWD: "/root"}}, Sources: []PolicySource{{Path: "/transcript", FileID: "1:1"}}}
@@ -13,6 +27,7 @@ func TestPolicyPlacementsDigestBindsExactBatch(t *testing.T) {
 		t.Fatalf("unstable digest: %q %q %v", original, same, err)
 	}
 	mutations := []func(*PolicyPlacementsRequest){
+		func(r *PolicyPlacementsRequest) { r.Device = &DeviceDirs{Home: "/Users/test"} },
 		func(r *PolicyPlacementsRequest) {
 			r.Placements = append(r.Placements, PolicyPlacement{CWD: "/private"})
 		},
