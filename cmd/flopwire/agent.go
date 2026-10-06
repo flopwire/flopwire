@@ -37,6 +37,7 @@ import (
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/recoveryreceipt"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -162,6 +163,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
+	desktopCodeRoot := fs.String("desktop-code-root", "", `Claude Desktop local Code metadata/scoped history container (macOS default; "-" disables); configured normal Claude root remains separate`)
 	coworkRoot := fs.String("cowork-root", "", `Cowork session container (default Claude Desktop app storage on macOS; "-" disables); shared uploads held pending server policy support`)
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
@@ -264,23 +266,35 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
 	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
+	loadSyncConfig := client.Load
 	if ccErr == nil {
+		loadSyncConfig = deviceBoundConfig(cc, client.Load)
 		cfg.UserRuleList = cc.Denylist
 		cfg.Unplaceable = cc.Unplaceable
 		if cc.Server != "" && cc.Token != "" && !*noSync {
 			cfg.AdminRules = adminRules(cc)
 			cfg.Withhold = withholdSession(cc, client.Load)
+			cfg.CoworkPolicy = coworkPolicyClient(cc, loadSyncConfig)
+			cfg.RecoveredPolicySources = recoveredPolicySources(cc, loadSyncConfig)
 		}
 	}
 	var startSyncRun func()
 	var sched *devicesync.Scheduler
 	if !*noSync {
-		s, tr, start, closeSync, err := startSync(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log)
+		var s *devicesync.Scheduler
+		var tr *syncTransport
+		var start, closeSync func()
+		var err error
+		if ccErr == nil {
+			s, tr, start, closeSync, err = startSyncFrom(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log, cc, loadSyncConfig)
+		} else {
+			s, tr, start, closeSync, err = startSync(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -558,6 +572,74 @@ func withholdSession(cc client.Config, load func() (client.Config, error)) func(
 	}
 }
 
+type coworkPolicyClientFunc func(context.Context, *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error)
+
+func (f coworkPolicyClientFunc) PolicyPlacements(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+	return f(ctx, req)
+}
+
+// Cowork policy registration follows credentials and TLS pins saved for this
+// server. Every call still checks the server's durable-policy capability.
+func coworkPolicyClient(cc client.Config, load func() (client.Config, error)) agent.CoworkPolicyClient {
+	var mu sync.Mutex
+	load = deviceBoundConfig(cc, load)
+	server, _ := client.NormalizeServer(cc.Server)
+	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
+	return coworkPolicyClientFunc(func(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+		loaded, loadErr := load()
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if loaded.DeviceID != cc.DeviceID {
+			return nil, errDeviceChanged
+		}
+		mu.Lock()
+		cur := cc
+		if c, same := savedConfig(server, func() (client.Config, error) { return loaded, loadErr }); same {
+			cur = c
+		}
+		if cur.TLSFingerprint != pin {
+			pin, hc = cur.TLSFingerprint, cur.HTTPClient()
+		}
+		policy := devicesync.PolicyClient{Server: cur.Server, Token: cur.Token, HTTP: hc}
+		mu.Unlock()
+		return policy.PolicyPlacements(ctx, req)
+	})
+}
+
+func recoveredPolicySources(cc client.Config, load func() (client.Config, error)) func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) {
+	load = deviceBoundConfig(cc, load)
+	configPath, pathErr := client.Path()
+	binding := recoveryreceipt.Binding{Server: cc.Server, DeviceID: cc.DeviceID}
+	return func(ctx context.Context, nativeUUID string) ([]syncproto.PolicyRecoverySource, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		current, err := load()
+		if err != nil {
+			return nil, err
+		}
+		if current.DeviceID != cc.DeviceID {
+			return nil, errDeviceChanged
+		}
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		receipts, err := recoveryreceipt.Read(filepath.Dir(configPath), binding, nativeUUID)
+		if errors.Is(err, recoveryreceipt.ErrAbsent) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		refs := make([]syncproto.PolicyRecoverySource, 0, len(receipts))
+		for _, r := range receipts {
+			refs = append(refs, syncproto.PolicyRecoverySource{Source: r.Source, OriginalPath: r.OriginalPath})
+		}
+		return refs, nil
+	}
+}
+
 // openBus opens the local message inbox. One that cannot be opened (a
 // damaged file, a full disk) turns messaging off with an error in the
 // log; it never stops indexing and upload.
@@ -724,6 +806,12 @@ func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCa
 		log.Info("agent: no server configured; indexing locally only", "reason", err)
 		return nil, nil, nil, nil, nil
 	}
+	return startSyncFrom(ctx, store, dir, spoolCap, dev, log, cfg, client.Load)
+}
+
+// Use the agent's initial credential snapshot for both sync and policy
+// registration. A second config read at construction could select a new device.
+func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, dev syncproto.DeviceDirs, log *slog.Logger, cfg client.Config, load func() (client.Config, error)) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
 	db, err := sql.Open("sqlite", "file:"+store.Path()+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -739,7 +827,7 @@ func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCa
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	tr := newSyncTransport(cfg, client.Load, log)
+	tr := newSyncTransport(cfg, load, log)
 	live := local.LiveReporter(local.NewDetector(), 30*time.Second, syncproto.MaxLive)
 	sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log, Device: dev, Live: live}, st, spool, tr)
 	if err != nil {
@@ -895,6 +983,18 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	if c := resp.DesktopCode; c != nil {
+		fmt.Fprintf(w, "Claude Desktop Code (Local): %s (%d scoped native sessions, %d normal-root links, %d missing linked transcripts, %d outside local Code scope)\n", c.State, c.Sessions, c.NormalLinks, c.MetadataOnly, c.OutOfScope)
+		if c.SharedHold != "" {
+			fmt.Fprintf(w, "  scoped shared uploads held: %s\n", c.SharedHold)
+		}
+		if c.Error != "" {
+			fmt.Fprintf(w, "  %s\n", c.Error)
+		}
+		if c.CoworkAliases > 0 {
+			fmt.Fprintf(w, "  %d Cowork import aliases retain folder-policy holds\n", c.CoworkAliases)
+		}
+	}
 	if c := resp.Cowork; c != nil {
 		fmt.Fprintf(w, "Cowork: %s (%d native sessions, %d metadata-only, %d excluded paths)\n", c.State, c.Sessions, c.MetadataOnly, c.Excluded)
 		if c.RepositoryScopeUnknown > 0 {

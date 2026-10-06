@@ -75,11 +75,12 @@ type Request struct {
 
 // Response answers a Request.
 type Response struct {
-	Cowork     *CoworkStatus                 `json:"cowork,omitempty"`
-	Extraction *transcript.ExtractionSummary `json:"extraction,omitempty"`
-	OK         bool                          `json:"ok"`
-	Path       string                        `json:"path,omitempty"` // flush: the source indexed
-	Error      string                        `json:"error,omitempty"`
+	DesktopCode *DesktopCodeStatus            `json:"desktop_code,omitempty"`
+	Cowork      *CoworkStatus                 `json:"cowork,omitempty"`
+	Extraction  *transcript.ExtractionSummary `json:"extraction,omitempty"`
+	OK          bool                          `json:"ok"`
+	Path        string                        `json:"path,omitempty"` // flush: the source indexed
+	Error       string                        `json:"error,omitempty"`
 	// Sync is the upload state (status); nil when sync is off.
 	Sync *devicesync.Status `json:"sync,omitempty"`
 	// ServerCopies (status): sessions path rules removed locally whose
@@ -229,6 +230,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		resp.ServerCopies = a.serverCopiesNotice()
 		resp.Placements = a.placementCounts()
 		resp.Cowork = a.coworkStatus()
+		resp.DesktopCode = a.desktopCodeStatus()
 		if a.cfg.Bus != nil {
 			st := a.cfg.Bus.Status(ctx)
 			resp.Bus = &st

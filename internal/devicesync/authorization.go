@@ -137,7 +137,7 @@ func (s *Syncer) protect(ctx context.Context, src *sourceRow) error {
 	return s.store.protectSource(ctx, src, a.Origin, a.Root)
 }
 
-func (s *Syncer) preflight(ctx context.Context, src *sourceRow) error {
+func (s *Syncer) preflight(ctx context.Context, src *sourceRow, capture bool) error {
 	if err := s.checkAuthorization(ctx); err != nil {
 		return err
 	}
@@ -154,10 +154,22 @@ func (s *Syncer) preflight(ctx context.Context, src *sourceRow) error {
 	if err != nil {
 		return err
 	}
+	if capture && s.canReplaceEmptyCurrent(src, current) {
+		return nil
+	}
 	if current != nil && (s.authorization != nil || current.Proof != nil) {
 		return s.validateGeneration(src, current)
 	}
 	return nil
+}
+
+// Only capture may replace an ordinary empty current generation. Resume and
+// transport paths still require proof, including for empty generations.
+func (s *Syncer) canReplaceEmptyCurrent(src *sourceRow, g *genRow) bool {
+	a := s.authorization
+	return a != nil && s.validateAuthorization(src) == nil && a.Origin == src.ProtectedOrigin && a.Root == src.ProtectedRoot &&
+		g != nil && g.SourceID == src.ID && g.Gen == src.Gen && g.Proof == nil && !g.Closed && !g.Lost && g.done() &&
+		g.Size == 0 && g.Entries == 0 && g.Acked == 0 && g.Tail.Offset == 0 && g.Tail.Size == 0 && g.SrvTailOff == 0 && g.SrvTailLen == 0
 }
 
 func validateProofIdentity(f *os.File, p *CaptureProof) error {

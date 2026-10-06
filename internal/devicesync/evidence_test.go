@@ -45,6 +45,12 @@ func TestCaptureEvidenceFindsAckedLegacyHistoryBeforeRPC(t *testing.T) {
 	if ref.Path != sp.Path || ref.FileID == "" || ref.Generation != 0 {
 		t.Fatalf("stored source reference=%+v", ref)
 	}
+	for _, origin := range []string{"cowork", "desktop-code"} {
+		strict, err := sc.CaptureEvidenceForOrigin(context.Background(), sp.Agent, sp.SessionKey, origin)
+		if err != nil || !strict.Unproven || len(strict.Sources) != 1 || strict.Sources[0] != ref {
+			t.Fatalf("unqualified history origin %s: %+v,%v", origin, strict, err)
+		}
+	}
 }
 
 func TestCaptureEvidenceValidatesEveryGenerationProof(t *testing.T) {
@@ -228,5 +234,53 @@ func TestCaptureEvidenceCanonicalCompanionRestriction(t *testing.T) {
 				t.Fatalf("canonical companion restriction=%+v,%v", out, err)
 			}
 		})
+	}
+}
+
+func TestCaptureEvidenceForOriginDoesNotRecertifyOtherOrigin(t *testing.T) {
+	for _, capturedOrigin := range []string{"desktop-code", "cowork"} {
+		t.Run(capturedOrigin, func(t *testing.T) {
+			e := newEnv(t, Config{}, 1<<20)
+			sp := nativeEvidenceSpec(e, "origin.jsonl")
+			data := jsonlLines(116, 20, 100)
+			appendFile(t, sp.Path, data)
+			a := fileAuthorization(t, sp, int64(len(data)))
+			a.Origin = capturedOrigin
+			if err := e.sy.SyncAuthorized(context.Background(), sp, a); err != nil {
+				t.Fatal(err)
+			}
+			sc := NewScheduler(e.sy, SchedulerConfig{})
+			generic, err := sc.CaptureEvidence(context.Background(), sp.Agent, sp.SessionKey)
+			if err != nil || generic.Unproven || len(generic.Sources) != 1 {
+				t.Fatalf("generic capture fact: %+v,%v", generic, err)
+			}
+			for _, expectedOrigin := range []string{"desktop-code", "cowork"} {
+				evidence, err := sc.CaptureEvidenceForOrigin(context.Background(), sp.Agent, sp.SessionKey, expectedOrigin)
+				if err != nil || evidence.Unproven != (expectedOrigin != capturedOrigin) || len(evidence.Sources) != 1 || evidence.Sources[0] != generic.Sources[0] {
+					t.Fatalf("origin %s evidence: %+v,%v", expectedOrigin, evidence, err)
+				}
+			}
+			// Qualification for either origin must still hold when an old nonempty
+			// capture lacks proof, even if the source's durable marker is qualified.
+			if _, err := e.store.db.Exec(`UPDATE devsync_gens SET capture_proof=NULL`); err != nil {
+				t.Fatal(err)
+			}
+			for _, expectedOrigin := range []string{"desktop-code", "cowork"} {
+				evidence, err := sc.CaptureEvidenceForOrigin(context.Background(), sp.Agent, sp.SessionKey, expectedOrigin)
+				if err != nil || !evidence.Unproven || len(evidence.Sources) != 1 {
+					t.Fatalf("legacy origin %s evidence: %+v,%v", expectedOrigin, evidence, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCaptureEvidenceForOriginRejectsUnknownOrigin(t *testing.T) {
+	e := newEnv(t, Config{}, 1<<20)
+	sc := NewScheduler(e.sy, SchedulerConfig{})
+	for _, origin := range []string{"", "cass", "unknown"} {
+		if out, err := sc.CaptureEvidenceForOrigin(context.Background(), transcript.AgentClaude, evidenceNativeSession, origin); err == nil {
+			t.Fatalf("invalid origin accepted: %+v", out)
+		}
 	}
 }

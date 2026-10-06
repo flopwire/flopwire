@@ -12,25 +12,6 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript/cowork"
 )
 
-// CoworkStatus distinguishes local coverage from shared readiness. The server
-// currently cannot persist/reapply multi-folder host policy, so all identified
-// Cowork evidence stays local, including overlapping CLI copies.
-type CoworkStatus struct {
-	Root                   string         `json:"root,omitempty"`
-	State                  string         `json:"state"`
-	Sessions               int            `json:"sessions"`
-	MetadataOnly           int            `json:"metadata_only"`
-	Excluded               int            `json:"excluded_paths"`
-	Unknown                int            `json:"unknown_mapping"`
-	RepositoryScopeUnknown int            `json:"unknown_repository_scopes"`
-	HistoricalUnknown      int            `json:"historical_unknown_mapping"`
-	MappingReasons         map[string]int `json:"mapping_reasons,omitempty"`
-	WatchCandidates        int            `json:"watch_candidates"`
-	Held                   int            `json:"shared_held"`
-	SharedHold             string         `json:"shared_hold"`
-	Error                  string         `json:"error,omitempty"`
-}
-
 // refreshCowork runs before files reach the worker pool. Host locations are
 // stored monotonically in placements: revoking an app grant must not remove
 // the rules protecting work already performed in that folder. The origin is
@@ -41,6 +22,11 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	defer a.coworkMu.Unlock()
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
+	a.refreshDesktopCodeLocked(ctx)
+	a.refreshCoworkLocked(ctx)
+}
+
+func (a *Agent) refreshCoworkLocked(ctx context.Context) {
 	facts, historyErr := a.store.CoworkHistoricalUnknownFacts(ctx)
 	a.placeWriteMu.Lock()
 	a.mu.Lock()
@@ -72,6 +58,8 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	changed := false
 	registrationFailed := false
 	scopes := append([]cowork.Link(nil), r.IdentityLinks...)
+	codeScopes, codeRoots := a.desktopCodeCoworkScopes(r)
+	scopes = append(scopes, codeScopes...)
 	historicalFacts := map[string]bool{}
 	for _, session := range facts {
 		historicalFacts[session] = true
@@ -99,6 +87,10 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 	for _, link := range r.IdentityLinks {
 		addMember(link.NativeSessionID, link.NativeSessionID)
 	}
+	for _, link := range codeScopes {
+		addMember(link.NativeSessionID, link.NativeSessionID)
+	}
+	a.desktopCodeCoworkFamilies(groups)
 	for session := range historicalFacts {
 		addMember(session, session)
 	}
@@ -123,25 +115,29 @@ func (a *Agent) refreshCowork(ctx context.Context) {
 			parents[link.NativeSessionID] = link
 		}
 	}
-	cliSessions, cliErr := claude.Discover(a.cfg.ClaudeProjects)
-	if cliErr != nil {
-		registrationFailed = true
-		a.log.Warn("agent: Cowork CLI child discovery failed", "error", cliErr)
-	}
-	for _, session := range cliSessions {
-		link, ok := parents[session.SessionID]
-		if !ok {
-			continue
+	// Ordinary CLI sweeps already discover this tree; inspect it here only
+	// when a verified Cowork parent can establish additional child scope.
+	if len(parents) > 0 {
+		cliSessions, cliErr := claude.Discover(a.cfg.ClaudeProjects)
+		if cliErr != nil {
+			registrationFailed = true
+			a.log.Warn("agent: Cowork CLI child discovery failed", "error", cliErr)
 		}
-		for _, sa := range session.Subagents {
-			child := link
-			child.NativeSessionID = claude.SubagentSessionID(sa.AgentID)
-			scopes = append(scopes, child)
-			addMember(session.SessionID, child.NativeSessionID)
+		for _, session := range cliSessions {
+			link, ok := parents[session.SessionID]
+			if !ok {
+				continue
+			}
+			for _, sa := range session.Subagents {
+				child := link
+				child.NativeSessionID = claude.SubagentSessionID(sa.AgentID)
+				scopes = append(scopes, child)
+				addMember(session.SessionID, child.NativeSessionID)
+			}
 		}
 	}
 	for root, link := range parents {
-		children, err := a.store.CapturedClaudeChildren(ctx, []string{a.cfg.ClaudeProjects, link.ProjectsRoot}, root)
+		children, err := a.store.CapturedClaudeChildren(ctx, append([]string{a.cfg.ClaudeProjects, link.ProjectsRoot}, codeRoots[root]...), root)
 		if err != nil {
 			registrationFailed = true
 			a.log.Warn("agent: Cowork historical child scope failed", "error", err)
@@ -407,62 +403,10 @@ func (a *Agent) coworkMode(pv *policyView, t *target) (pathpolicy.Decision, bool
 }
 
 func (a *Agent) coworkSafe(t *target) bool {
-	if a.cfg.CoworkRoot == "" {
-		return true
+	if root := a.nativeEvidenceRoot(t.path); root != "" {
+		return cowork.SafeFile(root, t.path)
 	}
-	if _, ok := under(a.cfg.CoworkRoot, t.path); !ok {
-		return true
-	}
-	return cowork.SafeFile(a.cfg.CoworkRoot, t.path)
-}
-
-func (a *Agent) coworkStatus() *CoworkStatus {
-	a.mu.Lock()
-	r := a.coworkResult
-	st := &CoworkStatus{Root: a.cfg.CoworkRoot, State: "supported", Sessions: len(r.Sessions), MetadataOnly: r.MetadataOnly, Excluded: r.Excluded, Error: a.coworkError, SharedHold: "server host-folder policy support pending", WatchCandidates: len(r.WatchDirs), MappingReasons: map[string]int{}}
-	for _, p := range a.places {
-		if localindex.IsCoworkPlacement(p.how) {
-			st.Held++
-			if p.how == localindex.PlacedByCoworkUnknown {
-				st.HistoricalUnknown++
-			}
-		}
-	}
-	a.mu.Unlock()
-	switch {
-	case a.cfg.CoworkRoot == "":
-		st.State = "disabled"
-	case st.Error != "":
-		st.State = "unavailable"
-	case r.Unavailable > 0:
-		st.State = "unavailable"
-	case r.Excluded > 0 && len(r.WatchDirs) == 0:
-		st.State = "excluded"
-	}
-	seen := map[string]bool{}
-	links := append([]cowork.Link(nil), r.IdentityLinks...)
-	for _, entry := range r.Sessions {
-		links = append(links, entry.Link)
-	}
-	for _, link := range links {
-		key := link.MetadataPath + "\x00" + link.NativeSessionID
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		repoUnknown := false
-		for _, path := range coworkHostPaths(link) {
-			repoUnknown = repoUnknown || a.policy().pol.DecideSubtree(a.resolve(path, "")).RepoScopeUnknown
-		}
-		if repoUnknown {
-			st.RepositoryScopeUnknown++
-		}
-		if !link.Mapping.Known() {
-			st.Unknown++
-			st.MappingReasons[link.Mapping.Reason()]++
-		}
-	}
-	return st
+	return true
 }
 
 // coworkCaptureScope separates current readiness from historical uncertainty.
@@ -478,6 +422,9 @@ func (a *Agent) coworkCaptureScope(t *target) ([]placeKey, bool) {
 		}
 	}
 	a.mu.Unlock()
+	if root == "" {
+		root = a.nativeClaudeParent(t.path)
+	}
 	keys := []placeKey{key}
 	if root != "" {
 		keys = append(keys, placeKey{transcript.AgentClaude, root})
@@ -509,10 +456,17 @@ func (a *Agent) coworkCaptureScope(t *target) ([]placeKey, bool) {
 			}
 		}
 	}
+	if !found && a.desktopCodeCoworkAlias(keys) {
+		found = true
+		known = false
+	}
 	return keys, found && known
 }
 
 func (a *Agent) coworkScopePresent(keys []placeKey) bool {
+	if a.desktopCodeCoworkAlias(keys) {
+		return true
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, key := range keys {
@@ -557,9 +511,17 @@ func coworkHostPaths(link cowork.Link) []string {
 // including failures extending an already registered session's folder union.
 func (a *Agent) coworkUnregisteredPaths(t *target) []string {
 	keys, _ := a.coworkCaptureScope(t)
+	alias := a.desktopCodeCoworkAlias(keys)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var missing []string
+	if alias {
+		for _, key := range keys {
+			if p, ok := a.places[key]; !ok || !localindex.IsCoworkPlacement(p.how) {
+				missing = append(missing, "")
+			}
+		}
+	}
 	for _, key := range keys {
 		p, ok := a.places[key]
 		have := map[string]bool{p.pl.Cwd: true}
@@ -649,50 +611,68 @@ func (a *Agent) taintCoworkEvidence(ctx context.Context, t *target) error {
 	if len(sessions) == 0 {
 		return nil
 	}
+	verified := make([]placeKey, 0, len(sessions))
+	for _, session := range sessions {
+		verified = append(verified, placeKey{transcript.AgentClaude, session})
+	}
+	return a.markCoworkHistoricalUnknown(ctx, verified)
+}
+
+// markCoworkHistoricalUnknown records verified historical uncertainty regardless
+// of current mapping readiness. Callers hold captureScopeMu and supply identities
+// backed by actual captures or validated server evidence, never metadata alone.
+// Facts commit before compatibility placements are published or proof is purged.
+// The caller enforces policy after this method releases placement locks.
+func (a *Agent) markCoworkHistoricalUnknown(ctx context.Context, keys []placeKey) error {
+	var native []placeKey
+	for _, key := range keys {
+		if key.agent == transcript.AgentClaude && key.session != "" {
+			native = append(native, key)
+		}
+	}
+	keys = a.coworkFamilyKeys(native)
+	if len(keys) == 0 {
+		return nil
+	}
+	sessions := make([]string, 0, len(keys))
+	for _, key := range keys {
+		sessions = append(sessions, key.session)
+	}
+	a.placeWriteMu.Lock()
+	defer a.placeWriteMu.Unlock()
 	if err := a.store.MarkCoworkHistoricalUnknown(ctx, sessions); err != nil {
 		a.mu.Lock()
 		if a.coworkHistoryFailures == nil {
 			a.coworkHistoryFailures = map[placeKey]error{}
 		}
-		for _, session := range sessions {
-			a.coworkHistoryFailures[placeKey{transcript.AgentClaude, session}] = err
+		if a.coworkPendingUnknown == nil {
+			a.coworkPendingUnknown = map[placeKey]bool{}
+		}
+		for _, key := range keys {
+			a.coworkHistoryFailures[key] = err
+			a.coworkPendingUnknown[key] = true
 		}
 		a.mu.Unlock()
 		return err
 	}
+	// The committed fact is authoritative even if a compatibility write fails.
 	a.mu.Lock()
-	for _, session := range sessions {
-		delete(a.coworkHistoryFailures, placeKey{transcript.AgentClaude, session})
+	updates := make(map[placeKey]placed, len(keys))
+	for _, key := range keys {
+		delete(a.coworkHistoryFailures, key)
+		delete(a.coworkPendingUnknown, key)
+		p := a.places[key]
+		p.how = localindex.PlacedByCoworkUnknown
+		a.places[key] = p
+		updates[key] = p
 	}
 	a.mu.Unlock()
-	a.placeWriteMu.Lock()
-	defer a.placeWriteMu.Unlock()
-	updates := map[placeKey]placed{}
-	for _, key := range keys {
-		a.mu.Lock()
-		p, ok := a.places[key]
-		a.mu.Unlock()
-		if !ok || !localindex.IsCoworkPlacement(p.how) || p.how == localindex.PlacedByCoworkUnknown {
-			continue
-		}
-		p.how = localindex.PlacedByCoworkUnknown
+	for key, p := range updates {
 		if err := a.store.SavePlacement(ctx, localindex.Placement{Agent: key.agent, SessionID: key.session, Placement: p.pl, How: p.how, CheckedAt: p.checked, Candidates: p.cands, OtherCwds: p.others}); err != nil {
 			return err
 		}
-		updates[key] = p
 	}
-	if len(updates) == 0 {
-		return nil
-	}
-	if err := a.store.Sync(ctx); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	for key, p := range updates {
-		a.places[key] = p
-	}
-	a.mu.Unlock()
-	return nil
+	return a.store.Sync(ctx)
 }
 
 func (a *Agent) coworkFamilyKeys(keys []placeKey) []placeKey {
