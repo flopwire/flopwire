@@ -295,7 +295,7 @@ func (a *Agent) mappingSignature(t *target) (string, error) {
 	for _, l := range r.IdentityLinks {
 		for _, k := range keys {
 			if l.NativeSessionID == k.session {
-				paths := l.Mapping.HostPaths()
+				paths := coworkHostPaths(l)
 				sort.Strings(paths)
 				grants = append(grants, grant{l.NativeSessionID, l.Mapping.Known(), paths})
 			}
@@ -320,6 +320,10 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 	a.refreshPolicy(ctx, false)
 	a.captureScopeMu.Lock()
 	release := a.captureScopeMu.Unlock
+	if !a.allowUpload(spec) {
+		release()
+		return nil, errCoworkHeld
+	}
 	a.mu.Lock()
 	t := a.targets[spec.Path]
 	a.mu.Unlock()
@@ -337,9 +341,11 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 		return nil, nil
 	}
 	keys, _ := a.coworkCaptureScope(t)
-	if !a.coworkOrigin(keys...) {
+	if !a.coworkOrigin(keys...) && !a.coworkScopePresent(keys) {
+		if a.desktopCodeScoped(spec.Path) {
+			return a.desktopCodeAuthorizationLocked(ctx, spec, t, release)
+		}
 		release()
-		// Ordinary collectors retain their existing authorization behavior.
 		return nil, nil
 	}
 	if spec.Export || !a.coworkSharingConfigured() {

@@ -1142,6 +1142,20 @@ func (a *Agent) sendWithholdsLocked(ctx context.Context) {
 		return
 	}
 	coworkOrigins := map[placeKey]bool{}
+	facts, historyErr := a.store.CoworkHistoricalUnknownFacts(ctx)
+	for _, session := range facts {
+		coworkOrigins[placeKey{transcript.AgentClaude, session}] = true
+	}
+	a.mu.Lock()
+	for key, p := range a.places {
+		if localindex.IsCoworkPlacement(p.how) {
+			coworkOrigins[key] = true
+		}
+	}
+	for key := range a.coworkPendingUnknown {
+		coworkOrigins[key] = true
+	}
+	a.mu.Unlock()
 	for _, p := range placements {
 		if localindex.IsCoworkPlacement(p.How) {
 			coworkOrigins[placeKey{p.Agent, p.SessionID}] = true
@@ -1150,7 +1164,8 @@ func (a *Agent) sendWithholdsLocked(ctx context.Context) {
 	for _, w := range ws {
 		// Old owed deletions must never escalate a device-bound Cowork scope
 		// into the legacy user-scoped tombstone. Metadata reconciliation owns it.
-		if coworkOrigins[placeKey{w.Agent, w.SessionID}] {
+		key := placeKey{w.Agent, w.SessionID}
+		if coworkOrigins[key] || w.Agent == transcript.AgentClaude && (historyErr != nil || a.coworkScopePresent([]placeKey{key})) {
 			continue
 		}
 		wctx, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -250,3 +250,33 @@ func TestCoworkOldWithholdNeverUsesLegacyRoute(t *testing.T) {
 		t.Fatalf("held legacy debt=%+v", ws)
 	}
 }
+
+func TestCoworkHistoricalFactPreventsLegacyWithholdAfterPlacementFailure(t *testing.T) {
+	f := newCoworkFixture(t)
+	key := placeKey{transcript.AgentClaude, coworkNativeID}
+	if err := f.a.saveCoworkPlace(ctx, key, placed{how: localindex.PlacedByNone}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetWithhold(ctx, key.agent, key.session, "deny", "synthetic"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.MarkCoworkHistoricalUnknown(ctx, []string{key.session}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	f.a.cfg.Withhold = func(context.Context, localindex.Withhold) error { calls++; return nil }
+	// Simulate the compatibility placement failing and every cache missing.
+	f.a.mu.Lock()
+	f.a.places = map[placeKey]placed{}
+	f.a.mu.Unlock()
+	f.a.sendWithholds(ctx)
+	if calls != 0 {
+		t.Fatal("durable fact escaped through legacy user-scoped route")
+	}
+	f.cfg.Withhold = f.a.cfg.Withhold
+	f.restart()
+	f.a.sendWithholds(ctx)
+	if calls != 0 {
+		t.Fatal("restart lost authoritative device-scoped routing")
+	}
+}

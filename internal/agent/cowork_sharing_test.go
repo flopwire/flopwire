@@ -143,3 +143,36 @@ func TestCoworkLeaseUnreachablePolicyDoesNotLeaveGateHeld(t *testing.T) {
 	}
 	auth.Release()
 }
+
+func TestCoworkLeaseRetargetedHostAliasInvalidatesCheck(t *testing.T) {
+	f, r, _, path := newCoworkLeaseFixture(t)
+	allowed, denied := filepath.Join(f.home, "allowed-real"), filepath.Join(f.home, "denied-real")
+	for _, dir := range []string{allowed, denied} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(f.home, "selected-alias")
+	if err := os.Symlink(allowed, alias); err != nil {
+		t.Fatal(err)
+	}
+	coworkMetadata(t, f, []string{alias}, nil, nil)
+	f.a.cfg.UserRuleList = []string{"deny " + denied}
+	f.a.refreshPolicy(ctx, false)
+	f.once()
+	sp, _ := r.spec(path)
+	auth, err := r.authorize(ctx, sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auth.Release()
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(denied, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.Check(ctx); err == nil {
+		t.Fatal("changed physical host policy scope retained lease")
+	}
+}
