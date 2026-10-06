@@ -10,7 +10,7 @@ The parent must schedule the builds and comparison in its serialized check slot.
 Use a new temporary directory for each comparison.
 
 ```sh
-smoke_dir="$(mktemp -d /private/tmp/flopwire-136-smoke.XXXXXX)"
+smoke_dir="$(mktemp -d ${TMPDIR:-/tmp}/flopwire-136-smoke.XXXXXX)"
 baseline_sha=9e4193da7c346ff14a377128920f3943ff14f523
 candidate_label="$(git rev-parse HEAD)"
 if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -27,8 +27,9 @@ go build -o "$smoke_dir/flopwire-current" ./cmd/flopwire
   --b "$smoke_dir/flopwire-current" --b-commit "$candidate_label" \
   --home "$smoke_dir/corpus" --scratch "$smoke_dir/scratch" \
   --out "$smoke_dir/results" --runs 1 --idle-after 1s \
-  --only index,fresh,queries --strict
+  --only index,fresh,queries
 cat "$smoke_dir/results/ab.md"
+jq -e '.verdict != "BASELINE_FAILED" and (.error // "") == ""' "$smoke_dir/results/ab.json"
 printf 'Smoke artifacts: %s\n' "$smoke_dir"
 ```
 
@@ -37,7 +38,8 @@ Retain both binaries and the generated corpus, per-run records, median records,
 ends in `working-tree`.
 
 Check that A completes indexing, idle startup, freshness and queries without an
-unknown `-opencode-db` error. Check the query results and indexed row counts for
+unknown `-opencode-db` error. A `REGRESSED` verdict reports measured drift;
+it is separate from a compatibility failure on this one-run smoke. Check the query results and indexed row counts for
 both binaries. Report other incompatibilities as failures.
 
 This lane has not run the real binary comparison. Focused fake-binary tests
