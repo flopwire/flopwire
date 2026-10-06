@@ -104,16 +104,17 @@ does not change ok or the exit status.
 
 // setupReport is what setup prints.
 type setupReport struct {
-	Kind        string          `json:"kind"`
-	Mode        string          `json:"mode"`
-	OK          bool            `json:"ok"`
-	Flopwire    setupBinary     `json:"flopwire"`
-	Agent       setupAgent      `json:"agent"`
-	Server      setupServer     `json:"server"`
-	SearchScope *format.Scope   `json:"search_scope,omitempty"`
-	Index       setupIndex      `json:"index"`
-	Harnesses   []harnessReport `json:"harnesses"`
-	Todo        []string        `json:"todo"`
+	Kind               string          `json:"kind"`
+	Mode               string          `json:"mode"`
+	OK                 bool            `json:"ok"`
+	Flopwire           setupBinary     `json:"flopwire"`
+	Agent              setupAgent      `json:"agent"`
+	Server             setupServer     `json:"server"`
+	SearchScope        *format.Scope   `json:"search_scope,omitempty"`
+	Index              setupIndex      `json:"index"`
+	Harnesses          []harnessReport `json:"harnesses"`
+	Todo               []string        `json:"todo"`
+	HookFailureWarning string          `json:"hook_failure_warning,omitempty"`
 }
 
 type setupBinary struct {
@@ -401,6 +402,9 @@ func runHarnessCommand(ctx context.Context, name string, args ...string) ([]byte
 
 func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep := setupReport{Kind: "setup", Mode: env.mode, OK: true, Todo: []string{}}
+	if env.mode == setupCheck {
+		rep.HookFailureWarning = lastHookFailureWarning()
+	}
 	if p, err := env.lookPath("flopwire"); err != nil {
 		rep.Flopwire.Note = "flopwire is not on PATH: the plugins find the binary by the path setup records, but your terminal and any MCP server you added by hand run it by name"
 		if env.mode != setupRemove {
@@ -1275,6 +1279,9 @@ func writeSetupText(w io.Writer, rep setupReport) {
 		} else {
 			b.WriteString("search: local by default (enroll to search shared history)\n")
 		}
+	}
+	if rep.HookFailureWarning != "" {
+		fmt.Fprintf(&b, "warning: %s\n", rep.HookFailureWarning)
 	}
 	for _, h := range rep.Harnesses {
 		if !h.Detected {

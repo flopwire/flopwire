@@ -895,6 +895,22 @@ plugin or the binary, run `flopwire setup --check`: it reports a binary on
 `PATH` that lacks a command the plugin runs. Devin has no hook approval
 step.
 
+The shared Claude Code/Codex hook shim also keeps one private, atomic
+`hook-last-failure` receipt in the resolved Flopwire config directory.
+It records only a UTC timestamp, a fixed reason (`missing-binary` or
+`hook-exit`) and an exit status. It does not record stdin, arguments,
+environment, message bodies or stderr. `flopwire setup --check` shows a
+valid receipt once as a historical warning (`hook_failure_warning` in JSON). It may come from Claude Code,
+Codex or Devin; it does not establish current hook health. A successful
+hook or setup run keeps the receipt. Checks and MCP execution do not
+write it. Unsafe or unwritable config directories can prevent recording;
+this does not change the hook's original exit behavior.
+
+Existing Devin cached plugins need the updated shim. Run `flopwire setup`
+to install or update the plugin through Devin, then start a new Devin session.
+Updating
+only the Flopwire binary does not replace Devin's cached plugin shim.
+
 On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
 `Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
 output could extend a turn. `flopwire hook` never does.

@@ -26,7 +26,7 @@
 
 if [ -n "${FLOPWIRE_CONFIG:-}" ]; then
 	case $FLOPWIRE_CONFIG in
-	*/*) dir=${FLOPWIRE_CONFIG%/*} ;;
+	*/*) dir=${FLOPWIRE_CONFIG%/*}; dir=${dir:-/} ;;
 	*) dir=. ;;
 	esac
 elif [ "$(uname -s 2>/dev/null || /usr/bin/uname -s 2>/dev/null)" = Darwin ]; then
@@ -37,6 +37,42 @@ else
 	*) dir="${HOME:-}/.config/flopwire" ;;
 	esac
 fi
+
+# Best-effort, content-free history shared by all copies of this shim.
+# Never inspect stdin or persist arguments, environment or binary output.
+record_failure() (
+	# Go rejects a relative XDG_CONFIG_HOME; keep binary lookup unchanged,
+	# but do not write history where setup cannot read it.
+	if [ -z "${FLOPWIRE_CONFIG:-}" ] && [ "$(/usr/bin/uname -s)" != Darwin ]; then
+		case ${XDG_CONFIG_HOME:-} in
+		''|/*) ;;
+		*) exit 0 ;;
+		esac
+	fi
+	umask 077
+	[ ! -L "$dir" ] || exit 0
+	/bin/mkdir -p "$dir" || exit 0
+	cd -P "$dir" || exit 0
+	# Check the directory we actually entered, before staging any file.
+	uid=$(/usr/bin/id -u) || exit 0
+	meta=$(/usr/bin/stat -c '%u %a' . 2>/dev/null) || meta=$(/usr/bin/stat -f '%u %Lp' .) || exit 0
+	set -- $meta
+	[ "$#" = 2 ] && [ "$1" = "$uid" ] || exit 0
+	case $2 in *[!0-7]*|'') exit 0 ;; esac
+	[ "$((0$2 & 0022))" = 0 ] || exit 0
+	[ ! -L hook-last-failure ] || exit 0
+	[ ! -e hook-last-failure ] || [ -f hook-last-failure ] || exit 0
+	stage=$(/usr/bin/mktemp -d ./hook-failure.XXXXXXXXXX) || exit 0
+	trap '/bin/rm -rf "$stage"' 0
+	stamp=$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ') || exit 0
+	printf 'v1 %s %s %s\n' "$stamp" "$failure_reason" "$failure_status" > "$stage/receipt" || exit 0
+	# Refuse a directory destination even if it replaces the checked entry.
+	case $(/usr/bin/uname -s) in
+	Darwin) /bin/mv -fh "$stage/receipt" hook-last-failure ;;
+	Linux) /bin/mv -fT "$stage/receipt" hook-last-failure ;;
+	*) exit 0 ;;
+	esac
+) </dev/null >/dev/null 2>&1
 
 recorded=
 if [ -r "$dir/binary-path" ]; then
@@ -71,6 +107,9 @@ if [ -z "$bin" ]; then
 fi
 
 if [ -z "$bin" ]; then
+	case ${1:-} in
+	hook) failure_reason=missing-binary failure_status=1; record_failure ;;
+	esac
 	echo "flopwire-hook: no flopwire binary: the recorded path (${recorded:-none}, from $dir/binary-path) is not executable, flopwire is not on PATH ($PATH), and not in /opt/homebrew/bin, /usr/local/bin, ~/go/bin or ~/.local/bin; fix: run flopwire setup" >&2
 	exit 1
 fi
@@ -91,6 +130,9 @@ export FLOPWIRE_HOOK_VIA
 "$bin" "$@"
 status=$?
 if [ "$status" -ne 0 ]; then
+	if [ "${1:-}" = hook ]; then
+		failure_reason=hook-exit failure_status=$status; record_failure
+	fi
 	echo "flopwire-hook: $bin $* exited $status: the binary may be older than this plugin; run: flopwire setup --check" >&2
 	exit 1
 fi
