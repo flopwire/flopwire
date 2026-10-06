@@ -766,14 +766,17 @@ func TestCoworkAgentFullChainPendingRestartHolds(t *testing.T) {
 				t.Fatal("persisted pending job never evaluated real agent filter")
 			}
 			if mode == "active authorized raw repair swap" {
-				select {
-				case err := <-observed.authorizeDone:
-					if err != nil {
-						t.Fatalf("active repair did not receive real authorization: %v", err)
+				// Run can inspect persisted work before Once publishes its refreshed
+				// scope. Initial held attempts are expected; require the actual ready
+				// authorization that triggers the deterministic filesystem fault.
+				chainEventually(t, "active repair receives refreshed actual authorization", func() error {
+					select {
+					case err := <-observed.authorizeDone:
+						return err
+					default:
+						return fmt.Errorf("actual ready authorization not yet observed")
 					}
-				case <-time.After(20 * time.Second):
-					t.Fatal("active repair did not evaluate actual authorizer")
-				}
+				})
 				chainEventually(t, "contained raw repair rejects source swapped after authorization", func() error {
 					if len(d.scheduler.Status().Failing) == 0 {
 						return fmt.Errorf("raw repair rejection not yet recorded")
