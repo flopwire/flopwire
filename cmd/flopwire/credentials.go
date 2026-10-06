@@ -199,6 +199,7 @@ type syncTransport struct {
 	cl     syncproto.Client
 	pin    string // cl.HTTP's pin
 	server string // normalized
+	device string // immutable: acknowledgements belong to the initial device
 	load   func() (client.Config, error)
 	env    bool
 	log    *slog.Logger
@@ -206,7 +207,36 @@ type syncTransport struct {
 
 func newSyncTransport(cfg client.Config, load func() (client.Config, error), log *slog.Logger) *syncTransport {
 	server, _ := client.NormalizeServer(cfg.Server)
-	return &syncTransport{cl: syncproto.Client{Server: cfg.Server, Token: cfg.Token, HTTP: cfg.HTTPClient()}, pin: cfg.TLSFingerprint, server: server, load: load, env: cfg.FromEnv, log: log}
+	bound := deviceBoundConfig(cfg, load)
+	return &syncTransport{cl: syncproto.Client{Server: cfg.Server, Token: cfg.Token, HTTP: cfg.HTTPClient()}, pin: cfg.TLSFingerprint, server: server, device: cfg.DeviceID, load: func() (client.Config, error) {
+		cc, err := bound()
+		if errors.Is(err, errDeviceChanged) && log != nil {
+			log.Warn("agent: " + err.Error())
+		}
+		return cc, err
+	}, env: cfg.FromEnv, log: log}
+}
+
+var errDeviceChanged = errors.New("device identity changed; restart with collector state bound to the new device")
+
+// Device-bound state cannot follow credentials for another device. Token
+// rotation and TLS re-pinning for the initial device remain valid.
+func deviceBoundConfig(initial client.Config, load func() (client.Config, error)) func() (client.Config, error) {
+	server, _ := client.NormalizeServer(initial.Server)
+	return func() (client.Config, error) {
+		if initial.FromEnv {
+			return initial, nil
+		}
+		cc, err := load()
+		if err != nil {
+			return cc, err
+		}
+		currentServer, err := client.NormalizeServer(cc.Server)
+		if err == nil && currentServer == server && cc.DeviceID != initial.DeviceID {
+			return client.Config{}, errDeviceChanged
+		}
+		return cc, nil
+	}
 }
 
 func (t *syncTransport) current() syncproto.Client {
@@ -256,8 +286,7 @@ func (t *syncTransport) refresh(ctx context.Context, used string) bool {
 	if !same || cc.Token == used {
 		return false
 	}
-	t.install(cc)
-	return true
+	return t.install(cc)
 }
 
 // refused records that the saved token (used) was refused.
@@ -278,7 +307,11 @@ func (t *syncTransport) refused(ctx context.Context, used, code string) error {
 	return out
 }
 
-func (t *syncTransport) install(cc client.Config) {
+func (t *syncTransport) install(cc client.Config) bool {
+	server, err := client.NormalizeServer(cc.Server)
+	if err != nil || server != t.server || cc.DeviceID != t.device || t.env {
+		return false
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.cl.Token = cc.Token
@@ -286,6 +319,7 @@ func (t *syncTransport) install(cc client.Config) {
 		t.cl.HTTP.CloseIdleConnections()
 		t.cl.HTTP, t.pin = cc.HTTPClient(), cc.TLSFingerprint
 	}
+	return true
 }
 
 // reload installs the saved token after the agent rotated it.
@@ -316,8 +350,7 @@ func (t *syncTransport) repin() bool {
 	if unchanged {
 		return false
 	}
-	t.install(cc)
-	return true
+	return t.install(cc)
 }
 
 // Credential sources, as setup --check and agent status name them.
