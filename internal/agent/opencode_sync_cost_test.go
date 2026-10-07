@@ -63,6 +63,12 @@ func TestLiveOpencodeSessionSyncCostsTheChange(t *testing.T) {
 		<-done
 	}()
 
+	defer func() {
+		if t.Failed() {
+			t.Logf("opencode synthetic sync state: scheduler=%+v capture=%+v", sched.Progress(), sy.CaptureStats())
+		}
+	}()
+
 	f := newFixture(t, "-")
 	f.cfg.OpencodeDB = oc.Path
 	f.cfg.Sync = sched

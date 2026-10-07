@@ -59,8 +59,8 @@ import (
 // Sync is the part of devicesync.Scheduler the agent drives. Every call
 // returns at once; the network never blocks indexing.
 type Sync interface {
-	Notify(devicesync.SourceSpec)
-	NotifyExportFunc(devicesync.SourceSpec, devicesync.ExportFunc)
+	NotifyWithNotice(devicesync.SourceSpec, devicesync.Notice)
+	NotifyExportFuncWithNotice(devicesync.SourceSpec, devicesync.ExportFunc, devicesync.Notice)
 	Flush(devicesync.SourceSpec)
 }
 
@@ -228,7 +228,14 @@ func (c *Config) defaults() {
 
 // Agent indexes one device's transcripts. Create it with New, then call
 // Run (or Once).
+type sessionActivityReader func(context.Context, transcript.Agent, []string) (map[string]time.Time, error)
+
 type Agent struct {
+	// Optional ranking metadata; a failed read must not discard committed sync work.
+	sessionActivities sessionActivityReader
+
+	initializedAt time.Time // distinguishes later-created files from cold directory peers
+
 	captureScopeMu        sync.RWMutex // orders app registration against in-flight native evidence
 	placeWriteMu          sync.Mutex   // orders placement memory and durable writes together
 	cfg                   Config
@@ -334,10 +341,10 @@ type Stats struct {
 func New(store *localindex.Store, cfg Config) *Agent {
 	cfg.defaults()
 	budget := transcript.NewLineBudget(cfg.LineBudget)
-	a := &Agent{cfg: cfg, store: store, log: cfg.Logger,
-		claude:  &claude.Parser{Lines: transcript.LineReaderOptions{Budget: budget}},
-		codex:   &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
-		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
+	a := &Agent{cfg: cfg, store: store, log: cfg.Logger, sessionActivities: store.SessionActivities,
+		claude:        &claude.Parser{Lines: transcript.LineReaderOptions{Budget: budget}},
+		codex:         &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
+		initializedAt: time.Now(), targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
 		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
@@ -638,7 +645,7 @@ func (a *Agent) merge(ctx context.Context, f *found, full bool) int {
 	n := 0
 	now := time.Now()
 	for _, s := range sts {
-		if a.gateID(s.t, s.id, now, false) {
+		if a.gateID(s.t, s.id, now, false, time.Unix(0, s.mod)) {
 			n++
 		}
 	}
@@ -667,16 +674,34 @@ func (a *Agent) waitDiscovered(ctx context.Context) error {
 // gate stats t and queues it when its tuple moved or is racy. urgent puts
 // it at the front of the queue.
 func (a *Agent) gate(t *target, now time.Time, urgent bool) bool {
-	id, err := transcript.StatIdentity(t.path)
+	fi, err := fsprobe.Stat(t.path)
 	if err != nil {
 		return false // gone; the next full pass retires it
 	}
-	return a.gateID(t, id, now, urgent)
+	return a.gateID(t, transcript.IdentityOf(fi), now, urgent, fi.ModTime())
 }
 
 // gateID is gate with the identity already sampled.
-func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent bool) bool {
+func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent bool, activity time.Time) bool {
 	a.mu.Lock()
+	// Discovery establishes historical activity. Only later evidence of an
+	// actual write may promote it; directory urgency is not that evidence.
+	select {
+	case <-a.discovered:
+		known := !t.notice.ActivityAt.IsZero()
+		indexedThisRun := t.seenAt >= a.initializedAt.UnixNano()
+		identityMoved := t.seen != (transcript.Identity{}) && (id.Size != t.seen.Size || id.ID != t.seen.ID)
+		newWrite := known && (activity.After(t.notice.ActivityAt) || indexedThisRun && identityMoved)
+		newSource := !known && !activity.Before(a.initializedAt)
+		changed := id != t.seen && (newWrite || newSource)
+		if changed {
+			t.notice.Kind = devicesync.NoticeChanged
+		}
+	default:
+	}
+	if activity.After(t.notice.ActivityAt) {
+		t.notice.ActivityAt = activity
+	}
 	// Hand every source to sync once per process start (and again after
 	// the path rules change), so a server configured after the index was
 	// built still gets the backlog; the syncer's own watermark makes it a

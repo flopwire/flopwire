@@ -79,7 +79,7 @@ func TestSchedulerCancellationKeepsNewerNotification(t *testing.T) {
 	sc.runOnce(ctx)
 	sc.mu.Lock()
 	j := sc.ready[sp.Path]
-	if j == nil || j.spec.Checkout != newer.Checkout || len(sc.order) != 1 {
+	if j == nil || j.spec.Checkout != newer.Checkout || len(sc.ready) != 1 {
 		sc.mu.Unlock()
 		t.Fatal("cancelled dispatch overwrote or duplicated the newer notification")
 	}

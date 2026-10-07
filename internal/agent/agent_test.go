@@ -40,21 +40,30 @@ type recorder struct {
 	notify  map[string]devicesync.SourceSpec
 	exports map[string]devicesync.ExportFunc
 	flushed []string
+	notices map[string]devicesync.Notice
 }
 
 func newRecorder() *recorder {
-	return &recorder{notify: map[string]devicesync.SourceSpec{}, exports: map[string]devicesync.ExportFunc{}}
+	return &recorder{notices: map[string]devicesync.Notice{}, notify: map[string]devicesync.SourceSpec{}, exports: map[string]devicesync.ExportFunc{}}
 }
 
-func (r *recorder) Notify(s devicesync.SourceSpec) {
+func (r *recorder) NotifyWithNotice(s devicesync.SourceSpec, notice devicesync.Notice) {
 	r.mu.Lock()
 	r.notify[s.Path] = s
+	if r.notices == nil {
+		r.notices = map[string]devicesync.Notice{}
+	}
+	r.notices[s.Path] = notice
 	r.mu.Unlock()
 }
 
-func (r *recorder) NotifyExportFunc(s devicesync.SourceSpec, fn devicesync.ExportFunc) {
+func (r *recorder) NotifyExportFuncWithNotice(s devicesync.SourceSpec, fn devicesync.ExportFunc, notice devicesync.Notice) {
 	r.mu.Lock()
 	r.notify[s.Path], r.exports[s.Path] = s, fn
+	if r.notices == nil {
+		r.notices = map[string]devicesync.Notice{}
+	}
+	r.notices[s.Path] = notice
 	r.mu.Unlock()
 }
 

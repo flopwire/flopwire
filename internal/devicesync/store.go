@@ -91,7 +91,7 @@ func OpenStore(path string) (*Store, error) {
 
 // NewStore creates the devsync_ tables in db if needed.
 func NewStore(db *sql.DB) (*Store, error) {
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + scheduleHintsSchema); err != nil {
 		return nil, fmt.Errorf("devicesync: schema: %w", err)
 	}
 	// Tables from an older build lack columns; the state lives in the
@@ -308,24 +308,40 @@ func (s *Store) pendingGens(ctx context.Context, sid int64) ([]*genRow, error) {
 
 // PendingSpecs lists sources with unacknowledged data: the upload queue.
 func (s *Store) PendingSpecs(ctx context.Context) ([]SourceSpec, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT spec FROM devsync_sources s WHERE EXISTS (
-	  SELECT 1 FROM devsync_gens g WHERE g.source_id = s.id AND g.lost = 0 AND (g.acked < g.entries OR g.tail_acked = 0))
-	  ORDER BY s.path`)
+	pending, err := s.pendingSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SourceSpec, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, p.Spec)
+	}
+	return out, nil
+}
+
+func (s *Store) pendingSources(ctx context.Context) ([]pendingSource, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT s.spec,coalesce(h.activity_at,0),
+ coalesce(nullif(h.waiting_since,0),(SELECT min(g.captured_at) FROM devsync_gens g
+ WHERE g.source_id=s.id AND g.lost=0 AND (g.acked<g.entries OR g.tail_acked=0)),0)
+ FROM devsync_sources s LEFT JOIN devsync_schedule_hints h ON h.path=s.path WHERE EXISTS (
+ SELECT 1 FROM devsync_gens g WHERE g.source_id=s.id AND g.lost=0 AND (g.acked<g.entries OR g.tail_acked=0)) ORDER BY s.path`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []SourceSpec
+	var out []pendingSource
 	for rows.Next() {
 		var raw string
-		var sp SourceSpec
-		if err := rows.Scan(&raw); err != nil {
+		var activity, waiting int64
+		var p pendingSource
+		if err := rows.Scan(&raw, &activity, &waiting); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(raw), &sp); err != nil {
+		if err := json.Unmarshal([]byte(raw), &p.Spec); err != nil {
 			return nil, err
 		}
-		out = append(out, sp)
+		p.Hints = scheduleHints{ActivityAt: hintTime(activity), WaitingSince: hintTime(waiting)}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

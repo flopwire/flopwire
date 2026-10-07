@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
@@ -77,7 +78,11 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	failed := t.reparseFailed == version
 	a.mu.Unlock()
 	var change transcript.Change
-	if st.Watermark != nil && (applied != version || (st.Extraction != nil && st.Extraction.Generation != st.Generation)) && !failed {
+	reparse := st.Watermark != nil && (applied != version || (st.Extraction != nil && st.Extraction.Generation != st.Generation)) && !failed
+	a.mu.Lock()
+	indexedThisRun := t.seenAt >= a.initializedAt.UnixNano()
+	a.mu.Unlock()
+	if reparse {
 		// D16: the source was indexed by another parser version. Re-parse
 		// it whole from its bytes as a new generation, but only after a dry
 		// run shows the new parser gets through it: a parser that fails on
@@ -226,6 +231,17 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 		// A transcript the rules now deny gives nothing, a read neither (D18).
 		a.markRead(ctx, &sink.reads)
 	}
+	// Decide verifies content even when a rewrite preserves size and mtime.
+	// Initial catch-up and extraction migrations do not create live activity.
+	// A ctime-only rewrite can also be chmod: compare persisted byte evidence
+	// rather than treating every conservative Rewrite verdict as activity.
+	prior := st.Watermark
+	byteEvidenceChanged := prior != nil && (wm.Offset != prior.Offset || wm.HeadHash != prior.HeadHash || wm.AnchorSum != prior.AnchorSum || id.Size != prior.Identity.Size || id.ID != prior.Identity.ID)
+	if indexedThisRun && !reparse && byteEvidenceChanged && change.Decision != transcript.Unchanged {
+		a.mu.Lock()
+		t.notice.Kind = devicesync.NoticeChanged
+		a.mu.Unlock()
+	}
 	a.markSeen(t, id, sampled, st.ID, indexedWith)
 	a.mu.Lock()
 	t.scanned = next.Offset
@@ -367,7 +383,12 @@ func (a *Agent) notify(t *target) bool {
 	}
 	m, known := a.modeOf(t)
 	if known && m == pathpolicy.Allow {
-		a.cfg.Sync.Notify(a.specOf(t))
+		sp := a.specOf(t)
+		a.mu.Lock()
+		notice := t.notice
+		t.notice.Kind = devicesync.NoticeHistorical
+		a.mu.Unlock()
+		a.cfg.Sync.NotifyWithNotice(sp, notice)
 	}
 	return known
 }

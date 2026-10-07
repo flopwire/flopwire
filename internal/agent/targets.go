@@ -36,6 +36,7 @@ type target struct {
 
 	mu sync.Mutex // held while indexing
 
+	notice   devicesync.Notice   // pending handoff provenance; activity survives consumption
 	seen     transcript.Identity // identity at the last index or verified check
 	seenAt   int64               // unix ns when seen was sampled
 	sourceID int64
