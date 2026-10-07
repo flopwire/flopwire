@@ -182,3 +182,25 @@ func TestCapturedClaudeChildrenBatchSchemaErrorRetainsVerifiedRestrictions(t *te
 		t.Fatalf("partial restrictions=%v error=%v", got, err)
 	}
 }
+
+func TestCapturedClaudeChildrenBatchValidParentWithoutRootsReportsSchemaError(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	for _, roots := range [][]string{nil, {}, {""}, {"relative/projects"}} {
+		t.Run(fmt.Sprint(roots), func(t *testing.T) {
+			s := openEvidenceTest(t)
+			if err := s.write(ctx, func(w *writeTx) error {
+				_, err := w.exec(`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: roots})
+			if err == nil || len(got) != 0 {
+				t.Fatalf("valid parent lost schema failure without usable roots: %v %v", got, err)
+			}
+			if got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{"invalid": {"/projects"}}); err != nil || len(got) != 0 {
+				t.Fatalf("invalid parent unexpectedly scanned evidence: %v %v", got, err)
+			}
+		})
+	}
+}

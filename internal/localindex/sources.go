@@ -466,7 +466,9 @@ func (s *Store) CapturedClaudeChildrenForParents(ctx context.Context, parents ma
 			byRoot[root][id.String()] = append(byRoot[root][id.String()], parent)
 		}
 	}
-	if len(byRoot) == 0 {
+	// Valid parents retain schema-error reporting even when their configured
+	// roots are unavailable. A failed evidence read must still hold sharing.
+	if len(seen) == 0 {
 		return nil, nil
 	}
 	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
