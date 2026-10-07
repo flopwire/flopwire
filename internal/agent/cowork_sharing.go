@@ -269,13 +269,20 @@ func (a *Agent) coworkSourceBoundary(t *target) (string, string) {
 // markCoworkHistoryUnknown commits uncertainty before an old unqualified
 // capture can be retried. A current complete mapping cannot qualify it.
 func (a *Agent) markCoworkHistoryUnknown(ctx context.Context, keys []placeKey) error {
-	err := a.markCoworkHistoricalUnknown(ctx, keys)
-	// Durable facts remain authoritative even if a compatibility placement
-	// write failed. A fact-write failure retains its scoped purge barrier.
+	keys = a.coworkFamilyKeys(keys)
+	changed, err := a.markCoworkHistoricalUnknownChanged(ctx, keys)
+	a.mu.Lock()
+	retry := a.policyEnforcementErr != nil
+	a.mu.Unlock()
+	if !changed && err == nil && !retry {
+		return nil
+	}
+	// An unfinished purge/resync must retry even when facts already committed.
+	// This records work completion only; durable facts determine permissions.
 	a.polMu.Lock()
-	a.enforce(ctx, a.policy().pol)
+	enforceErr := a.enforce(ctx, a.policy().pol)
 	a.polMu.Unlock()
-	return err
+	return errors.Join(err, enforceErr)
 }
 
 // mappingSignature checks the app's current grants, independently of the
