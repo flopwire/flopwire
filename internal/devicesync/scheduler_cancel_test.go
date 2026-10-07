@@ -115,3 +115,26 @@ func TestSchedulerProgressDoesNotWaitForCaptureConnection(t *testing.T) {
 		t.Fatal("progress queried optional diagnostics")
 	}
 }
+
+func TestSchedulerCancelledAuthorizationRetainsNotification(t *testing.T) {
+	e := newEnv(t, Config{}, 1<<20)
+	sc := NewScheduler(e.sy, SchedulerConfig{})
+	sp := e.spec("uncaptured.jsonl", transcript.StorageJSONLAppend)
+	appendFile(t, sp.Path, jsonlLines(23, 10, 100))
+	sc.due(sp.Path, &job{spec: sp})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	sc.SetAuthorize(func(context.Context, SourceSpec) (*CaptureAuthorization, error) {
+		cancel()
+		return nil, ctx.Err()
+	})
+	sc.runOnce(ctx)
+	if sc.Progress().Queued != 1 || e.sy.CaptureStats().Captures != 0 {
+		t.Fatal("cancelled authorization lost an uncaptured notification")
+	}
+	sc.SetAuthorize(nil)
+	sc.runOnce(t.Context())
+	if e.flushes() != 1 || sc.Progress().Queued != 0 {
+		t.Fatalf("notification did not resume: flushes=%d queued=%d", e.flushes(), sc.Progress().Queued)
+	}
+}
