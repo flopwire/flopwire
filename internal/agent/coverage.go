@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"github.com/flopwire/flopwire/internal/devicesync"
+	"maps"
 	"strings"
 
 	"github.com/flopwire/flopwire/internal/coverage"
@@ -27,7 +30,14 @@ func (a *Agent) coverageReport(ctx context.Context) *coverage.Report {
 		var err error
 		report.Upload, err = sync.CoverageContext(ctx)
 		if err != nil {
-			report.Unknown["captured_upload"] = "retained capture counts unavailable; diagnostic budget or database read failed"
+			if report.Upload == nil {
+				report.Unknown["upload"] = "scheduled source observations unavailable; scheduler state busy"
+			} else if report.Upload.Captured == nil {
+				report.Unknown["captured_upload"] = "retained capture counts unavailable; diagnostic budget or database read failed"
+			}
+			if errors.Is(err, devicesync.ErrCoverageSpoolBusy) {
+				report.Unknown["upload_blocking"] = "spool blocking state unavailable; local state busy"
+			}
 		}
 	} else if a.cfg.Sync == nil {
 		report.Unknown["upload"] = "sync is disabled; captured upload progress is not observed"
@@ -51,12 +61,30 @@ func (a *Agent) coverageReport(ctx context.Context) *coverage.Report {
 	} else {
 		report.Unknown["server_copies"] = "known retained server copies unavailable; local state busy"
 	}
-	cowork, err := a.coworkStatusContext(ctx)
-	if err != nil || cowork == nil {
-		report.Unknown["cowork_policy"] = "Cowork policy observation unavailable; local state busy or diagnostic budget exhausted"
+	report.Unknown["cowork_policy"] = "current Cowork hold and scheduling eligibility were not observed by this lightweight report"
+	if report.DeviceID == "" {
+		report.Unknown["historical_mapping"] = "durable historical mapping evidence cannot be scoped without the initial collector device identity"
 	} else {
-		policy.Cowork = &coverage.CoworkPolicySnapshot{SharedHeld: cowork.Held, ScheduleEligible: cowork.ScheduleEligible, HistoricalUnknown: cowork.HistoricalUnknown, HoldReasons: cowork.HoldReasons}
+		var historical int64
+		if err := a.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM cowork_history WHERE device_id=?`, report.DeviceID).Scan(&historical); err != nil {
+			report.Unknown["historical_mapping"] = "durable historical mapping evidence unavailable; not recorded or diagnostic budget exhausted"
+		} else {
+			policy.HistoricalMappingUnknown = &historical
+		}
 	}
 	report.Policy = policy
 	return report
+}
+
+// The ordinary status request already obtained this observation. Copy it
+// without another scope lock, filesystem read or permission-graph walk.
+func attachObservedCowork(report *coverage.Report, st *CoworkStatus) {
+	if report == nil || st == nil {
+		return
+	}
+	if report.Policy == nil {
+		report.Policy = new(coverage.PolicySnapshot)
+	}
+	report.Policy.Cowork = &coverage.CoworkPolicySnapshot{SharedHeld: st.Held, ScheduleEligible: st.ScheduleEligible, HistoricalUnknown: st.HistoricalUnknown, HoldReasons: maps.Clone(st.HoldReasons)}
+	delete(report.Unknown, "cowork_policy")
 }

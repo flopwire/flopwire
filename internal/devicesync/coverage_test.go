@@ -24,7 +24,7 @@ func TestCoverageCapturedPendingTailAndLostRemainDistinct(t *testing.T) {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
 	c := report.Captured
-	if report.QueuedSourceChecks != 0 || c.PendingGenerations != 1 || c.PendingManifestEntries <= 0 || c.PendingManifestBytes <= 0 || c.PendingTailBytes <= 0 || c.LostGenerations != 0 {
+	if report.QueuedSourceChecks != 0 || c.PendingGenerations != 1 || c.PendingManifestEntries <= 0 || c.PendingManifestBytes <= 0 || c.PendingTailBytes <= 0 || c.LostGenerations != 0 || c.TruncatedGenerations != 0 {
 		t.Fatalf("pending metadata=%+v queue=%d", c, report.QueuedSourceChecks)
 	}
 	// An empty scheduler does not mean there are no durable pending captures.

@@ -286,6 +286,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			unavailable("extraction", "extraction summary unavailable; retry status or run flopwire diagnostics")
 		}
 		resp.Coverage = a.coverageReport(ctx)
+		attachObservedCowork(resp.Coverage, resp.Cowork)
 	case req.Op == "repin":
 		// `flopwire login` saved a server pin: a sync stopped by a pin
 		// mismatch re-reads it and resumes.
