@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/auth"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/store"
@@ -158,6 +159,7 @@ func (a *API) Handler(reg *prometheus.Registry) http.Handler {
 		r.Post(syncproto.PathHas, a.syncDevice)
 		r.Post(syncproto.PathFlush, a.syncDevice)
 		r.Get(syncproto.PathCapabilities, a.syncDevice)
+		r.Get(coverage.Path, a.readerOnly(a.deviceCoverage))
 		r.Post(syncproto.PathPolicyPlacements, a.syncDevice)
 		a.retrievalRoutes(r)
 		a.busRoutes(r)
