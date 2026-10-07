@@ -22,7 +22,8 @@ type CollectionSnapshot struct {
 // QueuedSourceChecks counts scheduled work, not every unuploaded source.
 // ActiveSourceTurns includes capture, authorization and upload work.
 type UploadSnapshot struct {
-	BlockingReasons    map[string]int    `json:"blocking_reasons,omitempty"`
+	BlockingReason     string            `json:"blocking_reason,omitempty"`
+	FailingSources     int               `json:"failing_sources"`
 	QueuedSourceChecks int               `json:"queued_source_checks"`
 	ActiveSourceTurns  int               `json:"active_source_turns"`
 	Captured           *CapturedSnapshot `json:"captured,omitempty"`
