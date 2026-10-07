@@ -5,6 +5,8 @@
 /bin/
 /dist/
 coverage/
+!/internal/coverage/
+!/internal/coverage/**
 /node_modules/
 web/node_modules/
 web/dist/
