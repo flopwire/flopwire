@@ -116,9 +116,9 @@ func (a *Agent) reconcileCoworkBounded(ctx context.Context) {
 	if a.cfg.CoworkPolicy == nil {
 		return
 	}
-	rpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := a.reconcileCoworkPolicy(rpcCtx); err != nil && ctx.Err() == nil {
+	// Local preparation can wait behind the index writer. Only the network
+	// request below has a 10-second budget; preparation must not consume it.
+	if err := a.reconcileCoworkPolicy(ctx); err != nil && ctx.Err() == nil {
 		a.log.Info("agent: Cowork sharing held; policy metadata not acknowledged", "err", err)
 	}
 }
@@ -126,6 +126,10 @@ func (a *Agent) reconcileCoworkBounded(ctx context.Context) {
 func (a *Agent) reconcileCoworkKey(ctx context.Context, key placeKey) error {
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
+	// The gate is not context-aware. Never dispatch canceled work after a wait.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !a.coworkOrigin(key) {
 		return nil
 	}
@@ -144,8 +148,14 @@ func (a *Agent) reconcileCoworkKey(ctx context.Context, key placeKey) error {
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	recovery, err := a.recoveryPolicyEvidence(ctx, t)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	req, err := a.coworkPolicyRequest(ctx, t)
@@ -154,6 +164,10 @@ func (a *Agent) reconcileCoworkKey(ctx context.Context, key placeKey) error {
 	}
 	req.Sources = refs
 	req.RecoverySources = recovery
+	// The serialized index writer may finish a read after caller cancellation.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	rpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_, err = a.acknowledgeCoworkPolicy(rpcCtx, req)
