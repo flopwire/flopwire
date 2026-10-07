@@ -14,6 +14,9 @@ type deviceCoverageReader interface {
 }
 
 func (a *API) deviceCoverage(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	p := mustPrincipal(r)
 	if p.Credential.Kind == domain.CredentialSession || p.Credential.DeviceID == "" {
 		if a.auditOK(w, r, p.User.ID, p.Credential.DeviceID, "authorization.failed", "request", r.URL.Path, map[string]any{"reason": "device_credential_required"}) {
@@ -30,8 +33,6 @@ func (a *API) deviceCoverage(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotImplemented, "device parse coverage is unavailable")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
 	out, err := backend.DeviceParseCoverage(ctx, p.Credential.DeviceID)
 	if err != nil {
 		problem(w, http.StatusServiceUnavailable, "device parse coverage is unavailable")

@@ -11,6 +11,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/api"
 	"github.com/flopwire/flopwire/internal/coverage"
+	"github.com/flopwire/flopwire/internal/domain"
 	"github.com/flopwire/flopwire/internal/ingest"
 	"github.com/flopwire/flopwire/internal/pgtest"
 	"github.com/flopwire/flopwire/internal/store"
@@ -179,5 +180,37 @@ func TestDeviceParseCoveragePostgresSnapshot(t *testing.T) {
 	cancel()
 	if _, err = q.DeviceParseCoverage(cancelled, id); err == nil {
 		t.Fatal("canceled snapshot reported known counters")
+	}
+}
+
+// The read audit shares the snapshot deadline, so a successful SQL query cannot
+// leave this diagnostic waiting indefinitely for its required audit.
+type coverageAuditContextStore struct {
+	store.Store
+	t *testing.T
+}
+
+func (s *coverageAuditContextStore) AppendAudit(ctx context.Context, event domain.AuditEvent) error {
+	if event.Action == "coverage.read" {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 2*time.Second {
+			s.t.Error("coverage audit has no bounded context")
+		}
+		return context.DeadlineExceeded
+	}
+	return s.Store.AppendAudit(ctx, event)
+}
+func TestDeviceParseCoverageAuditSharesBudget(t *testing.T) {
+	memory := store.NewMemory()
+	admin := seedAdmin(t, memory)
+	backend := &coverageBackend{read: func(context.Context, string) (coverage.ParseSnapshot, error) {
+		return coverage.ParseSnapshot{ObservedAt: time.Now().UTC()}, nil
+	}}
+	srv := newServer(t, &coverageAuditContextStore{Store: memory, t: t}, api.Config{Parse: backend})
+	token, _ := coverageDevice(t, srv.URL, admin)
+	res := request(t, http.MethodGet, srv.URL+coverage.Path, nil, bearer(token))
+	body := read(res)
+	if res.StatusCode != 503 || strings.Contains(body, "pending") {
+		t.Fatalf("failed audit released counters: %s", body)
 	}
 }
