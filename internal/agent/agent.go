@@ -68,6 +68,10 @@ var _ Sync = (*devicesync.Scheduler)(nil)
 
 // Config configures an Agent. Zero fields take defaults.
 type Config struct {
+	// DeviceID and Server describe the initial collector binding for diagnostic
+	// observations. They never authorize collection or upload.
+	DeviceID        string
+	Server          string
 	DesktopCodeRoot string // local Code metadata/scoped container; Darwin default, "-" disables
 	CoworkRoot      string // Claude Desktop Cowork container; Darwin app default, "-" disables
 	ClaudeProjects  string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
@@ -23,7 +24,7 @@ import (
 
 // Request is one control-socket request: a JSON object on one line.
 type Request struct {
-	// "flush", "pass", "status", "repin", "redact" or "ping"; for the
+	// "flush", "pass", "status", "coverage", "repin", "redact" or "ping"; for the
 	// message bus "pending", "confirm", "held", "send", "peers", "inbox" or
 	// "root" (the session a subagent's Session belongs to, BusRoot).
 	Op      string `json:"op"`
@@ -75,6 +76,7 @@ type Request struct {
 
 // Response answers a Request.
 type Response struct {
+	Coverage *coverage.Report `json:"coverage,omitempty"`
 	// Unavailable names status sections that could not be read. Their absent
 	// counters are unknown, rather than zero. Other health fields remain useful.
 	Unavailable map[string]string             `json:"unavailable,omitempty"`
@@ -217,6 +219,13 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "coverage":
+		ctx, stop := untilClientLeaves(ctx, c)
+		defer stop()
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		resp.OK = true
+		resp.Coverage = a.coverageReport(ctx)
 	case req.Op == "status":
 		// The index summary scans every source: stop it if the client
 		// gives up, rather than hold a read connection for nobody.
@@ -276,6 +285,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Extraction = nil
 			unavailable("extraction", "extraction summary unavailable; retry status or run flopwire diagnostics")
 		}
+		resp.Coverage = a.coverageReport(ctx)
 	case req.Op == "repin":
 		// `flopwire login` saved a server pin: a sync stopped by a pin
 		// mismatch re-reads it and resumes.
