@@ -240,6 +240,7 @@ type Agent struct {
 	coworkError           string                     // guarded by mu
 	coworkPendingUnknown  map[placeKey]bool          // expected historical provenance, guarded by mu
 	coworkHistoryFailures map[placeKey]error         // failed durable fact operations, scoped to affected identities
+	policyEnforcementErr  error                      // unfinished purge/resync; reconstructed by startup enforcement, guarded by mu
 	coworkHistoryReadErr  error                      // unidentified historical origins hold Claude sharing until read recovers
 	coworkFamilies        map[string]map[string]bool // immutable verified relation snapshot, guarded by mu
 	coworkParser          transcript.Parser

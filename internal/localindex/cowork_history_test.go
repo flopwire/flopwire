@@ -65,3 +65,40 @@ func TestCoworkHistoryWholeFamilyRollbackOnFailure(t *testing.T) {
 		t.Fatalf("partial family fact committed %v %v", have, err)
 	}
 }
+
+func TestCoworkHistoryEnsureCommitsOnlyNewWholeFamilyFacts(t *testing.T) {
+	s := openEvidenceTest(t)
+	if changed, err := s.EnsureCoworkHistoricalUnknown(ctx, nil); err != nil || changed {
+		t.Fatalf("empty family: %v %v", changed, err)
+	}
+	if changed, err := s.EnsureCoworkHistoricalUnknown(ctx, []string{"root", "child", "root"}); err != nil || !changed {
+		t.Fatalf("first family: %v %v", changed, err)
+	}
+	if err := s.writeWait(ctx, func(w *writeTx) error {
+		_, err := w.exec(`CREATE TRIGGER reject_existing_fact BEFORE INSERT ON cowork_history WHEN NEW.session_id IN ('root','child') BEGIN SELECT RAISE(FAIL,'existing fact rewrite'); END`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.EnsureCoworkHistoricalUnknown(ctx, []string{"child", "root"}); err != nil || changed {
+		t.Fatalf("repeated family was not a no-op: %v %v", changed, err)
+	}
+	if changed, err := s.EnsureCoworkHistoricalUnknown(ctx, []string{"root", "child", "alias"}); err != nil || !changed {
+		t.Fatalf("new alias did not commit independently: %v %v", changed, err)
+	}
+	if changed, err := s.EnsureCoworkHistoricalUnknown(ctx, []string{"alias", "root", "child"}); err != nil || changed {
+		t.Fatalf("expanded family repeat: %v %v", changed, err)
+	}
+	if err := s.writeWait(ctx, func(w *writeTx) error {
+		_, err := w.exec(`CREATE TRIGGER reject_new_fact BEFORE INSERT ON cowork_history WHEN NEW.session_id='bad' BEGIN SELECT RAISE(FAIL,'whole-family failure'); END`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.EnsureCoworkHistoricalUnknown(ctx, []string{"new-before-failure", "bad"}); err == nil || changed {
+		t.Fatalf("failed family reported committed change: %v %v", changed, err)
+	}
+	if have, err := s.CoworkHistoricalUnknown(ctx, "new-before-failure"); err != nil || have {
+		t.Fatalf("partial fact persisted: %v %v", have, err)
+	}
+}

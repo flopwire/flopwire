@@ -374,7 +374,8 @@ func (a *Agent) setPolicy(ctx context.Context, pol pathpolicy.Policy) {
 // them in), every source is offered to sync again (a loosened local rule
 // lets it upload), and conversations a deny rule now covers are purged.
 // It also runs after the recovery pass changed placements.
-func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) {
+func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) error {
+	var failures []error
 	a.mu.Lock()
 	a.pol = &policyView{pol: pol, gen: a.pol.gen + 1, key: policyKey(pol)}
 	for _, t := range a.targets {
@@ -398,15 +399,26 @@ func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) {
 		d.mu.Unlock()
 		d.dirty.Store(true)
 	}
-	if err := a.purgeDenied(ctx); err != nil && ctx.Err() == nil {
-		a.stats.Errors.Add(1)
-		a.log.Error("agent: purging sessions a deny rule covers", "err", err)
-	}
-	for _, d := range a.stores() {
-		if err := a.storeResync(ctx, d); err != nil && ctx.Err() == nil {
-			a.log.Warn("agent: store after a path rules change", "agent", d.h.agent, "err", err)
+	if err := a.purgeDenied(ctx); err != nil {
+		failures = append(failures, err)
+		if ctx.Err() == nil {
+			a.stats.Errors.Add(1)
+			a.log.Error("agent: purging sessions a deny rule covers", "err", err)
 		}
 	}
+	for _, d := range a.stores() {
+		if err := a.storeResync(ctx, d); err != nil {
+			failures = append(failures, err)
+			if ctx.Err() == nil {
+				a.log.Warn("agent: store after a path rules change", "agent", d.h.agent, "err", err)
+			}
+		}
+	}
+	err := errors.Join(append(failures, ctx.Err())...)
+	a.mu.Lock()
+	a.policyEnforcementErr = err
+	a.mu.Unlock()
+	return err
 }
 
 // reresolve resolves again every stored placement whose directory still
