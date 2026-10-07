@@ -69,7 +69,7 @@ func TestJSONAndTextFlagsOnEveryVerb(t *testing.T) {
 	oracleIndex(t)
 	cli := func(args ...string) string {
 		t.Helper()
-		return captureStdout(t, func() error { return run(t.Context(), args) })
+		return withoutCoverageObservation(captureStdout(t, func() error { return run(t.Context(), args) }))
 	}
 	if a, b := cli("sessions"), cli("sessions", "--json"); a != b || !strings.HasPrefix(a, `{"scope":{"kind":"local"},"kind":"sessions",`) {
 		t.Fatalf("sessions --json is not the default:\n%s\n%s", a, b)

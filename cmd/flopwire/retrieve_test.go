@@ -413,6 +413,11 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 	}
 	var queries []url.Values
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			// Optional diagnostics are separate from retrieval query arguments.
+			http.NotFound(w, r)
+			return
+		}
 		queries = append(queries, r.URL.Query())
 		_ = json.NewEncoder(w).Encode(format.Sessions{})
 	}))
@@ -454,6 +459,11 @@ func TestServerRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	}
 	var queries []url.Values
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			// Optional diagnostics are separate from retrieval query arguments.
+			http.NotFound(w, r)
+			return
+		}
 		queries = append(queries, r.URL.Query())
 		_ = json.NewEncoder(w).Encode(format.Sessions{})
 	}))

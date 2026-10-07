@@ -195,7 +195,7 @@ func TestEnrolledLocalReadContinuationsStayLocal(t *testing.T) {
 			if err := toolCmdIO(t.Context(), "read", argv[1:], &next, &stderr); err != nil {
 				t.Fatalf("follow %q: %v", hint, err)
 			}
-			if !strings.HasPrefix(next.String(), "[scope: local device]\n") {
+			if !strings.HasPrefix(withoutCoverageObservation(next.String()), "[scope: local device]\n") {
 				t.Fatalf("continuation lost local scope: %s", next.String())
 			}
 			followed++

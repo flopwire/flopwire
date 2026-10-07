@@ -261,6 +261,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 	type addr struct{ msg, line, session string }
 	var addrs []addr
 	collect := func(out string) {
+		out = withoutCoverageObservation(out)
 		// sessions answers JSON by default: its address and full id both
 		// read the session.
 		var ss sessionsOut
@@ -358,7 +359,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		case a.session != "":
 			// A full session id reads the session it names (the
 			// message addresses use its shortest unique prefix).
-			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "[scope: local device]\n# "+a.session+" ") {
+			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(withoutCoverageObservation(out), "[scope: local device]\n# "+a.session+" ") {
 				t.Errorf("read %s: no focus in that session:\n%s", target, out)
 			}
 		case !focusIs(out, a.msg):
@@ -488,7 +489,7 @@ func TestSelfAndLive(t *testing.T) {
 		t.Fatalf("live header: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "/tmp/oracle-beta", "--agent", "codex", "--exclude-live")
-	if err != nil || strings.Contains(out, open) || !strings.HasPrefix(out, `{"scope":{"kind":"local"},"kind":"sessions","sessions":[],"has_more":false`) {
+	if err != nil || strings.Contains(out, open) || !strings.HasPrefix(withoutCoverageObservation(out), `{"scope":{"kind":"local"},"kind":"sessions","sessions":[],"has_more":false`) {
 		t.Fatalf("--exclude-live: %v\n%s", err, out)
 	}
 	if out, err = call("grep", "health", "--exclude-live", "--include-self"); err != nil || strings.Contains(out, open) {
