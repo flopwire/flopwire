@@ -22,6 +22,7 @@ type CollectionSnapshot struct {
 // QueuedSourceChecks counts scheduled work, not every unuploaded source.
 // ActiveSourceTurns includes capture, authorization and upload work.
 type UploadSnapshot struct {
+	BlockingReasons    map[string]int    `json:"blocking_reasons,omitempty"`
 	QueuedSourceChecks int               `json:"queued_source_checks"`
 	ActiveSourceTurns  int               `json:"active_source_turns"`
 	Captured           *CapturedSnapshot `json:"captured,omitempty"`
@@ -30,6 +31,7 @@ type UploadSnapshot struct {
 // CapturedSnapshot describes unacknowledged retained capture metadata. It
 // excludes lost generations and does not verify object contents on the server.
 type CapturedSnapshot struct {
+	LostGenerations        int64 `json:"lost_generations"`
 	PendingGenerations     int64 `json:"pending_generations"`
 	PendingManifestEntries int64 `json:"pending_manifest_entries"`
 	PendingManifestBytes   int64 `json:"pending_manifest_bytes"`
