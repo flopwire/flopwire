@@ -341,12 +341,22 @@ type SourceError struct {
 }
 
 func (s *Scheduler) Status() Status {
+	st, _ := s.StatusContext(context.Background())
+	return st
+}
+
+// StatusContext returns live scheduler health even when optional redaction
+// totals cannot be read. The caller must report that error as unavailable,
+// rather than interpret absent totals as zero redactions.
+func (s *Scheduler) StatusContext(ctx context.Context) (Status, error) {
 	st := s.status()
 	// Outside s.mu: the store query may wait for a capture's transaction.
-	if red, n, err := s.sy.store.RedactionTotals(context.Background()); err == nil {
-		st.Redactions, st.RedactedSources = red, n
+	red, n, err := s.sy.store.RedactionTotals(ctx)
+	if err != nil {
+		return st, err
 	}
-	return st
+	st.Redactions, st.RedactedSources = red, n
+	return st, nil
 }
 
 func (s *Scheduler) status() Status {
