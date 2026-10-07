@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -323,5 +324,137 @@ func TestAgentCoverageSocketCancellationClosesRead(t *testing.T) {
 	case <-closed:
 	case <-time.After(time.Second):
 		t.Fatal("server connection leaked")
+	}
+}
+
+func TestAgentCoverageMalformedStageCountersAreUnknown(t *testing.T) {
+	cases := []struct {
+		stage   string
+		body    string
+		unknown string
+	}{
+		{"parse", `{"parse":{"pending":-1}}`, "parse"},
+		{"collection", `{"collection":{}}`, "collection"},
+		{"collection", `{"collection":{"indexed_sources":null}}`, "collection"},
+		{"collection", `{"collection":{"indexed_sources":-1}}`, "collection"},
+		{"cowork", `{"policy":{"cowork":{"shared_held":0,"schedule_eligible":0}}}`, "cowork_policy"},
+		{"cowork", `{"policy":{"cowork":{"shared_held":null,"schedule_eligible":0,"historical_unknown":0}}}`, "cowork_policy"},
+		{"cowork", `{"policy":{"cowork":{"shared_held":0,"schedule_eligible":-1,"historical_unknown":0}}}`, "cowork_policy"},
+		{"cowork", `{"policy":{"cowork":{"shared_held":0,"schedule_eligible":0,"historical_unknown":0,"hold_reasons":{"held":-1}}}}`, "cowork_policy"},
+		{"upload", `{"upload":{"queued_source_checks":0,"active_source_turns":-1,"failing_sources":0}}`, "upload"},
+		{"captured", `{"upload":{"queued_source_checks":0,"active_source_turns":0,"failing_sources":0,"captured":{"pending_generations":0,"pending_manifest_entries":0,"pending_manifest_bytes":0,"pending_tail_bytes":-1,"lost_generations":0,"truncated_generations":0}}}`, "captured_upload"},
+		{"historical", `{"policy":{"historical_mapping_unknown":-1}}`, "historical_mapping"},
+		{"copies", `{"policy":{"server_copies_retained":-1}}`, "server_copies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.stage+tc.body, func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			json.Unmarshal([]byte(tc.body), &fields)
+			fields["observed_at"] = json.RawMessage(`"2026-10-07T00:00:00Z"`)
+			raw, _ := json.Marshal(fields)
+			report, err := decodeAgentCoverage(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Unknown[tc.unknown] == "" {
+				t.Fatalf("malformed count remained known: %+v", report)
+			}
+			switch tc.stage {
+			case "parse":
+				if report.Parse != nil {
+					t.Fatal("local report retained server parse claim")
+				}
+			case "collection":
+				if report.Collection != nil {
+					t.Fatal("collection retained")
+				}
+			case "cowork":
+				if report.Policy.Cowork != nil {
+					t.Fatal("Cowork retained")
+				}
+			case "upload":
+				if report.Upload != nil {
+					t.Fatal("upload retained")
+				}
+			case "captured":
+				if report.Upload.Captured != nil {
+					t.Fatal("capture retained")
+				}
+			case "historical":
+				if report.Policy.HistoricalMappingUnknown != nil {
+					t.Fatal("historical retained")
+				}
+			case "copies":
+				if report.Policy.ServerCopiesRetained != nil {
+					t.Fatal("copies retained")
+				}
+			}
+		})
+	}
+}
+
+func TestCoverageSharedTextHeaderYieldsToSmallBudget(t *testing.T) {
+	r := &retriever{backend: &bigBackend{sessions: &format.Sessions{Sessions: []format.ConversationInfo{}}}, scope: &format.Scope{Kind: "shared", Server: "https://example.test"}}
+	o, err := parseArgs("sessions", []string{"--text", "--include-self"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err = runTool(context.Background(), r, o, &out, format.Style{Budget: 100}, selfCLI); err != nil {
+		t.Fatal(err)
+	}
+	header, _, _ := strings.Cut(out.String(), "\n")
+	if len(header)+1 > 100 || !strings.Contains(header, "[scope: shared server https://example.test]") {
+		t.Fatalf("optional header exceeded budget: %s", header)
+	}
+	if strings.Contains(header, "parse unknown") {
+		t.Fatal("full phase expansion consumed small text budget")
+	}
+}
+func TestCoverageLocalUnknownKeysAllowlist(t *testing.T) {
+	ch := make(chan *coverage.Report, 1)
+	ch <- &coverage.Report{ObservedAt: time.Now(), Unknown: map[string]string{"collection": "busy", "server": "old server", "upload_blocking": "busy", "historical_mapping": "busy", "cowork_policy": "held"}}
+	p := coveragePending{local: ch, cancel: func() {}}
+	report := p.snapshot(&format.Scope{Kind: "local"}).Coverage
+	for key := range report.Unknown {
+		if key != "collection" && key != "discovery" {
+			t.Fatalf("local query carries shared diagnostic %s", key)
+		}
+	}
+	compact := budgetCoverageScope(&format.Scope{Kind: "local", Coverage: coverage.UnknownReport(strings.Repeat("x", 600))}, 512)
+	if compact.Coverage.Unknown["other_devices"] != "" {
+		t.Fatal("local compact metadata acquired shared device scope")
+	}
+}
+func TestCoverageCapturedAndBlockingUnknownNotes(t *testing.T) {
+	report := &coverage.Report{Upload: &coverage.UploadSnapshot{}, Unknown: map[string]string{"upload_blocking": "busy"}}
+	note := coverageNote(report, true)
+	if !strings.Contains(note, "captured unknown") || !strings.Contains(note, "blocking unknown") {
+		t.Fatalf("missing unknown phase: %s", note)
+	}
+	var out bytes.Buffer
+	printCoverage(&out, report)
+	if !strings.Contains(out.String(), "blocking: unknown") {
+		t.Fatalf("status omitted unknown blocker: %s", out.String())
+	}
+}
+func TestAgentStatusEnvelopePartialCoverageDoesNotFail(t *testing.T) {
+	var response agent.Response
+	raw := `{"ok":true,"coverage":{"observed_at":"2026-10-07T00:00:00Z","collection":{"indexed_sources":null},"policy":{"cowork":{"shared_held":0}}}}`
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Coverage == nil || response.Coverage.Collection != nil || response.Coverage.Policy.Cowork != nil {
+		t.Fatalf("partial status became facts: %+v", response)
+	}
+	if response.Coverage.Unknown["collection"] == "" || response.Coverage.Unknown["cowork_policy"] == "" {
+		t.Fatal("status missing unknown markers")
+	}
+	var page format.Page
+	if err := json.Unmarshal([]byte(`{"hits":[{"address":"s/1"}],"scope":{"kind":"shared","coverage":{"observed_at":"bad","collection":"unsupported"}}}`), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Hits) != 1 || page.Hits[0].Address != "s/1" || page.Scope.Coverage.Unknown["collection"] == "" {
+		t.Fatal("optional metadata damaged query results")
 	}
 }

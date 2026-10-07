@@ -55,45 +55,16 @@ func agentCoverageAt(ctx context.Context, socket string) (*coverage.Report, erro
 	return decodeAgentCoverage(envelope.Coverage)
 }
 
-// Keep older agents' missing additive counters unknown rather than implicit zero.
+// Common report decoding also sanitizes the ordinary status response path.
 func decodeAgentCoverage(raw json.RawMessage) (*coverage.Report, error) {
 	var report coverage.Report
 	if err := json.Unmarshal(raw, &report); err != nil {
 		return nil, err
 	}
-	if report.ObservedAt.IsZero() {
-		return nil, errors.New("invalid agent observation")
-	}
-	if report.Unknown == nil {
-		report.Unknown = map[string]string{}
-	}
-	var fields map[string]json.RawMessage
-	json.Unmarshal(raw, &fields)
-	if report.Upload != nil {
-		var upload map[string]json.RawMessage
-		json.Unmarshal(fields["upload"], &upload)
-		if !requiredCoverageFields(upload, "queued_source_checks", "active_source_turns", "failing_sources") {
-			report.Upload = nil
-			report.Unknown["upload"] = "unsupported agent upload observation"
-		} else if report.Upload.Captured != nil {
-			var captured map[string]json.RawMessage
-			json.Unmarshal(upload["captured"], &captured)
-			if !requiredCoverageFields(captured, "pending_generations", "pending_manifest_entries", "pending_manifest_bytes", "pending_tail_bytes", "lost_generations", "truncated_generations") {
-				report.Upload.Captured = nil
-				report.Unknown["captured_upload"] = "unsupported agent retained capture observation"
-			}
-		}
-	}
+	// Parsing facts require the separate server request and its device binding.
+	report.Parse = nil
+	report.Unknown["parse"] = "server parse progress requires a separate server observation"
 	return &report, nil
-}
-func requiredCoverageFields(fields map[string]json.RawMessage, keys ...string) bool {
-	for _, key := range keys {
-		v, ok := fields[key]
-		if !ok || string(v) == "null" {
-			return false
-		}
-	}
-	return true
 }
 
 // Use the same credential and pinned transport as the retrieval request. Decode
@@ -239,10 +210,11 @@ func (p coveragePending) snapshot(scope *format.Scope) *format.Scope {
 		report.Parse = nil
 		report.Server = ""
 		report.DeviceID = ""
-		for _, k := range []string{"upload", "policy", "parse", "captured_upload", "cowork_policy", "server_copies", "device"} {
-			delete(report.Unknown, k)
+		localUnknown := map[string]string{"discovery": coverage.DiscoveryUnknown}
+		if reason := report.Unknown["collection"]; reason != "" {
+			localUnknown["collection"] = reason
 		}
-		delete(report.Unknown, "other_devices")
+		report.Unknown = localUnknown
 	}
 	out.Coverage = report
 	p.cancel()
@@ -259,6 +231,12 @@ func coverageNote(r *coverage.Report, shared bool) string {
 			parts = append(parts, fmt.Sprintf("upload checks %d, active %d", r.Upload.QueuedSourceChecks, r.Upload.ActiveSourceTurns))
 			if c := r.Upload.Captured; c != nil {
 				parts = append(parts, fmt.Sprintf("captured pending %d, lost %d, truncated %d", c.PendingGenerations, c.LostGenerations, c.TruncatedGenerations))
+			}
+			if r.Upload.Captured == nil {
+				parts = append(parts, "captured unknown")
+			}
+			if r.Unknown["upload_blocking"] != "" {
+				parts = append(parts, "blocking unknown")
 			}
 			if r.Upload.BlockingReason != "" || r.Upload.FailingSources > 0 {
 				parts = append(parts, fmt.Sprintf("upload blocked %s, failing sources %d", r.Upload.BlockingReason, r.Upload.FailingSources))
@@ -295,6 +273,9 @@ func printCoverage(w io.Writer, r *coverage.Report) {
 	}
 	if u := r.Upload; u != nil {
 		fmt.Fprintf(w, "  upload: %d queued checks, %d active turns, %d failing sources\n", u.QueuedSourceChecks, u.ActiveSourceTurns, u.FailingSources)
+		if r.Unknown["upload_blocking"] != "" {
+			fmt.Fprintln(w, "    blocking: unknown")
+		}
 		if u.BlockingReason != "" {
 			fmt.Fprintf(w, "    blocked: %s\n", u.BlockingReason)
 		}
@@ -315,7 +296,7 @@ func printCoverage(w io.Writer, r *coverage.Report) {
 		fmt.Fprintf(w, "    historical policy mapping unknown: %d\n", *p.HistoricalMappingUnknown)
 	}
 	if p := r.Policy; p != nil && p.ServerCopiesRetained != nil {
-		fmt.Fprintf(w, "    server copies retained: %d\n", *p.ServerCopiesRetained)
+		fmt.Fprintf(w, "    known retained server copies (local policy record): %d\n", *p.ServerCopiesRetained)
 	}
 	if p := r.Parse; p != nil {
 		fmt.Fprintf(w, "  server parse: %d pending, %d failing, %d quarantined, %d untracked\n", p.Pending, p.Failing, p.Quarantined, p.UntrackedSources)
@@ -334,6 +315,9 @@ func budgetCoverageScope(scope *format.Scope, budget int) *format.Scope {
 		return scope
 	}
 	out := *scope
-	out.Coverage = &coverage.Report{ObservedAt: scope.Coverage.ObservedAt, Unknown: map[string]string{"coverage": "output budget; observations omitted", "discovery": "unknown", "other_devices": "unknown"}}
+	out.Coverage = &coverage.Report{ObservedAt: scope.Coverage.ObservedAt, Unknown: map[string]string{"coverage": "output budget; observations omitted", "discovery": "unknown"}}
+	if scope.Kind == "shared" {
+		out.Coverage.Unknown["other_devices"] = "unknown"
+	}
 	return &out
 }

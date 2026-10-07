@@ -660,7 +660,15 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		switch {
 		case !asJSON:
 			if scope != nil {
-				note := scopeNote(scope) + coverageNote(scope.Coverage, scope.Kind == "shared")
+				note := scopeNote(scope)
+				optional := coverageNote(scope.Coverage, scope.Kind == "shared")
+				if st.Budget > 0 && len(note)+len(optional)+1 > st.Budget {
+					optional = " [coverage: unknown]"
+					if len(note)+len(optional)+1 > st.Budget {
+						optional = ""
+					}
+				}
+				note += optional
 				if _, err := fmt.Fprintln(w, note); err != nil {
 					return err
 				}
