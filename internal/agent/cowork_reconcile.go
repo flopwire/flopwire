@@ -76,6 +76,11 @@ func (a *Agent) acknowledgeCoworkPolicy(ctx context.Context, req *syncproto.Poli
 // content or enables sharing. Call outside the capture scope gate after local
 // placement/policy refresh; each batch holds that gate through acknowledgement.
 func (a *Agent) reconcileCoworkPolicy(ctx context.Context) error {
+	return a.reconcileCoworkPolicyUntil(ctx, time.Time{})
+}
+
+// The pass budget stops new keys; it never expires an already prepared POST.
+func (a *Agent) reconcileCoworkPolicyUntil(ctx context.Context, until time.Time) error {
 	if a.cfg.CoworkPolicy == nil {
 		return nil
 	}
@@ -95,9 +100,14 @@ func (a *Agent) reconcileCoworkPolicy(ctx context.Context) error {
 	start := sort.Search(len(keys), func(i int) bool { return orderKey(keys[i]) > orderKey(cursor) })
 	keys = append(append([]placeKey(nil), keys[start:]...), keys[:start]...)
 	var failures []error
-	for _, key := range keys {
+	for i, key := range keys {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
+		}
+		// Always let the first key progress, even if local preparation takes
+		// longer than the budget. The cursor resumes after it next pass.
+		if i > 0 && !until.IsZero() && !time.Now().Before(until) {
+			break
 		}
 		// Advance before a slow or failing RPC. The next bounded pass starts
 		// after this key rather than indefinitely repeating the same prefix.
@@ -116,9 +126,9 @@ func (a *Agent) reconcileCoworkBounded(ctx context.Context) {
 	if a.cfg.CoworkPolicy == nil {
 		return
 	}
-	// Local preparation can wait behind the index writer. Only the network
-	// request below has a 10-second budget; preparation must not consume it.
-	if err := a.reconcileCoworkPolicy(ctx); err != nil && ctx.Err() == nil {
+	// Local preparation can wait behind the index writer. The pass cutoff
+	// limits new keys without consuming each POST's separate 10-second budget.
+	if err := a.reconcileCoworkPolicyUntil(ctx, time.Now().Add(10*time.Second)); err != nil && ctx.Err() == nil {
 		a.log.Info("agent: Cowork sharing held; policy metadata not acknowledged", "err", err)
 	}
 }

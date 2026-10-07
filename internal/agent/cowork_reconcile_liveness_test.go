@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -120,5 +121,31 @@ func TestCoworkReconcileCancellationAfterLocalWaitDoesNotDispatch(t *testing.T) 
 				t.Fatalf("canceled local work dispatched %d metadata requests", len(p.requests))
 			}
 		})
+	}
+}
+
+// An already exhausted pass budget models the first key finishing local work
+// after the cutoff, without sleeping or expiring the POST context.
+func TestCoworkReconcilePassBudgetStopsNextKeyAndRotates(t *testing.T) {
+	f := newCoworkFixture(t)
+	p := &deadlineCoworkPolicy{}
+	f.a.cfg.CoworkPolicy = p
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("11111111-2222-4333-8444-%012d", i)
+		if err := f.a.saveCoworkPlace(ctx, placeKey{transcript.AgentClaude, id}, placed{how: localindex.PlacedByCowork}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 1; i <= 3; i++ {
+		if err := f.a.reconcileCoworkPolicyUntil(context.Background(), time.Now().Add(-time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("11111111-2222-4333-8444-%012d", i)
+		if len(p.requests) != i || p.requests[i-1].SessionID != want {
+			t.Fatalf("budgeted pass %d requests=%+v", i, p.requests)
+		}
+		if !p.hasDeadline || p.remaining < 9*time.Second || p.remaining > 10*time.Second {
+			t.Fatalf("budget consumed POST allowance: present=%v remaining=%s", p.hasDeadline, p.remaining)
+		}
 	}
 }
