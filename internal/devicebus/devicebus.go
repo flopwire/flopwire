@@ -499,6 +499,13 @@ func (b *Bus) HeldNotice(ctx context.Context) ([]busproto.HeldSender, error) {
 
 // Status reports the bus state and the local inbox counts.
 func (b *Bus) Status(ctx context.Context) Status {
+	st, _ := b.StatusContext(ctx)
+	return st
+}
+
+// StatusContext preserves connection health when optional inbox counts cannot
+// be read. The caller must label those counts unavailable when err is non-nil.
+func (b *Bus) StatusContext(ctx context.Context) (Status, error) {
 	b.mu.Lock()
 	st := b.status
 	for _, h := range b.held {
@@ -507,10 +514,12 @@ func (b *Bus) Status(ctx context.Context) Status {
 	st.HeldSenders = append([]busproto.HeldSender(nil), b.held...)
 	b.mu.Unlock()
 	st.Cloud = len(b.CloudSessions())
-	if c, err := b.st.counts(ctx, b.cfg.Now()); err == nil {
-		st.Pending, st.Unacked = c.pending, c.owed
+	c, err := b.st.counts(ctx, b.cfg.Now())
+	if err != nil {
+		return st, err
 	}
-	return st
+	st.Pending, st.Unacked = c.pending, c.owed
+	return st, nil
 }
 
 func (b *Bus) setStatus(fn func(*Status)) {

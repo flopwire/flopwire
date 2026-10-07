@@ -21,6 +21,27 @@ import (
 
 var ctx = context.Background()
 
+func TestStatusContextPreservesConnectionHealthWhenCountsCancelled(t *testing.T) {
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(nil, nil), nil)
+	b.setStatus(func(st *Status) {
+		st.State = StateConnected
+		st.Sessions = 7
+		st.LastPoll = time.Now()
+	})
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	st, err := b.StatusContext(cctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("counts cancellation hidden: %v", err)
+	}
+	if st.State != StateConnected || st.Sessions != 7 || st.LastPoll.IsZero() {
+		t.Fatalf("lost connection health: %+v", st)
+	}
+	if st, err := b.StatusContext(ctx); err != nil || st.State != StateConnected {
+		t.Fatalf("fresh status did not recover: %+v %v", st, err)
+	}
+}
+
 // fakeServer is the bus routes in memory. A poll waits until the test
 // answers it (answer) or the poll is cancelled.
 type fakeServer struct {
