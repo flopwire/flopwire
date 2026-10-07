@@ -417,3 +417,35 @@ func TestAgentStatusDesktopCodeAuthorizationRequirement(t *testing.T) {
 		t.Fatal("available proof hook must not report prerequisite support pending")
 	}
 }
+
+func TestAgentStatusCoworkUsesCurrentDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status agent.CoworkStatus
+		want   []string
+	}{
+		{
+			name:   "known scopes still require a fresh acknowledgement",
+			status: agent.CoworkStatus{State: "supported", Sessions: 2, ScheduleEligible: 2, SharedHold: "fresh server policy acknowledgement required for every capture", LastPolicyAttempt: agent.CoworkPolicyAttempt{State: "acknowledged"}},
+			want:   []string{"2 eligible for scheduling, 0 held", "shared uploads: fresh server policy acknowledgement required for every capture", "latest policy registration: acknowledged"},
+		},
+		{
+			name:   "held history without current transcripts",
+			status: agent.CoworkStatus{State: "supported", Held: 3, Unknown: 1, HistoricalUnknown: 2, SharedHold: "Cowork sharing is not configured", LastPolicyAttempt: agent.CoworkPolicyAttempt{State: "history_unknown"}},
+			want:   []string{"0 eligible for scheduling, 3 held", "unknown mapping: 1 current, 2 historical native scopes", "shared uploads: Cowork sharing is not configured", "latest policy registration: history_unknown"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			printAgentStatus(&b, agent.Response{Cowork: &tc.status})
+			for _, want := range tc.want {
+				if !strings.Contains(b.String(), want) {
+					t.Fatalf("missing %q in status:\n%s", want, b.String())
+				}
+			}
+			if strings.Contains(b.String(), "server host-folder policy support pending") {
+				t.Fatalf("obsolete policy warning in status:\n%s", b.String())
+			}
+		})
+	}
+}

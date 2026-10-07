@@ -1003,8 +1003,21 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		if c.RepositoryScopeUnknown > 0 {
 			fmt.Fprintf(w, "  repository policy scope unresolved for %d native scopes; shared uploads held\n", c.RepositoryScopeUnknown)
 		}
-		if c.Sessions > 0 || c.Held > 0 {
-			fmt.Fprintf(w, "  shared uploads held: server host-folder policy support pending; %d current and %d historical native scopes have unknown mapping\n", c.Unknown, c.HistoricalUnknown)
+		if c.Sessions > 0 || c.Held > 0 || c.ScheduleEligible > 0 {
+			fmt.Fprintf(w, "  native scopes: %d eligible for scheduling, %d held\n", c.ScheduleEligible, c.Held)
+			if c.Unknown > 0 || c.HistoricalUnknown > 0 {
+				fmt.Fprintf(w, "  unknown mapping: %d current, %d historical native scopes\n", c.Unknown, c.HistoricalUnknown)
+			}
+			if c.SharedHold != "" {
+				fmt.Fprintf(w, "  shared uploads: %s\n", c.SharedHold)
+			}
+		}
+		if attempt := c.LastPolicyAttempt; attempt.State != "" && attempt.State != "not_attempted" {
+			fmt.Fprintf(w, "  latest policy registration: %s", attempt.State)
+			if !attempt.At.IsZero() {
+				fmt.Fprintf(w, " (%s)", attempt.At.Local().Format(time.DateTime))
+			}
+			fmt.Fprintln(w)
 		}
 	}
 	if resp.Extraction != nil {
