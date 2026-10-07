@@ -624,6 +624,13 @@ func (a *Agent) taintCoworkEvidence(ctx context.Context, t *target) error {
 // Facts commit before compatibility placements are published or proof is purged.
 // The caller enforces policy after this method releases placement locks.
 func (a *Agent) markCoworkHistoricalUnknown(ctx context.Context, keys []placeKey) error {
+	_, err := a.markCoworkHistoricalUnknownChanged(ctx, keys)
+	return err
+}
+
+// markCoworkHistoricalUnknownChanged reports whether enforcement must revisit
+// newly committed facts, changed origins, or a retried persistence operation.
+func (a *Agent) markCoworkHistoricalUnknownChanged(ctx context.Context, keys []placeKey) (bool, error) {
 	var native []placeKey
 	for _, key := range keys {
 		if key.agent == transcript.AgentClaude && key.session != "" {
@@ -632,7 +639,7 @@ func (a *Agent) markCoworkHistoricalUnknown(ctx context.Context, keys []placeKey
 	}
 	keys = a.coworkFamilyKeys(native)
 	if len(keys) == 0 {
-		return nil
+		return false, nil
 	}
 	sessions := make([]string, 0, len(keys))
 	for _, key := range keys {
@@ -640,7 +647,8 @@ func (a *Agent) markCoworkHistoricalUnknown(ctx context.Context, keys []placeKey
 	}
 	a.placeWriteMu.Lock()
 	defer a.placeWriteMu.Unlock()
-	if err := a.store.MarkCoworkHistoricalUnknown(ctx, sessions); err != nil {
+	newFacts, err := a.store.EnsureCoworkHistoricalUnknown(ctx, sessions)
+	if err != nil {
 		a.mu.Lock()
 		if a.coworkHistoryFailures == nil {
 			a.coworkHistoryFailures = map[placeKey]error{}
@@ -653,14 +661,25 @@ func (a *Agent) markCoworkHistoricalUnknown(ctx context.Context, keys []placeKey
 			a.coworkPendingUnknown[key] = true
 		}
 		a.mu.Unlock()
-		return err
+		return true, err
 	}
 	// The committed fact is authoritative even if a compatibility write fails.
 	a.mu.Lock()
+	changed := newFacts
+	for _, key := range keys {
+		changed = changed || a.places[key].how != localindex.PlacedByCoworkUnknown || a.coworkHistoryFailures[key] != nil || a.coworkPendingUnknown[key]
+	}
+	if !changed {
+		a.mu.Unlock()
+		return false, nil
+	}
+	if a.coworkPendingUnknown == nil {
+		a.coworkPendingUnknown = map[placeKey]bool{}
+	}
 	updates := make(map[placeKey]placed, len(keys))
 	for _, key := range keys {
 		delete(a.coworkHistoryFailures, key)
-		delete(a.coworkPendingUnknown, key)
+		a.coworkPendingUnknown[key] = true
 		p := a.places[key]
 		p.how = localindex.PlacedByCoworkUnknown
 		a.places[key] = p
@@ -669,10 +688,18 @@ func (a *Agent) markCoworkHistoricalUnknown(ctx context.Context, keys []placeKey
 	a.mu.Unlock()
 	for key, p := range updates {
 		if err := a.store.SavePlacement(ctx, localindex.Placement{Agent: key.agent, SessionID: key.session, Placement: p.pl, How: p.how, CheckedAt: p.checked, Candidates: p.cands, OtherCwds: p.others}); err != nil {
-			return err
+			return true, err
 		}
 	}
-	return a.store.Sync(ctx)
+	if err := a.store.Sync(ctx); err != nil {
+		return true, err
+	}
+	a.mu.Lock()
+	for _, key := range keys {
+		delete(a.coworkPendingUnknown, key)
+	}
+	a.mu.Unlock()
+	return true, nil
 }
 
 func (a *Agent) coworkFamilyKeys(keys []placeKey) []placeKey {
