@@ -962,6 +962,13 @@ func agentStatusOutput(ctx context.Context, w io.Writer, asJSON bool) error {
 		if resp.Coverage == nil {
 			resp.Coverage = coverage.UnknownReport("running agent coverage unavailable")
 		}
+		// A local agent observation cannot attest to fresh remote parsing.
+		// Only this request's authenticated, bound server probe can do that.
+		resp.Coverage.Parse = nil
+		if resp.Coverage.Unknown == nil {
+			resp.Coverage.Unknown = make(map[string]string)
+		}
+		resp.Coverage.Unknown["parse"] = "server parse progress was not observed for this status request"
 		if cfg, loadErr := client.Load(); loadErr == nil && sameCoverageBinding(resp.Coverage, &cfg) {
 			probeCtx, probeCancel := context.WithTimeout(ctx, retrievalCoverageBudget)
 			if snapshot, probeErr := parseCoverageReader(cfg)(probeCtx); probeErr == nil {

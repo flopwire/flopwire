@@ -458,3 +458,44 @@ func TestAgentStatusEnvelopePartialCoverageDoesNotFail(t *testing.T) {
 		t.Fatal("optional metadata damaged query results")
 	}
 }
+
+func TestAgentStatusCoverageRequiresFreshServerProbe(t *testing.T) {
+	dir := shortSockDir(t)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
+	ln, err := net.Listen("unix", filepath.Join(dir, "agent.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer conn.Close()
+		var request map[string]any
+		if err := json.NewDecoder(conn).Decode(&request); err != nil {
+			done <- err
+			return
+		}
+		now := time.Now()
+		report := &coverage.Report{DeviceID: "collector-device", Server: "https://server.test", ObservedAt: now, Parse: &coverage.ParseSnapshot{DeviceID: "different-device", ObservedAt: now, Pending: 3}}
+		done <- json.NewEncoder(conn).Encode(agent.Response{OK: true, Coverage: report})
+	}()
+	var output bytes.Buffer
+	if err := agentStatusOutput(context.Background(), &output, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var response agent.Response
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Coverage == nil || response.Coverage.Parse != nil || response.Coverage.Unknown["parse"] == "" {
+		t.Fatalf("unattested local parse observation survived: %s", output.Bytes())
+	}
+}
