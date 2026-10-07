@@ -290,8 +290,8 @@ func TestSchedulerAuthorizationReleasesEveryPath(t *testing.T) {
 				sp.Export = true
 			}
 			fn := func(context.Context, SourceSpec) (*CaptureAuthorization, error) { return a, acquireErr }
-			err := sc.syncJob(context.Background(), &job{spec: sp}, 0, false, fn)
-			if kind == "success" && err != nil {
+			pending, err := sc.syncJobTurn(context.Background(), &job{spec: sp}, 0, false, fn)
+			if kind == "success" && (err != nil || pending != syncDone) {
 				t.Fatal(err)
 			}
 			if kind != "success" && err == nil {
@@ -496,7 +496,7 @@ func TestSchedulerWithoutAuthorizerCannotResumeProtectedPendingAfterRestart(t *t
 	if err := os.Symlink(other, sp.Path); err != nil {
 		t.Fatal(err)
 	}
-	err = sc.syncJob(context.Background(), &job{spec: sp}, 0, false, nil)
+	_, err = sc.syncJobTurn(context.Background(), &job{spec: sp}, 0, false, nil)
 	if !errors.Is(err, ErrUnprovenCapture) {
 		t.Fatalf("restart without authorizer error=%v", err)
 	}
@@ -560,7 +560,7 @@ func TestSourceProtectionSurvivesAcknowledgedGenerationGCAndEmptyFailure(t *test
 	defer sy.Close()
 	sc := NewScheduler(sy, SchedulerConfig{})
 	sp.Checkout = "/new/spec/value" // Updating SourceSpec must preserve protection.
-	err = sc.syncJob(context.Background(), &job{spec: sp}, 0, false, nil)
+	_, err = sc.syncJobTurn(context.Background(), &job{spec: sp}, 0, false, nil)
 	if !errors.Is(err, ErrUnprovenCapture) {
 		t.Fatalf("GC/emptyfailure lost durable source protection: %v", err)
 	}

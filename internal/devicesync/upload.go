@@ -15,18 +15,54 @@ import (
 // errRestart: the server wants the current generation re-sent as a new one.
 var errRestart = errors.New("devicesync: restart as a new generation")
 
-// upload sends every pending generation of src, oldest first.
-func (s *Syncer) upload(ctx context.Context, src *sourceRow) error {
+// syncOutcome distinguishes a completed job from upload continuation and an
+// uncaptured version blocked by older pending bytes.
+type syncOutcome uint8
+
+const (
+	syncDone syncOutcome = iota
+	uploadPending
+	capturePending
+)
+
+type syncAction uint8
+
+const (
+	captureSource syncAction = iota
+	resumeUpload
+)
+
+// uploadTurn bounds only actual manifest requests. A nil turn drains fully.
+type uploadTurn struct {
+	remaining int
+	accepted  bool
+}
+
+func (t *uploadTurn) spent() bool { return t != nil && t.remaining == 0 }
+func (t *uploadTurn) dispatch() {
+	if t != nil {
+		t.remaining--
+	}
+}
+
+// uploadTurn sends pending generations oldest first, within the request budget.
+func (s *Syncer) uploadTurn(ctx context.Context, src *sourceRow, turn *uploadTurn) (syncOutcome, error) {
 	gens, err := s.store.pendingGens(ctx, src.ID)
 	if err != nil {
-		return err
+		return syncDone, err
 	}
 	for _, g := range gens {
 		if err := s.validateGeneration(src, g); err != nil {
-			return err
+			return syncDone, err
 		}
-		if err := s.uploadGen(ctx, src, g); err != nil {
-			return err
+		if turn.spent() {
+			return uploadPending, nil
+		}
+		if err := s.uploadGenTurn(ctx, src, g, turn); err != nil {
+			return syncDone, err
+		}
+		if !g.done() {
+			return uploadPending, nil
 		}
 	}
 	if f := s.held[src.ID]; f != nil {
@@ -34,23 +70,23 @@ func (s *Syncer) upload(ctx context.Context, src *sourceRow) error {
 		delete(s.held, src.ID)
 	}
 	if src.RepoSent == src.Spec.repoKey() || src.Gen < 0 {
-		return nil
+		return syncDone, nil
 	}
-	if len(gens) == 0 {
-		// Every byte is acknowledged, and the server has not heard the
-		// session's repository (placed or recovered since): tell it, header
-		// only.
-		if err := s.sendRepo(ctx, src); err != nil {
-			return err
+	if len(gens) == 0 || turn != nil && !turn.accepted {
+		if turn.spent() {
+			return uploadPending, nil
+		}
+		if err := s.sendRepo(ctx, src, turn); err != nil {
+			return syncDone, err
 		}
 	}
-	return s.store.repoSent(ctx, src)
+	return syncDone, s.store.repoSent(ctx, src)
 }
 
 // sendRepo reports src's repository with a flush of its current
 // generation that carries no entries and no tail: the server updates the
 // source's row and leaves its bytes as they are.
-func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow) error {
+func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn) error {
 	g, err := s.store.gen(ctx, src.ID, src.Gen)
 	if err != nil || g == nil {
 		return err
@@ -74,18 +110,30 @@ func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow) error {
 	if err := s.checkAuthorization(ctx); err != nil {
 		return err
 	}
+	turn.dispatch()
 	resp, err := s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h})
+	if err == nil && turn != nil {
+		turn.accepted = true
+	}
 	if err == nil && resp.Refused != "" {
 		s.noteRefused(src.Spec.Path, resp.Refused)
 	}
 	return err
 }
 
-func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error {
+func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, turn *uploadTurn) error {
 	if err := s.validateGeneration(src, g); err != nil {
 		return err
 	}
-	for stalls := 0; !g.done(); {
+	key := [2]int64{src.ID, g.Gen}
+	stalls := 0
+	if turn != nil {
+		stalls = s.stalls[key]
+	}
+	for !g.done() {
+		if turn.spent() {
+			return nil
+		}
 		if err := s.checkAuthorization(ctx); err != nil {
 			return err
 		}
@@ -145,6 +193,7 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 				pl.err = validateProofFile(pl.f, g.Proof)
 			}
 			if pl.err == nil {
+				turn.dispatch()
 				resp, err = s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h, Payload: pl})
 			}
 		}
@@ -180,6 +229,7 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 		case syncproto.StatusStaleGeneration, syncproto.StatusNewGeneration:
 			s.cfg.Logger.Warn("devicesync: server rejected generation", "path", src.Spec.Path,
 				"generation", g.Gen, "status", resp.Status, "server_generation", resp.Generation)
+			delete(s.stalls, key)
 			g.Lost = true
 			if err := s.store.updateGen(ctx, g, nil); err != nil {
 				return err
@@ -201,6 +251,9 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 			}
 			return errRestart
 		case syncproto.StatusOK, syncproto.StatusPartial:
+			if turn != nil {
+				turn.accepted = true
+			}
 			if resp.Refused != "" {
 				s.noteRefused(src.Spec.Path, resp.Refused)
 			}
@@ -228,12 +281,21 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 		}
 		s.release(ctx, src, g, acked)
 		if g.Acked == prev && !(last && g.TailAcked) {
-			if stalls++; stalls > 2 {
+			stalls++
+			if turn != nil {
+				if s.stalls == nil {
+					s.stalls = make(map[[2]int64]int)
+				}
+				s.stalls[key] = stalls
+			}
+			if stalls > 2 {
+				delete(s.stalls, key) // a failed operation may retry after backoff
 				return fmt.Errorf("devicesync: %s generation %d: server made no progress (status %s, acked %d of %d)",
 					src.Spec.Path, g.Gen, resp.Status, g.Acked, g.Entries)
 			}
 		}
 	}
+	delete(s.stalls, key)
 	return nil
 }
 

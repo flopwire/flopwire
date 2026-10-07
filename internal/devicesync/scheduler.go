@@ -55,7 +55,8 @@ func (c *SchedulerConfig) defaults() {
 
 type job struct {
 	spec   SourceSpec
-	export []byte // latest export bytes; nil for files
+	action syncAction // default captures; continuations upload the saved version
+	export []byte     // latest export bytes; nil for files
 	// exportFn produces the export when the flush runs (NotifyExportFunc),
 	// so a queue of exports costs no memory while the server is down.
 	exportFn ExportFunc
@@ -166,6 +167,7 @@ func (s *Scheduler) notify(spec SourceSpec, data []byte, fn ExportFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if j := s.ready[spec.Path]; j != nil {
+		j.action = captureSource
 		j.spec, j.export, j.exportFn = spec, data, fn // already due; carry the newest bytes
 		return
 	}
@@ -176,6 +178,7 @@ func (s *Scheduler) notify(spec SourceSpec, data []byte, fn ExportFunc) {
 	} else {
 		j.timer.Stop()
 	}
+	j.action = captureSource
 	j.spec, j.export, j.exportFn = spec, data, fn
 	delay := min(cad.Debounce, j.first.Add(cad.MaxWait).Sub(now))
 	j.timer = time.AfterFunc(max(delay, 0), func() { s.debounced(spec.Path, j) })
@@ -216,12 +219,18 @@ func (s *Scheduler) Flush(spec SourceSpec) {
 	// again after the worker picked it up (see debounced).
 	defer s.mu.Unlock()
 	j := s.waiting[spec.Path]
+	if j == nil {
+		j = s.ready[spec.Path]
+	}
 	if j != nil {
-		j.timer.Stop()
+		if j.timer != nil {
+			j.timer.Stop()
+		}
 		j.spec = spec
 	} else {
 		j = &job{spec: spec}
 	}
+	j.action = captureSource
 	s.dueLocked(spec.Path, j)
 	if i := slices.Index(s.order, spec.Path); i > 0 {
 		s.order = slices.Insert(slices.Delete(s.order, i, i+1), 0, spec.Path)
@@ -486,8 +495,13 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			s.mu.Unlock()
 			return
 		}
-		err := s.syncJob(ctx, j, upTo, bounded, authorize)
-		tail := err == nil && s.sy.provisional(ctx, j.spec.Path)
+		pending, err := s.syncJobTurn(ctx, j, upTo, bounded, authorize)
+		// A failed resume may invalidate its watermark. Retry by capturing,
+		// including when cancellation restores this job rather than requeues it.
+		if err != nil {
+			j.action = captureSource
+		}
+		tail := err == nil && pending == syncDone && s.sy.provisional(ctx, j.spec.Path)
 		s.mu.Lock()
 		s.running = 0
 		if ctx.Err() != nil {
@@ -498,7 +512,18 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		if err == nil {
 			s.backoff, s.down, s.lastErr = 0, false, nil
 			delete(s.failing, path)
-			s.sealLater(j, tail)
+			if pending != syncDone {
+				j.action = captureSource
+				if pending == uploadPending {
+					j.action = resumeUpload
+				}
+				if s.ready[path] == nil && s.waiting[path] == nil {
+					s.ready[path] = j
+					s.order = append(s.order, path)
+				}
+			} else {
+				s.sealLater(j, tail)
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -571,7 +596,7 @@ func boundOf(fn func(SourceSpec) (int64, bool), spec SourceSpec) (int64, bool) {
 	return fn(spec)
 }
 
-func (s *Scheduler) syncJob(ctx context.Context, j *job, upTo int64, bounded bool, authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)) (result error) {
+func (s *Scheduler) syncJobTurn(ctx context.Context, j *job, upTo int64, bounded bool, authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)) (pending syncOutcome, result error) {
 	var auth *CaptureAuthorization
 	if authorize != nil {
 		var err error
@@ -589,26 +614,17 @@ func (s *Scheduler) syncJob(ctx context.Context, j *job, upTo int64, bounded boo
 			}
 		}
 		if err != nil {
-			return err
+			return syncDone, err
 		}
 	}
-	if auth != nil {
-		if j.spec.Export {
-			return errors.New("devicesync: authorized file capture cannot export")
-		}
-		return s.sy.SyncAuthorized(ctx, j.spec, auth)
+	var export ExportFunc
+	if j.exportFn != nil {
+		export = j.exportFn
+	} else if j.export != nil {
+		export = func(context.Context, []byte) (Export, error) { return Export{Data: j.export}, nil }
 	}
-	if j.spec.Export {
-		if j.exportFn != nil {
-			return s.sy.SyncExportFunc(ctx, j.spec, j.exportFn)
-		}
-		if j.export != nil {
-			return s.sy.SyncExport(ctx, j.spec, j.export)
-		}
-		return s.sy.Resume(ctx, j.spec)
+	if !bounded {
+		upTo = -1
 	}
-	if bounded {
-		return s.sy.SyncUpTo(ctx, j.spec, upTo)
-	}
-	return s.sy.Sync(ctx, j.spec)
+	return s.sy.syncTurn(ctx, j.spec, export, upTo, auth, j.action)
 }
