@@ -112,6 +112,7 @@ func TestLocalCLIGolden(t *testing.T) {
 			}
 			out := captureStdout(t, func() error { return run(t.Context(), args) })
 			out = strings.ReplaceAll(out, home, "$HOME")
+			out = withoutCoverageObservation(out)
 			golden := filepath.Join("testdata", "golden", c.name+".txt")
 			if *update {
 				os.MkdirAll(filepath.Dir(golden), 0o755)

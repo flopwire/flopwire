@@ -24,6 +24,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -51,8 +52,11 @@ type retriever struct {
 	live  func(codex bool) map[string]time.Time
 	close func() error
 	// instructions replace mcpInstructions when set (a sync-only device).
-	instructions string
-	scope        *format.Scope
+	instructions   string
+	scope          *format.Scope
+	coverageConfig *client.Config
+	coverageLocal  func(context.Context) (*coverage.Report, error)
+	coverageParse  func(context.Context) (*coverage.ParseSnapshot, error)
 	// indexHint, set for the MCP server on a local index, is a note each
 	// retrieval tool adds to its answer ("" for none): the index is empty.
 	indexHint func(context.Context) string
@@ -87,7 +91,8 @@ func (r *retriever) whoCalls(ctx context.Context) (local.Caller, bool) {
 func openRetriever(server bool, indexPath string) (*retriever, error) {
 	det := local.NewDetector()
 	if server {
-		c, err := serverClient()
+		cfg, err := client.Load()
+		c := cfg.API(cfg.Token)
 		if err != nil {
 			return nil, fmt.Errorf("--server: %w (run flopwire login and enroll first)", err)
 		}
@@ -97,7 +102,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 		team := func(ctx context.Context, repo string) (local.Repo, error) {
 			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
 		}
-		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team, scope: &format.Scope{Kind: "shared", Server: c.Server}}, nil
+		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team, coverageConfig: &cfg, coverageLocal: agentCoverage, coverageParse: parseCoverageReader(cfg), scope: &format.Scope{Kind: "shared", Server: c.Server}}, nil
 	}
 	if indexPath == "" {
 		indexPath = local.IndexPath()
@@ -109,7 +114,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close, scope: &format.Scope{Kind: "local"}}, nil
+	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close, coverageLocal: agentCoverage, scope: &format.Scope{Kind: "local"}}, nil
 }
 
 // retrievalServer selects the scope once, before opening either backend.
@@ -637,22 +642,25 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 	}
 	st.Flat = o.on["no-heading"]
 	asJSON := jsonMode(o)
+	finishCoverage := r.startCoverage(ctx)
+	defer finishCoverage.cancel()
 	// emit writes the answer: the readable text, the --json form (grep,
 	// search and read on the CLI: indented, as before), or compact JSON
 	// within the budget (sessions, and every tool over MCP).
 	emit := func(full any, bounded func() any, text func() error) error {
+		scope := budgetCoverageScope(finishCoverage.snapshot(r.scope), st.Budget)
 		switch out := full.(type) {
 		case *format.Page:
-			out.Scope = r.scope
+			out.Scope = scope
 		case *format.Sessions:
-			out.Scope = r.scope
+			out.Scope = scope
 		case *format.Context:
-			out.Scope = r.scope
+			out.Scope = scope
 		}
 		switch {
 		case !asJSON:
-			if r.scope != nil {
-				note := scopeNote(r.scope)
+			if scope != nil {
+				note := scopeNote(scope) + coverageNote(scope.Coverage, scope.Kind == "shared")
 				if _, err := fmt.Fprintln(w, note); err != nil {
 					return err
 				}

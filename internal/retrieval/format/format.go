@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/digest"
 )
 
@@ -579,8 +580,9 @@ type Sessions struct {
 // Scope identifies the backend that answered a retrieval request.
 // It is attached by the CLI or MCP adapter, not inferred from result rows.
 type Scope struct {
-	Kind   string `json:"kind"` // "local" or "shared"
-	Server string `json:"server,omitempty"`
+	Kind     string           `json:"kind"` // "local" or "shared"
+	Server   string           `json:"server,omitempty"`
+	Coverage *coverage.Report `json:"coverage,omitempty"`
 }
 
 // Attribution names whose evidence a raw read returns: the user and

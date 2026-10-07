@@ -34,6 +34,10 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 		User: "gary@example.test", Lines: []format.Line{{N: 3, Text: "upload.test.ts:9 timeout\x1b]52;c;evil\x07", Match: true}},
 		Provenance: format.Provenance{SourceID: "s1", Path: "/r.jsonl", LineNo: 7, ByteOffset: &off, ByteLen: 40}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			http.NotFound(w, r)
+			return
+		}
 		queries, paths = append(queries, r.URL.Query()), append(paths, r.URL.Path)
 		switch r.URL.Path {
 		case "/v1/grep", "/v1/search":
@@ -58,6 +62,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 	out := captureStdout(t, func() error {
 		return run(t.Context(), []string{"grep", "--server", `upload\.Test`, "--agent", "codex", "--since", "24h", "-C", "2", "-m", "3", "--offset", "5"})
 	})
+	out = withoutCoverageObservation(out)
 	q := queries[0]
 	if paths[0] != "/v1/grep" || q.Get("pattern") != `upload\.Test` || q.Get("regex") != "true" || q.Get("case_sensitive") != "true" || q.Get("agent") != "codex" ||
 		q.Get("since") == "" || q.Get("before") != "2" || q.Get("after") != "2" || q.Get("max_per_session") != "3" || q.Get("offset") != "5" {

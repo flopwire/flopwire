@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
@@ -87,6 +88,9 @@ func mcp(ctx context.Context, args []string) error {
 	if r.scope == nil {
 		r.scope = &format.Scope{Kind: "local"}
 	}
+	if r.coverageLocal == nil {
+		r.coverageLocal = agentCoverage
+	}
 	defer r.close()
 	if lb, ok := r.backend.(*local.Backend); ok {
 		r.indexHint = emptyIndexHint(lb.Store)
@@ -99,6 +103,7 @@ func mcp(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	r.coverageLocal = func(ctx context.Context) (*coverage.Report, error) { return agentCoverageAt(ctx, r.busSocket) }
 	if *call != "" {
 		return mcpCallOnce(ctx, r, *call, os.Stdin, os.Stdout)
 	}

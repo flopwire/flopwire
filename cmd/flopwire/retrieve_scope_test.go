@@ -60,6 +60,10 @@ func TestEnrolledCLIUsesSharedScopeWithoutLocalFallback(t *testing.T) {
 	oracleIndex(t) // a populated local index must not hide a shared outage
 	t.Setenv(client.EnvToken, "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path != "/v1/search" {
 			t.Errorf("path=%s", r.URL.Path)
 		}
