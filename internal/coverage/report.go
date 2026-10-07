@@ -32,6 +32,7 @@ type UploadSnapshot struct {
 // CapturedSnapshot describes unacknowledged retained capture metadata. It
 // excludes lost generations and does not verify object contents on the server.
 type CapturedSnapshot struct {
+	TruncatedGenerations   int64 `json:"truncated_generations"`
 	LostGenerations        int64 `json:"lost_generations"`
 	PendingGenerations     int64 `json:"pending_generations"`
 	PendingManifestEntries int64 `json:"pending_manifest_entries"`
@@ -40,8 +41,9 @@ type CapturedSnapshot struct {
 }
 
 type PolicySnapshot struct {
-	Cowork               *CoworkPolicySnapshot `json:"cowork,omitempty"`
-	ServerCopiesRetained *int                  `json:"server_copies_retained,omitempty"`
+	HistoricalMappingUnknown *int64                `json:"historical_mapping_unknown,omitempty"`
+	Cowork                   *CoworkPolicySnapshot `json:"cowork,omitempty"`
+	ServerCopiesRetained     *int                  `json:"server_copies_retained,omitempty"`
 }
 
 // Scheduling eligibility is not a fresh capture authorization.
