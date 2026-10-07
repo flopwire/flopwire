@@ -136,12 +136,19 @@ func (a *Agent) refreshCoworkLocked(ctx context.Context) {
 			}
 		}
 	}
+	// Scan captured metadata once for the verified parents. Every parent keeps
+	// its own configured roots; a shared child identity alone supplies no link.
+	parentRoots := make(map[string][]string, len(parents))
 	for root, link := range parents {
-		children, err := a.store.CapturedClaudeChildren(ctx, append([]string{a.cfg.ClaudeProjects, link.ProjectsRoot}, codeRoots[root]...), root)
-		if err != nil {
-			registrationFailed = true
-			a.log.Warn("agent: Cowork historical child scope failed", "error", err)
-		}
+		parentRoots[root] = append([]string{a.cfg.ClaudeProjects, link.ProjectsRoot}, codeRoots[root]...)
+	}
+	childrenByParent, err := a.store.CapturedClaudeChildrenForParents(ctx, parentRoots)
+	if err != nil {
+		registrationFailed = true
+		a.log.Warn("agent: Cowork historical child scope failed", "error", err)
+	}
+	for root, link := range parents {
+		children := childrenByParent[root]
 		for _, childID := range children {
 			addMember(root, childID)
 			child := link

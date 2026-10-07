@@ -438,13 +438,40 @@ func (s *Store) SessionHasEvidence(ctx context.Context, agent transcript.Agent, 
 // The exact native path ancestry supplies the relation, never a global child-ID
 // lookup. Missing files are allowed because prior captures outlive their paths.
 func (s *Store) CapturedClaudeChildren(ctx context.Context, roots []string, parent string) ([]string, error) {
-	id, err := uuid.Parse(parent)
-	if err != nil || id == uuid.Nil || id.String() != strings.ToLower(parent) {
+	children, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: roots})
+	return children[parent], err
+}
+
+// CapturedClaudeChildrenForParents scans retained native evidence once for all
+// verified parents. Roots remain bound to each requested parent; a matching
+// path can restrict every verified family that actually contains it. Returned
+// keys preserve the input spelling. No transcript or companion content is read.
+func (s *Store) CapturedClaudeChildrenForParents(ctx context.Context, parents map[string][]string) (map[string][]string, error) {
+	byRoot := map[string]map[string][]string{}
+	seen := map[string]map[string]bool{}
+	for parent, roots := range parents {
+		id, err := uuid.Parse(parent)
+		if err != nil || id == uuid.Nil || id.String() != strings.ToLower(parent) {
+			continue
+		}
+		seen[parent] = map[string]bool{}
+		for _, root := range roots {
+			if !filepath.IsAbs(root) {
+				continue
+			}
+			root = filepath.Clean(root)
+			if byRoot[root] == nil {
+				byRoot[root] = map[string][]string{}
+			}
+			byRoot[root][id.String()] = append(byRoot[root][id.String()], parent)
+		}
+	}
+	// Valid parents retain schema-error reporting even when their configured
+	// roots are unavailable. A failed evidence read must still hold sharing.
+	if len(seen) == 0 {
 		return nil, nil
 	}
-	parent = id.String()
-	seen := map[string]bool{}
-	err = s.readSources(ctx, func(ctx context.Context, q dbtx) error {
+	err := s.readSources(ctx, func(ctx context.Context, q dbtx) error {
 		read := func(query string, args ...any) error {
 			rows, err := q.QueryContext(ctx, query, args...)
 			if err != nil {
@@ -456,8 +483,18 @@ func (s *Store) CapturedClaudeChildren(ctx context.Context, roots []string, pare
 				if err := rows.Scan(&path, &key); err != nil {
 					return err
 				}
-				if child := capturedClaudeChild(roots, parent, path, key); child != "" {
-					seen[child] = true
+				cleanPath := filepath.Clean(path)
+				for root, requests := range byRoot {
+					if root != string(filepath.Separator) && !strings.HasPrefix(cleanPath, root+string(filepath.Separator)) {
+						continue
+					}
+					parent, child := capturedClaudeChildAtRoot(root, cleanPath, key)
+					if child == "" {
+						continue
+					}
+					for _, request := range requests[parent] {
+						seen[request][child] = true
+					}
 				}
 			}
 			return rows.Err()
@@ -491,39 +528,45 @@ func (s *Store) CapturedClaudeChildren(ctx context.Context, roots []string, pare
    AND substr(json_extract(src.spec,'$.Parser'),1,7)='claude@' AND length(json_extract(src.spec,'$.Parser'))>7
    AND coalesce(json_extract(src.spec,'$.Export'),0)=0`, string(transcript.StorageCompanion), string(transcript.AgentClaude), string(transcript.StorageJSONLAppend), string(transcript.StorageCompanion))
 	})
-	out := make([]string, 0, len(seen))
-	for child := range seen {
-		out = append(out, child)
+	out := make(map[string][]string, len(seen))
+	for parent, children := range seen {
+		for child := range children {
+			out[parent] = append(out[parent], child)
+		}
+		sort.Strings(out[parent])
 	}
-	sort.Strings(out)
 	return out, err
 }
 
 func capturedClaudeChild(roots []string, parent, path, key string) string {
-	if !filepath.IsAbs(path) {
-		return ""
-	}
 	for _, root := range roots {
-		if !filepath.IsAbs(root) {
-			continue
+		p, child := capturedClaudeChildAtRoot(root, path, key)
+		if p == parent && child != "" {
+			return child
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			continue
-		}
-		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if len(parts) < 4 || parts[0] == ".." || strings.ToLower(parts[1]) != parent || parts[2] != "subagents" {
-			continue
-		}
-		name := parts[len(parts)-1]
-		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		child := strings.TrimSuffix(name, ".jsonl")
-		if child == "agent-" || key != "" && key != child {
-			continue
-		}
-		return child
 	}
 	return ""
+}
+
+func capturedClaudeChildAtRoot(root, path, key string) (string, string) {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(path) {
+		return "", ""
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", ""
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) < 4 || parts[0] == ".." || parts[2] != "subagents" {
+		return "", ""
+	}
+	name := parts[len(parts)-1]
+	if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") {
+		return "", ""
+	}
+	child := strings.TrimSuffix(name, ".jsonl")
+	if child == "agent-" || key != "" && key != child {
+		return "", ""
+	}
+	return strings.ToLower(parts[1]), child
 }
