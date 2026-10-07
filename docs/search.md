@@ -20,6 +20,22 @@ the server explicitly. `--index PATH` selects a local index unless
 include `scope.kind` (`local` or `shared`) and the shared server URL.
 Server failures return an error and never switch to local search. `flopwire <tool> --help` shows three examples and every flag.
 
+## Coverage observations
+
+`flopwire agent status` separates collection, uploads, policy holds, and server
+parsing. Retrieval JSON includes optional observations in `scope.coverage`.
+Text results include a short coverage note.
+
+These observations describe the current device. They do not establish that
+all intended folders were discovered or that other devices have caught up.
+Missing diagnostics are unknown. An empty upload queue does not prove that
+uploaded history has been parsed for search.
+
+Coverage probes run beside retrieval and do not delay its results. A busy
+agent, older server, or small output budget can omit detailed observations.
+Collection rules and exclusions still apply. See
+[coverage reporting](coverage-reporting.md) for scope and limitations.
+
 ## Addresses
 
 Every result starts with an address. Pass it to `read`.

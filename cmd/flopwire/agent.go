@@ -34,6 +34,7 @@ import (
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -266,7 +267,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{DeviceID: cc.DeviceID, Server: cc.Server, DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
@@ -957,6 +958,26 @@ func agentStatusOutput(ctx context.Context, w io.Writer, asJSON bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	resp, err := agent.Call(ctx, filepath.Join(dir, "agent.sock"), agent.Request{Op: "status"})
+	if err == nil {
+		if resp.Coverage == nil {
+			resp.Coverage = coverage.UnknownReport("running agent coverage unavailable")
+		}
+		// A local agent observation cannot attest to fresh remote parsing.
+		// Only this request's authenticated, bound server probe can do that.
+		resp.Coverage.Parse = nil
+		if resp.Coverage.Unknown == nil {
+			resp.Coverage.Unknown = make(map[string]string)
+		}
+		resp.Coverage.Unknown["parse"] = "server parse progress was not observed for this status request"
+		if cfg, loadErr := client.Load(); loadErr == nil && sameCoverageBinding(resp.Coverage, &cfg) {
+			probeCtx, probeCancel := context.WithTimeout(ctx, retrievalCoverageBudget)
+			if snapshot, probeErr := parseCoverageReader(cfg)(probeCtx); probeErr == nil {
+				resp.Coverage.Parse = snapshot
+				delete(resp.Coverage.Unknown, "parse")
+			}
+			probeCancel()
+		}
+	}
 	if asJSON {
 		if err != nil {
 			return err
@@ -989,6 +1010,7 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	printCoverage(w, resp.Coverage)
 	for _, section := range []string{"cowork", "redactions", "extraction", "inbox"} {
 		if reason := resp.Unavailable[section]; reason != "" {
 			fmt.Fprintln(w, reason)
