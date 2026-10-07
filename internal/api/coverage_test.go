@@ -79,7 +79,7 @@ func TestDeviceParseCoverageAuthorizationAndFailures(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"pending", "failing", "quarantined"} {
+	for _, key := range []string{"untracked_sources", "pending", "failing", "quarantined"} {
 		if out[key] != float64(0) {
 			t.Fatalf("known zero %s missing: %s", key, body)
 		}
@@ -148,9 +148,29 @@ func TestDeviceParseCoveragePostgresSnapshot(t *testing.T) {
 		if tc.device == other {
 			at = oldest.Add(-time.Hour)
 		}
-		_, err = pool.Exec(ctx, `INSERT INTO source_parse_state(source_id,requested_seq,parsed_seq,attempts,quarantined_at,requested_at,last_error) VALUES($1,$2,$3,$4,$5,$6,'private transcript error')`, source, tc.requested, tc.parsed, tc.attempts, quarantine, at)
+		_, err = pool.Exec(ctx, `INSERT INTO source_parse_state(source_id,requested_seq,parsed_seq,attempts,quarantined_at,requested_at,last_error,applied_parser) VALUES($1,$2,$3,$4,$5,$6,'private transcript error','claude')`, source, tc.requested, tc.parsed, tc.attempts, quarantine, at)
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+
+	for i, kind := range []string{"jsonl_append", "jsonl_append", "companion", "jsonl_append"} {
+		source := uuid.NewString()
+		var tombstone *time.Time
+		if i == 3 {
+			tombstone = &oldest
+		}
+		_, err = pool.Exec(ctx, `INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at,tombstoned_at) VALUES($1,$2,'claude',$3,$4,$5,'claude',now(),$6)`, source, id, "/private/untracked/"+source, source, kind, tombstone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A completed source can lack an applied parser; companions and deliberate
+		// tombstones must not be reported as untracked native indexing work.
+		if i == 1 {
+			_, err = pool.Exec(ctx, `INSERT INTO source_parse_state(source_id,requested_seq,parsed_seq) VALUES($1,1,1)`, source)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	res := request(t, http.MethodGet, srv.URL+coverage.Path, nil, bearer(token))
@@ -162,7 +182,7 @@ func TestDeviceParseCoveragePostgresSnapshot(t *testing.T) {
 	if err = json.Unmarshal([]byte(body), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.DeviceID != id || out.Pending != 2 || out.Failing != 1 || out.Quarantined != 2 || out.OldestPending == nil || !out.OldestPending.Equal(oldest) || out.ObservedAt.IsZero() {
+	if out.DeviceID != id || out.UntrackedSources != 2 || out.Pending != 2 || out.Failing != 1 || out.Quarantined != 2 || out.OldestPending == nil || !out.OldestPending.Equal(oldest) || out.ObservedAt.IsZero() {
 		t.Fatalf("snapshot %+v", out)
 	}
 	_, err = pool.Exec(ctx, `UPDATE source_parse_state SET parsed_seq=requested_seq,quarantined_at=NULL WHERE source_id IN(SELECT id FROM sources WHERE device_id=$1)`, id)
@@ -173,7 +193,7 @@ func TestDeviceParseCoveragePostgresSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Pending != 0 || out.Failing != 0 || out.Quarantined != 0 || out.OldestPending != nil {
+	if out.UntrackedSources != 2 || out.Pending != 0 || out.Failing != 0 || out.Quarantined != 0 || out.OldestPending != nil {
 		t.Fatalf("zero snapshot %+v", out)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
