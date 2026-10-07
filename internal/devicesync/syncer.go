@@ -127,6 +127,7 @@ type Syncer struct {
 	held          map[int64]*os.File
 	buf           []byte
 	authorization *CaptureAuthorization
+	stalls        map[[2]int64]int // source/generation no-progress responses across scheduler turns
 	// zkeep is a body compressed for a request it did not fit: the next
 	// request starts with it.
 	zkeep part
@@ -301,63 +302,108 @@ func (s *Syncer) SyncExportFunc(ctx context.Context, spec SourceSpec, fn ExportF
 // Resume uploads what is pending for a source without capturing it again.
 func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error { return s.resume(ctx, spec, nil) }
 func (s *Syncer) resume(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization) error {
+	_, err := s.resumeTurn(ctx, spec, auth, nil)
+	return err
+}
+
+func (s *Syncer) resumeTurn(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization, turn *uploadTurn) (syncOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authorization = auth
 	defer func() { s.authorization = nil }()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
-		return err
+		return syncDone, err
 	}
 	if err := s.validateAuthorization(src); err != nil {
-		return err
+		return syncDone, err
 	}
 	if err := s.protect(ctx, src); err != nil {
-		return err
+		return syncDone, err
 	}
 	if err := s.preflight(ctx, src, false); err != nil {
-		return err
+		return syncDone, err
 	}
-	return s.upload(ctx, src)
+	return s.uploadTurn(ctx, src, turn)
 }
 
 func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization) error {
+	_, err := s.runTurn(ctx, spec, export, upTo, snapshot, auth, nil)
+	return err
+}
+
+// syncTurn is scheduler-only. Public Sync and import calls still drain fully.
+func (s *Syncer) syncTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, auth *CaptureAuthorization, action syncAction) (syncOutcome, error) {
+	if auth != nil {
+		if spec.Export {
+			return syncDone, errors.New("devicesync: authorized file capture cannot export")
+		}
+		a, err := freezeAuthorization(auth)
+		if err != nil {
+			return syncDone, err
+		}
+		auth, upTo = a, a.Proof.Offset
+	}
+	turn := &uploadTurn{remaining: 1}
+	if action == resumeUpload || spec.Export && export == nil {
+		outcome, err := s.resumeTurn(ctx, spec, auth, turn)
+		if !errors.Is(err, errRestart) || spec.Export && export == nil {
+			return outcome, err
+		}
+		// A rejected current generation needs a durable replacement even
+		// when this turn began upload-only and spent its one request.
+	}
+
+	return s.runTurn(ctx, spec, export, upTo, nil, auth, turn)
+}
+
+func (s *Syncer) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization, turn *uploadTurn) (syncOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authorization = auth
 	defer func() { s.authorization = nil }()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
-		return err
+		return syncDone, err
 	}
 	if err := s.validateAuthorization(src); err != nil {
-		return err
+		return syncDone, err
 	}
 	if err := s.protect(ctx, src); err != nil {
-		return err
+		return syncDone, err
 	}
 	if err := s.preflight(ctx, src, true); err != nil {
-		return err
+		return syncDone, err
 	}
 	for attempt := 0; ; attempt++ {
 		if err := s.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
-			// Uploading what is pending is what frees the spool.
 			if uerr := s.checkAuthorization(ctx); uerr != nil {
-				return errors.Join(err, uerr)
+				return syncDone, errors.Join(err, uerr)
 			}
-			if uerr := s.upload(ctx, src); uerr != nil {
-				return errors.Join(err, uerr)
+			if _, uerr := s.uploadTurn(ctx, src, turn); uerr != nil {
+				return syncDone, errors.Join(err, uerr)
 			}
-			if err := s.capture(ctx, src, export, upTo, snapshot); err != nil {
-				return err
+			if cerr := s.capture(ctx, src, export, upTo, snapshot); cerr != nil {
+				if turn != nil && turn.remaining == 0 && errors.Is(cerr, ErrSpoolFull) {
+					gens, gerr := s.store.pendingGens(ctx, src.ID)
+					if gerr != nil {
+						return syncDone, gerr
+					}
+					if len(gens) > 0 {
+						return capturePending, nil
+					}
+				}
+				return syncDone, cerr
 			}
 		} else if err != nil {
-			return err
+			return syncDone, err
 		}
-		err := s.upload(ctx, src)
+		pending, err := s.uploadTurn(ctx, src, turn)
 		if !errors.Is(err, errRestart) || attempt > 0 {
-			return err
+			return pending, err
 		}
+		// Even with the Flush budget spent, recapture the rejected current
+		// generation durably before yielding. PendingSpecs can then resume it.
 	}
 }
 
@@ -807,6 +853,9 @@ func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64)
 	g.Entries, g.Tail, g.TailAcked = keep, syncproto.Tail{Offset: g.Tail.Offset}, true
 	if err := s.store.updateGen(ctx, g, nil); err != nil {
 		return err
+	}
+	if g.done() {
+		delete(s.stalls, [2]int64{src.ID, g.Gen})
 	}
 	s.release(ctx, src, g, dropped)
 	s.spool.DropTail(src.ID, g.Gen)
