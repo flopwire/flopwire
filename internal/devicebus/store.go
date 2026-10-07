@@ -35,7 +35,8 @@ type store struct {
 
 // schemaVersion stays 5: status uses only an additive table, so older v5
 // agents do not invoke their destructive version-mismatch reset on rollback.
-// Unsupported versions fail closed without deleting durable data.
+// Version 4 has the same tables and columns; version 5 added only an index.
+// Other unsupported versions fail closed without deleting durable data.
 const schemaVersion = 5
 
 const schema = `
@@ -126,11 +127,14 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("devicebus: schema: %w", err)
 	}
-	if version != 0 && version != schemaVersion {
+	if version != 0 && version != 4 && version != schemaVersion {
 		db.Close()
 		return nil, fmt.Errorf("devicebus: unsupported schema version %d; inbox preserved", version)
 	}
-	if _, err := db.Exec(schema + failureSchema + fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion)); err != nil {
+	if err := inTx(context.Background(), db, func(tx *sql.Tx) error {
+		_, err := tx.Exec(schema + failureSchema + fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion))
+		return err
+	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("devicebus: schema: %w", err)
 	}
