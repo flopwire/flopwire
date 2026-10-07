@@ -983,6 +983,11 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	for _, section := range []string{"cowork", "redactions", "extraction", "inbox"} {
+		if reason := resp.Unavailable[section]; reason != "" {
+			fmt.Fprintln(w, reason)
+		}
+	}
 	if c := resp.DesktopCode; c != nil {
 		fmt.Fprintf(w, "Claude Desktop Code (Local): %s (%d scoped native sessions, %d normal-root links, %d missing linked transcripts, %d outside local Code scope)\n", c.State, c.Sessions, c.NormalLinks, c.MetadataOnly, c.OutOfScope)
 		if c.SharedAuthorization != "" {
@@ -1051,7 +1056,7 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 	if resp.Credential != nil {
 		off = resp.Credential.MessagingOff
 	}
-	printBusStatus(w, resp.Bus, off)
+	printBusStatusWithCounts(w, resp.Bus, off, resp.Unavailable["inbox"] == "")
 	if st == nil {
 		fmt.Fprintln(w, "sync: off (no server configured)")
 		return
@@ -1073,7 +1078,9 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		fmt.Fprint(w, " (full: captures of rewritten sources paused)")
 	}
 	fmt.Fprintln(w)
-	printRedactions(w, st.Redactions, st.RedactedSources)
+	if resp.Unavailable["redactions"] == "" {
+		printRedactions(w, st.Redactions, st.RedactedSources)
+	}
 	if st.RefusedCount > 0 {
 		fmt.Fprintf(w, "server refused %d sources by admin path rule (not stored there):\n", st.RefusedCount)
 		for _, r := range st.Refused {
@@ -1095,6 +1102,10 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 // is the credential's messaging: off reason, which the credential lines
 // print: a bus stopped for that reason does not say it twice.
 func printBusStatus(w io.Writer, b *devicebus.Status, off string) {
+	printBusStatusWithCounts(w, b, off, true)
+}
+
+func printBusStatusWithCounts(w io.Writer, b *devicebus.Status, off string, countsKnown bool) {
 	if b == nil {
 		return
 	}
@@ -1114,7 +1125,9 @@ func printBusStatus(w io.Writer, b *devicebus.Status, off string) {
 	default:
 		fmt.Fprintf(w, "messaging: %s\n", b.State)
 	}
-	fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	if countsKnown {
+		fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	}
 	if b.Cloud > 0 {
 		fmt.Fprintf(w, "cloud sessions: %d listed (Claude Code cloud, Devin cloud)\n", b.Cloud)
 	}

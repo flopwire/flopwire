@@ -418,6 +418,25 @@ func TestAgentStatusDesktopCodeAuthorizationRequirement(t *testing.T) {
 	}
 }
 
+func TestAgentStatusUnavailableSectionsDoNotPrintZeroCounters(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{
+		Unavailable: map[string]string{"cowork": "Cowork status busy; capture or policy work is in progress", "redactions": "redaction totals unavailable; retry status", "extraction": "extraction summary unavailable; retry status or run flopwire diagnostics", "inbox": "inbox counts unavailable; retry status"},
+		Sync:        &devicesync.Status{Queued: 17},
+		Bus:         &devicebus.Status{State: devicebus.StateConnected, Sessions: 7},
+	})
+	for _, want := range []string{"Cowork status busy", "redaction totals unavailable", "extraction summary unavailable", "sync: ok", "queued: 17 sources", "inbox counts unavailable", "messaging: connected; 7 live sessions"} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatalf("missing %q: %s", want, b.String())
+		}
+	}
+	for _, unwanted := range []string{"nothing so far", "0 native sessions", "0 eligible for scheduling", "0 pending delivery", "0 receipts unsent"} {
+		if strings.Contains(b.String(), unwanted) {
+			t.Fatalf("unknown diagnostics rendered as zero: %s", b.String())
+		}
+	}
+}
+
 func TestAgentStatusCoworkUsesCurrentDiagnostics(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

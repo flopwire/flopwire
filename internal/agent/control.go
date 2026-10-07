@@ -75,6 +75,9 @@ type Request struct {
 
 // Response answers a Request.
 type Response struct {
+	// Unavailable names status sections that could not be read. Their absent
+	// counters are unknown, rather than zero. Other health fields remain useful.
+	Unavailable map[string]string             `json:"unavailable,omitempty"`
 	DesktopCode *DesktopCodeStatus            `json:"desktop_code,omitempty"`
 	Cowork      *CoworkStatus                 `json:"cowork,omitempty"`
 	Extraction  *transcript.ExtractionSummary `json:"extraction,omitempty"`
@@ -223,27 +226,55 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			testHookStatus(ctx)
 		}
 		resp.OK = true
-		if st, ok := a.cfg.Sync.(interface{ Status() devicesync.Status }); ok {
+		// Diagnostics must finish before the CLI's five-second socket budget.
+		// Never leave background scans running after that client goes away.
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		unavailable := func(section, reason string) {
+			if resp.Unavailable == nil {
+				resp.Unavailable = map[string]string{}
+			}
+			resp.Unavailable[section] = reason
+		}
+		if a.cfg.Bus != nil {
+			st, err := a.cfg.Bus.StatusContext(ctx)
+			resp.Bus = &st
+			if err != nil {
+				unavailable("inbox", "inbox counts unavailable; retry status")
+			}
+		}
+		if st, ok := a.cfg.Sync.(interface {
+			StatusContext(context.Context) (devicesync.Status, error)
+		}); ok {
+			v, err := st.StatusContext(ctx)
+			resp.Sync = &v
+			if err != nil {
+				unavailable("redactions", "redaction totals unavailable; retry status")
+			}
+		} else if st, ok := a.cfg.Sync.(interface{ Status() devicesync.Status }); ok {
 			v := st.Status()
 			resp.Sync = &v
 		}
 		resp.ServerCopies = a.serverCopiesNotice()
 		resp.Placements = a.placementCounts()
-		resp.Cowork = a.coworkStatus()
-		resp.DesktopCode = a.desktopCodeStatus()
-		if a.cfg.Bus != nil {
-			st := a.cfg.Bus.Status(ctx)
-			resp.Bus = &st
+		resp.Cowork, err = a.coworkStatusContext(ctx)
+		if err != nil {
+			resp.Cowork = nil
+			if ctx.Err() != nil {
+				unavailable("cowork", "Cowork status unavailable; diagnostic budget exhausted")
+			} else {
+				unavailable("cowork", "Cowork status busy; capture or policy work is in progress")
+			}
 		}
+		resp.DesktopCode = a.desktopCodeStatus()
 		if a.cfg.Credential != nil {
 			c := a.cfg.Credential()
 			resp.Credential = &c
 		}
-		var err error
 		resp.Extraction, err = a.store.ExtractionSummary(ctx)
 		if err != nil {
-			resp.OK = false
-			resp.Error = err.Error()
+			resp.Extraction = nil
+			unavailable("extraction", "extraction summary unavailable; retry status or run flopwire diagnostics")
 		}
 	case req.Op == "repin":
 		// `flopwire login` saved a server pin: a sync stopped by a pin

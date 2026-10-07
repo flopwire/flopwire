@@ -12,6 +12,11 @@ Use `--index PATH` to select a local index.
 
 `flopwire agent status` includes the local extraction summary.
 `flopwire agent status --json` returns the control response as JSON.
+Status limits diagnostic reads to two seconds. During capture or policy work,
+Cowork status can be unavailable. Busy or failed diagnostics do not hide sync
+and messaging health. JSON responses name unavailable sections in `unavailable`.
+Treat counters in those sections as unknown. Run status again for a fresh report.
+Run `flopwire diagnostics` for the complete local extraction report.
 The server exposes the same reports at `GET /v1/diagnostics`.
 Add `source_id=ID` to request one source.
 The admin status response includes `diagnostics.extraction`.

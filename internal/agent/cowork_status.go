@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -80,6 +81,24 @@ func coworkPolicyAttemptState(req *syncproto.PolicyPlacementsRequest, ack *syncp
 func (a *Agent) coworkStatus() *CoworkStatus {
 	a.captureScopeMu.RLock()
 	defer a.captureScopeMu.RUnlock()
+	st, _ := a.coworkStatusLocked(context.Background())
+	return st
+}
+
+// A diagnostic read must not queue behind the scope lease, which can span
+// policy requests and upload handovers. It never grants capture authorization.
+func (a *Agent) coworkStatusContext(ctx context.Context) (*CoworkStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !a.captureScopeMu.TryRLock() {
+		return nil, errors.New("Cowork scope busy")
+	}
+	defer a.captureScopeMu.RUnlock()
+	return a.coworkStatusLocked(ctx)
+}
+
+func (a *Agent) coworkStatusLocked(ctx context.Context) (*CoworkStatus, error) {
 	a.mu.Lock()
 	r := a.coworkResult
 	st := &CoworkStatus{Root: a.cfg.CoworkRoot, State: "supported", Sessions: len(r.Sessions), MetadataOnly: r.MetadataOnly, Excluded: r.Excluded, Error: a.coworkError, WatchCandidates: len(r.WatchDirs), MappingReasons: map[string]int{}, HoldReasons: map[string]int{}, LastPolicyAttempt: a.coworkPolicyAttempt}
@@ -113,6 +132,9 @@ func (a *Agent) coworkStatus() *CoworkStatus {
 		st.SharedHold = "Cowork sharing is not configured"
 	}
 	for _, t := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if a.coworkMaySchedule(a.policy(), t) {
 			st.ScheduleEligible++
 			continue
@@ -134,6 +156,9 @@ func (a *Agent) coworkStatus() *CoworkStatus {
 		links = append(links, entry.Link)
 	}
 	for _, link := range links {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		key := link.MetadataPath + "\x00" + link.NativeSessionID
 		if seen[key] {
 			continue
@@ -151,7 +176,7 @@ func (a *Agent) coworkStatus() *CoworkStatus {
 			st.MappingReasons[link.Mapping.Reason()]++
 		}
 	}
-	return st
+	return st, ctx.Err()
 }
 
 // Each ineligible identity has one primary reason; reasons sum to shared_held.
