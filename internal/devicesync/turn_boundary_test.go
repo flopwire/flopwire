@@ -44,7 +44,7 @@ func TestQueuedUploadTurnNewNotificationCapturesFreshVersion(t *testing.T) {
 			sc.mu.Lock()
 			j := sc.ready[sp.Path]
 			action := j.action
-			queued := len(sc.order)
+			queued := len(sc.ready)
 			sc.mu.Unlock()
 			if action != captureSource || queued != 1 {
 				t.Fatalf("fresh notification retained stale upload-only action: action=%v queued=%d", action, queued)

@@ -58,8 +58,8 @@ func TestSchedulerTurnsAlternateSourcesAfterFullCapture(t *testing.T) {
 			t.Fatalf("first upload occurred before complete capture: watermark=%+v generation=%+v batch=%d", src.Watermark, g, len(req.Header.Entries))
 		}
 	}
-	sc.due(a.Path, &job{spec: a})
-	sc.due(b.Path, &job{spec: b, exportFn: func(context.Context, []byte) (Export, error) { return Export{Data: smallData}, nil }})
+	sc.due(a.Path, &job{spec: a, lane: changedLane})
+	sc.due(b.Path, &job{spec: b, lane: changedLane, exportFn: func(context.Context, []byte) (Export, error) { return Export{Data: smallData}, nil }})
 	sc.runOnce(t.Context())
 	if len(tr.requests) < 3 || tr.requests[0].path != a.Path || tr.requests[1].path != b.Path || tr.requests[2].path != a.Path {
 		t.Fatalf("source turn order: %+v", tr.requests)
@@ -92,7 +92,7 @@ func TestSchedulerTurnKeepsNewerExporterNotification(t *testing.T) {
 		sc.Flush(newer)
 		sc.mu.Lock()
 		defer sc.mu.Unlock()
-		if len(sc.order) != 1 || sc.ready[sp.Path] == nil || sc.ready[sp.Path].spec.Checkout != newer.Checkout || sc.ready[sp.Path].exportFn == nil {
+		if len(sc.ready) != 1 || sc.ready[sp.Path] == nil || sc.ready[sp.Path].spec.Checkout != newer.Checkout || sc.ready[sp.Path].exportFn == nil {
 			t.Fatal("new exporter notification lost while old turn runs")
 		}
 	}
@@ -159,8 +159,8 @@ func TestSchedulerTurnReacquiresAuthorizationAndHoldsDeniedContinuation(t *testi
 	})
 	tr := &turnRecordingTransport{Transport: e.client}
 	e.sy.tr = tr
-	sc.due(a.Path, &job{spec: a})
-	sc.due(b.Path, &job{spec: b})
+	sc.due(a.Path, &job{spec: a, lane: changedLane})
+	sc.due(b.Path, &job{spec: b, lane: changedLane})
 	sc.runOnce(t.Context())
 	if acquires != 2 || releases != 2 || active != 0 || errorCalls != 1 {
 		t.Fatalf("turn leases acquires=%d releases=%d active=%d errors=%d", acquires, releases, active, errorCalls)

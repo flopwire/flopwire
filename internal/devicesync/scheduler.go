@@ -19,6 +19,20 @@ type Cadence struct {
 	Debounce, MaxWait time.Duration
 }
 
+// Notice records why a source was handed to sync. Historical admission does
+// not establish a new change merely because indexing started or rules changed.
+type Notice struct {
+	Kind       NoticeKind
+	ActivityAt time.Time
+}
+
+type NoticeKind uint8
+
+const (
+	NoticeHistorical NoticeKind = iota
+	NoticeChanged
+)
+
 // SchedulerConfig tunes flush cadence and retry. Zero fields take defaults.
 type SchedulerConfig struct {
 	Append     Cadence       // append-only sources: 300ms, max 2s (spec §6.4)
@@ -55,6 +69,9 @@ func (c *SchedulerConfig) defaults() {
 
 type job struct {
 	spec   SourceSpec
+	lane   queueLane
+	hints  scheduleHints
+	queued *queueEntry
 	action syncAction // default captures; continuations upload the saved version
 	export []byte     // latest export bytes; nil for files
 	// exportFn produces the export when the flush runs (NotifyExportFunc),
@@ -87,7 +104,7 @@ type Scheduler struct {
 	mu        sync.Mutex
 	waiting   map[string]*job // debouncing
 	ready     map[string]*job // due now (or at retryAt)
-	order     []string        // ready paths in arrival order
+	queue     turnQueue       // indexed eligible lanes and delayed retries
 	wake      chan struct{}
 	backoff   time.Duration
 	retryAt   time.Time // server backoff: no flush before this
@@ -135,12 +152,15 @@ func (s *Scheduler) SetAuthorize(fn func(context.Context, SourceSpec) (*CaptureA
 func NewScheduler(sy *Syncer, cfg SchedulerConfig) *Scheduler {
 	cfg.defaults()
 	return &Scheduler{sy: sy, cfg: cfg, waiting: map[string]*job{}, ready: map[string]*job{}, seal: map[string]*time.Timer{},
-		failing: map[string]*failure{}, wake: make(chan struct{}, 1)}
+		failing: map[string]*failure{}, queue: newTurnQueue(), wake: make(chan struct{}, 1)}
 }
 
-// Notify reports that a source changed. Call it on line completion, FS
-// events, and sweep hits.
-func (s *Scheduler) Notify(spec SourceSpec) { s.notify(spec, nil, nil) }
+// Notify admits a historical source. Use NotifyWithNotice for verified changes.
+func (s *Scheduler) Notify(spec SourceSpec) { s.NotifyWithNotice(spec, Notice{}) }
+
+func (s *Scheduler) NotifyWithNotice(spec SourceSpec, notice Notice) {
+	s.notifyWithNotice(spec, nil, nil, notice)
+}
 
 // NotifyExport reports a new version of an in-memory export (SyncExport).
 func (s *Scheduler) NotifyExport(spec SourceSpec, data []byte) {
@@ -154,11 +174,19 @@ func (s *Scheduler) NotifyExport(spec SourceSpec, data []byte) {
 // in memory at a time instead of all of them, and an exporter that appends
 // exports only what changed since the last flush.
 func (s *Scheduler) NotifyExportFunc(spec SourceSpec, fn ExportFunc) {
+	s.NotifyExportFuncWithNotice(spec, fn, Notice{})
+}
+
+func (s *Scheduler) NotifyExportFuncWithNotice(spec SourceSpec, fn ExportFunc, notice Notice) {
 	spec.Export = true
-	s.notify(spec, nil, fn)
+	s.notifyWithNotice(spec, nil, fn, notice)
 }
 
 func (s *Scheduler) notify(spec SourceSpec, data []byte, fn ExportFunc) {
+	s.notifyWithNotice(spec, data, fn, Notice{})
+}
+
+func (s *Scheduler) notifyWithNotice(spec SourceSpec, data []byte, fn ExportFunc, notice Notice) {
 	cad := s.cfg.Append
 	if spec.rewriteProne() || spec.Export {
 		cad = s.cfg.Document
@@ -167,8 +195,10 @@ func (s *Scheduler) notify(spec SourceSpec, data []byte, fn ExportFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if j := s.ready[spec.Path]; j != nil {
+		applyNotice(j, notice, now)
 		j.action = captureSource
 		j.spec, j.export, j.exportFn = spec, data, fn // already due; carry the newest bytes
+		s.indexReadyLocked(spec.Path, j, now)
 		return
 	}
 	j := s.waiting[spec.Path]
@@ -178,6 +208,7 @@ func (s *Scheduler) notify(spec SourceSpec, data []byte, fn ExportFunc) {
 	} else {
 		j.timer.Stop()
 	}
+	applyNotice(j, notice, now)
 	j.action = captureSource
 	j.spec, j.export, j.exportFn = spec, data, fn
 	delay := min(cad.Debounce, j.first.Add(cad.MaxWait).Sub(now))
@@ -197,12 +228,9 @@ func (s *Scheduler) debounced(path string, j *job) {
 	}
 }
 
-// Flush makes a source due immediately, skipping the debounce (hooks:
-// Claude Stop / PostToolUse and the Codex equivalents), and puts it at the
-// head of the queue: a backlog (a device's first sync, catch-up after an
-// outage) must not delay the session the user is working in. It resets
-// an outage backoff and the source's own, so a hook retries at once.
-// Admission cooldowns and explicit Retry-After deadlines still apply.
+// Flush makes a hook-triggered source due immediately in the interactive lane.
+// It retains the position of an already queued interactive job and resets
+// outage and source backoff. Admission cooldowns and Retry-After still apply.
 func (s *Scheduler) Flush(spec SourceSpec) {
 	s.mu.Lock()
 	var he *syncproto.HTTPError
@@ -231,10 +259,14 @@ func (s *Scheduler) Flush(spec SourceSpec) {
 		j = &job{spec: spec}
 	}
 	j.action = captureSource
-	s.dueLocked(spec.Path, j)
-	if i := slices.Index(s.order, spec.Path); i > 0 {
-		s.order = slices.Insert(slices.Delete(s.order, i, i+1), 0, spec.Path)
+	j.lane = interactiveLane
+	if now.After(j.hints.ActivityAt) {
+		j.hints.ActivityAt = now
 	}
+	if j.hints.WaitingSince.IsZero() {
+		j.hints.WaitingSince = now
+	}
+	s.dueLocked(spec.Path, j)
 }
 
 func (s *Scheduler) due(path string, j *job) {
@@ -243,14 +275,39 @@ func (s *Scheduler) due(path string, j *job) {
 	s.dueLocked(path, j)
 }
 
+func applyNotice(j *job, notice Notice, now time.Time) {
+	if notice.Kind == NoticeChanged && j.lane < changedLane {
+		j.lane = changedLane
+	}
+	if notice.ActivityAt.After(j.hints.ActivityAt) {
+		j.hints.ActivityAt = notice.ActivityAt
+	}
+	if j.hints.WaitingSince.IsZero() {
+		j.hints.WaitingSince = now
+	}
+}
+
+func (s *Scheduler) indexReadyLocked(path string, j *job, now time.Time) {
+	due := now
+	if f := s.failing[path]; f != nil && now.Before(f.retryAt) {
+		due = f.retryAt
+	}
+	s.queue.insert(path, j, due, now)
+}
+
 func (s *Scheduler) dueLocked(path string, j *job) {
 	if s.waiting[path] == j {
 		delete(s.waiting, path)
 	}
-	if s.ready[path] == nil {
-		s.order = append(s.order, path)
+	if old := s.ready[path]; old != nil && old != j {
+		mergeJobHints(j, old)
+		s.queue.remove(old)
+	}
+	if j.hints.WaitingSince.IsZero() {
+		j.hints.WaitingSince = time.Now()
 	}
 	s.ready[path] = j
+	s.indexReadyLocked(path, j, time.Now())
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -393,30 +450,22 @@ func (s *Scheduler) status() Status {
 	return st
 }
 
-// next returns the index in order of the first source due at now, or -1
-// and how long until one is. Called with s.mu held.
-func (s *Scheduler) next(now time.Time) (int, time.Duration) {
+// next peeks eligible indexed lanes without spending scheduling credit.
+// Called with s.mu held; backoff and permanent pin failure gate all lanes.
+func (s *Scheduler) next(now time.Time) (*queueEntry, time.Duration) {
 	if s.halted != nil {
 		if s.cfg.Repin == nil {
-			return -1, time.Hour
+			return nil, time.Hour
 		}
-		return -1, max(s.repinAt.Sub(now), time.Millisecond)
+		return nil, max(s.repinAt.Sub(now), time.Millisecond)
 	}
-	if len(s.order) == 0 {
-		return -1, time.Hour
+	if len(s.ready) == 0 {
+		return nil, time.Hour
 	}
 	if now.Before(s.retryAt) {
-		return -1, s.retryAt.Sub(now)
+		return nil, s.retryAt.Sub(now)
 	}
-	wait := time.Hour
-	for i, path := range s.order {
-		f := s.failing[path]
-		if f == nil || !now.Before(f.retryAt) {
-			return i, 0
-		}
-		wait = min(wait, f.retryAt.Sub(now))
-	}
-	return -1, wait
+	return s.queue.peek(now)
 }
 
 // jitter: equal jitter, half fixed and half random.
@@ -425,7 +474,7 @@ func jitter(d time.Duration) time.Duration { return d/2 + rand.N(d/2+1) }
 // Run processes due flushes until ctx ends. It first queues every source
 // the store still has unacknowledged data for: the watermark is the queue.
 func (s *Scheduler) Run(ctx context.Context) error {
-	specs, err := s.sy.store.PendingSpecs(ctx)
+	specs, err := s.sy.store.pendingSources(ctx)
 	if err != nil {
 		return err
 	}
@@ -433,7 +482,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		s.due(sp.Path, &job{spec: sp})
+		s.mu.Lock()
+		old := &job{spec: sp.Spec, hints: sp.Hints}
+		if existing := s.ready[sp.Spec.Path]; existing != nil {
+			mergeJobHints(existing, old)
+			s.indexReadyLocked(sp.Spec.Path, existing, time.Now())
+		} else if existing := s.waiting[sp.Spec.Path]; existing != nil {
+			mergeJobHints(existing, old)
+		} else {
+			s.dueLocked(sp.Spec.Path, old)
+		}
+		s.mu.Unlock()
 	}
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
@@ -459,7 +518,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// runOnce syncs due sources in arrival order until none is due or the
+// runOnce selects weighted serial turns until none is eligible or the
 // server fails. A source failing on its own backs off alone.
 func (s *Scheduler) runOnce(ctx context.Context) {
 	for {
@@ -467,14 +526,14 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			return
 		}
 		s.mu.Lock()
-		i, _ := s.next(time.Now())
-		if i < 0 {
+		now := time.Now()
+		entry, _ := s.next(now)
+		if entry == nil {
 			s.mu.Unlock()
 			return
 		}
-		path := s.order[i]
-		s.order = slices.Delete(s.order, i, i+1)
-		j := s.ready[path]
+		entry, _ = s.queue.take(now)
+		path, j := entry.path, entry.job
 		delete(s.ready, path)
 		s.running = 1
 		filter, bound, authorize := s.filter, s.bound, s.authorize
@@ -495,7 +554,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			s.mu.Unlock()
 			return
 		}
-		pending, err := s.syncJobTurn(ctx, j, upTo, bounded, authorize)
+		pending, err := s.executeTurn(ctx, j, upTo, bounded, authorize)
 		// A failed resume may invalidate its watermark. Retry by capturing,
 		// including when cancellation restores this job rather than requeues it.
 		if err != nil {
@@ -504,6 +563,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		tail := err == nil && pending == syncDone && s.sy.provisional(ctx, j.spec.Path)
 		s.mu.Lock()
 		s.running = 0
+		s.mergeNewerHintsLocked(path, j)
 		if ctx.Err() != nil {
 			s.restoreCancelledLocked(path, j)
 			s.mu.Unlock()
@@ -518,8 +578,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 					j.action = resumeUpload
 				}
 				if s.ready[path] == nil && s.waiting[path] == nil {
-					s.ready[path] = j
-					s.order = append(s.order, path)
+					s.dueLocked(path, j)
 				}
 			} else {
 				s.sealLater(j, tail)
@@ -531,8 +590,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			// Retrying cannot help (a TLS pin mismatch): keep the source
 			// queued and stop until the saved pin changes (Repin).
 			if s.ready[path] == nil && s.waiting[path] == nil {
-				s.ready[path] = &job{spec: j.spec, export: j.export, exportFn: j.exportFn}
-				s.order = append([]string{path}, s.order...)
+				s.dueLocked(path, retryJob(j))
 			}
 			s.halted, s.lastErr = err, err
 			s.repinAt = time.Now().Add(s.cfg.RepinEvery)
@@ -541,15 +599,9 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			return
 		}
 		transport := syncproto.Retryable(err) && !errors.Is(err, ErrSourceChanged) && !errors.Is(err, ErrSpoolFull)
-		// Requeue, keeping newer notifications: at the front when the
-		// server failed (every source waits for it), else at the back.
+		// A genuine error retries capture, while newer notifications keep their bytes.
 		if s.ready[path] == nil && s.waiting[path] == nil {
-			s.ready[path] = &job{spec: j.spec, export: j.export, exportFn: j.exportFn}
-			if transport {
-				s.order = append([]string{path}, s.order...)
-			} else {
-				s.order = append(s.order, path)
-			}
+			s.dueLocked(path, retryJob(j))
 		}
 		if transport {
 			s.backoff = min(max(2*s.backoff, s.cfg.BackoffMin), s.cfg.BackoffMax)
@@ -574,6 +626,9 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		d := jitter(f.backoff)
 		f.retryAt, f.err = time.Now().Add(d), err
 		f.attempts++
+		if queued := s.ready[path]; queued != nil {
+			s.indexReadyLocked(path, queued, time.Now())
+		}
 		s.mu.Unlock()
 		s.sy.cfg.Logger.Warn("devicesync: flush failed, will retry", "path", path, "retry_in", d, "attempts", f.attempts, "err", err)
 	}
@@ -583,10 +638,80 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 // pending bytes. A notification received during the operation takes precedence.
 // Called with s.mu held.
 func (s *Scheduler) restoreCancelledLocked(path string, j *job) {
+	s.mergeNewerHintsLocked(path, j)
 	if s.ready[path] == nil && s.waiting[path] == nil {
-		s.ready[path] = j
-		s.order = append([]string{path}, s.order...)
+		s.dueLocked(path, j)
 	}
+}
+
+func retryJob(j *job) *job {
+	return &job{spec: j.spec, export: j.export, exportFn: j.exportFn, lane: j.lane, hints: j.hints}
+}
+
+// Metadata merges never replace a newer notification's capture/action payload.
+func (s *Scheduler) mergeNewerHintsLocked(path string, j *job) *job {
+	if newer := s.ready[path]; newer != nil {
+		mergeJobHints(newer, j)
+		s.indexReadyLocked(path, newer, time.Now())
+		return newer
+	}
+	if newer := s.waiting[path]; newer != nil {
+		mergeJobHints(newer, j)
+		return newer
+	}
+	return nil
+}
+
+// executeTurn persists primary scheduling facts on the serial worker. Notify
+// stays nonblocking and never writes SQLite or acquires capture permission.
+func (s *Scheduler) executeTurn(ctx context.Context, j *job, upTo int64, bounded bool, authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)) (syncOutcome, error) {
+	h, err := s.sy.store.loadScheduleHints(ctx, j.spec.Path)
+	if err != nil {
+		return syncDone, err
+	}
+	mergeJobHints(j, &job{hints: h})
+	if err := s.sy.store.admitScheduleHints(ctx, j.spec.Path, j.hints); err != nil {
+		return syncDone, err
+	}
+	outcome, err := s.syncJobTurn(ctx, j, upTo, bounded, authorize)
+	if err != nil {
+		return outcome, err
+	}
+	if err := ctx.Err(); err != nil {
+		return outcome, err
+	}
+	now := time.Now()
+	s.mu.Lock()
+	newer := s.mergeNewerHintsLocked(j.spec.Path, j)
+	h = j.hints
+	h.WaitingSince = now
+	if newer != nil {
+		if newer.hints.ActivityAt.After(h.ActivityAt) {
+			h.ActivityAt = newer.hints.ActivityAt
+		}
+	} else if outcome == syncDone {
+		h.WaitingSince = time.Time{}
+	}
+	s.mu.Unlock()
+	if err := s.sy.store.serviceScheduleHints(ctx, j.spec.Path, h); err != nil {
+		return outcome, err
+	}
+	if err := ctx.Err(); err != nil {
+		return outcome, err
+	}
+	// Publish successful service age only after durable bookkeeping. Failed or
+	// canceled turns retain their previous waiting age and retry lineage.
+	s.mu.Lock()
+	newer = s.mergeNewerHintsLocked(j.spec.Path, j)
+	j.hints.WaitingSince = now
+	if newer != nil {
+		newer.hints.WaitingSince = now
+		if s.ready[j.spec.Path] == newer {
+			s.indexReadyLocked(j.spec.Path, newer, now)
+		}
+	}
+	s.mu.Unlock()
+	return outcome, nil
 }
 
 func boundOf(fn func(SourceSpec) (int64, bool), spec SourceSpec) (int64, bool) {
