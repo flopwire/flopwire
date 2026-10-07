@@ -5,6 +5,7 @@ import "time"
 // Report contains observations of separate coverage stages. Missing snapshots
 // are unknown; an empty scheduler or parse queue does not prove completeness.
 type Report struct {
+	Server     string              `json:"server,omitempty"`
 	DeviceID   string              `json:"device_id,omitempty"`
 	ObservedAt time.Time           `json:"observed_at"`
 	Collection *CollectionSnapshot `json:"collection,omitempty"`
