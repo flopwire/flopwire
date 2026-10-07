@@ -345,6 +345,11 @@ func (s *Scheduler) Status() Status {
 	return st
 }
 
+// Progress returns live upload state without querying optional database
+// diagnostics. It is suitable for waiting for uploads while capture owns the
+// store connection. An empty queue does not establish discovery or search coverage.
+func (s *Scheduler) Progress() Status { return s.status() }
+
 // StatusContext returns live scheduler health even when optional redaction
 // totals cannot be read. The caller must report that error as unavailable,
 // rather than interpret absent totals as zero redactions.
@@ -416,11 +421,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return err
 	}
 	for _, sp := range specs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.due(sp.Path, &job{spec: sp})
 	}
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.repin(time.Now())
 		s.mu.Lock()
 		_, wait := s.next(time.Now())
@@ -443,6 +454,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // server fails. A source failing on its own backs off alone.
 func (s *Scheduler) runOnce(ctx context.Context) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		s.mu.Lock()
 		i, _ := s.next(time.Now())
 		if i < 0 {
@@ -465,11 +479,19 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			s.mu.Unlock()
 			continue
 		}
+		if ctx.Err() != nil {
+			s.mu.Lock()
+			s.running = 0
+			s.restoreCancelledLocked(path, j)
+			s.mu.Unlock()
+			return
+		}
 		err := s.syncJob(ctx, j, upTo, bounded, authorize)
 		tail := err == nil && s.sy.provisional(ctx, j.spec.Path)
 		s.mu.Lock()
 		s.running = 0
 		if ctx.Err() != nil {
+			s.restoreCancelledLocked(path, j)
 			s.mu.Unlock()
 			return
 		}
@@ -529,6 +551,16 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		f.attempts++
 		s.mu.Unlock()
 		s.sy.cfg.Logger.Warn("devicesync: flush failed, will retry", "path", path, "retry_in", d, "attempts", f.attempts, "err", err)
+	}
+}
+
+// Cancellation must retain an uncaptured notification as well as durable
+// pending bytes. A notification received during the operation takes precedence.
+// Called with s.mu held.
+func (s *Scheduler) restoreCancelledLocked(path string, j *job) {
+	if s.ready[path] == nil && s.waiting[path] == nil {
+		s.ready[path] = j
+		s.order = append([]string{path}, s.order...)
 	}
 }
 

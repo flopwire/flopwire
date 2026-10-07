@@ -855,7 +855,13 @@ func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spo
 func drainSync(ctx context.Context, sched *devicesync.Scheduler, wait time.Duration, log *slog.Logger) error {
 	deadline := time.Now().Add(wait)
 	for {
-		st := sched.Status()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		st := sched.Progress()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		switch {
 		case st.Stopped != "":
 			return fmt.Errorf("upload stopped: %s", st.Stopped)
@@ -868,7 +874,7 @@ func drainSync(ctx context.Context, sched *devicesync.Scheduler, wait time.Durat
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(min(200*time.Millisecond, max(time.Until(deadline), 0))):
 		}
 	}
 }
