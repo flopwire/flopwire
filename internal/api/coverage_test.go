@@ -136,7 +136,7 @@ func TestDeviceParseCoveragePostgresSnapshot(t *testing.T) {
 		{id, 2, 1, 0, false}, {id, 3, 1, 2, false}, {id, 3, 1, 12, true}, {id, 3, 3, 12, true}, {id, 3, 3, 2, false}, {other, 4, 0, 3, false},
 	} {
 		source := uuid.NewString()
-		_, err = pool.Exec(ctx, `INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at) VALUES($1,$2,'claude',$3,$1,'jsonl_append','claude',now())`, source, tc.device, "/private/transcript/"+source)
+		_, err = pool.Exec(ctx, `INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at) VALUES($1,$2,'claude',$3,$4,'jsonl_append','claude',now())`, source, tc.device, "/private/transcript/"+source, source)
 		if err != nil {
 			t.Fatal(err)
 		}
