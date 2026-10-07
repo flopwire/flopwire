@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -210,9 +211,18 @@ func (a *Agent) pollStore(ctx context.Context, d *storeState, force, wait bool) 
 // path rules deny (D18).
 type storeSink struct {
 	*localindex.Sink
-	touched map[string]bool
+	touched map[string]time.Time
 	deny    func(session, cwd string) bool // nil: no rules
 	reads   readSightings
+}
+
+func (s *storeSink) noteActivity(session string, at time.Time) {
+	if s.touched == nil {
+		s.touched = map[string]time.Time{}
+	}
+	if old, ok := s.touched[session]; !ok || at.After(old) {
+		s.touched[session] = at
+	}
 }
 
 func (s *storeSink) denied(session, cwd string) bool { return s.deny != nil && s.deny(session, cwd) }
@@ -221,7 +231,7 @@ func (s *storeSink) Conversation(c *transcript.Conversation) error {
 	if s.denied(c.SessionID, c.Cwd) {
 		return nil
 	}
-	s.touched[c.SessionID] = true
+	s.noteActivity(c.SessionID, c.LastActivityAt)
 	return s.Sink.Conversation(c)
 }
 
@@ -229,7 +239,7 @@ func (s *storeSink) Message(m *transcript.Message) error {
 	if s.denied(m.SessionID, "") {
 		return nil
 	}
-	s.touched[m.SessionID] = true
+	s.noteActivity(m.SessionID, m.TS)
 	s.reads.note(m)
 	return s.Sink.Message(m)
 }
@@ -238,7 +248,7 @@ func (s *storeSink) SupersedeSession(agent transcript.Agent, id string) error {
 	if s.denied(id, "") {
 		return nil
 	}
-	s.touched[id] = true
+	s.noteActivity(id, time.Time{})
 	return s.Sink.SupersedeSession(agent, id)
 }
 
@@ -294,7 +304,7 @@ func (a *Agent) parseStore(ctx context.Context, d *storeState, id transcript.Ide
 	if st.Watermark != nil {
 		cur.Offset = st.Watermark.Offset
 	}
-	sink := &storeSink{Sink: a.store.NewSink(ctx, st.ID, st.Generation), touched: map[string]bool{}, reads: readSightings{agent: d.h.agent}}
+	sink := &storeSink{Sink: a.store.NewSink(ctx, st.ID, st.Generation), touched: map[string]time.Time{}, reads: readSightings{agent: d.h.agent}}
 	if pv := a.policy(); !pv.pol.Empty() {
 		a.loadStoreModes(ctx, d, pv)
 		sink.deny = func(session, cwd string) bool {
@@ -341,7 +351,8 @@ func (a *Agent) parseStore(ctx context.Context, d *storeState, id transcript.Ide
 	for s := range sink.touched {
 		sessions = append(sessions, s)
 	}
-	if !d.synced {
+	initial := !d.synced
+	if initial {
 		// First poll since start: hand every session over once, so a server
 		// configured after indexing still receives them.
 		all, err := d.h.list(ctx, d.path)
@@ -349,19 +360,49 @@ func (a *Agent) parseStore(ctx context.Context, d *storeState, id transcript.Ide
 			return err
 		}
 		sessions = append(sessions, all...)
-		d.synced = true
 	}
 	sort.Strings(sessions)
-	for i, s := range sessions {
-		if i > 0 && sessions[i-1] == s || a.storeMode(ctx, d, s) != pathpolicy.Allow {
+	sessions = slices.Compact(sessions)
+	// Resolve existing enqueue eligibility before the optional read. If that
+	// read is canceled after Flush, delivery no longer needs a fallible lookup.
+	specs := make([]devicesync.SourceSpec, 0, len(sessions))
+	for _, session := range sessions {
+		if a.storeMode(ctx, d, session) != pathpolicy.Allow {
 			continue
 		}
-		sp := d.spec(s)
-		if p, ok := a.storedPlace(placeKey{d.h.agent, s}); ok {
+		sp := d.spec(session)
+		if p, ok := a.storedPlace(placeKey{d.h.agent, session}); ok {
 			sp.Checkout, sp.Remote = p.pl.Main, p.pl.Remote
 		}
-		a.cfg.Sync.NotifyExportFunc(sp, d.exportFn(s))
+		specs = append(specs, sp)
 	}
+	sessions = sessions[:0]
+	for _, sp := range specs {
+		sessions = append(sessions, sp.SessionKey)
+	}
+	// Untouched initial sessions and deletion records retain their indexed
+	// per-session time; a shared database mtime is not session activity.
+	activity, err := a.sessionActivities(ctx, d.h.agent, sessions)
+	if err != nil {
+		// Flush already committed the parser cursor. Ranking is optional:
+		// skipping these notifications would strand exports behind that cursor.
+		a.log.Warn("agent: session activity unavailable; delivering sync notifications", "agent", d.h.agent, "sessions", len(sessions), "err", err)
+		activity = make(map[string]time.Time, len(sessions))
+	}
+	for session, at := range sink.touched {
+		if at.After(activity[session]) {
+			activity[session] = at
+		}
+	}
+	for _, sp := range specs {
+		s := sp.SessionKey
+		notice := devicesync.Notice{Kind: devicesync.NoticeHistorical, ActivityAt: activity[s]}
+		if _, written := sink.touched[s]; !initial && !full && written {
+			notice.Kind = devicesync.NoticeChanged
+		}
+		a.cfg.Sync.NotifyExportFuncWithNotice(sp, d.exportFn(s), notice)
+	}
+	d.synced = true
 	return nil
 }
 
