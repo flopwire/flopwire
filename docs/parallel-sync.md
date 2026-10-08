@@ -48,7 +48,7 @@ This establishes throughput potential, not production correctness or peak memory
 
 - `devicesync.Scheduler` runs one upload operation and stores one running count. New notifications can arrive while that operation runs.
 - `devicesync.Syncer` holds a global mutex through capture and network upload. Its scan buffer, retained compressed body, and held descriptors depend on serialization.
-- `Spool.write` checks existence, checks available space, writes a shared `.tmp` name, then updates accounting. The checks and publication are not one atomic operation.
+- The spool file owner serializes existence, capacity, publication and accounting within one `Spool` instance. Durable reference changes remain outside that owner.
 - Chunk cleanup checks durable references and then deletes the spool file. A concurrent capture can add a reference between those operations.
 - Scheduler startup restores persisted activity and waiting-age hints into the
   weighted queues. Initial local indexing still sorts by oldest modification
@@ -133,7 +133,7 @@ Expose this device's incomplete-sync state in CLI and MCP retrieval metadata and
 ### Shared chunk publication and cleanup
 
 ```text
-Current code if global serialization is removed:
+Before the file-publication prerequisite, if global serialization was removed:
 t0 A={needs:H}; B={needs:H}; spool={H:absent, used:0}
 t1 A and B both observe H absent and both pass Reserve(size(H))
 t2 A and B open H.tmp; one may truncate the other's in-progress write
@@ -151,6 +151,24 @@ t7 owner removes H and decrements bytes once
 ```
 
 Pending references and publication ordering must remain recoverable after a crash. Startup reconciliation handles abandoned temporary files; it must never discard a published chunk referenced by committed sync state.
+
+The first publication prerequisite keeps serial uploads and adds one spool file
+owner. The spool mutex spans existence and capacity checks, unique `.tmp` file
+creation, write, sync, close, rename, and the single accounting update. Duplicate
+chunk writers publish and charge bytes once. Reads hold that owner for the whole
+`os.ReadFile` call; removal holds it through stat, unlink and accounting. Failed
+publication removes its temporary file without charging capacity. If unlink
+fails, it charges the retained file size (conservatively the requested size if
+stat also fails) until startup sweep removes the orphan. IO failure alone does
+not set the space-blocked status. Opening a spool propagates file-info errors
+instead of silently undercounting files.
+
+This is file ownership within one `Spool` instance, not coordination of SQLite
+references, cross-process writers, active request buffers or work-memory budgets.
+`Reserve` remains a capacity check at one instant, not a held reservation. Startup
+sweep still runs before captures. `PutTail` still removes its previous version
+before publishing the next one; crash-safe provisional-tail replacement is a
+separate prerequisite and is not delivered by this publication change.
 
 `TestSaveCaptureProcessKillPreservesPendingSharedChunks` adds two serial
 subprocess barriers at the actual `Store.saveCapture` primitive. Source A first
