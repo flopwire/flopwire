@@ -209,13 +209,10 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 // sweepSpool drops spool files nothing pending needs: partial writes, and
 // chunks or tails spooled by a capture that crashed before it committed.
 func (s *Syncer) sweepSpool(ctx context.Context) error {
-	return s.spool.sweep(func(h *syncproto.Hash, sid, gen int64) (bool, error) {
-		if h != nil {
-			ref, err := s.store.referenced(ctx, []syncproto.Hash{*h})
-			return ref[*h], err
-		}
-		return s.store.keepTail(ctx, sid, gen)
-	})
+	return s.spool.sweep(ctx, func(h syncproto.Hash) (bool, error) {
+		ref, err := s.store.referenced(ctx, []syncproto.Hash{h})
+		return ref[h], err
+	}, func(sid, gen int64) (syncproto.Tail, bool, error) { return s.store.requiredTail(ctx, sid, gen) })
 }
 
 // Close releases held descriptors.
@@ -410,6 +407,15 @@ func (s *Syncer) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc
 // capture chunks whatever the source gained since the last capture, up
 // to upTo bytes of a file when upTo >= 0.
 func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
+	return s.captureWithCommit(ctx, src, export, upTo, snapshot, s.store.saveCapture)
+}
+
+// captureCommit is an explicit per-call persistence operation. Production uses
+// Store.saveCapture directly; tests can guard its transaction or stop after its
+// successful return to prove the actual capture loop's crash boundaries.
+type captureCommit func(context.Context, *sourceRow, *genRow, []syncproto.Entry, *transcript.Watermark, []byte, ...func() error) error
+
+func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource, commit captureCommit) error {
 	var (
 		r  io.ReaderAt
 		id transcript.Identity
@@ -497,6 +503,13 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	if err != nil {
 		return err
 	}
+	// g may alias cur and mutate it below. Retain the old durable identity by
+	// value so successful append, seal and rewrite can release exactly it.
+	var oldTail syncproto.Tail
+	var oldGen int64
+	if cur != nil {
+		oldTail, oldGen = cur.Tail, cur.Gen
+	}
 	var change transcript.Change
 	if ex != nil {
 		change = ex.change
@@ -539,8 +552,6 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	case transcript.Rewrite:
 		if cur != nil && !cur.done() {
 			s.salvage(ctx, src, cur, change.Reason)
-		} else if cur != nil && ex != nil {
-			s.spool.DropTail(src.ID, cur.Gen) // kept for appends (keepTail)
 		}
 		g = &genRow{SourceID: src.ID, Gen: src.Gen + 1, FileID: fileID(id), TailAcked: true}
 		if cur != nil && cur.FileID != g.FileID {
@@ -594,7 +605,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	}
 	if src.Spec.rewriteProne() {
 		// Worst case: every new byte is a chunk the spool lacks.
-		if err := s.spool.Reserve(end - from); err != nil {
+		if err := s.reserveCapture(ctx, src.ID, end-from); err != nil {
 			s.cfg.Logger.Error("devicesync: spool full, not capturing rewritten source", "path", src.Spec.Path, "err", err)
 			return err
 		}
@@ -665,7 +676,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 				}
 			}
 		} else if src.Spec.rewriteProne() {
-			if err := s.spool.PutTail(src.ID, g.Gen, data); err != nil {
+			if err := s.spool.PutTailVersion(src.ID, g.Gen, newTail.Hash, data); err != nil {
 				return err
 			}
 		}
@@ -710,9 +721,10 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 			return validateProofIdentity(f, &s.authorization.Proof)
 		})
 	}
-	if err := s.store.saveCapture(ctx, src, g, add, wm, exportState, guards...); err != nil {
+	if err := commit(ctx, src, g, add, wm, exportState, guards...); err != nil {
 		return err
 	}
+	s.releaseTail(ctx, src.ID, oldGen, oldTail)
 	if s.authorization != nil {
 		if err := validateProofFile(f, &s.authorization.Proof); err != nil {
 			return err // verified capture remains a fact; a changed live source requires reindexing
@@ -801,9 +813,9 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 	}
 	tailOK := g.TailAcked || g.Tail.Size == 0 || keep < g.Entries
 	if !tailOK {
-		if _, ok, _ := s.spool.Tail(src.ID, g.Gen); ok {
+		if body, ok, err := s.spool.TailVersion(src.ID, g.Gen, g.Tail.Hash); err == nil && ok && int64(len(body)) == g.Tail.Size {
 			tailOK = true
-		} else if data, ok := readVerified(g.Tail.Offset, g.Tail.Size, g.Tail.Hash); ok && s.spool.PutTail(src.ID, g.Gen, data) == nil {
+		} else if data, ok := readVerified(g.Tail.Offset, g.Tail.Size, g.Tail.Hash); ok && s.spool.PutTailVersion(src.ID, g.Gen, g.Tail.Hash, data) == nil {
 			tailOK = true
 		}
 	}
@@ -840,6 +852,7 @@ func entryHashes(ents []syncproto.Entry) []syncproto.Hash {
 // as it was: it is the last evidence of the lost bytes. Spooled chunks
 // only the cut entries needed are released.
 func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64) error {
+	oldTail := g.Tail
 	var dropped []syncproto.Hash
 	if keep < g.Entries {
 		ents, err := s.store.entries(ctx, src.ID, g.Gen, keep, int(g.Entries-keep))
@@ -858,7 +871,7 @@ func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64)
 		delete(s.stalls, [2]int64{src.ID, g.Gen})
 	}
 	s.release(ctx, src, g, dropped)
-	s.spool.DropTail(src.ID, g.Gen)
+	s.releaseTail(ctx, src.ID, g.Gen, oldTail)
 	return nil
 }
 
@@ -995,7 +1008,7 @@ func (s *Syncer) exportTail(src *sourceRow, g *genRow) ([]byte, bool) {
 	if g.Tail.Size == 0 {
 		return []byte{}, true
 	}
-	data, ok, err := s.spool.Tail(src.ID, g.Gen)
+	data, ok, err := s.spool.TailVersion(src.ID, g.Gen, g.Tail.Hash)
 	if err != nil || !ok || int64(len(data)) != g.Tail.Size || syncproto.Sum(data) != g.Tail.Hash {
 		return nil, false
 	}
@@ -1026,7 +1039,40 @@ func (s *Syncer) keepExport(ctx context.Context, src *sourceRow, g *genRow, ex *
 	if syncproto.Sum(data) != g.Tail.Hash {
 		return nil
 	}
-	return s.spool.PutTail(src.ID, g.Gen, data)
+	return s.spool.PutTailVersion(src.ID, g.Gen, g.Tail.Hash, data)
+}
+
+// reserveCapture only reconciles this source's immutable tail attempts after
+// cap pressure. Failed handoff files stay charged until durable reference reads
+// succeed. It does not reclaim chunks or coordinate concurrent workers.
+func (s *Syncer) reserveCapture(ctx context.Context, sid, bytes int64) error {
+	if err := s.spool.Reserve(bytes); !errors.Is(err, ErrSpoolFull) {
+		return err
+	}
+	if err := s.spool.reconcileTailVersions(ctx, sid, func(sid, gen int64) (syncproto.Tail, bool, error) {
+		return s.store.requiredTail(ctx, sid, gen)
+	}); err != nil {
+		return err
+	}
+	return s.spool.Reserve(bytes)
+}
+
+// releaseTail follows a durable commit/acknowledgement. Reference uncertainty
+// or cleanup failure leaves bytes charged for startup or later pressure retry.
+func (s *Syncer) releaseTail(ctx context.Context, sid, gen int64, old syncproto.Tail) {
+	if old.Size == 0 {
+		return
+	}
+	ref, needed, err := s.store.requiredTail(ctx, sid, gen)
+	if err == nil && needed && ref.Hash == old.Hash {
+		return
+	}
+	if err == nil {
+		err = s.spool.DropTailVersion(sid, gen, old.Hash)
+	}
+	if err != nil {
+		s.cfg.Logger.Warn("devicesync: released tail cleanup deferred", "source_id", sid, "generation", gen, "err", err)
+	}
 }
 
 // appendReader serves an appended export from the generation's tail

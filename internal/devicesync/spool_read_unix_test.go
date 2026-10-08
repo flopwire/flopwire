@@ -4,6 +4,7 @@ package devicesync
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -178,7 +179,7 @@ func TestSpoolFailedTemporaryUnlinkRemainsAccountedUntilSweep(t *testing.T) {
 	if reopened.Used() != int64(len(partial)) {
 		t.Fatalf("restart lost retained-byte accounting: %d", reopened.Used())
 	}
-	if err := reopened.sweep(func(*syncproto.Hash, int64, int64) (bool, error) { return false, nil }); err != nil {
+	if err := reopened.sweep(context.Background(), func(syncproto.Hash) (bool, error) { return false, nil }, func(int64, int64) (syncproto.Tail, bool, error) { return syncproto.Tail{}, false, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if reopened.Used() != 0 {

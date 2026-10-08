@@ -4,9 +4,27 @@
 the legacy canonical layout. It certifies tail format only. It does not approve
 an older binary's schema, policy enforcement, or application compatibility.
 
-Immutable tail APIs are dormant in this build. Existing capture, upload, and
-startup sweep callers still use the legacy layout. This command does not enable
-immutable runtime writes or parallel uploads.
+Capture publishes hash-named immutable tails. Upload reads the committed hash
+and verifies its size. Matching legacy canonical tails remain readable during
+the transition. Before activating a legacy-only reader, run this command on the
+current database and spool pair.
+
+Capture retains the old committed tail until the new manifest transaction
+succeeds. Both copies count against the existing spool cap. If they cannot fit,
+capture pauses and retries; it does not overwrite the committed copy or increase
+the cap. Seal, cut, rewrite, and acknowledgement release a tail only after its
+durable reference no longer needs that hash.
+
+Startup sweep selects exact committed hashes and sizes. A cap-constrained retry
+can also remove verified unreferenced tail files belonging to that source before
+publishing another tail. Database uncertainty or corrupt recognized files stop
+that cleanup. This retry does not reclaim chunks or other sources' files. If the
+failed source becomes held or disappears, its orphan bytes remain charged until
+that source retries or the next startup sweep. This behavior does not guarantee
+global progress at the cap.
+
+Capture, upload, and cleanup use the serial sync owner. This change does not
+qualify parallel spool readers or writers.
 
 ## Procedure
 
