@@ -5,6 +5,7 @@ package devicesync
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,7 +36,12 @@ func TestSpoolReadOwnsFileUntilActualReadCompletes(t *testing.T) {
 		err     error
 	}
 	readDone := make(chan result, 1)
-	go func() { b, ok, err := s.Chunk(h); readDone <- result{b, ok, err} }()
+	readExited := make(chan struct{})
+	go func() {
+		defer close(readExited)
+		b, ok, err := s.Chunk(h)
+		readDone <- result{b, ok, err}
+	}()
 	// O_WRONLY returns only once the reader actually opens the FIFO. Keep
 	// that writer open so os.ReadFile cannot finish, even after data arrives.
 	opened := make(chan *os.File, 1)
@@ -43,26 +49,10 @@ func TestSpoolReadOwnsFileUntilActualReadCompletes(t *testing.T) {
 	writerDone := make(chan struct{})
 	abort := make(chan struct{})
 	var writer *os.File
+	var drops sync.WaitGroup
 	t.Cleanup(func() {
-		close(abort)
-		if writer != nil {
-			_ = writer.Close()
-		}
-		// An abort before either FIFO open completes still needs a peer.
-		// A nonblocking rescue descriptor releases both opens without data.
-		rescue, _ := os.OpenFile(s.chunkPath(h), os.O_RDWR|syscall.O_NONBLOCK, 0)
-		if rescue != nil {
-			defer rescue.Close()
-		}
-		select {
-		case <-writerDone:
-		case <-time.After(5 * time.Second):
-			t.Error("FIFO writer did not exit during cleanup")
-		}
-		select {
-		case f := <-opened:
-			_ = f.Close()
-		default:
+		if err := abortSpoolFIFO(s.chunkPath(h), abort, writer, readExited, writerDone, opened, &drops, nil); err != nil {
+			t.Error(err)
 		}
 	})
 	go func() {
@@ -96,7 +86,6 @@ func TestSpoolReadOwnsFileUntilActualReadCompletes(t *testing.T) {
 	}
 	started := make(chan struct{}, 2)
 	dropDone := make(chan struct{}, 2)
-	var drops sync.WaitGroup
 	for _, hash := range []syncproto.Hash{h, j} {
 		drops.Add(1)
 		go func() { defer drops.Done(); started <- struct{}{}; s.DropChunk(hash); dropDone <- struct{}{} }()
@@ -200,5 +189,160 @@ func TestSpoolFailedTemporaryUnlinkRemainsAccountedUntilSweep(t *testing.T) {
 	}
 	if err := reopened.PutChunk(syncproto.Sum(data), data); err != nil {
 		t.Fatalf("reclaimed capacity unusable: %v", err)
+	}
+}
+
+// This test-only cleanup joins actual FIFO IO, including readers scheduled
+// after the first rescue has already released the writer.
+func abortSpoolFIFO(path string, abort chan struct{}, writer *os.File, readExited, writerDone <-chan struct{}, opened <-chan *os.File, drops *sync.WaitGroup, afterFirstRescueClose func()) error {
+	close(abort)
+	if writer != nil {
+		_ = writer.Close()
+	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	readerFinished, writerFinished := false, false
+	for !readerFinished || !writerFinished {
+		select {
+		case <-readExited:
+			readerFinished = true
+		default:
+		}
+		select {
+		case <-writerDone:
+			writerFinished = true
+		default:
+		}
+		select {
+		case f := <-opened:
+			_ = f.Close()
+		default:
+		}
+		if readerFinished && writerFinished {
+			break
+		}
+		rescue, _ := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK, 0)
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline.C:
+			if rescue != nil {
+				_ = rescue.Close()
+			}
+			return fmt.Errorf("FIFO reader or writer did not exit during cleanup")
+		}
+		if rescue != nil {
+			_ = rescue.Close()
+		}
+		if afterFirstRescueClose != nil {
+			afterFirstRescueClose()
+			afterFirstRescueClose = nil
+		}
+		// Leave a no-writer interval for a blocked ReadFile to observe EOF.
+		// A reader still waiting in open gets a peer on the next iteration.
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline.C:
+			return fmt.Errorf("FIFO reader or writer did not exit during cleanup")
+		}
+	}
+	removed := make(chan struct{})
+	go func() { drops.Wait(); close(removed) }()
+	select {
+	case <-removed:
+		return nil
+	case <-deadline.C:
+		return fmt.Errorf("FIFO removals did not exit during cleanup")
+	}
+}
+
+func TestSpoolFIFOAbortJoinsReaderStartingAfterFirstRescue(t *testing.T) {
+	s := publicationSpool(t, 1024)
+	h := syncproto.Sum([]byte("delayed FIFO reader cleanup fixture"))
+	path := s.chunkPath(h)
+	if err := syscall.Mkfifo(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	abort := make(chan struct{})
+	opened := make(chan *os.File, 1)
+	writerDone := make(chan struct{})
+	writerError := make(chan error, 1)
+	go func() {
+		defer close(writerDone)
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			writerError <- err
+			return
+		}
+		select {
+		case <-abort:
+			_ = f.Close()
+		default:
+			opened <- f
+		}
+	}()
+	startReader := make(chan struct{})
+	var startOnce sync.Once
+	start := func() { startOnce.Do(func() { close(startReader) }) }
+	t.Cleanup(start)
+	readExited := make(chan struct{})
+	readResult := make(chan error, 1)
+	go func() {
+		defer close(readExited)
+		<-startReader
+		b, ok, err := s.Chunk(h)
+		if err == nil && (!ok || len(b) != 0) {
+			err = fmt.Errorf("rescue changed empty FIFO read: present=%v bytes=%d", ok, len(b))
+		}
+		readResult <- err
+	}()
+	firstRescueClosed := make(chan struct{})
+	var drops sync.WaitGroup
+	cleanupDone := make(chan error, 1)
+	cleanupExited := make(chan struct{})
+	go func() {
+		defer close(cleanupExited)
+		cleanupDone <- abortSpoolFIFO(path, abort, nil, readExited, writerDone, opened, &drops, func() { close(firstRescueClosed) })
+	}()
+	t.Cleanup(func() {
+		start()
+		select {
+		case <-cleanupExited:
+		case <-time.After(6 * time.Second):
+			t.Error("abort regression cleanup did not exit")
+		}
+	})
+	// Channel barriers force the missed-barrier order: the first rescue
+	// releases the writer and closes while the actual reader cannot start.
+	select {
+	case <-firstRescueClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first rescue close missed")
+	}
+	select {
+	case <-writerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rescue did not release writer")
+	}
+	select {
+	case err := <-writerError:
+		t.Fatal(err)
+	default:
+	}
+	select {
+	case <-readExited:
+		t.Fatal("reader ran before release")
+	default:
+	}
+	start()
+	if err := publicationResult(t, cleanupDone); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-readExited:
+	default:
+		t.Fatal("cleanup did not join reader")
+	}
+	if err := publicationResult(t, readResult); err != nil {
+		t.Fatal(err)
 	}
 }
