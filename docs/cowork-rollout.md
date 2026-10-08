@@ -1,6 +1,28 @@
-# Local Code and Cowork rollout proposal
+# Local Code and Cowork rollout
 
-This proposal requires owner approval before production changes. No server or Mac collector has been upgraded during qualification.
+## Completed deployment, October 8, 2026
+
+The owner-approved rollout is complete. Production and both Mac collectors run
+`d91403265ab82a3996202a06dab604eb80ecca03` (version `d91403265ab8`).
+The main tree at `3fe2a2484fd2bfadea4f00960d15099b2ff69c40` matches
+the qualified source. Policy placements version one and serial concurrency
+one are enabled. Both device identities and sole index ownership were verified.
+Pinned authenticated endpoints, three status samples per Mac, and CLI/MCP
+shared retrieval passed. Database and full collector state backups are retained.
+
+The coverage release passed 1,612 checks with 17 intentional skips across the
+affected suites, independent review, required CI, and Docker E2E. The final
+commit changed only CLI test expectations; unchanged runtime qualification
+retains its earlier source attribution.
+
+Fresh Code/Cowork app-session and lifecycle acceptance remains incomplete.
+See [history qualification](operations/history-qualification.md).
+
+## Historical rollout proposal
+
+The following candidate, installation snapshot, and commands record the initial
+October 6 proposal. They are historical evidence, not the current release
+artifacts or instructions to rerun the completed deployment.
 
 ## Candidate and release gates
 
@@ -26,7 +48,7 @@ The exact release candidate passed 25 focused cases with no skips against real P
 
 The preceding `eefe90b` candidate passed the nine-package private race suite with 1,374 passes and 17 intentional skips. That result is prior evidence. The final native-main gate change received the focused and affected-ingest checks above. Artifact source `a41dc8e` and the final dependency composition have identical implementation files; their differences are reviewed documentation and migration test additions.
 
-## Current installations
+## Installations before the initial rollout
 
 | Installation | Observed version | Process |
 | --- | --- | --- |
@@ -120,4 +142,5 @@ Do not restart the old Mac binaries with sharing enabled. They do not enforce th
 
 Ongoing Local Code and Cowork collection is in scope. SSH and WSL collection is deferred. The known 11,722 archived records uploaded by the separate recovery device remain unreconciled in this phase. Same-device receipts provide restriction-only reconciliation for verified retained export uploads; they do not establish cross-device ownership or authorize new content.
 
-The Local Code probe observed the existing normal CLI transcript location on the local Mac. The scoped Code and Cowork authorization paths were qualified with isolated synthetic fixtures. Both production Mac upgrades and their live collection checks remain pending owner approval.
+The Local Code probe observed the existing normal CLI transcript location on the local Mac. The scoped Code and Cowork authorization paths were qualified with isolated synthetic fixtures. Both production Mac upgrades are complete. Fresh-session app lifecycle checks
+on both Macs remain incomplete.
