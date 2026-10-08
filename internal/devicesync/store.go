@@ -543,14 +543,51 @@ func referencedSQL(n int) string {
 // whose exporter appends (it saved a state) and has a tail, which the next
 // append resumes from, so its spooled copy is needed.
 func (s *Store) keepTail(ctx context.Context, sid, gen int64) (bool, error) {
-	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM devsync_gens g JOIN devsync_sources s ON s.id = g.source_id
-	  WHERE g.source_id = ? AND g.generation = ? AND g.lost = 0 AND g.tail_size > 0
-	  AND (g.tail_acked = 0 OR s.generation = g.generation AND json_extract(s.watermark, '$.Export') IS NOT NULL)`, sid, gen).Scan(&one)
+	_, needed, err := s.requiredTail(ctx, sid, gen)
+	return needed, err
+}
+
+// requiredTail returns the exact durable tail still needed by pending upload
+// or by the current incremental exporter. A filename alone is not a reference.
+func (s *Store) requiredTail(ctx context.Context, sid, gen int64) (syncproto.Tail, bool, error) {
+	var tail syncproto.Tail
+	var hash []byte
+	var size int64
+	var lost, acked, exportState bool
+	var current sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT g.tail_offset,g.tail_size,g.tail_hash,g.size,g.lost,g.tail_acked,
+	 s.generation,json_extract(s.watermark,'$.Export') IS NOT NULL
+	 FROM devsync_gens g LEFT JOIN devsync_sources s ON s.id=g.source_id
+	 WHERE g.source_id=? AND g.generation=? AND g.tail_size>0`, sid, gen).
+		Scan(&tail.Offset, &tail.Size, &hash, &size, &lost, &acked, &current, &exportState)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		// A source still pointing at a missing generation is uncertainty,
+		// not permission to remove that generation's surviving tail files.
+		var sourceGen int64
+		var exists bool
+		lookup := s.db.QueryRowContext(ctx, `SELECT generation,EXISTS(SELECT 1 FROM devsync_gens WHERE source_id=? AND generation=?) FROM devsync_sources WHERE id=?`, sid, gen, sid).Scan(&sourceGen, &exists)
+		if lookup != nil && !errors.Is(lookup, sql.ErrNoRows) {
+			return syncproto.Tail{}, false, lookup
+		}
+		if lookup == nil && sourceGen == gen && !exists {
+			return syncproto.Tail{}, false, errors.New("devicesync: source lacks current generation metadata")
+		}
+		return syncproto.Tail{}, false, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return syncproto.Tail{}, false, err
+	}
+	if !current.Valid {
+		return syncproto.Tail{}, false, errors.New("devicesync: tail generation lacks source metadata")
+	}
+	if lost || acked && !(current.Int64 == gen && exportState) {
+		return syncproto.Tail{}, false, nil
+	}
+	if tail.Offset < 0 || tail.Size > syncproto.MaxPartBytes || size < tail.Size || tail.Offset != size-tail.Size || len(hash) != len(tail.Hash) {
+		return syncproto.Tail{}, false, errors.New("devicesync: invalid required tail metadata")
+	}
+	copy(tail.Hash[:], hash)
+	return tail, true, nil
 }
 
 // renamedFrom finds the source a new source at spec.Path was moved from

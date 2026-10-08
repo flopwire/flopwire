@@ -118,6 +118,11 @@ func TestSaveCaptureCrashHelper(t *testing.T) {
 
 func killCaptureHelperAtBarrier(t *testing.T, dir, phase string, check func()) {
 	t.Helper()
+	killNamedCaptureHelperAtBarrier(t, dir, phase, "TestSaveCaptureCrashHelper", check)
+}
+
+func killNamedCaptureHelperAtBarrier(t *testing.T, dir, phase, helper string, check func()) {
+	t.Helper()
 	signalRead, signalWrite, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +141,7 @@ func killCaptureHelperAtBarrier(t *testing.T, dir, phase string, check func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(executable, "-test.run=^TestSaveCaptureCrashHelper$", "-test.count=1")
+	cmd := exec.Command(executable, "-test.run=^"+helper+"$", "-test.count=1")
 	cmd.Env = append(os.Environ(), "FLOPWIRE_CAPTURE_CRASH_CHILD=1", "FLOPWIRE_CAPTURE_CRASH_DIR="+dir, "FLOPWIRE_CAPTURE_CRASH_PHASE="+phase)
 	cmd.ExtraFiles = []*os.File{signalWrite, controlRead}
 	var output bytes.Buffer

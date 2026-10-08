@@ -97,7 +97,7 @@ func openTailRoot(dir string) (*os.Root, error) {
 }
 
 // PutTailVersion publishes immutable bytes while retaining earlier versions.
-// Runtime capture continues to use PutTail until commit-aware callers land.
+// Capture keeps the prior committed tail until its manifest transaction succeeds.
 func (s *Spool) PutTailVersion(sid, gen int64, hash syncproto.Hash, data []byte) error {
 	name, err := tailVersionName(sid, gen, hash)
 	if err != nil {

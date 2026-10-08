@@ -1,6 +1,7 @@
 package devicesync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -202,39 +203,30 @@ func (s *Spool) PutTail(sid, gen int64, data []byte) error {
 func (s *Spool) Tail(sid, gen int64) ([]byte, bool, error) { return s.read(s.tailPath(sid, gen)) }
 func (s *Spool) DropTail(sid, gen int64)                   { s.remove(s.tailPath(sid, gen)) }
 
-// sweep deletes partial writes (*.tmp) and every chunk or tail that keep
-// rejects: keep gets a chunk's hash, or nil and a tail's source and
-// generation. Run it before any capture, so nothing is mid-write.
-func (s *Spool) sweep(keep func(h *syncproto.Hash, sid, gen int64) (bool, error)) error {
-	for _, d := range []string{"chunks", "tails"} {
+// sweep runs with no capture or upload in progress. Tail decisions use exact
+// committed hashes; chunk reference/delete coordination remains serial.
+func (s *Spool) sweep(ctx context.Context, keepChunk func(syncproto.Hash) (bool, error), required requiredTailFunc) error {
+	for _, d := range []string{"chunks"} {
 		ents, err := os.ReadDir(filepath.Join(s.dir, d))
 		if err != nil {
 			return err
 		}
 		for _, de := range ents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			path := filepath.Join(s.dir, d, de.Name())
 			if de.IsDir() {
 				continue
 			}
-			var (
-				h        *syncproto.Hash
-				sid, gen int64
-				ok       bool
-			)
 			if strings.HasSuffix(de.Name(), ".tmp") {
 				s.remove(path)
 				continue
 			}
-			if d == "chunks" {
-				var hh syncproto.Hash
-				if hh.UnmarshalText([]byte(de.Name())) == nil {
-					h, ok = &hh, true
-				}
-			} else if _, err := fmt.Sscanf(de.Name(), "%d-%d", &sid, &gen); err == nil {
-				ok = true
-			}
+			var h syncproto.Hash
+			ok := h.UnmarshalText([]byte(de.Name())) == nil
 			if ok {
-				if ok, err = keep(h, sid, gen); err != nil {
+				if ok, err = keepChunk(h); err != nil {
 					return err
 				}
 			}
@@ -243,5 +235,5 @@ func (s *Spool) sweep(keep func(h *syncproto.Hash, sid, gen int64) (bool, error)
 			}
 		}
 	}
-	return nil
+	return s.sweepTails(ctx, required)
 }

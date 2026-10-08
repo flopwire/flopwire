@@ -241,7 +241,7 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 				}
 				s.release(ctx, src, g, hs)
 			}
-			s.spool.DropTail(src.ID, g.Gen)
+			s.releaseTail(ctx, src.ID, g.Gen, g.Tail)
 			if g.Gen != src.Gen {
 				return nil // an older generation: the current one carries on
 			}
@@ -377,9 +377,7 @@ func (s *Syncer) release(ctx context.Context, src *sourceRow, g *genRow, acked [
 			}
 		}
 	}
-	if g.TailAcked && !(src.ExportState != nil && g.Gen == src.Gen && g.Tail.Size > 0) {
-		s.spool.DropTail(src.ID, g.Gen) // an appending export's current tail is kept (keepTail)
-	}
+	s.releaseTail(ctx, src.ID, g.Gen, g.Tail)
 }
 
 // vanished reports whether src's file disappeared (vanish forgot its
@@ -490,7 +488,7 @@ func (p *payload) compressed(e syncproto.Entry) ([]byte, error) {
 
 // loadTail reads and verifies the tail and keeps the bytes from t.From.
 func (p *payload) loadTail(t *syncproto.Tail) {
-	data, err := p.read(nil, t.Offset, t.Size, t.Hash, func() ([]byte, bool, error) { return p.s.spool.Tail(p.src.ID, p.g.Gen) })
+	data, err := p.read(nil, t.Offset, t.Size, t.Hash, func() ([]byte, bool, error) { return p.s.spool.TailVersion(p.src.ID, p.g.Gen, t.Hash) })
 	if err != nil {
 		p.err, p.failed = err, p.g.Entries
 		return
