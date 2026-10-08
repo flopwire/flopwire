@@ -7,10 +7,12 @@ changing exclusions, or deleting archives and recovery keys.
 ## Shipped behavior
 
 Both Macs collect ordinary native coding history and Claude Desktop Local Code.
-Cowork collection is deployed on both Macs. Fresh Cowork acceptance is required
-on the second Mac; the owner does not use Cowork on the first Mac. Ordinary
-Claude chat and remote SSH/WSL collection are outside the selected scope. Cowork inherits the strictest rule anywhere within its selected
-Mac folders. Unknown mapping holds sharing. Previously captured unknown mapping
+Local Cowork collection is deployed on both Macs. The second-Mac synthetic
+Cowork task ran in Claude’s cloud. Its app metadata exposed folder mapping,
+but no transcript was observed in the known local container. The owner deferred
+cloud Cowork collection and does not use Cowork on the first Mac. Ordinary
+Claude chat and remote SSH/WSL collection are outside the selected scope. Local
+Cowork inherits the strictest rule anywhere within its selected Mac folders. Unknown mapping holds sharing. Previously captured unknown mapping
 remains restrictive even when current folders become known.
 
 Collection, captured uploads, server parsing, and policy holds have separate
@@ -30,28 +32,41 @@ message equality.
 | October 8 live checks | Both collectors connected; no pending captured bytes or reported loss/truncation; both authenticated parse snapshots settled | Exhaustive history completeness or a single atomic cross-device snapshot |
 | Cowork policy observations | Historical mapping holds remain deliberate; second Mac reported 44 held sessions | Permission to upload held evidence or complete policy facts when diagnostics are busy |
 
-The October 8 Local Code app check on the first Mac created a session after
-collector startup and appended a second synthetic prompt. Both prompts and
-replies appeared in local and shared Claude retrieval, in the same session.
-This establishes creation and append for that surface. It does not establish
-app restart, collector restart, or hooks-disabled discovery. Both second-Mac
-app sessions passed UI creation and append. Local Code markers appeared in
-local and shared retrieval; Cowork collection remains under investigation.
-Cross-Mac shared retrieval of the first-Mac Code markers passed. The owner
-authorized app restart checks on the second Mac and deferred them on the first. Scoped fallback
-and Cowork authorization passed synthetic integration tests. Synthetic
+Fresh Local Code creation and append passed on both Macs. All four first-Mac
+and six second-Mac marker records appeared in local and shared retrieval, with
+raw reads matching independently read native byte ranges. Cross-Mac shared
+retrieval of the first-Mac markers passed. The second Mac reopened the same
+Code session after Claude Desktop restarted and collected its next prompt and
+reply. First-Mac app restart was deferred by the owner.
+
+Both live collectors restarted and reconnected with one index owner. The first
+Mac exceeded the initial 35-second health deadline; subsequent health passed.
+Its restart queued source checks, so this observation does not claim that all
+startup checks had drained. The second Mac also preserved its configuration
+bytes. Neither check changed folder rules or enrollment.
+
+On each Mac, a separate installed collector used private synthetic roots,
+configuration, index, and socket, with uploads disabled and no hook invocation.
+It discovered a source created after startup, collected an append, and collected
+an append made while stopped after restart. Exactly three marker records
+remained, and all three raw reads matched native bytes. This establishes local
+watch/sweep and restart catch-up for the synthetic Claude source. It does not
+establish live shared outage catch-up or every provider’s behavior. Synthetic
 private staging tests used real PostgreSQL and MinIO; they do not establish
 complete private-history coverage.
 
 ## Remaining coverage gates
 
-- [ ] Finish fresh Local Code acceptance on both Macs and Cowork on the second
-  Mac. First-Mac Local Code creation and append passed. Check provenance and raw
-  evidence, plus intended shared eligibility or hold. First-Mac Cowork is unused.
-- [ ] Verify append, a session created after collector startup, app restart,
-  and collector restart. Check for duplicate live records and durable catch-up.
-- [ ] Verify cross-Mac retrieval and hooks-disabled collection. Use isolated
-  synthetic staging records for outages and destructive policy tests.
+- [x] Verify fresh Local Code creation and append on both Macs, with local and
+  shared retrieval, native provenance, and raw-byte checks. Cloud Cowork is
+  deferred; first-Mac Cowork is unused. Existing local Cowork remains subject
+  to the configured rules and historical holds.
+- [x] Verify second-Mac app restart and both live collector restarts. Verify
+  local catch-up after an offline append and no duplicate marker records in
+  isolated synthetic roots. First-Mac app restart is deferred.
+- [x] Verify cross-Mac shared retrieval and local discovery without hooks on
+  isolated synthetic records. Live shared outage catch-up and broader provider
+  coverage are outside this smoke check’s proof.
 - [ ] Account for older missing Code files and the outside-root native source.
   Record exclusions and unavailable evidence without broadening roots silently.
 - [x] Verify the selected CASS recovery exports through origin, original path,
@@ -90,8 +105,8 @@ decision. Retained snapshots remain intact.
 
 The owner also chose to drop **180 CASS records from other providers** from
 migration scope. They remain outside selected native collection and recovery
-scope. Retained snapshots stay intact; this decision does not claim migration. The selected export proof and eight native
-samples do not establish exhaustive discovery, all native message equality, or
+scope. Retained snapshots stay intact; this decision does not claim migration.
+The selected export proof and eight native samples do not establish exhaustive discovery, all native message equality, or
 a complete backup restore. CASS retirement remains pending live acceptance and
 owner review of the remaining boundaries.
 
@@ -110,3 +125,17 @@ working keys and migration archives.
 Parallel uploads remain a separate [qualification project](../parallel-sync.md).
 Their throughput and shared-state safety gates cannot be inferred from the
 successful serial rollout. Remote SSH/WSL collectors remain deferred.
+
+## CASS retirement inventory
+
+The October 8 read-only inventory found no running CASS process on either Mac,
+no loaded CASS launchd label, and no CASS MCP server or hook entry in the checked
+Codex and Claude settings. CASS mentions there are permissions and, on the first
+Mac, a trusted project entry; these are not active collection integrations.
+
+The first Mac retains `com.coding-agent-search.cass-watch.plist`, configured to
+start its watcher automatically. The second Mac has no CASS-named LaunchAgent.
+A retirement action would disable the first-Mac watcher’s future automatic
+start, preserve its plist for rollback, and retain the CASS executable, snapshots,
+archives, and keys. This inventory does not authorize that change or removal of
+unexamined project-level references.
