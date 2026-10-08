@@ -74,6 +74,33 @@ old checkpoint automatically; that can discard captures made after it.
 The conversion has no directory-fsync or power-loss qualification. Concurrent
 spool readers and writers are outside its exclusive offline contract.
 
+## Isolated CLI qualification
+
+`TestLegacyTailCLIRollback` runs in the private Linux test VM. Supply two
+already-built, independently identified binaries:
+
+```sh
+FLOPWIRE_TAIL_CANDIDATE_CLI=/path/to/candidate \
+FLOPWIRE_TAIL_LEGACY_CLI=/path/to/legacy \
+go test ./internal/devicesync -run '^TestLegacyTailCLIRollback$' -count=1 -v
+```
+
+The test creates synthetic pending exports through the candidate capture code.
+It then runs the candidate CLI preparation command against that state. It checks
+lock refusal, conversion of stale and absent canonical tails, repeat preparation,
+and unchanged database bytes. The test starts the legacy CLI with `agent run
+--once` twice. It requires the original generation's full payload on a loopback
+server, durable acknowledgements, retained export continuation, and no new
+generation or pending bytes.
+
+The subprocesses use a temporary home, configuration, database, spool, and empty
+collection roots. Provider commands are canaries. Credentials are synthetic.
+The test logs each binary's SHA256 and does not build binaries or use production
+services. A successful run qualifies those two processes for this synthetic
+export state. It does not approve every provider, protected-source policy,
+existing deployment schema, or live rollback. Complete the deployment-specific
+checks before activating a legacy collector on live state.
+
 ## Output
 
 Text and `--json` output contain aggregate counts only:
