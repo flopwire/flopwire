@@ -106,6 +106,7 @@ type Scheduler struct {
 	ready     map[string]*job // due now (or at retryAt)
 	queue     turnQueue       // indexed eligible lanes and delayed retries
 	wake      chan struct{}
+	gateEpoch uint64 // changes when newer global pressure, halt, or re-pin is installed
 	backoff   time.Duration
 	retryAt   time.Time // server backoff: no flush before this
 	lastErr   error
@@ -369,6 +370,7 @@ func (s *Scheduler) repin(now time.Time) {
 		return
 	}
 	s.mu.Lock()
+	s.gateEpoch++
 	s.halted, s.lastErr, s.down, s.backoff, s.retryAt = nil, nil, false, 0, time.Time{}
 	s.mu.Unlock()
 	s.sy.cfg.Logger.Info("devicesync: server pin changed; sync resumed")
@@ -536,6 +538,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		path, j := entry.path, entry.job
 		delete(s.ready, path)
 		s.running = 1
+		dispatchEpoch := s.gateEpoch
 		filter, bound, authorize := s.filter, s.bound, s.authorize
 		s.mu.Unlock()
 
@@ -570,7 +573,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			return
 		}
 		if err == nil {
-			s.backoff, s.down, s.lastErr = 0, false, nil
+			s.clearPressureLocked(dispatchEpoch)
 			delete(s.failing, path)
 			if pending != syncDone {
 				j.action = captureSource
@@ -592,6 +595,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			if s.ready[path] == nil && s.waiting[path] == nil {
 				s.dueLocked(path, retryJob(j))
 			}
+			s.gateEpoch++
 			s.halted, s.lastErr = err, err
 			s.repinAt = time.Now().Add(s.cfg.RepinEvery)
 			s.mu.Unlock()
@@ -604,6 +608,7 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			s.dueLocked(path, retryJob(j))
 		}
 		if transport {
+			s.gateEpoch++
 			s.backoff = min(max(2*s.backoff, s.cfg.BackoffMin), s.cfg.BackoffMax)
 			d := jitter(s.backoff)
 			now := time.Now()
@@ -632,6 +637,17 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 		s.mu.Unlock()
 		s.sy.cfg.Logger.Warn("devicesync: flush failed, will retry", "path", path, "retry_in", d, "attempts", f.attempts, "err", err)
 	}
+}
+
+// clearPressureLocked reconciles only global health, after the turn's durable
+// acknowledgment. An older success must not erase a newer cooldown or stop;
+// its source still receives normal completion bookkeeping. Called with s.mu held.
+// This does not enable concurrent execution or replace drain-before-repin.
+func (s *Scheduler) clearPressureLocked(dispatchEpoch uint64) {
+	if dispatchEpoch != s.gateEpoch || s.halted != nil {
+		return
+	}
+	s.backoff, s.down, s.lastErr = 0, false, nil
 }
 
 // Cancellation must retain an uncaptured notification as well as durable
