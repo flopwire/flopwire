@@ -90,8 +90,17 @@ func TestSchedulerResumesAfterRepin(t *testing.T) {
 	appendFile(t, sp.Path, data)
 	sc.Notify(sp)
 	waitFor(t, "sync stopped", func() bool { return sc.Status().Stopped != "" })
+	sc.mu.Lock()
+	stoppedEpoch := sc.gateEpoch
+	sc.mu.Unlock()
 	sc.Recheck()
 	waitFor(t, "a pin check", func() bool { return checks.Load() > 0 })
+	sc.mu.Lock()
+	failedRepinEpoch := sc.gateEpoch
+	sc.mu.Unlock()
+	if failedRepinEpoch != stoppedEpoch {
+		t.Fatal("failed re-pin changed the completion epoch")
+	}
 	if st := sc.Status(); st.Stopped == "" {
 		t.Fatalf("resumed without a new pin: %+v", st)
 	}
@@ -102,7 +111,7 @@ func TestSchedulerResumesAfterRepin(t *testing.T) {
 	sc.mu.Lock()
 	epoch := sc.gateEpoch
 	sc.mu.Unlock()
-	if epoch < 2 {
+	if epoch != stoppedEpoch+1 {
 		t.Fatal("re-pin did not invalidate pre-transition completion stamps")
 	}
 	if st := sc.Status(); st.Stopped != "" || st.LastError != "" {

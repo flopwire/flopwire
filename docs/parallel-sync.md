@@ -55,7 +55,10 @@ This establishes throughput potential, not production correctness or peak memory
   time; indexing order is separate from upload priority.
 - Server HTTP admission permits one flush per device. Each admitted flush holds a database connection and chunk locks while receiving its body.
 - A partial acknowledgment can mean another request holds a shared chunk. The client currently stops after three no-progress responses. Parallelism can turn normal contention into this error.
-- PR #148 distinguishes admission pressure from outages, honors `Retry-After`, and prevents hooks from bypassing cooldowns. Completion handling still assumes serialization: a concurrent success could clear newer global backoff if copied unchanged into a worker pool.
+- PR #148 distinguishes admission pressure from outages, honors `Retry-After`,
+  and prevents hooks from bypassing cooldowns. Completion stamps now prevent an
+  older success from clearing newer global pressure. Parallel probe ownership,
+  stale error/configuration handling, and drain safety still require qualification.
 
 ## Design
 
@@ -146,7 +149,7 @@ The scheduler must recheck path policy and parsed upload bounds immediately befo
 | PR | Scope | Gate |
 | --- | --- | --- |
 | 0 | Content/address oracle #149 and initial fixture/provenance #175 delivered; commit-before-ack barrier #176 delivered; other interruption boundaries remain | Existing serial behavior; fail if the intended crash boundary is not reached |
-| 1 | Serial pressure classification, `Retry-After`, and hook cooldown protection delivered in #148; parallel cooldown epochs and concurrent lifecycle drain safety remain | A hook or stale success cannot undo newer pressure; permanent stop drains correctly |
+| 1 | Serial pressure classification, `Retry-After`, hook cooldown protection, and successful-completion epoch guard delivered; parallel probe/configuration epochs and concurrent lifecycle drain safety remain | A hook or stale success cannot undo newer pressure; permanent stop drains correctly |
 | 2 | Serial one-request turns and fair recent/history scheduling delivered in #204–205 | Chunk boundaries unchanged; live append during backfill; restart order and starvation |
 | 3 | Capability endpoint and bounded server/device/path admission, advertise one | Old-client compatibility; release on disconnect; retain pool headroom |
 | 4 | Shared spool owner, worker-local upload state, export/descriptor budgets, still serial | Publication/read/delete races; existing recovery/redaction corpus; coherent exports |
@@ -179,7 +182,7 @@ This is a useful serial baseline, not sufficient coverage for enabling parallel 
 | Live work during bulk sync | Live append after initial drain; scheduler unit test for hook priority | Keep backfill blocked/in progress, fill workers with large sources, append a live message with and without hooks, assert upload and search latency plus eventual older-source progress |
 | Multiple workers share client state | Serial two-device agents; prototype uses independent stores | Same actual agent/store/spool at worker counts 1 and 4; sources sharing chunks; rewritten exports; controlled publication/read/delete races |
 | Crash recovery at exact boundaries | #176 deterministic server-commit-before-local-ack barrier; component spool recovery | Barriers after publication and during concurrent requests; hard-fail missed barriers; restart with the same durable state |
-| Pressure and stale completions | #148 serial `Retry-After`, pressure labels, and hook cooldown protection; failure isolation and pin/rotation component tests | Delayed success after newer 429/503; changed pin/token while several requests run; parallel cooldown epochs and drain safety |
+| Pressure and stale completions | #148 serial `Retry-After`, pressure labels, and hook cooldown protection; failure isolation and pin/rotation component tests | Successful-completion epoch guard added for real 429/503 and pin rejection; verify changed pin/token while several requests run, parallel probe ownership, stale errors, and drain safety |
 | Source ownership and server limits | Server test rejects a second same-device flush | Prove different paths overlap, same path cannot overlap across identities/generations/processes, device/global limits hold, and every slot releases on disconnect |
 | Version compatibility and progress | Authenticated serial capability and policy contract; #206–208 device snapshots and optional unknown coverage with compatibility/error tests | Parallel old/new client/server combinations; exact parse revisions; upload ack with parsing deliberately paused |
 | Capacity on the intended deployment | Separate private VM performance experiments | Sustained mixed-agent two-device backfill, latency/loss, searches and messaging; assert concurrency actually exceeds one; collect client and whole-stack peaks |
