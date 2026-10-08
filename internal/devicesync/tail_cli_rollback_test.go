@@ -228,15 +228,51 @@ func TestLegacyTailCLIRollback(t *testing.T) {
 			}
 			var current, size, entries, acked, genCount, manifestCount int64
 			var tailAcked, lost bool
-			var spec, watermark []byte
-			if err := db.QueryRow(`SELECT s.generation,s.spec,s.watermark,g.size,g.entries,g.acked,g.tail_acked,g.lost FROM devsync_sources s JOIN devsync_gens g ON g.source_id=s.id AND g.generation=s.generation WHERE s.id=?`, f.sid).Scan(&current, &spec, &watermark, &size, &entries, &acked, &tailAcked, &lost); err != nil {
+			var spec, watermark, tailHash []byte
+			var persistedTail syncproto.Tail
+			if err := db.QueryRow(`SELECT s.generation,s.spec,s.watermark,g.size,g.entries,g.acked,g.tail_acked,g.lost,g.tail_offset,g.tail_size,g.tail_hash FROM devsync_sources s JOIN devsync_gens g ON g.source_id=s.id AND g.generation=s.generation WHERE s.id=?`, f.sid).Scan(&current, &spec, &watermark, &size, &entries, &acked, &tailAcked, &lost, &persistedTail.Offset, &persistedTail.Size, &tailHash); err != nil {
 				t.Fatal(err)
+			}
+			if len(tailHash) != len(persistedTail.Hash) {
+				t.Fatal("legacy CLI changed persisted tail hash length")
+			}
+			copy(persistedTail.Hash[:], tailHash)
+			if persistedTail != f.tail {
+				t.Fatal("legacy CLI changed persisted tail offset, size, or hash")
 			}
 			if err := db.QueryRow(`SELECT count(*) FROM devsync_gens WHERE source_id=?`, f.sid).Scan(&genCount); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.QueryRow(`SELECT count(*) FROM devsync_manifest WHERE source_id=?`, f.sid).Scan(&manifestCount); err != nil {
 				t.Fatal(err)
+			}
+			rows, err := db.Query(`SELECT generation,ordinal,hash,offset,size FROM devsync_manifest WHERE source_id=? ORDER BY generation,ordinal`, f.sid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var persistedEntries []syncproto.Entry
+			for rows.Next() {
+				var generation int64
+				var entry syncproto.Entry
+				var hash []byte
+				if err := rows.Scan(&generation, &entry.Ordinal, &hash, &entry.Offset, &entry.Size); err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				if generation != 0 || len(hash) != len(entry.Hash) {
+					rows.Close()
+					t.Fatal("legacy CLI changed manifest generation or hash length")
+				}
+				copy(entry.Hash[:], hash)
+				persistedEntries = append(persistedEntries, entry)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			rows.Close()
+			if !reflect.DeepEqual(persistedEntries, f.entries) {
+				t.Fatal("legacy CLI changed persisted manifest ordinals, hashes, offsets, or sizes")
 			}
 			// RepoSent may be added to the stored spec after flush; compare
 			// the immutable source descriptor rather than JSON formatting.
