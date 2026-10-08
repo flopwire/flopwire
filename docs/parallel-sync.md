@@ -64,6 +64,28 @@ This establishes throughput potential, not production correctness or peak memory
 
 ### 1. Server admission and capability negotiation
 
+The serial admission prerequisite keeps the advertised and per-device limit at
+one. After API authentication, a shared process-local owner reserves global and
+device slots before ingest header decoding or an ingest database connection.
+Authentication may already use the database. It releases each slot once, after
+the handler stops work, including malformed input, cancellation and disconnect. It retains
+only active device keys. Device contention keeps the legacy `flush_in_progress`
+429; global contention returns `server_busy` 503. Both carry `Retry-After`.
+Rejected flush handlers do not read the body; the HTTP server may still drain
+bounded unread bytes when managing connection reuse.
+
+Production explicitly sizes this owner from the configured pool: reserve the
+retrieval bound, effective parse workers, one additional bounded worker, and 16
+connections for other operations; admit at most eight flushes from the remainder.
+An explicit pool override that leaves no upload slot is a startup configuration
+error, before database connections, migrations or object creation. Nonpositive
+parse-worker settings use the queue's existing four-worker default before pool
+sizing. Direct `ingest.Server` constructors use a lazy global-one fallback; that
+fallback does not establish database headroom. Servers sharing a process budget
+must share the owner. This bound is not cluster-wide admission or a measured
+memory/performance guarantee. Device seriality currently excludes every path;
+the independent path guard remains a prerequisite for raising device concurrency.
+
 Extend the authenticated `GET /v1/sync/capabilities` response with supported request limits. The existing protocol version, policy placements support, and serial flush limit stay intact. Cache concurrency capabilities per normalized server and credential/configuration epoch. Recheck after reconnect and configuration changes.
 
 Use one worker on an unsupported-endpoint/404 response and report that compatibility decision; a 404 cannot prove whether the server is old or a proxy route is wrong. Authentication, pin, network, and malformed-response failures must remain visible; they must not masquerade as an older server. If a flush returns the legacy `flush_in_progress` 429, clamp to one worker for that capability epoch as a defensive fallback. New admission errors should distinguish source contention, device capacity, and global capacity. Never infer concurrency from the binary version or deliberately provoke 429s to discover it.

@@ -63,7 +63,11 @@ type Server struct {
 	// Queue, when set, is told about sources with new bytes to parse.
 	Queue Notifier
 
-	flushing sync.Map // device id -> struct{}: the device's flush in progress
+	// Admission must be configured before serving requests. Multiple Servers
+	// on the same process/pool should share one owner.
+	Admission        *FlushAdmission
+	admissionOnce    sync.Once
+	defaultAdmission *FlushAdmission
 }
 
 // Notifier is the parse queue as the flush path sees it: it is told which

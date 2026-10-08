@@ -215,8 +215,19 @@ func serve(ctx context.Context, args []string) error {
 	secret := mustEnv("S3_SECRET_KEY")
 	bucket := env("S3_BUCKET", "flopwire")
 	secure := envBool("S3_SECURE", false)
-	workers := envInt("FLOPWIRE_PARSE_WORKERS", 4)
+	workers, err := serverParseWorkers(envInt("FLOPWIRE_PARSE_WORKERS", 4))
+	if err != nil {
+		return err
+	}
 	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+1)
+	if err != nil {
+		return err
+	}
+	flushSlots, err := flushAdmissionBudget(poolCfg.MaxConns, workers)
+	if err != nil {
+		return err
+	}
+	admission, err := ingest.NewFlushAdmission(flushSlots)
 	if err != nil {
 		return err
 	}
@@ -258,7 +269,7 @@ func serve(ctx context.Context, args []string) error {
 	messageBus := &bus.Store{Pool: pool, Stopping: ctx.Done(), Retention: retention}
 	slog.Info("message bus retention", "retention", retention.String(), "applies_to", "delivered, read, expired, refused and undelivered messages after their expiry, with their audit rows")
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
-		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
+		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser, Admission: admission}, Parse: parser,
 		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
 		Bus:               messageBus,
 		TrustedProxyCIDRs: envList("FLOPWIRE_TRUSTED_PROXY_CIDRS"),

@@ -105,14 +105,14 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 			writeErr(w, badRequest("content type"))
 			return
 		}
-		// One flush per device at a time: a flush holds a pool connection
-		// and chunk locks while its body arrives, and a device's agent
-		// sends one at a time anyway. A second one is told to retry.
-		if _, busy := s.flushing.LoadOrStore(deviceID, struct{}{}); busy {
-			writeErr(w, &Error{http.StatusTooManyRequests, "flush_in_progress", "another flush of this device is in progress; retry later"})
+		// Reserve before reading even the bounded header or acquiring a pool
+		// connection. The handler keeps its slot until all actual work ends.
+		ticket, refusal := s.flushAdmission().acquire(deviceID)
+		if refusal != nil {
+			writeErr(w, refusal)
 			return
 		}
-		defer s.flushing.Delete(deviceID)
+		defer ticket.release()
 		h, pr, err := syncproto.DecodeFlush(r.Body)
 		if err != nil {
 			code := "bad_request"
