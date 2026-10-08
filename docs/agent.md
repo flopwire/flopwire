@@ -47,7 +47,7 @@ An unresolved nested repository scope holds sharing at local mode; an actual
 matching deny rule excludes indexing. Previously observed folders keep
 protecting the session after app permissions change or metadata disappears.
 
-All Cowork uploads remain held until the server supports stored host-folder
+Cowork uploads remain held when the server does not support stored host-folder
 policy evidence. The hold also covers identified CLI copies of those sessions.
 Status reports the server support hold separately from unknown folder mapping.
 VM paths, unresolved mount identifiers and missing mapping leave an unknown
@@ -81,7 +81,10 @@ Historical unknown imports follow the configured unplaceable policy, including
 Collection and scoped authorization are implemented. Earlier server copies
 require the separate Cowork policy reconciliation path. The scoped path has
 passed synthetic capture and restart tests through the unified dispatcher.
-The updated collectors have not been deployed to both Macs.
+The updated collectors are deployed to both Macs. The October 7 reporting
+release passed live status and CLI/MCP retrieval checks. Fresh-session app
+lifecycle checks on both Macs remain incomplete; see
+[history qualification](operations/history-qualification.md).
 
 The installed Claude 2.19675.1 Local flow was qualified with an approved
 synthetic session in the default Claude projects root. Scoped

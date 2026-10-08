@@ -2,9 +2,22 @@
 
 Status: proposed. This document scopes implementation; it does not enable parallel uploads.
 
-Implementation status as of October 5, 2026: PR #148 delivered serial `Retry-After` handling, pressure labels, and hook cooldown protection. PR #149 strengthened the E2E content/address oracle. These are partial prerequisites; deterministic interruption barriers, parallel cooldown epochs, shared-state ownership, and concurrent uploads remain unimplemented.
+Implementation status as of October 8, 2026: uploads remain serial. Independent
+fixture/provenance checks (#175) and a deterministic server-commit-before-local-ack
+barrier (#176) have shipped; additional shared-spool interruption boundaries
+remain. Responsive drain and cancellation retention (#203), one-request turns
+(#204), and active-first scheduling with guaranteed historical progress (#205)
+are deployed. Parallel pressure epochs and shared-state coordination remain open.
 
-The October 6 Cowork policy work added authenticated `GET /v1/sync/capabilities` with `version`, `policyplacements_version`, and `max_concurrent_flushes`. Policy placements support authorizes protected evidence only after a matching durable policy acknowledgement. The route continues to advertise one concurrent flush. Request-limit negotiation, capability caching for a parallel worker pool, and parse-revision reporting remain proposed below.
+Authenticated capabilities advertise policy placements version one and one
+concurrent flush (#197). Bounded parallel admission and workers remain open.
+Device-scoped parse observations, local collection/upload/policy snapshots,
+and optional CLI/MCP reporting shipped in #206–208. These observations do not
+prove exact indexed revisions, exhaustive discovery, or all-history completeness.
+
+See [history qualification](operations/history-qualification.md) for the separate
+CASS retirement gate. Synthetic/private serial qualification does not establish
+parallel throughput, request overlap, or whole-stack memory bounds.
 
 ## Outcome
 
@@ -128,15 +141,15 @@ The scheduler must recheck path policy and parsed upload bounds immediately befo
 
 | PR | Scope | Gate |
 | --- | --- | --- |
-| 0 | Content/address oracle delivered in #149; deterministic interruption barriers and independent fixture/provenance checks remain | Existing serial behavior; fail if the intended crash boundary is not reached |
-| 1 | Serial pressure classification, `Retry-After`, and hook cooldown protection delivered in #148; parallel cooldown epochs and drain safety remain | A hook or stale success cannot undo newer pressure; permanent stop drains correctly |
-| 2 | Serial one-request upload turns, recent-first order and fair queueing | Chunk boundaries unchanged; live append during backfill; restart order and starvation |
+| 0 | Content/address oracle #149 and initial fixture/provenance #175 delivered; commit-before-ack barrier #176 delivered; other interruption boundaries remain | Existing serial behavior; fail if the intended crash boundary is not reached |
+| 1 | Serial pressure classification, `Retry-After`, and hook cooldown protection delivered in #148; parallel cooldown epochs and concurrent lifecycle drain safety remain | A hook or stale success cannot undo newer pressure; permanent stop drains correctly |
+| 2 | Serial one-request turns and fair recent/history scheduling delivered in #204–205 | Chunk boundaries unchanged; live append during backfill; restart order and starvation |
 | 3 | Capability endpoint and bounded server/device/path admission, advertise one | Old-client compatibility; release on disconnect; retain pool headroom |
 | 4 | Shared spool owner, worker-local upload state, export/descriptor budgets, still serial | Publication/read/delete races; existing recovery/redaction corpus; coherent exports |
 | 5 | Negotiated bounded worker pool | Same-path running exclusion; shared-chunk contention recovery; pressure fallback; rotation; race tests |
-| 6 | Upload versus indexing progress and retrieval coverage notes | Honest unknown states; bounded polling; CLI/MCP output contracts |
+| 6 | Observed upload/parsing/policy and unknown coverage shipped in #206–208; exact-revision proof remains open | Honest unknown states; bounded polling; CLI/MCP output contracts |
 
-PRs 0 through 4 can land with serial behavior. PR 5 enables concurrency only after capability support and shared-state safety. Define optional parse-revision fields in the capability contract in PR 3 and implement their reporting in PR 6. This delivers pressure handling and recent-history availability before the riskier worker refactor. Ship small reviewable pieces; do not merge the private experiment branch as the implementation.
+PRs 0 through 4 can land with serial behavior. PR 5 enables concurrency only after capability support and shared-state safety. Exact-revision acknowledgment fields remain proposed. The shipped separate parse endpoint reports device-level snapshots, not revision receipts. This delivers pressure handling and recent-history availability before the riskier worker refactor. Ship small reviewable pieces; do not merge the private experiment branch as the implementation.
 
 ### Claude review and independent assessment
 
@@ -146,7 +159,7 @@ Accepted changes: deliver serial pressure handling and request-level fairness fi
 
 Caveats: whole-file capture is not free merely because it scans with a bounded buffer. It consumes CPU, accumulates manifest metadata, and opaque export callbacks allocate complete byte slices. Shared-store throughput and live latency during the largest captures remain release measurements; safe resumable capture would need a separate design if those gates fail. At review time, the consistency oracle verified native-ID/part multiplicity rather than full extracted content. PR #149 added semantic, text-hash, ordinal, and byte-address comparisons. Mandatory interruption barriers and independent fixture/provenance checks remain prerequisites. The current PostgreSQL pool uses retrieval/parse bounds plus 24 headroom connections; eight flush slots still need whole-stack qualification rather than an assumption of spare capacity.
 
-Resolve the remaining cutover stack against current main before final integration. The retained-text byte bound in PR #126 and JSON preservation in #130 are merged and affect mixed-history validation. Recovery import in #132 and shared retrieval/setup PRs #127 and #135 remain integration dependencies. Keep those reviews distinct from the new concurrency work.
+Resolve the remaining cutover stack against current main before final integration. The retained-text byte bound in PR #126 and JSON preservation in #130 are merged and affect mixed-history validation. Recovery import #132 and shared retrieval/setup #127 and #135 are merged; retain their behavior in the concurrency qualification. Keep those reviews distinct from the new concurrency work.
 
 ## VM validation and release gates
 
@@ -154,17 +167,17 @@ Resolve the remaining cutover stack against current main before final integratio
 
 `internal/e2e/sync_test.go:TestTwoDeviceSync` runs a real TLS server, PostgreSQL, MinIO, and two agent processes with separate homes, credentials, local indexes, and sync state. Its scenarios cover initial sync, live append and hook flush, cross-device retrieval, server outage/catch-up, client kill/restart, Claude rewrite, Devin deletion, admin deletion, companions/raw retrieval, backup/restore, and final consistency. GitHub's E2E workflow runs synthetic fixtures; real corpus sampling is opt-in and caps sampled individual files at 64 MiB.
 
-This is a useful serial baseline, not sufficient coverage for enabling parallel sync. The initial-sync scenario waits for the optional corpus to drain before live-append scenarios. The kill scenario logs instead of failing when it misses the mid-flush window. PR #149 supplemented the native-ID/part multiplicity checks with `content_test.go` comparisons of message semantics, text hashes, ordinals, and byte addresses. Those expectations still use the transcript parsers; independent fixture expectations and source generation/provenance checks remain to be added. Raw-byte checks exist for selected sources, not every consistency comparison.
+This is a useful serial baseline, not sufficient coverage for enabling parallel sync. The initial-sync scenario waits for the optional corpus to drain before live-append scenarios. PR #149 supplemented the native-ID/part multiplicity checks with `content_test.go` comparisons of message semantics, text hashes, ordinals, and byte addresses. Those expectations still use the transcript parsers; initial independent fixture expectations and source generation/provenance checks were added in #175. The deterministic #176 crash test fails if its server-commit-before-local-ack boundary is missed. Other interruption boundaries and parallel shared-state cases remain open. Raw-byte checks exist for selected sources, not every consistency comparison.
 
 | Requirement | Present coverage | Required addition before rollout |
 | --- | --- | --- |
-| Content and addresses survive catch-up | #149 compares semantics, text hashes, native identity, ordinals, and byte addresses; selected raw-byte checks | Add independent explicit fixture expectations and source generation/provenance checks; independently verify redacted raw bytes |
+| Content and addresses survive catch-up | #149 comparisons plus initial independent fixture/source generation expectations in #175; selected raw-byte checks | Extend independent rewrite/redaction coverage; independently verify redacted raw bytes |
 | Live work during bulk sync | Live append after initial drain; scheduler unit test for hook priority | Keep backfill blocked/in progress, fill workers with large sources, append a live message with and without hooks, assert upload and search latency plus eventual older-source progress |
 | Multiple workers share client state | Serial two-device agents; prototype uses independent stores | Same actual agent/store/spool at worker counts 1 and 4; sources sharing chunks; rewritten exports; controlled publication/read/delete races |
-| Crash recovery at exact boundaries | Large-source kill/restart; component spool recovery | Explicit barriers after publication, after server commit before local ack, and during concurrent requests; hard-fail missed barriers; restart with the same durable state |
+| Crash recovery at exact boundaries | #176 deterministic server-commit-before-local-ack barrier; component spool recovery | Barriers after publication and during concurrent requests; hard-fail missed barriers; restart with the same durable state |
 | Pressure and stale completions | #148 serial `Retry-After`, pressure labels, and hook cooldown protection; failure isolation and pin/rotation component tests | Delayed success after newer 429/503; changed pin/token while several requests run; parallel cooldown epochs and drain safety |
 | Source ownership and server limits | Server test rejects a second same-device flush | Prove different paths overlap, same path cannot overlap across identities/generations/processes, device/global limits hold, and every slot releases on disconnect |
-| Version compatibility and progress | Authenticated serial capability and policy placements contract; no parse-revision acknowledgment contract | Old/new client/server combinations; endpoint errors; upload ack with parsing deliberately paused; correct incomplete/unknown retrieval scope notes |
+| Version compatibility and progress | Authenticated serial capability and policy contract; #206–208 device snapshots and optional unknown coverage with compatibility/error tests | Parallel old/new client/server combinations; exact parse revisions; upload ack with parsing deliberately paused |
 | Capacity on the intended deployment | Separate private VM performance experiments | Sustained mixed-agent two-device backfill, latency/loss, searches and messaging; assert concurrency actually exceeds one; collect client and whole-stack peaks |
 
 Use deterministic barriers at component/integration level for spool races and stale completions. Use a test-controlled transport/proxy or equivalent explicit fault controls for process-level E2E interruption. Production builds must not expose an unauthenticated fault-injection API. Tests should prove the concurrency/boundary they exercise, rather than merely return a passing end state.
