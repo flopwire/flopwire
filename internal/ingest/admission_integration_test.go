@@ -39,6 +39,9 @@ func TestServeSyncAdmissionInterruptedPayloadAndSuccessfulRetry(t *testing.T) {
 	if w.Code != http.StatusBadRequest || admissionCount(a) != 0 {
 		t.Fatalf("interrupted payload status=%d active=%d", w.Code, admissionCount(a))
 	}
+	if held := e.pool.Stat().AcquiredConns(); held != 0 {
+		t.Fatalf("interrupted payload retained %d database connections", held)
+	}
 	if e.count(`SELECT count(*) FROM generations`) != 0 {
 		t.Fatal("interrupted payload committed a generation")
 	}
@@ -58,6 +61,9 @@ func TestServeSyncAdmissionInterruptedPayloadAndSuccessfulRetry(t *testing.T) {
 	}
 	if w.Code != http.StatusOK || response.AckedEntries != 2 || admissionCount(a) != 0 {
 		t.Fatalf("retry status=%d acked=%d active=%d", w.Code, response.AckedEntries, admissionCount(a))
+	}
+	if held := e.pool.Stat().AcquiredConns(); held != 0 {
+		t.Fatalf("successful retry retained %d database connections", held)
 	}
 	if e.count(`SELECT count(*) FROM generations`) != 1 || e.count(`SELECT count(*) FROM manifest_entries`) != 2 {
 		t.Fatal("complete retry did not commit exactly one two-chunk generation")
