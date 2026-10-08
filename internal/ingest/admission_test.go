@@ -144,6 +144,9 @@ func waitAdmissionSignal(t *testing.T, signal <-chan struct{}) {
 func requireAdmissionRefusal(t *testing.T, s *Server, device string, status int, code string) {
 	t.Helper()
 	body := &admissionBody{started: make(chan struct{}), finish: make(chan error, 1)}
+	// A regression that reads a refused body must fail immediately rather
+	// than hang this assertion until the package-wide timeout.
+	body.finish <- errors.New("unexpected read of refused request body")
 	w := httptest.NewRecorder()
 	s.ServeSync(w, admissionRequest(context.Background(), body), device)
 	var response syncproto.ErrorResponse

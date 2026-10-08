@@ -67,8 +67,8 @@ This establishes throughput potential, not production correctness or peak memory
 The serial admission prerequisite keeps the advertised and per-device limit at
 one. After API authentication, a shared process-local owner reserves global and
 device slots before ingest header decoding or an ingest database connection.
-Authentication may already use the database. It releases each slot once, after the handler
-stops work, including malformed input, cancellation and disconnect. It retains
+Authentication may already use the database. It releases each slot once, after
+the handler stops work, including malformed input, cancellation and disconnect. It retains
 only active device keys. Device contention keeps the legacy `flush_in_progress`
 429; global contention returns `server_busy` 503. Both carry `Retry-After`.
 Rejected flush handlers do not read the body; the HTTP server may still drain
