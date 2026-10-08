@@ -36,6 +36,18 @@ func TestSchedulerStopsOnPinMismatch(t *testing.T) {
 	appendFile(t, sp.Path, jsonlLines(70, 20, 100))
 	sc.Notify(sp)
 	waitFor(t, "sync stopped", func() bool { return sc.Status().Stopped != "" })
+	before := sc.Status()
+	sc.mu.Lock()
+	if sc.gateEpoch == 0 {
+		sc.mu.Unlock()
+		t.Fatal("permanent stop did not invalidate earlier completion stamps")
+	}
+	sc.clearPressureLocked(0)            // dispatched before the actual pin rejection
+	sc.clearPressureLocked(sc.gateEpoch) // even a current success cannot lift a halt
+	sc.mu.Unlock()
+	if after := sc.Status(); after.Stopped != before.Stopped || after.LastError != before.LastError {
+		t.Fatal("success erased a permanent stop")
+	}
 	sc.Flush(sp)
 	time.Sleep(200 * time.Millisecond)
 	st := sc.Status()
@@ -78,8 +90,17 @@ func TestSchedulerResumesAfterRepin(t *testing.T) {
 	appendFile(t, sp.Path, data)
 	sc.Notify(sp)
 	waitFor(t, "sync stopped", func() bool { return sc.Status().Stopped != "" })
+	sc.mu.Lock()
+	stoppedEpoch := sc.gateEpoch
+	sc.mu.Unlock()
 	sc.Recheck()
 	waitFor(t, "a pin check", func() bool { return checks.Load() > 0 })
+	sc.mu.Lock()
+	failedRepinEpoch := sc.gateEpoch
+	sc.mu.Unlock()
+	if failedRepinEpoch != stoppedEpoch {
+		t.Fatal("failed re-pin changed the completion epoch")
+	}
 	if st := sc.Status(); st.Stopped == "" {
 		t.Fatalf("resumed without a new pin: %+v", st)
 	}
@@ -87,6 +108,12 @@ func TestSchedulerResumesAfterRepin(t *testing.T) {
 	sc.Recheck()
 	waitFor(t, "upload after re-pin", func() bool { _, tail := e.srv.Manifest(sp.Path, fileIDOf(t, sp.Path), 0); return tail != nil })
 	e.requireServerHas(sp.Path, fileIDOf(t, sp.Path), 0, data)
+	sc.mu.Lock()
+	epoch := sc.gateEpoch
+	sc.mu.Unlock()
+	if epoch != stoppedEpoch+1 {
+		t.Fatal("re-pin did not invalidate pre-transition completion stamps")
+	}
 	if st := sc.Status(); st.Stopped != "" || st.LastError != "" {
 		t.Fatalf("status after re-pin %+v", st)
 	}

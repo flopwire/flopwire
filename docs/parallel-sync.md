@@ -7,7 +7,9 @@ fixture/provenance checks (#175) and a deterministic server-commit-before-local-
 barrier (#176) have shipped; additional shared-spool interruption boundaries
 remain. Responsive drain and cancellation retention (#203), one-request turns
 (#204), and active-first scheduling with guaranteed historical progress (#205)
-are deployed. Parallel pressure epochs and shared-state coordination remain open.
+are deployed. A serial pressure-epoch prerequisite now guards global health against older
+successful completions. Parallel dispatch, probe ownership, credential drain,
+and shared-state coordination remain open.
 
 Authenticated capabilities advertise policy placements version one and one
 concurrent flush (#197). Bounded parallel admission and workers remain open.
@@ -48,10 +50,15 @@ This establishes throughput potential, not production correctness or peak memory
 - `devicesync.Syncer` holds a global mutex through capture and network upload. Its scan buffer, retained compressed body, and held descriptors depend on serialization.
 - `Spool.write` checks existence, checks available space, writes a shared `.tmp` name, then updates accounting. The checks and publication are not one atomic operation.
 - Chunk cleanup checks durable references and then deletes the spool file. A concurrent capture can add a reference between those operations.
-- `PendingSpecs` sorts recovered work by path. Initial local indexing sorts by oldest modification time. Neither is a recent-history upload policy.
+- Scheduler startup restores persisted activity and waiting-age hints into the
+  weighted queues. Initial local indexing still sorts by oldest modification
+  time; indexing order is separate from upload priority.
 - Server HTTP admission permits one flush per device. Each admitted flush holds a database connection and chunk locks while receiving its body.
 - A partial acknowledgment can mean another request holds a shared chunk. The client currently stops after three no-progress responses. Parallelism can turn normal contention into this error.
-- PR #148 distinguishes admission pressure from outages, honors `Retry-After`, and prevents hooks from bypassing cooldowns. Completion handling still assumes serialization: a concurrent success could clear newer global backoff if copied unchanged into a worker pool.
+- PR #148 distinguishes admission pressure from outages, honors `Retry-After`,
+  and prevents hooks from bypassing cooldowns. Completion stamps now prevent an
+  older success from clearing newer global pressure. Parallel probe ownership,
+  stale error/configuration handling, and drain safety still require qualification.
 
 ## Design
 
@@ -142,7 +149,7 @@ The scheduler must recheck path policy and parsed upload bounds immediately befo
 | PR | Scope | Gate |
 | --- | --- | --- |
 | 0 | Content/address oracle #149 and initial fixture/provenance #175 delivered; commit-before-ack barrier #176 delivered; other interruption boundaries remain | Existing serial behavior; fail if the intended crash boundary is not reached |
-| 1 | Serial pressure classification, `Retry-After`, and hook cooldown protection delivered in #148; parallel cooldown epochs and concurrent lifecycle drain safety remain | A hook or stale success cannot undo newer pressure; permanent stop drains correctly |
+| 1 | Serial pressure classification, `Retry-After`, hook cooldown protection, and successful-completion epoch guard delivered; parallel probe/configuration epochs and concurrent lifecycle drain safety remain | A hook or stale success cannot undo newer pressure; permanent stop drains correctly |
 | 2 | Serial one-request turns and fair recent/history scheduling delivered in #204–205 | Chunk boundaries unchanged; live append during backfill; restart order and starvation |
 | 3 | Capability endpoint and bounded server/device/path admission, advertise one | Old-client compatibility; release on disconnect; retain pool headroom |
 | 4 | Shared spool owner, worker-local upload state, export/descriptor budgets, still serial | Publication/read/delete races; existing recovery/redaction corpus; coherent exports |
@@ -175,7 +182,7 @@ This is a useful serial baseline, not sufficient coverage for enabling parallel 
 | Live work during bulk sync | Live append after initial drain; scheduler unit test for hook priority | Keep backfill blocked/in progress, fill workers with large sources, append a live message with and without hooks, assert upload and search latency plus eventual older-source progress |
 | Multiple workers share client state | Serial two-device agents; prototype uses independent stores | Same actual agent/store/spool at worker counts 1 and 4; sources sharing chunks; rewritten exports; controlled publication/read/delete races |
 | Crash recovery at exact boundaries | #176 deterministic server-commit-before-local-ack barrier; component spool recovery | Barriers after publication and during concurrent requests; hard-fail missed barriers; restart with the same durable state |
-| Pressure and stale completions | #148 serial `Retry-After`, pressure labels, and hook cooldown protection; failure isolation and pin/rotation component tests | Delayed success after newer 429/503; changed pin/token while several requests run; parallel cooldown epochs and drain safety |
+| Pressure and stale completions | #148 serial `Retry-After`, pressure labels, and hook cooldown protection; failure isolation and pin/rotation component tests | Successful-completion epoch guard added for real 429/503 and pin rejection; verify changed pin/token while several requests run, parallel probe ownership, stale errors, and drain safety |
 | Source ownership and server limits | Server test rejects a second same-device flush | Prove different paths overlap, same path cannot overlap across identities/generations/processes, device/global limits hold, and every slot releases on disconnect |
 | Version compatibility and progress | Authenticated serial capability and policy contract; #206–208 device snapshots and optional unknown coverage with compatibility/error tests | Parallel old/new client/server combinations; exact parse revisions; upload ack with parsing deliberately paused |
 | Capacity on the intended deployment | Separate private VM performance experiments | Sustained mixed-agent two-device backfill, latency/loss, searches and messaging; assert concurrency actually exceeds one; collect client and whole-stack peaks |
@@ -207,3 +214,18 @@ CASS retirement remains a separate coverage gate: both intended source sets disc
 Multi-source request batching could reduce per-file round trips further. Defer it until concurrent version-1 uploads are measured on the whole corpus. It adds per-source partial-ack framing, body/reference accounting, retry isolation, and fairness rules. Add it only if small-file round trips remain a material bottleneck after the worker pool. Do not require a permanent streaming socket: existing keep-alive/HTTP/2 connections already support reusable transport.
 
 Implementation must settle the exact work-memory reservation formula in PR 4 and validate the initial weighted queue policy in PR 2 with allocation and starvation tests. These are tuning questions, not reasons to weaken source ordering, spool safety, or recovery guarantees.
+
+### Serial pressure-epoch prerequisite
+
+Each serial dispatch records the scheduler’s current gate epoch. Installing
+transport pressure, a permanent stop, or a successful re-pin advances it. A
+successful turn retains its durable acknowledgment and source bookkeeping, but
+clears global backoff/error state only if its dispatch epoch is still current
+and the scheduler is not halted. Hooks retain the existing cooldown behavior.
+
+Tests inject an older completion after real HTTP 429/503 and TLS pin rejection,
+then verify the newer deadline/error or halt survives. A current retry and
+re-pin still restore progress. These are completion-transition checks with the
+existing serial executor. They do not establish overlapping requests, a single
+parallel probe, stale credential-error ordering, or drain-before-repin with
+multiple active workers. Those remain worker-pool prerequisites.
