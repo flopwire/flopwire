@@ -6,9 +6,10 @@ changing exclusions, or deleting archives and recovery keys.
 
 ## Shipped behavior
 
-Both Macs collect ordinary native coding history, Claude Desktop Local Code,
-and Cowork. Ordinary Claude chat and remote SSH/WSL collection are outside the
-selected scope. Cowork inherits the strictest rule anywhere within its selected
+Both Macs collect ordinary native coding history and Claude Desktop Local Code.
+Cowork collection is deployed on both Macs. Fresh Cowork acceptance is required
+on the second Mac; the owner does not use Cowork on the first Mac. Ordinary
+Claude chat and remote SSH/WSL collection are outside the selected scope. Cowork inherits the strictest rule anywhere within its selected
 Mac folders. Unknown mapping holds sharing. Previously captured unknown mapping
 remains restrictive even when current folders become known.
 
@@ -29,29 +30,70 @@ message equality.
 | October 8 live checks | Both collectors connected; no pending captured bytes or reported loss/truncation; both authenticated parse snapshots settled | Exhaustive history completeness or a single atomic cross-device snapshot |
 | Cowork policy observations | Historical mapping holds remain deliberate; second Mac reported 44 held sessions | Permission to upload held evidence or complete policy facts when diagnostics are busy |
 
-The current Local Code app probe established normal native CLI storage on one
-Mac. Scoped fallback and Cowork authorization passed synthetic integration
-tests. They still need fresh app-session acceptance on both Macs. Synthetic
+The October 8 Local Code app check on the first Mac created a session after
+collector startup and appended a second synthetic prompt. Both prompts and
+replies appeared in local and shared Claude retrieval, in the same session.
+This establishes creation and append for that surface. It does not establish
+app restart, collector restart, or hooks-disabled discovery. Both second-Mac
+app sessions passed UI creation and append. Local Code markers appeared in
+local and shared retrieval; Cowork collection remains under investigation.
+Cross-Mac shared retrieval of the first-Mac Code markers passed. The owner
+authorized app restart checks on the second Mac and deferred them on the first. Scoped fallback
+and Cowork authorization passed synthetic integration tests. Synthetic
 private staging tests used real PostgreSQL and MinIO; they do not establish
 complete private-history coverage.
 
 ## Remaining coverage gates
 
-- [ ] Verify fresh Local Code and Cowork sessions on both Macs. Check local
-  retrieval, intended shared eligibility or hold, provenance, and raw evidence.
+- [ ] Finish fresh Local Code acceptance on both Macs and Cowork on the second
+  Mac. First-Mac Local Code creation and append passed. Check provenance and raw
+  evidence, plus intended shared eligibility or hold. First-Mac Cowork is unused.
 - [ ] Verify append, a session created after collector startup, app restart,
   and collector restart. Check for duplicate live records and durable catch-up.
 - [ ] Verify cross-Mac retrieval and hooks-disabled collection. Use isolated
   synthetic staging records for outages and destructive policy tests.
 - [ ] Account for older missing Code files and the outside-root native source.
   Record exclusions and unavailable evidence without broadening roots silently.
-- [ ] Compare retained CASS recovery evidence with native and shared history.
-  Require archive origin and original-path proof before matching copies.
-  A shared session ID alone is insufficient.
-- [ ] Verify selected raw bytes and message text, order, and addresses against
-  independently retained evidence. Record the sampling limits.
+- [x] Verify the selected CASS recovery exports through origin, original path,
+  raw bytes, and indexed messages. See the bounded audit below. This does not
+  prove all native history or providers outside the selected recovery set.
+- [x] Compare eight selected native Claude/Codex records across both Macs with
+  local and shared raw reads and extracted message identities and text. All
+  matched. This sample excludes Devin and does not prove whole-history equality.
 - [ ] Publish the aggregate acceptance result and remaining gaps for the owner
   to review before any CASS watcher or integration is removed.
+
+## October 8 retained recovery audit
+
+The read-only audit verified all **11,722 selected Claude recovery exports and
+94,900 expected indexed messages**: 30 exports from the first Mac and 11,692
+from the second. Manifest origin and original-path associations, export file
+hashes, raw source reconstruction, and message identities were checked.
+
+Of these exports, 11,715 match original bytes exactly. Seven contain only
+length-preserving redactions. All indexed message text matches the archived
+post-redaction text. The second-Mac chunk-backed subset contains 136 sources;
+all 328 committed objects passed BLAKE3 address and decoded-size checks.
+Provisional-tail generations need not have their completion flag set; this
+proof used acknowledged extents and reconstructed bytes.
+
+Thirty first-Mac exports have ambiguous conversation-level origin metadata
+because imports with a shared session ID coalesced. Their source and individual
+message provenance and bytes were verified independently. Conversation origin
+or a shared session ID alone remains insufficient proof.
+
+The owner chose to drop **103 older supported CASS records** from recovery
+scope: 61 Devin, 21 Codex, and 21 Code-app records without proven shared
+original-path association. This is an accepted coverage gap, not a successful
+migration claim. No additional import or snapshot deletion is required by that
+decision. Retained snapshots remain intact.
+
+The owner also chose to drop **180 CASS records from other providers** from
+migration scope. They remain outside selected native collection and recovery
+scope. Retained snapshots stay intact; this decision does not claim migration. The selected export proof and eight native
+samples do not establish exhaustive discovery, all native message equality, or
+a complete backup restore. CASS retirement remains pending live acceptance and
+owner review of the remaining boundaries.
 
 Separate recovery-device reconciliation was previously deferred. Read-only
 comparison does not authorize restriction changes, grants, imports, or deletion
