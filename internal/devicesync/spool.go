@@ -3,6 +3,7 @@ package devicesync
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,12 +44,17 @@ func OpenSpool(dir string, capBytes int64) (*Spool, error) {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if fi, err := d.Info(); err == nil {
-			s.used += fi.Size()
+		fi, err := d.Info()
+		if err != nil {
+			return err
 		}
+		s.used += fi.Size()
 		return nil
 	})
-	return s, err
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Spool) chunkPath(h syncproto.Hash) string {
@@ -64,12 +70,17 @@ func (s *Spool) tailPath(sid, gen int64) string {
 func (s *Spool) Used() int64   { s.mu.Lock(); defer s.mu.Unlock(); return s.used }
 func (s *Spool) Blocked() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.blocked }
 
-// Reserve checks that n more bytes fit, without writing. It sets Blocked
-// when they do not.
+// Reserve checks that n more bytes fit at this moment, without writing or
+// holding a reservation. Another writer may consume capacity before a later
+// PutChunk/PutTail, which checks again. It sets Blocked when bytes do not fit.
 func (s *Spool) Reserve(n int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.used+n > s.cap {
+	return s.checkSpaceLocked(n)
+}
+
+func (s *Spool) checkSpaceLocked(n int64) error {
+	if n < 0 || s.used > s.cap || n > s.cap-s.used {
 		s.blocked = true
 		return fmt.Errorf("%w: %d + %d bytes over cap %d", ErrSpoolFull, s.used, n, s.cap)
 	}
@@ -77,18 +88,65 @@ func (s *Spool) Reserve(n int64) error {
 }
 
 func (s *Spool) write(path string, data []byte) error {
-	if _, err := os.Stat(path); err == nil {
+	return s.writeWithFileWriter(path, data, (*os.File).Write)
+}
+
+func (s *Spool) writeWithFileWriter(path string, data []byte, write func(*os.File, []byte) (int, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fi, err := os.Stat(path); err == nil {
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("devicesync: spool destination is not a regular file: %s", path)
+		}
 		return nil
-	}
-	if err := s.Reserve(int64(len(data))); err != nil {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err := s.checkSpaceLocked(int64(len(data))); err != nil {
+		return err
+	}
+	retained, err := publishSpoolFile(path, data, write)
 	if err != nil {
+		// Failed cleanup can leave a partial temporary file. Charge it while
+		// still owning the spool, so later writers cannot ignore those bytes.
+		s.used += retained
 		return err
 	}
-	_, err = f.Write(data)
+	s.used += int64(len(data))
+	s.blocked = false
+	return nil
+}
+
+// Publication has no mutable fault hooks. The write operation is passed
+// explicitly so tests can prove partial-write/IO failure cleanup with real files.
+func publishSpoolFile(path string, data []byte, write func(*os.File, []byte) (int, error)) (retained int64, err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return 0, err
+	}
+	tmp := f.Name()
+	defer func() {
+		_ = f.Close()
+		if err != nil {
+			if cleanupErr := removeSpoolTemp(tmp); cleanupErr != nil {
+				fi, statErr := os.Stat(tmp)
+				switch {
+				case statErr == nil:
+					retained = fi.Size()
+				case errors.Is(statErr, os.ErrNotExist):
+					retained = 0
+				default:
+					retained = int64(len(data))
+				}
+				err = errors.Join(err, cleanupErr, statErr)
+			}
+		}
+	}()
+	var n int
+	n, err = write(f, data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
 	if err == nil {
 		err = f.Sync()
 	}
@@ -98,18 +156,20 @@ func (s *Spool) write(path string, data []byte) error {
 	if err == nil {
 		err = os.Rename(tmp, path)
 	}
-	if err != nil {
-		os.Remove(tmp)
-		return err
+	return 0, err
+}
+
+func removeSpoolTemp(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	s.mu.Lock()
-	s.used += int64(len(data))
-	s.blocked = false
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 func (s *Spool) read(path string) ([]byte, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
@@ -118,14 +178,14 @@ func (s *Spool) read(path string) ([]byte, bool, error) {
 }
 
 func (s *Spool) remove(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	fi, err := os.Stat(path)
 	if err != nil {
 		return
 	}
 	if os.Remove(path) == nil {
-		s.mu.Lock()
 		s.used -= fi.Size()
-		s.mu.Unlock()
 	}
 }
 
