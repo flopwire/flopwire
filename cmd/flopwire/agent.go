@@ -49,13 +49,15 @@ import (
 
 func agentCmd(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flopwire agent run|flush|status [flags]")
+		return errors.New("usage: flopwire agent run|flush|status|prepare-legacy-tails [flags]")
 	}
 	switch args[0] {
 	case "run":
 		return agentRun(ctx, args[1:])
 	case "flush":
 		return agentFlush(ctx, args[1:], os.Stdin)
+	case "prepare-legacy-tails":
+		return agentPrepareLegacyTails(ctx, args[1:], os.Stdout)
 	case "status":
 		fs := flag.NewFlagSet("agent status", flag.ContinueOnError)
 		asJSON := fs.Bool("json", false, "print JSON")
@@ -67,7 +69,7 @@ func agentCmd(ctx context.Context, args []string) error {
 		}
 		return agentStatusOutput(ctx, os.Stdout, *asJSON)
 	default:
-		return fmt.Errorf("unknown agent command %q (want run, flush or status)", args[0])
+		return fmt.Errorf("unknown agent command %q (want run, flush, status or prepare-legacy-tails)", args[0])
 	}
 }
 

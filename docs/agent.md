@@ -37,6 +37,11 @@ The agent uses these paths:
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
 
+Offline tail-format preparation uses `flopwire agent prepare-legacy-tails`.
+It requires a stopped collector and exclusive ownership of existing state.
+See [spool tail preparation](operations/spool-tail-preparation.md) for its
+validation, resumable conversion, and format-only limits.
+
 Cowork collection reads native Claude evidence under
 `<container>/<account>/<workspace>/<app-session>/.claude/projects`.
 It preserves native session IDs and original paths. It uses adjacent app
