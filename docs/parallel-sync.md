@@ -152,6 +152,28 @@ t7 owner removes H and decrements bytes once
 
 Pending references and publication ordering must remain recoverable after a crash. Startup reconciliation handles abandoned temporary files; it must never discard a published chunk referenced by committed sync state.
 
+`TestSaveCaptureProcessKillPreservesPendingSharedChunks` adds two serial
+subprocess barriers at the actual `Store.saveCapture` primitive. Source A first
+commits a pending reference to literal chunk H. Source B publishes H and unique
+chunk J. One case blocks in the existing saveCapture guard before transaction
+commit; the other blocks immediately after saveCapture returns. The parent must
+observe the requested pipe barrier and independently inspect the committed
+ledger before killing and reaping the child. A missed barrier fails the test.
+
+Restart uses the same SQLite state and spool through `NewSyncer`'s actual sweep.
+Before-commit death must retain A's H and delete unreferenced J. After-commit
+death must retain both chunks; acknowledging A must retain H for B, and B must
+finish its original generation before the remaining spool bytes are released.
+Manifest hashes, offsets, sizes, watermarks, durable acknowledgments and protocol
+server reconstruction are checked against the literal fixture bytes.
+
+These are component tests with a protocol test server and real process kill.
+They do not exercise the full collector capture loop, PostgreSQL/MinIO,
+concurrent workers, filesystem power failure or provisional-tail replacement.
+Tail safety remains a separate prerequisite: retain old and new provisional
+tails within the existing spool cap until capture commits; pause and retry when
+both cannot fit. Do not truncate history or increase the cap to complete a turn.
+
 ### Notification, pressure, and restart
 
 ```text
