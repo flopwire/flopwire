@@ -34,8 +34,11 @@ The October 8 Local Code app check on the first Mac created a session after
 collector startup and appended a second synthetic prompt. Both prompts and
 replies appeared in local and shared Claude retrieval, in the same session.
 This establishes creation and append for that surface. It does not establish
-app restart, collector restart, or hooks-disabled discovery. Second-Mac Local
-Code and Cowork checks are delegated to its live coding session. Scoped fallback
+app restart, collector restart, or hooks-disabled discovery. Both second-Mac
+app sessions passed UI creation and append. Local Code markers appeared in
+local and shared retrieval; Cowork collection remains under investigation.
+Cross-Mac shared retrieval of the first-Mac Code markers passed. The owner
+authorized app restart checks on the second Mac and deferred them on the first. Scoped fallback
 and Cowork authorization passed synthetic integration tests. Synthetic
 private staging tests used real PostgreSQL and MinIO; they do not establish
 complete private-history coverage.
@@ -85,9 +88,9 @@ original-path association. This is an accepted coverage gap, not a successful
 migration claim. No additional import or snapshot deletion is required by that
 decision. Retained snapshots remain intact.
 
-Another **180 CASS records from other providers** remain outside selected
-native collection and recovery scope. This audit does not migrate them or
-establish an owner waiver for them. The selected export proof and eight native
+The owner also chose to drop **180 CASS records from other providers** from
+migration scope. They remain outside selected native collection and recovery
+scope. Retained snapshots stay intact; this decision does not claim migration. The selected export proof and eight native
 samples do not establish exhaustive discovery, all native message equality, or
 a complete backup restore. CASS retirement remains pending live acceptance and
 owner review of the remaining boundaries.
