@@ -84,10 +84,40 @@ func TestPathAdmissionExactKeysAndStaleRelease(t *testing.T) {
 	}
 }
 
+// Every asynchronously started handler has a buffered result and a cleanup
+// owner. Cleanup opens the barrier, cancels outstanding IO and joins handlers
+// before later fixture cleanups can close PostgreSQL or MinIO resources.
+type pathHandlers struct {
+	wg      sync.WaitGroup
+	cancels []context.CancelFunc
+}
+
+func newPathHandlers(t *testing.T, openBarrier func()) *pathHandlers {
+	t.Helper()
+	handlers := new(pathHandlers)
+	t.Cleanup(func() {
+		openBarrier()
+		for _, cancel := range handlers.cancels {
+			cancel()
+		}
+		handlers.wg.Wait()
+	})
+	return handlers
+}
+func (h *pathHandlers) start(ctx context.Context, fn func(context.Context) error) <-chan error {
+	ctx, cancel := context.WithCancel(ctx)
+	h.cancels = append(h.cancels, cancel)
+	result := make(chan error, 1)
+	h.wg.Add(1)
+	go func() { defer h.wg.Done(); defer cancel(); result <- fn(ctx) }()
+	return result
+}
+
 type pathQueueBarrier struct {
-	entered chan struct{}
-	finish  chan struct{}
-	calls   atomic.Int64
+	entered  chan struct{}
+	finish   chan struct{}
+	calls    atomic.Int64
+	handlers *pathHandlers
 }
 
 func (q *pathQueueBarrier) Notify(string) {}
@@ -100,8 +130,7 @@ func (q *pathQueueBarrier) Overloaded() *Error {
 func pathQueue(t *testing.T) *pathQueueBarrier {
 	t.Helper()
 	q := &pathQueueBarrier{entered: make(chan struct{}, 4), finish: make(chan struct{})}
-	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(q.finish) }) })
+	q.handlers = newPathHandlers(t, func() { close(q.finish) })
 	return q
 }
 func pathAwait(t *testing.T, ch <-chan struct{}) {
@@ -169,8 +198,10 @@ func TestPathAdmissionActualFlushIgnoresChangedSourceIdentity(t *testing.T) {
 	q := pathQueue(t)
 	s, other := &Server{Admission: a, Queue: q}, &Server{Admission: a, Queue: q}
 	h := pathHeader("/same.jsonl")
-	done := make(chan error, 1)
-	go func() { _, err := s.Flush(context.Background(), "device", &h, nil); done <- err }()
+	done := q.handlers.start(context.Background(), func(ctx context.Context) error {
+		_, err := s.Flush(ctx, "device", &h, nil)
+		return err
+	})
 	pathAwait(t, q.entered)
 	variants := []syncproto.FlushHeader{h, h, h, h, h}
 	variants[0].Source.FileID = "2:2"
@@ -180,8 +211,11 @@ func TestPathAdmissionActualFlushIgnoresChangedSourceIdentity(t *testing.T) {
 	variants[4].Source.SessionKey = "other-session"
 	for _, v := range variants {
 		header, pr, probe := pathDecoded(t, v, []byte("synthetic refused payload\n"))
-		_, err := other.Flush(context.Background(), "device", header, pr)
-		pathRequireRefusal(t, err)
+		conflict := q.handlers.start(context.Background(), func(ctx context.Context) error {
+			_, err := other.Flush(ctx, "device", header, pr)
+			return err
+		})
+		pathRequireRefusal(t, pathResult(t, conflict))
 		if probe.reads.Load() != 0 || q.calls.Load() != 1 {
 			t.Fatal("refusal reached payload or queue")
 		}
@@ -202,13 +236,13 @@ func TestPathAdmissionDistinctDirectFlushesOverlap(t *testing.T) {
 			a := admissionOwner(t, 1)
 			q := pathQueue(t)
 			s := &Server{Admission: a, Queue: q}
-			done := make(chan error, 2)
+			var results []<-chan error
 			for _, key := range []struct{ device, path string }{{"one", "/same"}, other} {
-				go func() {
+				results = append(results, q.handlers.start(context.Background(), func(ctx context.Context) error {
 					h := pathHeader(key.path)
-					_, err := s.Flush(context.Background(), key.device, &h, nil)
-					done <- err
-				}()
+					_, err := s.Flush(ctx, key.device, &h, nil)
+					return err
+				}))
 			}
 			pathAwait(t, q.entered)
 			pathAwait(t, q.entered)
@@ -217,8 +251,8 @@ func TestPathAdmissionDistinctDirectFlushesOverlap(t *testing.T) {
 			}
 			q.finish <- struct{}{}
 			q.finish <- struct{}{}
-			for i := 0; i < 2; i++ {
-				if err := pathResult(t, done); err == nil {
+			for _, result := range results {
+				if err := pathResult(t, result); err == nil {
 					t.Fatal("queue rejection missing")
 				}
 			}
@@ -236,8 +270,10 @@ func TestPathAdmissionCancellationWaitsForActualFlushReturn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	h := pathHeader("/cancel")
-	done := make(chan error, 1)
-	go func() { _, err := s.Flush(ctx, "one", &h, nil); done <- err }()
+	done := q.handlers.start(ctx, func(ctx context.Context) error {
+		_, err := s.Flush(ctx, "one", &h, nil)
+		return err
+	})
 	pathAwait(t, q.entered)
 	cancel()
 	if _, err := a.acquirePath("one", h.Source.Path); err == nil {
@@ -308,17 +344,16 @@ func TestPathAdmissionDurableFlushRetainsOwnershipThroughNotify(t *testing.T) {
 	e := newEnv(t)
 	a := admissionOwner(t, 2)
 	q := &pathNotifyBarrier{entered: make(chan struct{}, 4), finish: make(chan struct{})}
-	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(q.finish) }) })
+	handlers := newPathHandlers(t, func() { close(q.finish) })
 	s := &Server{Admission: a, Pool: e.pool, Objects: e.objects, Log: e.queue.Log, Queue: q}
 	body := []byte("{\"record\":\"durable before notification\"}\n")
 	header, pr, _ := pathDecoded(t, pathHeader("/durable-notify.jsonl"), body)
-	type outcome struct {
-		reply *syncproto.FlushResponse
-		err   error
-	}
-	done := make(chan outcome, 1)
-	go func() { reply, err := s.Flush(e.ctx, e.deviceID, header, pr); done <- outcome{reply, err} }()
+	var firstReply *syncproto.FlushResponse
+	done := handlers.start(e.ctx, func(ctx context.Context) error {
+		var err error
+		firstReply, err = s.Flush(ctx, e.deviceID, header, pr)
+		return err
+	})
 	pathAwait(t, q.entered)
 	if e.pool.Stat().AcquiredConns() != 1 || pathAdmissionCount(a) != 1 {
 		t.Fatalf("notify lost resources: conns=%d paths=%d", e.pool.Stat().AcquiredConns(), pathAdmissionCount(a))
@@ -336,19 +371,17 @@ func TestPathAdmissionDurableFlushRetainsOwnershipThroughNotify(t *testing.T) {
 	changed.Source.FileID = "2:2"
 	changed.Generation = 1
 	next, reader, probe := pathDecoded(t, changed, []byte("refused changed identity\n"))
-	_, err = s.Flush(e.ctx, e.deviceID, next, reader)
-	pathRequireRefusal(t, err)
+	conflict := handlers.start(e.ctx, func(ctx context.Context) error {
+		_, err := s.Flush(ctx, e.deviceID, next, reader)
+		return err
+	})
+	pathRequireRefusal(t, pathResult(t, conflict))
 	if probe.reads.Load() != 0 || e.pool.Stat().AcquiredConns() != 1 {
 		t.Fatal("busy path reached payload or acquired another connection")
 	}
 	q.finish <- struct{}{}
-	select {
-	case result := <-done:
-		if result.err != nil || result.reply.Status != syncproto.StatusOK || result.reply.AckedEntries != 1 {
-			t.Fatalf("flush result %+v %v", result.reply, result.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("notify release did not finish")
+	if err := pathResult(t, done); err != nil || firstReply == nil || firstReply.Status != syncproto.StatusOK || firstReply.AckedEntries != 1 {
+		t.Fatalf("flush result %+v %v", firstReply, err)
 	}
 	if e.pool.Stat().AcquiredConns() != 0 || pathAdmissionCount(a) != 0 {
 		t.Fatal("completed flush leaked resources")
