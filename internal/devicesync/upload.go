@@ -46,19 +46,20 @@ func (t *uploadTurn) dispatch() {
 }
 
 // uploadTurn sends pending generations oldest first, within the request budget.
-func (s *Syncer) uploadTurn(ctx context.Context, src *sourceRow, turn *uploadTurn) (syncOutcome, error) {
+func (op *syncOperation) uploadTurn(ctx context.Context, src *sourceRow, turn *uploadTurn) (syncOutcome, error) {
+	s := op.syncer
 	gens, err := s.store.pendingGens(ctx, src.ID)
 	if err != nil {
 		return syncDone, err
 	}
 	for _, g := range gens {
-		if err := s.validateGeneration(src, g); err != nil {
+		if err := op.validateGeneration(src, g); err != nil {
 			return syncDone, err
 		}
 		if turn.spent() {
 			return uploadPending, nil
 		}
-		if err := s.uploadGenTurn(ctx, src, g, turn); err != nil {
+		if err := op.uploadGenTurn(ctx, src, g, turn); err != nil {
 			return syncDone, err
 		}
 		if !g.done() {
@@ -76,7 +77,7 @@ func (s *Syncer) uploadTurn(ctx context.Context, src *sourceRow, turn *uploadTur
 		if turn.spent() {
 			return uploadPending, nil
 		}
-		if err := s.sendRepo(ctx, src, turn); err != nil {
+		if err := op.sendRepo(ctx, src, turn); err != nil {
 			return syncDone, err
 		}
 	}
@@ -86,15 +87,16 @@ func (s *Syncer) uploadTurn(ctx context.Context, src *sourceRow, turn *uploadTur
 // sendRepo reports src's repository with a flush of its current
 // generation that carries no entries and no tail: the server updates the
 // source's row and leaves its bytes as they are.
-func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn) error {
+func (op *syncOperation) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn) error {
+	s := op.syncer
 	g, err := s.store.gen(ctx, src.ID, src.Gen)
 	if err != nil || g == nil {
 		return err
 	}
-	if err := s.validateGeneration(src, g); err != nil {
+	if err := op.validateGeneration(src, g); err != nil {
 		return err
 	}
-	if err := s.checkAuthorization(ctx); err != nil {
+	if err := op.checkAuthorization(ctx); err != nil {
 		return err
 	}
 	h := syncproto.FlushHeader{
@@ -107,7 +109,7 @@ func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn)
 	if g.ChangeTime != 0 {
 		h.ChangeTime = time.Unix(0, g.ChangeTime).UTC()
 	}
-	if err := s.checkAuthorization(ctx); err != nil {
+	if err := op.checkAuthorization(ctx); err != nil {
 		return err
 	}
 	turn.dispatch()
@@ -121,8 +123,9 @@ func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn)
 	return err
 }
 
-func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, turn *uploadTurn) error {
-	if err := s.validateGeneration(src, g); err != nil {
+func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, turn *uploadTurn) error {
+	s := op.syncer
+	if err := op.validateGeneration(src, g); err != nil {
 		return err
 	}
 	key := [2]int64{src.ID, g.Gen}
@@ -134,16 +137,16 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 		if turn.spent() {
 			return nil
 		}
-		if err := s.checkAuthorization(ctx); err != nil {
+		if err := op.checkAuthorization(ctx); err != nil {
 			return err
 		}
-		batch, bodies, err := s.nextBatch(ctx, src, g)
+		batch, bodies, err := op.nextBatch(ctx, src, g)
 		if err != nil {
 			return err
 		}
 		// Compress the bodies, cutting the batch where the compressed bytes
 		// would pass MaxRequestBytes; then read the tail if it fits.
-		pl := &payload{ctx: ctx, s: s, src: src, g: g, failed: -1}
+		pl := &payload{ctx: ctx, op: op, src: src, g: g, failed: -1}
 		batch = pl.pack(batch, bodies)
 		var tail *syncproto.Tail
 		last := pl.err == nil && g.Acked+int64(len(batch)) == g.Entries
@@ -187,9 +190,9 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 				h.Bodies = append(h.Bodies, syncproto.Body{Hash: p.e.Hash, Size: p.e.Size, ZSize: int64(len(p.z))})
 			}
 			if pl.err == nil {
-				pl.err = s.checkAuthorization(ctx)
+				pl.err = op.checkAuthorization(ctx)
 			}
-			if pl.err == nil && s.authorization != nil && pl.f != nil {
+			if pl.err == nil && op.authorization != nil && pl.f != nil {
 				pl.err = validateProofFile(pl.f, g.Proof)
 			}
 			if pl.err == nil {
@@ -199,7 +202,7 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 		}
 		pl.close()
 		if pl.err != nil {
-			if s.authorization != nil {
+			if op.authorization != nil {
 				return pl.err
 			}
 			if pl.failed >= 0 && (g.Gen != src.Gen || s.vanished(src)) {
@@ -311,7 +314,8 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 // entry), and the bodies the server is not known to hold, asking /has when
 // those exceed HasThreshold. payload.pack then cuts the batch where the
 // compressed bodies reach MaxRequestBytes.
-func (s *Syncer) nextBatch(ctx context.Context, src *sourceRow, g *genRow) ([]syncproto.Entry, []syncproto.Entry, error) {
+func (op *syncOperation) nextBatch(ctx context.Context, src *sourceRow, g *genRow) ([]syncproto.Entry, []syncproto.Entry, error) {
+	s := op.syncer
 	// Bounded by Entries: a gap cut leaves manifest rows past the cut.
 	ents, err := s.store.entries(ctx, g.SourceID, g.Gen, g.Acked, int(min(g.Entries-g.Acked, 4096)))
 	if err != nil {
@@ -325,7 +329,7 @@ func (s *Syncer) nextBatch(ctx context.Context, src *sourceRow, g *genRow) ([]sy
 		return nil, nil, err
 	}
 	for _, e := range ents {
-		if s.authorization != nil && (e.Offset < 0 || e.Size < 0 || e.Offset > g.Size-e.Size || e.Offset > g.Proof.Offset-e.Size) {
+		if op.authorization != nil && (e.Offset < 0 || e.Size < 0 || e.Offset > g.Size-e.Size || e.Offset > g.Proof.Offset-e.Size) {
 			return nil, nil, s.unproven(src, g, "manifest exceeds captured proof")
 		}
 		need := !known[e.Hash] && !seen[e.Hash]
@@ -346,7 +350,7 @@ func (s *Syncer) nextBatch(ctx context.Context, src *sourceRow, g *genRow) ([]sy
 	for i, b := range bodies {
 		hs[i] = b.Hash
 	}
-	if err := s.checkAuthorization(ctx); err != nil {
+	if err := op.checkAuthorization(ctx); err != nil {
 		return nil, nil, err
 	}
 	missing, err := s.tr.Has(ctx, hs)
@@ -427,7 +431,7 @@ const batchRatio = 8
 // one uncompressed chunk is in memory at a time.
 type payload struct {
 	ctx   context.Context
-	s     *Syncer
+	op    *syncOperation
 	src   *sourceRow
 	g     *genRow
 	parts []part
@@ -454,8 +458,8 @@ type part struct {
 // returns batch cut before the first entry whose body was left out. On a
 // read failure it sets err and failed.
 func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
-	keep := p.s.zkeep
-	p.s.zkeep = part{}
+	keep := p.op.scratch.deferred
+	p.op.scratch.deferred = part{}
 	for i, e := range bodies {
 		var z []byte
 		var err error
@@ -468,8 +472,8 @@ func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
 			p.err, p.failed = err, e.Ordinal
 			return batch
 		}
-		if i > 0 && p.wire+int64(len(z)) > p.s.cfg.MaxRequestBytes {
-			p.s.zkeep = part{e, z} // the next request starts with it
+		if i > 0 && p.wire+int64(len(z)) > p.op.syncer.cfg.MaxRequestBytes {
+			p.op.scratch.deferred = part{e, z} // the next request starts with it
 			for j, b := range batch {
 				if b.Ordinal >= e.Ordinal {
 					return batch[:j]
@@ -485,7 +489,7 @@ func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
 
 // compressed returns the zstd frame of chunk e.
 func (p *payload) compressed(e syncproto.Entry) ([]byte, error) {
-	data, err := p.read(p.s.buf, e.Offset, e.Size, e.Hash, func() ([]byte, bool, error) { return p.s.spool.Chunk(e.Hash) })
+	data, err := p.read(p.op.scratch.buf, e.Offset, e.Size, e.Hash, func() ([]byte, bool, error) { return p.op.syncer.spool.Chunk(e.Hash) })
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +498,7 @@ func (p *payload) compressed(e syncproto.Entry) ([]byte, error) {
 
 // loadTail reads and verifies the tail and keeps the bytes from t.From.
 func (p *payload) loadTail(t *syncproto.Tail) {
-	data, err := p.read(nil, t.Offset, t.Size, t.Hash, func() ([]byte, bool, error) { return p.s.spool.TailVersion(p.src.ID, p.g.Gen, t.Hash) })
+	data, err := p.read(nil, t.Offset, t.Size, t.Hash, func() ([]byte, bool, error) { return p.op.syncer.spool.TailVersion(p.src.ID, p.g.Gen, t.Hash) })
 	if err != nil {
 		p.err, p.failed = err, p.g.Entries
 		return
@@ -505,8 +509,8 @@ func (p *payload) loadTail(t *syncproto.Tail) {
 // read returns size bytes at off of the source, from the spool when it
 // holds them (else read into buf, grown as needed), verified against want.
 func (p *payload) read(buf []byte, off, size int64, want syncproto.Hash, spooled func() ([]byte, bool, error)) ([]byte, error) {
-	if p.s.authorization != nil && (off < 0 || size < 0 || off > p.g.Proof.Offset-size) {
-		return nil, p.s.unproven(p.src, p.g, "payload exceeds captured proof")
+	if p.op.authorization != nil && (off < 0 || size < 0 || off > p.g.Proof.Offset-size) {
+		return nil, p.op.syncer.unproven(p.src, p.g, "payload exceeds captured proof")
 	}
 	data, ok, _ := spooled()
 	if !ok {
@@ -516,7 +520,7 @@ func (p *payload) read(buf []byte, off, size int64, want syncproto.Hash, spooled
 		}
 		data = data[:size]
 		if err := p.readSource(data, off); err != nil {
-			if p.s.authorization != nil {
+			if p.op.authorization != nil {
 				return nil, fmt.Errorf("devicesync: read authorized source %s: %w", p.src.Spec.Path, err)
 			}
 			return nil, fmt.Errorf("%w: %s: %w", ErrSourceChanged, p.src.Spec.Path, err)
@@ -548,11 +552,11 @@ func (p *payload) Read(b []byte) (int, error) {
 func (p *payload) readSource(data []byte, off int64) error {
 	if !p.open {
 		p.open = true
-		if p.s.authorization != nil {
-			if err := p.s.checkAuthorization(p.ctx); err != nil {
+		if p.op.authorization != nil {
+			if err := p.op.checkAuthorization(p.ctx); err != nil {
 				return err
 			}
-			f, err := p.s.authorization.Open(p.ctx, p.src.Spec)
+			f, err := p.op.authorization.Open(p.ctx, p.src.Spec)
 			if err != nil {
 				return err
 			}
@@ -560,7 +564,7 @@ func (p *payload) readSource(data []byte, off int64) error {
 			if err := validateProofFile(f, p.g.Proof); err != nil {
 				return err
 			}
-		} else if f := p.s.held[p.src.ID]; f != nil {
+		} else if f := p.op.syncer.held[p.src.ID]; f != nil {
 			p.f = f
 		} else if f, err := os.Open(p.src.Spec.Path); err == nil {
 			p.f = f
@@ -580,7 +584,7 @@ func (p *payload) readSource(data []byte, off int64) error {
 }
 
 func (p *payload) close() {
-	if p.f != nil && p.f != p.s.held[p.src.ID] {
+	if p.f != nil && p.f != p.op.syncer.held[p.src.ID] {
 		p.f.Close()
 	}
 }

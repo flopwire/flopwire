@@ -10,8 +10,9 @@ remain. Responsive drain and cancellation retention (#203), one-request turns
 are deployed. A serial pressure-epoch prerequisite now guards global health against older
 successful completions. The shared serial global/device HTTP admission owner
 (#213) is deployed. The Store/Spool reference owner and serial runtime wiring
-(#219–220) have landed. This prerequisite adds independent device/path ownership
-while the device cap remains one. Parallel dispatch, worker-local state and
+(#219–220) have landed. Independent device/path admission (#221) has landed
+while the device cap remains one. The serial client operation prerequisite makes
+authorization explicit and separates reusable scratch from the logical call. Parallel dispatch, worker-local state and
 memory budgets, probe ownership, credential drain, and concurrency negotiation
 remain open.
 
@@ -119,6 +120,24 @@ Keep existing chunk verification, ownership checks, manifest transactions, redac
 ### 2. One client coordinator, bounded worker contexts
 
 The scheduler owns job transitions. Workers receive immutable work snapshots and return results; they do not independently change shared queue state. Represent each path as one of waiting, ready, running, or retrying. A running path may retain one coalesced newer notification. The next operation on that path starts only after completion of the current operation.
+
+The serial operation prerequisite keeps the existing Syncer mutex through
+capture and network upload. One private operation carries a frozen authorization
+through resume and recapture. Context and the one-request scheduler budget remain
+explicit arguments. Public authorized calls still leave lease release to their
+caller; scheduler error callbacks and release retain their existing order.
+
+An operation points to the Syncer's reusable scan buffer and one deferred
+compressed body. That pointer is an association, not an active borrow or lease.
+Production code borrows scratch only inside the existing mutex intervals and
+closes request payloads before unlocking. Another serial call can reuse scratch
+between resume and recapture; the operation reloads deferred state after relock.
+Deferred frames retain content-addressed bytes, never authorization, file handles
+or source state. Matching-hash reuse still requires the new operation's proof
+checks. No Chunk.Max buffer is allocated per operation. This is not a complete
+memory bound: request parts, large persisted chunks and opaque exports retain
+existing allocation costs. Descriptor and stall ownership stay with the serial
+Syncer. Parallel scratch ownership remains separate work.
 
 Keep a single `Store` and `Spool`. Keep whole-version capture serialized initially, separate from parallel upload turns. Do not introduce capture stepping as part of this rollout. Allocate worker-local upload/redaction buffers and retained compressed bodies. Keep descriptor ownership, refusals, durable source generations, and spool references under explicit shared owners. Run startup spool sweeping exactly once, before workers start; shut down workers before sweeping or closing descriptors.
 

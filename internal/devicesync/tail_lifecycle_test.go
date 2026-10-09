@@ -51,7 +51,7 @@ func TestTailLifecycleIdleSealRetainsTailUntilCommit(t *testing.T) {
 	src := lifecycleSource(t, e, spec)
 	body := []byte("synthetic complete record\n")
 	export := lifecycleExport(body, []byte("state"))
-	if err := e.sy.capture(t.Context(), src, export, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, export, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	before := lifecycleGeneration(t, e, src)
@@ -72,7 +72,7 @@ func TestTailLifecycleIdleSealRetainsTailUntilCommit(t *testing.T) {
 		guards = append(guards, func() error { return rejected })
 		return e.store.saveCapture(ctx, src, g, add, wm, state, guards...)
 	}
-	if err := e.sy.captureWithCommit(t.Context(), src, export, -1, nil, guardCommit); !errors.Is(err, rejected) {
+	if err := e.sy.ordinaryOperation().captureWithCommit(t.Context(), src, export, -1, nil, guardCommit); !errors.Is(err, rejected) {
 		t.Fatalf("guard error: %v", err)
 	}
 	committed := lifecycleGeneration(t, e, src)
@@ -80,7 +80,7 @@ func TestTailLifecycleIdleSealRetainsTailUntilCommit(t *testing.T) {
 		t.Fatalf("failed seal changed ledger: %+v", committed)
 	}
 	lifecycleTail(t, e, src.ID, before.Gen, before.Tail, body, true)
-	if err := e.sy.capture(t.Context(), src, export, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, export, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	committed = lifecycleGeneration(t, e, src)
@@ -97,7 +97,7 @@ func TestTailLifecycleAcknowledgedExportRewriteRetainsOldUntilCommit(t *testing.
 	src := lifecycleSource(t, e, spec)
 	old := []byte("old synthetic export\n")
 	next := []byte("replacement synthetic export\n")
-	if err := e.sy.capture(t.Context(), src, lifecycleExport(old, []byte("old state")), -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, lifecycleExport(old, []byte("old state")), -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	g := lifecycleGeneration(t, e, src)
@@ -117,7 +117,7 @@ func TestTailLifecycleAcknowledgedExportRewriteRetainsOldUntilCommit(t *testing.
 		return e.store.saveCapture(ctx, src, nextGen, add, wm, state, append(guards, func() error { return rejected })...)
 	}
 	export := lifecycleExport(next, []byte("next state"))
-	if err := e.sy.captureWithCommit(t.Context(), src, export, -1, nil, commit); !errors.Is(err, rejected) {
+	if err := e.sy.ordinaryOperation().captureWithCommit(t.Context(), src, export, -1, nil, commit); !errors.Is(err, rejected) {
 		t.Fatalf("rewrite error: %v", err)
 	}
 	src = lifecycleSource(t, e, spec)
@@ -125,7 +125,7 @@ func TestTailLifecycleAcknowledgedExportRewriteRetainsOldUntilCommit(t *testing.
 		t.Fatalf("failed rewrite changed source: %+v", src)
 	}
 	lifecycleTail(t, e, src.ID, g.Gen, g.Tail, old, true)
-	if err := e.sy.capture(t.Context(), src, export, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, export, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	committed := lifecycleGeneration(t, e, src)
@@ -142,7 +142,7 @@ func TestTailLifecycleCutFailurePreservesOldCommittedTail(t *testing.T) {
 	spec.Export = true
 	src := lifecycleSource(t, e, spec)
 	body := []byte("pending bytes to cut\n")
-	if err := e.sy.capture(t.Context(), src, lifecycleExport(body, []byte("state")), -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, lifecycleExport(body, []byte("state")), -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	before := lifecycleGeneration(t, e, src)
@@ -209,7 +209,7 @@ func TestTailLifecycleSameHashReleasePreservesLiveVersion(t *testing.T) {
 	spec.Export = true
 	src := lifecycleSource(t, e, spec)
 	body := []byte("same committed bytes\n")
-	if err := e.sy.capture(t.Context(), src, lifecycleExport(body, []byte("state")), -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, lifecycleExport(body, []byte("state")), -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	g := lifecycleGeneration(t, e, src)
@@ -239,7 +239,7 @@ func TestTailLifecycleSalvageRequiresExactPendingTail(t *testing.T) {
 			if err := e.spool.PutTailVersion(src.ID, 0, syncproto.Sum(stored), stored); err != nil {
 				t.Fatal(err)
 			}
-			e.sy.salvage(t.Context(), src, g, "synthetic source unavailable")
+			e.sy.ordinaryOperation().salvage(t.Context(), src, g, "synthetic source unavailable")
 			committed := lifecycleGeneration(t, e, src)
 			if matching {
 				if committed.Tail != tail || committed.TailAcked {
