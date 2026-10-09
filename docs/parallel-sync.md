@@ -138,8 +138,15 @@ Deferred frames retain content-addressed bytes, never authorization, file handle
 or source state. Matching-hash reuse still requires the new operation's proof
 checks. No Chunk.Max buffer is allocated per operation. This is not a complete
 memory bound: request parts, large persisted chunks and opaque exports retain
-existing allocation costs. Stalls stay with the serial Syncer. Parallel scratch
-ownership remains separate work.
+existing allocation costs. Parallel scratch ownership remains separate work.
+
+A shared counter owner now records cumulative no-progress responses by source
+and generation across scheduler turns. Progress and notifications do not reset
+that count. The third stall removes the bucket before the existing failure and
+backoff path. Public full-drain calls keep their local zero-based counter.
+Terminal upload, rejected-generation and successful terminal-cut cleanup remove
+only the affected generation. The Syncer mutex and serial dispatch remain;
+future workers still need per-path coordination to reject stale completions.
 
 The descriptor owner uses a short mutex to retain, borrow and retire exact file
 entries. A retired entry stays open until its last borrower releases it. Those

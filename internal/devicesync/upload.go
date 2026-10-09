@@ -125,11 +125,8 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 	if err := op.validateGeneration(src, g); err != nil {
 		return err
 	}
-	key := [2]int64{src.ID, g.Gen}
-	stalls := 0
-	if turn != nil {
-		stalls = s.stalls[key]
-	}
+	key := stallKey{src.ID, g.Gen}
+	stalls := 0 // public full-drain calls count locally from zero
 	for !g.done() {
 		if turn.spent() {
 			return nil
@@ -229,7 +226,7 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 		case syncproto.StatusStaleGeneration, syncproto.StatusNewGeneration:
 			s.cfg.Logger.Warn("devicesync: server rejected generation", "path", src.Spec.Path,
 				"generation", g.Gen, "status", resp.Status, "server_generation", resp.Generation)
-			delete(s.stalls, key)
+			s.stalls.forget(key)
 			g.Lost = true
 			return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
 				if err := scope.updateGen(ctx, g, nil); err != nil {
@@ -288,21 +285,21 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 			return err
 		}
 		if g.Acked == prev && !(last && g.TailAcked) {
-			stalls++
 			if turn != nil {
-				if s.stalls == nil {
-					s.stalls = make(map[[2]int64]int)
-				}
-				s.stalls[key] = stalls
+				stalls = s.stalls.record(key)
+			} else {
+				stalls++
 			}
 			if stalls > 2 {
-				delete(s.stalls, key) // a failed operation may retry after backoff
+				if turn == nil {
+					s.stalls.forget(key)
+				}
 				return fmt.Errorf("devicesync: %s generation %d: server made no progress (status %s, acked %d of %d)",
 					src.Spec.Path, g.Gen, resp.Status, g.Acked, g.Entries)
 			}
 		}
 	}
-	delete(s.stalls, key)
+	s.stalls.forget(key)
 	return nil
 }
 

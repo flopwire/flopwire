@@ -126,7 +126,7 @@ type Syncer struct {
 	mu            sync.Mutex
 	descriptors   *descriptorOwner
 	serialScratch syncScratch
-	stalls        map[[2]int64]int // source/generation no-progress responses across scheduler turns
+	stalls        stallOwner // source/generation no-progress responses across scheduler turns
 
 	refMu   sync.Mutex
 	refused map[string]string // path -> the admin path rule the server refused it under
@@ -889,7 +889,7 @@ func (s *Syncer) cutOwned(ctx context.Context, scope *spoolReferenceScope, src *
 		return err
 	}
 	if g.done() {
-		delete(s.stalls, [2]int64{src.ID, g.Gen})
+		s.stalls.forget(stallKey{src.ID, g.Gen})
 	}
 	s.releaseOwned(ctx, scope, src, g, dropped)
 	s.releaseTailOwned(ctx, scope, src.ID, g.Gen, oldTail)

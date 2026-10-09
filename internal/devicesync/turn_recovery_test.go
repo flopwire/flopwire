@@ -227,8 +227,8 @@ func TestTurnStallsRemainCumulativeAcrossProgressAndNotifications(t *testing.T) 
 	e.sy.tr = e.client
 	sc.Flush(sp)
 	sc.runOnce(t.Context())
-	if len(e.sy.stalls) != 0 {
-		t.Fatalf("completed stall buckets: %v", e.sy.stalls)
+	if counts := snapshotStalls(&e.sy.stalls); len(counts) != 0 {
+		t.Fatalf("completed stall buckets: %v", counts)
 	}
 }
 
@@ -260,13 +260,14 @@ func TestTurnTerminalSalvagePrunesStallState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := [2]int64{src.ID, g.Gen}
-	e.sy.stalls = map[[2]int64]int{key: 2}
+	key := stallKey{src.ID, g.Gen}
+	e.sy.stalls.record(key)
+	e.sy.stalls.record(key)
 	if err := e.sy.cut(t.Context(), src, g, g.Acked); err != nil {
 		t.Fatal(err)
 	}
-	if !g.done() || len(e.sy.stalls) != 0 {
-		t.Fatalf("terminal salvage retained stalls: done=%v stalls=%v", g.done(), e.sy.stalls)
+	if counts := snapshotStalls(&e.sy.stalls); !g.done() || len(counts) != 0 {
+		t.Fatalf("terminal salvage retained stalls: done=%v stalls=%v", g.done(), counts)
 	}
 }
 
