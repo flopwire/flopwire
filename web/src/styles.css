@@ -44,23 +44,9 @@ button:disabled {
 }
 .brand-mark {
   width: 22px;
-  height: 18px;
-  display: grid;
-  align-content: space-between;
-}
-.brand-mark i {
+  height: 32px;
   display: block;
-  height: 2px;
-  background: #18201b;
-}
-.brand-mark i:nth-child(1) {
-  width: 15px;
-}
-.brand-mark i:nth-child(2) {
-  width: 22px;
-}
-.brand-mark i:nth-child(3) {
-  width: 9px;
+  flex-shrink: 0;
 }
 .porcelain {
   font:
