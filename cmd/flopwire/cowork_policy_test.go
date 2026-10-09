@@ -114,7 +114,7 @@ func TestSyncStartupUsesPolicyCredentialSnapshot(t *testing.T) {
 	saved.DeviceID, saved.Token = "device-b", "token-b"
 	reads := 0
 	load := deviceBoundConfig(initial, func() (client.Config, error) { reads++; return saved, nil })
-	_, tr, start, stop, err := startSyncFrom(t.Context(), store, dir, 1<<20, syncproto.DeviceDirs{}, quiet, initial, load)
+	_, tr, start, stop, err := startSyncFrom(t.Context(), store, dir, 1<<20, 1, syncproto.DeviceDirs{}, quiet, initial, load)
 	if err != nil {
 		t.Fatal(err)
 	}

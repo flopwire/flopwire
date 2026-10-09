@@ -37,6 +37,25 @@ The agent uses these paths:
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
 
+Upload concurrency defaults to one. Start the collector with
+`flopwire agent run --sync-workers=2` to request two upload workers.
+Start the server with `flopwire serve --flush-per-device=2` to permit them.
+The server must reserve at least two global upload slots in its PostgreSQL pool.
+Its default remains one upload per device.
+
+The collector checks support with its pinned, authenticated connection.
+A server reporting one worker, or a missing capability endpoint, keeps uploads
+serial. A failed check keeps serial uploads available, reports the error, and
+retries the check. A current authentication or TLS-pin failure stops uploads.
+`flopwire agent status` reports the effective worker count and capability errors.
+The JSON fields are `upload_workers` and `concurrency_error`.
+
+Two workers overlap network waits for separate sources. Capture, exports and
+local state changes remain serialized. A source path has one operation at a time.
+Scoped Code and Cowork keep their exclusive authorization leases, which can
+serialize uploads. Worker count does not establish a memory limit or exhaustive
+history coverage. See [parallel sync](parallel-sync.md) for qualification status.
+
 Offline tail-format preparation uses `flopwire agent prepare-legacy-tails`.
 It requires a stopped collector and exclusive ownership of existing state.
 See [spool tail preparation](operations/spool-tail-preparation.md) for its
@@ -259,6 +278,8 @@ socket and prints these parts:
 | `sync: ok` | Uploads work. |
 | `sync: server unreachable, retry at T: ERR` | The server did not answer. The agent retries by itself, at most 30 seconds apart. |
 | `sync: stopped until the server is re-pinned` | The server's certificate does not match the pinned fingerprint. Uploads stop. Run `flopwire login --fingerprint <new>` after you confirm the new fingerprint. |
+| `upload workers: N` | Effective upload concurrency. The default is one. |
+| `upload capability check: ERR (using one worker; retrying)` | The check failed. Serial uploads continue and the check retries. |
 | `queued: N sources; spool: N bytes` | Sources waiting to upload, and the spool size. `(full: …)` means the spool reached `--spool-cap` and captures of rewritten sources pause. |
 | `failing sources (N)` | Each source that fails, its error and its attempts. A failing source retries on its own and does not delay the others. |
 | `server refused N sources by admin path rule` | The server did not store these sources. Each shows its path and the rule. The device learns of a refusal on its next upload of that source. |

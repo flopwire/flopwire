@@ -7,35 +7,54 @@ import (
 )
 
 // FlushAdmission bounds active HTTP flushes across Servers sharing this owner.
-// Each device has one HTTP slot and each exact device/path one Flush owner.
+// Each device has a configured HTTP limit and each exact device/path one owner.
 // It is process-local, not a cross-server database
 // lock. Production must supply an owner sized for its configured pool headroom.
 type FlushAdmission struct {
-	mu     sync.Mutex
-	limit  int
-	active map[string]*flushTicket
-	paths  map[flushPathKey]*pathTicket
+	mu          sync.Mutex
+	limit       int
+	deviceLimit int
+	active      map[*flushTicket]struct{}
+	devices     map[string]int
+	paths       map[flushPathKey]*pathTicket
 }
 
 // NewFlushAdmission sets a positive global limit; per-device uploads stay serial.
 func NewFlushAdmission(limit int) (*FlushAdmission, error) {
+	return NewFlushAdmissionPerDevice(limit, 1)
+}
+
+// NewFlushAdmissionPerDevice explicitly opts in to one or two requests per
+// device. The global limit still accounts for every admitted request.
+func NewFlushAdmissionPerDevice(limit, perDevice int) (*FlushAdmission, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("flush admission: global limit must be positive")
 	}
-	return &FlushAdmission{limit: limit, active: make(map[string]*flushTicket), paths: make(map[flushPathKey]*pathTicket)}, nil
+	if perDevice != 1 && perDevice != 2 {
+		return nil, fmt.Errorf("flush admission: per-device limit must be 1 or 2")
+	}
+	if limit < perDevice {
+		return nil, fmt.Errorf("flush admission: global limit %d cannot support per-device limit %d", limit, perDevice)
+	}
+	return &FlushAdmission{limit: limit, deviceLimit: perDevice, active: make(map[*flushTicket]struct{}), devices: make(map[string]int), paths: make(map[flushPathKey]*pathTicket)}, nil
 }
 
 func (a *FlushAdmission) acquire(device string) (*flushTicket, *Error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.active[device] != nil {
-		return nil, &Error{http.StatusTooManyRequests, "flush_in_progress", "another flush of this device is in progress; retry later"}
+	if a.devices[device] >= a.deviceLimit {
+		code := "flush_in_progress" // Retain the legacy serial refusal contract.
+		if a.deviceLimit == 2 {
+			code = "device_busy"
+		}
+		return nil, &Error{http.StatusTooManyRequests, code, "this device's flush capacity is in use; retry later"}
 	}
 	if len(a.active) >= a.limit {
 		return nil, &Error{http.StatusServiceUnavailable, "server_busy", "flush capacity is in use; retry later"}
 	}
 	t := &flushTicket{owner: a, device: device}
-	a.active[device] = t
+	a.active[t] = struct{}{}
+	a.devices[device]++
 	return t, nil
 }
 
@@ -52,8 +71,12 @@ func (t *flushTicket) release() {
 		a := t.owner
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if a.active[t.device] == t {
-			delete(a.active, t.device)
+		if _, ok := a.active[t]; ok {
+			delete(a.active, t)
+			a.devices[t.device]--
+			if a.devices[t.device] == 0 {
+				delete(a.devices, t.device)
+			}
 		}
 	})
 }
