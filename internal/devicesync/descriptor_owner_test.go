@@ -281,6 +281,9 @@ func TestDescriptorOwnerPayloadBorrowHasFixedOldInodeCustody(t *testing.T) {
 		t.Fatal("payload replacement rejected")
 	}
 	descriptorTestSlots(t, e.sy.descriptors, 2, 1)
+	// The redactor may cache this small body. Read directly through the
+	// acquired payload FD to prove uncached reads survive replacement too.
+	descriptorTestBytes(t, oldFD, oldBody)
 	all := make([]byte, len(oldBody))
 	if err := p.readSource(all, 0); err != nil || !bytes.Equal(all, oldBody) {
 		t.Fatalf("payload changed inode %q %v", all, err)
