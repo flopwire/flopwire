@@ -131,8 +131,8 @@ func TestUploadTurnsRespectHeldDescriptorCapAndRepairOrRecordGap(t *testing.T) {
 				if err != nil || outcome != uploadPending {
 					t.Fatalf("initial capped descriptor turn: %v,%v", outcome, err)
 				}
-				if len(e.sy.held) > 1 {
-					t.Fatalf("held descriptors exceeded cap: %d", len(e.sy.held))
+				if count, _ := retainedDescriptors(e.sy, 0); count > 1 {
+					t.Fatalf("held descriptors exceeded cap: %d", count)
 				}
 			}
 			srcB, err := e.store.source(t.Context(), second.Path, nil)
@@ -143,7 +143,7 @@ func TestUploadTurnsRespectHeldDescriptorCapAndRepairOrRecordGap(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(e.sy.held) != 1 || e.sy.held[srcB.ID] != nil {
+			if count, retained := retainedDescriptors(e.sy, srcB.ID); count != 1 || retained {
 				t.Fatal("second source bypassed descriptor cap")
 			}
 			if deleted {
@@ -163,8 +163,8 @@ func TestUploadTurnsRespectHeldDescriptorCapAndRepairOrRecordGap(t *testing.T) {
 						}
 						t.Fatalf("continuation after descriptor cap: %v", err)
 					}
-					if len(e.sy.held) > 1 {
-						t.Fatalf("continuation exceeded descriptor cap: %d", len(e.sy.held))
+					if count, _ := retainedDescriptors(e.sy, 0); count > 1 {
+						t.Fatalf("continuation exceeded descriptor cap: %d", count)
 					}
 					if outcome == syncDone {
 						done = true
@@ -194,9 +194,17 @@ func TestUploadTurnsRespectHeldDescriptorCapAndRepairOrRecordGap(t *testing.T) {
 					t.Fatal("deleted source claimed uncaptured remainder")
 				}
 			}
-			if len(e.sy.held) != 0 {
-				t.Fatalf("completed turns leaked held descriptors: %d", len(e.sy.held))
+			if count, _ := retainedDescriptors(e.sy, 0); count != 0 {
+				t.Fatalf("completed turns leaked held descriptors: %d", count)
 			}
 		})
 	}
+}
+
+// retainedDescriptors inspects physical cache occupancy, including retired
+// entries that an outstanding reader still borrows.
+func retainedDescriptors(s *Syncer, id int64) (int, bool) {
+	s.descriptors.mu.Lock()
+	defer s.descriptors.mu.Unlock()
+	return s.descriptors.slots, s.descriptors.current[id] != nil
 }

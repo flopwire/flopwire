@@ -124,7 +124,7 @@ type Syncer struct {
 	tr    syncproto.Transport
 
 	mu            sync.Mutex
-	held          map[int64]*os.File
+	descriptors   *descriptorOwner
 	serialScratch syncScratch
 	stalls        map[[2]int64]int // source/generation no-progress responses across scheduler turns
 
@@ -195,7 +195,7 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 	if cfg.MaxRequestBytes < int64(cfg.Chunk.Max) {
 		return nil, errors.New("devicesync: MaxRequestBytes below the chunk maximum")
 	}
-	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, held: map[int64]*os.File{}, serialScratch: syncScratch{buf: make([]byte, cfg.Chunk.Max)}}
+	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, descriptors: newDescriptorOwner(cfg.MaxHeldFiles), serialScratch: syncScratch{buf: make([]byte, cfg.Chunk.Max)}}
 	if err := s.sweepSpool(context.Background()); err != nil {
 		return nil, fmt.Errorf("devicesync: sweep spool: %w", err)
 	}
@@ -214,10 +214,7 @@ func (s *Syncer) sweepSpool(ctx context.Context) error {
 func (s *Syncer) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, f := range s.held {
-		f.Close()
-		delete(s.held, id)
-	}
+	s.descriptors.close()
 }
 
 // Sync captures the file at spec.Path and uploads everything pending for
@@ -426,20 +423,21 @@ func (op *syncOperation) captureWithCommit(ctx context.Context, src *sourceRow, 
 	})
 }
 
-func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, ex *exportRead, upTo int64, snapshot *snapshotSource, now time.Time, commit captureCommit) error {
+func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, ex *exportRead, upTo int64, snapshot *snapshotSource, now time.Time, commit captureCommit) (retErr error) {
 	s := op.syncer
 	var (
 		r  io.ReaderAt
 		id transcript.Identity
 		f  *os.File
 	)
+	keep := false
 	if ex != nil {
 		r, id = ex.r, transcript.Identity{Size: ex.size}
 	} else {
 		var err error
 		path := src.Spec.Path
 		if snapshot != nil {
-			if s.held[src.ID] == nil && len(s.held) >= s.cfg.MaxHeldFiles {
+			if !s.descriptors.canRetain(src.ID) {
 				return errors.New("devicesync: snapshot descriptor limit reached")
 			}
 			path = snapshot.path
@@ -489,15 +487,14 @@ func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoo
 			id.Size = upTo
 		}
 	}
-	keep := false
 	defer func() {
 		if snapshot != nil && f != nil {
 			// Also retain on the unchanged/pending path: upload must not fall
 			// back to reopening the original source after a retry.
-			if old := s.held[src.ID]; old != nil && old != f {
-				old.Close()
+			keep = s.descriptors.retain(src.ID, f)
+			if !keep {
+				retErr = errors.Join(retErr, errors.New("devicesync: snapshot descriptor retention rejected"))
 			}
-			s.held[src.ID], keep = f, true
 		}
 		if f != nil && !keep {
 			f.Close()
@@ -736,13 +733,7 @@ func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoo
 		}
 	}
 	if f != nil && !src.Spec.rewriteProne() && !g.done() {
-		if old := s.held[src.ID]; old != nil {
-			old.Close()
-			delete(s.held, src.ID)
-		}
-		if len(s.held) < s.cfg.MaxHeldFiles {
-			s.held[src.ID], keep = f, true
-		}
+		keep = s.descriptors.retain(src.ID, f)
 	}
 	return nil
 }
@@ -791,13 +782,13 @@ func (op *syncOperation) salvageOwned(ctx context.Context, scope *spoolReference
 		return
 	} // retain pending generation; raw repair requires a fresh verified open
 
-	f := s.held[src.ID]
-	defer func() {
-		if f != nil {
-			f.Close()
-			delete(s.held, src.ID)
-		}
-	}()
+	borrow := s.descriptors.borrow(src.ID)
+	s.descriptors.retire(src.ID)
+	var f *os.File
+	if borrow != nil {
+		f = borrow.file()
+		defer borrow.release()
+	}
 	var rr *redact.ReaderAt
 	if f != nil {
 		rr = src.Spec.redacted(f)
