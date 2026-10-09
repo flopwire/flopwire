@@ -418,7 +418,7 @@ func TestCoordinatorLegacyAfterPressureStillClampsSharedAdmission(t *testing.T) 
 	sc.complete(turnResult{ctx: t.Context(), path: a.spec.Path, job: a, err: newer})
 	epoch := sc.gateEpoch
 	sc.complete(turnResult{ctx: t.Context(), path: b.spec.Path, job: b, err: &syncproto.HTTPError{Status: 429, Body: syncproto.ErrorResponse{Code: "flush_in_progress"}}})
-	if sc.workers != 1 || !sc.serialClamp || sc.gateEpoch != epoch || sc.lastErr != newer {
+	if sc.workers != 1 || sc.gateEpoch != epoch || sc.lastErr != newer {
 		t.Fatal("legacy refusal lost or replaced newer cooldown")
 	}
 	first, err := e.sy.acquireOperation(t.Context(), "synthetic-first")

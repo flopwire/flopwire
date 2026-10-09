@@ -123,7 +123,6 @@ type Scheduler struct {
 	concurrencyErr error
 	negotiateAt    time.Time
 	pressure       bool
-	serialClamp    bool
 	seal           map[string]*time.Timer
 	failing        map[string]*failure // per-source backoff, by path
 	halted         error               // a permanent error (TLS pin mismatch): no flush until Repin succeeds
@@ -404,7 +403,7 @@ func (s *Scheduler) repinContext(ctx context.Context, now time.Time) {
 	s.mu.Lock()
 	s.gateEpoch++
 	s.halted, s.lastErr, s.down, s.backoff, s.retryAt = nil, nil, false, 0, time.Time{}
-	s.serialClamp, s.pressure = false, false
+	s.pressure = false
 	s.negotiateAt = time.Time{}
 	s.mu.Unlock()
 	s.sy.cfg.Logger.Info("devicesync: server pin changed; sync resumed")
@@ -691,7 +690,6 @@ func (s *Scheduler) negotiate(ctx context.Context, now time.Time) {
 		s.concurrencyErr = err
 		s.workers = workers
 		if err == nil {
-			s.serialClamp = false
 			s.gateEpoch++
 		} else if syncproto.Permanent(err) {
 			s.gateEpoch++
@@ -796,7 +794,6 @@ func (s *Scheduler) complete(r turnResult) bool {
 	var legacy *syncproto.HTTPError
 	if transport && errors.As(err, &legacy) && legacy.Body.Code == "flush_in_progress" {
 		s.workers = 1
-		s.serialClamp = true
 		_ = s.sy.setOperationLimit(1)
 	}
 	if transport && dispatchEpoch != s.gateEpoch {
