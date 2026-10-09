@@ -8,11 +8,15 @@ barrier (#176) have shipped; additional shared-spool interruption boundaries
 remain. Responsive drain and cancellation retention (#203), one-request turns
 (#204), and active-first scheduling with guaranteed historical progress (#205)
 are deployed. A serial pressure-epoch prerequisite now guards global health against older
-successful completions. Parallel dispatch, probe ownership, credential drain,
-and shared-state coordination remain open.
+successful completions. The shared serial global/device HTTP admission owner
+(#213) is deployed. The Store/Spool reference owner and serial runtime wiring
+(#219–220) have landed. This prerequisite adds independent device/path ownership
+while the device cap remains one. Parallel dispatch, worker-local state and
+memory budgets, probe ownership, credential drain, and concurrency negotiation
+remain open.
 
 Authenticated capabilities advertise policy placements version one and one
-concurrent flush (#197). Bounded parallel admission and workers remain open.
+concurrent flush (#197). Raising admission limits and parallel workers remain open.
 Device-scoped parse observations, local collection/upload/policy snapshots,
 and optional CLI/MCP reporting shipped in #206–208. These observations do not
 prove exact indexed revisions, exhaustive discovery, or all-history completeness.
@@ -102,7 +106,9 @@ including the path in the response. Ownership lasts until actual Flush work,
 chunk unlock, connection release and parse notification finish. Cancellation
 does not release work that is still running.
 
-This owner is process-local and shared through `FlushAdmission`. It does not
+This owner is process-local and shared through `FlushAdmission`. Servers serving
+the same process/pool must receive the same owner. The default fallback belongs
+to one Server and does not coordinate separate Server instances. It does not
 normalize filesystem paths or serialize changes to other Parent/Previous paths,
 shared sessions, or device policy. Existing database locks remain required.
 HTTP device admission and advertised concurrency remain one. Independent path
