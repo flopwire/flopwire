@@ -66,10 +66,7 @@ func (op *syncOperation) uploadTurn(ctx context.Context, src *sourceRow, turn *u
 			return uploadPending, nil
 		}
 	}
-	if f := s.held[src.ID]; f != nil {
-		f.Close()
-		delete(s.held, src.ID)
-	}
+	s.descriptors.retire(src.ID)
 	if src.RepoSent == src.Spec.repoKey() || src.Gen < 0 {
 		return syncDone, nil
 	}
@@ -430,19 +427,20 @@ const batchRatio = 8
 // streams them. Compressed bodies stay under MaxRequestBytes (pack), and
 // one uncompressed chunk is in memory at a time.
 type payload struct {
-	ctx   context.Context
-	op    *syncOperation
-	src   *sourceRow
-	g     *genRow
-	parts []part
-	wire  int64 // compressed body bytes
-	tail  []byte
-	cur   []byte
-	next  int
-	f     *os.File
-	rr    *redact.ReaderAt
-	open  bool
-	err   error
+	ctx      context.Context
+	op       *syncOperation
+	src      *sourceRow
+	g        *genRow
+	parts    []part
+	wire     int64 // compressed body bytes
+	tail     []byte
+	cur      []byte
+	next     int
+	f        *os.File
+	borrowed *descriptorBorrow
+	rr       *redact.ReaderAt
+	open     bool
+	err      error
 	// failed is where the unreadable part starts: the ordinal of the first
 	// entry that needs it, or g.Entries for the tail; -1 while none.
 	failed int64
@@ -564,8 +562,8 @@ func (p *payload) readSource(data []byte, off int64) error {
 			if err := validateProofFile(f, p.g.Proof); err != nil {
 				return err
 			}
-		} else if f := p.op.syncer.held[p.src.ID]; f != nil {
-			p.f = f
+		} else if borrow := p.op.syncer.descriptors.borrow(p.src.ID); borrow != nil {
+			p.borrowed, p.f = borrow, borrow.file()
 		} else if f, err := os.Open(p.src.Spec.Path); err == nil {
 			p.f = f
 		}
@@ -584,7 +582,11 @@ func (p *payload) readSource(data []byte, off int64) error {
 }
 
 func (p *payload) close() {
-	if p.f != nil && p.f != p.op.syncer.held[p.src.ID] {
+	if p.borrowed != nil {
+		p.borrowed.release()
+		p.borrowed = nil
+	} else if p.f != nil {
 		p.f.Close()
 	}
+	p.f = nil
 }

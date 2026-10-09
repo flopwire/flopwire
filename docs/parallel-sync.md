@@ -12,7 +12,9 @@ successful completions. The shared serial global/device HTTP admission owner
 (#213) is deployed. The Store/Spool reference owner and serial runtime wiring
 (#219–220) have landed. Independent device/path admission (#221) has landed
 while the device cap remains one. The serial client operation prerequisite makes
-authorization explicit and separates reusable scratch from the logical call. Parallel dispatch, worker-local state and
+authorization explicit and separates reusable scratch from the logical call.
+A serial descriptor-owner prerequisite now gives retained files explicit borrow
+lifetimes. Parallel dispatch, worker-local state and
 memory budgets, probe ownership, credential drain, and concurrency negotiation
 remain open.
 
@@ -52,7 +54,7 @@ This establishes throughput potential, not production correctness or peak memory
 ## Existing constraints
 
 - `devicesync.Scheduler` runs one upload operation and stores one running count. New notifications can arrive while that operation runs.
-- `devicesync.Syncer` holds a global mutex through capture and network upload. Its scan buffer, retained compressed body, and held descriptors depend on serialization.
+- `devicesync.Syncer` holds a global mutex through capture and network upload. Its scan buffer and retained compressed body depend on serialization. Retained descriptors have a shared owner; capture and upload remain serialized.
 - The spool file mutex serializes existence, capacity, publication and accounting within one `Spool` instance. Serial capture and conditional cleanup now share a reference owner with the actual Store/Spool pair. Export materialization and network transport remain outside that owner. Independent concurrent Syncers and parallel worker state still need qualification.
 - Scheduler startup restores persisted activity and waiting-age hints into the
   weighted queues. Initial local indexing still sorts by oldest modification
@@ -136,8 +138,23 @@ Deferred frames retain content-addressed bytes, never authorization, file handle
 or source state. Matching-hash reuse still requires the new operation's proof
 checks. No Chunk.Max buffer is allocated per operation. This is not a complete
 memory bound: request parts, large persisted chunks and opaque exports retain
-existing allocation costs. Descriptor and stall ownership stay with the serial
-Syncer. Parallel scratch ownership remains separate work.
+existing allocation costs. Stalls stay with the serial Syncer. Parallel scratch
+ownership remains separate work.
+
+The descriptor owner uses a short mutex to retain, borrow and retire exact file
+entries. A retired entry stays open until its last borrower releases it. Those
+entries still count against MaxHeldFiles. Replacement retires the old source
+entry before checking admission; it never evicts another source. Retaining the
+same file again is idempotent. The cap bounds only the retained cache, not fresh
+capture or authorized payload opens. This adds no LRU or worker dispatch.
+
+Payloads release a borrowed entry or close the fresh file they opened. They do
+not compare against a later cache lookup. Salvage retires its source while
+borrowing the old inode through verification. Snapshot retries retain the staged
+inode even when capture is unchanged; admission failure is explicit. Close denies
+new borrows and retires cached entries; outstanding borrowers close on release.
+The existing Syncer mutex still serializes operations and shutdown. This lifetime
+primitive does not qualify parallel capture, policy changes or shutdown draining.
 
 Keep a single `Store` and `Spool`. Keep whole-version capture serialized initially, separate from parallel upload turns. Do not introduce capture stepping as part of this rollout. Allocate worker-local upload/redaction buffers and retained compressed bodies. Keep descriptor ownership, refusals, durable source generations, and spool references under explicit shared owners. Run startup spool sweeping exactly once, before workers start; shut down workers before sweeping or closing descriptors.
 
