@@ -111,7 +111,7 @@ func (op *syncOperation) sendRepo(ctx context.Context, src *sourceRow, turn *upl
 		return err
 	}
 	turn.dispatch()
-	resp, err := s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h})
+	resp, err := op.transportFlush(ctx, &syncproto.FlushRequest{Header: h})
 	if err == nil && turn != nil {
 		turn.accepted = true
 	}
@@ -200,7 +200,7 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 						"deferred_frame_capacity_bytes", int64(cap(op.scratch.deferred.z)))
 				}
 				turn.dispatch()
-				resp, err = s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h, Payload: pl})
+				resp, err = op.transportFlush(ctx, &syncproto.FlushRequest{Header: h, Payload: pl})
 			}
 		}
 		pl.close()
@@ -356,7 +356,7 @@ func (op *syncOperation) nextBatch(ctx context.Context, src *sourceRow, g *genRo
 	if err := op.checkAuthorization(ctx); err != nil {
 		return nil, nil, err
 	}
-	missing, err := s.tr.Has(ctx, hs)
+	missing, err := op.transportHas(ctx, hs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -598,4 +598,26 @@ func (p *payload) close() {
 	// request roots and aliases; err/failed still drive repair below.
 	p.buffers.clear()
 	p.cur, p.rr = nil, nil
+}
+
+// Transport is the only global-mutex handoff. Callers hold Syncer.mu, keep their
+// path/workspace and permission lease, and resume all state work after relock.
+func (op *syncOperation) transportFlush(ctx context.Context, req *syncproto.FlushRequest) (*syncproto.FlushResponse, error) {
+	s := op.syncer
+	if s.cfg.UploadWorkers == 1 {
+		return s.tr.Flush(ctx, req)
+	}
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	return s.tr.Flush(ctx, req)
+}
+
+func (op *syncOperation) transportHas(ctx context.Context, hashes []syncproto.Hash) ([]syncproto.Hash, error) {
+	s := op.syncer
+	if s.cfg.UploadWorkers == 1 {
+		return s.tr.Has(ctx, hashes)
+	}
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	return s.tr.Has(ctx, hashes)
 }

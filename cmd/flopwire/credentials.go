@@ -196,6 +196,7 @@ func rotateIfDue(ctx context.Context, tr *syncTransport, now func() time.Time, l
 // agent to recheck (Repin).
 type syncTransport struct {
 	mu     sync.Mutex
+	failed *syncproto.Client // snapshot whose permanent error may still await scheduler completion
 	cl     syncproto.Client
 	pin    string // cl.HTTP's pin
 	server string // normalized
@@ -245,32 +246,96 @@ func (t *syncTransport) current() syncproto.Client {
 	return t.cl
 }
 
+// snapshotChanged prevents an old request from stopping a newly installed
+// credential or pin. The HTTP client belongs to that immutable pin snapshot.
+func (t *syncTransport) snapshotChanged(c syncproto.Client) bool {
+	current := t.current()
+	return current.Server != c.Server || current.Token != c.Token || current.HTTP != c.HTTP
+}
+
+func credentialRetry() error {
+	return &syncproto.HTTPError{Status: http.StatusServiceUnavailable, Body: syncproto.ErrorResponse{Code: "credential_refreshed", Message: "the device credential changed; retrying"}}
+}
+
+func (t *syncTransport) requestError(c syncproto.Client, err error) error {
+	if err == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cl.Server != c.Server || t.cl.Token != c.Token || t.cl.HTTP != c.HTTP {
+		return credentialRetry()
+	}
+	if syncproto.Permanent(err) {
+		snapshot := c
+		t.failed = &snapshot
+	}
+	return err
+}
+
+// uploadConcurrency uses the same pinned, device-bound snapshot as uploads.
+func (t *syncTransport) uploadConcurrency(ctx context.Context, requested int) (int, error) {
+	if requested == 1 {
+		return 1, nil
+	}
+	c := t.current()
+	workers, err := c.UploadConcurrency(ctx, requested)
+	if t.snapshotChanged(c) {
+		return 1, credentialRetry()
+	}
+	code, denied := unauthorized(err)
+	if denied {
+		if !t.refresh(ctx, c.Token) {
+			return 1, t.requestError(c, t.refused(ctx, c, code))
+		}
+		c = t.current()
+		workers, err = c.UploadConcurrency(ctx, requested)
+		if code, denied = unauthorized(err); denied {
+			err = t.refused(ctx, c, code)
+		}
+	}
+	if t.snapshotChanged(c) {
+		return 1, credentialRetry()
+	}
+	return workers, t.requestError(c, err)
+}
+
 func (t *syncTransport) Has(ctx context.Context, hashes []syncproto.Hash) ([]syncproto.Hash, error) {
 	c := t.current()
 	missing, err := c.Has(ctx, hashes)
+	if err != nil && t.snapshotChanged(c) {
+		return nil, credentialRetry()
+	}
 	code, denied := unauthorized(err)
 	if !denied {
-		return missing, err
+		return missing, t.requestError(c, err)
 	}
 	if t.refresh(ctx, c.Token) {
 		c = t.current()
-		return c.Has(ctx, hashes)
+		missing, err = c.Has(ctx, hashes)
+		if code, denied = unauthorized(err); denied {
+			err = t.refused(ctx, c, code)
+		}
+		return missing, t.requestError(c, err)
 	}
-	return nil, t.refused(ctx, c.Token, code)
+	return nil, t.requestError(c, t.refused(ctx, c, code))
 }
 
 func (t *syncTransport) Flush(ctx context.Context, req *syncproto.FlushRequest) (*syncproto.FlushResponse, error) {
 	c := t.current()
 	resp, err := c.Flush(ctx, req)
+	if err != nil && t.snapshotChanged(c) {
+		return nil, credentialRetry()
+	}
 	code, denied := unauthorized(err)
 	if !denied {
-		return resp, err
+		return resp, t.requestError(c, err)
 	}
 	if t.refresh(ctx, c.Token) {
 		// The payload was consumed: let the scheduler retry the flush.
-		return nil, &syncproto.HTTPError{Status: http.StatusServiceUnavailable, Body: syncproto.ErrorResponse{Code: "credential_refreshed", Message: "the device credential changed; retrying"}}
+		return nil, credentialRetry()
 	}
-	return nil, t.refused(ctx, c.Token, code)
+	return nil, t.requestError(c, t.refused(ctx, c, code))
 }
 
 // refresh installs the saved token when it differs from used.
@@ -278,19 +343,25 @@ func (t *syncTransport) refresh(ctx context.Context, used string) bool {
 	if t.env {
 		return false
 	}
-	var cc client.Config
-	var same bool
-	if err := client.WithConfigLock(ctx, func() error { cc, same = savedConfig(t.server, t.load); return nil }); err != nil {
+	var installed bool
+	if err := client.WithConfigLock(ctx, func() error {
+		cc, same := savedConfig(t.server, t.load)
+		if same && cc.Token != used {
+			installed = t.install(cc)
+		}
+		return nil
+	}); err != nil {
 		return false
 	}
-	if !same || cc.Token == used {
-		return false
-	}
-	return t.install(cc)
+	return installed
 }
 
 // refused records that the saved token (used) was refused.
-func (t *syncTransport) refused(ctx context.Context, used, code string) error {
+func (t *syncTransport) refused(ctx context.Context, snapshot syncproto.Client, code string) error {
+	used := snapshot.Token
+	if t.snapshotChanged(snapshot) {
+		return credentialRetry()
+	}
 	if t.env {
 		if code == "" {
 			code = "credential_invalid"
@@ -299,8 +370,18 @@ func (t *syncTransport) refused(ctx context.Context, used, code string) error {
 	}
 	var out error = &reloginError{code: code}
 	_ = client.WithConfigLock(ctx, func() error {
-		if cc, same := savedConfig(t.server, t.load); same && cc.Token == used {
-			out = markRelogin(cc, code)
+		if cc, same := savedConfig(t.server, t.load); same {
+			if cc.Token == used {
+				t.mu.Lock()
+				if t.cl.Token != snapshot.Token || t.cl.HTTP != snapshot.HTTP {
+					out = credentialRetry()
+				} else {
+					out = markRelogin(cc, code)
+				}
+				t.mu.Unlock()
+			} else if t.install(cc) {
+				out = credentialRetry()
+			}
 		}
 		return nil
 	})
@@ -336,21 +417,40 @@ func (t *syncTransport) reload(ctx context.Context) {
 // saved config and, when the pin or the token of the same server changed
 // (`flopwire login` saved a new one), installs it and resumes.
 func (t *syncTransport) repin() bool {
-	cc, same := savedConfig(t.server, t.load)
-	if cc.Server == "" {
-		return false
-	}
-	if !same {
-		t.log.Warn("agent: the client config names another server; restart the agent to sync with it", "server", cc.Server)
-		return false
-	}
-	t.mu.Lock()
-	unchanged := cc.Token == t.cl.Token && cc.TLSFingerprint == t.pin
-	t.mu.Unlock()
-	if unchanged {
-		return false
-	}
-	return t.install(cc)
+	var installed bool
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = client.WithConfigLock(ctx, func() error {
+		cc, same := savedConfig(t.server, t.load)
+		if cc.Server == "" {
+			return nil
+		}
+		if !same {
+			if t.log != nil {
+				t.log.Warn("agent: the client config names another server; restart the agent to sync with it", "server", cc.Server)
+			}
+			return nil
+		}
+		t.mu.Lock()
+		unchanged := cc.Token == t.cl.Token && cc.TLSFingerprint == t.pin
+		recovered := unchanged && t.failed != nil && (t.failed.Token != t.cl.Token || t.failed.HTTP != t.cl.HTTP)
+		if recovered {
+			t.failed = nil
+		}
+		t.mu.Unlock()
+		if recovered {
+			installed = true
+		} else if !unchanged {
+			installed = t.install(cc)
+			if installed {
+				t.mu.Lock()
+				t.failed = nil
+				t.mu.Unlock()
+			}
+		}
+		return nil
+	})
+	return installed
 }
 
 // Credential sources, as setup --check and agent status name them.

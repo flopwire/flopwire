@@ -58,7 +58,10 @@ func (sp *SourceSpec) rewriteProne() bool {
 
 // Config tunes a Syncer. Zero fields take defaults.
 type Config struct {
-	Chunk ChunkParams
+	// UploadWorkers bounds complete operations, including public calls. Default
+	// one preserves serial transport; opt-in two overlaps only network waits.
+	UploadWorkers int
+	Chunk         ChunkParams
 	// MaxRequestBytes caps one request's chunk bodies as sent, compressed
 	// (syncproto codec.go). A flush that has more (the first sync of a
 	// large file, a backlog after an outage) is sent as several requests; steady state is one. The server gives a
@@ -92,6 +95,9 @@ type Config struct {
 }
 
 func (c *Config) defaults() {
+	if c.UploadWorkers == 0 {
+		c.UploadWorkers = 1
+	}
 	if c.Chunk == (ChunkParams{}) {
 		c.Chunk = DefaultChunkParams
 	}
@@ -116,7 +122,8 @@ func (c *Config) defaults() {
 }
 
 // Syncer captures sources into chunked generations and uploads them. It is
-// safe for concurrent use; calls are serialized.
+// safe for concurrent use. Capture and state changes are serialized; opting
+// into two workers permits independent admitted operations to overlap transport.
 type Syncer struct {
 	cfg   Config
 	store *Store
@@ -126,6 +133,7 @@ type Syncer struct {
 	mu            sync.Mutex
 	descriptors   *descriptorOwner
 	serialScratch syncScratch
+	operations    *operationOwner
 	stalls        stallOwner // source/generation no-progress responses across scheduler turns
 
 	refMu   sync.Mutex
@@ -189,6 +197,9 @@ var ErrSourceChanged = errors.New("devicesync: source changed since capture")
 
 func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (*Syncer, error) {
 	cfg.defaults()
+	if cfg.UploadWorkers < 1 || cfg.UploadWorkers > 2 {
+		return nil, errors.New("devicesync: UploadWorkers must be one or two")
+	}
 	if err := cfg.Chunk.Validate(); err != nil {
 		return nil, err
 	}
@@ -196,6 +207,11 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 		return nil, errors.New("devicesync: MaxRequestBytes below the chunk maximum")
 	}
 	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, descriptors: newDescriptorOwner(cfg.MaxHeldFiles), serialScratch: syncScratch{buf: make([]byte, cfg.Chunk.Max)}}
+	slots := []*syncScratch{&s.serialScratch}
+	if cfg.UploadWorkers == 2 {
+		slots = append(slots, &syncScratch{buf: make([]byte, cfg.Chunk.Max)})
+	}
+	s.operations = newOperationOwner(slots)
 	if err := s.sweepSpool(context.Background()); err != nil {
 		return nil, fmt.Errorf("devicesync: sweep spool: %w", err)
 	}
@@ -212,6 +228,7 @@ func (s *Syncer) sweepSpool(ctx context.Context) error {
 
 // Close releases held descriptors.
 func (s *Syncer) Close() {
+	s.operations.close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.descriptors.close()
@@ -291,7 +308,12 @@ func (s *Syncer) SyncExportFunc(ctx context.Context, spec SourceSpec, fn ExportF
 // Resume uploads what is pending for a source without capturing it again.
 func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error { return s.resume(ctx, spec, nil) }
 func (s *Syncer) resume(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization) error {
-	_, err := s.operation(auth).resumeTurn(ctx, spec, nil)
+	lease, err := s.acquireOperation(ctx, spec.Path)
+	if err != nil {
+		return err
+	}
+	defer lease.release()
+	_, err = s.operationWithScratch(auth, lease.scratch).resumeTurn(ctx, spec, nil)
 	return err
 }
 
@@ -316,12 +338,28 @@ func (op *syncOperation) resumeTurn(ctx context.Context, spec SourceSpec, turn *
 }
 
 func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization) error {
-	_, err := s.operation(auth).runTurn(ctx, spec, export, upTo, snapshot, nil)
+	lease, err := s.acquireOperation(ctx, spec.Path)
+	if err != nil {
+		return err
+	}
+	defer lease.release()
+	_, err = s.operationWithScratch(auth, lease.scratch).runTurn(ctx, spec, export, upTo, snapshot, nil)
 	return err
 }
 
 // syncTurn is scheduler-only. Public Sync and import calls still drain fully.
 func (s *Syncer) syncTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, auth *CaptureAuthorization, action syncAction) (syncOutcome, error) {
+	lease, err := s.acquireOperation(ctx, spec.Path)
+	if err != nil {
+		return syncDone, err
+	}
+	defer lease.release()
+	return s.syncTurnWithScratch(ctx, spec, export, upTo, auth, action, lease.scratch)
+}
+
+// syncTurnWithScratch requires the caller's operation lease through permission
+// cleanup. The same workspace survives resume, replacement capture and upload.
+func (s *Syncer) syncTurnWithScratch(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, auth *CaptureAuthorization, action syncAction, scratch *syncScratch) (syncOutcome, error) {
 	if auth != nil {
 		if spec.Export {
 			return syncDone, errors.New("devicesync: authorized file capture cannot export")
@@ -332,7 +370,7 @@ func (s *Syncer) syncTurn(ctx context.Context, spec SourceSpec, export ExportFun
 		}
 		auth, upTo = a, a.Proof.Offset
 	}
-	op := s.operation(auth)
+	op := s.operationWithScratch(auth, scratch)
 	turn := &uploadTurn{remaining: 1}
 	if action == resumeUpload || spec.Export && export == nil {
 		outcome, err := op.resumeTurn(ctx, spec, turn)

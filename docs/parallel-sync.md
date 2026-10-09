@@ -1,38 +1,42 @@
 # Parallel sync and catch-up
 
-Status: proposed. This document scopes implementation; it does not enable parallel uploads.
+Status: two-worker implementation under qualification. Production remains on
+serial uploads until private qualification, review, CI, merge and rollout finish.
 
-Implementation status as of October 9, 2026: uploads remain serial. Independent
-fixture/provenance checks (#175) and a deterministic server-commit-before-local-ack
-barrier (#176) have shipped; additional shared-spool interruption boundaries
-remain. Responsive drain and cancellation retention (#203), one-request turns
-(#204), and active-first scheduling with guaranteed historical progress (#205)
-are deployed. A serial pressure-epoch prerequisite now guards global health against older
-successful completions. The shared serial global/device HTTP admission owner
-(#213) is deployed. The Store/Spool reference owner and serial runtime wiring
-(#219–220) have landed. Independent device/path admission (#221) has landed
-while the device cap remains one. The serial client operation prerequisite makes
-authorization explicit and separates reusable scratch from the logical call.
-A serial descriptor-owner prerequisite now gives retained files explicit borrow
-lifetimes. Parallel dispatch, worker-local state and
-memory budgets, probe ownership, credential drain, and concurrency negotiation
-remain open.
+The candidate adds explicit collector `--sync-workers=1|2` and server
+`--flush-per-device=1|2`; both default to one. Two fixed workspaces share one
+Store and Spool. Only network waits overlap. Exact source-path admission covers
+public and scheduled operations. Negotiated serial fallback limits both.
+Capture, exports, metadata and acknowledgements remain serialized. Current
+Code/Cowork authorization leases remain exclusive.
 
-Authenticated capabilities advertise policy placements version one and one
-concurrent flush (#197). Raising admission limits and parallel workers remain open.
-Device-scoped parse observations, local collection/upload/policy snapshots,
-and optional CLI/MCP reporting shipped in #206–208. These observations do not
-prove exact indexed revisions, exhaustive discovery, or all-history completeness.
+Authenticated capability queries explicitly request two. Legacy requests still
+receive one. A missing endpoint selects one; failed checks select one with a
+visible diagnostic and periodic retry. Current authentication and TLS-pin
+failures stop uploads. A legacy concurrency refusal immediately selects one
+until a successful drained capability check establishes a new capability epoch.
 
-See [history qualification](operations/history-qualification.md) for the separate
-CASS retirement gate. Synthetic/private serial qualification does not establish
-parallel throughput, request overlap, or whole-stack memory bounds.
+The coordinator parks newer notifications for an active path, joins canceled
+work, and permits one retry probe after outstanding work drains. Pressure epochs
+protect newer cooldowns; they do not suppress genuine authentication or pin
+failures. Credential snapshots govern obsolete credential failures.
+
+Default serial operation owners, descriptor lifetimes, request-buffer ownership,
+spool references, cumulative stall handling and server pool admission have landed
+in earlier changes. Two-worker throughput, full-stack memory, real CLI recovery
+and rollout remain qualification gates. No fixed byte-budget default is added.
+The design notes below include prior proposals; four-worker experiments and
+prospective memory budgets are not part of this candidate.
+
+See [agent operation](agent.md) for controls and status, and
+[history qualification](operations/history-qualification.md) for the separate
+CASS retirement gate. Empty queues do not prove complete history coverage.
 
 ## Outcome
 
 An enrolled Mac should upload separate sources concurrently, make recent history searchable first, and show whether missing search results could reflect incomplete synchronization. A large backfill must leave capacity for live sessions, search, and messaging.
 
-Start with up to four upload workers per device. Keep one durable sync database, one spool, and the existing source identities, generation rules, redaction rules, and acknowledgment protocol. Each device path has at most one capture/upload operation in progress, including across file-identity changes.
+This candidate supports up to two upload workers per device. Keep one durable sync database, one spool, and the existing source identities, generation rules, redaction rules, and acknowledgment protocol. Each device path has at most one capture/upload operation in progress, including across file-identity changes.
 
 Do not ship the experiment's independent stores or environment switch. Do not add a second bulk-import data path.
 
@@ -51,7 +55,7 @@ Four workers improved the latency case by 3.77 times. All 512 sources across two
 
 This establishes throughput potential, not production correctness or peak memory. The benchmark used disjoint sources and independent client stores. It did not cover simultaneous shared-spool operations, restart recovery, large Codex records, or sustained mixed-agent backfill. The network delay was simulated inside the VM. Memory available after the final run was approximately 2.45 GiB; that is not a peak measurement.
 
-## Existing constraints
+## Serial baseline constraints
 
 - `devicesync.Scheduler` runs one upload operation and stores one running count. New notifications can arrive while that operation runs.
 - `devicesync.Syncer` holds a global mutex through capture and network upload. Its scan buffer and retained compressed body depend on serialization. Retained descriptors have a shared owner; capture and upload remain serialized.
@@ -66,7 +70,10 @@ This establishes throughput potential, not production correctness or peak memory
   older success from clearing newer global pressure. Parallel probe ownership,
   stale error/configuration handling, and drain safety still require qualification.
 
-## Design
+## Prior design notes
+
+These notes record the original proposal and serial prerequisites. The current
+candidate contract and outstanding gates are stated above.
 
 ### 1. Server admission and capability negotiation
 

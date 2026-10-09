@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -55,9 +56,23 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 	r.Body = http.MaxBytesReader(w, r.Body, MaxFlushBytes)
 	switch r.URL.Path {
 	case syncproto.PathCapabilities:
+		limit := 1 // Legacy policy clients require an exactly serial response.
+		if r.URL.RawQuery != "" {
+			query, err := url.ParseQuery(r.URL.RawQuery)
+			if err != nil || len(query) != 1 || len(query["max_concurrent_flushes"]) != 1 {
+				writeErr(w, badRequest("capabilities accepts only max_concurrent_flushes=1 or 2"))
+				return
+			}
+			requested, err := strconv.Atoi(query.Get("max_concurrent_flushes"))
+			if err != nil || requested != 1 && requested != 2 {
+				writeErr(w, badRequest("max_concurrent_flushes must be 1 or 2"))
+				return
+			}
+			limit = min(requested, s.flushAdmission().deviceLimit)
+		}
 		writeJSON(w, http.StatusOK, syncproto.CapabilitiesResponse{
 			Version: syncproto.Version, PolicyPlacementsVersion: syncproto.PolicyPlacementsVersion,
-			MaxConcurrentFlushes: 1,
+			MaxConcurrentFlushes: limit,
 		})
 	case syncproto.PathPolicyPlacements:
 		r.Body = http.MaxBytesReader(w, r.Body, syncproto.MaxPolicyPlacementsBytes)

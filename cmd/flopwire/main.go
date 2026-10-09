@@ -201,9 +201,13 @@ func usage() error {
 func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", env("FLOPWIRE_ADDR", ":8080"), "listen address")
+	flushPerDevice := fs.Int("flush-per-device", 1, "maximum simultaneous flushes per device (1 or 2)")
 	tlsf := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *flushPerDevice != 1 && *flushPerDevice != 2 {
+		return fmt.Errorf("--flush-per-device must be 1 or 2")
 	}
 	transport, err := resolveServerTLS(tlsf, *addr)
 	if err != nil {
@@ -227,7 +231,7 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	admission, err := ingest.NewFlushAdmission(flushSlots)
+	admission, err := ingest.NewFlushAdmissionPerDevice(flushSlots, *flushPerDevice)
 	if err != nil {
 		return err
 	}

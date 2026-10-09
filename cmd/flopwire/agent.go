@@ -160,6 +160,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	dbPath := fs.String("db", "", "local index database (default $FLOPWIRE_INDEX, else <user cache dir>/flopwire/index.db)")
 	once := fs.Bool("once", false, "index everything that changed, upload it (with a configured server or FLOPWIRE_TOKEN), then exit")
 	syncWait := fs.Duration("sync-timeout", 5*time.Minute, "with --once: how long to wait for the upload to finish")
+	syncWorkers := fs.Int("sync-workers", 1, "upload workers: 1 (default) or 2 (requires server support)")
 	noSync := fs.Bool("no-sync", false, "never upload, even with a configured server")
 	rebuildIndex := fs.Bool("rebuild-index", false, "drop the local index's rows and search files and index every transcript again; keeps sync state, placements and local redactions (see docs/agent.md#recover-the-local-index)")
 	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from the client config's "mode"`)
@@ -180,6 +181,9 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	verbose := fs.Bool("v", false, "log every sweep")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if *syncWorkers != 1 && *syncWorkers != 2 {
+		return nil, errors.New("--sync-workers must be 1 or 2")
 	}
 	cc, ccErr := client.Load()
 	if err := resolveSyncOnly(fs, syncOnly, cc, ccErr); err != nil {
@@ -294,9 +298,9 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		var start, closeSync func()
 		var err error
 		if ccErr == nil {
-			s, tr, start, closeSync, err = startSyncFrom(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log, cc, loadSyncConfig)
+			s, tr, start, closeSync, err = startSyncFrom(ctx, store, dir, *spoolCap, *syncWorkers, deviceDirs(*claudeDir, *codexHome), log, cc, loadSyncConfig)
 		} else {
-			s, tr, start, closeSync, err = startSync(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log)
+			s, tr, start, closeSync, err = startSync(ctx, store, dir, *spoolCap, *syncWorkers, deviceDirs(*claudeDir, *codexHome), log)
 		}
 		if err != nil {
 			return nil, err
@@ -803,18 +807,18 @@ func deviceDirs(claudeProjects, codexHome string) syncproto.DeviceDirs {
 	return syncproto.DeviceDirs{Home: home, ClaudeProjects: claudeProjects, CodexHome: codexHome}
 }
 
-func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, dev syncproto.DeviceDirs, log *slog.Logger) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
+func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, uploadWorkers int, dev syncproto.DeviceDirs, log *slog.Logger) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
 	cfg, err := client.Load()
 	if err != nil {
 		log.Info("agent: no server configured; indexing locally only", "reason", err)
 		return nil, nil, nil, nil, nil
 	}
-	return startSyncFrom(ctx, store, dir, spoolCap, dev, log, cfg, client.Load)
+	return startSyncFrom(ctx, store, dir, spoolCap, uploadWorkers, dev, log, cfg, client.Load)
 }
 
 // Use the agent's initial credential snapshot for both sync and policy
 // registration. A second config read at construction could select a new device.
-func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, dev syncproto.DeviceDirs, log *slog.Logger, cfg client.Config, load func() (client.Config, error)) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
+func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, uploadWorkers int, dev syncproto.DeviceDirs, log *slog.Logger, cfg client.Config, load func() (client.Config, error)) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
 	db, err := sql.Open("sqlite", "file:"+store.Path()+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -832,12 +836,12 @@ func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spo
 	}
 	tr := newSyncTransport(cfg, load, log)
 	live := local.LiveReporter(local.NewDetector(), 30*time.Second, syncproto.MaxLive)
-	sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log, Device: dev, Live: live}, st, spool, tr)
+	sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log, Device: dev, Live: live, UploadWorkers: uploadWorkers}, st, spool, tr)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	sched := devicesync.NewScheduler(sy, devicesync.SchedulerConfig{Repin: tr.repin})
+	sched := devicesync.NewScheduler(sy, devicesync.SchedulerConfig{Repin: tr.repin, Workers: uploadWorkers, NegotiatedWorkers: tr.uploadConcurrency})
 	sctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	start := func() {
@@ -1102,6 +1106,12 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		fmt.Fprintf(w, "sync: server busy, retry at %s: %s\n", st.RetryAt.Local().Format(time.TimeOnly), st.LastError)
 	default:
 		fmt.Fprintln(w, "sync: ok")
+	}
+	if st.UploadWorkers > 0 {
+		fmt.Fprintf(w, "upload workers: %d\n", st.UploadWorkers)
+	}
+	if st.ConcurrencyError != "" {
+		fmt.Fprintf(w, "upload capability check: %s (using one worker; retrying)\n", st.ConcurrencyError)
 	}
 	fmt.Fprintf(w, "queued: %d sources; spool: %d bytes", st.Queued, st.SpoolBytes)
 	if st.SpoolBlocked {

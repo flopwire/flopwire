@@ -1,7 +1,8 @@
 package devicesync
 
-// syncScratch belongs to the serial Syncer, not a logical operation. Borrow it
-// only while Syncer.mu is held. A later serial call may reuse it between turns.
+// syncScratch belongs to a fixed Syncer workspace, not a logical operation.
+// Its admitted operation retains it through network waits and recapture.
+// Capture and materialization still borrow it only under Syncer.mu.
 // Deferred bytes are content addressed; they carry no authorization or cursor.
 type syncScratch struct {
 	buf      []byte
@@ -14,13 +15,17 @@ type syncScratch struct {
 type syncOperation struct {
 	syncer        *Syncer
 	authorization *CaptureAuthorization
-	scratch       *syncScratch // association only; borrowing requires Syncer.mu
+	scratch       *syncScratch // fixed by operation admission; reads/materialization use Syncer.mu
 }
 
 func (s *Syncer) operation(frozen *CaptureAuthorization) *syncOperation {
-	return &syncOperation{syncer: s, authorization: frozen, scratch: &s.serialScratch}
+	return s.operationWithScratch(frozen, &s.serialScratch)
 }
 
 // ordinaryOperation explicitly selects ordinary capture for private fixtures
 // and ordinary entry points. It never consults ambient authorization state.
 func (s *Syncer) ordinaryOperation() *syncOperation { return s.operation(nil) }
+
+func (s *Syncer) operationWithScratch(frozen *CaptureAuthorization, scratch *syncScratch) *syncOperation {
+	return &syncOperation{syncer: s, authorization: frozen, scratch: scratch}
+}
