@@ -60,9 +60,9 @@ func (s *Syncer) unproven(src *sourceRow, g *genRow, reason string) error {
 	return &UnprovenCaptureError{Source: src.Spec, SourceID: src.ID, Generation: gen, Reason: reason, Captured: g != nil && (g.Size > 0 || g.Entries > 0 || g.Tail.Size > 0)}
 }
 
-func (s *Syncer) checkAuthorization(ctx context.Context) error {
-	if s.authorization != nil {
-		return s.authorization.Check(ctx)
+func (op *syncOperation) checkAuthorization(ctx context.Context) error {
+	if op.authorization != nil {
+		return op.authorization.Check(ctx)
 	}
 	return nil
 }
@@ -71,11 +71,12 @@ func validCaptureProof(p *CaptureProof) bool {
 	return p != nil && validProtection(p.Origin, p.Root) && p.PolicyRequestDigest != "" && p.Identity.ID != (transcript.FileID{}) && p.Identity.CTime != 0 && p.Identity.Size >= 0 && p.Offset >= 0 && p.Offset <= p.Identity.Size
 }
 
-func (s *Syncer) validateGeneration(src *sourceRow, g *genRow) error {
-	if s.authorization == nil && g.Proof == nil && src.ProtectedOrigin == "" && src.ProtectedRoot == "" {
+func (op *syncOperation) validateGeneration(src *sourceRow, g *genRow) error {
+	s := op.syncer
+	if op.authorization == nil && g.Proof == nil && src.ProtectedOrigin == "" && src.ProtectedRoot == "" {
 		return nil
 	}
-	if s.authorization == nil {
+	if op.authorization == nil {
 		return s.unproven(src, g, "authorization lease missing")
 	}
 	if !generationProofValid(src.Spec, g) || g.Proof.Origin != src.ProtectedOrigin || g.Proof.Root != src.ProtectedRoot {
@@ -119,8 +120,9 @@ func validProtection(origin, root string) bool {
 	return (origin == "cowork" || origin == "desktop-code") && filepath.IsAbs(root) && filepath.Clean(root) == root
 }
 
-func (s *Syncer) protect(ctx context.Context, src *sourceRow) error {
-	a := s.authorization
+func (op *syncOperation) protect(ctx context.Context, src *sourceRow) error {
+	s := op.syncer
+	a := op.authorization
 	protected := src.ProtectedOrigin != "" || src.ProtectedRoot != ""
 	if a == nil {
 		if protected {
@@ -128,7 +130,7 @@ func (s *Syncer) protect(ctx context.Context, src *sourceRow) error {
 		}
 		return nil
 	}
-	if err := s.checkAuthorization(ctx); err != nil {
+	if err := op.checkAuthorization(ctx); err != nil {
 		return err
 	}
 	if protected && (a.Origin != src.ProtectedOrigin || a.Root != src.ProtectedRoot) {
@@ -137,8 +139,9 @@ func (s *Syncer) protect(ctx context.Context, src *sourceRow) error {
 	return s.store.protectSource(ctx, src, a.Origin, a.Root)
 }
 
-func (s *Syncer) preflight(ctx context.Context, src *sourceRow, capture bool) error {
-	if err := s.checkAuthorization(ctx); err != nil {
+func (op *syncOperation) preflight(ctx context.Context, src *sourceRow, capture bool) error {
+	s := op.syncer
+	if err := op.checkAuthorization(ctx); err != nil {
 		return err
 	}
 	gens, err := s.store.pendingGens(ctx, src.ID)
@@ -146,7 +149,7 @@ func (s *Syncer) preflight(ctx context.Context, src *sourceRow, capture bool) er
 		return err
 	}
 	for _, g := range gens {
-		if err := s.validateGeneration(src, g); err != nil {
+		if err := op.validateGeneration(src, g); err != nil {
 			return err
 		}
 	}
@@ -154,20 +157,20 @@ func (s *Syncer) preflight(ctx context.Context, src *sourceRow, capture bool) er
 	if err != nil {
 		return err
 	}
-	if capture && s.canReplaceEmptyCurrent(src, current) {
+	if capture && op.canReplaceEmptyCurrent(src, current) {
 		return nil
 	}
-	if current != nil && (s.authorization != nil || current.Proof != nil) {
-		return s.validateGeneration(src, current)
+	if current != nil && (op.authorization != nil || current.Proof != nil) {
+		return op.validateGeneration(src, current)
 	}
 	return nil
 }
 
 // Only capture may replace an ordinary empty current generation. Resume and
 // transport paths still require proof, including for empty generations.
-func (s *Syncer) canReplaceEmptyCurrent(src *sourceRow, g *genRow) bool {
-	a := s.authorization
-	return a != nil && s.validateAuthorization(src) == nil && a.Origin == src.ProtectedOrigin && a.Root == src.ProtectedRoot &&
+func (op *syncOperation) canReplaceEmptyCurrent(src *sourceRow, g *genRow) bool {
+	a := op.authorization
+	return a != nil && op.validateAuthorization(src) == nil && a.Origin == src.ProtectedOrigin && a.Root == src.ProtectedRoot &&
 		g != nil && g.SourceID == src.ID && g.Gen == src.Gen && g.Proof == nil && !g.Closed && !g.Lost && g.done() &&
 		g.Size == 0 && g.Entries == 0 && g.Acked == 0 && g.Tail.Offset == 0 && g.Tail.Size == 0 && g.SrvTailOff == 0 && g.SrvTailLen == 0
 }
@@ -203,8 +206,9 @@ func validateProofFile(f *os.File, p *CaptureProof) error {
 	return nil
 }
 
-func (s *Syncer) validateAuthorization(src *sourceRow) error {
-	a := s.authorization
+func (op *syncOperation) validateAuthorization(src *sourceRow) error {
+	s := op.syncer
+	a := op.authorization
 	if a == nil {
 		return nil
 	}

@@ -48,7 +48,7 @@ func wiringSealFixture(t *testing.T) (*env, *sourceRow, ExportFunc, []byte) {
 	src := tailCaptureSource(t, e.store, spec)
 	body := []byte("{\"record\":\"owned publication\"}\n")
 	export := lifecycleExport(body, []byte("owned-state"))
-	if err := e.sy.capture(t.Context(), src, export, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, export, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * time.Minute)
@@ -131,7 +131,7 @@ func TestSpoolWiringCaptureOwnsPublicationThroughCommit(t *testing.T) {
 		})
 		return e.store.saveCapture(ctx, src, g, add, wm, state, guards...)
 	}
-	if err := e.sy.captureWithCommit(t.Context(), src, export, -1, nil, commit); err != nil {
+	if err := e.sy.ordinaryOperation().captureWithCommit(t.Context(), src, export, -1, nil, commit); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -165,7 +165,7 @@ func TestSpoolWiringFailedAndUncertainCapturePreserveBytes(t *testing.T) {
 				}
 				return stop
 			}
-			if err := e.sy.captureWithCommit(t.Context(), src, export, -1, nil, commit); !errors.Is(err, stop) {
+			if err := e.sy.ordinaryOperation().captureWithCommit(t.Context(), src, export, -1, nil, commit); !errors.Is(err, stop) {
 				t.Fatalf("capture: %v", err)
 			}
 			wiringRequireSealLedger(t, e, src.ID, body, committed)
@@ -266,7 +266,7 @@ func TestSpoolWiringTailPlanningQueriesOutsideFileOwner(t *testing.T) {
 
 func TestSpoolWiringReleaseUsesDurableAndVerifiedReferences(t *testing.T) {
 	e, src, export, body := wiringSealFixture(t)
-	if err := e.sy.capture(t.Context(), src, export, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, export, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	g := lifecycleGeneration(t, e, src)
@@ -302,7 +302,7 @@ func TestSpoolWiringReleaseUsesDurableAndVerifiedReferences(t *testing.T) {
 
 func TestSpoolWiringCutFailurePreservesPendingFiles(t *testing.T) {
 	e, src, export, body := wiringSealFixture(t)
-	if err := e.sy.capture(t.Context(), src, export, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, export, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	hash := syncproto.Sum(body)

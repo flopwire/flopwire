@@ -93,7 +93,7 @@ func TestLegacyTailCLIRollback(t *testing.T) {
 		f.payload = bytes.Repeat([]byte("{\"synthetic\":\"literal pending export record\"}\n"), 1000)
 		f.payload = append(f.payload, []byte("{\"synthetic\":\"final provisional fragment\"}\n")...)
 		src := tailCaptureSource(t, store, f.spec)
-		if err := sy.capture(t.Context(), src, func(context.Context, []byte) (Export, error) {
+		if err := sy.ordinaryOperation().capture(t.Context(), src, func(context.Context, []byte) (Export, error) {
 			return Export{Data: f.payload, State: f.state}, nil
 		}, -1, nil); err != nil {
 			t.Fatal(err)

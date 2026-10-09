@@ -125,12 +125,8 @@ type Syncer struct {
 
 	mu            sync.Mutex
 	held          map[int64]*os.File
-	buf           []byte
-	authorization *CaptureAuthorization
+	serialScratch syncScratch
 	stalls        map[[2]int64]int // source/generation no-progress responses across scheduler turns
-	// zkeep is a body compressed for a request it did not fit: the next
-	// request starts with it.
-	zkeep part
 
 	refMu   sync.Mutex
 	refused map[string]string // path -> the admin path rule the server refused it under
@@ -199,7 +195,7 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 	if cfg.MaxRequestBytes < int64(cfg.Chunk.Max) {
 		return nil, errors.New("devicesync: MaxRequestBytes below the chunk maximum")
 	}
-	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, held: map[int64]*os.File{}, buf: make([]byte, cfg.Chunk.Max)}
+	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, held: map[int64]*os.File{}, serialScratch: syncScratch{buf: make([]byte, cfg.Chunk.Max)}}
 	if err := s.sweepSpool(context.Background()); err != nil {
 		return nil, fmt.Errorf("devicesync: sweep spool: %w", err)
 	}
@@ -298,33 +294,32 @@ func (s *Syncer) SyncExportFunc(ctx context.Context, spec SourceSpec, fn ExportF
 // Resume uploads what is pending for a source without capturing it again.
 func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error { return s.resume(ctx, spec, nil) }
 func (s *Syncer) resume(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization) error {
-	_, err := s.resumeTurn(ctx, spec, auth, nil)
+	_, err := s.operation(auth).resumeTurn(ctx, spec, nil)
 	return err
 }
 
-func (s *Syncer) resumeTurn(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization, turn *uploadTurn) (syncOutcome, error) {
+func (op *syncOperation) resumeTurn(ctx context.Context, spec SourceSpec, turn *uploadTurn) (syncOutcome, error) {
+	s := op.syncer
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authorization = auth
-	defer func() { s.authorization = nil }()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
 		return syncDone, err
 	}
-	if err := s.validateAuthorization(src); err != nil {
+	if err := op.validateAuthorization(src); err != nil {
 		return syncDone, err
 	}
-	if err := s.protect(ctx, src); err != nil {
+	if err := op.protect(ctx, src); err != nil {
 		return syncDone, err
 	}
-	if err := s.preflight(ctx, src, false); err != nil {
+	if err := op.preflight(ctx, src, false); err != nil {
 		return syncDone, err
 	}
-	return s.uploadTurn(ctx, src, turn)
+	return op.uploadTurn(ctx, src, turn)
 }
 
 func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization) error {
-	_, err := s.runTurn(ctx, spec, export, upTo, snapshot, auth, nil)
+	_, err := s.operation(auth).runTurn(ctx, spec, export, upTo, snapshot, nil)
 	return err
 }
 
@@ -340,9 +335,10 @@ func (s *Syncer) syncTurn(ctx context.Context, spec SourceSpec, export ExportFun
 		}
 		auth, upTo = a, a.Proof.Offset
 	}
+	op := s.operation(auth)
 	turn := &uploadTurn{remaining: 1}
 	if action == resumeUpload || spec.Export && export == nil {
-		outcome, err := s.resumeTurn(ctx, spec, auth, turn)
+		outcome, err := op.resumeTurn(ctx, spec, turn)
 		if !errors.Is(err, errRestart) || spec.Export && export == nil {
 			return outcome, err
 		}
@@ -350,36 +346,35 @@ func (s *Syncer) syncTurn(ctx context.Context, spec SourceSpec, export ExportFun
 		// when this turn began upload-only and spent its one request.
 	}
 
-	return s.runTurn(ctx, spec, export, upTo, nil, auth, turn)
+	return op.runTurn(ctx, spec, export, upTo, nil, turn)
 }
 
-func (s *Syncer) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization, turn *uploadTurn) (syncOutcome, error) {
+func (op *syncOperation) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, turn *uploadTurn) (syncOutcome, error) {
+	s := op.syncer
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authorization = auth
-	defer func() { s.authorization = nil }()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
 		return syncDone, err
 	}
-	if err := s.validateAuthorization(src); err != nil {
+	if err := op.validateAuthorization(src); err != nil {
 		return syncDone, err
 	}
-	if err := s.protect(ctx, src); err != nil {
+	if err := op.protect(ctx, src); err != nil {
 		return syncDone, err
 	}
-	if err := s.preflight(ctx, src, true); err != nil {
+	if err := op.preflight(ctx, src, true); err != nil {
 		return syncDone, err
 	}
 	for attempt := 0; ; attempt++ {
-		if err := s.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
-			if uerr := s.checkAuthorization(ctx); uerr != nil {
+		if err := op.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
+			if uerr := op.checkAuthorization(ctx); uerr != nil {
 				return syncDone, errors.Join(err, uerr)
 			}
-			if _, uerr := s.uploadTurn(ctx, src, turn); uerr != nil {
+			if _, uerr := op.uploadTurn(ctx, src, turn); uerr != nil {
 				return syncDone, errors.Join(err, uerr)
 			}
-			if cerr := s.capture(ctx, src, export, upTo, snapshot); cerr != nil {
+			if cerr := op.capture(ctx, src, export, upTo, snapshot); cerr != nil {
 				if turn != nil && turn.remaining == 0 && errors.Is(cerr, ErrSpoolFull) {
 					gens, gerr := s.store.pendingGens(ctx, src.ID)
 					if gerr != nil {
@@ -394,7 +389,7 @@ func (s *Syncer) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc
 		} else if err != nil {
 			return syncDone, err
 		}
-		pending, err := s.uploadTurn(ctx, src, turn)
+		pending, err := op.uploadTurn(ctx, src, turn)
 		if !errors.Is(err, errRestart) || attempt > 0 {
 			return pending, err
 		}
@@ -405,8 +400,9 @@ func (s *Syncer) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc
 
 // capture chunks whatever the source gained since the last capture, up
 // to upTo bytes of a file when upTo >= 0.
-func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
-	return s.captureWithCommit(ctx, src, export, upTo, snapshot, s.store.saveCapture)
+func (op *syncOperation) capture(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
+	s := op.syncer
+	return op.captureWithCommit(ctx, src, export, upTo, snapshot, s.store.saveCapture)
 }
 
 // captureCommit is an explicit per-call persistence operation. Production uses
@@ -414,7 +410,8 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 // successful return to prove the actual capture loop's crash boundaries.
 type captureCommit func(context.Context, *sourceRow, *genRow, []syncproto.Entry, *transcript.Watermark, []byte, ...func() error) error
 
-func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource, commit captureCommit) error {
+func (op *syncOperation) captureWithCommit(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource, commit captureCommit) error {
+	s := op.syncer
 	now := s.cfg.Now()
 	defer s.captures.Add(1)
 	var ex *exportRead
@@ -425,11 +422,12 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 		}
 	}
 	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
-		return s.captureOwnedWithCommit(ctx, scope, src, ex, upTo, snapshot, now, commit)
+		return op.captureOwnedWithCommit(ctx, scope, src, ex, upTo, snapshot, now, commit)
 	})
 }
 
-func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, ex *exportRead, upTo int64, snapshot *snapshotSource, now time.Time, commit captureCommit) error {
+func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, ex *exportRead, upTo int64, snapshot *snapshotSource, now time.Time, commit captureCommit) error {
+	s := op.syncer
 	var (
 		r  io.ReaderAt
 		id transcript.Identity
@@ -446,24 +444,24 @@ func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferen
 			}
 			path = snapshot.path
 		}
-		if s.authorization != nil {
-			f, err = s.authorization.Open(ctx, src.Spec)
+		if op.authorization != nil {
+			f, err = op.authorization.Open(ctx, src.Spec)
 		} else {
 			f, err = os.Open(path)
 		}
 		if errors.Is(err, os.ErrNotExist) {
-			if s.authorization != nil {
+			if op.authorization != nil {
 				return err
 			}
 			if snapshot != nil {
 				return err
 			}
-			return s.vanishOwned(ctx, scope, src)
+			return op.vanishOwned(ctx, scope, src)
 		} else if err != nil {
 			return err
 		}
-		if s.authorization != nil {
-			if err := validateProofFile(f, &s.authorization.Proof); err != nil {
+		if op.authorization != nil {
+			if err := validateProofFile(f, &op.authorization.Proof); err != nil {
 				f.Close()
 				return err
 			}
@@ -523,11 +521,11 @@ func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferen
 	} else if change, err = transcript.Decide(src.Watermark, id, r); err != nil {
 		return err
 	}
-	if s.canReplaceEmptyCurrent(src, cur) {
+	if op.canReplaceEmptyCurrent(src, cur) {
 		// Materialize and attest a fresh generation even when the file remains empty.
 		change = transcript.Change{Decision: transcript.Rewrite, Reason: "qualify empty native generation"}
-	} else if s.authorization != nil && cur != nil {
-		if err := s.validateGeneration(src, cur); err != nil {
+	} else if op.authorization != nil && cur != nil {
+		if err := op.validateGeneration(src, cur); err != nil {
 			return err
 		}
 	}
@@ -558,7 +556,7 @@ func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferen
 		// Idle with a captured complete-record tail: fall through to seal it.
 	case transcript.Rewrite:
 		if cur != nil && !cur.done() {
-			s.salvageOwned(ctx, scope, src, cur, change.Reason)
+			op.salvageOwned(ctx, scope, src, cur, change.Reason)
 		}
 		g = &genRow{SourceID: src.ID, Gen: src.Gen + 1, FileID: fileID(id), TailAcked: true}
 		if cur != nil && cur.FileID != g.FileID {
@@ -646,7 +644,7 @@ func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferen
 		pend, pendBytes = pend[:0], 0
 		return nil
 	}
-	tail, err := Scan(s.cfg.Chunk, scan, from, end, s.buf, func(c Chunk, data []byte) error {
+	tail, err := Scan(s.cfg.Chunk, scan, from, end, op.scratch.buf, func(c Chunk, data []byte) error {
 		add = append(add, syncproto.Entry{Ordinal: g.Entries + int64(len(add)), Hash: c.Hash, Offset: c.Offset, Size: c.Size})
 		if !src.Spec.rewriteProne() {
 			return nil
@@ -711,29 +709,29 @@ func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferen
 		}
 		wm = &w
 	}
-	if s.authorization != nil {
-		if err := s.checkAuthorization(ctx); err != nil {
+	if op.authorization != nil {
+		if err := op.checkAuthorization(ctx); err != nil {
 			return err
 		}
-		if err := validateProofFile(f, &s.authorization.Proof); err != nil {
+		if err := validateProofFile(f, &op.authorization.Proof); err != nil {
 			return err
 		}
-		proof := s.authorization.Proof
+		proof := op.authorization.Proof
 		proof.ContentSHA = bytes.Clone(proof.ContentSHA)
 		g.Proof = &proof
 	}
 	var guards []func() error
-	if s.authorization != nil {
+	if op.authorization != nil {
 		guards = append(guards, func() error {
-			return validateProofIdentity(f, &s.authorization.Proof)
+			return validateProofIdentity(f, &op.authorization.Proof)
 		})
 	}
 	if err := commit(ctx, src, g, add, wm, exportState, guards...); err != nil {
 		return err
 	}
 	s.releaseTailOwned(ctx, scope, src.ID, oldGen, oldTail)
-	if s.authorization != nil {
-		if err := validateProofFile(f, &s.authorization.Proof); err != nil {
+	if op.authorization != nil {
+		if err := validateProofFile(f, &op.authorization.Proof); err != nil {
 			return err // verified capture remains a fact; a changed live source requires reindexing
 		}
 	}
@@ -752,20 +750,22 @@ func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferen
 // vanish handles a source file that disappeared: salvage what is pending
 // from the held descriptor and forget the watermark, so a file that
 // reappears at the path starts a new generation.
-func (s *Syncer) vanish(ctx context.Context, src *sourceRow) error {
+func (op *syncOperation) vanish(ctx context.Context, src *sourceRow) error {
+	s := op.syncer
 	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
-		return s.vanishOwned(ctx, scope, src)
+		return op.vanishOwned(ctx, scope, src)
 	})
 }
 
-func (s *Syncer) vanishOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow) error {
+func (op *syncOperation) vanishOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow) error {
+	s := op.syncer
 	if src.Watermark == nil {
 		return nil
 	}
 	if g, err := s.store.gen(ctx, src.ID, src.Gen); err != nil {
 		return err
 	} else if g != nil && !g.done() {
-		s.salvageOwned(ctx, scope, src, g, "source disappeared")
+		op.salvageOwned(ctx, scope, src, g, "source disappeared")
 	}
 	return scope.setWatermark(ctx, src, nil)
 }
@@ -775,17 +775,19 @@ func (s *Syncer) vanishOwned(ctx context.Context, scope *spoolReferenceScope, sr
 // (which still reaches a replaced or unlinked inode). Bytes that cannot be
 // recovered (in-place rewrite, spool full, no held descriptor) are recorded
 // as a gap: the generation is cut back to the recoverable prefix.
-func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why string) {
+func (op *syncOperation) salvage(ctx context.Context, src *sourceRow, g *genRow, why string) {
+	s := op.syncer
 	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
-		s.salvageOwned(ctx, scope, src, g, why)
+		op.salvageOwned(ctx, scope, src, g, why)
 		return nil
 	}); err != nil {
 		s.cfg.Logger.Warn("devicesync: salvage reference ownership failed", "err", err)
 	}
 }
 
-func (s *Syncer) salvageOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, why string) {
-	if s.authorization != nil {
+func (op *syncOperation) salvageOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, why string) {
+	s := op.syncer
+	if op.authorization != nil {
 		return
 	} // retain pending generation; raw repair requires a fresh verified open
 

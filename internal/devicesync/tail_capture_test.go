@@ -77,7 +77,7 @@ func TestTailCaptureCapPreservesCommittedLegacy(t *testing.T) {
 	sp := tailCaptureSpec(e.dir)
 	src := tailCaptureSource(t, e.store, sp)
 	g := &growingExport{log: bytes.Clone(tailCaptureH)}
-	if err := e.sy.capture(t.Context(), src, g.fn, -1, nil); err != nil {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Under this fixture's exclusive owner, emulate a legacy-only installation.
@@ -85,7 +85,7 @@ func TestTailCaptureCapPreservesCommittedLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.log = bytes.Clone(tailCaptureJ)
-	if err := e.sy.capture(t.Context(), src, g.fn, -1, nil); !errors.Is(err, ErrSpoolFull) {
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); !errors.Is(err, ErrSpoolFull) {
 		t.Fatalf("want cap refusal, got %v", err)
 	}
 	requireTailCaptureLedger(t, e.store.db, sp, tailCaptureH, false)
@@ -106,7 +106,7 @@ func TestTailCaptureRetryReclaimsOnlyUncommittedVersion(t *testing.T) {
 			sp := tailCaptureSpec(e.dir)
 			src := tailCaptureSource(t, e.store, sp)
 			g := &growingExport{log: bytes.Clone(tailCaptureH)}
-			if err := e.sy.capture(t.Context(), src, g.fn, -1, nil); err != nil {
+			if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); err != nil {
 				t.Fatal(err)
 			}
 			g.log = bytes.Clone(tailCaptureJ)
@@ -120,7 +120,7 @@ func TestTailCaptureRetryReclaimsOnlyUncommittedVersion(t *testing.T) {
 				}
 				return stop // committed, but cleanup has not run
 			}
-			if err := e.sy.captureWithCommit(t.Context(), src, g.fn, -1, nil, commit); !errors.Is(err, stop) {
+			if err := e.sy.ordinaryOperation().captureWithCommit(t.Context(), src, g.fn, -1, nil, commit); !errors.Is(err, stop) {
 				t.Fatalf("want handoff rejection, got %v", err)
 			}
 			requireTailCaptureLedger(t, e.store.db, sp, want, false)
@@ -129,7 +129,7 @@ func TestTailCaptureRetryReclaimsOnlyUncommittedVersion(t *testing.T) {
 			// The fixed fixture cap requires reconciliation before publishing K.
 			g.log = bytes.Clone(tailCaptureK)
 			src = tailCaptureSource(t, e.store, sp) // discard any failed in-memory mutations
-			if err := e.sy.capture(t.Context(), src, g.fn, -1, nil); err != nil {
+			if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); err != nil {
 				t.Fatalf("same-source retry: %v", err)
 			}
 			requireTailCaptureLedger(t, e.store.db, sp, tailCaptureK, false)
@@ -165,7 +165,7 @@ func TestTailCaptureCrashHelper(t *testing.T) {
 	defer sy.Close()
 	src := tailCaptureSource(t, store, tailCaptureSpec(dir))
 	g := &growingExport{log: bytes.Clone(tailCaptureH)}
-	if err := sy.capture(t.Context(), src, g.fn, -1, nil); err != nil {
+	if err := sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); err != nil {
 		t.Fatal(err)
 	}
 	g.log = bytes.Clone(tailCaptureJ)
@@ -190,7 +190,7 @@ func TestTailCaptureCrashHelper(t *testing.T) {
 		}
 		return barrier()
 	}
-	if err := sy.captureWithCommit(t.Context(), src, g.fn, -1, nil, commit); err != nil {
+	if err := sy.ordinaryOperation().captureWithCommit(t.Context(), src, g.fn, -1, nil, commit); err != nil {
 		t.Fatal(err)
 	}
 	t.Fatal("capture passed its crash barrier")
