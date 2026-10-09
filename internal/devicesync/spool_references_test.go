@@ -52,8 +52,9 @@ func requireOwnedChunk(t *testing.T, spool *Spool, body []byte, present bool) {
 }
 
 func TestSpoolReferencesPublicationThroughCommitOrAbort(t *testing.T) {
-	for _, commit := range []bool{false, true} {
-		t.Run(map[bool]string{false: "guard-reject", true: "commit"}[commit], func(t *testing.T) {
+	for _, mode := range []string{"guard-reject", "commit", "commit-then-error"} {
+		t.Run(mode, func(t *testing.T) {
+			commit := mode != "guard-reject"
 			f := newTailPreparationFixture(t)
 			src := referenceSource(t, f.store)
 			body := []byte("literal publication H\n")
@@ -81,7 +82,13 @@ func TestSpoolReferencesPublicationThroughCommitOrAbort(t *testing.T) {
 					if !commit {
 						guards = append(guards, func() error { return rejected })
 					}
-					return scope.saveCapture(t.Context(), src, g, entries, wm, nil, guards...)
+					if err := scope.saveCapture(t.Context(), src, g, entries, wm, nil, guards...); err != nil {
+						return err
+					}
+					if mode == "commit-then-error" {
+						return rejected // Error does not undo the durable reference.
+					}
+					return nil
 				})
 			}()
 			<-published
@@ -104,7 +111,7 @@ func TestSpoolReferencesPublicationThroughCommitOrAbort(t *testing.T) {
 			<-cleanupAttempt
 			close(proceed)
 			captureErr := awaitReferenceResult(t, captureResult)
-			if commit && captureErr != nil || !commit && !errors.Is(captureErr, rejected) {
+			if mode == "commit" && captureErr != nil || mode != "commit" && !errors.Is(captureErr, rejected) {
 				t.Fatalf("actual capture result: %v", captureErr)
 			}
 			if err := awaitReferenceResult(t, cleanupResult); err != nil {
@@ -123,6 +130,44 @@ func TestSpoolReferencesPublicationThroughCommitOrAbort(t *testing.T) {
 				t.Fatalf("durable chunk reference: %v %v", refs[hash], err)
 			}
 		})
+	}
+}
+
+func TestSpoolReferencesTailCancellationAfterWaitingForFileOwner(t *testing.T) {
+	f := newTailPreparationFixture(t)
+	body := []byte("literal released tail awaiting file owner\n")
+	sid, hash := f.add(t, transcript.StorageJSONDoc, false, body, nil, true)
+	if err := f.spool.withReferences(f.store, func(scope *spoolReferenceScope) error {
+		return scope.putTailVersion(sid, 0, hash, body)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	attempted := make(chan struct{})
+	result := make(chan error, 1)
+	f.spool.mu.Lock()
+	go func() {
+		result <- f.spool.withReferences(f.store, func(scope *spoolReferenceScope) error {
+			_, needed, err := scope.store.requiredTail(t.Context(), sid, 0)
+			close(attempted)
+			if err != nil || needed {
+				return errors.New("fixture tail is not durably released")
+			}
+			// The private helper must check cancellation after acquiring the
+			// occupied file mutex. No outer cancellation check can mask it.
+			return scope.spool.dropTailVersion(ctx, sid, 0, hash)
+		})
+	}()
+	<-attempted
+	cancel()
+	f.spool.mu.Unlock()
+	if err := awaitReferenceResult(t, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation while waiting for file ownership: %v", err)
+	}
+	assertReconcileFile(t, reconcileVersionPath(f.spool, sid, 0, hash), body)
+	if f.spool.Used() != int64(len(body)) {
+		t.Fatal("canceled tail cleanup changed accounting")
 	}
 }
 
