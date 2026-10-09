@@ -2,17 +2,21 @@
 
 Status: proposed. This document scopes implementation; it does not enable parallel uploads.
 
-Implementation status as of October 8, 2026: uploads remain serial. Independent
+Implementation status as of October 9, 2026: uploads remain serial. Independent
 fixture/provenance checks (#175) and a deterministic server-commit-before-local-ack
 barrier (#176) have shipped; additional shared-spool interruption boundaries
 remain. Responsive drain and cancellation retention (#203), one-request turns
 (#204), and active-first scheduling with guaranteed historical progress (#205)
 are deployed. A serial pressure-epoch prerequisite now guards global health against older
-successful completions. Parallel dispatch, probe ownership, credential drain,
-and shared-state coordination remain open.
+successful completions. The shared serial global/device HTTP admission owner
+(#213) is deployed. The Store/Spool reference owner and serial runtime wiring
+(#219–220) have landed. This prerequisite adds independent device/path ownership
+while the device cap remains one. Parallel dispatch, worker-local state and
+memory budgets, probe ownership, credential drain, and concurrency negotiation
+remain open.
 
 Authenticated capabilities advertise policy placements version one and one
-concurrent flush (#197). Bounded parallel admission and workers remain open.
+concurrent flush (#197). Raising admission limits and parallel workers remain open.
 Device-scoped parse observations, local collection/upload/policy snapshots,
 and optional CLI/MCP reporting shipped in #206–208. These observations do not
 prove exact indexed revisions, exhaustive discovery, or all-history completeness.
@@ -48,12 +52,11 @@ This establishes throughput potential, not production correctness or peak memory
 
 - `devicesync.Scheduler` runs one upload operation and stores one running count. New notifications can arrive while that operation runs.
 - `devicesync.Syncer` holds a global mutex through capture and network upload. Its scan buffer, retained compressed body, and held descriptors depend on serialization.
-- The spool file owner serializes existence, capacity, publication and accounting within one `Spool` instance. Durable reference changes remain outside that owner.
-- Chunk cleanup checks durable references and then deletes the spool file. A concurrent capture can add a reference between those operations.
+- The spool file mutex serializes existence, capacity, publication and accounting within one `Spool` instance. Serial capture and conditional cleanup now share a reference owner with the actual Store/Spool pair. Export materialization and network transport remain outside that owner. Independent concurrent Syncers and parallel worker state still need qualification.
 - Scheduler startup restores persisted activity and waiting-age hints into the
   weighted queues. Initial local indexing still sorts by oldest modification
   time; indexing order is separate from upload priority.
-- Server HTTP admission permits one flush per device. Each admitted flush holds a database connection and chunk locks while receiving its body.
+- Server HTTP admission permits one flush per device. An independent exact device/path owner also guards `Server.Flush`, including direct callers. Each admitted flush holds a database connection and chunk locks while receiving its body.
 - A partial acknowledgment can mean another request holds a shared chunk. The client currently stops after three no-progress responses. Parallelism can turn normal contention into this error.
 - PR #148 distinguishes admission pressure from outages, honors `Retry-After`,
   and prevents hooks from bypassing cooldowns. Completion stamps now prevent an
@@ -93,6 +96,23 @@ Use one worker on an unsupported-endpoint/404 response and report that compatibi
 Initially advertise one active flush per device. After qualification, enable four per device and eight globally for the two-Mac deployment. Clamp the global limit against configured PostgreSQL pool capacity so retrieval, parse workers, messaging, and maintenance retain headroom. Validate these settings on the 4 GiB VM. Advertise the effective limit, including a serial rollback setting.
 
 Apply global/device admission before reading a large body or acquiring a pool connection. After decoding the bounded header, admit at most one request per authenticated device path, across generations and file identities. A different client process using the same device credential cannot overlap writes to that path. Release every reservation on success, rejection, cancellation, or disconnect. Bound and remove idle admission entries.
+
+The independent path prerequisite uses the authenticated device ID and literal
+source path as its key. File ID, generation, agent, storage kind and session do
+not distinguish overlapping requests at that path. It acquires ownership after
+supported-storage validation and before queue admission, a pool connection, or
+payload reads. A conflicting path returns retryable `source_busy`/429 without
+including the path in the response. Ownership lasts until actual Flush work,
+chunk unlock, connection release and parse notification finish. Cancellation
+does not release work that is still running.
+
+This owner is process-local and shared through `FlushAdmission`. Servers serving
+the same process/pool must receive the same owner. The default fallback belongs
+to one Server and does not coordinate separate Server instances. It does not
+normalize filesystem paths or serialize changes to other Parent/Previous paths,
+shared sessions, or device policy. Existing database locks remain required.
+HTTP device admission and advertised concurrency remain one. Independent path
+ownership is not permission to dispatch parallel workers.
 
 Keep existing chunk verification, ownership checks, manifest transactions, redaction locks, and durable parse scheduling. Shared chunks remain content addressed. Do not wait on conflicting chunk locks while holding other chunk locks. Return the existing partial/missing result when a concurrent writer owns a chunk, and make that condition a bounded, retryable contention outcome for the client.
 
