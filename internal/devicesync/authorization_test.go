@@ -411,7 +411,18 @@ func TestCaptureProofMigrationPreservesLegacyHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.sy.store = migrated
+	// A new Store wrapper gets a new file/reference owner after the old
+	// Syncer stops, matching a collector restart rather than rebinding it.
+	e.sy.Close()
+	e.spool, err = OpenSpool(e.spool.dir, e.spool.cap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.sy, err = NewSyncer(e.sy.cfg, migrated, e.spool, e.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.sy.Close)
 	src, err := migrated.source(context.Background(), sp.Path, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -658,7 +669,18 @@ func TestSourceProtectionMigrationMarksExistingQualifiedCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.sy.store = migrated
+	// A new Store wrapper gets a new file/reference owner after the old
+	// Syncer stops, matching a collector restart rather than rebinding it.
+	e.sy.Close()
+	e.spool, err = OpenSpool(e.spool.dir, e.spool.cap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.sy, err = NewSyncer(e.sy.cfg, migrated, e.spool, e.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.sy.Close)
 	src, err = migrated.source(context.Background(), sp.Path, nil)
 	if err != nil || src.ProtectedOrigin != "legacy-qualified" {
 		t.Fatalf("old-proof missing-root migration escaped protection: %+v,%v", src, err)

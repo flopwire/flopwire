@@ -23,8 +23,10 @@ failed source becomes held or disappears, its orphan bytes remain charged until
 that source retries or the next startup sweep. This behavior does not guarantee
 global progress at the cap.
 
-Capture, upload, and cleanup use the serial sync owner. This change does not
-qualify parallel spool readers or writers.
+Capture and conditional cleanup share one reference owner for the actual Store
+and Spool pair. Export materialization and network transport run outside that
+owner. Reference queries never run under the file mutex. The serial Syncer is
+still required. This change does not qualify parallel spool readers or writers.
 
 ## Procedure
 

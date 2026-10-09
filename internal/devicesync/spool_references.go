@@ -13,7 +13,7 @@ import (
 // spoolReferenceScope is lexical ownership of one actual Store/Spool pair.
 // Do not retain it after withReferences returns or call withReferences from
 // inside its callback. Nested publication/cleanup uses the supplied scope.
-// This API is dormant; existing runtime operations do not yet join it.
+// Runtime capture and cleanup join this owner while workers remain serial.
 type spoolReferenceScope struct {
 	store *Store
 	spool *Spool
@@ -80,6 +80,26 @@ func (r *spoolReferenceScope) putTailVersion(sid, gen int64, hash syncproto.Hash
 
 func (r *spoolReferenceScope) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add []syncproto.Entry, wm *transcript.Watermark, state []byte, guards ...func() error) error {
 	return r.store.saveCapture(ctx, src, g, add, wm, state, guards...)
+}
+
+func (r *spoolReferenceScope) updateGen(ctx context.Context, g *genRow, known []syncproto.Hash) error {
+	return r.store.updateGen(ctx, g, known)
+}
+
+func (r *spoolReferenceScope) setWatermark(ctx context.Context, src *sourceRow, wm *transcript.Watermark) error {
+	return r.store.setWatermark(ctx, src, wm)
+}
+
+func (r *spoolReferenceScope) reconcileTailVersions(ctx context.Context, sid int64) error {
+	return r.spool.reconcileTailVersions(ctx, sid, func(sid, gen int64) (syncproto.Tail, bool, error) {
+		return r.store.requiredTail(ctx, sid, gen)
+	})
+}
+
+func (r *spoolReferenceScope) sweep(ctx context.Context) error {
+	return r.spool.sweep(ctx, r.requiredChunks, func(sid, gen int64) (syncproto.Tail, bool, error) {
+		return r.store.requiredTail(ctx, sid, gen)
+	})
 }
 
 // releaseChunks checks every requested hash before opening the file owner.
@@ -219,4 +239,81 @@ func openChunkRoot(dir string) (*os.Root, error) {
 		return nil, errors.New("devicesync: owned chunk directory unavailable or nonregular")
 	}
 	return root.OpenRoot("chunks")
+}
+
+// chunkInventory copies names while holding only the file mutex. Only canonical
+// hash names can be durable references; other regular files are abandoned writes.
+func (s *Spool) chunkInventory(ctx context.Context) ([]syncproto.Hash, []string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	root, err := openChunkRoot(s.dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, nil, err
+	}
+	files, err := dir.ReadDir(-1)
+	dir.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	var hashes []syncproto.Hash
+	var junk []string
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		var hash syncproto.Hash
+		if hash.UnmarshalText([]byte(file.Name())) == nil && hash.String() == file.Name() {
+			hashes = append(hashes, hash)
+		} else {
+			info, err := root.Lstat(file.Name())
+			if err != nil {
+				return nil, nil, err
+			}
+			if info.Mode().IsRegular() {
+				junk = append(junk, file.Name())
+			}
+		}
+	}
+	return hashes, junk, nil
+}
+
+func (s *Spool) dropChunkJunk(ctx context.Context, names []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	root, err := openChunkRoot(s.dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, name := range names {
+		info, err := root.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("devicesync: abandoned chunk changed file type")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := root.Remove(name); err != nil {
+			return err
+		}
+		s.used -= info.Size()
+	}
+	return nil
 }

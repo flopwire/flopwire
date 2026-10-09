@@ -10,10 +10,85 @@ import (
 
 type requiredTailFunc func(sid, gen int64) (syncproto.Tail, bool, error)
 
+// planRequiredTails separates file inventory and SQL reference reads. The
+// reference owner spans both phases and later deletion; the file mutex does not.
+// The returned facts exist only for this operation, never as a shared cache.
+func (s *Spool) planRequiredTails(ctx context.Context, sid int64, required requiredTailFunc) (requiredTailFunc, error) {
+	keys, err := s.tailKeys(ctx, sid)
+	if err != nil {
+		return nil, err
+	}
+	type reference struct {
+		tail   syncproto.Tail
+		needed bool
+	}
+	facts := make(map[tailKey]reference, len(keys))
+	for _, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		ref, needed, err := required(key.sid, key.gen)
+		if err != nil {
+			return nil, err
+		}
+		facts[key] = reference{ref, needed}
+	}
+	return func(sid, gen int64) (syncproto.Tail, bool, error) {
+		ref, found := facts[tailKey{sid, gen}]
+		if !found {
+			return syncproto.Tail{}, false, errors.New("devicesync: tail inventory changed during owned cleanup")
+		}
+		return ref.tail, ref.needed, nil
+	}, nil
+}
+
+func (s *Spool) tailKeys(ctx context.Context, sid int64) ([]tailKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root, err := openTailRoot(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	files, err := dir.ReadDir(-1)
+	dir.Close()
+	if err != nil {
+		return nil, err
+	}
+	var keys []tailKey
+	seen := map[tailKey]bool{}
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		name, valid := parseTailName(file.Name())
+		if !valid || sid != 0 && name.sid != sid {
+			continue
+		}
+		key := tailKey{name.sid, name.gen}
+		if !seen[key] {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	return keys, nil
+}
+
 // reconcileTailVersions removes only this source's verified tail files
-// that no committed hash needs. Call it with the serial Syncer owner and before
+// that no committed hash needs. Call it with the reference owner and before
 // any current capture publication. Database uncertainty preserves charged bytes.
 func (s *Spool) reconcileTailVersions(ctx context.Context, sid int64, required requiredTailFunc) error {
+	required, err := s.planRequiredTails(ctx, sid, required)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	root, err := openTailRoot(s.dir)
@@ -77,6 +152,10 @@ func (s *Spool) reconcileTailVersions(ctx context.Context, sid int64, required r
 // sweepTails chooses exact committed versions. Legacy canonical bodies need
 // their own hash/size check; a matching immutable sibling cannot validate them.
 func (s *Spool) sweepTails(ctx context.Context, required requiredTailFunc) error {
+	required, err := s.planRequiredTails(ctx, 0, required)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	root, err := openTailRoot(s.dir)
