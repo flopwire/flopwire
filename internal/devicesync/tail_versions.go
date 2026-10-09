@@ -1,6 +1,7 @@
 package devicesync
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -169,12 +170,19 @@ func (s *Spool) TailVersion(sid, gen int64, hash syncproto.Hash) ([]byte, bool, 
 // only when its bytes match that hash. Callers must first durably release every
 // reference to the version; this method does not inspect sync state.
 func (s *Spool) DropTailVersion(sid, gen int64, hash syncproto.Hash) error {
+	return s.dropTailVersion(context.Background(), sid, gen, hash)
+}
+
+func (s *Spool) dropTailVersion(ctx context.Context, sid, gen int64, hash syncproto.Hash) error {
 	name, err := tailVersionName(sid, gen, hash)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	root, err := openTailRoot(s.dir)
 	if err != nil {
 		return err
@@ -204,6 +212,9 @@ func (s *Spool) DropTailVersion(sid, gen int64, hash syncproto.Hash) error {
 		}{candidate, int64(len(data))})
 	}
 	for _, file := range remove {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := root.Remove(file.name); err != nil {
 			return errors.New("devicesync: cannot remove released tail version")
 		}
