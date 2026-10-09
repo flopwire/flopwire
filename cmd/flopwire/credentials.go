@@ -196,6 +196,7 @@ func rotateIfDue(ctx context.Context, tr *syncTransport, now func() time.Time, l
 // agent to recheck (Repin).
 type syncTransport struct {
 	mu     sync.Mutex
+	failed *syncproto.Client // snapshot whose permanent error may still await scheduler completion
 	cl     syncproto.Client
 	pin    string // cl.HTTP's pin
 	server string // normalized
@@ -257,8 +258,17 @@ func credentialRetry() error {
 }
 
 func (t *syncTransport) requestError(c syncproto.Client, err error) error {
-	if err != nil && t.snapshotChanged(c) {
+	if err == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cl.Server != c.Server || t.cl.Token != c.Token || t.cl.HTTP != c.HTTP {
 		return credentialRetry()
+	}
+	if syncproto.Permanent(err) {
+		snapshot := c
+		t.failed = &snapshot
 	}
 	return err
 }
@@ -287,7 +297,7 @@ func (t *syncTransport) uploadConcurrency(ctx context.Context, requested int) (i
 	if t.snapshotChanged(c) {
 		return 1, credentialRetry()
 	}
-	return workers, err
+	return workers, t.requestError(c, err)
 }
 
 func (t *syncTransport) Has(ctx context.Context, hashes []syncproto.Hash) ([]syncproto.Hash, error) {
@@ -423,9 +433,20 @@ func (t *syncTransport) repin() bool {
 		}
 		t.mu.Lock()
 		unchanged := cc.Token == t.cl.Token && cc.TLSFingerprint == t.pin
+		recovered := unchanged && t.failed != nil && (t.failed.Token != t.cl.Token || t.failed.HTTP != t.cl.HTTP)
+		if recovered {
+			t.failed = nil
+		}
 		t.mu.Unlock()
-		if !unchanged {
+		if recovered {
+			installed = true
+		} else if !unchanged {
 			installed = t.install(cc)
+			if installed {
+				t.mu.Lock()
+				t.failed = nil
+				t.mu.Unlock()
+			}
 		}
 		return nil
 	})
