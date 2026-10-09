@@ -197,6 +197,14 @@ func (s *Server) Flush(ctx context.Context, deviceID string, h *syncproto.FlushH
 	if !slices.Contains(storageKinds, h.Source.StorageKind) {
 		return nil, badRequest("unknown storage_kind %q", h.Source.StorageKind)
 	}
+	// HTTP already holds its serial device/global slot. The independent
+	// path owner also covers direct callers and excludes replacement file IDs.
+	// Declare this defer before connection/chunk defers so it releases last.
+	ticket, refusal := s.flushAdmission().acquirePath(deviceID, h.Source.Path)
+	if refusal != nil {
+		return nil, refusal
+	}
+	defer ticket.release()
 	if s.Queue != nil {
 		if e := s.Queue.Overloaded(); e != nil {
 			return nil, e
