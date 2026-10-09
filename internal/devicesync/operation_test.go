@@ -192,10 +192,10 @@ func TestOperationScratchReusesMatchingFrameAndDiscardsDifferentHash(t *testing.
 			observed := false
 			e.sy.tr = operationTransport{Transport: e.client, flush: func(ctx context.Context, r *syncproto.FlushRequest) (*syncproto.FlushResponse, error) {
 				p, ok := r.Payload.(*payload)
-				if !ok || len(p.parts) == 0 {
+				if !ok || len(p.buffers.parts) == 0 {
 					return nil, errors.New("fixture missing compressed body")
 				}
-				first := p.parts[0]
+				first := p.buffers.parts[0]
 				sameHash := first.e.Hash == deferred.e.Hash
 				sameFrame := &first.z[0] == &deferred.z[0]
 				if sameHash != matching || sameFrame != matching {

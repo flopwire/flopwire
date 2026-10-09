@@ -140,6 +140,21 @@ checks. No Chunk.Max buffer is allocated per operation. This is not a complete
 memory bound: request parts, large persisted chunks and opaque exports retain
 existing allocation costs. Parallel scratch ownership remains separate work.
 
+Request buffers now own compressed frame roots and the full verified tail,
+including any prefix already held by the server. Payload reads borrow aliases
+from those roots. After transport returns and joins its encoder, payload close
+clears request buffers and aliases while preserving error and repair metadata.
+An overflow frame remains in shared scratch for the next operation. Packing still
+compresses that frame before deciding overflow, preserving failure ordering and
+cached repair bytes. Compression and raw-read allocations are unchanged.
+
+When debug logging is enabled, dispatch reports derived capacities for request
+frames, the full tail, shared scan scratch and the deferred frame. These are
+selected retained application buffers, not peak or process memory. They exclude
+temporary raw reads, codec and redactor state, metadata, allocator overhead and
+capture/export work. This adds no admission limit or memory-budget default.
+Expected-size spool reads and bounded compression allocation remain separate work.
+
 A shared counter owner now records cumulative no-progress responses by source
 and generation across scheduler turns. Progress and notifications do not reset
 that count. The third stall removes the bucket before the existing failure and
