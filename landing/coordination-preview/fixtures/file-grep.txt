@@ -1,0 +1,2 @@
+1:export function nextPage(response: { next_cursor: string }) {
+2:  return { cursor: response.next_cursor };

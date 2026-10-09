@@ -1,0 +1,72 @@
+{
+  "hits": [
+    {
+      "address": "0b7e2c1a/3026944",
+      "message_id": "7",
+      "conversation_id": "2",
+      "agent": "claude",
+      "session_id": "0b7e2c1a-0000-4000-8000-000000000001",
+      "ordinal": 3026944,
+      "title": "Update the pagination API",
+      "repo": "/work/acme/app",
+      "device": "local",
+      "branches": [
+        "api-cursors"
+      ],
+      "kind": "assistant",
+      "ts": "2026-09-23T10:00:02Z",
+      "lines": [
+        {
+          "n": 1,
+          "text": "The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent.",
+          "match": true
+        }
+      ],
+      "provenance": {
+        "source_id": "2",
+        "path": "/tmp/fw-site-z7efx1r9/projects/acme-app/0b7e2c1a-0000-4000-8000-000000000001.jsonl",
+        "generation": 1,
+        "line_no": 3,
+        "byte_offset": 739,
+        "byte_len": 507
+      }
+    }
+  ],
+  "total": 1,
+  "total_sessions": 1,
+  "exact": true,
+  "excluded": "left out your own session 4c19e0d2-0000-4000-8000-000000000001 and its subagents; --include-self includes them",
+  "session_info": [
+    {
+      "address": "0b7e2c1a",
+      "id": "2",
+      "agent": "claude",
+      "session_id": "0b7e2c1a-0000-4000-8000-000000000001",
+      "title": "Update the pagination API",
+      "cwd": "/work/acme/app",
+      "repo": "/work/acme/app",
+      "device": "local",
+      "started_at": "2026-09-23T10:00:00Z",
+      "last_activity_at": "2026-09-23T10:00:02Z",
+      "messages": 3,
+      "branches": [
+        "api-cursors"
+      ],
+      "digest": {
+        "intent": "Update the pagination API",
+        "repos": [
+          "/work/acme/app"
+        ],
+        "branches": [
+          "api-cursors"
+        ],
+        "duration_s": 2,
+        "messages": {
+          "assistant": 1,
+          "user": 2
+        },
+        "last": "The cursor includes the sort position as well as the ID. Send next_cursor back unchanged so pagination stays consistent."
+      }
+    }
+  ]
+}
