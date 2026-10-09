@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -180,7 +181,7 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 			if g.ChangeTime != 0 {
 				h.ChangeTime = time.Unix(0, g.ChangeTime).UTC()
 			}
-			for _, p := range pl.parts {
+			for _, p := range pl.buffers.parts {
 				h.Bodies = append(h.Bodies, syncproto.Body{Hash: p.e.Hash, Size: p.e.Size, ZSize: int64(len(p.z))})
 			}
 			if pl.err == nil {
@@ -190,6 +191,14 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 				pl.err = validateProofFile(pl.f, g.Proof)
 			}
 			if pl.err == nil {
+				if s.cfg.Logger.Enabled(ctx, slog.LevelDebug) {
+					compressed, tail := pl.buffers.capacities()
+					s.cfg.Logger.DebugContext(ctx, "devicesync: selected retained upload buffer capacities",
+						"compressed_capacity_bytes", compressed,
+						"full_tail_capacity_bytes", tail,
+						"shared_scan_capacity_bytes", int64(cap(op.scratch.buf)),
+						"deferred_frame_capacity_bytes", int64(cap(op.scratch.deferred.z)))
+				}
 				turn.dispatch()
 				resp, err = s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h, Payload: pl})
 			}
@@ -421,16 +430,15 @@ const batchRatio = 8
 
 // payload holds a request's compressed chunk bodies and tail, read from
 // the spool or else the source and verified against their hashes, and
-// streams them. Compressed bodies stay under MaxRequestBytes (pack), and
-// one uncompressed chunk is in memory at a time.
+// streams them. pack bounds compressed bodies except the first body, which is
+// always admitted. One uncompressed chunk is read at a time.
 type payload struct {
 	ctx      context.Context
 	op       *syncOperation
 	src      *sourceRow
 	g        *genRow
-	parts    []part
+	buffers  uploadBuffers
 	wire     int64 // compressed body bytes
-	tail     []byte
 	cur      []byte
 	next     int
 	f        *os.File
@@ -476,7 +484,7 @@ func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
 			}
 			return batch
 		}
-		p.parts = append(p.parts, part{e, z})
+		p.buffers.parts = append(p.buffers.parts, part{e, z})
 		p.wire += int64(len(z))
 	}
 	return batch
@@ -498,7 +506,7 @@ func (p *payload) loadTail(t *syncproto.Tail) {
 		p.err, p.failed = err, p.g.Entries
 		return
 	}
-	p.tail = data[t.From:]
+	p.buffers.tail, p.buffers.tailFrom = data, t.From
 }
 
 // read returns size bytes at off of the source, from the spool when it
@@ -530,10 +538,10 @@ func (p *payload) read(buf []byte, off, size int64, want syncproto.Hash, spooled
 func (p *payload) Read(b []byte) (int, error) {
 	for len(p.cur) == 0 {
 		switch {
-		case p.next < len(p.parts):
-			p.cur = p.parts[p.next].z
-		case p.next == len(p.parts) && p.tail != nil:
-			p.cur = p.tail
+		case p.next < len(p.buffers.parts):
+			p.cur = p.buffers.parts[p.next].z
+		case p.next == len(p.buffers.parts) && p.buffers.tail != nil:
+			p.cur = p.buffers.tail[p.buffers.tailFrom:]
 		default:
 			return 0, io.EOF
 		}
@@ -586,4 +594,8 @@ func (p *payload) close() {
 		p.f.Close()
 	}
 	p.f = nil
+	// Flush has returned ownership after joining its encoder. Drop only the
+	// request roots and aliases; err/failed still drive repair below.
+	p.buffers.clear()
+	p.cur, p.rr = nil, nil
 }
