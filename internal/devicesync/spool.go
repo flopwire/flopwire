@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -32,8 +31,8 @@ type Spool struct {
 	used    int64
 	blocked bool
 
-	// Dormant reference owner: runtime callers remain serial under Syncer.mu
-	// until their publication and cleanup paths explicitly join this scope.
+	// Reference owner spans durable publication and conditional cleanup.
+	// Runtime workers remain serial under Syncer.mu; file reads copy under mu.
 	referenceMu    sync.Mutex
 	referenceStore *Store
 }
@@ -208,37 +207,32 @@ func (s *Spool) PutTail(sid, gen int64, data []byte) error {
 func (s *Spool) Tail(sid, gen int64) ([]byte, bool, error) { return s.read(s.tailPath(sid, gen)) }
 func (s *Spool) DropTail(sid, gen int64)                   { s.remove(s.tailPath(sid, gen)) }
 
-// sweep runs with no capture or upload in progress. Tail decisions use exact
-// committed hashes; chunk reference/delete coordination remains serial.
-func (s *Spool) sweep(ctx context.Context, keepChunk func(syncproto.Hash) (bool, error), required requiredTailFunc) error {
-	for _, d := range []string{"chunks"} {
-		ents, err := os.ReadDir(filepath.Join(s.dir, d))
-		if err != nil {
-			return err
-		}
-		for _, de := range ents {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			path := filepath.Join(s.dir, d, de.Name())
-			if de.IsDir() {
-				continue
-			}
-			if strings.HasSuffix(de.Name(), ".tmp") {
-				s.remove(path)
-				continue
-			}
-			var h syncproto.Hash
-			ok := h.UnmarshalText([]byte(de.Name())) == nil
-			if ok {
-				if ok, err = keepChunk(h); err != nil {
-					return err
-				}
-			}
-			if !ok {
-				s.remove(path)
-			}
+// sweep runs before workers start, under the reference owner. All reference
+// queries finish before any deletion; file inspection never encloses SQL.
+func (s *Spool) sweep(ctx context.Context, requiredChunks func(context.Context, []syncproto.Hash) (map[syncproto.Hash]bool, error), required requiredTailFunc) error {
+	hashes, junk, err := s.chunkInventory(ctx)
+	if err != nil {
+		return err
+	}
+	refs, err := requiredChunks(ctx, hashes)
+	if err != nil {
+		return err
+	}
+	tailRefs, err := s.planRequiredTails(ctx, 0, required)
+	if err != nil {
+		return err
+	}
+	var unused []syncproto.Hash
+	for _, h := range hashes {
+		if !refs[h] {
+			unused = append(unused, h)
 		}
 	}
-	return s.sweepTails(ctx, required)
+	if err := s.dropVerifiedChunks(ctx, unused); err != nil {
+		return err
+	}
+	if err := s.dropChunkJunk(ctx, junk); err != nil {
+		return err
+	}
+	return s.sweepTails(ctx, tailRefs)
 }

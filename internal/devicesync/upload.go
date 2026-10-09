@@ -216,7 +216,7 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 				continue
 			}
 			// The bytes under the watermark moved: force a new generation.
-			if werr := s.store.setWatermark(ctx, src, nil); werr != nil {
+			if werr := s.setWatermark(ctx, src, nil); werr != nil {
 				return werr
 			}
 			return pl.err
@@ -231,25 +231,27 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 				"generation", g.Gen, "status", resp.Status, "server_generation", resp.Generation)
 			delete(s.stalls, key)
 			g.Lost = true
-			if err := s.store.updateGen(ctx, g, nil); err != nil {
-				return err
-			}
-			if lost, err := s.store.entries(ctx, src.ID, g.Gen, g.Acked, int(g.Entries-g.Acked)); err == nil {
-				hs := make([]syncproto.Hash, len(lost))
-				for i, e := range lost {
-					hs[i] = e.Hash
+			return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+				if err := scope.updateGen(ctx, g, nil); err != nil {
+					return err
 				}
-				s.release(ctx, src, g, hs)
-			}
-			s.releaseTail(ctx, src.ID, g.Gen, g.Tail)
-			if g.Gen != src.Gen {
-				return nil // an older generation: the current one carries on
-			}
-			src.Gen = max(src.Gen, resp.Generation)
-			if err := s.store.setWatermark(ctx, src, nil); err != nil {
-				return err
-			}
-			return errRestart
+				if lost, err := s.store.entries(ctx, src.ID, g.Gen, g.Acked, int(g.Entries-g.Acked)); err == nil {
+					hs := make([]syncproto.Hash, len(lost))
+					for i, e := range lost {
+						hs[i] = e.Hash
+					}
+					s.releaseOwned(ctx, scope, src, g, hs)
+				}
+				s.releaseTailOwned(ctx, scope, src.ID, g.Gen, g.Tail)
+				if g.Gen != src.Gen {
+					return nil
+				}
+				src.Gen = max(src.Gen, resp.Generation)
+				if err := scope.setWatermark(ctx, src, nil); err != nil {
+					return err
+				}
+				return errRestart
+			})
 		case syncproto.StatusOK, syncproto.StatusPartial:
 			if turn != nil {
 				turn.accepted = true
@@ -273,13 +275,18 @@ func (s *Syncer) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, t
 				acked = append(acked, e.Hash)
 			}
 		}
-		if err := s.store.forget(ctx, resp.Missing); err != nil {
+		if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+			if err := s.store.forget(ctx, resp.Missing); err != nil {
+				return err
+			}
+			if err := scope.updateGen(ctx, g, acked); err != nil {
+				return err
+			}
+			s.releaseOwned(ctx, scope, src, g, acked)
+			return nil
+		}); err != nil {
 			return err
 		}
-		if err := s.store.updateGen(ctx, g, acked); err != nil {
-			return err
-		}
-		s.release(ctx, src, g, acked)
 		if g.Acked == prev && !(last && g.TailAcked) {
 			stalls++
 			if turn != nil {
@@ -364,20 +371,19 @@ func (s *Syncer) nextBatch(ctx context.Context, src *sourceRow, g *genRow) ([]sy
 
 // release drops spooled bytes nothing pending needs any more.
 func (s *Syncer) release(ctx context.Context, src *sourceRow, g *genRow, acked []syncproto.Hash) {
-	var spooled []syncproto.Hash
-	for _, h := range acked {
-		if _, ok, _ := s.spool.Chunk(h); ok {
-			spooled = append(spooled, h)
-		}
+	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		s.releaseOwned(ctx, scope, src, g, acked)
+		return nil
+	}); err != nil {
+		s.cfg.Logger.Warn("devicesync: released bytes cleanup deferred", "err", err)
 	}
-	if ref, err := s.store.referenced(ctx, spooled); err == nil {
-		for _, h := range spooled {
-			if !ref[h] {
-				s.spool.DropChunk(h)
-			}
-		}
+}
+
+func (s *Syncer) releaseOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, acked []syncproto.Hash) {
+	if err := scope.releaseChunks(ctx, acked); err != nil {
+		s.cfg.Logger.Warn("devicesync: released chunks cleanup deferred", "err", err)
 	}
-	s.releaseTail(ctx, src.ID, g.Gen, g.Tail)
+	s.releaseTailOwned(ctx, scope, src.ID, g.Gen, g.Tail)
 }
 
 // vanished reports whether src's file disappeared (vanish forgot its

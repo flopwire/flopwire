@@ -209,10 +209,9 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 // sweepSpool drops spool files nothing pending needs: partial writes, and
 // chunks or tails spooled by a capture that crashed before it committed.
 func (s *Syncer) sweepSpool(ctx context.Context) error {
-	return s.spool.sweep(ctx, func(h syncproto.Hash) (bool, error) {
-		ref, err := s.store.referenced(ctx, []syncproto.Hash{h})
-		return ref[h], err
-	}, func(sid, gen int64) (syncproto.Tail, bool, error) { return s.store.requiredTail(ctx, sid, gen) })
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return scope.sweep(ctx)
+	})
 }
 
 // Close releases held descriptors.
@@ -416,19 +415,27 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 type captureCommit func(context.Context, *sourceRow, *genRow, []syncproto.Entry, *transcript.Watermark, []byte, ...func() error) error
 
 func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource, commit captureCommit) error {
-	var (
-		r  io.ReaderAt
-		id transcript.Identity
-		f  *os.File
-		ex *exportRead
-	)
 	now := s.cfg.Now()
 	defer s.captures.Add(1)
+	var ex *exportRead
 	if export != nil {
 		var err error
 		if ex, err = s.readExport(ctx, src, export); err != nil {
 			return err
 		}
+	}
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.captureOwnedWithCommit(ctx, scope, src, ex, upTo, snapshot, now, commit)
+	})
+}
+
+func (s *Syncer) captureOwnedWithCommit(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, ex *exportRead, upTo int64, snapshot *snapshotSource, now time.Time, commit captureCommit) error {
+	var (
+		r  io.ReaderAt
+		id transcript.Identity
+		f  *os.File
+	)
+	if ex != nil {
 		r, id = ex.r, transcript.Identity{Size: ex.size}
 	} else {
 		var err error
@@ -451,7 +458,7 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 			if snapshot != nil {
 				return err
 			}
-			return s.vanish(ctx, src)
+			return s.vanishOwned(ctx, scope, src)
 		} else if err != nil {
 			return err
 		}
@@ -541,7 +548,7 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 	switch change.Decision {
 	case transcript.Unchanged:
 		if ex != nil {
-			if err := s.keepExport(ctx, src, cur, ex); err != nil {
+			if err := s.keepExportOwned(ctx, scope, src, cur, ex); err != nil {
 				return err
 			}
 		}
@@ -551,7 +558,7 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 		// Idle with a captured complete-record tail: fall through to seal it.
 	case transcript.Rewrite:
 		if cur != nil && !cur.done() {
-			s.salvage(ctx, src, cur, change.Reason)
+			s.salvageOwned(ctx, scope, src, cur, change.Reason)
 		}
 		g = &genRow{SourceID: src.ID, Gen: src.Gen + 1, FileID: fileID(id), TailAcked: true}
 		if cur != nil && cur.FileID != g.FileID {
@@ -605,7 +612,7 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 	}
 	if src.Spec.rewriteProne() {
 		// Worst case: every new byte is a chunk the spool lacks.
-		if err := s.reserveCapture(ctx, src.ID, end-from); err != nil {
+		if err := s.reserveCaptureOwned(ctx, scope, src.ID, end-from); err != nil {
 			s.cfg.Logger.Error("devicesync: spool full, not capturing rewritten source", "path", src.Spec.Path, "err", err)
 			return err
 		}
@@ -631,7 +638,7 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 		}
 		for _, p := range pend {
 			if !known[p.hash] {
-				if err := s.spool.PutChunk(p.hash, p.data); err != nil {
+				if err := scope.putChunk(p.hash, p.data); err != nil {
 					return err
 				}
 			}
@@ -671,12 +678,12 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 			add = append(add, syncproto.Entry{Ordinal: g.Entries + int64(len(add)), Hash: newTail.Hash, Offset: tail, Size: newTail.Size})
 			newTail = syncproto.Tail{Offset: end}
 			if src.Spec.rewriteProne() {
-				if err := s.spool.PutChunk(add[len(add)-1].Hash, data); err != nil {
+				if err := scope.putChunk(add[len(add)-1].Hash, data); err != nil {
 					return err
 				}
 			}
 		} else if src.Spec.rewriteProne() {
-			if err := s.spool.PutTailVersion(src.ID, g.Gen, newTail.Hash, data); err != nil {
+			if err := scope.putTailVersion(src.ID, g.Gen, newTail.Hash, data); err != nil {
 				return err
 			}
 		}
@@ -724,7 +731,7 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 	if err := commit(ctx, src, g, add, wm, exportState, guards...); err != nil {
 		return err
 	}
-	s.releaseTail(ctx, src.ID, oldGen, oldTail)
+	s.releaseTailOwned(ctx, scope, src.ID, oldGen, oldTail)
 	if s.authorization != nil {
 		if err := validateProofFile(f, &s.authorization.Proof); err != nil {
 			return err // verified capture remains a fact; a changed live source requires reindexing
@@ -746,15 +753,21 @@ func (s *Syncer) captureWithCommit(ctx context.Context, src *sourceRow, export E
 // from the held descriptor and forget the watermark, so a file that
 // reappears at the path starts a new generation.
 func (s *Syncer) vanish(ctx context.Context, src *sourceRow) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.vanishOwned(ctx, scope, src)
+	})
+}
+
+func (s *Syncer) vanishOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow) error {
 	if src.Watermark == nil {
 		return nil
 	}
 	if g, err := s.store.gen(ctx, src.ID, src.Gen); err != nil {
 		return err
 	} else if g != nil && !g.done() {
-		s.salvage(ctx, src, g, "source disappeared")
+		s.salvageOwned(ctx, scope, src, g, "source disappeared")
 	}
-	return s.store.setWatermark(ctx, src, nil)
+	return scope.setWatermark(ctx, src, nil)
 }
 
 // salvage copies a generation's unacknowledged bytes into the spool before
@@ -763,6 +776,15 @@ func (s *Syncer) vanish(ctx context.Context, src *sourceRow) error {
 // recovered (in-place rewrite, spool full, no held descriptor) are recorded
 // as a gap: the generation is cut back to the recoverable prefix.
 func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why string) {
+	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		s.salvageOwned(ctx, scope, src, g, why)
+		return nil
+	}); err != nil {
+		s.cfg.Logger.Warn("devicesync: salvage reference ownership failed", "err", err)
+	}
+}
+
+func (s *Syncer) salvageOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, why string) {
 	if s.authorization != nil {
 		return
 	} // retain pending generation; raw repair requires a fresh verified open
@@ -806,7 +828,7 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 			continue
 		}
 		data, ok := readVerified(e.Offset, e.Size, e.Hash)
-		if !ok || s.spool.PutChunk(e.Hash, data) != nil {
+		if !ok || scope.putChunk(e.Hash, data) != nil {
 			keep = e.Ordinal
 			break
 		}
@@ -815,7 +837,7 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 	if !tailOK {
 		if body, ok, err := s.spool.TailVersion(src.ID, g.Gen, g.Tail.Hash); err == nil && ok && int64(len(body)) == g.Tail.Size {
 			tailOK = true
-		} else if data, ok := readVerified(g.Tail.Offset, g.Tail.Size, g.Tail.Hash); ok && s.spool.PutTailVersion(src.ID, g.Gen, g.Tail.Hash, data) == nil {
+		} else if data, ok := readVerified(g.Tail.Offset, g.Tail.Size, g.Tail.Hash); ok && scope.putTailVersion(src.ID, g.Gen, g.Tail.Hash, data) == nil {
 			tailOK = true
 		}
 	}
@@ -823,7 +845,7 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 		s.cfg.Logger.Warn("devicesync: unacknowledged bytes lost before upload",
 			"path", src.Spec.Path, "generation", g.Gen, "reason", why,
 			"kept_entries", keep, "entries", g.Entries, "tail_bytes", g.Tail.Size, "spool_blocked", s.spool.Blocked())
-		if err := s.cut(ctx, src, g, keep); err != nil {
+		if err := s.cutOwned(ctx, scope, src, g, keep); err != nil {
 			s.cfg.Logger.Error("devicesync: record gap", "path", src.Spec.Path, "err", err)
 		}
 	}
@@ -852,6 +874,12 @@ func entryHashes(ents []syncproto.Entry) []syncproto.Hash {
 // as it was: it is the last evidence of the lost bytes. Spooled chunks
 // only the cut entries needed are released.
 func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.cutOwned(ctx, scope, src, g, keep)
+	})
+}
+
+func (s *Syncer) cutOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, keep int64) error {
 	oldTail := g.Tail
 	var dropped []syncproto.Hash
 	if keep < g.Entries {
@@ -864,14 +892,14 @@ func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64)
 		}
 	}
 	g.Entries, g.Tail, g.TailAcked = keep, syncproto.Tail{Offset: g.Tail.Offset}, true
-	if err := s.store.updateGen(ctx, g, nil); err != nil {
+	if err := scope.updateGen(ctx, g, nil); err != nil {
 		return err
 	}
 	if g.done() {
 		delete(s.stalls, [2]int64{src.ID, g.Gen})
 	}
-	s.release(ctx, src, g, dropped)
-	s.releaseTail(ctx, src.ID, g.Gen, oldTail)
+	s.releaseOwned(ctx, scope, src, g, dropped)
+	s.releaseTailOwned(ctx, scope, src.ID, g.Gen, oldTail)
 	return nil
 }
 
@@ -1020,9 +1048,15 @@ func (s *Syncer) exportTail(src *sourceRow, g *genRow) ([]byte, bool) {
 // provisional tail again when the spool lost it, so the next change can
 // append.
 func (s *Syncer) keepExport(ctx context.Context, src *sourceRow, g *genRow, ex *exportRead) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.keepExportOwned(ctx, scope, src, g, ex)
+	})
+}
+
+func (s *Syncer) keepExportOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, ex *exportRead) error {
 	if !bytes.Equal(ex.state, src.ExportState) {
 		src.ExportState = ex.state
-		if err := s.store.setWatermark(ctx, src, src.Watermark); err != nil {
+		if err := scope.setWatermark(ctx, src, src.Watermark); err != nil {
 			return err
 		}
 	}
@@ -1039,19 +1073,23 @@ func (s *Syncer) keepExport(ctx context.Context, src *sourceRow, g *genRow, ex *
 	if syncproto.Sum(data) != g.Tail.Hash {
 		return nil
 	}
-	return s.spool.PutTailVersion(src.ID, g.Gen, g.Tail.Hash, data)
+	return scope.putTailVersion(src.ID, g.Gen, g.Tail.Hash, data)
 }
 
 // reserveCapture only reconciles this source's immutable tail attempts after
 // cap pressure. Failed handoff files stay charged until durable reference reads
 // succeed. It does not reclaim chunks or coordinate concurrent workers.
 func (s *Syncer) reserveCapture(ctx context.Context, sid, bytes int64) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.reserveCaptureOwned(ctx, scope, sid, bytes)
+	})
+}
+
+func (s *Syncer) reserveCaptureOwned(ctx context.Context, scope *spoolReferenceScope, sid, bytes int64) error {
 	if err := s.spool.Reserve(bytes); !errors.Is(err, ErrSpoolFull) {
 		return err
 	}
-	if err := s.spool.reconcileTailVersions(ctx, sid, func(sid, gen int64) (syncproto.Tail, bool, error) {
-		return s.store.requiredTail(ctx, sid, gen)
-	}); err != nil {
+	if err := scope.reconcileTailVersions(ctx, sid); err != nil {
 		return err
 	}
 	return s.spool.Reserve(bytes)
@@ -1060,19 +1098,24 @@ func (s *Syncer) reserveCapture(ctx context.Context, sid, bytes int64) error {
 // releaseTail follows a durable commit/acknowledgement. Reference uncertainty
 // or cleanup failure leaves bytes charged for startup or later pressure retry.
 func (s *Syncer) releaseTail(ctx context.Context, sid, gen int64, old syncproto.Tail) {
-	if old.Size == 0 {
-		return
-	}
-	ref, needed, err := s.store.requiredTail(ctx, sid, gen)
-	if err == nil && needed && ref.Hash == old.Hash {
-		return
-	}
-	if err == nil {
-		err = s.spool.DropTailVersion(sid, gen, old.Hash)
-	}
-	if err != nil {
+	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return scope.releaseTail(ctx, sid, gen, old)
+	}); err != nil {
 		s.cfg.Logger.Warn("devicesync: released tail cleanup deferred", "source_id", sid, "generation", gen, "err", err)
 	}
+}
+
+func (s *Syncer) releaseTailOwned(ctx context.Context, scope *spoolReferenceScope, sid, gen int64, old syncproto.Tail) {
+	if err := scope.releaseTail(ctx, sid, gen, old); err != nil {
+		s.cfg.Logger.Warn("devicesync: released tail cleanup deferred", "source_id", sid, "generation", gen, "err", err)
+	}
+}
+
+// setWatermark changes the durable tail-continuation reference outside capture.
+func (s *Syncer) setWatermark(ctx context.Context, src *sourceRow, wm *transcript.Watermark) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return scope.setWatermark(ctx, src, wm)
+	})
 }
 
 // appendReader serves an appended export from the generation's tail
