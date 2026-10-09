@@ -31,6 +31,11 @@ type Spool struct {
 	mu      sync.Mutex
 	used    int64
 	blocked bool
+
+	// Dormant reference owner: runtime callers remain serial under Syncer.mu
+	// until their publication and cleanup paths explicitly join this scope.
+	referenceMu    sync.Mutex
+	referenceStore *Store
 }
 
 // OpenSpool opens (creating) a spool directory with a size cap in bytes.
