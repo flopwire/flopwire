@@ -66,7 +66,9 @@ func wiringRequireSealLedger(t *testing.T, e *env, sid int64, body []byte, seale
 	if sealed {
 		wantEntries, wantTail = 1, 0
 	}
-	if entries != wantEntries || size != int64(len(body)) || tailSize != wantTail || acked != 0 || tailAcked != sealed || lost {
+	// Local sealing changes the tail to empty; the server must still ACK
+	// that change. Both fixture states remain unacknowledged before upload.
+	if entries != wantEntries || size != int64(len(body)) || tailSize != wantTail || acked != 0 || tailAcked || lost {
 		t.Fatalf("ledger entries=%d size=%d tail=%d ack=%d/%v lost=%v", entries, size, tailSize, acked, tailAcked, lost)
 	}
 	if sealed {
