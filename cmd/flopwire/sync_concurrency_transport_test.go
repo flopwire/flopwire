@@ -244,7 +244,7 @@ func TestSyncReturnedPermanentRecoversAlreadyInstalledCredentials(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer store.Close()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer new" {
 			t.Error("recovered request used old token")
 		}
@@ -302,7 +302,7 @@ func TestSyncReturnedPermanentRecoversAlreadyInstalledCredentials(t *testing.T) 
 	// waits. Install the same-device replacement under the normal config lock.
 	if err := client.WithConfigLock(t.Context(), func() error {
 		saved.Token = "new"
-		saved.TLSFingerprint = client.FingerprintPrefix + strings.Repeat("22", 32)
+		saved.TLSFingerprint = client.Fingerprint(srv.Certificate().Raw)
 		if !tr.install(saved) {
 			return errors.New("replacement install failed")
 		}

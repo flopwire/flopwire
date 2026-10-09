@@ -43,9 +43,9 @@ func TestTwoFlushAdmissionCountsRequestsAndRetainsCancelledOwners(t *testing.T) 
 	requireAdmissionRefusal(t, s, "one", 429, "device_busy")
 	bodies[0].finish <- context.Canceled
 	waitAdmissionSignal(t, finished[0])
-	replacement, err := a.acquire("one")
-	if err != nil {
-		t.Fatal(err)
+	replacement, admissionErr := a.acquire("one")
+	if admissionErr != nil {
+		t.Fatal(admissionErr)
 	}
 	replacement.release()
 	replacement.release()
