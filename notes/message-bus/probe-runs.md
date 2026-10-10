@@ -205,8 +205,9 @@ Desktop and IDE results are recorded separately below.
 | Devin Desktop | UNVERIFIED | No standalone app found in the installed application directories; no app was installed |
 | Claude Code for JetBrains | UNVERIFIED | No JetBrains app found in the installed application directories |
 
-Claude Desktop sign-in needs the user. A collection check from an earlier
-session does not substitute for these messaging checks.
+The user subsequently signed in. The Local Code messaging checks are recorded
+below. A collection check from an earlier session does not substitute for
+these messaging checks.
 
 ## 2026-10-10 manual: Claude Code for VS Code
 
@@ -259,3 +260,33 @@ zero blocked or failed runs. The later prompt recovered the marker without a set
 The missed first boundary needs diagnosis before changing settings.
 
 The missed prompt boundary is tracked in [#228](https://github.com/flopwire/flopwire/issues/228).
+
+## 2026-10-10 manual: Claude Desktop Local Code
+
+Claude Desktop `2.31226.0`, bundled Claude Code `2.1.295`
+(`entrypoint=claude-desktop`), Flopwire runtime `7cc9fd9e9148`.
+After the user signed in, the retained synthetic prompt started fresh session
+`c905bffe-e366-4e0a-b573-8e53e34b0622` in the empty scratch repository.
+The real interactive Claude Code sender was
+`abe8b2cd-9795-4c7e-a2bf-67c3ed1ddda7`, CLI `2.1.296`.
+
+| Case | Result | Evidence |
+|---|---|---|
+| Existing plugin / tools | PASS | Setup check reported enabled; Desktop named all seven tools, including peers/send/inbox; SessionStart attached the standing messaging instructions |
+| Presence | PASS | Exact native session was live and idle on `manual/messaging-20261010` in the scratch repository |
+| Idle / prompt-submit | PASS | `m9cd12d3d7a1ed1d2` stayed queued with no automatic turn for over a minute; generic prompt at 14:05:02.656Z contained no marker; UserPromptSubmit attached it at 14:05:02.824Z; UI quoted `MANUAL-CLAUDE-DESKTOP-IDLE-20261010-A`; sender state read |
+| Delivery at a tool boundary | PASS | `m46931cc7f1e2d459` entered PostToolUse:Bash context at 14:05:27.231Z after separate `echo first`, before `echo second` at 14:05:28.542Z; UI quoted `MANUAL-CLAUDE-DESKTOP-BOUNDARY-20261010-A`; sender state read |
+| Threaded reply | PASS | Desktop sent one MCP reply `m048b4b6cb84565fd` containing `MANUAL-CLAUDE-DESKTOP-REPLY-20261010-A` with reply_to `m3ed3c6592a728095`; a fresh generic requester prompt received it through hook context; state read |
+| Foreground-sleep / busy receipt | UNVERIFIED | This run used separate echo calls. The boundary marker's send receipt reported idle at turn startup; actual native hook context proves the tool boundary, not a busy receipt during foreground sleep |
+| Global install/remove / fresh trust review | UNVERIFIED | Existing plugins and approval settings were retained |
+
+The Desktop UI did not display the message wrapper as a separate chat item.
+The native transcript records the hook attachment, and the UI response quotes
+its id and marker. Both delivery markers had intent inform; the reply used a
+separate request thread. No reply was sent for either inform message.
+The existing Auto mode allowed the synthetic commands and MCP reply without
+a new approval dialog. No app restart, upgrade or global setting change was
+performed.
+
+Private filtered synthetic transcripts and inbox receipts are in
+`/tmp/flopwire-desktop-evidence-20261010` on the test Mac.
