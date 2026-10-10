@@ -145,3 +145,117 @@ flopwire dev, local agent. Plugins as installed (`--as-installed`): the hooks ra
 | opencode | hook-binary | PASS | the plugin's hook command ran this probe's flopwire: 20 hooks via recorded path |
 
 25 passed, 0 failed.
+
+## 2026-10-10 manual: interactive TUIs
+
+Flopwire runtime `7cc9fd9e9148`, local production agent and shared server.
+Repository main `f432f28` adds a test after that runtime; no new binary was deployed.
+Fresh sessions ran in an empty scratch Git repository on the Mac.
+Existing user plugins and hook trust were retained.
+These checks used interactive PTYs, not headless probe drivers.
+
+| Surface | Case | Result | Evidence |
+|---|---|---|---|
+| Claude Code 2.1.296 | tool roster / presence | PASS | New session `3e434760-3408-4aa1-86e2-51aaff5ad820`; peers/send/inbox in its deferred MCP roster; live idle on the scratch branch |
+| Claude Code 2.1.296 | prompt-submit | PASS | `mf93cad8e05bf86c7` entered hook context; model quoted `MANUAL-CLAUDE-IDLE-20261010-A`; sender state read |
+| Claude Code 2.1.296 | one-minute idle interval | PASS | Recheck `m637db1d4e651f586` stayed queued for over a minute before the next human prompt; initial A interval was about 53 seconds |
+| Claude Code 2.1.296 | delivery at a tool boundary | PASS | `m689387e7d5fdea59` sent while busy; PostToolUse:Bash attached it after `echo first`; model quoted it; sender state read |
+| Claude Code 2.1.296 | threaded reply | PASS | MCP reply `m3cfd5073859cd10c` contains `MANUAL-CLAUDE-REPLY-20261010-A`, reply_to `m7bfb114b256607b3` |
+| Codex 0.162.0 | tool discovery / presence | PASS | New session `01a125db-7239-7e90-9550-00ff49d972a4`; discovery exposed peers/send/inbox; live idle on scratch repo |
+| Codex 0.162.0 | idle / prompt-submit | PASS | `md3037c69cbdebcd5` remained queued for a minute; additional hook context contains it; model quoted `MANUAL-CODEX-IDLE-20261010-A`; sender state read |
+| Codex 0.162.0 | mid-turn | PASS | `m11273a98640f420b` sent while busy during `sleep 30`; hook context arrived during completion wait before `echo second`; model quoted it; sender state read |
+| Codex 0.162.0 | threaded MCP reply | BLOCKED | Send required approval; this test session's approval policy was never. No reply was sent for `m5960167bec8cb749` |
+| Devin 3000.11.1 | tool roster / presence | PASS | New session `spiny-seagull`; MCP discovery confirmed peers/send/inbox; live idle on scratch repo |
+| Devin 3000.11.1 | idle / prompt-submit | PASS | `me6564080d001bdf8` remained queued for a minute; transcript system step contains it; model quoted `MANUAL-DEVIN-IDLE-20261010-A`; sender state read |
+| Devin 3000.11.1 | mid-turn | PASS | `m1a17e536b700c375` sent while busy during approved `sleep 30`; transcript system context appeared before `echo second`; model quoted it; sender state read |
+| Devin 3000.11.1 | threaded reply | PASS | One-time send approval; reply `m715470b18bd68582` contains `MANUAL-DEVIN-REPLY-20261010-A`, reply_to `mda4b9f7e43a691bd` |
+
+The first Codex prompt prohibited discovery, so its report of no visible
+Flopwire tools was inconclusive. A discovery-only prompt exposed them.
+No installation change was needed.
+
+Claude's standalone `sleep 30` was blocked by its existing command policy.
+The model used the permitted background form and resumed on completion.
+The recorded Claude mid-turn case instead used separate `echo first` and
+`echo second` calls. This proves delivery at an actual tool boundary,
+but does not qualify the checklist's foreground sleep sequence.
+
+All idle and mid-turn messages had intent inform and sender own.
+Replies were separate request threads. Read receipts mean context delivery;
+they do not mean a request was answered. Reply ids above prove replies were
+queued for the exact requesting session. Fresh no-tool prompts subsequently
+received those replies through hook context; their sender states are read.
+
+Private evidence includes synthetic transcripts and inbox JSON in
+`/tmp/flopwire-manual-evidence-20261010.a5myl31t` on the test Mac.
+No private work transcript was added to this log.
+
+Fresh hook-review UI, global install/remove and a genuinely different-user
+Devin sender remain UNVERIFIED. Existing five Codex hooks were trusted. The TUI `/mcp` inventory
+reported Flopwire connected with seven tools.
+No global plugin removal, trust reset, app restart or app upgrade was done.
+Desktop and IDE results are recorded separately below.
+
+## 2026-10-10 manual: desktop availability
+
+| Surface | Result | Evidence / remaining work |
+|---|---|---|
+| Claude Desktop 2.31226.0, Local Code | BLOCKED | Empty scratch repo selected; synthetic tool-list prompt stopped by "Your session timed out. Sign in again to verify your identity." No acceptance session started |
+| Codex desktop app | UNVERIFIED | No standalone app found in the installed application directories; no app was installed |
+| Devin Desktop | UNVERIFIED | No standalone app found in the installed application directories; no app was installed |
+| Claude Code for JetBrains | UNVERIFIED | No JetBrains app found in the installed application directories |
+
+Claude Desktop sign-in needs the user. A collection check from an earlier
+session does not substitute for these messaging checks.
+
+## 2026-10-10 manual: Claude Code for VS Code
+
+VS Code `1.139.1`, extension `anthropic.claude-code@2.1.207`, fresh session
+`25ca6094-b620-4180-9c7c-b394e37f2439`. Flopwire runtime `7cc9fd9e9148`.
+The extension loaded the existing user plugin in the empty scratch repo.
+
+| Case | Result | Evidence |
+|---|---|---|
+| Tools / presence | PASS | UI named peers/send/inbox; exact session was live idle with the scratch branch |
+| Idle / prompt-submit | PASS | `mb1ef278b680fca74` remained queued for over a minute; UserPromptSubmit hook context contains it; UI quoted marker `MANUAL-CLAUDE-IDE-IDLE-20261010-A`; sender state read |
+| Delivery at a tool boundary | PASS | `mdc54b64f39fff7f2` attached at PostToolUse:Bash after `echo first`; `ma736c4a92ea0d232` attached at PostToolUse of the approved synthetic reply; UI quoted both |
+| Busy receipt | PASS | `m383fdaca02645352` sent while busy, receipt next_tool_call; no tool call remained in that turn, so it stayed pending until the next prompt |
+| Threaded reply | PASS | One-time approval; `m40ff846c72e7d5e7` contains `MANUAL-CLAUDE-IDE-REPLY-20261010-A`, reply_to `m934e0f2600189de4`; later requester prompt received it and sender state read |
+| Foreground-sleep checklist sequence | UNVERIFIED | Existing command policy blocked standalone sleep; background completion created a new prompt boundary |
+
+Marker names are test labels, not presence evidence. Messages labelled
+BUSY-A and BUSY-D were actually sent with idle/unknown receipts. A arrived
+at UserPromptSubmit after background completion. D arrived at PostToolUse
+of the reply tool. BUSY-B had an idle/unknown receipt at turn startup but
+entered the echo tool's PostToolUse context. BUSY-C had a busy receipt
+but was sent after the last tool call, and entered context at the next
+prompt. These outcomes must not be combined into a foreground-sleep pass.
+
+No global plugin or permission setting was changed. Install/remove and
+fresh plugin trust review remain UNVERIFIED. Evidence is in the private
+synthetic evidence directory noted above.
+
+## 2026-10-10 manual: Codex IDE extension
+
+VS Code `1.139.1`, active extension `openai.chatgpt@26.51007.21434`,
+Codex backend `0.162.0-alpha.17.2`
+(`source=vscode`, `originator=codex_vscode`), fresh session
+`01a125e5-3eb3-7522-8c08-e96dd3981eab`, empty scratch repository.
+Flopwire runtime `7cc9fd9e9148`.
+
+| Case | Result | Evidence |
+|---|---|---|
+| Tools / presence | PASS | Discovery exposed peers/send/inbox; exact synthetic transcript matches the IDE prompt; session live idle on scratch repo |
+| Idle interval | PASS | `mdb224a12dc68e291` stayed queued for over a minute without an automatic turn |
+| Prompt-submit | FAIL | Generic prompt at 13:01:51Z produced "No <flopwire-message> tags have appeared in my context so far." Native transcript had no tag and sender state was still queued after that prompt |
+| Idle recheck | PASS | `m75c89105ac6b2ec9` stayed queued for over a minute and entered next-prompt hook context at 13:07:08Z; model quoted marker B |
+| Later prompt catch-up | PASS | Previously missed idle marker entered UserPromptSubmit context at 13:04:30Z, before any command |
+| Mid-turn | PASS | `m49e7a72af88d3004` sent busy during sleep; hook context at 13:05:04Z precedes separate echo at 13:05:09Z; model quoted both markers |
+| Threaded reply | PASS | MCP reply `m196ac9ed4cd3cd19` contains `MANUAL-CODEX-IDE-REPLY-20261010-A`, reply_to `m031127983117c9ab`; requester received hook context and sender state read |
+
+This failure was observed on the installed IDE surface; interactive Codex
+0.162.0 TUI hook delivery passed above. At the missed prompt, IDE Hook stats reported one completed UserPromptSubmit run with
+zero blocked or failed runs. The later prompt recovered the marker without a setting change.
+The missed first boundary needs diagnosis before changing settings.
+
+The missed prompt boundary is tracked in [#228](https://github.com/flopwire/flopwire/issues/228).
