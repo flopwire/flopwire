@@ -88,7 +88,7 @@ func TestParseCoverageRequiresEveryCounter(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(body)
 		}))
-		cfg := client.Config{Server: server.URL, DeviceID: "device-a"}
+		cfg := client.Config{Server: server.URL, DeviceID: "device-a", FromEnv: true}
 		got, err := parseCoverageReader(cfg)(context.Background())
 		server.Close()
 		if missing == "" {
@@ -157,7 +157,7 @@ func TestAgentCoverageMissingAdditiveCounterIsUnknown(t *testing.T) {
 func TestParseCoverageRejectsOversizeAndTrailingJSON(t *testing.T) {
 	for _, body := range []string{strings.Repeat(" ", 16*1024+1), `{} {}`} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }))
-		_, err := parseCoverageReader(client.Config{Server: server.URL, DeviceID: "device-a"})(context.Background())
+		_, err := parseCoverageReader(client.Config{Server: server.URL, DeviceID: "device-a", FromEnv: true})(context.Background())
 		server.Close()
 		if err == nil {
 			t.Fatal("invalid metadata accepted")

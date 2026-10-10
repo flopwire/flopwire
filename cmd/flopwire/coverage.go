@@ -70,9 +70,9 @@ func decodeAgentCoverage(raw json.RawMessage) (*coverage.Report, error) {
 // Use the same credential and pinned transport as the retrieval request. Decode
 // presence separately: an older or partial response must not invent zero counts.
 func parseCoverageReader(cfg client.Config) func(context.Context) (*coverage.ParseSnapshot, error) {
+	api := cfg.RetrievalAPI()
 	return func(ctx context.Context) (*coverage.ParseSnapshot, error) {
 		var raw map[string]json.RawMessage
-		api := cfg.API(cfg.Token)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(api.Server, "/")+coverage.Path, nil)
 		if err != nil {
 			return nil, err
