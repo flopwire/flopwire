@@ -92,10 +92,10 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	det := local.NewDetector()
 	if server {
 		cfg, err := client.Load()
-		c := cfg.RetrievalAPI()
 		if err != nil {
 			return nil, fmt.Errorf("--server: %w (run flopwire login and enroll first)", err)
 		}
+		c := cfg.RetrievalAPI()
 		if indexPath == "" {
 			indexPath = local.IndexPath()
 		}

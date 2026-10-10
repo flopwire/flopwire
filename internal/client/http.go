@@ -35,7 +35,7 @@ func (e *APIError) Error() string {
 		// Print only recognized codes, never arbitrary server response text.
 		switch e.Code {
 		case "credential_rotated", "credential_revoked", "reauth_required", "credential_invalid":
-			return fmt.Sprintf("flopwire API 401 Unauthorized (%s); run flopwire login", e.Code)
+			return fmt.Sprintf("flopwire API 401 Unauthorized (%s); run flopwire login or renew FLOPWIRE_TOKEN if set", e.Code)
 		case "credential_expired":
 			return "flopwire API 401 Unauthorized (credential_expired); run flopwire login or mint a new FLOPWIRE_TOKEN"
 		default:

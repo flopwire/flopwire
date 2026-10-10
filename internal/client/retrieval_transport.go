@@ -13,9 +13,6 @@ import (
 // clients. Environment credentials remain fixed and never fall back to disk.
 func (c Config) RetrievalAPI() HTTP {
 	api := c.API(c.Token)
-	if c.FromEnv {
-		return api
-	}
 	api.Client = &http.Client{Transport: &retrievalTransport{
 		initial: c, load: LoadFile, lock: WithConfigLock,
 		pin: c.TLSFingerprint, client: api.Client,
@@ -33,6 +30,9 @@ type retrievalTransport struct {
 }
 
 func (t *retrievalTransport) saved() (Config, error) {
+	if t.initial.FromEnv {
+		return t.initial, nil
+	}
 	c, err := t.load()
 	if err != nil {
 		return Config{}, errors.New("Flopwire credential configuration is unavailable; run flopwire login")
@@ -74,7 +74,7 @@ func (t *retrievalTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, err
 	}
 	resp, err := t.send(req, c)
-	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+	if err != nil || resp.StatusCode != http.StatusUnauthorized || t.initial.FromEnv {
 		return resp, err
 	}
 	// Rotation commits on the server before saving the new token. Wait for

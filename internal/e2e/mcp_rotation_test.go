@@ -107,7 +107,7 @@ func (h *harness) checkMCPRotation(t *testing.T, d *device, needle string, r *re
 		if body := call("flopwire_search", map[string]any{"query": needle, "include_self": true, "format": "json"}, false); !strings.Contains(body, needle) {
 			t.Fatalf("search lost fixture: %s", body)
 		}
-		if body := call("flopwire_sessions", map[string]any{"session": d.claudeSID, "include_self": true}, false); !strings.Contains(body, d.claudeSID) {
+		if body := call("flopwire_sessions", map[string]any{"glob": d.claudeSID, "include_self": true}, false); !strings.Contains(body, d.claudeSID) {
 			t.Fatalf("sessions lost fixture: %s", body)
 		}
 	}
