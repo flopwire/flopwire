@@ -263,7 +263,7 @@ The missed prompt boundary is tracked in [#228](https://github.com/flopwire/flop
 
 ## 2026-10-10 manual: Claude Desktop Local Code
 
-Claude Desktop `2.31226.0`, bundled Claude Code `2.1.295`
+Claude Desktop `2.31226.1` (About dialog), bundled Claude Code `2.1.295`
 (`entrypoint=claude-desktop`), Flopwire runtime `7cc9fd9e9148`.
 After the user signed in, the retained synthetic prompt started fresh session
 `c905bffe-e366-4e0a-b573-8e53e34b0622` in the empty scratch repository.
