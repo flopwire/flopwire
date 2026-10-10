@@ -31,6 +31,17 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	if e.StatusCode == http.StatusUnauthorized {
+		// Print only recognized codes, never arbitrary server response text.
+		switch e.Code {
+		case "credential_rotated", "credential_revoked", "reauth_required", "credential_invalid":
+			return fmt.Sprintf("flopwire API 401 Unauthorized (%s); run flopwire login", e.Code)
+		case "credential_expired":
+			return "flopwire API 401 Unauthorized (credential_expired); run flopwire login or mint a new FLOPWIRE_TOKEN"
+		default:
+			return "flopwire API 401 Unauthorized; run flopwire login or renew FLOPWIRE_TOKEN if set"
+		}
+	}
 	if e.Detail != "" {
 		return fmt.Sprintf("flopwire API %d: %s", e.StatusCode, e.Detail)
 	}

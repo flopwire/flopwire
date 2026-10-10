@@ -92,7 +92,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	det := local.NewDetector()
 	if server {
 		cfg, err := client.Load()
-		c := cfg.API(cfg.Token)
+		c := cfg.RetrievalAPI()
 		if err != nil {
 			return nil, fmt.Errorf("--server: %w (run flopwire login and enroll first)", err)
 		}
@@ -207,7 +207,7 @@ func serverClient() (client.HTTP, error) {
 	if err != nil {
 		return client.HTTP{}, err
 	}
-	return cfg.API(cfg.Token), nil
+	return cfg.RetrievalAPI(), nil
 }
 
 // --- options ---

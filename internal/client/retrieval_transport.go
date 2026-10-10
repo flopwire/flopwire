@@ -1,0 +1,97 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+)
+
+// RetrievalAPI follows saved credentials for read-only requests in long-running
+// clients. Environment credentials remain fixed and never fall back to disk.
+func (c Config) RetrievalAPI() HTTP {
+	api := c.API(c.Token)
+	if c.FromEnv {
+		return api
+	}
+	api.Client = &http.Client{Transport: &retrievalTransport{
+		initial: c, load: LoadFile, lock: WithConfigLock,
+		pin: c.TLSFingerprint, client: api.Client,
+	}}
+	return api
+}
+
+type retrievalTransport struct {
+	initial Config
+	load    func() (Config, error)
+	lock    func(context.Context, func() error) error
+	mu      sync.Mutex
+	pin     string
+	client  *http.Client
+}
+
+func (t *retrievalTransport) saved() (Config, error) {
+	c, err := t.load()
+	if err != nil {
+		return Config{}, errors.New("Flopwire credential configuration is unavailable; run flopwire login")
+	}
+	want, err := NormalizeServer(t.initial.Server)
+	if err != nil {
+		return Config{}, err
+	}
+	got, err := NormalizeServer(c.Server)
+	if err != nil || got != want || c.DeviceID != t.initial.DeviceID {
+		return Config{}, errors.New("Flopwire server or device changed; restart the Flopwire MCP server")
+	}
+	return c, nil
+}
+
+func (t *retrievalTransport) send(req *http.Request, c Config) (*http.Response, error) {
+	t.mu.Lock()
+	if c.TLSFingerprint != t.pin {
+		t.client.CloseIdleConnections()
+		t.client, t.pin = c.HTTPClient(), c.TLSFingerprint
+	}
+	hc := t.client
+	t.mu.Unlock()
+	r := req.Clone(req.Context())
+	r.Header.Set("Authorization", "Bearer "+c.Token)
+	return hc.Transport.RoundTrip(r)
+}
+
+func (t *retrievalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, err := url.Parse(t.initial.Server)
+	if err != nil || !strings.EqualFold(req.URL.Host, u.Host) || req.URL.Scheme != u.Scheme {
+		return nil, errors.New("Flopwire retrieval refuses to send credentials to another server")
+	}
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		return nil, errors.New("Flopwire retrieval transport only supports read-only requests")
+	}
+	c, err := t.saved()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.send(req, c)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	// Rotation commits on the server before saving the new token. Wait for
+	// its config lock before checking whether this request raced that save.
+	var next Config
+	err = t.lock(req.Context(), func() error {
+		var loadErr error
+		next, loadErr = t.saved()
+		return loadErr
+	})
+	if err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	if next.Token == c.Token {
+		return resp, nil
+	}
+	resp.Body.Close()
+	return t.send(req, next)
+}

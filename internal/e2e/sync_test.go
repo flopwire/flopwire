@@ -164,6 +164,13 @@ func TestTwoDeviceSync(t *testing.T) {
 		r.Notes = append(r.Notes, fmt.Sprintf("hit device=%s", hits[0].Device))
 	})
 
+	h.scenario("b-mcp-credential-rotation", func(t *testing.T, r *result) {
+		if liveNeedle == "" {
+			t.Fatal("no live fixture from scenario a")
+		}
+		h.checkMCPRotation(t, d1, liveNeedle, r)
+	})
+
 	h.scenario("c-server-down", func(t *testing.T, r *result) {
 		if _, err := h.compose("stop", "flopwire"); err != nil {
 			t.Fatal(err)
