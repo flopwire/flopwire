@@ -80,10 +80,15 @@ func (c HTTP) do(ctx context.Context, method, path string, body io.Reader, heade
 		}
 		_ = json.Unmarshal(raw, &problem)
 		e := &APIError{StatusCode: res.StatusCode, Code: problem.Code}
+		usedToken := c.Token
+		if res.Request != nil {
+			usedToken = strings.TrimPrefix(res.Request.Header.Get("Authorization"), "Bearer ")
+		}
 		// Only a Flopwire problem document's own detail is shown, never a
 		// body a proxy wrote, and never one holding the credential.
 		if (res.StatusCode == 400 || res.StatusCode == 404) && problem.Type == "about:blank" && problem.Status == res.StatusCode &&
-			len(problem.Detail) <= 500 && (c.Token == "" || !strings.Contains(problem.Detail, c.Token)) {
+			len(problem.Detail) <= 500 && (c.Token == "" || !strings.Contains(problem.Detail, c.Token)) &&
+			(usedToken == "" || !strings.Contains(problem.Detail, usedToken)) {
 			e.Detail = problem.Detail
 		}
 		return e

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func retrievalConfig(t *testing.T, server string) Config {
@@ -209,5 +211,114 @@ func TestRetrievalFollowsSavedPin(t *testing.T) {
 	}
 	if err := api.JSON(t.Context(), "GET", "/v1/sessions", nil, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRetrievalErrorsRedactActualCredential(t *testing.T) {
+	for _, status := range []int{400, 404} {
+		for _, retry := range []bool{false, true} {
+			t.Run(fmt.Sprintf("status%d/retry%v", status, retry), func(t *testing.T) {
+				var calls atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					if retry && r.Header.Get("Authorization") == "Bearer initial-secret-123" {
+						w.WriteHeader(401)
+						return
+					}
+					w.WriteHeader(status)
+					// Encode each letter as a JSON escape: filtering raw response
+					// bytes would miss the credential after JSON decoding.
+					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					var escaped strings.Builder
+					for _, ch := range token {
+						fmt.Fprintf(&escaped, "\\u%04x", ch)
+					}
+					fmt.Fprintf(w, `{"type":"about:blank","status":%d,"detail":"reflected %s"}`, status, escaped.String())
+				}))
+				defer srv.Close()
+				c := retrievalConfig(t, srv.URL)
+				c.Token = "initial-secret-123"
+				if err := Save(c); err != nil {
+					t.Fatal(err)
+				}
+				api := c.RetrievalAPI()
+				install := func() error { c.Token = "rotated-secret-456"; return Save(c) }
+				if retry {
+					api.Client.Transport.(*retrievalTransport).lock = func(ctx context.Context, fn func() error) error {
+						if err := install(); err != nil {
+							return err
+						}
+						return fn()
+					}
+				} else if err := install(); err != nil {
+					t.Fatal(err)
+				}
+				err := api.JSON(t.Context(), "GET", "/v1/grep", nil, nil)
+				var ae *APIError
+				if !errors.As(err, &ae) || ae.StatusCode != status || ae.Detail != "" {
+					t.Fatalf("unsafe error: %v", err)
+				}
+				raw, _ := json.Marshal(ae)
+				if strings.Contains(err.Error(), c.Token) || strings.Contains(string(raw), c.Token) {
+					t.Fatal("reflected rotated credential leaked")
+				}
+				wantCalls := int32(1)
+				if retry {
+					wantCalls = 2
+				}
+				if calls.Load() != wantCalls {
+					t.Fatalf("calls=%d, want %d", calls.Load(), wantCalls)
+				}
+			})
+		}
+	}
+}
+
+func TestRetrievalHeldConfigLockHasDeadlineAndCanCancel(t *testing.T) {
+	for _, cancelCaller := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel%v", cancelCaller), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
+			defer srv.Close()
+			api := retrievalConfig(t, srv.URL).RetrievalAPI()
+			locked, release := make(chan struct{}), make(chan struct{})
+			lockDone := make(chan error, 1)
+			go func() { lockDone <- WithConfigLock(t.Context(), func() error { close(locked); <-release; return nil }) }()
+			<-locked
+			defer func() {
+				close(release)
+				if err := <-lockDone; err != nil {
+					t.Error(err)
+				}
+			}()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			entered := make(chan struct{})
+			api.Client.Transport.(*retrievalTransport).lock = func(ctx context.Context, fn func() error) error {
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > credentialReloadTimeout {
+					t.Error("lock wait has no bounded deadline")
+				}
+				close(entered)
+				return WithConfigLock(ctx, fn)
+			}
+			done := make(chan error, 1)
+			go func() { done <- api.JSON(ctx, "GET", "/v1/sessions", nil, nil) }()
+			<-entered
+			want := context.DeadlineExceeded
+			if cancelCaller {
+				cancel()
+				want = context.Canceled
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, want) {
+					t.Fatalf("held lock: %v, want %v", err, want)
+				}
+				if !cancelCaller && !strings.Contains(err.Error(), "retry the tool call") {
+					t.Fatalf("timeout has no recovery instruction: %v", err)
+				}
+			case <-time.After(credentialReloadTimeout + 2*time.Second):
+				t.Fatal("held config lock hung retrieval")
+			}
+		})
 	}
 }

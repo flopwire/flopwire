@@ -3,11 +3,16 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
+
+// A local credential update must not leave an MCP call waiting indefinitely.
+const credentialReloadTimeout = 5 * time.Second
 
 // RetrievalAPI follows saved credentials for read-only requests in long-running
 // clients. Environment credentials remain fixed and never fall back to disk.
@@ -58,7 +63,13 @@ func (t *retrievalTransport) send(req *http.Request, c Config) (*http.Response, 
 	t.mu.Unlock()
 	r := req.Clone(req.Context())
 	r.Header.Set("Authorization", "Bearer "+c.Token)
-	return hc.Transport.RoundTrip(r)
+	resp, err := hc.Transport.RoundTrip(r)
+	if resp != nil {
+		// HTTP.do must sanitize errors against the credential actually sent,
+		// including the final credential when a rotation causes a retry.
+		resp.Request = r
+	}
+	return resp, err
 }
 
 func (t *retrievalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -80,13 +91,18 @@ func (t *retrievalTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// Rotation commits on the server before saving the new token. Wait for
 	// its config lock before checking whether this request raced that save.
 	var next Config
-	err = t.lock(req.Context(), func() error {
+	lockCtx, cancel := context.WithTimeout(req.Context(), credentialReloadTimeout)
+	err = t.lock(lockCtx, func() error {
 		var loadErr error
 		next, loadErr = t.saved()
 		return loadErr
 	})
+	cancel()
 	if err != nil {
 		resp.Body.Close()
+		if errors.Is(err, context.DeadlineExceeded) && req.Context().Err() == nil {
+			return nil, fmt.Errorf("Flopwire credential update is still in progress; retry the tool call: %w", err)
+		}
 		return nil, err
 	}
 	if next.Token == c.Token {
