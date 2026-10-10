@@ -5,7 +5,9 @@ release gate (section 5). The other checks on this page need real
 transcripts, real agent CLIs or two machines, so CI cannot run them. Run
 every check on a release candidate before you tag it, except the ones
 marked optional. Record the measured numbers in the release PR. See [Releases](releases.md)
-for the release-please workflow and bot setup.
+for the release-please workflow and bot setup. The [v0.1.0 qualification
+record](releases/v0.1.0-readiness.md) separates observed evidence from pending
+gates and owner-deferred scope.
 
 All corpus checks read the harness directories (`~/.claude`, `~/.codex`,
 `~/.local/share/devin`) read-only. Their output can quote real transcript
@@ -104,7 +106,7 @@ docs/perf has no record yet, the first run sets the reference laptop.
 1. Run the whole set on the reference laptop. Set the release version:
 
    ```sh
-   FLOPWIRE_VERSION=v0.4.0 scripts/acceptance.sh /tmp/flopwire-acceptance
+   FLOPWIRE_VERSION=v0.1.0 scripts/acceptance.sh /tmp/flopwire-acceptance
    ```
 
 2. To run one part, use the bench command directly:
