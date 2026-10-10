@@ -164,13 +164,6 @@ func TestTwoDeviceSync(t *testing.T) {
 		r.Notes = append(r.Notes, fmt.Sprintf("hit device=%s", hits[0].Device))
 	})
 
-	h.scenario("b-mcp-credential-rotation", func(t *testing.T, r *result) {
-		if liveNeedle == "" {
-			t.Fatal("no live fixture from scenario a")
-		}
-		h.checkMCPRotation(t, d1, liveNeedle, r)
-	})
-
 	h.scenario("c-server-down", func(t *testing.T, r *result) {
 		if _, err := h.compose("stop", "flopwire"); err != nil {
 			t.Fatal(err)
@@ -729,6 +722,15 @@ func TestTwoDeviceSync(t *testing.T) {
 
 	h.scenario("i-backup-restore", func(t *testing.T, r *result) {
 		h.backupRestore(t, r, d2, liveNeedle)
+	})
+
+	// Run credential transitions after the outage/crash scenarios so their
+	// timing measures network recovery without an extra token-refresh backoff.
+	h.scenario("j-mcp-credential-rotation", func(t *testing.T, r *result) {
+		needle := "mcp rotation fixture " + h.nonce
+		appendFile(t, d1.claudePath, d1.claudeUser(needle))
+		h.waitSessionSynced(t, d1, transcript.AgentClaude, d1.claudePath, d1.claudeSID, time.Minute)
+		h.checkMCPRotation(t, d1, needle, r)
 	})
 
 	// Every transcript on both devices, after all of the above: the server's
