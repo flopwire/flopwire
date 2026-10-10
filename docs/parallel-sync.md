@@ -1,9 +1,10 @@
 # Parallel sync and catch-up
 
-Status: two-worker implementation under qualification. Production remains on
-serial uploads until private qualification, review, CI, merge and rollout finish.
+Status: opt-in two-worker uploads are implemented. The default remains serial.
+Deployment requires an explicit server and collector setting; merged code alone
+does not establish which settings a running deployment uses.
 
-The candidate adds explicit collector `--sync-workers=1|2` and server
+The implementation provides collector `--sync-workers=1|2` and server
 `--flush-per-device=1|2`; both default to one. Two fixed workspaces share one
 Store and Spool. Only network waits overlap. Exact source-path admission covers
 public and scheduled operations. Negotiated serial fallback limits both.
@@ -23,10 +24,10 @@ failures. Credential snapshots govern obsolete credential failures.
 
 Default serial operation owners, descriptor lifetimes, request-buffer ownership,
 spool references, cumulative stall handling and server pool admission have landed
-in earlier changes. Two-worker throughput, full-stack memory, real CLI recovery
-and rollout remain qualification gates. No fixed byte-budget default is added.
+in earlier changes. Throughput, full-stack memory, real CLI recovery and rollout
+require evidence for the selected source and deployment. No fixed byte-budget default is added.
 The design notes below include prior proposals; four-worker experiments and
-prospective memory budgets are not part of this candidate.
+prospective memory budgets are outside the implemented one/two-worker contract.
 
 See [agent operation](agent.md) for controls and status, and
 [history qualification](operations/history-qualification.md) for the separate

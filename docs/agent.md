@@ -275,17 +275,17 @@ socket and prints these parts:
 | `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](#keep-sessions-out-with-path-rules). |
 | `sessions placed by (for path rules):` | How many sessions each placement method placed. See [Where a session ran](#where-a-session-ran). |
 | `sync: off (no server configured)` | The device is not enrolled, or the agent runs with `--no-sync`. |
-| `sync: ok` | Uploads work. |
-| `sync: server unreachable, retry at T: ERR` | The server did not answer. The agent retries by itself, at most 30 seconds apart. |
+| `sync: ok` | No current scheduler transport failure is reported. It does not prove discovery, upload or parse completeness. |
+| `sync: server unreachable, retry at T: ERR` | The server did not answer. The agent retries with exponential backoff. Server `Retry-After` can extend the configured backoff ceiling. |
 | `sync: stopped until the server is re-pinned` | The server's certificate does not match the pinned fingerprint. Uploads stop. Run `flopwire login --fingerprint <new>` after you confirm the new fingerprint. |
 | `upload workers: N` | Effective upload concurrency. The default is one. |
 | `upload capability check: ERR (using one worker; retrying)` | The check failed. Serial uploads continue and the check retries. |
-| `queued: N sources; spool: N bytes` | Sources waiting to upload, and the spool size. `(full: …)` means the spool reached `--spool-cap` and captures of rewritten sources pause. |
+| `queued: N sources; spool: N bytes` | Scheduled source checks and active turns, plus spool storage usage. A check may find no new bytes. These are not totals of undiscovered or unuploaded history. `(full: …)` means the spool reached `--spool-cap` and captures of rewritten sources pause. |
 | `failing sources (N)` | Each source that fails, its error and its attempts. A failing source retries on its own and does not delay the others. |
 | `server refused N sources by admin path rule` | The server did not store these sources. Each shows its path and the rule. The device learns of a refusal on its next upload of that source. |
 | `messaging: connected` | The agent holds its poll to the server. See [Messaging](#messaging). |
 | `messaging: local` | No server is configured. Messages go between the sessions on this device. |
-| `messaging: server unreachable, retry at T: ERR` | The poll failed. The agent retries by itself, at most 30 seconds apart. |
+| `messaging: server unreachable, retry at T: ERR` | The poll failed. The agent retries with exponential backoff. Server `Retry-After` can extend the configured backoff ceiling. |
 | `messaging: stopped: ERR` | The server refused the credential or the certificate. Run `flopwire login`. Messaging resumes when the agent sees the new credential. |
 | `messaging: disabled: ERR` | The server has no message bus, or the credential is not an enrolled device. The agent asks again every 10 minutes. |
 | `messages: N pending delivery, N receipts unsent, N held for your acceptance` | Messages in the local inbox that no hook has confirmed yet, deliveries (and undelivered reports) the server has not taken yet, and messages from people you have not accepted. |

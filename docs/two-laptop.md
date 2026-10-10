@@ -16,8 +16,8 @@ You need:
 - Laptop B can reach laptop A over the network: the same LAN, a VPN, or any
   other route. This runbook needs no VPN.
 - Docker Desktop on laptop A.
-- Go 1.26 on both laptops, or a built `flopwire` binary.
-- A clone of this repository on laptop A.
+- Go 1.26.6 on both laptops, or a built `flopwire` binary.
+- A clone of this repository on each laptop that builds the binary.
 
 ## Install the binary
 
@@ -26,7 +26,9 @@ Do these steps on both laptops.
 1. Build the binary:
 
    ```sh
-   go build -trimpath -o ~/.local/bin/flopwire ./cmd/flopwire
+   mkdir -p ~/.local/bin
+   go build -trimpath -ldflags="-X main.version=$(git rev-parse --short=12 HEAD)" \
+     -o ~/.local/bin/flopwire ./cmd/flopwire
    ```
 
 2. Make sure `~/.local/bin` is on your `PATH`.
@@ -58,7 +60,9 @@ Do these steps on both laptops.
 4. Start the stack:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
+   docker compose -f compose.yaml -f compose.dev.yaml build \
+     --build-arg VERSION="$(git rev-parse --short=12 HEAD)"
+   docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
    ```
 
    `compose.dev.yaml` publishes Postgres on `127.0.0.1:55432` and MinIO
@@ -115,8 +119,10 @@ The first administrator is also the owner of both devices.
 
 The configuration is in `~/Library/Application Support/flopwire/config.json`
 with mode 0600. It holds the device token, a login session and the pinned
-fingerprint. The login session expires after 24 hours. The device token does
-not expire. Run `flopwire login` again before an administrative command.
+fingerprint. The login session expires after 24 hours. Device credentials
+require reauthentication after 90 days or 30 days without use. Rotation does
+not extend that deadline. Run `flopwire login` when reauthentication is needed
+and before administrative commands after the login session expires.
 
 Every connection from this laptop checks the server's certificate against
 the pinned fingerprint: admin commands, `--server` queries, the raw fallback
@@ -183,6 +189,7 @@ Do these steps on both laptops.
 1. Copy the template:
 
    ```sh
+   mkdir -p ~/Library/LaunchAgents ~/Library/Logs
    cp deploy/launchd/com.flopwire.agent.plist ~/Library/LaunchAgents/
    ```
 
@@ -218,41 +225,26 @@ Do these steps on both laptops.
 
    Look for `agent: running` with `sync=true`.
 
-The first pass indexes every transcript on the laptop. On an 18GB corpus
-it takes about 7 minutes. After a large first pass the agent restarts
-itself once. The first upload of all history takes longer. Hook flushes
+The first pass indexes eligible transcripts in configured collection roots.
+An earlier 18GB reference corpus took about 7 minutes. After a large first pass
+the agent restarts itself once. The first upload of eligible history takes longer. Hook flushes
 go ahead of that backlog.
 
 ## Connect the harness hooks
 
-Do these steps on both laptops. The hooks make uploads immediate. Without
-them, a new line reaches the server within about 2 seconds while the
-server is up.
+Do these steps on both laptops.
 
-1. Open `~/.claude/settings.json`.
-2. Add these entries under `hooks`. Use the full path of the binary:
+1. Run `flopwire setup`.
+2. Read the report and complete each `todo` item.
+3. Approve Codex plugin hooks when Codex asks.
+4. Restart the harness sessions, or reload Claude Code plugins.
+5. Run `flopwire setup --check`.
 
-   ```json
-   {
-     "hooks": {
-       "Stop": [
-         { "hooks": [{ "type": "command", "command": "/Users/YOU/.local/bin/flopwire agent flush", "timeout": 10 }] }
-       ],
-       "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "/Users/YOU/.local/bin/flopwire agent flush", "timeout": 10 }] }
-       ]
-     }
-   }
-   ```
-
-3. Open `~/.codex/config.toml`.
-4. Add this line at the top level:
-
-   ```toml
-   notify = ["/Users/YOU/.local/bin/flopwire", "agent", "flush"]
-   ```
-
-A hook never fails because of the agent. See `docs/agent.md` for details.
+The plugins provide messaging, tools and capture notifications. Hook-triggered
+checks receive scheduling priority. They still respect path rules, capture
+bounds and server cooldowns. Polling and watches also discover changes without
+hooks. Setup reports older manual hooks and Codex `notify` entries; remove those
+entries yourself to avoid duplicate invocation. See [agent setup](agent.md#install-into-the-harnesses).
 
 ## Verify
 
@@ -277,10 +269,10 @@ A hook never fails because of the agent. See `docs/agent.md` for details.
 5. On laptop A, run the same search with `--device laptop-b` for a
    prompt from laptop B.
 
-6. Search the local index of laptop A. Leave out `--server`:
+6. Search the local index of laptop A with `--local`:
 
    ```sh
-   flopwire grep zebra-4411
+   flopwire grep --local zebra-4411
    ```
 
    The hit comes from the agent's local index, which holds only laptop A's
@@ -290,8 +282,9 @@ A hook never fails because of the agent. See `docs/agent.md` for details.
 
 Do nothing. The agent indexes locally and keeps a queue. When the server
 is reachable again, the agent uploads what is missing. The retry interval
-grows to at most 30 seconds, so catch-up starts up to 30 seconds after the
-server returns. A hook flush retries at once.
+uses exponential backoff, with a configured ceiling of 30 seconds. Server
+`Retry-After` deadlines can extend that wait. A hook prioritizes its source and
+can reset ordinary outage backoff, but cannot bypass an admission cooldown.
 
 If laptop A sleeps, laptop B also waits. Laptop B loses nothing.
 
@@ -317,24 +310,26 @@ If laptop A sleeps, laptop B also waits. Laptop B loses nothing.
 
 ## Back up the server
 
-1. Create a directory that the container user (uid 10001) can write:
+1. Create a private backup directory:
 
    ```sh
-   mkdir -p ~/flopwire-backups && chmod 777 ~/flopwire-backups
+   mkdir -p ~/flopwire-backups
+   chmod 700 ~/flopwire-backups
    ```
 
 2. Put the directory on encrypted storage. FileVault counts.
-3. Create a backup:
+3. Create a backup. Run the one-shot command as your host user so it can
+   write the private bind mount:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
+   docker compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps --user "$(id -u):$(id -g)" \
      -v ~/flopwire-backups:/backup flopwire backup --encrypted-destination --output /backup/$(date +%Y%m%d)
    ```
 
 4. Verify the backup:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
+   docker compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps --user "$(id -u):$(id -g)" \
      -v ~/flopwire-backups:/backup flopwire backup-verify --input /backup/$(date +%Y%m%d)
    ```
 
