@@ -342,7 +342,7 @@ func desktopChainRows(ctx context.Context, e *chainEnv, d *chainDevice, id strin
 		if err := d.index.DB().QueryRowContext(ctx, `SELECT s.path,s.file_id,lower(hex(m.content_sha)),m.parser,m.role,COALESCE(m.parent_native_id,''),m.source_generation,m.byte_offset,m.byte_len,m.line_no,m.ordinal FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN sources s ON s.id=m.source_id WHERE c.session_id=? AND m.native_id=? AND NOT m.superseded`, chainNativeID, row.native+"#0").Scan(&path, &file, &hash, &parser, &role, &parent, &generation, &offset, &length, &line, &ordinal); err != nil {
 			return err
 		}
-		if err := desktopChainProvenance(row, paths, identities, path, file, hash, parser, role, parent, generation, offset, length, line, ordinal); err != nil {
+		if err := desktopChainProvenance(row, paths, identities, path, file, hash, parser, role, parent, generation, offset, length, line, ordinal, 1); err != nil {
 			return err
 		}
 		hits, err := d.index.Find(ctx, row.text, localindex.FindOptions{CaseSensitive: true})
@@ -361,16 +361,16 @@ func desktopChainRows(ctx context.Context, e *chainEnv, d *chainDevice, id strin
 			if text != row.text || !exists {
 				return fmt.Errorf("server literal marker or generation missing")
 			}
-			if err := desktopChainProvenance(row, paths, identities, path, file, hash, parser, role, parent, generation, offset, length, line, ordinal); err != nil {
+			if err := desktopChainProvenance(row, paths, identities, path, file, hash, parser, role, parent, generation, offset, length, line, ordinal, 0); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func desktopChainProvenance(row desktopChainRow, paths []string, identities map[string]string, path, file, hash, parser, role, parent string, generation, offset, length, line, ordinal int64) error {
-	if (path != paths[0] && path != paths[1]) || file != identities[path] || hash != fmt.Sprintf("%x", sha256.Sum256([]byte(row.text))) || parser != "claude@4.1" || role != row.role || parent != row.parent || generation != 0 || offset != row.offset || length != row.length || line != row.line || ordinal != row.offset*4096 {
-		return fmt.Errorf("literal marker %s has wrong source/hash/native-chain extent", row.native)
+func desktopChainProvenance(row desktopChainRow, paths []string, identities map[string]string, path, file, hash, parser, role, parent string, generation, offset, length, line, ordinal, expectedGeneration int64) error {
+	if (path != paths[0] && path != paths[1]) || file != identities[path] || hash != fmt.Sprintf("%x", sha256.Sum256([]byte(row.text))) || parser != "claude@4.1" || role != row.role || parent != row.parent || generation != expectedGeneration || offset != row.offset || length != row.length || line != row.line || ordinal != row.offset*4096 {
+		return fmt.Errorf("literal marker %.80q has wrong source/hash/native-chain extent: path=%.240q want-one-of=[%.240q,%.240q] file=%.80q want=%.80q generation=%d want=%d parser=%.80q want=claude@4.1 role=%.40q want=%.40q parent=%.80q want=%.80q hash=%.64q want=%.64q offset=%d want=%d length=%d want=%d line=%d want=%d ordinal=%d want=%d", row.native, path, paths[0], paths[1], file, identities[path], generation, expectedGeneration, parser, role, row.role, parent, row.parent, hash, fmt.Sprintf("%x", sha256.Sum256([]byte(row.text))), offset, row.offset, length, row.length, line, row.line, ordinal, row.offset*4096)
 	}
 	return nil
 }
