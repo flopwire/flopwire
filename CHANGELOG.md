@@ -3,6 +3,32 @@
 ## 0.1.0 (2026-10-10)
 
 
+### Scope and deferred checks
+
+This release provides the CLI, collector, server, MCP tools, harness plugins,
+admin console, and deployment files as source. GitHub provides source archives;
+no built binaries or container images are published, and no deployment is upgraded.
+See the [archive build instructions](https://github.com/flopwire/flopwire/blob/main/docs/releases.md#build-from-a-source-archive)
+and [measured qualification record](https://github.com/flopwire/flopwire/blob/main/docs/releases/v0.1.0-readiness.md).
+
+This source release includes the completed owner-selected collection, folder-policy, coverage,
+and bounded two-worker work. Selected core messaging checks passed on the installed
+TUI, IDE and Claude Desktop Local Code surfaces. Remaining manual acceptance
+checks are deferred in [#58](https://github.com/flopwire/flopwire/issues/58),
+[#59](https://github.com/flopwire/flopwire/issues/59), and
+[#60](https://github.com/flopwire/flopwire/issues/60).
+
+The Codex IDE missed-prompt case remains unresolved and deferred until
+recurrence ([#228](https://github.com/flopwire/flopwire/issues/228)). Broad
+hardening remains deferred ([#150](https://github.com/flopwire/flopwire/issues/150)).
+These entries describe shipped changes, not completion of those open issues.
+
+Long-running MCP retrieval follows saved credentials after device rotation.
+The client fix also bounds configuration-lock waiting and checks error details
+against the credential actually sent. PR #233 passed independent review,
+credential-lifecycle tests, Docker E2E, CI, and a source-archive build.
+
+
 ### Features
 
 * **agent:** ended sessions leave presence; the instruction is leased ([#67](https://github.com/flopwire/flopwire/issues/67), [#82](https://github.com/flopwire/flopwire/issues/82), [#101](https://github.com/flopwire/flopwire/issues/101)) ([1887a77](https://github.com/flopwire/flopwire/commit/1887a77cce413ed4dd715aba5517e93c2f660541))
@@ -46,10 +72,10 @@
 * **probe:** flopwire probe re-runs the delivery marker tests ([447a8b6](https://github.com/flopwire/flopwire/commit/447a8b6f9c030a0bf5c347c4d85450af2fec0f2c)), closes [#69](https://github.com/flopwire/flopwire/issues/69)
 * **probe:** opencode as a fourth harness ([9cb087d](https://github.com/flopwire/flopwire/commit/9cb087d6cbc948e6b65768ffb1691127b37a2f6d)), closes [#62](https://github.com/flopwire/flopwire/issues/62)
 * **retrieval,bus:** match a repository across devices by its remote ([301fe7e](https://github.com/flopwire/flopwire/commit/301fe7e07dd2ea201c1358aeb4ce6f9856280d08))
-* **setup:** compare the Claude Code plugin with the flopwire binary ([a19bdb2](https://github.com/flopwire/flopwire/commit/a19bdb280fa495e9e403ff924fc75a035403f132)), closes [#58](https://github.com/flopwire/flopwire/issues/58)
+* **setup:** compare the Claude Code plugin with the flopwire binary ([a19bdb2](https://github.com/flopwire/flopwire/commit/a19bdb280fa495e9e403ff924fc75a035403f132)), refs [#58](https://github.com/flopwire/flopwire/issues/58)
 * **setup:** install the opencode plugin ([a73f019](https://github.com/flopwire/flopwire/commit/a73f019ce6ace31103d2a7768457488aaeda0475)), closes [#62](https://github.com/flopwire/flopwire/issues/62)
-* **setup:** report hooks a Devin plugin update enabled ([44f121f](https://github.com/flopwire/flopwire/commit/44f121f83cb8ec67300b813d2fe5d83e2c8ab077)), closes [#60](https://github.com/flopwire/flopwire/issues/60)
-* **setup:** report the local index state ([1d0552d](https://github.com/flopwire/flopwire/commit/1d0552d7644728d41a8280a06a150568756049f9)), closes [#58](https://github.com/flopwire/flopwire/issues/58)
+* **setup:** report hooks a Devin plugin update enabled ([44f121f](https://github.com/flopwire/flopwire/commit/44f121f83cb8ec67300b813d2fe5d83e2c8ab077)), refs [#60](https://github.com/flopwire/flopwire/issues/60)
+* **setup:** report the local index state ([1d0552d](https://github.com/flopwire/flopwire/commit/1d0552d7644728d41a8280a06a150568756049f9)), refs [#58](https://github.com/flopwire/flopwire/issues/58)
 * **sync:** add authenticated policy metadata client ([1f7581d](https://github.com/flopwire/flopwire/commit/1f7581d7fb4e8605005afee7f160014d4daff0cf))
 * **sync:** allow compact restriction requests for scope limits ([#184](https://github.com/flopwire/flopwire/issues/184)) ([c930b9e](https://github.com/flopwire/flopwire/commit/c930b9e8a835b5d4c1367a674af01c5b7f92f558))
 * **sync:** bind metadata policy requests to reported device directories ([38c8216](https://github.com/flopwire/flopwire/commit/38c82161c26c6994d1819ea339ca4c97d330d340))
@@ -119,7 +145,7 @@
 * **bus:** refuse a send whose refs or recipient name a withheld session ([b200ce2](https://github.com/flopwire/flopwire/commit/b200ce2bb57fabcc497168efce1c78a8211c2849)), closes [#71](https://github.com/flopwire/flopwire/issues/71)
 * **bus:** refuse an [@user](https://github.com/user) repo or peers filter the path rules withhold ([682b3c8](https://github.com/flopwire/flopwire/commit/682b3c833a792fc0c82d04b82614a4a010d46d81)), closes [#71](https://github.com/flopwire/flopwire/issues/71)
 * **bus:** refused sends use send quota, polls answer on shutdown, stricter index guard ([6fb0f3c](https://github.com/flopwire/flopwire/commit/6fb0f3c0ead71290abd48e1ffc20ba904d689e2a))
-* **bus:** report a plain EACCES on the agent socket as permission_denied ([32f60ac](https://github.com/flopwire/flopwire/commit/32f60ac025404813b0b243ed9c27188a6ba5be7d)), closes [#59](https://github.com/flopwire/flopwire/issues/59)
+* **bus:** report a plain EACCES on the agent socket as permission_denied ([32f60ac](https://github.com/flopwire/flopwire/commit/32f60ac025404813b0b243ed9c27188a6ba5be7d)), refs [#59](https://github.com/flopwire/flopwire/issues/59)
 * **bus:** retain confirmed idle sessions and report failed deliveries ([6088c16](https://github.com/flopwire/flopwire/commit/6088c16234d57fadddd233a32fa1dd1316b95143))
 * **bus:** rotate unprinted delivery notices fairly ([a77cfc1](https://github.com/flopwire/flopwire/commit/a77cfc1556c00df90897508b69161e019ead3084))
 * **bus:** send from a subagent as its session ([390e179](https://github.com/flopwire/flopwire/commit/390e179aad4374d8fe46b4bf77f2bb5a2b0ac93f))
@@ -178,7 +204,7 @@
 * **localindex:** read the extraction summary on the read pool, not the writer ([0ede2d0](https://github.com/flopwire/flopwire/commit/0ede2d088d41d270259fb22bc71ae0bd04fc95e1))
 * **localindex:** run one extraction summary scan at a time ([b40e04c](https://github.com/flopwire/flopwire/commit/b40e04cd3f7fea37d6ed67963876257117675890))
 * **mcp:** look at the process name before a Claude session file in UnderCodex ([b7e7e0a](https://github.com/flopwire/flopwire/commit/b7e7e0ad193b4cc8ca5e56bc5ff64ad9c0cdef00)), closes [#71](https://github.com/flopwire/flopwire/issues/71)
-* **mcp:** serve an empty index on a device whose agent never ran ([94c9e42](https://github.com/flopwire/flopwire/commit/94c9e4273d47fa4105a07ce5fba053954f374c90)), closes [#58](https://github.com/flopwire/flopwire/issues/58)
+* **mcp:** serve an empty index on a device whose agent never ran ([94c9e42](https://github.com/flopwire/flopwire/commit/94c9e4273d47fa4105a07ce5fba053954f374c90)), refs [#58](https://github.com/flopwire/flopwire/issues/58)
 * **mcp:** serve when the local index exists but does not open yet ([1f87164](https://github.com/flopwire/flopwire/commit/1f871643b9198f870d3bf02c56802927fbe08970))
 * **mcp:** trust _meta's Codex thread id only when Codex launched the server ([fa4e015](https://github.com/flopwire/flopwire/commit/fa4e01504b978227d35a4814f0bc27274f0a6b4d)), closes [#71](https://github.com/flopwire/flopwire/issues/71)
 * **opencode:** a delivered part counts only when its wrapper names the metadata's id ([38b53ce](https://github.com/flopwire/flopwire/commit/38b53ce3510d7f539a5d0efebdea90432c1181b0)), closes [#62](https://github.com/flopwire/flopwire/issues/62)
@@ -186,10 +212,10 @@
 * **opencode:** confirm a promptAsync delivery only when opencode stores its part ([a4ccf61](https://github.com/flopwire/flopwire/commit/a4ccf617613374cb71c3ad9586e93631d5b11972))
 * **opencode:** emit a row that appears below the saved highest id ([3bc8dbc](https://github.com/flopwire/flopwire/commit/3bc8dbc93614af466d00cde8b96716a2688cff8d))
 * **perfguard:** require a condition on the named index's leading column ([50634ed](https://github.com/flopwire/flopwire/commit/50634edf2b2535c0cc968a798895f0f60d1604bc))
-* **plugin:** a Claude Code hook that fails says so instead of exiting 0 ([51fcc7f](https://github.com/flopwire/flopwire/commit/51fcc7f91c7be607c3f27ea76f4c5cb55b8d9db3)), closes [#58](https://github.com/flopwire/flopwire/issues/58)
+* **plugin:** a Claude Code hook that fails says so instead of exiting 0 ([51fcc7f](https://github.com/flopwire/flopwire/commit/51fcc7f91c7be607c3f27ea76f4c5cb55b8d9db3)), refs [#58](https://github.com/flopwire/flopwire/issues/58)
 * **plugins:** a newer flopwire on PATH beats a stale recorded path ([113bb43](https://github.com/flopwire/flopwire/commit/113bb4383fe0e16de5f4951f50cf08829bd262ee))
 * **plugins:** Codex SessionEnd hook timeout 3 s ([3471d8c](https://github.com/flopwire/flopwire/commit/3471d8ca500325b3a69ed774dc8bf307299525fe))
-* **plugins:** run the Codex Stop hook async so shell startup output cannot fail it ([ddf6ddc](https://github.com/flopwire/flopwire/commit/ddf6ddc5307b920a48b55b69b08114708874b2c2)), closes [#59](https://github.com/flopwire/flopwire/issues/59)
+* **plugins:** run the Codex Stop hook async so shell startup output cannot fail it ([ddf6ddc](https://github.com/flopwire/flopwire/commit/ddf6ddc5307b920a48b55b69b08114708874b2c2)), refs [#59](https://github.com/flopwire/flopwire/issues/59)
 * **plugins:** the MCP server finds flopwire through the shim too ([efd7fcf](https://github.com/flopwire/flopwire/commit/efd7fcfe65aaf5d32eb6201b5db7bb2c753332b3))
 * **presence:** bound uncertain holders and normalize idle clocks ([31a0aef](https://github.com/flopwire/flopwire/commit/31a0aef3140b93ddc133b551eb3e266a9f7138d2))
 * preserve explicit source in read continuations ([84abec6](https://github.com/flopwire/flopwire/commit/84abec6cf6d3c17142139979985a6554be820061))
@@ -207,9 +233,9 @@
 * **retrieval:** a write cut by the caller's cancel is context.Canceled ([2db67a1](https://github.com/flopwire/flopwire/commit/2db67a1c45c47bef691b9975cdf86e7446c198b3))
 * **server:** FLOPWIRE_BUS_RETENTION days past the largest duration are an error ([92f89e6](https://github.com/flopwire/flopwire/commit/92f89e6259cb89e3ccab6a1176561907c71c972a))
 * **server:** wait for requests in flight before serve returns ([195635f](https://github.com/flopwire/flopwire/commit/195635f7787584151c176d41509dced549d544c1)), closes [#70](https://github.com/flopwire/flopwire/issues/70)
-* **setup:** carry on past a logged-out Devin ([e3d0057](https://github.com/flopwire/flopwire/commit/e3d0057b786e494fc1e7f01ff1e71dc1f543f05b)), closes [#60](https://github.com/flopwire/flopwire/issues/60)
+* **setup:** carry on past a logged-out Devin ([e3d0057](https://github.com/flopwire/flopwire/commit/e3d0057b786e494fc1e7f01ff1e71dc1f543f05b)), refs [#60](https://github.com/flopwire/flopwire/issues/60)
 * **setup:** codex --check names the Codex version its hook hash copies ([bb91d09](https://github.com/flopwire/flopwire/commit/bb91d09a0c7c44b6ffc8c02f05093f100f8a6511))
-* **setup:** codex --check reads Codex's files instead of starting app-server ([c619614](https://github.com/flopwire/flopwire/commit/c61961479da9d5e701bd180d4fdc8d1a1c2dd6b4)), closes [#59](https://github.com/flopwire/flopwire/issues/59)
+* **setup:** codex --check reads Codex's files instead of starting app-server ([c619614](https://github.com/flopwire/flopwire/commit/c61961479da9d5e701bd180d4fdc8d1a1c2dd6b4)), refs [#59](https://github.com/flopwire/flopwire/issues/59)
 * **setup:** Devin follow-ups from [#60](https://github.com/flopwire/flopwire/issues/60): logged-out Devin, hook-change warning, marketplace doc ([382da3a](https://github.com/flopwire/flopwire/commit/382da3a99a554f19c9559ec13ab99816dc347e86))
 * **setup:** Devin's --check names a command the binary on PATH lacks ([89ab8e9](https://github.com/flopwire/flopwire/commit/89ab8e94f19f69acb4b66483f7fc5cde1761f912))
 * **setup:** do not say a skipped Devin's plugin is not installed ([6ac78d4](https://github.com/flopwire/flopwire/commit/6ac78d4856c7dd0c9f78645d8911e89863d3df76))
@@ -225,8 +251,8 @@
 * **setup:** say when a running agent's credential is unknown ([17cdb51](https://github.com/flopwire/flopwire/commit/17cdb513a37e9a07d5079da7f64a4aebdd28c4fd))
 * **setup:** show shared search without requiring a local index ([40b1475](https://github.com/flopwire/flopwire/commit/40b14759023e75df7984b91a201005d78c3d3f20))
 * **setup:** side-effect-free codex --check; Codex subagent MCP sender; GitHub install check ([ff915b6](https://github.com/flopwire/flopwire/commit/ff915b6ceafd7421d51dc1c211e962cab7ce5eb3))
-* **setup:** skip a logged-out Devin; any other harness error fails setup ([397dff1](https://github.com/flopwire/flopwire/commit/397dff19b0290482bbd29e25186eba64dcedb801)), closes [#60](https://github.com/flopwire/flopwire/issues/60)
-* **setup:** warn about project .mcp.json and local-scope flopwire mcp servers ([88a8d22](https://github.com/flopwire/flopwire/commit/88a8d22d1fb345295db45bfa0dbe9bd584eae49b)), closes [#58](https://github.com/flopwire/flopwire/issues/58)
+* **setup:** skip a logged-out Devin; any other harness error fails setup ([397dff1](https://github.com/flopwire/flopwire/commit/397dff19b0290482bbd29e25186eba64dcedb801)), refs [#60](https://github.com/flopwire/flopwire/issues/60)
+* **setup:** warn about project .mcp.json and local-scope flopwire mcp servers ([88a8d22](https://github.com/flopwire/flopwire/commit/88a8d22d1fb345295db45bfa0dbe9bd584eae49b)), refs [#58](https://github.com/flopwire/flopwire/issues/58)
 * **store:** preserve the deployed bus schema through a forward upgrade ([c99a87d](https://github.com/flopwire/flopwire/commit/c99a87d22fe8a83fc07766cdab826260d46ca885))
 * sweep of plausible review findings ([#112](https://github.com/flopwire/flopwire/issues/112)-[#146](https://github.com/flopwire/flopwire/issues/146)) ([a715160](https://github.com/flopwire/flopwire/commit/a715160a9e45b40ff13942646053ca70c1feeb71))
 * **sync:** address independent cooldown review findings ([54f06f4](https://github.com/flopwire/flopwire/commit/54f06f4c9a1f10182776c543670ec760daaa49a8))
@@ -250,8 +276,8 @@
 * append changed opencode session export records ([e319764](https://github.com/flopwire/flopwire/commit/e319764e348651d124d0d05f18944bc34712f9d5))
 * append changed opencode session exports ([634dbfe](https://github.com/flopwire/flopwire/commit/634dbfe4813b040922631e4eaeac65d6260b2b33))
 * **devicebus:** a presence read writes only what changed ([92afabf](https://github.com/flopwire/flopwire/commit/92afabf610c5a9d5673339e7859733141e48dd16))
-* **devicesync:** sync a live Devin session by appends, not whole exports ([7cf143e](https://github.com/flopwire/flopwire/commit/7cf143ed636f102d32c437bc22cffdfe1903a67d)), closes [#150](https://github.com/flopwire/flopwire/issues/150)
-* **devin:** append to a session's export as it grows (devin-export@2) ([740a27d](https://github.com/flopwire/flopwire/commit/740a27d2e7f9aa52449423fb9c3431204e8a9b63)), closes [#150](https://github.com/flopwire/flopwire/issues/150)
+* **devicesync:** sync a live Devin session by appends, not whole exports ([7cf143e](https://github.com/flopwire/flopwire/commit/7cf143ed636f102d32c437bc22cffdfe1903a67d)), refs [#150](https://github.com/flopwire/flopwire/issues/150)
+* **devin:** append to a session's export as it grows (devin-export@2) ([740a27d](https://github.com/flopwire/flopwire/commit/740a27d2e7f9aa52449423fb9c3431204e8a9b63)), refs [#150](https://github.com/flopwire/flopwire/issues/150)
 * **devin:** sync a live Devin session by appended exports ([e17198a](https://github.com/flopwire/flopwire/commit/e17198ab4e0c690ff241b9f88f4e69c27fe19db9))
 * **devin:** walk to the main chain side by side and stop at the meeting ([cb84a3d](https://github.com/flopwire/flopwire/commit/cb84a3de8f7574959766698fb20a6815a86607fe))
 * grep's conversation step leaves since to the messages ([207efd5](https://github.com/flopwire/flopwire/commit/207efd5fc485ebbc80e5a10556741ae8d9d1856b))
