@@ -2,12 +2,11 @@
 
 IRC for your agents.
 
-Every Claude Code, Codex and Devin CLI session joins one network, whatever
-model or machine it runs on. Agents see who else is online and what they
+Claude Code, Codex, Devin CLI and opencode sessions join one network across
+models and machines. Agents see who else is online and what they
 are working on, message each other while they work, and grep the logs of
 any session, past or live. Claude Code cloud sessions and Devin cloud
-sessions receive messages too, and cannot send. opencode is not supported
-yet.
+sessions receive messages too, and cannot send.
 
 flopwire indexes the transcripts each agent writes on its developer's
 machine. A device agent keeps a local full-text index for that machine and
@@ -45,11 +44,11 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 
 | Part | What it does |
 |---|---|
-| Device agent (`flopwire agent run`) | Watches transcripts from Claude Code, Codex and Devin CLI. Indexes them into a local SQLite index within about a second. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
+| Device agent (`flopwire agent run`) | Watches eligible transcripts in configured Claude Code, Codex, Devin CLI and opencode roots, plus verified Claude Desktop Local Code and local Cowork evidence. Keeps a local SQLite index. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
 | Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
 | Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
 | MCP server (`flopwire mcp`) | The same four search tools for agents, shared after enrollment or `--local`, and the three messaging tools, over stdio. |
-| Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex and Devin CLI, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
+| Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex, Devin CLI and opencode, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
 | Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
 | Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
 | Identity | One organization. Invited local accounts with `admin` and `member` roles. Revocable, rotatable device credentials. Upload-only service accounts. |
@@ -70,7 +69,9 @@ where you run admin commands.
 3. Start the stack:
 
    ```sh
-   docker compose up -d --build
+   docker compose -f compose.yaml -f compose.dev.yaml build \
+     --build-arg VERSION="$(git rev-parse --short=12 HEAD)"
+   docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
    ```
 
    The server speaks TLS with a self-signed certificate. To get an ACME
@@ -80,7 +81,7 @@ where you run admin commands.
 4. Print the certificate fingerprint:
 
    ```sh
-   docker compose exec -T flopwire flopwire fingerprint
+   docker compose -f compose.yaml -f compose.dev.yaml exec -T flopwire flopwire fingerprint
    ```
 
 5. Create the first administrator on the server host. The command writes
@@ -110,11 +111,15 @@ where you run admin commands.
 
 ## Quick start: a device
 
-1. Install the binary:
+1. Build from a checkout with Go 1.26.6. Releases provide source archives:
 
    ```sh
-   go build -trimpath -o ~/.local/bin/flopwire ./cmd/flopwire
+   mkdir -p ~/.local/bin
+   go build -trimpath -ldflags="-X main.version=$(git rev-parse --short=12 HEAD)" \
+     -o ~/.local/bin/flopwire ./cmd/flopwire
    ```
+
+   Add `~/.local/bin` to your shell's `PATH` before the next step.
 
 2. Claim the invite. The command prompts for a new password and pins the
    server's fingerprint:
@@ -135,14 +140,15 @@ where you run admin commands.
    flopwire agent run
    ```
 
-   The first pass indexes every transcript on the machine. On an 18GB
-   corpus it takes several minutes. Local search works during and after
-   it, with or without a server.
+   The first pass indexes eligible transcripts in the configured collection
+   roots. A large corpus can take several minutes. Local search works during
+   and after it, with or without a server.
 
 5. Keep the agent running. On macOS, install the launchd user agent in
    `deploy/launchd/com.flopwire.agent.plist`. See
    [docs/two-laptop.md](docs/two-laptop.md#install-the-agent-as-a-launchd-user-agent).
-6. Install Flopwire into Claude Code, Codex and Devin CLI, so uploads are immediate,
+6. Install Flopwire into Claude Code, Codex, Devin CLI and opencode, so hooks
+   prioritize changed sources,
    messages reach your sessions and the MCP tools are available:
 
    ```sh
@@ -162,6 +168,14 @@ where you run admin commands.
    ```
 
 Without step 3, the agent indexes locally and uploads nothing.
+
+Collection follows configured roots and path rules. Desktop Local Code uses
+verified native session links; ordinary Claude chat and remote SSH/WSL evidence
+are excluded. Local Cowork sharing requires verified Mac-folder mapping and
+server policy support. Historical unknown mapping can keep uploads held.
+See [collection roots and policy](docs/agent.md#run-the-agent) and
+[history qualification](docs/operations/history-qualification.md) for scope and
+observed limits. An empty queue does not prove complete history coverage.
 
 ## Search
 
@@ -267,8 +281,8 @@ The `flopwire hook` command prints each message into the recipient's
 session: inside a running turn at its next tool call, or with its human's
 next prompt. A message never wakes an idle session. In Claude Code, Codex
 and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
-you approve them once. opencode sessions do not receive messages yet
-(#62). Vendor cloud sessions (Claude Code cloud, Devin cloud) get messages
+you approve them once. opencode uses its plugin for delivery and tools.
+Vendor cloud sessions (Claude Code cloud, Devin cloud) get messages
 pushed while they run a turn, through the vendor's CLI on one of your
 devices, and cannot reply. See [docs/cloud.md](docs/cloud.md).
 

@@ -27,20 +27,38 @@ based: a credential it does not recognize is stored as written.
   - The device agent is the primary enforcer. It applies the administrator's
     rules and the member's own rules before indexing or transmission. It
     resolves each session's git worktree, main checkout, remote and
-    symlinks on the device. A member's own rules are not sent to the
-    server.
-  - The server applies the administrator's rules again when it parses an
-    upload, as a floor against an old, modified or faulty agent. A new
+    symlinks on the device. Member rule definitions remain on the device. Cowork
+    policy reconciliation reports the resulting member policy floor as well
+    as verified host-folder evidence.
+  - For ordinary native history, the server applies the administrator's
+    rules again when it parses an upload, as a floor against an old, modified
+    or faulty agent. A new
     session that a deny or local rule covers, or an unplaceable session
     under an `unplaceable` floor of `local` or `exclude`, is not stored: no
     conversation or message rows, and its raw evidence is dropped under the
     purge lock. The refusal is audited (`source.refused`, with the user,
     device, source and rule), counted in the admin status
     (`refused_sources`), and reported to the device in the flush answer
-    (`flopwire agent status`). The server sees only what the transcript
+    (`flopwire agent status`). This native path uses what the transcript
     recorded: its working directory, the git remote Codex recorded, and the
     Claude project folder name. It cannot resolve worktrees, main
     checkouts or symlinks, so it can miss a session that the agent catches.
+  - Cowork also has a durable, device-bound policy ledger. Before sharing,
+    the client reports verified selected and approved Mac folders, source
+    identities, historical mapping uncertainty and its current policy floor.
+    The strictest intersecting rule anywhere within selected folders applies
+    to the verified session family, including native CLI copies. Logical and
+    physical folder paths both apply. Observed folders remain protective when
+    app metadata disappears or permissions shrink. The server rechecks stored
+    scopes on administrator rule changes. A missing mapping or unresolved
+    repository scope holds sharing; it does not grant access by the VM cwd.
+    Previously captured unknown mapping remains restrictive. Configured
+    unplaceable exclusion makes that history Deny even with current mapping.
+    Current or historical uncertainty and capacity holds hide existing copies
+    without inventing a destructive Deny. Actual Deny retains its purge rules.
+    Reconciliation is scoped to the credential's device and verified aliases;
+    it does not grant permission through a session ID shared by other devices.
+    See [Cowork policy](docs/cowork-policy.md) for the protocol and limits.
   - `~` in a rule is the home directory the device reports with each
     upload (with its Claude projects and Codex directories). Until a device
     has reported one, the server infers the home from the harness
@@ -49,11 +67,15 @@ based: a credential it does not recognize is stored as written.
     `CODEX_HOME` lies outside the home: a `~` rule then misses sessions
     (or covers another tree) until the device reports its home. A device
     reports only its own home, so it cannot steer the rules for another
-    device's or user's sessions.
+    device's or user's sessions. Cowork metadata registration also reports
+    the device home. Missing home under restrictive `~` rules holds sharing;
+    a recorded home cannot silently change through registration or upload.
   - When the administrator's rules change, stored sessions are hidden, not
     deleted. The server re-checks every stored conversation. A session the
     new rules cover is hidden at once, with its subagents and the same
-    session on the user's other devices: search, grep, sessions, read and
+    session on the user's other devices for ordinary native policy. Cowork
+    ledger reconciliation uses its device-bound family instead. Search, grep,
+    sessions, read and
     raw leave it out. The hide records the rule, the rules version, the
     time and the administrator, and is audited (`conversation.hidden`). If
     a later rule change no longer covers the session (the rule is removed,
@@ -68,7 +90,8 @@ based: a credential it does not recognize is stored as written.
     chunks) and is audited (`conversation.purged`, with the reason). A
     purge is permanent: removing the rule later does not bring the session
     back. New uploads to a hidden session are stored hidden, so a restore
-    brings the session back whole.
+    brings the session back whole. Cowork historical unknown and capacity
+    holds retain their restrictions independently of a removed folder rule.
   - Backups and path rules. A backup copies what the database and object
     store hold at that moment:
     - A backup taken between an upload and its parse can hold raw

@@ -1,6 +1,8 @@
 # History qualification before CASS retirement
 
-Status: incomplete, October 8, 2026. Collection and coverage reporting are
+Dated acceptance record: incomplete as of October 8, 2026. Its open items describe that audit
+and must be reconciled with later evidence before a retirement decision.
+Collection and coverage reporting are
 deployed. This record does not authorize stopping CASS, removing integrations,
 changing exclusions, or deleting archives and recovery keys.
 
