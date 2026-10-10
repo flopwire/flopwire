@@ -63,6 +63,8 @@ Not included: semantic search, and corpus search in the web console.
 
 Requirements: Docker with Compose, and the `flopwire` binary on the machine
 where you run admin commands.
+For a release source archive, use the explicit version commands in
+[Build from a source archive](docs/releases.md#build-from-a-source-archive).
 
 1. Copy `.env.example` to `.env`.
 2. Replace every example secret in `.env`.
@@ -120,6 +122,8 @@ where you run admin commands.
    ```
 
    Add `~/.local/bin` to your shell's `PATH` before the next step.
+   For a release source archive, follow
+   [Build from a source archive](docs/releases.md#build-from-a-source-archive).
 
 2. Claim the invite. The command prompts for a new password and pins the
    server's fingerprint:

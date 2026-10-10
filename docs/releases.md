@@ -10,6 +10,37 @@ After that release, `fix:` and `perf:` bump the patch, and `feat:` bumps
 the minor. Breaking changes bump the minor before `1.0.0` and the major
 after it. Release-please owns subsequent manifest and changelog updates.
 
+## Build from a source archive
+
+The initial release provides source archives. Install Go 1.26.6 and unpack
+an archive before running these commands from its top-level directory:
+
+```sh
+mkdir -p ~/.local/bin
+go build -trimpath -ldflags="-X main.version=v0.1.0" \
+  -o ~/.local/bin/flopwire ./cmd/flopwire
+~/.local/bin/flopwire version
+```
+
+The version must be `v0.1.0`. Use the archive's release version for later
+releases. Add `~/.local/bin` to your shell's `PATH` before running setup.
+A source archive has no Git metadata; the version above is explicit.
+
+To build the server container, first complete the README's
+[server configuration steps](../README.md#quick-start-the-server), including
+the `.env` file and database and object-storage passwords. Compose requires
+these values when it reads the configuration, including during a build.
+Use this explicit archive version in place of the README's Git-derived
+version command. The build also includes the bundled admin console:
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml build \
+  --build-arg VERSION=v0.1.0
+```
+
+This builds a local image. Release automation does not publish that image.
+Continue with the README's server startup and bootstrap steps.
+
 ## Bot identity
 
 The workflow selects credentials in this order:
