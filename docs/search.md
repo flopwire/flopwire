@@ -80,7 +80,7 @@ Output, newest message first, grouped under one header line per session
   | `who` | `user@device`, on the team server |
   | `agent` | `claude`, `codex`, `devin` or `opencode` |
   | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
-  | `repo`, `branch` | The last element of the checkout the session ran in (a linked worktree shows its own directory, not the main checkout's); the branch, or `a→b` when it switched |
+  | `repo`, `worktree`, `branch` | The recorded repository name; the checkout directory when it differs; the branch, or `a→b` when it switched. Without recorded repository identity, `repo` keeps the legacy directory name |
   | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits (with or without a sha), failed tool calls. A `+` means the digest capped the list |
   | `intent` | What the session was for, cut to 80 characters at a word. Always last |
 
@@ -88,6 +88,10 @@ Output, newest message first, grouped under one header line per session
   bytes: long names are cut, then the intent, then `who`, `repo` and
   `branch` go. A session indexed so recently that it has no digest yet
   gets the session id, `who`, `agent`, the time, `repo` and `branch` only.
+  JSON keeps the original `repo` path. Optional `repo_identity` records the
+  normalized remote, or the main checkout for a repository without a remote.
+  Optional `worktree` records the checkout root. For example, an Eichler
+  checkout named `ike-ux-audit` prints `repo=eichler worktree=ike-ux-audit`.
 - Under the header, a matching line is `ORDINAL:LINE kind/tool: text` on
   a message's first matching line and `ORDINAL:LINE: text` on the others.
   A context line is `ORDINAL-LINE- text`. The address for `read` is

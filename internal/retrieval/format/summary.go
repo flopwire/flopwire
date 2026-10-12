@@ -76,8 +76,8 @@ func branchLabel(bs []string) string {
 }
 
 // repoAt is the repo name, @ the branch when there is one.
-func repoAt(repo string, branches []string) string {
-	r := repoName(repo)
+func repoAt(repo string, branches []string, identity ...string) string {
+	r := repoName(repo, identity...)
 	if b := branchLabel(branches); b != "" {
 		return r + "@" + b
 	}
@@ -180,8 +180,11 @@ func summary(c *ConversationInfo, now time.Time, extra ...string) string {
 		w = field("who", clip(Clean(s), 40))
 	}
 	var where []string
-	if c.Repo != "" {
-		where = append(where, field("repo", clip(Clean(repoName(c.Repo)), 50)))
+	if c.Repo != "" || c.RepoIdentity != "" {
+		where = append(where, field("repo", clip(Clean(repoName(c.Repo, c.RepoIdentity)), 50)))
+	}
+	if c.RepoIdentity != "" && c.Worktree != "" && repoName(c.Worktree) != repoName(c.Repo, c.RepoIdentity) {
+		where = append(where, field("worktree", clip(Clean(repoName(c.Worktree)), 50)))
 	}
 	if b := branchLabel(c.Branches); b != "" {
 		where = append(where, field("branch", clip(Clean(b), 50)))

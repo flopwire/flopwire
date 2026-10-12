@@ -148,7 +148,14 @@ func stamp(t *time.Time) string {
 	return t.UTC().Format(stampLayout)
 }
 
-func repoName(repo string) string {
+func repoName(repo string, identity ...string) string {
+	if len(identity) > 0 && identity[0] != "" {
+		name := path.Base(strings.TrimRight(identity[0], "/"))
+		if strings.HasSuffix(name, ".git") {
+			return strings.TrimPrefix(strings.TrimSuffix(name, ".git"), ".")
+		}
+		return name
+	}
 	if repo == "" {
 		return "-"
 	}
@@ -165,7 +172,10 @@ func kindLabel(kind, tool string) string {
 // meta is a hit's bracketed attribution: agent, kind, time, repo, and the
 // user when the server answered.
 func meta(h *Hit) string {
-	parts := []string{h.Agent, kindLabel(h.Kind, h.ToolName), stamp(h.TS), Clean(repoAt(h.Repo, h.Branches))}
+	parts := []string{h.Agent, kindLabel(h.Kind, h.ToolName), stamp(h.TS), Clean(repoAt(h.Repo, h.Branches, h.RepoIdentity))}
+	if h.RepoIdentity != "" && h.Worktree != "" && repoName(h.Worktree) != repoName(h.Repo, h.RepoIdentity) {
+		parts = append(parts, field("worktree", repoName(h.Worktree)))
+	}
 	if h.User != "" {
 		parts = append(parts, Clean(h.User))
 	}
@@ -429,8 +439,11 @@ func sessionLine(s *ConversationInfo) string {
 	if s.LastActivityAt != nil {
 		parts = append(parts, field("active", isoStamp(s.LastActivityAt)))
 	}
-	if s.Repo != "" {
-		parts = append(parts, field("repo", repoName(s.Repo)))
+	if s.Repo != "" || s.RepoIdentity != "" {
+		parts = append(parts, field("repo", repoName(s.Repo, s.RepoIdentity)))
+	}
+	if s.RepoIdentity != "" && s.Worktree != "" && repoName(s.Worktree) != repoName(s.Repo, s.RepoIdentity) {
+		parts = append(parts, field("worktree", repoName(s.Worktree)))
 	}
 	if b := branchLabel(s.Branches); b != "" {
 		parts = append(parts, field("branch", b))
@@ -566,7 +579,12 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 // first and last activity (UTC), message count and, last, the title.
 func readHeader(c *ConversationInfo) string {
 	head := []string{sessionValue(c.SessionID), field("agent", c.Agent)}
-	if c.Repo != "" {
+	if c.RepoIdentity != "" {
+		head = append(head, field("repo", repoName(c.Repo, c.RepoIdentity)))
+		if c.Worktree != "" && repoName(c.Worktree) != repoName(c.Repo, c.RepoIdentity) {
+			head = append(head, field("worktree", repoName(c.Worktree)))
+		}
+	} else if c.Repo != "" {
 		head = append(head, field("repo", c.Repo))
 	} else if c.Cwd != "" {
 		head = append(head, field("cwd", c.Cwd))
@@ -713,8 +731,11 @@ func (g *grouper) open(e *errWriter, h *Hit) bool {
 			parts = append(parts, field("who", h.User))
 		}
 		parts = append(parts, field("agent", h.Agent))
-		if h.Repo != "" {
-			parts = append(parts, field("repo", repoName(h.Repo)))
+		if h.Repo != "" || h.RepoIdentity != "" {
+			parts = append(parts, field("repo", repoName(h.Repo, h.RepoIdentity)))
+		}
+		if h.RepoIdentity != "" && h.Worktree != "" && repoName(h.Worktree) != repoName(h.Repo, h.RepoIdentity) {
+			parts = append(parts, field("worktree", repoName(h.Worktree)))
 		}
 		if b := branchLabel(h.Branches); b != "" {
 			parts = append(parts, field("branch", b))

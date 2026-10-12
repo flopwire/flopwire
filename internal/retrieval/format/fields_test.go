@@ -183,3 +183,39 @@ func TestLabeledHeadersSplitUnambiguously(t *testing.T) {
 		t.Fatalf("cwd: %v", vals)
 	}
 }
+
+func TestRecordedRepositoryLabels(t *testing.T) {
+	for _, tc := range []struct{ name, identity, worktree, repo, wantWorktree string }{
+		{"remote", "github.com/acme/eichler", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
+		{"same name remote", "github.com/other/eichler", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
+		{"dot bare main", "/src/.eichler.git", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
+		{"bare main", "/src/eichler.git", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
+		{"main", "/src/eichler", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
+		{"clone", "github.com/acme/eichler", "/tmp/eichler-clone", "eichler", "eichler-clone"},
+		{"main checkout", "github.com/acme/eichler", "/src/eichler", "eichler", ""},
+		{"unknown", "", "/src/eichler/ike-ux-audit", "ike-ux-audit", ""},
+		{"escaping", "github.com/acme/eichler", "/tmp/ike \"x\"=audit\n", "eichler", oneLine(Clean("ike \"x\"=audit\n"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ConversationInfo{Address: "session", SessionID: "session", Agent: "codex", Repo: "/tmp/ike-ux-audit", RepoIdentity: tc.identity, Worktree: tc.worktree}
+			for _, line := range []string{summary(&c, time.Now()), readHeader(&c), sessionLine(&c)} {
+				_, fields := parseFields(t, line)
+				wantRepo := tc.repo
+				if tc.identity == "" && line == readHeader(&c) {
+					wantRepo = c.Repo
+				}
+				if fields["repo"] != wantRepo || fields["worktree"] != tc.wantWorktree || fields["session"] != "session" {
+					t.Fatalf("labels: %s", line)
+				}
+			}
+			h := Hit{Repo: c.Repo, RepoIdentity: c.RepoIdentity, Worktree: c.Worktree, Agent: c.Agent, Kind: "user"}
+			if text := meta(&h); !strings.Contains(text, tc.repo) || tc.wantWorktree != "" && !strings.Contains(text, "worktree=") {
+				t.Fatalf("hit attribution: %s", text)
+			}
+		})
+	}
+	c := ConversationInfo{Address: "session", Agent: "codex", RepoIdentity: "github.com/acme/" + strings.Repeat("x", 1000), Worktree: "/tmp/" + strings.Repeat("\"", 1000)}
+	if line := summary(&c, time.Now()); len(line) > MaxHeader {
+		t.Fatalf("header exceeds budget: %d", len(line))
+	}
+}
