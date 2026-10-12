@@ -243,10 +243,10 @@ func TestClaudePluginMCP(t *testing.T) {
 	if !subcommands()["mcp"] {
 		t.Fatal("mcp is not a flopwire subcommand")
 	}
-	// The seven tools the plugin promises.
+	// The tools the plugin promises.
 	tools := slices.Sorted(maps.Keys(mcpVerbs))
 	tools = append(tools, slices.Sorted(maps.Keys(busToolNames))...)
-	want := []string{"flopwire_grep", "flopwire_read", "flopwire_search", "flopwire_sessions", "flopwire_inbox", "flopwire_peers", "flopwire_send"}
+	want := []string{"flopwire_grep", "flopwire_read", "flopwire_search", "flopwire_sessions", "flopwire_inbox", "flopwire_messages", "flopwire_peers", "flopwire_send"}
 	if !slices.Equal(tools, want) {
 		t.Fatalf("MCP tools %q, want %q", tools, want)
 	}

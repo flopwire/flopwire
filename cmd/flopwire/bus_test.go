@@ -676,7 +676,7 @@ func TestMCPPeersAndInbox(t *testing.T) {
 	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false}` {
 		t.Fatalf("inbox json: %q %v", text, err)
 	}
-	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_peers, flopwire_read") {
+	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_messages, flopwire_peers, flopwire_read") {
 		t.Fatalf("unknown tool: %v", err)
 	}
 }

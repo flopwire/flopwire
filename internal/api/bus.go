@@ -19,6 +19,7 @@ import (
 // audit themselves in their transaction; a failure the caller should see
 // is a *busproto.Error.
 type Bus interface {
+	Messages(ctx context.Context, c busproto.Caller, q busproto.MessagesQuery) (busproto.MessagesResponse, error)
 	Send(ctx context.Context, c busproto.Caller, req busproto.SendRequest) (busproto.SendResponse, error)
 	// Poll records the device's presence and holds until it has a message
 	// newer than the cursor or the wait ends.
@@ -40,6 +41,7 @@ func (a *API) busRoutes(r chi.Router) {
 	r.Post(busproto.PathAck, a.busDevice(a.busAck))
 	r.Get(busproto.PathPeers, a.busDevice(a.busPeers))
 	r.Get(busproto.PathInbox, a.busDevice(a.busInbox))
+	r.Get(busproto.PathMessages, a.busDevice(a.busMessages))
 	// Accepting a sender is the person's act (B7, plan §4 "Permission"):
 	// a login session only, never a device token an agent could use.
 	r.Get(busproto.PathAccepts, a.busLogin(a.busAccepts))
