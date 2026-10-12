@@ -32,6 +32,10 @@ func coworkUpgradeSnapshot(t *testing.T, pool *pgxpool.Pool, tables []string) ma
 		if table == "conversations" {
 			expr = "to_jsonb(r)-'hidden_scope'"
 		}
+		if table == "bus_messages" {
+			// Later additive sender-placement columns do not alter pre-014 data.
+			expr = "to_jsonb(r)-'from_remote'-'from_main'"
+		}
 		if table == "flopwire_schema_migrations" {
 			where = " WHERE name<'014'"
 		}

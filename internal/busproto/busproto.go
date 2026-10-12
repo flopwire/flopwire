@@ -79,14 +79,15 @@ import (
 )
 
 const (
-	PathSend    = "/v1/bus/send"
-	PathPoll    = "/v1/bus/poll"
-	PathClaim   = "/v1/bus/claim"
-	PathAck     = "/v1/bus/ack"
-	PathPeers   = "/v1/bus/peers"
-	PathInbox   = "/v1/bus/inbox"
-	PathAccepts = "/v1/bus/accepts" // DELETE PathAccepts + "/" + user to revoke
-	PathHeld    = "/v1/bus/held"
+	PathSend     = "/v1/bus/send"
+	PathPoll     = "/v1/bus/poll"
+	PathClaim    = "/v1/bus/claim"
+	PathAck      = "/v1/bus/ack"
+	PathPeers    = "/v1/bus/peers"
+	PathMessages = "/v1/bus/messages"
+	PathInbox    = "/v1/bus/inbox"
+	PathAccepts  = "/v1/bus/accepts" // DELETE PathAccepts + "/" + user to revoke
+	PathHeld     = "/v1/bus/held"
 )
 
 const (
@@ -721,4 +722,57 @@ type DeliveryFailure struct {
 type FailureAck struct {
 	ID    string `json:"id"`
 	Token string `json:"token"`
+}
+
+// MessagesQuery reads retained bus evidence, never a live session mailbox.
+// Repo identities must be resolved by recorded placement, not a bare name.
+// Lists select latest eligible activity in threads with an eligible repo/filter
+// row. Since (inclusive) and
+// until (exclusive) apply to that row. Opening a thread applies times to each
+// message. Session and User match either participant. Before is created_at|id.
+type MessagesQuery struct {
+	Repo                                        string
+	Roots, Mains, Remotes                       []string
+	User, Session, Thread, Since, Until, Before string
+	Limit, MaxBytes                             int
+}
+
+// MessagesParticipant attributes one account/session in eligible thread rows.
+type MessagesParticipant struct {
+	UserID  string `json:"user_id"`
+	User    string `json:"user"`
+	Session string `json:"session,omitempty"`
+	Agent   string `json:"agent,omitempty"`
+}
+
+// MessagesItem preserves the canonical envelope and delivery state. Thread
+// summaries contain a first-line body preview and omit refs; opening returns full
+// stored bodies and refs. Participants summarize only eligible thread rows. Remote and
+// Main are send-time snapshots; empty values mean unknown for older history.
+type MessagesItem struct {
+	InboxItem
+	Participants          []MessagesParticipant `json:"participants,omitempty"`
+	ParticipantsRemaining int                   `json:"participants_remaining,omitempty"`
+	Remote                string                `json:"remote,omitempty"`
+	Main                  string                `json:"main,omitempty"`
+	RepoIdentityKnown     bool                  `json:"repo_identity_known"`
+}
+
+// MessagesResponse lists latest rows (Threads) or full eligible rows (Messages).
+// Retention can remove parents and rows between pages. No completion is inferred.
+type MessagesResponse struct {
+	RepoRoots        []string       `json:"repo_roots,omitempty"`
+	RepoMains        []string       `json:"repo_mains,omitempty"`
+	RepoRemotes      []string       `json:"repo_remotes,omitempty"`
+	Kind             string         `json:"kind"`
+	Scope            string         `json:"scope"`
+	Repo             string         `json:"repo"`
+	Thread           string         `json:"thread,omitempty"`
+	Threads          []MessagesItem `json:"threads"`
+	Messages         []MessagesItem `json:"messages"`
+	More             bool           `json:"more"`
+	Next             string         `json:"next,omitempty"`
+	Limit            int            `json:"limit"`
+	RetentionSeconds int64          `json:"retention_seconds"`
+	Hint             string         `json:"hint"`
 }

@@ -105,6 +105,8 @@ func run(parent context.Context, args []string) error {
 		return toolCmd(ctx, "grep", args[1:])
 	case "search", "sessions", "read":
 		return toolCmd(ctx, args[0], args[1:])
+	case "messages":
+		return messagesMain(ctx, args[1:])
 	case "peers", "send", "inbox":
 		return busMain(ctx, args[0], args[1:])
 	case "accept", "revoke", "accepts":
@@ -162,12 +164,13 @@ const usageText = `Usage: flopwire <command>
   read        read a message or session at an address that grep, search or sessions print
   peers       list live agent sessions you can message
   send        message another agent session, or @user's next session
+  messages    retained coordination threads on this repository
   inbox       this session's messages, received and sent
   accepts     who may message your agents, and messages held until you accept
               their sender (a person at a terminal only, like accept and revoke)
   accept      accept messages from a person's agents (asks for your password)
   revoke      stop accepting a person's messages; undelivered ones are held again
-  mcp         serve grep, search, sessions, read, peers, send and inbox over
+  mcp         serve grep, search, sessions, read and messaging tools over
               MCP stdio (the first four read the local index; --server
               queries the team server; the last three go through the device
               agent; flopwire <tool> --help shows examples)

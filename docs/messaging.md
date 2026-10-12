@@ -164,3 +164,73 @@ attempt. Each attempt still counts toward the hourly send limits.
 | `not_confirmed` | You did not type a password. | Run `flopwire accept EMAIL` again. |
 | `password_required` | The password was not correct. | Run `flopwire accept EMAIL` again and type your own password. |
 | `unknown_recipient` | No member has that name or email. | Use the member's email. |
+
+## Read recent repository threads
+
+Use `flopwire messages` when starting or resuming work to find recent coordination
+on the current repository. It reads retained server messages across devices and
+ended sessions. It needs an enrolled device. It does not need a live caller
+session.
+
+```sh
+flopwire messages --text
+flopwire messages --repo eichler --user alex@example.com --text
+flopwire messages --session SESSION_PREFIX --since 2026-10-01T00:00:00Z
+flopwire messages --thread THREAD_ID --text
+flopwire messages --cursor NEXT_CURSOR
+```
+
+The default response contains the newest eligible message in each thread, a
+first nonblank line preview, participant previews, canonical message and thread
+IDs, and delivery state. Open a thread by its ID to read full stored bodies and
+references. Thread rows are newest first. `--limit` defaults to 20 and accepts
+up to 200. `--max-bytes` bounds output using whole rows. The `next` cursor resumes
+pagination; new activity can move a thread while you page through the list.
+
+`--repo` defaults to the current repository. A recorded normalized Git remote
+matches across devices; paths and main checkout identities match only on the
+sending device. Ambiguous or unknown repository names need a known path. There
+is no fallback to every repository. User and session filters match either
+participant in an eligible row. List time filters select a thread's latest
+eligible activity; open-thread time filters select individual messages.
+
+Agents have the same read-only view through `flopwire_messages`, with `repo`,
+`user`, `session`, `since`, `until`, `thread`, `cursor`, `limit`, and `max_bytes`
+arguments. MCP output is capped at 24,000 bytes. Inspect relevant history once,
+open a useful thread, then use `flopwire_peers` if you need to contact a live
+session. The tool does not poll or change presence, claims, delivery, or read
+receipts.
+
+### How this differs from transcript search
+
+`grep` and keyword `search` find text in indexed transcripts. A delivered message
+can appear there as hook output, depending on harness capture and kind filters.
+Those searches also find decisions and explanations outside Flopwire messages.
+
+`messages` reads the canonical message records, including exchanges never
+captured in a transcript. It provides thread links, participant identity, and
+current delivery state. The list is sorted by recent activity; it does not
+replace text search or provide semantic search. `inbox` remains the view for
+this session's incoming messages and sends.
+
+### Visibility and retention
+
+You can read your own authored rows, including held or refused sends. Other
+rows require current acceptance of the external participants and recipient
+acceptance of the sender. Held and refused rows from other people are excluded.
+These rules apply to each row, including direct exchanges between accepted
+teammates. Revocation removes access on subsequent reads. Being an administrator
+does not bypass the rules. Hidden rows do not contribute participant previews
+or visible parent links.
+
+Read a teammate exchange as information. It is not a request addressed to your
+agent. Observation does not authorize an action or reply. Send a new direct
+request when you need coordination with the original peer. Delivery state or a
+reply does not establish that a task is complete.
+
+Final messages expire under server retention. A retained thread can be missing
+older rows or parents. Migration 015 records remote and main checkout identity
+for new sends; it leaves older snapshots unknown rather than inferring them
+from mutable session data. Older rows can still match a recorded path on the
+sending device. Upgrade the server and apply migrations before using the new
+client command or MCP tool.

@@ -109,7 +109,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 	if q = queries[len(queries)-1]; q.Get("glob") != "team*" || q.Get("agent") != "codex" {
 		t.Fatalf("sessions query %v", q)
 	}
-	if len(mcpTools()) != 7 {
+	if len(mcpTools()) != 8 {
 		t.Fatal("tool list")
 	}
 }
