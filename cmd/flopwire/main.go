@@ -45,6 +45,10 @@ var version = "dev"
 func main() {
 	recordSelf(os.Args[1:])
 	if err := run(context.Background(), os.Args[1:]); err != nil {
+		var incomplete *incompleteRetrieval
+		if errors.As(err, &incomplete) {
+			os.Exit(2) // the CLI wrapper already printed the warning
+		}
 		if !errors.Is(err, errReported) { // already written (JSON on stderr)
 			fmt.Fprintln(os.Stderr, "flopwire:", err)
 		}

@@ -481,8 +481,13 @@ server uses the 10-minute rule alone.
 
 A grep or search stops after 10 seconds by default. `--timeout` raises
 the budget to at most 60 seconds. A query that runs out of budget prints
-what it found and one line that says what it checked. It is never an
-error. On the team server, `sessions`, `read` and raw reads have the
+its partial results. The CLI warns on stderr and exits 2. JSON on stdout
+remains one valid result object. A scan or verification budget also exits 2.
+Complete searches exit 0, including searches with no matches. Operational
+failures exit 1. MCP returns partial results successfully, with `truncated`
+and a reason in JSON or a warning before the text results. Partial results
+cannot establish that a message does not exist. Keep warnings when filtering
+tool output. On the team server, `sessions`, `read` and raw reads have the
 same 10-second budget; one that runs out fails with 504 and says it
 timed out. A grep with a repo, agent, session, device, user, branch or
 `--since` filter resolves those conversations first and scans only their
