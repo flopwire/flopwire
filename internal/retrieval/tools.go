@@ -89,10 +89,12 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	narrows, broad := grepNarrows(f), false
 	b := budget(ctx)
 	deadline := time.Now().Add(b)
+	startupStage := "acquiring the read transaction and setting its timeout"
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
 	err = s.read(ctx, b, func(tx pgx.Tx) error {
 		if narrows {
+			startupStage = "resolving filtered sessions"
 			// The filtered conversations first, so the candidate query
 			// reads their messages and not every trigram match
 			// (grepConvCap).
@@ -108,9 +110,11 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			}
 			broad = !ok
 		}
+		startupStage = "declaring the candidate cursor"
 		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+grepCandidates(q, gq.Sort == format.SortOldest), q.args...); err != nil {
 			return err
 		}
+		startupStage = "fetching the first candidate page"
 		for {
 			left := time.Until(deadline)
 			if left <= 0 {
@@ -162,7 +166,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if b < MaxBudget {
 				raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
 			}
-			page.Reason = fmt.Sprintf("timed out after %s before the candidate query returned its first page (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), raise)
+			page.Reason = fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), startupStage, raise)
 		} else {
 			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked)
 		}
@@ -280,12 +284,12 @@ func grepConvWhere(q *query, f format.Filters) {
 }
 
 // grepConvQuery selects the ids of the visible conversations q admits,
-// newest activity first, at most limit. It walks the sessions list's
-// indexes (conversation_activity_idx, conversations_source_idx,
-// sources_remote_idx), never messages.
+// at most limit. Their order has no result semantics: the caller uses
+// every id through grepConvCap and discards the list above it. The
+// candidate query still orders the final matches by message time.
 func grepConvQuery(q *query, limit int) string {
 	return `SELECT c.id::text FROM ` + listed + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql() +
-		` ORDER BY c.last_activity_at DESC NULLS LAST,c.aid DESC LIMIT ` + strconv.Itoa(limit)
+		` LIMIT ` + strconv.Itoa(limit)
 }
 
 // grepConversations resolves the conversations f's conversation filters
