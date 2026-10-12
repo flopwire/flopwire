@@ -76,6 +76,8 @@ type sessionBrief struct {
 	User           string     `json:"user,omitempty"`
 	Device         string     `json:"device,omitempty"`
 	Repo           string     `json:"repo,omitempty"`
+	RepoIdentity   string     `json:"repo_identity,omitempty"`
+	Worktree       string     `json:"worktree,omitempty"`
 	Branches       []string   `json:"branches,omitempty"`
 	Live           bool       `json:"live"`
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
@@ -96,7 +98,7 @@ type sessionBrief struct {
 const briefTitle = 160
 
 func brief(c format.ConversationInfo) sessionBrief {
-	b := sessionBrief{SessionID: c.SessionID, Address: c.Address, Agent: c.Agent, User: c.User, Repo: c.Repo, Branches: c.Branches,
+	b := sessionBrief{SessionID: c.SessionID, Address: c.Address, Agent: c.Agent, User: c.User, Repo: c.Repo, RepoIdentity: c.RepoIdentity, Worktree: c.Worktree, Branches: c.Branches,
 		Live: c.Live, LastActivityAt: c.LastActivityAt, Messages: c.Messages, Title: format.ClipAround(c.Title, 0, briefTitle), ParentSession: c.ParentSession}
 	if b.Repo == "" {
 		b.Repo = c.Cwd

@@ -1539,6 +1539,8 @@ type ConversationRow struct {
 	DeviceID             string
 	Cwd                  string
 	RepoRoot             string
+	RepoIdentity         string // recorded remote, otherwise main checkout
+	Worktree             string // recorded placement root
 	Title                string
 	StartedAt            time.Time
 	LastActivityAt       time.Time
@@ -1644,8 +1646,10 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 		c.started_at, c.last_activity_at, ifnull(c.parent_conversation_id, 0), ifnull(c.parent_session_id, ''),
 		ifnull(c.spawned_by_message_id, 0), c.depth, c.deleted_in_generation IS NOT NULL, ifnull(s.path, ''),
 		` + messageCountSQL + `,
-		ifnull(c.branches, ''), ifnull(c.digest, '')
+		ifnull(c.branches, ''), ifnull(c.digest, ''),
+		coalesce(nullif(p.remote, ''), p.main_root, ''), ifnull(p.worktree_root, '')
 		FROM conversations c LEFT JOIN sources s ON s.id = c.source_id
+		LEFT JOIN placements p ON p.agent = c.agent AND p.session_id = c.session_id
 		WHERE ` + where + ` ORDER BY ` + order + ` LIMIT ?`
 	rows, err := s.rdb.QueryContext(ctx, q, append(args, o.Limit)...)
 	if err != nil {
@@ -1662,8 +1666,11 @@ func (s *Store) ListConversations(ctx context.Context, o ListOptions) ([]Convers
 		)
 		if err := rows.Scan(&c.ID, &agent, &c.SessionID, &c.DeviceID, &c.Cwd, &c.RepoRoot, &c.Title, &start, &la,
 			&c.ParentConversationID, &c.ParentSessionID, &c.SpawnedByMessageID, &c.Depth, &c.Deleted, &c.SourcePath, &c.Messages,
-			&branches, &dg); err != nil {
+			&branches, &dg, &c.RepoIdentity, &c.Worktree); err != nil {
 			return nil, err
+		}
+		if c.RepoIdentity == "" {
+			c.Worktree = ""
 		}
 		if branches != "" {
 			_ = json.Unmarshal([]byte(branches), &c.Branches)

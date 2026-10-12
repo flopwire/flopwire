@@ -568,3 +568,68 @@ func assertEmptyOutline(t *testing.T, cx *format.Context) {
 		}
 	}
 }
+
+func TestRecordedRepositoryAttribution(t *testing.T) {
+	b, _ := oracle(t)
+	initial := grepFor(t, b, grep.Spec{Patterns: []string{"setTimeout(500)"}, Fixed: true}, format.Filters{})
+	h := initial.Hits[0]
+	original, err := b.Read(ctx, format.ReadQuery{Address: h.Address}, format.Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range []string{"github.com/acme/eichler", "github.com/other/eichler", "/src/eichler.git", ""} {
+		p := localindex.Placement{Agent: transcript.Agent(h.Agent), SessionID: h.SessionID, How: localindex.PlacedByWorktree}
+		p.Worktree = "/tmp/ike-ux-audit"
+		if strings.HasPrefix(identity, "/") {
+			p.Main = identity
+		} else {
+			p.Remote = identity
+		}
+		if err := b.Store.SavePlacement(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		wantWorktree := p.Worktree
+		if identity == "" {
+			wantWorktree = ""
+		}
+		check := func(c format.ConversationInfo) {
+			t.Helper()
+			if c.RepoIdentity != identity || c.Worktree != wantWorktree || c.Repo != original.Conversation.Repo || c.Cwd != original.Conversation.Cwd || c.Address != original.Conversation.Address {
+				t.Fatalf("conversation attribution changed scope or legacy fields: %+v", c)
+			}
+		}
+		cx, err := b.Read(ctx, format.ReadQuery{Address: h.Address}, format.Filters{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(cx.Conversation)
+		sessions, err := b.Sessions(ctx, "", "", format.Filters{Session: h.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, c := range sessions.Sessions {
+			if c.SessionID == h.SessionID {
+				check(c)
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("session missing")
+		}
+		search, err := b.Search(ctx, format.SearchQuery{Query: "setTimeout"}, format.Filters{Session: h.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, page := range []*format.Page{grepFor(t, b, grep.Spec{Patterns: []string{"setTimeout(500)"}, Fixed: true}, format.Filters{Session: h.SessionID}), search} {
+			if len(page.Hits) == 0 {
+				t.Fatal("hits missing")
+			}
+			for _, got := range page.Hits {
+				if got.SessionID == h.SessionID && (got.RepoIdentity != identity || got.Worktree != wantWorktree || got.Repo != h.Repo) {
+					t.Fatalf("hit attribution: %+v", got)
+				}
+			}
+		}
+	}
+}

@@ -362,7 +362,9 @@ type Hit struct {
 	SessionID      string `json:"session_id"`
 	Ordinal        int64  `json:"ordinal"`
 	Title          string `json:"title,omitempty"`
-	Repo           string `json:"repo,omitempty"`
+	Repo           string `json:"repo,omitempty"`          // legacy checkout label
+	RepoIdentity   string `json:"repo_identity,omitempty"` // recorded normalized remote, otherwise main checkout
+	Worktree       string `json:"worktree,omitempty"`      // recorded checkout root
 	Device         string `json:"device,omitempty"`
 	User           string `json:"user,omitempty"`
 	// Branches are the session's git branches, first seen first.
@@ -426,7 +428,9 @@ type ConversationInfo struct {
 	SessionID            string     `json:"session_id"`
 	Title                string     `json:"title,omitempty"`
 	Cwd                  string     `json:"cwd,omitempty"`
-	Repo                 string     `json:"repo,omitempty"`
+	Repo                 string     `json:"repo,omitempty"`          // legacy checkout label
+	RepoIdentity         string     `json:"repo_identity,omitempty"` // recorded normalized remote, otherwise main checkout
+	Worktree             string     `json:"worktree,omitempty"`      // recorded checkout root
 	Device               string     `json:"device,omitempty"`
 	User                 string     `json:"user,omitempty"`
 	StartedAt            *time.Time `json:"started_at,omitempty"`

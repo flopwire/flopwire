@@ -696,6 +696,7 @@ func (b *Backend) hits(ctx context.Context, rows []*localindex.Row) ([]format.Hi
 	for _, r := range rows {
 		h := format.Hit{Address: format.MessageAddress(short[r.SessionID], r.Ordinal), MessageID: id(r.ID), ConversationID: id(r.ConversationID),
 			Agent: string(r.Agent), SessionID: r.SessionID, Ordinal: r.Ordinal, Title: infos[r.ConversationID].Title, Repo: repoOf(r.RepoRoot, r.Cwd),
+			RepoIdentity: infos[r.ConversationID].RepoIdentity, Worktree: infos[r.ConversationID].Worktree,
 			Device: r.DeviceID, Branches: infos[r.ConversationID].Branches, Kind: r.Kind.String(), ToolName: r.ToolName, IsError: r.IsError, TS: tsPtr(r.TS),
 			Superseded: r.Superseded, OffPath: offPath(r), Provenance: provenance(r, srcs[r.ID])}
 		out = append(out, h)
@@ -716,7 +717,7 @@ func repoOf(root, cwd string) string {
 
 func info(c localindex.ConversationRow, short map[string]string) format.ConversationInfo {
 	i := format.ConversationInfo{Address: short[c.SessionID], ID: id(c.ID), Agent: string(c.Agent), SessionID: c.SessionID, Title: c.Title, Cwd: c.Cwd,
-		Repo: repoOf(c.RepoRoot, c.Cwd), Device: c.DeviceID, StartedAt: tsPtr(c.StartedAt), LastActivityAt: tsPtr(c.LastActivityAt), Depth: c.Depth,
+		Repo: repoOf(c.RepoRoot, c.Cwd), RepoIdentity: c.RepoIdentity, Worktree: c.Worktree, Device: c.DeviceID, StartedAt: tsPtr(c.StartedAt), LastActivityAt: tsPtr(c.LastActivityAt), Depth: c.Depth,
 		Messages: c.Messages, ParentSession: short[c.ParentSessionID], Branches: c.Branches, Digest: format.ParseDigest(c.Digest)}
 	if c.ParentConversationID != 0 {
 		i.ParentConversationID = id(c.ParentConversationID)
