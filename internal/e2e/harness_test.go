@@ -174,9 +174,14 @@ func (h *harness) writeReport() {
 
 // run executes the flopwire binary with env and returns stdout.
 func (h *harness) run(env []string, stdin string, args ...string) (string, error) {
+	return h.runAt("", env, stdin, args...)
+}
+
+func (h *harness) runAt(dir string, env []string, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.cfg.bin, args...)
+	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errb bytes.Buffer

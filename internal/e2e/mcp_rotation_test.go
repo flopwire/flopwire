@@ -18,7 +18,7 @@ import (
 
 // One real MCP subprocess stays alive across real server-side rotations,
 // credential revocation and interactive login. Run by the E2E sync workflow.
-func (h *harness) checkMCPRotation(t *testing.T, d *device, needle string, r *result) {
+func (h *harness) checkMCPRotation(t *testing.T, d *device, needle, messageRepo, messageThread, messageBody string, r *result) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	cmd := exec.CommandContext(ctx, h.cfg.bin, "mcp", "--server")
@@ -110,6 +110,14 @@ func (h *harness) checkMCPRotation(t *testing.T, d *device, needle string, r *re
 		if body := call("flopwire_sessions", map[string]any{"glob": d.claudeSID, "include_self": true}, false); !strings.Contains(body, d.claudeSID) {
 			t.Fatalf("sessions lost fixture: %s", body)
 		}
+		if messageThread != "" {
+			body := call("flopwire_messages", map[string]any{"repo": messageRepo, "thread": messageThread}, false)
+			var messages struct{ Messages []struct{ Body string } }
+			if err := json.Unmarshal([]byte(body), &messages); err != nil || len(messages.Messages) != 2 || messages.Messages[0].Body != messageBody {
+				t.Fatalf("messages lost the canonical thread: %v %s", err, body)
+			}
+		}
+
 	}
 	readConfig := func() client.Config {
 		t.Helper()
@@ -137,7 +145,7 @@ func (h *harness) checkMCPRotation(t *testing.T, d *device, needle string, r *re
 			t.Fatal("server still accepts old credential")
 		}
 		check()
-		r.Notes = append(r.Notes, fmt.Sprintf("all four tools passed after rotation %d without MCP restart", i+1))
+		r.Notes = append(r.Notes, fmt.Sprintf("all five tools passed after rotation %d without MCP restart", i+1))
 	}
 	// Revoke only the credential, preserving the device so login can renew it.
 	if _, err := h.pg.Exec(t.Context(), `UPDATE credentials SET revoked_at=now(), revoke_reason='revoked' WHERE device_id=$1 AND kind='device' AND revoked_at IS NULL`, d.id); err != nil {
@@ -147,9 +155,14 @@ func (h *harness) checkMCPRotation(t *testing.T, d *device, needle string, r *re
 	if !strings.Contains(body, "credential_revoked") || !strings.Contains(body, "flopwire login") {
 		t.Fatalf("revocation recovery instruction missing: %s", body)
 	}
+	if messageThread != "" {
+		if body := call("flopwire_messages", map[string]any{"repo": messageRepo, "thread": messageThread}, true); !strings.Contains(body, "credential_revoked") || !strings.Contains(body, "flopwire login") {
+			t.Fatalf("message credential recovery instruction missing: %s", body)
+		}
+	}
 	if _, err := h.run(d.env(), "e2e member battery staple\n", "login", "--server", h.cfg.server, "--fingerprint", h.cfg.pin, "--email", "gary@e2e.test"); err != nil {
 		t.Fatal(err)
 	}
 	check()
-	r.Notes = append(r.Notes, "revocation returned a login instruction; all four tools recovered after login in the same MCP process")
+	r.Notes = append(r.Notes, "revocation returned a login instruction; all five tools recovered after login in the same MCP process")
 }

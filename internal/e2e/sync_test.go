@@ -724,13 +724,18 @@ func TestTwoDeviceSync(t *testing.T) {
 		h.backupRestore(t, r, d2, liveNeedle)
 	})
 
+	var messageRepo, messageThread, messageBody string
+	h.scenario("i2-repo-message-threads", func(t *testing.T, r *result) {
+		messageRepo, messageThread, messageBody = h.checkMessageThreads(t, d1, d2, r)
+	})
+
 	// Run credential transitions after the outage/crash scenarios so their
 	// timing measures network recovery without an extra token-refresh backoff.
 	h.scenario("j-mcp-credential-rotation", func(t *testing.T, r *result) {
 		needle := "mcp rotation fixture " + h.nonce
 		appendFile(t, d1.claudePath, d1.claudeUser(needle))
 		h.waitSessionSynced(t, d1, transcript.AgentClaude, d1.claudePath, d1.claudeSID, time.Minute)
-		h.checkMCPRotation(t, d1, needle, r)
+		h.checkMCPRotation(t, d1, needle, messageRepo, messageThread, messageBody, r)
 	})
 
 	// Every transcript on both devices, after all of the above: the server's
