@@ -743,10 +743,12 @@ func scanConv(row pgx.Row) (format.ConversationInfo, error) {
 
 const convFrom = listed + ` c` + convJoins
 
-// convJoins joins a conversation c to what convCols needs.
+// convJoins joins a conversation c to what convCols needs. The source
+// lookup stays parameterized per returned conversation: flattening it into
+// a hash join can scan every source even for a small undated session page.
 const convJoins = ` JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id
 	LEFT JOIN ` + visible + ` pc ON pc.id=c.parent_conversation_id
-	LEFT JOIN sources rs ON rs.id=c.source_id`
+	LEFT JOIN LATERAL (SELECT remote,checkout FROM sources WHERE id=c.source_id OFFSET 0) rs ON true`
 
 // Raw returns bytes [offset, offset+length) of a source generation,
 // fetching only the chunk objects the range touches (or the provisional
