@@ -252,6 +252,7 @@ var flagDefs = []flagDef{
 	{"offset", 0, fInt, "gs"},
 	{"cursor", 0, fString, "lri"},
 	{"sort", 0, fString, "gsl"},
+	{"matching", 0, fString, "s"},
 	{"no-heading", 0, fBool, "gs"},
 	{"timeout", 0, fString, "gs"},
 	{"agent", 0, fString, "gslp"},
@@ -751,7 +752,10 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if len(o.pos) == 0 {
 			return badArg(errors.New("search needs a QUERY (flopwire search --help)"))
 		}
-		q := format.SearchQuery{Query: strings.Join(o.pos, " "), Limit: f.Limit}
+		q := format.SearchQuery{Query: strings.Join(o.pos, " "), Limit: f.Limit, Matching: o.vals["matching"]}
+		if _, err := format.SearchMatching(q.Matching); err != nil {
+			return badArg(err)
+		}
 		if q.Offset, err = o.int("offset"); err != nil {
 			return badArg(err)
 		}
@@ -1058,7 +1062,7 @@ Kinds    user assistant tool_call tool_result thinking system agent_message inje
 Live: active in the last 10 minutes or open in its harness. An agent's own session is left
 out (a human at a terminal sees all); --session self searches only it.
 `,
-	"search": `flopwire search — ranked search (BM25) for fuzzy questions; use grep for exact strings
+	"search": `flopwire search — ranked lexical search for natural-language questions; use grep for exact strings
 
   flopwire search sqlite trigram tokenizer
   flopwire search '"exponential backoff" retry' --repo flopwire   quoted phrases must match
@@ -1067,8 +1071,9 @@ out (a human at a terminal sees all); --session self searches only it.
 Hits are grouped under one labeled header per session (as grep's), best first:
   ORDINAL:LINE kind/tool: snippet
 The address for flopwire read is SESSION/ORDINAL:LINE. When no message has every word,
-it ranks messages with any of them (common words dropped) and says so. Identical texts
-show once, "+N copies".
+auto removes filler words and gradually relaxes terms, keeping quoted phrases and
+the rarest matching topic term required. --matching all stays strict; --matching any
+allows broad any-term matches. Fallback notes state required terms; copies show once (+N).
 
 Output   --limit N (20)  --offset N  --sort relevance|newest|oldest  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)

@@ -9,7 +9,7 @@ by default (`--text` for readable rows). See [Output](#output).
 | Tool | CLI | MCP | Use it for |
 |---|---|---|---|
 | grep | `flopwire grep` (alias `find`) | `flopwire_grep` | Exact strings and regexes, like rg |
-| search | `flopwire search` | `flopwire_search` | Fuzzy and natural-language questions |
+| search | `flopwire search` | `flopwire_search` | Ranked keyword matches, including plain-language queries |
 | sessions | `flopwire sessions` | `flopwire_sessions` | Listing or globbing sessions |
 | read | `flopwire read` | `flopwire_read` | Reading what an address points to |
 
@@ -136,14 +136,25 @@ flopwire search '"exponential backoff" retry' --repo flopwire
 flopwire search papercut --agent codex --since 30d --offset 20
 ```
 
-- BM25 ranking. Prompts and replies (user, assistant, agent_message) rank
+- Lexical ranking: BM25 locally and PostgreSQL `ts_rank_cd` on the server.
+  Search matches words and phrases. It does not use embeddings or interpret
+  a question's meaning. Prompts and replies (user, assistant, agent_message) rank
   above tool calls and tool output that match as well. `--sort newest` or
   `oldest` orders the matching messages by time instead.
 - Hits are grouped under the same labeled session headers as grep's:
   `ORDINAL:LINE kind/tool: snippet`. `--no-heading` prints the flat form.
 - A quoted phrase must appear as written.
-- When no message holds every word, search ranks the messages that hold
-  any of them, with common words dropped, and adds a note.
+- `--matching auto` is the default. When no message holds every term, it
+  removes common filler words and relaxes terms gradually. Quoted phrases
+  and the rarest matching term remain required. A note names the required
+  fallback terms. Rarity probes respect the filters and share the ranking
+  deadline. Each later probe stops once it cannot identify a rarer term.
+- `--matching all` requires all terms. `--matching any` explicitly allows
+  broad matches on any unquoted term. Quoted phrases remain required.
+  MCP uses `matching: "auto"`, `"all"`, or `"any"`.
+- If every matching term reaches the rarity probe cap, automatic relaxation
+  keeps the strict query and says why. Use quoted topic terms or narrow the
+  filters. Explicit server `OR` and negative query syntax retain their meaning.
 - In the local index, a very common word matches too many messages to
   rank them all. Search then ranks the newest 20,000 matches and says so:
   `ranked newest 20k of N matches — add terms or filters`. The team

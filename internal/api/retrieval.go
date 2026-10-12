@@ -195,7 +195,11 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := r.URL.Query()
-	sq := format.SearchQuery{Query: v.Get("q"), Limit: f.Limit}
+	sq := format.SearchQuery{Query: v.Get("q"), Limit: f.Limit, Matching: v.Get("matching")}
+	if _, err := format.SearchMatching(sq.Matching); err != nil {
+		problem(w, 400, err.Error())
+		return
+	}
 	var err error
 	if sq.Offset, err = strconv.Atoi(orZero(v.Get("offset"))); err != nil || sq.Offset < 0 {
 		problem(w, 400, "offset: bad value")

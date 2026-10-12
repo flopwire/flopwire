@@ -18,6 +18,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -291,51 +292,61 @@ func budgetNote(p localindex.Partial) string {
 	return fmt.Sprintf("%s: checked %d of %s candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", what, p.Checked, total)
 }
 
-// Search is ranked BM25 over the token index. Quoted phrases must appear
-// as written. When no message holds every term, it ranks messages holding
-// any of the terms, stopwords dropped, and says so. Notes carry the rank
-// cap (decision D2) and the budget.
+// Search ranks lexical matches with BM25. Planning and ranking share one
+// deadline; fallback retains phrases and an index-evidenced topic anchor.
 func (b *Backend) Search(ctx context.Context, q format.SearchQuery, f format.Filters) (*format.Page, error) {
 	lf, err := b.filter(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	words, phrases := format.SplitQuery(q.Query)
-	if len(words)+len(phrases) == 0 {
+	if strings.TrimSpace(q.Query) == "" {
 		return nil, bad("query is empty")
 	}
-	// One hit past the page says whether a next page exists.
+	if _, err := format.SearchMatching(q.Matching); err != nil {
+		return nil, bad("%s", err)
+	}
 	n := limit(q.Limit)
 	sort, err := format.SortFor("search", f.Sort)
 	if err != nil {
 		return nil, err
 	}
-	o := localindex.SearchOptions{Filter: lf, Limit: n + 1, Offset: q.Offset, Phrases: phrases, Budget: localindex.Budget{Timeout: q.Timeout}}
+	timeout := q.Timeout
+	if timeout <= 0 {
+		timeout = localindex.DefaultTimeout
+	}
+	timeout = min(timeout, localindex.MaxTimeout)
+	searchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	o := localindex.SearchOptions{Filter: lf, Limit: n + 1, Offset: q.Offset, Budget: localindex.Budget{Timeout: timeout}}
 	if sort != format.SortRelevance {
 		o.ByTime = sort
 	}
-	text := strings.Join(append(append([]string{}, words...), phrases...), " ")
-	res, err := b.Store.Rank(ctx, text, o)
+	page := &format.Page{Hits: []format.Hit{}, Offset: q.Offset}
+	match, err := format.PlanSearch(searchCtx, q.Query, q.Matching, func(ctx context.Context, m format.SearchMatch, cap int) (int, error) {
+		opts := o
+		opts.AnyTerm, opts.Phrases = m.Any, m.Phrases
+		return b.Store.SearchCount(ctx, m.Text(), opts, cap)
+	})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || searchCtx.Err() == context.DeadlineExceeded {
+			page.Truncated = true
+			page.Reason = "timed out before lexical matching probes finished; narrow terms or filters"
+			return page, nil
+		}
+		return nil, err
+	}
+	o.AnyTerm, o.Phrases = match.Any, match.Phrases
+	res, err := b.Store.Rank(searchCtx, match.Text(), o)
+	if searchCtx.Err() == context.DeadlineExceeded {
+		page.Truncated = true
+		page.Reason = "timed out before lexical ranking finished; narrow terms or filters"
+		return page, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	page := &format.Page{Hits: []format.Hit{}, Offset: q.Offset}
-	if len(res.Hits) == 0 && !res.Truncated && len(words) > 1 {
-		none := q.Offset == 0
-		if !none { // a later page: did the every-term query match at all?
-			first, err := b.Store.Rank(ctx, text, localindex.SearchOptions{Filter: lf, Limit: 1, Phrases: phrases, ByTime: o.ByTime})
-			none = err == nil && len(first.Hits) == 0 && !first.Truncated
-		}
-		if none {
-			kept := format.DropStopwords(words)
-			o.AnyTerm = true
-			if res, err = b.Store.Rank(ctx, strings.Join(append(kept, phrases...), " "), o); err != nil {
-				return nil, err
-			}
-			if len(res.Hits) > 0 {
-				page.Notes = append(page.Notes, "no message has every term; ranked messages with any of: "+strings.Join(kept, " ")+" (they may not answer the question)")
-			}
-		}
+	if match.Note != "" && !res.Truncated {
+		page.Notes = append(page.Notes, match.Note)
 	}
 	switch {
 	case res.Truncated:
