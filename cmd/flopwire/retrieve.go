@@ -618,6 +618,14 @@ func pageInfos(p *format.Page) []*format.ConversationInfo {
 	return out
 }
 
+// incompleteRetrieval is a CLI status, after the partial answer was written.
+// It is separate from operational failures and is never returned over MCP.
+type incompleteRetrieval struct{ reason string }
+
+func (e *incompleteRetrieval) Error() string {
+	return "results are incomplete; no absence conclusion is justified: " + format.Clean(e.reason)
+}
+
 // runTool runs one tool and writes its text (or JSON) answer to w.
 func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.Style, p selfPolicy) error {
 	f, err := o.filters()
@@ -682,6 +690,15 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		return writeJSON(w, full)
 	}
+	emitPage := func(page *format.Page, bounded func() any, text func() error) error {
+		if err := emit(page, bounded, text); err != nil {
+			return err
+		}
+		if page.Truncated && !st.MCP {
+			return &incompleteRetrieval{reason: page.Reason}
+		}
+		return nil
+	}
 	switch o.verb {
 	case "grep":
 		spec := grep.Spec{Patterns: append([]string{}, o.list["regexp"]...), Fixed: o.on["fixed-strings"], IgnoreCase: o.on["ignore-case"],
@@ -729,7 +746,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		return emit(page, func() any { return boundPage("grep", page, q.Mode, st.Budget, st.MCP) }, func() error { return format.WriteGrep(w, page, q.Mode, st) })
+		return emitPage(page, func() any { return boundPage("grep", page, q.Mode, st.Budget, st.MCP) }, func() error { return format.WriteGrep(w, page, q.Mode, st) })
 	case "search":
 		if len(o.pos) == 0 {
 			return badArg(errors.New("search needs a QUERY (flopwire search --help)"))
@@ -748,7 +765,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		return emit(page, func() any { return boundPage("search", page, "", st.Budget, st.MCP) }, func() error { return format.WriteSearch(w, page, st) })
+		return emitPage(page, func() any { return boundPage("search", page, "", st.Budget, st.MCP) }, func() error { return format.WriteSearch(w, page, st) })
 	case "sessions":
 		if len(o.pos) > 1 {
 			return badArg(fmt.Errorf("sessions takes one GLOB; got %q", strings.Join(o.pos, " ")))
@@ -912,6 +929,13 @@ func toolCmdIO(ctx context.Context, verb string, args []string, stdout, stderr i
 	}
 	if err == nil {
 		return nil
+	}
+	var incomplete *incompleteRetrieval
+	if errors.As(err, &incomplete) {
+		if _, werr := fmt.Fprintln(stderr, "flopwire: warning:", incomplete); werr != nil {
+			return werr
+		}
+		return err
 	}
 	if !asJSON {
 		return errors.New(shortError(err))
