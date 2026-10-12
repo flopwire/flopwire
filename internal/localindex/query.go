@@ -365,7 +365,7 @@ func (s *Store) Search(ctx context.Context, query string, o SearchOptions) ([]Hi
 func (s *Store) Rank(ctx context.Context, query string, o SearchOptions) (SearchResult, error) {
 	res := SearchResult{Total: -1, Cap: searchRankCap}
 	res.Partial.Total = -1
-	expr, terms := tokQuery(query, o.AnyTerm)
+	expr, terms := searchExpression(query, o)
 	if expr == "" {
 		return res, nil
 	}
@@ -404,6 +404,52 @@ func (s *Store) Rank(ctx context.Context, query string, o SearchOptions) (Search
 		return res, err
 	}
 	return res, nil
+}
+
+// searchExpression keeps phrase tokens mandatory even for broad-any queries,
+// including one-character phrases the trigram index cannot narrow.
+func searchExpression(text string, o SearchOptions) (string, []string) {
+	expr, terms := tokQuery(text, o.AnyTerm)
+	if !o.AnyTerm {
+		return expr, terms
+	}
+	for _, phrase := range o.Phrases {
+		p, pt := tokQuery(phrase, false)
+		if p == "" {
+			continue
+		}
+		if expr == "" {
+			expr = p
+		} else {
+			expr = "(" + expr + ") AND (" + p + ")"
+		}
+		terms = append(terms, pt...)
+	}
+	return expr, terms
+}
+
+// SearchCount counts at most cap index matches passing the same filters and
+// mandatory phrases as Rank. The caller owns the shared planning deadline.
+func (s *Store) SearchCount(ctx context.Context, text string, o SearchOptions, cap int) (int, error) {
+	expr, _ := searchExpression(text, o)
+	if expr == "" {
+		return 0, nil
+	}
+	where, args := o.Filter.hitWhere()
+	if len(o.Phrases) > 0 {
+		ids, err := s.phraseIDs(ctx, o.Phrases)
+		if err != nil {
+			return 0, err
+		}
+		if ids != nil {
+			where += " AND m.id IN (SELECT value FROM json_each(?))"
+			args = append(args, int64JSON(ids))
+		}
+	}
+	q := `SELECT count(*) FROM (SELECT m.id FROM fts_tok JOIN messages m INDEXED BY messages_meta ON m.id=fts_tok.rowid ` + o.Filter.convJoin() + ` WHERE fts_tok MATCH ? AND ` + where + ` LIMIT ?)`
+	var n int
+	err := s.rdb.QueryRowContext(ctx, q, append(append([]any{expr}, args...), cap)...).Scan(&n)
+	return n, err
 }
 
 // Ranked search reads the best candidates from fts_tok alone first (FTS5
@@ -804,6 +850,29 @@ func (s *Store) phraseIDs(ctx context.Context, phrases []string) ([]int64, error
 	}
 	if out == nil {
 		out = []int64{}
+	}
+	// A long phrase uses a trigram window; detail=column also has no
+	// positions. Verify those candidates against the entire quoted text.
+	verify := s.details.Tri != DetailFull
+	for _, p := range phrases {
+		verify = verify || runeLen(p) > phraseWindow
+	}
+	if verify && len(out) > 0 {
+		rows, err := s.Messages(ctx, out)
+		if err != nil {
+			return nil, err
+		}
+		out = []int64{}
+		for _, row := range rows {
+			text := strings.ToLower(row.Text)
+			matches := true
+			for _, p := range phrases {
+				matches = matches && strings.Contains(text, strings.ToLower(p))
+			}
+			if matches {
+				out = append(out, row.ID)
+			}
+		}
 	}
 	return out, nil
 }

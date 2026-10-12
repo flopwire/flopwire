@@ -310,12 +310,13 @@ func grepConversations(ctx context.Context, tx pgx.Tx, f format.Filters) ([]stri
 	return ids, true, nil
 }
 
-// Search ranks messages matching the query (websearch syntax: words,
-// "phrases", or, -not) by ts_rank_cd, newest first among equals, with
-// identical texts collapsed into one hit. When no message holds every
-// word, it ranks messages holding any of them, stopwords dropped, and says
-// so. When the query budget runs out, the page is empty and says so.
+// Search ranks lexical matches by ts_rank_cd. Auto relaxation retains
+// phrases and a filtered, index-evidenced rarest matching term. Planning
+// and ranking share one deadline and a strategy independent of offset.
 func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filters) (*format.Page, error) {
+	if _, err := format.SearchMatching(sq.Matching); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadRequest, err)
+	}
 	if strings.TrimSpace(sq.Query) == "" {
 		return nil, fmt.Errorf("%w: query is empty", ErrBadRequest)
 	}
@@ -333,29 +334,31 @@ func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filt
 		return nil, err
 	}
 	f.Sort = sort
-	hits, more, err := s.rank(ctx, b, sq.Query, sq.Offset, n, f)
-	words, phrases := format.SplitQuery(sq.Query)
-	if err == nil && len(hits) == 0 && len(words) > 1 && !strings.Contains(strings.ToLower(" "+sq.Query+" "), " or ") {
-		none := sq.Offset == 0
-		if !none {
-			first, _, ferr := s.rank(ctx, b, sq.Query, 0, 1, f)
-			none = ferr == nil && len(first) == 0
+	searchCtx, cancel := context.WithTimeout(ctx, b)
+	defer cancel()
+	match, err := format.PlanSearch(searchCtx, sq.Query, sq.Matching, func(ctx context.Context, m format.SearchMatch, cap int) (int, error) {
+		q := &query{}
+		searchConditions(q, m)
+		if err := hitFilters(q, f); err != nil {
+			return 0, err
 		}
-		if none {
-			kept := format.DropStopwords(words)
-			var any []string
-			for _, p := range phrases {
-				any = append(any, `"`+p+`"`)
-			}
-			any = append(any, strings.Join(kept, " or "))
-			if hits, more, err = s.rank(ctx, b, strings.Join(any, " "), sq.Offset, n, f); err == nil && len(hits) > 0 {
-				page.Notes = append(page.Notes, "no message has every term; ranked messages with any of: "+strings.Join(kept, " ")+" (they may not answer the question)")
-			}
-		}
+		var n int
+		err := s.read(ctx, time.Until(searchDeadline(searchCtx)), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT m.id FROM `+from+` WHERE `+q.sql()+` LIMIT `+strconv.Itoa(cap)+`) matches`, q.args...).Scan(&n)
+		})
+		return n, err
+	})
+	var hits []format.Hit
+	var more bool
+	if err == nil {
+		hits, more, err = s.rank(searchCtx, time.Until(searchDeadline(searchCtx)), match, sq.Offset, n, f)
+	}
+	if err == nil && match.Note != "" {
+		page.Notes = append(page.Notes, match.Note)
 	}
 	if timedOut(err) {
 		page.Truncated = true
-		page.Reason = fmt.Sprintf("timed out after %s before ranking finished; narrow with --agent, --repo, --kind or --since, or more specific terms", b.Round(time.Second))
+		page.Reason = fmt.Sprintf("timed out after %s before lexical matching probes or ranking finished; narrow with --agent, --repo, --kind or --since, or more specific terms", b.Round(time.Second))
 		return page, nil
 	}
 	if err != nil {
@@ -384,6 +387,20 @@ func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filt
 	return page, nil
 }
 
+// searchDeadline is set once for probes and ranking, never per retry.
+func searchDeadline(ctx context.Context) time.Time { d, _ := ctx.Deadline(); return d }
+
+func searchConditions(q *query, match format.SearchMatch) string {
+	tsq := q.arg(match.WebQuery())
+	q.where("m.tsv @@ websearch_to_tsquery('simple'," + tsq + ")")
+	if match.Any {
+		for _, phrase := range match.Phrases {
+			q.where("m.tsv @@ phraseto_tsquery('simple'," + q.arg(phrase) + ")")
+		}
+	}
+	return tsq
+}
+
 // hitSessions describes the sessions of hits, in order of first hit.
 func (s *Store) hitSessions(ctx context.Context, hits []format.Hit) ([]format.ConversationInfo, error) {
 	var ids []string
@@ -410,19 +427,18 @@ const conversationBoost = 1.5
 
 // rank returns hits offset..offset+n of a websearch query, identical texts
 // collapsed (copies counted among the rows read), and whether more follow.
-func (s *Store) rank(ctx context.Context, b time.Duration, text string, offset, n int, f format.Filters) ([]format.Hit, bool, error) {
+func (s *Store) rank(ctx context.Context, b time.Duration, match format.SearchMatch, offset, n int, f format.Filters) ([]format.Hit, bool, error) {
 	q := &query{}
-	tsq := q.arg(text)
-	q.where("m.tsv @@ websearch_to_tsquery('simple'," + tsq + ")")
+	tsq := searchConditions(q, match)
 	if err := hitFilters(q, f); err != nil {
 		return nil, false, err
 	}
-	terms := queryTerms(text)
+	terms := queryTerms(match.WebQuery())
 	// Read enough rows to fill the page after collapsing copies.
 	window := min((offset+n)*3+16, 3000)
 	var out []format.Hit
 	more := false
-	order := ` ORDER BY score DESC, m.ts DESC NULLS LAST LIMIT `
+	order := ` ORDER BY score DESC, m.ts DESC NULLS LAST, m.id LIMIT `
 	switch f.Sort {
 	case format.SortNewest:
 		order = ` ORDER BY m.ts DESC NULLS LAST, m.id LIMIT `

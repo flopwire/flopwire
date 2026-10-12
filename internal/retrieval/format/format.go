@@ -689,6 +689,8 @@ type SearchQuery struct {
 	Offset  int           `json:"offset,omitempty"`
 	Limit   int           `json:"limit,omitempty"` // default 20
 	Timeout time.Duration `json:"timeout,omitempty"`
+
+	Matching string `json:"matching,omitempty"` // auto (default), all or any
 }
 
 // ReadQuery is a read request.

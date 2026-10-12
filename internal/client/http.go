@@ -129,6 +129,9 @@ func (c HTTP) Search(ctx context.Context, q format.SearchQuery, f format.Filters
 	}
 	v := f.Values()
 	v.Set("q", q.Query)
+	if q.Matching != "" {
+		v.Set("matching", q.Matching)
+	}
 	if q.Offset > 0 {
 		v.Set("offset", strconv.Itoa(q.Offset))
 	}

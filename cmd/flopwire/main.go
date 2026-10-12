@@ -157,7 +157,7 @@ const usageText = `Usage: flopwire <command>
   claim       claim an invitation
   enroll      bind this installation as a device
   grep        regex search over agent transcripts, like rg (find is an alias)
-  search      ranked search for fuzzy questions
+  search      ranked keyword search
   sessions    list sessions, newest first
   read        read a message or session at an address that grep, search or sessions print
   peers       list live agent sessions you can message

@@ -191,7 +191,7 @@ Results report their scope. A server failure never falls back to local search.
 
 ```sh
 flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, like rg
-flopwire search 'how did we handle income verification?'              # ranked, BM25
+flopwire search 'how did we handle income verification?'              # ranked keywords
 flopwire sessions 'api*' --since 7d                                   # newest first, JSON
 flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an address a result printed
 ```

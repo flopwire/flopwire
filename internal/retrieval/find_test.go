@@ -334,13 +334,13 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	if p = grepQ(format.GrepQuery{Pattern: "retry", Fixed: true}, format.Filters{ExcludeKinds: []string{"tool_result"}}); len(p.Hits) != 2 {
 		t.Fatalf("exclude kind: %+v", p.Hits)
 	}
-	// Search: copies collapse; no every-term match ranks any term.
+	// Search: copies collapse; missing terms relax around a matching anchor.
 	sp, err := f.s.Search(ctx, format.SearchQuery{Query: "retry once"}, format.Filters{})
 	if err != nil || len(sp.Hits) != 1 || sp.Hits[0].Copies != 1 || sp.Hits[0].Address == "" {
 		t.Fatalf("search copies: %+v %v", sp, err)
 	}
 	sp, err = f.s.Search(ctx, format.SearchQuery{Query: "how did we handle exponential tokenizer"}, format.Filters{})
-	if err != nil || len(sp.Hits) != 1 || len(sp.Notes) != 1 || !strings.Contains(sp.Notes[0], "any of: handle exponential tokenizer") {
+	if err != nil || len(sp.Hits) != 1 || len(sp.Notes) != 1 || !strings.Contains(sp.Notes[0], "rarest matching term: exponential") {
 		t.Fatalf("search any-term: %+v %v", sp, err)
 	}
 	// Prompts and replies outrank tool output that matches as well, even

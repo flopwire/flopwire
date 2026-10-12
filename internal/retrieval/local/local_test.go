@@ -159,10 +159,9 @@ func TestSearch(t *testing.T) {
 	if len(p.Hits) == 0 || p.Hits[0].Snippet == "" || p.Hits[0].Title == "" || p.Hits[0].Address == "" || len(p.Notes) != 0 {
 		t.Fatalf("search: %+v", p)
 	}
-	// Every term matching nothing: an any-term retry without stopwords,
-	// and a note.
+	// Missing terms relax while retaining a matching lexical anchor.
 	p = search("how did we handle the exponential tokenizer?", format.Filters{})
-	if len(p.Hits) == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "any of: handle exponential tokenizer") {
+	if len(p.Hits) == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "rarest matching term: exponential") {
 		t.Fatalf("any-term retry: %+v", p)
 	}
 	// A quoted phrase must appear as written.
