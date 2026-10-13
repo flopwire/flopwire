@@ -128,3 +128,22 @@ state. Stop the new server before the restore. Start the matching old binary
 only after the restore. Restoring the backup discards writes made after it;
 account for those writes in the cutover plan. Starting the old binary against
 the upgraded database is refused by the ledger guard.
+
+## Existing MCP connections after a binary upgrade
+
+Replacing the Flopwire executable leaves existing MCP processes running their
+original build. Run `flopwire setup --check` after an upgrade. Its `mcp` records
+show the live PID, startup time, build, executable identity, and credential
+source. They contain no credentials or tool content.
+
+If a live executable changed, reconnect only that Flopwire MCP connection in
+its harness. Preserve the agent session. Setup reports the condition and does
+not stop or reconnect any process. Credential rotation and login do not require
+reconnection once the updated credential implementation is running.
+
+Processes started before runtime diagnostics are unknown. An empty MCP list
+does not prove that no older process is running. Diagnostics cover the current
+configuration directory. The bounded scan reports when its coverage is limited.
+Setup checks leave receipts unchanged. A new MCP process removes unlocked dead
+receipts and old interrupted startup receipts. Process-held file locks distinguish
+live instances from crashed processes and reused PIDs.
