@@ -63,6 +63,9 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		// required trigram, even if a whole ILIKE could index them.
 		if indexable(plan.Query) != nil {
 			cond = literalRegexpCond(q, plan.Re)
+			if cond == "" {
+				cond = requiredRegexpCond(q, plan.Re)
+			}
 		}
 		if cond == "" {
 			cond = trigramCond(q, plan.Query)
