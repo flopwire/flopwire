@@ -16,6 +16,23 @@ func evidenceCall(id, cmd string, ord int64) transcript.Message {
 func evidenceResult(id, text string, ord int64) transcript.Message {
 	return transcript.Message{NativeID: "result-" + id, ToolCallID: id, Kind: transcript.KindToolResult, Text: text, Ordinal: ord, ByteOffset: ord * 100, Part: 2}
 }
+
+func TestCommitEvidenceRepeatedBannerIsOneAddressedObservation(t *testing.T) {
+	out := "[main abcdef0] fix\n[main abcdef0] fix\n[main 1234567] next"
+	result := evidenceResult("a", out, 1)
+	completion := result
+	completion.Enrichment = map[string]any{"command_completion": true, "commands": []any{map[string]any{"cmd": "git commit -m fix", "cwd": "/repo", "exit_code": float64(0)}}}
+	for _, rows := range [][]transcript.Message{{evidenceCall("a", "git commit -m fix", 0), result}, {completion}} {
+		got := ExtractCommitEvidence(rows)
+		if len(got) != 2 || got[0].Hash != "abcdef0" || got[1].Hash != "1234567" {
+			t.Fatalf("repeated output lost distinct observations: %+v", got)
+		}
+	}
+	rows := []transcript.Message{evidenceCall("a", "git commit -m fix", 0), evidenceResult("a", "[main abcdef0] fix", 1), evidenceCall("b", "git commit -m fix", 2), evidenceResult("b", "[main abcdef0] fix", 3)}
+	if got := ExtractCommitEvidence(rows); len(got) != 2 {
+		t.Fatalf("separate executions collapsed: %+v", got)
+	}
+}
 func TestCommitEvidenceExactPairAndUncapped(t *testing.T) {
 	var rows []transcript.Message
 	for i := int64(0); i < 25; i++ {

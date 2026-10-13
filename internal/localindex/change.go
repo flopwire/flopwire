@@ -153,6 +153,16 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 				return e
 			}
 			key := fmt.Sprintf("%d/%s/%s/%s", source, changeIdentity(ev.Command), changeIdentity(ev.Result), ev.Hash)
+			if ev.RevealCommand != nil || ev.RevealResult != nil {
+				var command, result string
+				if ev.RevealCommand != nil {
+					command = changeIdentity(*ev.RevealCommand)
+				}
+				if ev.RevealResult != nil {
+					result = changeIdentity(*ev.RevealResult)
+				}
+				key += fmt.Sprintf("/reveal:%q:%q", command, result)
+			}
 			prev, exists := old[key]
 			delete(old, key)
 			// Generation changes alone do not alter addressed evidence. Physical address
