@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +16,7 @@ import (
 )
 
 const mcpRuntimeLimit = 128
+const mcpRuntimeScanLimit = 1024
 
 // A locked receipt belongs to this process, even if its PID is later reused.
 // No tokens, tool arguments, transcript content or arbitrary environment are saved.
@@ -22,6 +24,7 @@ type mcpRuntime struct {
 	PID              int       `json:"pid"`
 	StartedAt        time.Time `json:"started_at"`
 	Version          string    `json:"version"`
+	Revision         string    `json:"revision,omitempty"`
 	Binary           string    `json:"binary"`
 	CredentialSource string    `json:"credential_source"`
 	Device           uint64    `json:"device"`
@@ -30,6 +33,17 @@ type mcpRuntime struct {
 	ModifiedAt       time.Time `json:"modified_at"`
 	Stale            bool      `json:"stale,omitempty"`
 	Note             string    `json:"note,omitempty"`
+}
+
+func mcpBuildRevision() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				return setting.Value
+			}
+		}
+	}
+	return ""
 }
 
 func runtimeIdentity(path string, r *mcpRuntime) error {
@@ -65,7 +79,7 @@ func recordMCPRuntime() func() {
 	if strings.TrimSpace(os.Getenv(client.EnvToken)) != "" {
 		source = "environment"
 	}
-	r := mcpRuntime{PID: os.Getpid(), StartedAt: time.Now().UTC(), Version: version, Binary: binary, CredentialSource: source}
+	r := mcpRuntime{PID: os.Getpid(), StartedAt: time.Now().UTC(), Version: version, Revision: mcpBuildRevision(), Binary: binary, CredentialSource: source}
 	if runtimeIdentity(binary, &r) != nil {
 		return func() {}
 	}
@@ -73,6 +87,7 @@ func recordMCPRuntime() func() {
 }
 
 func writeMCPRuntime(dir string, r mcpRuntime) func() {
+	r.Stale, r.Note = false, ""
 	noop := func() {}
 	if os.MkdirAll(dir, 0700) != nil {
 		return noop
@@ -101,31 +116,33 @@ func writeMCPRuntime(dir string, r mcpRuntime) func() {
 // setup --check reads receipts without changing them. Startup may prune dead
 // receipts. flock, rather than PID liveness, also handles PID reuse and crashes.
 func readMCPRuntimes(dir string, prune bool) ([]mcpRuntime, string) {
-	directory, err := os.Open(dir)
+	directoryFD, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if os.IsNotExist(err) {
 		return nil, "live MCP builds are unknown until each Flopwire connection is reconnected with runtime diagnostics"
 	}
 	if err != nil {
 		return nil, "MCP runtime diagnostics unavailable"
 	}
+	directory := os.NewFile(uintptr(directoryFD), dir)
 	defer directory.Close()
-	entries, err := directory.ReadDir(mcpRuntimeLimit + 1)
+	entries, err := directory.ReadDir(mcpRuntimeScanLimit + 1)
 	if err != nil && err != io.EOF {
 		return nil, "MCP runtime diagnostics unavailable"
 	}
 	note := "pre-diagnostic MCP processes are not tracked; an empty list does not prove that none are running"
-	if len(entries) > mcpRuntimeLimit {
-		entries = entries[:mcpRuntimeLimit]
-		note += "; runtime scan limited to 128 entries"
+	if len(entries) > mcpRuntimeScanLimit {
+		entries = entries[:mcpRuntimeScanLimit]
+		note += "; directory scan limited to 1024 entries"
 	}
 	var rows []mcpRuntime
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Type()&os.ModeSymlink != 0 {
+		stage := strings.HasPrefix(entry.Name(), ".starting-") && !strings.HasSuffix(entry.Name(), ".json")
+		if entry.IsDir() || (!stage && !strings.HasSuffix(entry.Name(), ".json")) || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
 		// Never follow a receipt symlink, including one swapped after ReadDir.
-		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+		fd, err := unix.Openat(directoryFD, entry.Name(), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 		if err != nil {
 			continue
 		}
@@ -137,9 +154,13 @@ func readMCPRuntimes(dir string, prune bool) ([]mcpRuntime, string) {
 		}
 		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
-			if prune {
-				os.Remove(path)
+			if prune && (!stage || time.Since(info.ModTime()) > time.Minute) {
+				unix.Unlinkat(directoryFD, entry.Name(), 0)
 			}
+			f.Close()
+			continue
+		}
+		if stage {
 			f.Close()
 			continue
 		}
@@ -156,12 +177,17 @@ func readMCPRuntimes(dir string, prune bool) ([]mcpRuntime, string) {
 		if r.CredentialSource != "file" && r.CredentialSource != "environment" {
 			continue
 		}
+		r.Stale, r.Note = false, ""
 		current := mcpRuntime{}
 		if runtimeIdentity(r.Binary, &current) != nil {
 			r.Note = "installed executable unavailable; reconnect only this Flopwire MCP connection after installing the binary"
 		} else if current.Device != r.Device || current.Inode != r.Inode || current.Size != r.Size || !current.ModifiedAt.Equal(r.ModifiedAt) {
 			r.Stale = true
 			r.Note = "installed executable changed; reconnect only this Flopwire MCP connection in its harness to load the update; preserve the agent session"
+		}
+		if len(rows) == mcpRuntimeLimit {
+			note += "; runtime scan limited to 128 live receipts"
+			break
 		}
 		rows = append(rows, r)
 	}
