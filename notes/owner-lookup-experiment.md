@@ -17,8 +17,9 @@ and [#239](https://github.com/flopwire/flopwire/pull/239). #245 and #247
 have squash commits; #239 has a merge commit. The difference between merged
 and original hashes matters in both cases.
 
-On the local index, a repo-wide detailed query returned 480 sessions, without
-pagination. Only aggregate counts were retained. The repeatable probe produced:
+A binary built from the `af87e78` production source queried the local index.
+The repo-wide detailed query returned 480 sessions, without pagination. Only
+aggregate counts were retained. The repeatable probe produced:
 
 | PR | Sessions recording merged SHA | Sessions recording an original PR commit | Sessions referencing the PR | Sessions returned by current PR branch filter |
 |---|---:|---:|---:|---:|
@@ -30,11 +31,12 @@ Counts overlap: a session can record both a commit and a PR reference. These are
 visible digest counts, not verified authors or a complete history audit. Branch
 filtering alone missed all candidates in this sample; use repository scope as
 the starting point. A PR's current head branch is not an ownership identifier.
-The initial local and remote inspection found two PR-reference sessions for
-#245; the subsequent local reproduction found three as history changed. Neither
+The initial inspection used installed CLI revision `04124b3` and found two
+PR-reference sessions for #245 on both local and remote retrieval; the subsequent local reproduction found three as history changed. Neither
 run found commit evidence for #245. Eleven of the 480 digests reported capped
 commit or PR lists in the reproduction. The checked-in repeatable probe uses
-local retrieval only.
+local retrieval only. The current-main binary reproduced the later local
+counts, including zero branch-filter results.
 
 ## Evidence the experiment preserves
 
@@ -91,8 +93,11 @@ For an optional local-history reproduction, run:
 ```sh
 python3 scripts/owner-lookup-experiment/probe.py \
   --checkout /path/to/flopwire --repository flopwire/flopwire \
-  --pr 245 --pr 247 --pr 239
+  --flopwire-bin /path/to/current/flopwire --pr 245 --pr 247 --pr 239
 ```
+
+Build the current CLI with `go build -o /tmp/flopwire-owner-probe ./cmd/flopwire`
+and pass that binary to avoid testing an older installed version.
 
 This reads local session digests and GitHub PR metadata in memory. It prints
 aggregate counts only, not session IDs, titles, prompts, transcript bodies or

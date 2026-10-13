@@ -21,9 +21,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--repository", required=True, help="GitHub OWNER/REPO")
+    parser.add_argument("--flopwire-bin", default="flopwire", help="CLI binary to probe")
     parser.add_argument("--pr", type=int, action="append", required=True)
     args = parser.parse_args()
-    command = ["flopwire", "sessions", "--local", "--repo", str(args.checkout.resolve()),
+    command = [args.flopwire_bin, "sessions", "--local", "--repo", str(args.checkout.resolve()),
                "--detail", "--include-self", "--limit", "500", "--max-bytes", "1000000"]
     raw = read_json(command)
     # Scope is asserted by the caller and flopwire --repo. The offline reducer
