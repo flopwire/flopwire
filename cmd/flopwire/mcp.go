@@ -104,6 +104,7 @@ func mcp(ctx context.Context, args []string) error {
 		}
 	}
 	r.coverageLocal = func(ctx context.Context) (*coverage.Report, error) { return agentCoverageAt(ctx, r.busSocket) }
+	r.callerCwd = agentCallerCwd(r.busSocket)
 	if *call != "" {
 		return mcpCallOnce(ctx, r, *call, os.Stdin, os.Stdout)
 	}
@@ -561,6 +562,14 @@ func mcpArgs(name string) []string {
 
 // mcpCall runs one tool and returns its answer: one text block.
 func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
+	var err error
+	args, err = mcpRepoArgs(ctx, r, name, args)
+	if err != nil {
+		if _, ok := busToolNames[name]; ok {
+			return "", mcpBusErr(args["format"] != "text", badUsage(err.Error(), ""))
+		}
+		return "", badArg(err)
+	}
 	if _, ok := busToolNames[name]; ok {
 		return busMCPCall(ctx, r, name, args)
 	}

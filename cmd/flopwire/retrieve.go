@@ -67,6 +67,8 @@ type retriever struct {
 	// so a request's _meta names the calling Codex thread; otherwise _meta
 	// is ignored.
 	underCodex bool
+	// callerCwd resolves an exact MCP caller on this device, per request.
+	callerCwd func(context.Context, local.Caller) (string, error)
 	// teamRepo, set for the server, expands a --repo argument on this
 	// device (local.ExpandRepo with the local index's placements), since
 	// the server cannot read this device's git files.
