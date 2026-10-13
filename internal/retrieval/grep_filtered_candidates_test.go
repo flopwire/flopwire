@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,6 +13,8 @@ import (
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func filteredCandidateIDs(t testing.TB, tx pgx.Tx, sql string, args ...any) []uuid.UUID {
