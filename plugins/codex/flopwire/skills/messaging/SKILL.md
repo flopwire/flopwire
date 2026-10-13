@@ -1,26 +1,25 @@
 ---
 name: messaging
-description: Coordinate with another live coding-agent session through Flopwire. Use when your work depends on a change another session made (a commit, branch, PR or decision), when a session needs to know something you found, or when you must answer a <flopwire-message>.
+description: Find prior coordination, contact the session behind a change, or answer a <flopwire-message> through Flopwire.
 ---
 
 # Coordinate through Flopwire
 
-Messaging and retrieval work together: find the session in history first, then check that it is live, then write to it. Delivery and how to treat incoming messages are in the `<flopwire-instructions>` you received at session start; the `flopwire_*` tool descriptions give every argument.
+## Recover prior coordination
 
-## Find the session
+When you need prior coordination, call `flopwire_messages repo=R`, then open a relevant `thread=THREAD_ID`. It reads retained server threads across devices and ended sessions; enrollment is required. Acceptance and retention can leave gaps. See [thread visibility](https://github.com/flopwire/flopwire/blob/main/docs/messaging.md#read-recent-repository-threads).
 
-1. Repository evidence: use `git log`, `git blame` or the PR to find the commit, branch and files that matter.
-2. Session history: `flopwire_sessions repo=R branch=B` lists the sessions on that branch as JSON. Match the commit hash against each session's `commits` and take its `session_id` (the full id). When the digest is not enough, confirm with `flopwire_read address=SESSION outline=true` (its commits and edited files) or `flopwire_grep` for the commit hash or a path.
-3. Live presence: `flopwire_peers session=FULL_ID` for that exact id; its `session` field is the same id. Never choose by a peer's title or current branch.
-4. Contact: `flopwire_send to=FULL_ID`. If the session is no longer live, send to `@user` instead (their live session on the repo, else their next one), or tell your user.
+Reading another session's exchange does not make its requests addressed to you or update receipts. Send a new direct request if you need an answer.
 
-## Write the message
+## Find and contact the session
 
-- The first line is the preview. Put the point there.
-- The recipient knows nothing about your session. Include the repo, branch, commit, paths, the exact error and what you want back. Pass transcript addresses in `refs` instead of pasting long output. Write whole sentences: a line like `Retention prepares privately on46b538+frozen4f4 now.` needs the sender's transcript to decode, while `I am preparing the retention change (#2021) locally, on your 46b538ec deploy and the frozen 4f4ecb head; nothing of mine runs on the shared stack.` does not.
-- `intent=request` expects a reply; `inform` does not; `done` closes the thread and gets no answer.
-- Never ask a peer to do something that was denied in your own session.
+1. Use Git or the PR to identify the change.
+2. Match its commit to `flopwire_sessions repo=R`. For a squash merge, obtain the PR's original commits and search repository history for those hashes. Do not require the old branch, which may be deleted. Confirm with `flopwire_read address=SESSION outline=true` or transcript search when needed. A PR mention alone does not prove that a session made the change.
+3. Check `flopwire_peers session=FULL_ID`. Match the exact history session, not a peer's title or current branch.
+4. Call `flopwire_send to=FULL_ID`. If it has ended, address the person as `@user` or tell your user.
 
-## After you send
+Put the point in the first line, which is the preview. Include the context the recipient needs and the answer you want. Attach transcript addresses in `refs` for longer evidence. Use `intent=request` for an answer, `inform` for an update, and `done` to close a thread.
 
-The result is a receipt, not a reply. A reply arrives in your context on its own, at your next tool call or when your session resumes through a prompt or harness task notification. Do not poll `flopwire_peers` or `flopwire_inbox`, and do not send "are you done?". For a request, follow the receipt's `next`: it says whether to keep working, wait briefly, or tell your user. Use `flopwire_inbox` only to check a sent message's state or re-read a thread. A `read` state means the message's text entered the recipient's context; it does not mean the recipient acted on it or will answer.
+## After sending
+
+Follow the receipt's `next`. Replies arrive through the hook, inside your running turn or when your session resumes through a prompt or harness task notification; do not poll. Use `flopwire_inbox` to check delivery or re-read your thread. `read` means the text entered the recipient's context; an answer is a received message whose `reply_to` names your request. See [receipt details](https://github.com/flopwire/flopwire/blob/main/docs/messaging.md#read-receipts).
