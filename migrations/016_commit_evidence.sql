@@ -8,11 +8,22 @@ CREATE TABLE commit_evidence_state (
 );
 INSERT INTO commit_evidence_state(singleton) VALUES(true);
 CREATE TABLE commit_evidence_dirty (
-  conversation_id uuid PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  -- Message updates already lock their message row. A foreign key here would
+  -- then lock the conversation and reverse redaction's conversation/message
+  -- lock order. This rebuildable queue uses explicit deletion cleanup instead.
+  conversation_id uuid PRIMARY KEY,
   limited boolean NOT NULL DEFAULT false,
+  revision bigint NOT NULL DEFAULT 1,
   retry_after timestamptz
 );
 INSERT INTO commit_evidence_dirty(conversation_id) SELECT id FROM conversations;
+CREATE FUNCTION flopwire_commit_evidence_conversation_deleted() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM commit_evidence_dirty WHERE conversation_id=OLD.id;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER commit_evidence_conversation_deleted AFTER DELETE ON conversations
+  FOR EACH ROW EXECUTE FUNCTION flopwire_commit_evidence_conversation_deleted();
 CREATE TABLE commit_evidence (
   id bigserial PRIMARY KEY,
   conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -54,7 +65,7 @@ DECLARE cid uuid;
 BEGIN
   cid=CASE WHEN TG_OP='DELETE' THEN OLD.conversation_id ELSE NEW.conversation_id END;
   INSERT INTO commit_evidence_dirty(conversation_id) SELECT id FROM conversations WHERE id=cid
-    ON CONFLICT(conversation_id) DO UPDATE SET limited=false,retry_after=NULL;
+    ON CONFLICT(conversation_id) DO UPDATE SET limited=false,retry_after=NULL,revision=commit_evidence_dirty.revision+1;
   IF TG_OP='DELETE' OR (TG_OP='UPDATE' AND
     ROW(OLD.conversation_id,OLD.source_id,OLD.source_generation,OLD.native_id,OLD.part,OLD.ordinal,OLD.kind,OLD.tool_name,OLD.tool_call_id,OLD.is_error,
         OLD.text,OLD.enrichment,OLD.superseded,OLD.on_active_path,OLD.line_no,OLD.byte_offset,OLD.byte_len,OLD.locator)
@@ -65,7 +76,7 @@ BEGIN
     IF TG_OP='UPDATE' AND OLD.conversation_id<>cid THEN
       DELETE FROM commit_evidence WHERE conversation_id=OLD.conversation_id;
       INSERT INTO commit_evidence_dirty(conversation_id) SELECT id FROM conversations WHERE id=OLD.conversation_id
-        ON CONFLICT(conversation_id) DO UPDATE SET limited=false,retry_after=NULL;
+        ON CONFLICT(conversation_id) DO UPDATE SET limited=false,retry_after=NULL,revision=commit_evidence_dirty.revision+1;
     END IF;
   END IF;
   RETURN NULL;
@@ -96,3 +107,8 @@ CREATE CONSTRAINT TRIGGER commit_evidence_source_visibility AFTER UPDATE ON sour
   WHEN (ROW(OLD.tombstoned_at,OLD.remote,OLD.checkout)
     IS DISTINCT FROM ROW(NEW.tombstoned_at,NEW.remote,NEW.checkout))
   EXECUTE FUNCTION flopwire_commit_evidence_visibility();
+
+-- Coverage checks inspect only retained rows whose stored text was capped.
+CREATE INDEX messages_commit_capped_idx ON messages(conversation_id)
+  WHERE NOT superseded AND on_active_path IS NOT FALSE
+    AND (text_len>octet_length(text) OR enrichment->'text_truncated'='true'::jsonb);

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/flopwire/flopwire/internal/digest"
@@ -17,13 +18,19 @@ import (
 const CommitEvidenceMessageLimit = 100000
 const CommitEvidenceTextLimit = 64 << 20
 
+// ErrCommitEvidenceMoved requires the caller to roll back the entire projection
+// transaction. A mutation changed an excluded row while its snapshot was read.
+var ErrCommitEvidenceMoved = errors.New("commit evidence: retained messages changed during projection")
+
 // RefreshCommitEvidence atomically replaces one conversation's projection from
 // retained live rows. The caller holds its conversation row lock. Appended rows
 // can complete an older call; replay is source scoped, never cross-source.
 // Unchanged observations keep their IDs so appends do not disturb open pages.
 func RefreshCommitEvidence(ctx context.Context, tx pgx.Tx, conv string) error {
-	var dirty bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM commit_evidence_dirty WHERE conversation_id=$1)`, conv).Scan(&dirty); err != nil || !dirty {
+	var revision int64
+	if err := tx.QueryRow(ctx, `SELECT revision FROM commit_evidence_dirty WHERE conversation_id=$1`, conv).Scan(&revision); errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
 		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT m.id::text,m.source_id::text,m.source_generation,COALESCE(m.native_id,''),m.ordinal,m.part,m.kind,
@@ -34,7 +41,7 @@ func RefreshCommitEvidence(ctx context.Context, tx pgx.Tx, conv string) error {
 		octet_length(m.text)+COALESCE(octet_length(m.enrichment::text),0)
    FROM messages m JOIN sources s ON s.id=m.source_id
    WHERE m.conversation_id=$1 AND NOT m.superseded AND m.on_active_path IS NOT FALSE AND s.tombstoned_at IS NULL
-		AND m.kind IN ('tool_call','tool_result') ORDER BY m.source_id,m.ordinal,m.id LIMIT $2`, conv, CommitEvidenceMessageLimit+1, CommitEvidenceTextLimit)
+		AND m.kind IN ('tool_call','tool_result') ORDER BY m.source_id,m.ordinal,m.id LIMIT $2 FOR SHARE OF m`, conv, CommitEvidenceMessageLimit+1, CommitEvidenceTextLimit)
 	if err != nil {
 		return err
 	}
@@ -63,8 +70,14 @@ func RefreshCommitEvidence(ctx context.Context, tx pgx.Tx, conv string) error {
 		total += textBytes
 		if count > CommitEvidenceMessageLimit || total > CommitEvidenceTextLimit {
 			rows.Close()
-			_, err := tx.Exec(ctx, `UPDATE commit_evidence_dirty SET limited=true WHERE conversation_id=$1`, conv)
-			return err
+			tag, err := tx.Exec(ctx, `UPDATE commit_evidence_dirty SET limited=true WHERE conversation_id=$1 AND revision=$2`, conv, revision)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return ErrCommitEvidenceMoved
+			}
+			return nil
 		}
 		m.Kind, err = transcript.ParseKind(kind)
 		if err != nil {
@@ -139,8 +152,14 @@ func RefreshCommitEvidence(ctx context.Context, tx pgx.Tx, conv string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM commit_evidence WHERE conversation_id=$1 AND fingerprint<>ALL($2::text[])`, conv, fingerprints); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `DELETE FROM commit_evidence_dirty WHERE conversation_id=$1`, conv)
-	return err
+	tag, err := tx.Exec(ctx, `DELETE FROM commit_evidence_dirty WHERE conversation_id=$1 AND revision=$2`, conv, revision)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrCommitEvidenceMoved
+	}
+	return nil
 }
 
 // BackfillCommitEvidence advances the rebuildable index by a bounded batch.
@@ -173,6 +192,9 @@ func BackfillCommitEvidenceFor(ctx context.Context, pool interface {
 		}
 		if err != nil {
 			_ = tx.Rollback(ctx)
+			if errors.Is(err, ErrCommitEvidenceMoved) {
+				return nil
+			}
 			return err
 		}
 		if err = tx.Commit(ctx); err != nil {

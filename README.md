@@ -183,7 +183,7 @@ observed limits. An empty queue does not prove complete history coverage.
 
 ## Search
 
-Four tools, in the CLI and in MCP. They search the shared server after
+Five tools, in the CLI and in MCP. They search the shared server after
 enrollment and the local index before enrollment. Use `--local` to search
 only this device, or `--server` to select the server explicitly. An explicit
 `--index PATH` selects a local index unless `--server` is also set.
@@ -194,6 +194,7 @@ flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, li
 flopwire search 'how did we handle income verification?'              # ranked keywords
 flopwire sessions 'api*' --since 7d                                   # newest first, JSON
 flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an address a result printed
+flopwire change --repo . 0123456789abcdef0123456789abcdef01234567     # captured commit evidence
 ```
 
 - `grep`, `search` and `read` print text (`--json` for JSON). Hits group

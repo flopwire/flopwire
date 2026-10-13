@@ -56,6 +56,9 @@ If `restart_required` is true, repeat the query without a cursor.
 complete history. Missing captures, unsupported commands, redaction, and
 rewritten hashes can leave gaps. An empty result means no evidence matched
 in the searched index.
+Server lookups refresh a bounded batch of changed conversations before
+searching. Pending conversations report indexing lag; repeat the lookup to
+continue indexing.
 `source_text_truncated` reports captured messages whose text was capped before
 indexing. Commit output outside the retained text cannot match. Server backfill
 also bounds each conversation to 100,000 tool records and 64 MiB of retained

@@ -423,33 +423,13 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 		}
 	}
 	return pgx.BeginTxFunc(ctx, q.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		// Publish once per completed parse, rather than replaying a growing
-		// transcript for each write batch. Interrupted parses remain dirty
-		// and can be rebuilt from their retained rows by a bounded lookup.
-		// Lock the whole checkpoint set before checkpointDigests takes any
-		// subset, preserving the common conversation/parent lock order.
-		rows, err := tx.Query(ctx, `SELECT id::text FROM conversations WHERE id IN (
-			SELECT unnest($1::uuid[]) UNION SELECT id FROM conversations WHERE source_id=$2
-			UNION SELECT conversation_id FROM messages WHERE source_id=$2 OR source_id=$3)`, append(append([]string{}, j.touched...), j.recount...), j.src.id, j.previous)
-		if err != nil {
-			return err
-		}
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
-		}
-		if _, err := lockWithParents(ctx, tx, ids); err != nil {
-			return err
-		}
 		if err := checkpointDigests(ctx, tx, j, gen, full); err != nil {
 			return err
 		}
-		for _, id := range ids {
-			if err := RefreshCommitEvidence(ctx, tx, id); err != nil {
-				return err
-			}
-		}
-		_, err = tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
+		// Message mutations mark commit projections dirty in their write
+		// transaction. Bounded scoped lookup backfill publishes them without
+		// making an append scan its conversation's retained history.
+		_, err := tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
 			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7,
 			applied_parser=COALESCE(NULLIF($8,''),applied_parser),
 			applied_redaction_rules=CASE WHEN $8<>'' THEN $9 ELSE applied_redaction_rules END,

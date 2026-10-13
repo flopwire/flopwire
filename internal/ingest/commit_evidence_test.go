@@ -1,12 +1,42 @@
 package ingest
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/jackc/pgx/v5"
 )
+
+func TestCommitEvidencePublicationUsesBoundedBackfill(t *testing.T) {
+	e := newEnv(t)
+	a := newAppendSession(t, e, 8)
+	lines := a.toolCalls(a.next, 1, 0)
+	lines = bytes.ReplaceAll(lines, []byte(`"command":"false"`), []byte(`"command":"git commit -m synthetic"`))
+	lines = bytes.ReplaceAll(lines, []byte("exit status 1"), []byte("[main abcdef0] synthetic"))
+	a.add(t, lines)
+	var conv string
+	if err := e.pool.QueryRow(e.ctx, `SELECT id::text FROM conversations WHERE session_id=$1`, a.session.SessionID).Scan(&conv); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.count(`SELECT count(*) FROM commit_evidence`); got != 0 {
+		t.Fatal("parse checkpoint eagerly replayed commit history")
+	}
+	if got := e.count(`SELECT count(*) FROM commit_evidence_dirty WHERE conversation_id=$1`, conv); got != 1 {
+		t.Fatal("completed parse lost indexing backlog")
+	}
+	if err := BackfillCommitEvidenceFor(e.ctx, e.pool, []string{conv}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, conv); got != 1 {
+		t.Fatal("bounded backfill did not publish captured commit")
+	}
+	e.exec(`UPDATE messages SET text='[redacted]' WHERE conversation_id=$1 AND kind='tool_result'`, conv)
+	if got := e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, conv); got != 0 {
+		t.Fatal("destructive update retained stale evidence until backfill")
+	}
+}
 
 func TestCommitCompletionPreservesServerSummaryCounts(t *testing.T) {
 	s := batchTestSink(t)
