@@ -88,7 +88,7 @@ scratch repository and its branch.
 
 4. Read the receipt.
 
-Expected: the receipt says `idle, arrives with its human's next prompt`.
+Expected: the receipt says `idle, arrives when its session resumes`.
 No turn starts in the recipient session.
 
 5. Wait 1 minute.

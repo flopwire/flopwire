@@ -769,8 +769,9 @@ The harness hooks run `flopwire hook`. The command does two jobs:
 | Any other event | Nothing. It only asks for the upload. |
 
 A message arrives inside a running turn, at the next tool call, or with the
-human's next prompt. A message never wakes an idle session and never
-starts a turn.
+session's next prompt or resumption hook, including a background task
+notification. Child tool calls do not deliver messages to a stopped parent.
+A message never wakes an idle session and never starts a turn.
 
 A hook never fails a turn. `flopwire hook` exits 0 and prints nothing in
 these cases:
@@ -1317,7 +1318,7 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    a reply. With `--text`, the receipt is one line, for example:
 
    ```text
-   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt
+   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives when its session resumes
    ```
 
 4. Check what you sent:

@@ -186,7 +186,7 @@ func TestSendOutcomeLines(t *testing.T) {
 			"sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at its next tool call"},
 		{busproto.SendResponse{ID: "m7f3b", State: busproto.StateQueued, ExpiresAt: exp,
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/home/g/api", Branch: "main", Live: true}},
-			"sent m7f3b to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt (idle duration unknown)"},
+			"sent m7f3b to 4c19e0d2 (gary codex api@main): idle, arrives when its session resumes (idle duration unknown)"},
 		{busproto.SendResponse{ID: "m7f3c", State: busproto.StateHeld, ExpiresAt: exp, To: busproto.Recipient{User: "sam@example.test", Repo: "api", Live: true}},
 			"held m7f3c for @sam: sam has not accepted messages from you; expires 2026-10-02T14:02Z"},
 		{busproto.SendResponse{ID: "m7f3d", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Repo: "api"}},
@@ -194,7 +194,7 @@ func TestSendOutcomeLines(t *testing.T) {
 		{busproto.SendResponse{ID: "m7f3e", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Repo: "api", Live: true, Busy: true}},
 			"sent m7f3e to @alex: a busy session on api takes it, arrives at its next tool call"},
 		{busproto.SendResponse{ID: "m7f3f", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Live: true}},
-			"sent m7f3f to @alex: an idle session takes it, arrives with its human's next prompt"},
+			"sent m7f3f to @alex: an idle session takes it, arrives when its session resumes"},
 		{busproto.SendResponse{ID: "m7f40", State: busproto.StateQueued, ExpiresAt: exp,
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/home/g/api"}},
 			"sent m7f40 to 4c19e0d2 (gary codex api): not running, arrives only if it resumes; expires 2026-10-02T14:02Z"},
@@ -433,7 +433,7 @@ func TestPeersOutput(t *testing.T) {
 	out, err := cli(t, fa, "", "peers", "--repo", "api", "--user", "@alex", "--agent", "claude")
 	want := `4c19e0d2  gary  codex  live idle (idle duration unknown)  api@main  "add cursor to list endpoint"
 9d00e0d2  alex  claude  live busy  api@main  "refactor client pagination"
-[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]
+[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: when its session resumes. Address one by its first column, or a person as @user]
 `
 	if err != nil || out != want {
 		t.Fatalf("peers:\n%s\nwant:\n%s%v", out, want, err)
@@ -1308,5 +1308,22 @@ func TestPeersTextUsesAuthoritativeIdleAge(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "idle duration unknown") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestStoppedParentReceiptWaitsForResumption(t *testing.T) {
+	r := busproto.SendResponse{ID: "msynthetic", State: busproto.StateQueued, Intent: busproto.IntentRequest, To: busproto.Recipient{Session: "parent-session", Agent: "claude", Live: true, IdleKnown: true, IdleSince: t0}}
+	if arrival(r) != arriveNextPrompt {
+		t.Fatalf("idle protocol value: %q", arrival(r))
+	}
+	if line := sendOutcome(r); !strings.Contains(line, "arrives when its session resumes") || strings.Contains(line, "next tool call") {
+		t.Fatalf("stopped parent receipt: %s", line)
+	}
+	if sendNext(r) != nextNoWait {
+		t.Fatalf("stopped parent should not wait: %s", sendNext(r))
+	}
+	r.To.Busy = true
+	if arrival(r) != arriveNextToolCall || sendNext(r) != nextBusy {
+		t.Fatalf("resumed parent: %s / %s", arrival(r), sendNext(r))
 	}
 }
