@@ -16,10 +16,10 @@ import (
 // Codex starts the plugin server in its installed plugin directory. Never
 // chdir here: one server can serve several calling threads concurrently.
 func mcpRepoArgs(ctx context.Context, r *retriever, name string, args map[string]any) (map[string]any, error) {
-	if _, retrieval := mcpVerbs[name]; !retrieval {
-		if _, bus := busToolNames[name]; !bus {
-			return args, nil
-		}
+	switch name {
+	case "flopwire_grep", "flopwire_search", "flopwire_sessions", "flopwire_messages", "flopwire_peers", "flopwire_send":
+	default:
+		return args, nil
 	}
 	repo, ok := args["repo"].(string)
 	if _, present := args["repo"]; present && !ok {

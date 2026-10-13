@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -24,5 +25,24 @@ func TestControlCallerContextUsesExactLocalPlacement(t *testing.T) {
 		if got := ask(t, a, req); got.OK || got.Cwd != "" {
 			t.Fatalf("guessed missing context: %+v", got)
 		}
+	}
+}
+
+func TestControlCallerContextLoadsSyncOnlyPlacement(t *testing.T) {
+	store, err := localindex.Open(filepath.Join(t.TempDir(), "index.db"), localindex.Options{SyncOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cwd := filepath.Join(t.TempDir(), "child-worktree")
+	if err := store.SavePlacement(t.Context(), localindex.Placement{Agent: transcript.AgentCodex, SessionID: "child", Placement: pathpolicy.Placement{Cwd: cwd}}); err != nil {
+		t.Fatal(err)
+	}
+	a := New(store, Config{})
+	if err := a.loadPlaces(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ask(t, a, Request{Op: "caller-context", Agent: "codex", Session: "child"}); !got.OK || got.Cwd != cwd {
+		t.Fatalf("sync-only persisted placement: %+v", got)
 	}
 }
