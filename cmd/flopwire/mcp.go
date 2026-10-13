@@ -108,6 +108,7 @@ func mcp(ctx context.Context, args []string) error {
 	if *call != "" {
 		return mcpCallOnce(ctx, r, *call, os.Stdin, os.Stdout)
 	}
+	defer recordMCPRuntime()()
 	return serveMCP(ctx, r, os.Stdin, os.Stdout)
 }
 

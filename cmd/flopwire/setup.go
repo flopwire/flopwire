@@ -114,6 +114,8 @@ type setupReport struct {
 	Index              setupIndex      `json:"index"`
 	Harnesses          []harnessReport `json:"harnesses"`
 	Todo               []string        `json:"todo"`
+	MCP                []mcpRuntime    `json:"mcp,omitempty"`
+	MCPNote            string          `json:"mcp_note,omitempty"`
 	HookFailureWarning string          `json:"hook_failure_warning,omitempty"`
 }
 
@@ -404,6 +406,9 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep := setupReport{Kind: "setup", Mode: env.mode, OK: true, Todo: []string{}}
 	if env.mode == setupCheck {
 		rep.HookFailureWarning = lastHookFailureWarning()
+		if dir, err := mcpRuntimeDir(); err == nil {
+			rep.MCP, rep.MCPNote = readMCPRuntimes(dir, false)
+		}
 	}
 	if p, err := env.lookPath("flopwire"); err != nil {
 		rep.Flopwire.Note = "flopwire is not on PATH: the plugins find the binary by the path setup records, but your terminal and any MCP server you added by hand run it by name"
@@ -1239,6 +1244,15 @@ func writeSetupText(w io.Writer, rep setupReport) {
 	}
 	if rep.Flopwire.Recorded != "" {
 		fmt.Fprintf(&b, "  recorded for the hooks: %s\n", rep.Flopwire.Recorded)
+	}
+	for _, runtime := range rep.MCP {
+		fmt.Fprintf(&b, "MCP: PID %d, started %s, build %s, credential source %s\n", runtime.PID, runtime.StartedAt.Format(time.RFC3339), runtime.Version, runtime.CredentialSource)
+		if runtime.Note != "" {
+			fmt.Fprintf(&b, "  note: %s\n", runtime.Note)
+		}
+	}
+	if rep.MCPNote != "" {
+		fmt.Fprintf(&b, "MCP coverage: %s\n", rep.MCPNote)
 	}
 	if rep.Agent.Running {
 		b.WriteString("agent: running\n")
