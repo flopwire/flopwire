@@ -26,7 +26,8 @@ import (
 type Request struct {
 	// "flush", "pass", "status", "coverage", "repin", "redact" or "ping"; for the
 	// message bus "pending", "confirm", "held", "send", "peers", "inbox" or
-	// "root" (the session a subagent's Session belongs to, BusRoot).
+	// "root" (the session a subagent's Session belongs to, BusRoot), or
+	// "caller-context" (the exact local session's recorded working directory).
 	Op      string `json:"op"`
 	Path    string `json:"path,omitempty"`    // flush: the transcript path
 	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
@@ -84,6 +85,7 @@ type Response struct {
 	Cowork      *CoworkStatus                 `json:"cowork,omitempty"`
 	Extraction  *transcript.ExtractionSummary `json:"extraction,omitempty"`
 	OK          bool                          `json:"ok"`
+	Cwd         string                        `json:"cwd,omitempty"`  // caller-context, local only
 	Path        string                        `json:"path,omitempty"` // flush: the source indexed
 	Error       string                        `json:"error,omitempty"`
 	// Sync is the upload state (status); nil when sync is off.
@@ -206,6 +208,12 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	switch {
 	case err != nil:
 		resp.Error = "bad request: " + err.Error()
+	case req.Op == "caller-context":
+		resp.Cwd, err = a.callerCwd(req.Agent, req.Session)
+		resp.OK = err == nil
+		if err != nil {
+			resp.Error = err.Error()
+		}
 	case req.Op == "ping":
 		resp.OK = true
 	case req.Op == "pass":
