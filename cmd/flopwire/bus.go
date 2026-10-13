@@ -556,7 +556,7 @@ const (
 // reply: a reply arrives later as a received message. Next, for a
 // request only, tells the sender what to do until the reply comes
 // (issue #83): Flopwire never starts a turn, so a sender that ends its
-// turn sees the reply only when its human next prompts it.
+// turn sees the reply when its session resumes.
 type sendJSON struct {
 	Kind string `json:"kind"` // "send_receipt"
 	busproto.SendResponse
@@ -1189,7 +1189,7 @@ with --ref ADDRESS (an archive address from grep, search or read).
           thread and must not be answered.
 Do not poll peers or send "are you done?": the receipt says when the message arrives.
 A reply arrives in your own context through the flopwire hook: inside your running turn
-at the next tool call, or with your human's next prompt. Never ask a peer to do
+at the next tool call, or with your next prompt or when your session resumes. Never ask a peer to do
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
@@ -1228,7 +1228,7 @@ pass next as --cursor.
 --text: ID  received|sent  TIME  from|to WHO  intent  state (read: with its time), then
 the text indented (a list shows first lines; --thread shows whole texts).
 Received messages arrive in your context through the flopwire hook (inside a running
-turn at the next tool call, or with the human's next prompt); use inbox to check a sent
+turn at the next tool call, or with the next prompt or session resumption); use inbox to check a sent
 message's state or re-read a thread, or where the hook is not set up.
 
 Output   --limit N (20, max 200)  --cursor C (next)  --text  --max-bytes N (text)

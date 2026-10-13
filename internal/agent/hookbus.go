@@ -53,7 +53,8 @@ const hookBusyCap = 15 * time.Minute
 // hookTurns is each session's last hook event: UserPromptSubmit, PreToolUse
 // and PostToolUse mean a turn is running; Stop, SessionStart and SessionEnd
 // mean none is. Every event reaches the agent as the flush request of
-// `flopwire hook`, so this costs nothing extra. Devin's and opencode's
+// `flopwire hook`, so this costs nothing extra. Claude uses witnessed
+// parent turns ahead of its registry. Devin's and opencode's
 // presence use it: neither has another read-only signal of a running turn.
 // Devin fires no Stop for an interrupted turn; presence reads the store's
 // interrupt marker for that (devinTurnBusy).

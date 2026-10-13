@@ -11,7 +11,8 @@ package agent
 //
 //   - Claude Code: <claude config dir>/sessions/<pid>.json whose pid runs
 //     and started when procStart says (a reused pid does not count). Its
-//     status "busy" means a turn is running.
+//     registry status supplies turn state when parent-hook evidence is
+//     unavailable; a witnessed parent Stop overrides background activity.
 //   - Codex: a running Codex holds the flock on
 //     thread-writer-locks/<thread>.lock (codexWriter probes it as Codex's
 //     own cleanup does, under its coordination lock). The file outlives
