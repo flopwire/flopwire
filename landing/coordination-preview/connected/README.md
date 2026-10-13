@@ -1,7 +1,7 @@
-# Connected-workflow homepage preview
+# Connected-workflow copy preview
 
-Serve `landing` and open `/coordination-preview/connected/`. The production homepage is unchanged.
+Serve `landing` and open `/coordination-preview/connected/`.
 
-This static concept connects history, attribution, and direct messaging in one synthetic example. Commit-to-session lookup represents the planned workflow, not a verified shipping command. No backend is connected.
+The preview uses the production homepage stylesheet, JavaScript, fonts, logo, and components directly. Only the HTML copy, examples, and section order differ. The production homepage is unchanged.
 
-The page uses bundled fonts and native HTML disclosures. It has no JavaScript or build step.
+The examples connect history search, attribution, and direct messaging. Commit lookup is labeled as planned. No backend is connected.
