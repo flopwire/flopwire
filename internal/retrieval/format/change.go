@@ -44,12 +44,13 @@ type ChangeMatch struct {
 	DirectoryKnown       bool             `json:"directory_known"`
 }
 type ChangeCoverage struct {
-	VisibleIndex       bool `json:"visible_index"`
-	HistoryComplete    bool `json:"history_complete"`
-	IndexingLag        bool `json:"indexing_lag"`
-	UnknownDirectory   bool `json:"unknown_directory"`
-	Truncated          bool `json:"truncated"`
-	UnavailableSources int  `json:"unavailable_sources,omitempty"`
+	SourceTextTruncated bool `json:"source_text_truncated"`
+	VisibleIndex        bool `json:"visible_index"`
+	HistoryComplete     bool `json:"history_complete"`
+	IndexingLag         bool `json:"indexing_lag"`
+	UnknownDirectory    bool `json:"unknown_directory"`
+	Truncated           bool `json:"truncated"`
+	UnavailableSources  int  `json:"unavailable_sources,omitempty"`
 }
 
 func NormalizeChange(q ChangeQuery, f Filters) (ChangeQuery, error) {
@@ -197,4 +198,23 @@ func VerifyChangeCursor(token string, secret []byte) (ChangeCursor, error) {
 		return ChangeCursor{}, fmt.Errorf("%w: invalid change cursor signature", ErrBadRequest)
 	}
 	return ParseChangeCursor(payload)
+}
+
+// ChangeCursorIndex reads an untrusted instance ID only to detect a rebuilt
+// index. A mismatch may return an empty restart response. It must never grant
+// access to results; matching instances still require VerifyChangeCursor.
+func ChangeCursorIndex(token string) (string, error) {
+	payload, sig, ok := strings.Cut(token, ".")
+	if !ok || len(token) > 2048 {
+		return "", fmt.Errorf("%w: invalid change cursor", ErrBadRequest)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil || len(signature) != sha256.Size {
+		return "", fmt.Errorf("%w: invalid change cursor", ErrBadRequest)
+	}
+	c, err := ParseChangeCursor(payload)
+	if err != nil {
+		return "", err
+	}
+	return c.IndexID, nil
 }

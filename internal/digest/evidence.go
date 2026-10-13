@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -97,7 +98,7 @@ func ExtractCommitEvidence(messages []transcript.Message) []CommitEvidence {
 				base := CommitEvidence{Operation: op, Command: evidenceRef(m), Result: evidenceRef(m), CommandDirectory: cwd, DirectoryKnown: known, Outcome: outcome}
 				printed := false
 				if g.printed && printedCommandsSafe(cmds) {
-					for _, hit := range evidenceCommitOut.FindAllStringSubmatch(out, -1) {
+					for _, hit := range evidenceCommitOut().FindAllStringSubmatch(out, -1) {
 						e := base
 						e.Hash = hit[1]
 						events = append(events, e)
@@ -223,7 +224,7 @@ func ExtractCommitEvidence(messages []transcript.Message) []CommitEvidence {
 		}
 		printed := false
 		if p.g.printed && printedOutputSafe(p.m) {
-			for _, match := range evidenceCommitOut.FindAllStringSubmatch(out, -1) {
+			for _, match := range evidenceCommitOut().FindAllStringSubmatch(out, -1) {
 				e := base
 				e.Hash = match[1]
 				events = append(events, e)
@@ -262,12 +263,12 @@ func ExtractCommitEvidence(messages []transcript.Message) []CommitEvidence {
 
 // Execution handles are accepted only from harness result envelopes and typed
 // poll arguments. An occurrence in arbitrary output cannot establish ownership.
-var runningSession = regexp.MustCompile(`(?m)^Process running with session ID ([0-9]+)$`)
+var runningSession = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?m)^Process running with session ID ([0-9]+)$`) })
 
 func runningHandle(text string) string {
 	if strings.HasPrefix(text, "Chunk ID: ") {
 		if head, _, ok := strings.Cut(text, "\nOutput:"); ok {
-			if m := runningSession.FindStringSubmatch(head); m != nil {
+			if m := runningSession().FindStringSubmatch(head); m != nil {
 				return "session:" + m[1]
 			}
 		}
@@ -295,7 +296,9 @@ func pollHandle(m transcript.Message) string {
 	return ""
 }
 
-var evidenceCommitOut = regexp.MustCompile(`(?m)^\[(?:detached HEAD|[^\]\s]+)(?: \([^)\n]*\))? ([0-9a-f]{7,64})\] `)
+var evidenceCommitOut = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^\[(?:detached HEAD|[^\]\s]+)(?: \([^)\n]*\))? ([0-9a-f]{7,64})\] `)
+})
 
 func evidenceOperation(cmds []shellCmd) (string, string, bool) {
 	op, cwd := "", ""

@@ -56,6 +56,10 @@ If `restart_required` is true, repeat the query without a cursor.
 complete history. Missing captures, unsupported commands, redaction, and
 rewritten hashes can leave gaps. An empty result means no evidence matched
 in the searched index.
+`source_text_truncated` reports captured messages whose text was capped before
+indexing. Commit output outside the retained text cannot match. Server backfill
+also bounds each conversation to 100,000 tool records and 64 MiB of retained
+tool text and metadata; a larger conversation reports truncated coverage.
 
 For a squash merge, the calling agent can use its own GitHub access to obtain
 the PR's original commit IDs and submit those IDs together. Flopwire does not

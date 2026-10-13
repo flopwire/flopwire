@@ -197,8 +197,9 @@ type ChangeRecord struct {
 	Evidence                        digest.CommitEvidence
 }
 type ChangeSnapshot struct {
-	IndexID          string
-	Revision, Cutoff int64
+	SourceTextTruncated bool
+	IndexID             string
+	Revision, Cutoff    int64
 }
 
 // ChangeRecords reads one bounded page and its mutation state in a snapshot.
@@ -255,6 +256,13 @@ func (s *Store) ChangeRecords(ctx context.Context, commits []string, f Filter, c
 	// Source extraction checkpoints identify retained sources awaiting their
 	// first parse. This does not claim that absent device history is available.
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sources s JOIN conversations c ON c.source_id=s.id WHERE s.extraction_report IS NULL AND c.deleted_in_generation IS NULL)`).Scan(&lag)
+	if err != nil {
+		return
+	}
+	coverageWhere, coverageArgs := f.where()
+	// Row lengths are metadata; this coverage query never decompresses text.
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.deleted_in_generation IS NULL AND m.full_len>m.text_len AND `+coverageWhere+`)`, coverageArgs...).Scan(&state.SourceTextTruncated)
+
 	return
 }
 

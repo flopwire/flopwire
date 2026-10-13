@@ -235,3 +235,20 @@ func TestChangeDoesNotPairAcrossSourceGenerations(t *testing.T) {
 		t.Fatalf("same generation evidence absent %+v %v", rows, err)
 	}
 }
+
+func TestChangeCoverageReportsScopedRetainedTextCaps(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	src := source(t, s, transcript.AgentClaude, "/p/capped-change.jsonl")
+	h := "abcdef0" + strings.Repeat("1", 33)
+	capped := msg("capped", "capped-result", 1, transcript.KindToolResult, "retained output head")
+	capped.FullLen = len(capped.Text) + 100000
+	apply(t, s, Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "capped", Cwd: "/repo/capped"}}, Messages: []*transcript.Message{capped}})
+	rows, state, _, err := s.ChangeRecords(ctx, []string{h}, Filter{Repos: []string{"/repo/capped"}}, -1, 0)
+	if err != nil || len(rows) != 0 || !state.SourceTextTruncated {
+		t.Fatalf("missing retained cap coverage %+v %+v %v", rows, state, err)
+	}
+	_, other, _, err := s.ChangeRecords(ctx, []string{h}, Filter{Repos: []string{"/repo/other"}}, -1, 0)
+	if err != nil || other.SourceTextTruncated {
+		t.Fatalf("unrelated repo inherited cap coverage %+v %v", other, err)
+	}
+}

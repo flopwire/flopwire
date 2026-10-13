@@ -426,7 +426,7 @@ func carryPlacements(tx *sql.Tx) error {
 	return err
 }
 
-// ownTables are the tables schemaSQL creates.
+// ownTables are the main and commit-projection tables.
 var ownTables = []string{"sources", "generations", "conversations", "messages", "companions", "placements", "fts_queue", "change_events", "meta"}
 
 // splitSQL splits on statement-ending semicolons; the schema has none inside
@@ -486,7 +486,7 @@ func createChangeSchema(tx *sql.Tx) error {
 	invalidate := `INSERT INTO meta(key,value) VALUES('change_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1;`
 	triggers := []string{
 		`CREATE TRIGGER change_message_generation AFTER UPDATE OF source_id,source_generation ON messages WHEN (OLD.source_id IS NOT NEW.source_id OR OLD.source_generation IS NOT NEW.source_generation) AND EXISTS(SELECT 1 FROM change_events e WHERE e.command_id=OLD.id OR e.result_id=OLD.id OR e.reveal_command_id=OLD.id OR e.reveal_result_id=OLD.id) BEGIN ` + invalidate + ` END`,
-		`CREATE TRIGGER change_conversation_visibility AFTER UPDATE OF cwd,repo_root,device_id,agent,session_id,parent_session_id,parent_conversation_id,deleted_in_generation ON conversations WHEN (OLD.cwd IS NOT NEW.cwd OR OLD.repo_root IS NOT NEW.repo_root OR OLD.device_id IS NOT NEW.device_id OR OLD.agent IS NOT NEW.agent OR OLD.session_id IS NOT NEW.session_id OR OLD.parent_session_id IS NOT NEW.parent_session_id OR OLD.parent_conversation_id IS NOT NEW.parent_conversation_id OR OLD.deleted_in_generation IS NOT NEW.deleted_in_generation) AND EXISTS(SELECT 1 FROM change_events WHERE conversation_id=NEW.id) BEGIN ` + invalidate + ` END`,
+		`CREATE TRIGGER change_conversation_visibility AFTER UPDATE OF cwd,repo_root,device_id,agent,session_id,parent_session_id,parent_conversation_id,deleted_in_generation,branches,depth ON conversations WHEN (OLD.cwd IS NOT NEW.cwd OR OLD.repo_root IS NOT NEW.repo_root OR OLD.device_id IS NOT NEW.device_id OR OLD.agent IS NOT NEW.agent OR OLD.session_id IS NOT NEW.session_id OR OLD.parent_session_id IS NOT NEW.parent_session_id OR OLD.parent_conversation_id IS NOT NEW.parent_conversation_id OR OLD.deleted_in_generation IS NOT NEW.deleted_in_generation OR OLD.branches IS NOT NEW.branches OR OLD.depth IS NOT NEW.depth) AND EXISTS(SELECT 1 FROM change_events WHERE conversation_id=NEW.id) BEGIN ` + invalidate + ` END`,
 		`CREATE TRIGGER change_placement_update AFTER UPDATE OF main_root,remote,worktree_root,agent,session_id ON placements WHEN (OLD.main_root IS NOT NEW.main_root OR OLD.remote IS NOT NEW.remote OR OLD.worktree_root IS NOT NEW.worktree_root OR OLD.agent IS NOT NEW.agent OR OLD.session_id IS NOT NEW.session_id) AND EXISTS(SELECT 1 FROM change_events e JOIN conversations c ON c.id=e.conversation_id WHERE (c.agent=OLD.agent AND (c.session_id=OLD.session_id OR c.parent_session_id=OLD.session_id)) OR (c.agent=NEW.agent AND (c.session_id=NEW.session_id OR c.parent_session_id=NEW.session_id))) BEGIN ` + invalidate + ` END`,
 		`CREATE TRIGGER change_placement_delete AFTER DELETE ON placements WHEN EXISTS(SELECT 1 FROM change_events e JOIN conversations c ON c.id=e.conversation_id WHERE c.agent=OLD.agent AND (c.session_id=OLD.session_id OR c.parent_session_id=OLD.session_id)) BEGIN ` + invalidate + ` END`,
 		`CREATE TRIGGER change_placement_insert AFTER INSERT ON placements WHEN EXISTS(SELECT 1 FROM change_events e JOIN conversations c ON c.id=e.conversation_id WHERE c.agent=NEW.agent AND (c.session_id=NEW.session_id OR c.parent_session_id=NEW.session_id)) BEGIN ` + invalidate + ` END`,

@@ -79,6 +79,14 @@ func (s *Store) Change(ctx context.Context, request format.ChangeQuery, f format
 		}
 		cursor.Scope = scope
 		if q.Cursor != "" {
+			instance, err := format.ChangeCursorIndex(q.Cursor)
+			if err != nil {
+				return err
+			}
+			if instance != cursor.IndexID {
+				out.RestartRequired = true
+				return nil
+			}
 			prior, err := format.VerifyChangeCursor(q.Cursor, secret)
 			if err != nil {
 				return err
@@ -100,18 +108,21 @@ func (s *Store) Change(ctx context.Context, request format.ChangeQuery, f format
 		convFilters(&where, f)
 		// Change deliberately includes the caller's sessions and descendants.
 		where.where("c.hidden_at IS NULL")
-		var lag, limited bool
+		var lag, limited, sourceTextTruncated bool
 		var unavailable int
 		if err := tx.QueryRow(workctx, `SELECT COALESCE(bool_or(EXISTS(SELECT 1 FROM commit_evidence_dirty dirty WHERE dirty.conversation_id=c.id AND NOT dirty.limited)
     OR EXISTS(SELECT 1 FROM source_parse_state p WHERE p.source_id=c.source_id AND (p.requested_seq>p.parsed_seq OR p.refresh_requested_at IS NOT NULL))),false),
 			count(*) FILTER(WHERE EXISTS(SELECT 1 FROM source_parse_state p WHERE p.source_id=c.source_id AND p.quarantined_at IS NOT NULL)),
-			COALESCE(bool_or(EXISTS(SELECT 1 FROM commit_evidence_dirty dirty WHERE dirty.conversation_id=c.id AND dirty.limited)),false)
-			FROM conversations c JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id WHERE `+where.sql(), where.args...).Scan(&lag, &unavailable, &limited); err != nil {
+			COALESCE(bool_or(EXISTS(SELECT 1 FROM commit_evidence_dirty dirty WHERE dirty.conversation_id=c.id AND dirty.limited)),false),
+			COALESCE(bool_or(EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE
+			  AND (m.text_len>octet_length(m.text) OR m.enrichment->'text_truncated'='true'::jsonb))),false)
+			FROM conversations c JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id WHERE `+where.sql(), where.args...).Scan(&lag, &unavailable, &limited, &sourceTextTruncated); err != nil {
 			return err
 		}
 		out.Coverage.IndexingLag = lag
 		out.Coverage.UnavailableSources = unavailable
 		out.Coverage.Truncated = limited
+		out.Coverage.SourceTextTruncated = sourceTextTruncated
 		prefixes := []string{}
 		seen := map[string]bool{}
 		for _, h := range q.Commits {
@@ -123,16 +134,21 @@ func (s *Store) Change(ctx context.Context, request format.ChangeQuery, f format
 				}
 			}
 		}
-		where.where("e.observed_hash=ANY(" + where.arg(prefixes) + "::text[])")
+		prefixArg := where.arg(prefixes)
+		where.where("e.observed_hash=p.hash")
 		where.where("e.id>" + where.arg(cursor.After) + " AND e.id<=" + where.arg(cursor.Cutoff))
 		where.where("s.tombstoned_at IS NULL")
-		rows, err := tx.Query(workctx, `SELECT e.id,e.observed_hash,e.evidence,e.command_id::text,e.result_id::text,
+		// Probe the (hash,id) index for each submitted prefix. Applying the
+		// visible scope inside each probe makes the per-prefix limit safe,
+		// and avoids scanning the event-ID index until a rare hash appears.
+		rows, err := tx.Query(workctx, `SELECT hit.* FROM unnest(`+prefixArg+`::text[]) p(hash) CROSS JOIN LATERAL (
+			SELECT e.id AS evidence_id,e.observed_hash,e.evidence,e.command_id::text,e.result_id::text,
     COALESCE(e.reveal_command_id::text,''),COALESCE(e.reveal_result_id::text,''),
     c.id::text,c.agent,c.session_id,left(COALESCE(c.title,''),256),left(COALESCE(c.repo_root,c.cwd,''),4096),d.name,u.email,
     COALESCE(NULLIF(rs.remote,''),rs.checkout,''),COALESCE(c.repo_root,'')
     FROM commit_evidence e JOIN conversations c ON c.id=e.conversation_id JOIN sources s ON s.id=e.source_id
     JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id LEFT JOIN sources rs ON rs.id=c.source_id
-    WHERE `+where.sql()+` ORDER BY e.id LIMIT `+fmt.Sprint(q.Limit+1), where.args...)
+			WHERE `+where.sql()+` ORDER BY e.id LIMIT `+fmt.Sprint(q.Limit+1)+`) hit ORDER BY hit.evidence_id LIMIT `+fmt.Sprint(q.Limit+1), where.args...)
 		if err != nil {
 			return err
 		}

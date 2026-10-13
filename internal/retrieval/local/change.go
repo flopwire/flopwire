@@ -32,6 +32,17 @@ func (b *Backend) Change(ctx context.Context, q format.ChangeQuery, f format.Fil
 	cutoff := int64(-1)
 	after := int64(0)
 	if q.Cursor != "" {
+		instance, parseErr := format.ChangeCursorIndex(q.Cursor)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		current, stateErr := b.Store.ChangeState(ctx)
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		if instance != current.IndexID {
+			return &format.Changes{Kind: "change", Matches: []format.ChangeMatch{}, RestartRequired: true, Coverage: format.ChangeCoverage{VisibleIndex: true}}, nil
+		}
 		cursor, err = format.VerifyChangeCursor(q.Cursor, secret)
 		if err != nil {
 			return nil, err
@@ -46,7 +57,7 @@ func (b *Backend) Change(ctx context.Context, q format.ChangeQuery, f format.Fil
 	if err != nil {
 		return nil, err
 	}
-	out := &format.Changes{Kind: "change", Matches: []format.ChangeMatch{}, Coverage: format.ChangeCoverage{VisibleIndex: true, IndexingLag: lag}}
+	out := &format.Changes{Kind: "change", Matches: []format.ChangeMatch{}, Coverage: format.ChangeCoverage{VisibleIndex: true, IndexingLag: lag, SourceTextTruncated: state.SourceTextTruncated}}
 	if q.Cursor != "" && (cursor.IndexID != state.IndexID || cursor.Revision != state.Revision) {
 		out.RestartRequired = true
 		return out, nil
@@ -71,7 +82,7 @@ func (b *Backend) Change(ctx context.Context, q format.ChangeQuery, f format.Fil
 		c, ok := infos[r.ConversationID]
 		if !ok {
 			out.RestartRequired = true
-			out.Matches = nil
+			out.Matches = []format.ChangeMatch{}
 			out.HasMore = false
 			return out, nil
 		}

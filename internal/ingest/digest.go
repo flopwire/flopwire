@@ -227,7 +227,7 @@ func lockWithParents(ctx context.Context, tx pgx.Tx, ids []string) ([]string, er
 func digestCounts(ctx context.Context, tx pgx.Tx, conv string) (digest.Counts, error) {
 	n := digest.Counts{Messages: map[string]int{}, Tools: map[string]int{}}
 	rows, err := tx.Query(ctx, `SELECT kind,COALESCE(tool_name,''),count(*) FROM messages
-		WHERE conversation_id=$1 AND NOT superseded AND on_active_path IS NOT FALSE AND enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb GROUP BY 1,2`, conv)
+		WHERE conversation_id=$1 AND NOT superseded AND on_active_path IS NOT FALSE AND (kind<>'tool_result' OR enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb) GROUP BY 1,2`, conv)
 	if err != nil {
 		return n, err
 	}
@@ -248,7 +248,7 @@ func digestCounts(ctx context.Context, tx pgx.Tx, conv string) (digest.Counts, e
 		return n, err
 	}
 	if err := tx.QueryRow(ctx, `SELECT count(DISTINCT COALESCE(tool_call_id,id::text)) FROM messages
-		WHERE conversation_id=$1 AND NOT superseded AND on_active_path IS NOT FALSE AND is_error AND enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb`, conv).Scan(&n.Failed); err != nil {
+		WHERE conversation_id=$1 AND NOT superseded AND on_active_path IS NOT FALSE AND is_error AND (kind<>'tool_result' OR enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb)`, conv).Scan(&n.Failed); err != nil {
 		return n, err
 	}
 	// Claude repeats an API message's usage on each of its lines; the line
@@ -286,7 +286,7 @@ func newFailed(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.M
 	n := 0
 	calls := map[string]int{}
 	for _, m := range msgs {
-		if m.Enrichment["command_completion"] == true || !m.IsError || m.Superseded || m.OnActivePath != nil && !*m.OnActivePath {
+		if digest.IsEvidenceOnly(m) || !m.IsError || m.Superseded || m.OnActivePath != nil && !*m.OnActivePath {
 			continue
 		}
 		if m.ToolCallID == "" {
@@ -303,7 +303,7 @@ func newFailed(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcript.M
 		ids = append(ids, id)
 	}
 	rows, err := tx.Query(ctx, `SELECT tool_call_id,count(*) FROM messages
-		WHERE conversation_id=$1 AND tool_call_id=ANY($2::text[]) AND is_error AND NOT superseded AND on_active_path IS NOT FALSE AND enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb
+		WHERE conversation_id=$1 AND tool_call_id=ANY($2::text[]) AND is_error AND NOT superseded AND on_active_path IS NOT FALSE AND (kind<>'tool_result' OR enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb)
 		GROUP BY tool_call_id`, conv, ids)
 	if err != nil {
 		return 0, err

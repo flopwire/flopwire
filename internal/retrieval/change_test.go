@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/ingest"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -226,6 +228,92 @@ func TestChangeServerSourceIsolationAndRevealReferences(t *testing.T) {
 	if len(f.lookup([]string{h}, 10, "").Matches) != 0 {
 		t.Fatal("deleted reveal retained evidence")
 	}
+}
+
+func TestChangeServerGenerationIsolation(t *testing.T) {
+	f := newChangeFixture(t)
+	ctx := context.Background()
+	h := strings.Repeat("1", 40)
+	command, result := f.commit(h)
+	if _, err := f.s.Pool.Exec(ctx, `UPDATE messages SET source_generation=1 WHERE id=$1`, result); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.lookup([]string{h}, 10, "").Matches) != 0 {
+		t.Fatal("paired across replacement generations")
+	}
+	if _, err := f.s.Pool.Exec(ctx, `UPDATE messages SET source_generation=1 WHERE id=$1`, command); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.lookup([]string{h}, 10, "").Matches) != 1 {
+		t.Fatal("completed replacement not indexed")
+	}
+}
+
+func TestChangeServerRetainedTextCoverage(t *testing.T) {
+	f := newChangeFixture(t)
+	h := strings.Repeat("3", 40)
+	_, result := f.commit(h)
+	if _, err := f.s.Pool.Exec(context.Background(), `UPDATE messages SET text_len=text_len+100 WHERE id=$1`, result); err != nil {
+		t.Fatal(err)
+	}
+	out := f.lookup([]string{h}, 20, "")
+	if !out.Coverage.SourceTextTruncated || out.Coverage.HistoryComplete {
+		t.Fatalf("capped source coverage: %+v", out.Coverage)
+	}
+}
+
+func TestChangeServerRebuiltIndexRestarts(t *testing.T) {
+	f := newChangeFixture(t)
+	h := strings.Repeat("4", 40)
+	f.commit(h)
+	f.commit(h)
+	first := f.lookup([]string{h}, 1, "")
+	if _, err := f.s.Pool.Exec(context.Background(), `UPDATE commit_evidence_state SET index_id=gen_random_uuid(),cursor_secret=decode(replace(gen_random_uuid()::text,'-','')||replace(gen_random_uuid()::text,'-',''),'hex') WHERE singleton`); err != nil {
+		t.Fatal(err)
+	}
+	out := f.lookup([]string{h}, 1, first.NextCursor)
+	if !out.RestartRequired || len(out.Matches) != 0 {
+		t.Fatalf("rebuilt index cursor: %+v", out)
+	}
+}
+
+func TestChangeServerIndexedScale(t *testing.T) {
+	f := newChangeFixture(t)
+	ctx := context.Background()
+	command, result := f.commit(strings.Repeat("2", 40))
+	f.lookup([]string{strings.Repeat("2", 40)}, 20, "")
+	if _, err := f.s.Pool.Exec(ctx, `INSERT INTO commit_evidence(conversation_id,source_id,source_generation,fingerprint,observed_hash,command_id,result_id,evidence)
+	 SELECT $1,$2,0,'scale-'||i,lpad(to_hex(i),40,'0'),$3,$4,'{"operation":"commit","outcome":"succeeded","directory_known":true}'::jsonb FROM generate_series(1,10000)i`, f.conv, f.source, command, result); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.Pool.Exec(ctx, `ANALYZE commit_evidence`); err != nil {
+		t.Fatal(err)
+	}
+	commits := make([]string, 100)
+	for i := range commits {
+		commits[i] = fmt.Sprintf("%040x", 9901+i)
+	}
+	rows, err := f.s.Pool.Query(ctx, `EXPLAIN (ANALYZE,BUFFERS) SELECT hit.id FROM unnest($1::text[]) p(hash) CROSS JOIN LATERAL
+	 (SELECT id FROM commit_evidence WHERE observed_hash=p.hash ORDER BY id LIMIT 21) hit ORDER BY hit.id LIMIT 21`, commits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "commit_evidence_hash_idx") {
+		t.Fatalf("selective lookup missed hash index:\n%s", joined)
+	}
+	start := time.Now()
+	out := f.lookup(commits, 20, "")
+	elapsed := time.Since(start)
+	data, _ := json.Marshal(out)
+	if len(out.Matches) != 20 || !out.HasMore {
+		t.Fatalf("scale result: %+v", out)
+	}
+	t.Logf("10000 indexed observations,100 inputs,20-event page: %s, %d bytes; plan:\n%s", elapsed, len(data), joined)
 }
 
 func TestChangeServerOutOfOrderPublicationRestarts(t *testing.T) {
