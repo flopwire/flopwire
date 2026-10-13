@@ -21,6 +21,7 @@ func TestGrepStartupTimeoutStages(t *testing.T) {
 	}{
 		{"transaction", "begin", "acquiring the read transaction", format.Filters{}},
 		{"sessions", "SELECT c.id::text FROM", "resolving filtered sessions", format.Filters{Agent: "claude"}},
+		{"metadata", "LIMIT 20001", "resolving filtered messages", format.Filters{Session: "grep-timeout-fixture", Kinds: []string{"user"}}},
 		{"declare", "DECLARE grep_candidates", "declaring the candidate cursor", format.Filters{}},
 		{"fetch", "FETCH 256 FROM grep_candidates", "fetching the first candidate page", format.Filters{}},
 		{"hydrate", "WITH ORDINALITY", "loading candidate bodies and metadata", format.Filters{}},
@@ -28,6 +29,9 @@ func TestGrepStartupTimeoutStages(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFindFixture(t)
 			f.add("user", "upload")
+			if tc.name == "metadata" {
+				tc.filters.Session = "sess-1"
+			}
 			plan := &stallPlan{onWrite: []byte(tc.write)}
 			s := f.stallStore(plan)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
