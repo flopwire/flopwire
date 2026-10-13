@@ -1010,14 +1010,12 @@ func (s *Store) readAt(ctx context.Context, deviceID string, rq format.ReadQuery
 	for i := range msgs {
 		m := &msgs[i]
 		m.Address = format.MessageAddress(short[m.Address], m.Ordinal)
-		from, chars := 1, max(budget/4, 200)
+		var e format.Excerpt
 		if m.ID == focus {
-			from, chars = rq.LineOffset, budget
-			if from == 0 && line > 0 {
-				from = max(1, line-5)
-			}
+			e = format.CutFocus(m.Text, rq.LineOffset, line, budget)
+		} else {
+			e = format.Cut(m.Text, 1, max(budget/4, 200))
 		}
-		e := format.Cut(m.Text, from, chars)
 		m.Text, m.Lines, m.LineFrom, m.LineTo, m.Clipped = e.Text, e.Lines, e.From, e.To, e.Clipped
 	}
 	out.Messages = msgs

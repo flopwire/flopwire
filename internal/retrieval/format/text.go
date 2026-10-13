@@ -62,6 +62,32 @@ type Excerpt struct {
 // a rune boundary. maxChars <= 0 means no limit.
 func Cut(text string, from, maxChars int) Excerpt {
 	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	return cutLines(lines, from, maxChars)
+}
+
+// CutFocus preserves the cited line when choosing an implicit read window.
+// It includes up to five preceding lines only when they and the entire cited
+// line fit. An explicit line offset keeps Cut's sequential paging semantics;
+// a cited line longer than the budget is clipped at a rune boundary.
+func CutFocus(text string, lineOffset, citedLine, maxChars int) Excerpt {
+	if lineOffset != 0 || citedLine <= 0 {
+		return Cut(text, lineOffset, maxChars)
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	from := min(citedLine, len(lines))
+	used := len(lines[from-1])
+	for from > max(1, citedLine-5) {
+		need := len(lines[from-2]) + 1
+		if maxChars > 0 && (used > maxChars || need > maxChars-used) {
+			break
+		}
+		used += need
+		from--
+	}
+	return cutLines(lines, from, maxChars)
+}
+
+func cutLines(lines []string, from, maxChars int) Excerpt {
 	e := Excerpt{Lines: len(lines), From: min(max(from, 1), len(lines))}
 	var b strings.Builder
 	e.To = e.From - 1
