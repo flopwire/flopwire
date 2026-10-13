@@ -8,8 +8,8 @@
 // command, exit code, duration and changed paths to that call's row. An
 // event with no open call in its turn (a user shell command, or a
 // background command that finished after its exec script returned) becomes
-// its own tool_result row. Event output text is never indexed: it is
-// already in the call's output record.
+// its own tool_result row. A completion carrying output also emits an
+// evidence row linking its command and output within that captured record.
 //
 // The pairing is Flopwire's own. apply_patch path extraction follows
 // kenn-io/agentsview internal/parser/codex.go extractPatchedFiles at commit
@@ -33,7 +33,7 @@ import (
 
 // EventsVersion names this sub-parser; it is recorded on the rows it
 // creates and on the call rows it enriches.
-const EventsVersion = "codex-events@1.0"
+const EventsVersion = "codex-events@2.0"
 
 // Command is one shell command a tool call ran, from a CommandExecution
 // event. It is the element type of Message.Enrichment["commands"].
@@ -46,14 +46,17 @@ type Command struct {
 
 // eventItem is item_completed.item, reduced to the enrichment fields.
 type eventItem struct {
-	Type     string                `json:"type"`
-	ID       string                `json:"id"`
-	Command  json.RawMessage       `json:"command"`
-	Cwd      string                `json:"cwd"`
-	ExitCode *int                  `json:"exit_code"`
-	Duration json.RawMessage       `json:"duration"`
-	Status   string                `json:"status"`
-	Changes  map[string]fileChange `json:"changes"`
+	Type             string                `json:"type"`
+	ID               string                `json:"id"`
+	Command          json.RawMessage       `json:"command"`
+	Cwd              string                `json:"cwd"`
+	ExitCode         *int                  `json:"exit_code"`
+	Duration         json.RawMessage       `json:"duration"`
+	Status           string                `json:"status"`
+	CallID           string                `json:"call_id"`
+	Output           *string               `json:"output"`
+	AggregatedOutput *string               `json:"aggregated_output"`
+	Changes          map[string]fileChange `json:"changes"`
 }
 
 type fileChange struct {
@@ -68,6 +71,8 @@ type event struct {
 	Command *Command
 	Paths   []string
 	Failed  bool
+	CallID  string
+	Output  *string
 }
 
 var errNotEnrichment = errors.New("codex-events: not an enrichment item")
@@ -95,6 +100,11 @@ func parseEvent(it *eventItem) (ev *event, err error) {
 			c.DurationMS = &ms
 		}
 		ev.Command = c
+		ev.CallID = it.CallID
+		ev.Output = it.Output
+		if it.AggregatedOutput != nil {
+			ev.Output = it.AggregatedOutput
+		}
 		ev.Failed = it.ExitCode != nil && *it.ExitCode != 0
 	case "FileChange":
 		for p, ch := range it.Changes {

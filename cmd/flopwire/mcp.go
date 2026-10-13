@@ -401,6 +401,7 @@ func mcpTool(name, title, desc, verb string, own map[string]any, required ...str
 // tools (mcp_bus.go).
 func mcpTools() []any {
 	return append([]any{
+		changeMCPTool(),
 		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For ranked keyword matches use flopwire_search.", "grep",
 			map[string]any{
 				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; needs a run of 3 letters or digits every match contains"),
@@ -436,7 +437,7 @@ func mcpTools() []any {
 }
 
 // mcpVerbs maps tool names to verbs.
-var mcpVerbs = map[string]string{"flopwire_grep": "grep", "flopwire_search": "search", "flopwire_sessions": "sessions", "flopwire_read": "read"}
+var mcpVerbs = map[string]string{"flopwire_change": "change", "flopwire_grep": "grep", "flopwire_search": "search", "flopwire_sessions": "sessions", "flopwire_read": "read"}
 
 // mcpArgNames maps MCP argument names to option names where they differ.
 var mcpArgNames = map[string]map[string]string{
@@ -578,6 +579,9 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 	}
 	if _, ok := busToolNames[name]; ok {
 		return busMCPCall(ctx, r, name, args)
+	}
+	if name == "flopwire_change" {
+		return changeMCPCall(ctx, r, args)
 	}
 	return mcpRetrievalCall(ctx, r, name, args)
 }

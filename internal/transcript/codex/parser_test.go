@@ -230,7 +230,7 @@ func TestSeptemberShape(t *testing.T) {
 		t.Errorf("background command not attached late: %v", late.Enrichment)
 	}
 	loose := byID["exec-c-5"]
-	if loose == nil || loose.Kind != transcript.KindToolResult || loose.ToolName != "shell" || loose.Text != "git status --short" || loose.Parser != EventsVersion {
+	if loose == nil || loose.Kind != transcript.KindToolResult || loose.ToolName != "shell" || loose.Text != "" || loose.Enrichment["command_completion"] != true || loose.Parser != EventsVersion {
 		t.Fatalf("loose event row %+v", loose)
 	}
 	aborted := byID["ctc_c_4"]

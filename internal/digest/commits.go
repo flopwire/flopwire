@@ -447,10 +447,10 @@ func formatStyle(v string) (string, bool) {
 var logCount = regexp.MustCompile(`^-(n=?)?[0-9]+$|^--max-count=[0-9]+$`)
 
 var (
-	shaLine    = regexp.MustCompile(`(?m)^[*|\\/ ]*([0-9a-f]{7,40})(?:[ \t]|$)`)
-	shaHeader  = regexp.MustCompile(`(?m)^[*|\\/ ]*commit ([0-9a-f]{7,40})\b`)
-	shaBare    = regexp.MustCompile(`(?m)^([0-9a-f]{7,40})\s*$`)
-	pushUpdate = regexp.MustCompile(`(?m)^\s*[+ ]?\s*[0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40})\s+(\S+)\s+->\s+\S+`)
+	shaLine    = regexp.MustCompile(`(?m)^[*|\\/ ]*([0-9a-f]{7,64})(?:[ \t]|$)`)
+	shaHeader  = regexp.MustCompile(`(?m)^[*|\\/ ]*commit ([0-9a-f]{7,64})\b`)
+	shaBare    = regexp.MustCompile(`(?m)^([0-9a-f]{7,64})\s*$`)
+	pushUpdate = regexp.MustCompile(`(?m)^\s*[+ ]?\s*[0-9a-f]{7,64}\.\.\.?([0-9a-f]{7,64})\s+(\S+)\s+->\s+\S+`)
 )
 
 // revealed is the sha a reveal's output shows for HEAD ("" for none).

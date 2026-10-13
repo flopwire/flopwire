@@ -557,14 +557,15 @@ type row struct {
 	Parser     string          `json:"pa,omitempty"`
 	Ordinal    *int64          `json:"co,omitempty"` // Codex's own top-level ordinal
 
-	Commands       []Command `json:"cmds,omitempty"`
-	Paths          []string  `json:"paths,omitempty"`
-	Author         string    `json:"au,omitempty"`
-	Recipient      string    `json:"rc,omitempty"`
-	Window         string    `json:"w,omitempty"`
-	FromCompaction bool      `json:"fc,omitempty"`
-	Enriched       string    `json:"en,omitempty"`
-	HookContext    bool      `json:"hk,omitempty"` // a hook's additionalContext (transcript.EnrichHookContext)
+	CommandCompletion bool      `json:"cc,omitempty"`
+	Commands          []Command `json:"cmds,omitempty"`
+	Paths             []string  `json:"paths,omitempty"`
+	Author            string    `json:"au,omitempty"`
+	Recipient         string    `json:"rc,omitempty"`
+	Window            string    `json:"w,omitempty"`
+	FromCompaction    bool      `json:"fc,omitempty"`
+	Enriched          string    `json:"en,omitempty"`
+	HookContext       bool      `json:"hk,omitempty"` // a hook's additionalContext (transcript.EnrichHookContext)
 }
 
 func (w *row) setText(full string) {
@@ -612,6 +613,9 @@ func (w *row) message(sessionID string) *transcript.Message {
 	e := map[string]any{}
 	if w.Ordinal != nil {
 		e["codex_ordinal"] = *w.Ordinal
+	}
+	if w.CommandCompletion {
+		e["command_completion"] = true
 	}
 	if len(w.Commands) > 0 {
 		e["commands"] = append([]Command(nil), w.Commands...)
@@ -1016,6 +1020,19 @@ func (r *run) event(ts time.Time, ord *int64, ev *eventMsg, it *eventItem) error
 			r.stats.EventErrors.Add(1)
 			return nil
 		}
+		// The command and output in one completion record provide exact
+		// provenance independently of the legacy summary pairing below.
+		if e.Command != nil && e.Output != nil {
+			w := r.newRow(kindToolResult, ts, ord, 0)
+			w.NativeID, w.Role, w.ToolName = e.ID, "tool", "shell"
+			w.ToolCallID, w.Parser, w.Enriched = e.CallID, EventsVersion, EventsVersion
+			w.CommandCompletion, w.IsError = true, e.Failed
+			w.Commands = []Command{*e.Command}
+			r.setText(&w, *e.Output)
+			if err := r.emit(w); err != nil {
+				return err
+			}
+		}
 		for i := len(r.st.Open) - 1; i >= 0; i-- {
 			if oc := r.st.Open[i]; oc.Turn == ev.TurnID {
 				oc.Events = append(oc.Events, r.lineRef())
@@ -1035,6 +1052,9 @@ func (r *run) event(ts time.Time, ord *int64, ev *eventMsg, it *eventItem) error
 			return r.reemit(oc)
 		}
 		r.stats.EventsLoose.Add(1)
+		if e.Command != nil && e.Output != nil {
+			return nil // completion evidence already emitted at this locator
+		}
 		w := unpairedRow(e)
 		loc := r.newRow(kindToolResult, ts, ord, 0)
 		w.TSns, w.LineNo, w.Offset, w.Len, w.Ordinal = loc.TSns, loc.LineNo, loc.Offset, loc.Len, loc.Ordinal
