@@ -560,15 +560,13 @@ func (b *Backend) Read(ctx context.Context, q format.ReadQuery, f format.Filters
 	}
 	for i := range msgs {
 		m := &msgs[i]
-		from, chars := 1, max(budget/4, 200)
+		var e format.Excerpt
 		if m.ID == cx.Focus {
-			from, chars = q.LineOffset, budget
-			if from == 0 && line > 0 {
-				from = max(1, line-5)
-			}
+			e = format.CutFocus(m.Text, q.LineOffset, line, budget)
+		} else {
+			e = format.Cut(m.Text, 1, max(budget/4, 200))
 		}
 		stored := rows[i]
-		e := format.Cut(m.Text, from, chars)
 		m.Text, m.Lines, m.LineFrom, m.LineTo, m.Clipped = e.Text, e.Lines, e.From, e.To, e.Clipped
 		if stored.FullLen > len(stored.Text) {
 			m.StoredLen, m.Clipped = len(stored.Text), true
