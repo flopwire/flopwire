@@ -23,7 +23,7 @@ func TestCommandCompletionsPreserveExactEvidence(t *testing.T) {
 		t.Fatalf("completion evidence count %d, want 3", count)
 	}
 	first := byID["completion-a"]
-	if first == nil || first.Kind != transcript.KindToolResult || first.ToolCallID != "call-a" || first.Role != "tool" || first.ToolName != "shell" || first.Text != "[topic abc1234] first" || first.LineNo != 5 || first.IsError {
+	if first == nil || first.Kind != transcript.KindToolResult || first.ToolCallID != "call-a" || first.Role != "tool" || first.ToolName != "shell" || first.Text != "[topic abc1234] first" || first.LineNo != 5 || first.IsError || first.Enrichment["completion_legacy"] != nil {
 		t.Fatalf("first completion %+v", first)
 	}
 	cmds, _ := first.Enrichment["commands"].([]Command)
@@ -31,11 +31,11 @@ func TestCommandCompletionsPreserveExactEvidence(t *testing.T) {
 		t.Fatalf("commands %+v", cmds)
 	}
 	delayed := byID["completion-delayed"]
-	if delayed == nil || delayed.ToolCallID != "" || delayed.LineNo != 8 || !delayed.IsError || delayed.Text != "[topic def5678] delayed\nsubsequent command failed" {
+	if delayed == nil || delayed.ToolCallID != "" || delayed.LineNo != 8 || !delayed.IsError || delayed.Text != "[topic def5678] delayed\nsubsequent command failed" || delayed.Enrichment["completion_legacy"] != true {
 		t.Fatalf("delayed completion %+v", delayed)
 	}
 	empty := byID["completion-empty"]
-	if empty == nil || empty.Text != "" || empty.Enrichment["command_completion"] != true {
+	if empty == nil || empty.Text != "" || empty.Enrichment["command_completion"] != true || empty.Enrichment["completion_legacy"] != true {
 		t.Fatalf("empty completion %+v", empty)
 	}
 	noOutput := byID["completion-no-output"]

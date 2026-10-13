@@ -252,3 +252,75 @@ func TestChangeCoverageReportsScopedRetainedTextCaps(t *testing.T) {
 		t.Fatalf("unrelated repo inherited cap coverage %+v %v", other, err)
 	}
 }
+
+func TestChangeCompletionSummaryKeepsLegacyFallbackCounts(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	src := source(t, s, transcript.AgentCodex, "/p/legacy-completion.jsonl")
+	legacy := msg("legacy-summary", "legacy", 1, transcript.KindToolResult, "legacy output")
+	legacy.ToolCallID = "legacy-call"
+	legacy.IsError = true
+	legacy.Enrichment = map[string]any{"command_completion": true, "completion_legacy": true}
+	extra := msg("legacy-summary", "extra", 2, transcript.KindToolResult, "extra output")
+	extra.ToolCallID = "extra-call"
+	extra.IsError = true
+	extra.Enrichment = map[string]any{"command_completion": true}
+	apply(t, s, Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentCodex, SessionID: "legacy-summary"}}, Messages: []*transcript.Message{legacy}})
+	d, _ := storedDigest(t, s, "legacy-summary")
+	if d.Messages["tool_result"] != 1 || d.Failed != 1 {
+		t.Fatalf("initial legacy count %+v", d)
+	}
+	apply(t, s, Batch{SourceID: src.ID, Generation: 1, Messages: []*transcript.Message{extra}})
+	d, _ = storedDigest(t, s, "legacy-summary")
+	if d.Messages["tool_result"] != 1 || d.Failed != 1 {
+		t.Fatalf("additional proof changed legacy count %+v", d)
+	}
+	var conv int64
+	if err := s.DB().QueryRow(`SELECT id FROM conversations WHERE session_id='legacy-summary'`).Scan(&conv); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.write(ctx, func(w *writeTx) error { return w.refreshDigest(conv, nil, nil, true) }); err != nil {
+		t.Fatal(err)
+	}
+	d, _ = storedDigest(t, s, "legacy-summary")
+	if d.Messages["tool_result"] != 1 || d.Failed != 1 {
+		t.Fatalf("full recount dropped legacy result %+v", d)
+	}
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "legacy-summary", Ordinal: extra.Ordinal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.write(ctx, func(w *writeTx) error { return w.refreshDigest(conv, nil, nil, true) }); err != nil {
+		t.Fatal(err)
+	}
+	d, _ = storedDigest(t, s, "legacy-summary")
+	if d.Messages["tool_result"] != 1 || d.Failed != 1 {
+		t.Fatalf("redaction erased evidence-only marker and changed counts %+v", d)
+	}
+}
+
+func TestChangeOrdinaryCommandRedactionClearsEnrichment(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	src := source(t, s, transcript.AgentClaude, "/p/ordinary-secret.jsonl")
+	call := msg("ordinary-secret", "ordinary-call", 1, transcript.KindToolCall, `{"command":"git commit -m SECRET-CHANGE-123"}`)
+	call.ToolName = "Bash"
+	call.ToolCallID = "ordinary-call-id"
+	call.Enrichment = map[string]any{"commands": []map[string]any{{"cmd": "git commit -m SECRET-CHANGE-123", "cwd": "/repo"}}, "changed_paths": []string{"SECRET-CHANGE-123.txt"}}
+	apply(t, s, Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "ordinary-secret", Cwd: "/repo"}}, Messages: []*transcript.Message{call}})
+	if _, err := s.RedactMessage(ctx, LocalRedaction{Session: "ordinary-secret", Ordinal: call.Ordinal}); err != nil {
+		t.Fatal(err)
+	}
+	var enrichment *string
+	var conv int64
+	if err := s.DB().QueryRow(`SELECT enrichment,conversation_id FROM messages WHERE native_id='ordinary-call'`).Scan(&enrichment, &conv); err != nil {
+		t.Fatal(err)
+	}
+	if enrichment != nil {
+		t.Fatalf("redacted ordinary command retained enrichment: %q", *enrichment)
+	}
+	if err := s.write(ctx, func(w *writeTx) error { return w.refreshDigest(conv, nil, nil, true) }); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := storedDigest(t, s, "ordinary-secret")
+	if d.Messages["tool_call"] != 1 || d.Tools["Bash"] != 1 {
+		t.Fatalf("redaction changed command counts %+v", d)
+	}
+}

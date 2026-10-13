@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -274,6 +275,19 @@ func TestChangeServerRebuiltIndexRestarts(t *testing.T) {
 	out := f.lookup([]string{h}, 1, first.NextCursor)
 	if !out.RestartRequired || len(out.Matches) != 0 {
 		t.Fatalf("rebuilt index cursor: %+v", out)
+	}
+}
+
+func TestChangeServerOversizedIdentityRejected(t *testing.T) {
+	f := newChangeFixture(t)
+	h := strings.Repeat("5", 40)
+	f.commit(h)
+	if _, err := f.s.Pool.Exec(context.Background(), `UPDATE conversations SET session_id=repeat('synthetic',20000) WHERE id=$1`, f.conv); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.s.Change(context.Background(), format.ChangeQuery{Commits: []string{h}}, format.Filters{Repo: "/src/flopwire"})
+	if !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("oversized exact identity exceeded output bound: %v", err)
 	}
 }
 

@@ -53,4 +53,34 @@ func TestCommitCompletionPreservesServerSummaryCounts(t *testing.T) {
 	if rows != 2 {
 		t.Fatal("evidence-only completion was not retained")
 	}
+	// A completion that was already a summary row before evidence extraction
+	// keeps its legacy message/tool/failure counts, on append and recount.
+	legacy := batchMessage("legacy-completion", 3, "synthetic legacy output")
+	legacy.Kind = transcript.KindToolResult
+	legacy.ToolName = "shell"
+	legacy.ToolCallID = "legacy"
+	legacy.IsError = true
+	legacy.Enrichment = map[string]any{"command_completion": true, "completion_legacy": true}
+	if err := s.Message(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.flush(); err != nil {
+		t.Fatal(err)
+	}
+	checkLegacy := func() {
+		t.Helper()
+		var raw []byte
+		if err := s.pool.QueryRow(s.ctx, `SELECT digest FROM conversation_activity WHERE conversation_id=$1`, conv).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		out := digest.Parse(raw)
+		if out.Messages["user"] != 1 || out.Messages["tool_result"] != 1 || out.Failed != 1 {
+			t.Fatalf("legacy completion lost summary counts: %+v", out)
+		}
+	}
+	checkLegacy()
+	if err := pgx.BeginFunc(s.ctx, s.pool, func(tx pgx.Tx) error { return recountDigests(s.ctx, tx, []string{conv}) }); err != nil {
+		t.Fatal(err)
+	}
+	checkLegacy()
 }

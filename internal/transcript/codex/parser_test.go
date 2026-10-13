@@ -229,8 +229,16 @@ func TestSeptemberShape(t *testing.T) {
 	if cmds, _ := late.Enrichment["commands"].([]Command); len(cmds) != 1 || cmds[0].Cmd != "go build -o bin/app ./cmd/app" {
 		t.Errorf("background command not attached late: %v", late.Enrichment)
 	}
+	// Captured output adds proof to paired and delayed calls; those records
+	// do not add a second legacy summary result or failure count.
+	for _, id := range []string{"exec-c-1", "exec-c-2", "exec-c-4", "exec-c-6"} {
+		m := byID[id]
+		if m == nil || m.Enrichment["command_completion"] != true || m.Enrichment["completion_legacy"] != nil {
+			t.Fatalf("additional completion accounting %s: %+v", id, m)
+		}
+	}
 	loose := byID["exec-c-5"]
-	if loose == nil || loose.Kind != transcript.KindToolResult || loose.ToolName != "shell" || loose.Text != "" || loose.Enrichment["command_completion"] != true || loose.Parser != EventsVersion {
+	if loose == nil || loose.Kind != transcript.KindToolResult || loose.ToolName != "shell" || loose.Text != "" || loose.Enrichment["command_completion"] != true || loose.Enrichment["completion_legacy"] != true || loose.Parser != EventsVersion {
 		t.Fatalf("loose event row %+v", loose)
 	}
 	aborted := byID["ctc_c_4"]

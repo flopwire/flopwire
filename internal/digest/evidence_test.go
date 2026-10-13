@@ -210,3 +210,19 @@ func TestCompletionPreservesDigestSummary(t *testing.T) {
 		t.Fatalf("%+v", d)
 	}
 }
+
+func TestLegacyCompletionCountsRetained(t *testing.T) {
+	r := evidenceResult("", "", 0)
+	r.Enrichment = map[string]any{"command_completion": true, "completion_legacy": true}
+	if IsEvidenceOnly(&r) {
+		t.Fatal("legacy captured row excluded")
+	}
+	b := Append(nil, Conv{Cwd: "/repo"}, []*transcript.Message{&r}, 0, 0)
+	var d Digest
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Messages["tool_result"] != 1 {
+		t.Fatalf("legacy count: %+v", d.Messages)
+	}
+}

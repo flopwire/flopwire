@@ -187,6 +187,9 @@ func (s *Store) Change(ctx context.Context, request format.ChangeQuery, f format
 				}
 			}
 			match, size := format.BoundedChangeMatch(match)
+			if size > format.ChangePageBudget {
+				return fmt.Errorf("%w: stored change evidence exceeds page byte limit", ErrBadRequest)
+			}
 			if bytes+size > format.ChangePageBudget && len(out.Matches) > 0 {
 				out.HasMore = true
 				out.Coverage.Truncated = true

@@ -54,3 +54,28 @@ func TestChangeCursorRestartsAfterActualIndexRebuild(t *testing.T) {
 		t.Fatalf("old cursor did not restart after secret rotation %+v %v", page, err)
 	}
 }
+
+func TestChangeRejectsOversizedFirstIdentity(t *testing.T) {
+	s, err := localindex.Open(filepath.Join(t.TempDir(), "index.db"), localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	src, err := s.EnsureSource(ctx, transcript.Source{Agent: transcript.AgentClaude, Path: "/missing/oversized.jsonl", FileID: transcript.FileID{Dev: 1, Ino: 1}, StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := strings.Repeat("s", 70<<10)
+	hash := "abcdef0" + strings.Repeat("1", 33)
+	call := &transcript.Message{SessionID: session, NativeID: "call", Kind: transcript.KindToolCall, ToolName: "Bash", ToolCallID: "call-id"}
+	call.SetText(`{"command":"git commit -m fix"}`, transcript.CapConfig{})
+	result := &transcript.Message{SessionID: session, NativeID: "result", Ordinal: 1, Kind: transcript.KindToolResult, ToolName: "Bash", ToolCallID: "call-id"}
+	result.SetText("[main abcdef0] fix", transcript.CapConfig{})
+	if _, err := s.ApplyBatch(ctx, localindex.Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: session, Cwd: "/repo"}}, Messages: []*transcript.Message{call, result}}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := (&Backend{Store: s}).Change(ctx, format.ChangeQuery{Commits: []string{hash}}, format.Filters{Repo: "/repo"})
+	if err == nil || page != nil || !strings.Contains(err.Error(), "exceeds the page byte limit") {
+		t.Fatalf("oversized first event did not fail explicitly page=%+v err=%v", page, err)
+	}
+}

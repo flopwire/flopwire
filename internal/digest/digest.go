@@ -480,7 +480,7 @@ func (d *Digest) root() string {
 // IsEvidenceOnly identifies additional captured proof records. These remain
 // readable and indexable, but do not alter the pre-existing session summary.
 func IsEvidenceOnly(m *transcript.Message) bool {
-	return m.Kind == transcript.KindToolResult && m.Enrichment["command_completion"] == true
+	return m.Kind == transcript.KindToolResult && m.Enrichment["command_completion"] == true && m.Enrichment["completion_legacy"] != true
 }
 
 func (d *Digest) Fold(m *transcript.Message) {

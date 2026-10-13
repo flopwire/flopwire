@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -161,8 +162,17 @@ func TestLocalMCPRoundTrip(t *testing.T) {
 	if len(got) != 9 {
 		t.Fatalf("want 9 responses (none for the notification), got %d:\n%s", len(got), out.String())
 	}
-	if got[1].Result.ServerInfo["name"] != "flopwire" || !strings.Contains(got[1].Result.Instructions, "SESSION/ORDINAL") || len(got[2].Result.Tools) != 8 {
+	if got[1].Result.ServerInfo["name"] != "flopwire" || !strings.Contains(got[1].Result.Instructions, "SESSION/ORDINAL") || len(got[2].Result.Tools) != 9 {
 		t.Fatalf("initialize/list: %+v %+v", got[1], got[2])
+	}
+	var toolNames []string
+	for _, tool := range got[2].Result.Tools {
+		toolNames = append(toolNames, tool["name"].(string))
+	}
+	slices.Sort(toolNames)
+	wantTools := []string{"flopwire_change", "flopwire_grep", "flopwire_inbox", "flopwire_messages", "flopwire_peers", "flopwire_read", "flopwire_search", "flopwire_send", "flopwire_sessions"}
+	if !slices.Equal(toolNames, wantTools) {
+		t.Fatalf("tool catalog: %v, want %v", toolNames, wantTools)
 	}
 	text := func(id int) string { return got[id].Result.Content[0].Text }
 	// The caller's own session (97, 98) and its subagent (100) are left

@@ -71,7 +71,7 @@ func TestChangeCodexCompletionRoundTrip(t *testing.T) {
 		}
 	}
 	command := `text(await tools.exec_command({cmd:"git commit -m synthetic",workdir:"/tmp/synthetic-change-repo"}));`
-	ingest("completion", meta(session), call("duplicate-call", "synthetic-call", command), result("duplicate-call", "synthetic-original-result", output), completion)
+	ingest("completion", meta(session), record{"type": "event_msg", "payload": record{"type": "task_started", "turn_id": "synthetic-turn"}}, call("duplicate-call", "synthetic-call", command), result("duplicate-call", "synthetic-original-result", output), completion)
 	// The exec script output has no exact provenance for its shell execution.
 	// Only the retained self-contained completion supplies commit evidence.
 	page, err := backend.Change(ctx, format.ChangeQuery{Commits: []string{hash}}, format.Filters{Repo: repo})
@@ -122,12 +122,12 @@ func TestChangeCodexCompletionRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			captured := strings.SplitAfter(string(rawFile), "\n")[3]
+			captured := strings.SplitAfter(string(rawFile), "\n")[4]
 			if string(rawCommand) != captured || !strings.Contains(string(rawCommand), "git commit -m synthetic") || !strings.Contains(string(rawCommand), output) {
 				t.Fatalf("raw command does not recover exact completion record: %q", rawCommand)
 			}
 
-			if cm.Text != output || cm.Provenance.LineNo != 4 || cm.Provenance.Path != paths[0] || !match.DirectoryKnown || match.CommandDirectory != repo || match.Outcome != "succeeded" {
+			if cm.Text != output || cm.Provenance.LineNo != 5 || cm.Provenance.Path != paths[0] || !match.DirectoryKnown || match.CommandDirectory != repo || match.Outcome != "succeeded" {
 				t.Fatalf("completion lost exact provenance: match=%+v row=%+v", match, cm)
 			}
 		} else {
