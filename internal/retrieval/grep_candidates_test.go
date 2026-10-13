@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type candidateRow struct {
@@ -87,6 +89,22 @@ func TestGrepCandidateRowsEquivalent(t *testing.T) {
 	}
 }
 
+// Inject a committed mutation at the actual Grep hydration statement. This
+// fails if Grep itself drops its repeatable-read snapshot, even when helper
+// transaction tests still use the correct isolation level.
+type grepHydrationMutation struct {
+	once   sync.Once
+	change func()
+}
+
+func (m *grepHydrationMutation) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if data.SQL == grepCandidateBodies {
+		m.once.Do(m.change)
+	}
+	return ctx
+}
+func (*grepHydrationMutation) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
 func TestGrepCandidateHydrationSnapshot(t *testing.T) {
 	for _, change := range []string{"redact", "delete", "hide", "metadata"} {
 		t.Run(change, func(t *testing.T) {
@@ -94,63 +112,56 @@ func TestGrepCandidateHydrationSnapshot(t *testing.T) {
 			f.add("user", "needle first")
 			f.add("assistant", "needle second")
 			ctx := context.Background()
-			q := &query{}
-			q.where("m.text ILIKE " + q.arg("%needle%"))
-			if err := hitFilters(q, format.Filters{}); err != nil {
-				t.Fatal(err)
-			}
-			var target string
-			err := f.s.readTransaction(ctx, time.Second*5, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
-				rows, err := tx.Query(ctx, grepWideCandidates(q, false), q.args...)
-				if err != nil {
-					return err
-				}
-				want := collectCandidateRows(t, rows)
-				target = want[0].Hit.MessageID
-				if _, err = tx.Exec(ctx, `DECLARE snapshot_candidates CURSOR FOR `+grepCandidates(q, false), q.args...); err != nil {
-					return err
-				}
-				rows, err = tx.Query(ctx, `FETCH 256 FROM snapshot_candidates`)
-				if err != nil {
-					return err
-				}
-				ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
-				if err != nil {
-					return err
-				}
-				mutation := map[string]string{
-					"redact":   `UPDATE messages SET text='[redacted]' WHERE id=$1::uuid`,
-					"delete":   `DELETE FROM messages WHERE id=$1::uuid`,
-					"hide":     `UPDATE conversations SET hidden_at=now() WHERE id=(SELECT conversation_id FROM messages WHERE id=$1::uuid)`,
-					"metadata": `UPDATE conversations SET title='new title' WHERE id=(SELECT conversation_id FROM messages WHERE id=$1::uuid)`,
-				}[change]
-				if _, err = f.s.Pool.Exec(ctx, mutation, target); err != nil {
-					return err
-				}
-				rows, err = tx.Query(ctx, grepCandidateBodies, ids)
-				if err != nil {
-					return err
-				}
-				got := collectCandidateRows(t, rows)
-				if !reflect.DeepEqual(got, want) {
-					t.Fatal("hydration escaped the candidate cursor snapshot")
-				}
-				return nil
-			})
+			query := format.GrepQuery{Pattern: "needle", Fixed: true}
+			want, err := f.s.Grep(ctx, query, format.Filters{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			page, err := f.s.Grep(ctx, format.GrepQuery{Pattern: "needle", Fixed: true}, format.Filters{})
+			target := want.Hits[0].MessageID
+			mutation := map[string]string{
+				"redact":   `UPDATE messages SET text='[redacted]' WHERE id=$1::uuid`,
+				"delete":   `DELETE FROM messages WHERE id=$1::uuid`,
+				"hide":     `UPDATE conversations SET hidden_at=now() WHERE id=(SELECT conversation_id FROM messages WHERE id=$1::uuid)`,
+				"metadata": `UPDATE conversations SET title='new title' WHERE id=(SELECT conversation_id FROM messages WHERE id=$1::uuid)`,
+			}[change]
+			var mutationErr error
+			changed := false
+			cfg := f.s.Pool.Config()
+			cfg.ConnConfig.Tracer = &grepHydrationMutation{change: func() {
+				_, mutationErr = f.s.Pool.Exec(ctx, mutation, target)
+				changed = true
+			}}
+			pool, err := pgxpool.NewWithConfig(ctx, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(pool.Close)
+			actual := *f.s
+			actual.Pool = pool
+			got, err := actual.Grep(ctx, query, format.Filters{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mutationErr != nil {
+				t.Fatal(mutationErr)
+			}
+			if !changed {
+				t.Fatal("actual Grep hydration injection did not run")
+			}
+			if !reflect.DeepEqual(got.Hits, want.Hits) {
+				t.Fatal("actual Grep hydration escaped the candidate cursor snapshot")
+			}
+			next, err := f.s.Grep(ctx, query, format.Filters{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if change == "hide" {
-				if len(page.Hits) != 0 {
+				if len(next.Hits) != 0 {
 					t.Fatal("next request showed hidden conversation")
 				}
 				return
 			}
-			for _, hit := range page.Hits {
+			for _, hit := range next.Hits {
 				if hit.MessageID == target {
 					if change != "metadata" {
 						t.Fatalf("next request returned %s candidate", change)
