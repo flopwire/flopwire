@@ -312,7 +312,7 @@ func prop(typ, desc string) map[string]any {
 // like.
 var filterDesc = map[string]string{
 	"agent":              "claude, codex, devin or opencode; a comma list",
-	"repo":               `"." (this repo: every checkout and worktree of it), /abs/path, a repo name or owner/name, or a glob like "team*"`,
+	"repo":               `"." (the calling session's recorded repo: every checkout and worktree of it), /abs/path, a repo name or owner/name, or a glob like "team*"; relative paths require known local caller context`,
 	"since":              `"7d", "24h", "2026-09-01", "2026-09-23 10:00Z" (the form hits print) or RFC 3339; times are UTC`,
 	"until":              `exclusive; same forms as since`,
 	"kind":               "comma list of user, assistant, tool_call, tool_result, thinking, system, agent_message, injected (injected CLAUDE.md/AGENTS.md text is hidden unless named)",
@@ -567,6 +567,11 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 	if err != nil {
 		if _, ok := busToolNames[name]; ok {
 			return "", mcpBusErr(args["format"] != "text", badUsage(err.Error(), ""))
+		}
+		if args["format"] == "json" || name == "flopwire_sessions" && args["format"] != "text" {
+			var b bytes.Buffer
+			_ = writeErrorJSON(&b, retrievalErr(mcpVerbs[name], badArg(err), true))
+			return "", &mcpBusError{text: strings.TrimRight(b.String(), "\n")}
 		}
 		return "", badArg(err)
 	}
