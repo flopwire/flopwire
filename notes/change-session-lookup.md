@@ -1,146 +1,147 @@
 # Find the sessions behind a change
 
-Proposal, 2026-10-13. Source baseline: `208f48b`. Production lookup is not
-implemented. The [earlier experiment](https://github.com/flopwire/flopwire/pull/252)
-found useful candidates by following original PR commits after squash merges.
+**Proposal:** look up a commit ID and get matching sessions, with links to the
+captured commands and results. Several sessions can match; the evidence explains
+why each one appeared.
 
-## Recommendation
+## How it would work
 
-Add a read-only lookup from commit IDs to captured session evidence. Return
-each matching session with the command/result address that explains the match.
-Keep GitHub authentication with the calling agent. Keep search lexical and
-coordination unchanged.
+1. The agent asks Flopwire about a commit.
+2. Flopwire returns matching sessions and links the agent can open with `read`.
+3. If the evidence is insufficient, the agent uses its existing `gh` access to
+   find the PR's original commits, then looks those up together.
 
-Entire's durable commit-to-context link is worth borrowing. Its Git hooks,
-checkpoint refs, and publication queue solve a larger capture and distribution
-problem than this lookup needs. Flopwire already captures and stores sessions;
-it can derive searchable commit events from those records.
+That third step matters for squash merges: the merged commit has a different ID
+from the commits recorded in the original sessions. **GitHub credentials stay
+with the calling agent.** The Flopwire daemon receives only commit IDs.
 
-| Design choice | Benefit | Cost or limit |
-|---|---|---|
-| Internal commit-event index | Direct evidence addresses; no commit-message changes | A rebuildable projection needs local/server migrations, backfill, and deletion handling |
-| Several sessions per change | Includes separate contributors and backports | Caller still has to inspect which session answers its question |
-| Agent supplies original PR commits | Uses the agent's existing GitHub access | Squash lookup can require a GitHub call and a second Flopwire call |
-| Evidence labels instead of an owner score | States what the captured history supports | Some results remain ambiguous |
+## What to build
 
-## Agent interface
+Add a commit index derived from the sessions Flopwire already captures.
+Keep the command and result addresses so each match can be inspected. Existing
+session summaries are capped and discard those addresses.
 
-Proposed tool: `flopwire_change(repo, commits, limit?, cursor?)`. Require a
-resolved repository and one or more full commit IDs. Bound the list to 100 IDs
-per request; the caller batches larger PRs. Page by evidence event, initially
-20 events per page, grouped by session for display. A session may recur on later
-pages; the cursor continues events, not sessions. Bound snippets and total output
-bytes too. These limits are provisional until the implementation is measured.
+Entire's explicit commit-to-context links are useful. For Flopwire, an internal
+index reuses existing capture and storage without requiring Git hooks or changes
+to commit messages. The main implementation cost is keeping that index correct
+when source records are reparsed, redacted, or deleted.
 
-A dedicated tool keeps lineage, evidence, and coverage out of the already broad
-`sessions` filter interface. It adds one tool to discovery, but gives this task
-one predictable result shape. Include the caller's own session and descendants:
-historical change lookup should not silently exclude them.
+An empty result means no evidence was found in the searched history. Missing
+captures, rewritten commits, and abbreviated hashes can leave gaps or ambiguity.
 
-Typical flow:
+**Status:** design only. The state walk and Git experiment are complete;
+implementation and performance checks remain. Build the event extractor first,
+then the local/server indexes, then the lookup tool.
 
-1. Agent supplies the commit it is investigating.
-2. Flopwire returns matching sessions, compact evidence, and addresses for `read`.
-3. If direct evidence is absent or insufficient, the agent uses `gh` to find an
-   associated PR, obtain its original commits, and submit those IDs together.
-   Starting from a PR can take this path immediately. Direct matches do not
-   establish that every contributing session has been found.
-4. Agent reads the relevant evidence. Contact remains a separate decision.
+<details>
+<summary>Proposed tool and result format</summary>
 
-The daemon and server receive no GitHub token and do not invoke `gh`. A supplied
-commit list is a search input. Flopwire does not assert that the commits belong
-to a PR or authenticate the caller's claimed lineage. The calling agent keeps
-the GitHub result as its source for that relationship.
+`flopwire_change(repo, commits, limit?, cursor?)`
 
-Each result includes the session, matched input commit, observed hash, operation
-(`commit`, `cherry_pick`, `revert`, or `unknown`), and command/result read addresses. A quiet
-commit resolved by a later HEAD command links both events. Report a short hash
-as a prefix match even if it matches only one submitted ID; uniqueness within
-the submitted list does not establish uniqueness in the repository.
+Use one dedicated tool so the task has one result shape. It searches the caller's
+own sessions and descendants as well as other visible sessions.
 
-Separate missing evidence from missing results: show an unknown command
-repository, unavailable source, unfinished backfill, or partial page explicitly.
-PR mentions may remain available through ordinary grep; omit them from this
-tool's commit results. Do not mix weaker mentions into an apparently successful
-commit lookup.
+| Input or output | Meaning |
+|---|---|
+| `repo` | Resolved repository scope |
+| `commits` | Full commit IDs to look up; initially at most 100 per request |
+| `limit`, `cursor` | Page through evidence events; initially 20 per page |
+| Each match | Session, matched input ID, observed hash, operation, and command/result read addresses |
+| Coverage | Partial pages, indexing lag, unavailable sources, or unknown command repository |
 
-## Implementation shape
+Group events by session for display. A session can recur on later pages. Bound
+snippets and total output bytes; measure before finalizing the limits.
 
-Extract events using the existing commit parser, preserving command/result
-provenance before the digest reduces it to a capped SHA list. This requires
-extending the shared parser to emit events; do not build a second shell parser.
-Assign an operation only when the command/result association supports it:
-compound calls can contain several operations and require `unknown` when their
-outputs cannot be separated. Distinguish a direct commit result from a later
-HEAD reveal. Existing parser gaps remain gaps: wrapper scripts, absent output,
-and unsupported shell shapes must not produce invented commit evidence.
+An operation is `commit`, `cherry_pick`, `revert`, or `unknown`. Compound commands
+can produce several commits without showing which operation produced each one.
+A quiet commit resolved by a later HEAD command links both events.
 
-Store events as a derived projection of retained transcript rows. Key events by
-source identity/generation and source message identity, with separate addresses
-for the original call, result, and any later reveal. Index observed hashes and
-visible conversation identity. Short prefixes need bounded prefix matching;
-query-plan and scale checks are required before finalizing that index.
+An abbreviated hash remains a prefix match, even if only one submitted ID matches
+it. The input list cannot establish uniqueness across the whole repository.
+PR mentions remain searchable through grep; this tool returns commit evidence.
 
-Keep the observed command directory separately from the session's repository.
-Only label a command repository known when captured placement evidence supports
-the mapping. A current filesystem path or present-day Git remote cannot prove
-what repository occupied that path when an old command ran. Unknown mappings
-remain explicit. Repository filtering initially scopes sessions using existing
-placement rules; it does not promise to discover every cross-repository command.
+The calling agent can start from a PR or investigate an associated PR after an
+insufficient direct lookup. It keeps the GitHub response as evidence of the PR's
+commit list. Flopwire treats supplied IDs as search inputs and makes no claim
+about their PR relationship. The daemon and server do not invoke `gh`.
 
-Local and server ingestion use the same event extractor. Reparse replaces a
-generation's events idempotently. Redaction, superseding, deletion, and access
-filters remove or hide associated evidence under the same rules as its source.
-The projection is rebuildable from retained source records; it is not a new
-backup contract. Do not cache raw evidence in pagination tokens.
+</details>
 
-Publish the event and its source generation atomically within each index. Page
-in stable event order with an ingestion cutoff: later appends belong to a new
-lookup and do not restart existing pages. Replacing or retracting evidence
-invalidates affected pagination; return a restart condition rather than silently
-skipping results. Bind cursors to the query and visibility scope, and recheck
-access on every page. Finalizing this cursor contract requires an implementation
-spike. Report visible-index coverage, capture/backfill lag, and truncation
-separately. Completing a scan never establishes complete history.
+<details>
+<summary>Implementation and checks needed before shipping</summary>
 
-## Why not require Entire-style checkpoints?
+### 1. Preserve evidence in the existing parser
 
-The v0.11.4 source supports multiple sessions per checkpoint and multiple
-checkpoint links per commit. Local squash hooks inherit existing links, and
-rewrite hooks handle amend/rebase mappings. That is stronger than inferring a
-session from a branch name. See [persistent sessions][entire-persistent],
-[squash tests][entire-squash], and [rewrite hooks][entire-hooks].
+Extend the shared commit parser to emit events before the session summary drops
+source details or hits its cap. Preserve addresses for the command, result, and
+any later command that reveals the commit ID. Keep existing summary behavior.
 
-Those links still have independent failure states. Commit hooks can fail without
-failing the commit. Checkpoint transport can fail while a code push succeeds.
-Checkpoint refs can later receive transcript backfills. A link therefore does
-not imply complete or available context. See [hook generation][entire-install],
-[push handling][entire-push], and [refs storage][entire-refs].
+Assign an operation only when command/result association supports it. Wrapper
+scripts, absent output, and unsupported shell syntax remain gaps. Test quiet
+commits, failed compound commands, directory changes, cherry-picks, and reverts.
 
-GitHub permits squash messages containing only the PR title or its description.
-Inference: a developer-machine squash hook cannot guarantee trailer retention
-in a hosted merge. Follow the PR's original commits when needed, retaining that
-provider evidence outside Flopwire. [GitHub squash settings][github-squash]
+Keep the command's observed directory separate from the session's repository.
+A session can commit in another repository. Label the command repository known
+only when captured placement evidence supports it; today's path or remote is
+insufficient. Initial repository filtering uses session placement and can miss
+cross-repository work.
 
-## Delivery and remaining proof
+### 2. Add rebuildable local and server indexes
 
-1. Extend the parser to emit source-linked commit events. Test quiet commits,
-   failed compound commands, directory changes, cherry-picks, and reverts.
-2. Add local/server projections with lifecycle parity. Validate reparse,
-   redaction, deletion, access changes, backfill, and interrupted ingestion.
-3. Expose the bounded lookup and document the agent-owned GitHub fallback.
-   Measure query plans, output size, and latency before fixing limits.
+Both indexes use the same extractor. Key events by source identity, generation,
+and message identity. Index observed hashes and visible conversation identity.
+Validate query plans and prefix matching at scale.
 
-The first implementation should preserve existing digest behavior. Fixing its
-summary wording or changing which outside-directory commits it includes is a
-separate decision. No Git hooks, new credentials, owner selection, or automatic
-messages are part of this proposal.
+Publish events and their source generation atomically. Reparse replaces a
+source generation's events without duplicates. Redaction, replacement, deletion,
+and access changes must remove or hide the corresponding evidence. Test those
+paths, backfill, and interrupted ingestion on both local and server storage.
+The index can be rebuilt from retained source records.
+
+### 3. Add bounded lookup and pagination
+
+Page in stable event order with an ingestion cutoff. New appends appear in a new
+lookup without restarting existing pages. Replacing or removing evidence
+invalidates affected pages and returns a restart condition. Bind cursors to the
+query and visibility scope; recheck access on each page. Keep raw evidence out
+of cursor tokens.
+
+The cursor contract still needs an implementation spike. Measure latency and
+output size before fixing limits. Report visible-index coverage, indexing lag,
+and truncation separately: a finished scan does not establish complete history.
+
+</details>
+
+<details>
+<summary>What Entire gets right, and why use a different implementation</summary>
+
+Entire v0.11.4 supports several sessions per checkpoint and several checkpoint
+links per commit. Its local squash hooks preserve existing links, and rewrite
+hooks handle amend/rebase mappings. Flopwire should retain that ability to
+represent several contributors. [Sessions][entire-persistent],
+[squash tests][entire-squash], [rewrite hooks][entire-hooks].
+
+Those links have separate availability limits. Commit hooks can fail while the
+commit succeeds. Checkpoint uploads can fail while code pushes succeed. Later
+transcript backfills can update checkpoint refs. A link alone does not establish
+complete, readable context. [Hook generation][entire-install],
+[push handling][entire-push], [refs storage][entire-refs].
+
+GitHub allows squash messages containing only the PR title or description.
+Inference: local hooks cannot guarantee checkpoint trailers survive a hosted
+merge. Looking up the PR's original commits remains useful.
+[GitHub squash settings][github-squash].
+
+Flopwire already stores captured sessions. Deriving the links there avoids adding
+Entire's Git hooks, checkpoint refs, and separate publication queue to this feature.
+
+</details>
 
 <details>
 <summary>Hand-computed state transitions</summary>
 
-Shape 3: walk the requested lookup against current state, then identify the
-state it lacks. All names and commit symbols below are synthetic.
+This walk follows a squash merge through capture and lookup. All names and
+commit symbols are synthetic.
 
 ```text
 t0 git={main:Z}; capture={}; index={}
@@ -198,36 +199,41 @@ invalidation. PR lineage stays in the caller's context, outside daemon state.
 </details>
 
 <details>
-<summary>Stress-test evidence and POC</summary>
+<summary>Research findings and Git experiment</summary>
 
-| Claim | Impact if false | Strongest evidence | Missing evidence | Status | Next action |
-|---|---|---|---|---|---|
-| A digest match identifies the producing repository | Wrong attribution | [Parser tests](../internal/digest/commits_test.go) intentionally count outside-directory SHAs | Per-event placement is discarded | contradicted | Preserve location and uncertainty |
-| Digests are exhaustive and current | False negative presented as certainty | [Digest caps](../internal/digest/digest.go); [server stale state](../internal/retrieval/retrieval.go) | Public result lacks digest freshness | contradicted | Derive event projection; report its coverage |
-| Entire local squash drops all original links | Needlessly reject a useful approach | [Tagged squash tests][entire-squash] preserve links | Hooks not executed here | contradicted | Borrow relation semantics |
-| A checkpoint pointer guarantees readable final context | Dangling or partial evidence | [Push queue][entire-push], [refs backfill][entire-refs] | Runtime Entire failure injection not run | contradicted | Separate link from source availability |
-| Plain Git always retains checkpoint trailers | Lost lookup after squash | Synthetic Git POC below | Hosted merges and Entire hooks not executed | contradicted | Keep caller-side PR expansion |
-| Event lookup can be bounded without missed pages | Incomplete results or costly scans | Proposed generation and cursor contract | Index/query implementation and measurements | unresolved | Query-plan, pagination and scale tests before release |
-| Projection obeys source lifecycle/access rules | Stale or inaccessible evidence exposed | Existing source lifecycle provides integration points | New projection has not been implemented | unresolved | Required local/server lifecycle tests |
+Reviewed on 2026-10-13 against Flopwire `208f48b` and Entire v0.11.4. The
+[earlier experiment](https://github.com/flopwire/flopwire/pull/252) recovered
+candidates by following original PR commits after squash merges.
 
-Local POC, 2026-10-13, Git 2.55.0: an isolated synthetic repository, hooks and
-signing disabled, no remotes. It created two topic commits containing checkpoint
-trailers, squashed them with an explicit new message, cherry-picked one with a
-different committer, and rebased the topic onto an unrelated new base.
+| Finding | Evidence and consequence |
+|---|---|
+| Session summaries do not establish the command's repository | [Parser tests](../internal/digest/commits_test.go) count outside-directory commits. Preserve location and uncertainty. |
+| Summaries can be incomplete or stale | [Digest caps](../internal/digest/digest.go) and [server stale state](../internal/retrieval/retrieval.go). Report index coverage explicitly. |
+| Entire preserves local squash links | [Tagged tests][entire-squash]. Hooks were source-reviewed, not executed here. |
+| A checkpoint link can lack readable final context | [Push queue][entire-push] and [refs backfill][entire-refs]. Separate the link from source availability. |
+| Plain Git can discard trailers during squash | The POC below. Keep the caller-side PR fallback. |
 
-All five assertions passed: the squash had a new SHA; its original commits were
-not its ancestors; its explicit message omitted their trailers; the cherry-pick
-retained a trailer despite a changed committer/SHA; the ordinary rebase retained
-a trailer despite a changed SHA. This tests plain Git only. Entire's local hooks
-add squash preservation beyond that baseline. Scratch artifacts were removed.
+**Still unverified:** lookup performance, pagination correctness, and the new
+index's behavior under source or access changes. These require implementation
+and local/server tests before release.
 
-Reproduce the behavior with two trailer-bearing commits on `topic`:
-`git merge --squash topic`, then `git commit -m 'feature'`. Inspect the resulting
-message and ancestry. On separate branches from the original base, cherry-pick
-one commit and rebase the topic onto a new base; inspect messages and SHAs.
+The local POC used Git 2.55.0 in a synthetic repository with hooks and signing
+disabled and no remotes. All five assertions passed:
 
-No production-performance, credential, hosted-merge, or Entire runtime POC was
-run. The unresolved implementation claims above remain release requirements.
+- Squashing two topic commits produced a new commit ID.
+- The original commits were not ancestors of the squash commit.
+- An explicit squash message omitted their checkpoint trailers.
+- Cherry-picking retained a trailer despite a changed committer and commit ID.
+- An ordinary rebase retained a trailer despite a changed commit ID.
+
+This tests plain Git. Entire's local hooks add squash preservation. No Entire
+runtime, hosted-merge, credential, or production-performance POC was run.
+Scratch artifacts were removed.
+
+To reproduce, create two trailer-bearing commits on `topic`, then run
+`git merge --squash topic` and `git commit -m 'feature'`. Inspect the message and
+ancestry. On separate branches from the original base, cherry-pick one commit
+and rebase the topic onto a new base; inspect their messages and IDs.
 
 </details>
 
