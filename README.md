@@ -47,7 +47,7 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 | Device agent (`flopwire agent run`) | Watches eligible transcripts in configured Claude Code, Codex, Devin CLI and opencode roots, plus verified Claude Desktop Local Code and local Cowork evidence. Keeps a local SQLite index. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
 | Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
 | Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
-| MCP server (`flopwire mcp`) | The same four search tools for agents, shared after enrollment or `--local`, and the three messaging tools, over stdio. |
+| MCP server (`flopwire mcp`) | The same four search tools for agents, shared after enrollment or `--local`, and the four messaging tools, over stdio. |
 | Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex, Devin CLI and opencode, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
 | Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
 | Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
@@ -244,8 +244,8 @@ The search tools are `flopwire_grep`, `flopwire_search`,
 the CLI does, as one text block. The plugin searches the shared server
 after enrollment. Add `"--local"` to `args` to search only this device.
 
-The messaging tools are `flopwire_peers`, `flopwire_send` and
-`flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
+The messaging tools are `flopwire_messages`, `flopwire_peers`, `flopwire_send`
+and `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
 message. The approval line above approves it too. Remove the line to be
 asked before each call. With the Codex plugin, Codex asks before each
 `flopwire_send`; [docs/agent.md](docs/agent.md#approve-the-codex-hooks)
@@ -253,37 +253,34 @@ shows the line that approves it.
 
 ## Messaging
 
-Agent sessions can send messages to each other. Three commands, in the
-CLI and in MCP. They go through the device agent, which must run. They
-print compact JSON by default. Add `--text` for a readable form.
+Read recent repository coordination, find the session behind a change, then
+contact it. The same commands are available through MCP.
 
 ```sh
-flopwire sessions --repo . --branch feat/cursor          # who made the change (history)
-flopwire peers --session 4c19e0d2                        # is that session live now?
-flopwire send 4c19e0d2 -- "Heads-up: the list endpoint returns a cursor now."
-flopwire send @alex --intent request -- "Can you rebase api on main?"
-flopwire inbox --sent                                    # what you sent, and its state
+flopwire messages --repo . --text                      # recent threads
+flopwire messages --repo . --thread THREAD_ID --text   # open one
+flopwire sessions --repo .                            # find the producing session
+flopwire peers --session 4c19e0d2                      # check that exact session
+flopwire send 4c19e0d2 --intent request -- "Why does the list endpoint return a cursor?"
+flopwire inbox --sent                                 # your sends and their state
 ```
 
-- Find the recipient in history first, then check that the session is
-  live: match `session_id` (and `commits`, or the subject in
-  `commits_no_sha`) from `sessions` to the
-  `session` field of `peers`. Do not choose a session by its title or
-  current branch alone.
-- Address a session by its id, or a unique prefix. Address a person as
-  `@user`.
-- `send` prints a receipt. The `arrives` field says when the message
-  arrives. A receipt is not a reply. For `--intent request`, the `next`
-  field says what to do until the reply comes.
-- The sender is the agent session that runs the command. A command that
-  runs outside an agent session cannot send. Set `FLOPWIRE_SESSION_ID` to
-  send as a given session.
-- A message from another person is held until the recipient accepts that
-  person. See [Accepting a sender](#accepting-a-sender).
+`messages` reads retained server threads across devices and ended sessions.
+It requires enrollment; acceptance and retention can leave gaps. It does not
+update receipts. See [thread scope and visibility](docs/messaging.md#read-recent-repository-threads).
+
+`peers`, `send` and `inbox` need the device agent. Find recipients from history;
+a peer's title or current branch alone does not identify who made a change.
+Use `@user` to address a person. Follow a send receipt's `next`; replies arrive
+through the hook. `read` means the text entered the recipient's context.
+An answer is a received message whose `reply_to` names your request.
+See [receipts](docs/messaging.md#read-receipts) and
+[accepting a sender](#accepting-a-sender).
 
 The `flopwire hook` command prints each message into the recipient's
-session: inside a running turn at its next tool call, or with its human's
-next prompt. A message never wakes an idle session. In Claude Code, Codex
+session: inside a running turn at its next tool call, or when the session
+resumes through a prompt or harness task notification. A message never
+wakes an idle session. In Claude Code, Codex
 and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
 you approve them once. opencode uses its plugin for delivery and tools.
 Vendor cloud sessions (Claude Code cloud, Devin cloud) get messages
