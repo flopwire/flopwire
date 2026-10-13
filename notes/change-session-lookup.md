@@ -27,8 +27,10 @@ it can derive searchable commit events from those records.
 
 Proposed tool: `flopwire_change(repo, commits, limit?, cursor?)`. Require a
 resolved repository and one or more full commit IDs. Bound the list to 100 IDs
-per request; the caller batches larger PRs. Start with a default page of ten
-sessions. These limits are provisional until the implementation is measured.
+per request; the caller batches larger PRs. Page by evidence event, initially
+20 events per page, grouped by session for display. A session may recur on later
+pages; the cursor continues events, not sessions. Bound snippets and total output
+bytes too. These limits are provisional until the implementation is measured.
 
 A dedicated tool keeps lineage, evidence, and coverage out of the already broad
 `sessions` filter interface. It adds one tool to discovery, but gives this task
@@ -39,8 +41,10 @@ Typical flow:
 
 1. Agent supplies the commit it is investigating.
 2. Flopwire returns matching sessions, compact evidence, and addresses for `read`.
-3. If the agent knows this was a squash merge, it uses `gh` to obtain the PR's
-   original commits and submits those IDs together.
+3. If direct evidence is absent or insufficient, the agent uses `gh` to find an
+   associated PR, obtain its original commits, and submit those IDs together.
+   Starting from a PR can take this path immediately. Direct matches do not
+   establish that every contributing session has been found.
 4. Agent reads the relevant evidence. Contact remains a separate decision.
 
 The daemon and server receive no GitHub token and do not invoke `gh`. A supplied
@@ -49,7 +53,7 @@ to a PR or authenticate the caller's claimed lineage. The calling agent keeps
 the GitHub result as its source for that relationship.
 
 Each result includes the session, matched input commit, observed hash, operation
-(`commit`, `cherry_pick`, or `revert`), and command/result read addresses. A quiet
+(`commit`, `cherry_pick`, `revert`, or `unknown`), and command/result read addresses. A quiet
 commit resolved by a later HEAD command links both events. Report a short hash
 as a prefix match even if it matches only one submitted ID; uniqueness within
 the submitted list does not establish uniqueness in the repository.
@@ -65,7 +69,9 @@ commit lookup.
 Extract events using the existing commit parser, preserving command/result
 provenance before the digest reduces it to a capped SHA list. This requires
 extending the shared parser to emit events; do not build a second shell parser.
-Preserve operation type and distinguish a direct commit result from a later
+Assign an operation only when the command/result association supports it:
+compound calls can contain several operations and require `unknown` when their
+outputs cannot be separated. Distinguish a direct commit result from a later
 HEAD reveal. Existing parser gaps remain gaps: wrapper scripts, absent output,
 and unsupported shell shapes must not produce invented commit evidence.
 
