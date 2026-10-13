@@ -1,0 +1,35 @@
+{
+  "repository": "flopwire/flopwire",
+  "complete": true,
+  "sessions": [
+    {
+      "repository": "flopwire/flopwire",
+      "session_id": "synthetic-author",
+      "commits": [
+        "69a3719"
+      ],
+      "prs": [
+        "flopwire/flopwire#247"
+      ],
+      "more": []
+    },
+    {
+      "repository": "flopwire/flopwire",
+      "session_id": "synthetic-reviewer",
+      "commits": [],
+      "prs": [
+        "flopwire/flopwire#247"
+      ],
+      "more": []
+    },
+    {
+      "repository": "other/project",
+      "session_id": "synthetic-other-repo",
+      "commits": [
+        "69a3719"
+      ],
+      "prs": [],
+      "more": []
+    }
+  ]
+}
