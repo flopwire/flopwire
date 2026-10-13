@@ -10,6 +10,7 @@ type seg struct {
 	words   []string
 	op      string
 	heredoc string
+	raw     string
 }
 
 // splitShell splits a command line into simple commands. It knows quotes,
@@ -23,6 +24,7 @@ func splitShell(s string) ([]seg, bool) {
 		cur      seg
 		word     strings.Builder
 		inWord   bool
+		start    int
 		heredocs []hd // here-documents opened on this line, read at its end
 	)
 	flushWord := func() {
@@ -32,9 +34,11 @@ func splitShell(s string) ([]seg, bool) {
 			inWord = false
 		}
 	}
-	end := func(op string) {
+	end := func(op string, boundary int) {
 		flushWord()
 		cur.op = op
+		cur.raw = s[start:boundary]
+		start = boundary + len(op)
 		// An empty command ("a &&\nb", "( a )") keeps the operator before it.
 		if len(cur.words) > 0 {
 			out = append(out, cur)
@@ -107,10 +111,11 @@ func splitShell(s string) ([]seg, bool) {
 			heredocs = append(heredocs, hd{delim: delim.String(), strip: strip, seg: len(out)})
 			i = j - 1
 		case c == '\n':
-			end(";")
+			end(";", i)
 			if len(heredocs) > 0 {
 				i = readHeredocs(s, i+1, heredocs, out) - 1
 				heredocs = nil
+				start = i + 1
 			}
 		case c == ' ' || c == '\t' || c == '\r':
 			flushWord()
@@ -118,32 +123,32 @@ func splitShell(s string) ([]seg, bool) {
 			if c == ';' && i+1 < len(s) && s[i+1] == ';' {
 				i++
 			}
-			end(";")
+			end(";", i)
 		case c == '&':
 			switch {
 			case i+1 < len(s) && s[i+1] == '&':
-				end("&&")
+				end("&&", i)
 				i++
 			case inWord && strings.HasSuffix(word.String(), ">") || inWord && strings.HasSuffix(word.String(), "<"),
 				i+1 < len(s) && s[i+1] == '>':
 				word.WriteByte(c) // 2>&1, &>file
 				inWord = true
 			default:
-				end("&")
+				end("&", i)
 			}
 		case c == '|':
 			if i+1 < len(s) && s[i+1] == '|' {
-				end("||")
+				end("||", i)
 				i++
 			} else {
-				end("|")
+				end("|", i)
 			}
 		default:
 			word.WriteByte(c)
 			inWord = true
 		}
 	}
-	end("")
+	end("", len(s))
 	if len(heredocs) > 0 {
 		readHeredocs(s, len(s), heredocs, out)
 	}

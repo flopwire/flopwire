@@ -3,6 +3,7 @@ package digest
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -151,8 +152,14 @@ func ExtractCommitEvidence(messages []transcript.Message) []CommitEvidence {
 			// An arbitrary exec script can print text unrelated to its shell output.
 			// Exact self-contained completion records cover its shell executions.
 			if strings.Contains(m.Text, "exec_command(") {
-				open = nil
-				lastMover = m.Ordinal
+				// A fully literal wrapper can establish a HEAD-move barrier without
+				// supplying output evidence. Never trust heuristic event enrichment.
+				cmds, literal := literalExecCommands(m.Text)
+				g, parsed := readCall(cmds)
+				if !literal || !parsed || !revealCommandsOnly(cmds) || placementUnsupported(cmds) || g.mover || slices.ContainsFunc(g.ends, func(e [2]string) bool { return e[0] != e[1] }) {
+					open = nil
+					lastMover = m.Ordinal
+				}
 				continue
 			}
 			// Commands enrichment is best effort, including heuristic Codex event joins.
@@ -361,6 +368,9 @@ func printedCommandsSafe(cmds []shellCmd) bool {
 				continue
 			}
 			if w[0] != "git" && !strings.HasSuffix(w[0], "/git") {
+				if literalFilePrint(s) {
+					continue
+				}
 				return false
 			}
 			_, sub, _ := gitArgs(w[1:])
@@ -412,4 +422,71 @@ func placementUnsupported(cmds []shellCmd) bool {
 		}
 	}
 	return false
+}
+
+// Only literal file preparation can precede Git's printed output. Quoted or
+// escaped greater-than characters are arguments, not redirections.
+func literalFilePrint(s seg) bool {
+	w := stripPrefix(s.words)
+	if len(w) == 0 || (w[0] != "printf" && w[0] != "echo") || strings.ContainsAny(s.raw, "$`") || s.op == "|" || s.op == "&" {
+		return false
+	}
+	if w[0] == "printf" && (len(w) < 2 || strings.HasPrefix(w[1], "-")) {
+		return false
+	}
+	raw := s.raw
+	redirect := -1
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			i++
+		case '\'', '"':
+			quote := raw[i]
+			for i++; i < len(raw) && raw[i] != quote; i++ {
+				if quote == '"' && raw[i] == '\\' {
+					i++
+				}
+			}
+		case '<':
+			return false
+		case '>':
+			redirect = i
+			if i > 0 && raw[i-1] >= '0' && raw[i-1] <= '9' {
+				return false
+			}
+			i = len(raw)
+		}
+	}
+	if redirect < 0 {
+		return false
+	}
+	if strings.HasPrefix(raw[redirect:], ">>>") {
+		return false
+	}
+	target := strings.TrimSpace(strings.TrimLeft(raw[redirect:], ">"))
+	if !strings.HasPrefix(target, "/") && slices.Contains(strings.Split(target, "/"), "..") {
+		return false
+	}
+	target = path.Clean(target)
+	if target == "" || strings.ContainsAny(target, "&<>\\\"' \t\r\n") || strings.HasPrefix(target, "/dev/") || strings.HasPrefix(target, "/proc/") || target == ".." || strings.HasPrefix(target, "../") {
+		return false
+	}
+	return true
+}
+
+func revealCommandsOnly(cmds []shellCmd) bool {
+	if len(cmds) != 1 {
+		return false
+	}
+	segs, ok := splitShell(cmds[0].line)
+	if !ok || len(segs) != 1 {
+		return false
+	}
+	w := stripPrefix(segs[0].words)
+	if len(w) < 2 || (w[0] != "git" && !strings.HasSuffix(w[0], "/git")) {
+		return false
+	}
+	_, sub, args := gitArgs(w[1:])
+	kind, _ := revealOf(sub, args)
+	return kind != "" && sub != "push" && !strings.ContainsAny(cmds[0].line, "$`<>")
 }
