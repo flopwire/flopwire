@@ -1,9 +1,17 @@
 {
-  "langfuse_observations": 960,
-  "langfuse_sessions": 48,
-  "langfuse_canonical_message_ids_complete": true,
-  "flopwire_conversations": 48,
-  "flopwire_message_rows": 1008,
-  "agentsview_sessions": 48,
-  "agentsview_message_rows": 960
+  "source": "retrieval.json.gz",
+  "validation": {
+    "flopwire": {
+      "sessions": 48,
+      "message_rows": 1008
+    },
+    "agentsview": {
+      "sessions": 48,
+      "message_rows": 960
+    },
+    "langfuse": {
+      "observations": 960,
+      "source_ids_complete": true
+    }
+  }
 }

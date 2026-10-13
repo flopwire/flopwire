@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "name": "identifier",
+      "query": "atlasquokka",
+      "kind": "literal",
+      "expected_sessions": [
+        "ba597816-606b-5c94-a7bd-188b916eaf4b",
+        "d0547371-4e2c-5ab8-b76b-00b9b39f7460"
+      ]
+    },
+    {
+      "name": "path",
+      "query": "internal/zircon/jaxflux.go",
+      "kind": "literal",
+      "expected_sessions": [
+        "cbde11e3-a3ad-5104-a31e-a12d7748e31e",
+        "e15da57a-5a53-5a00-99f8-0e9e291167af"
+      ]
+    },
+    {
+      "name": "tool-output",
+      "query": "jinxedtoolsentinel",
+      "kind": "literal",
+      "expected_sessions": [
+        "35012595-892b-5feb-bff6-4afa03657a83",
+        "9c30878f-6620-5641-b783-4d415a25e40f"
+      ]
+    },
+    {
+      "name": "unicode",
+      "query": "cafépiñata",
+      "kind": "literal",
+      "expected_sessions": [
+        "56ac2c9b-d8c2-56c1-8c2c-e232d7215bf0",
+        "8ebaa697-1f77-555d-9080-ebf7f30fbffc"
+      ]
+    },
+    {
+      "name": "phrase",
+      "query": "retry jitter",
+      "kind": "literal",
+      "expected_sessions": [
+        "4f3f0956-4bd7-5308-83f1-698a0e2d8ee0",
+        "ca841e10-7866-5048-b725-056f2161ed1f"
+      ]
+    },
+    {
+      "name": "regex",
+      "query": "ZQ-[0-9]{4}",
+      "kind": "regex",
+      "expected_sessions": [
+        "5287f7f4-63ac-5cf7-a7ea-cf5593e82a68",
+        "886472de-9048-5beb-8da1-fe7617b5dbb1"
+      ]
+    }
+  ],
+  "sha256": {
+    "corpus/.claude/projects/-workspace-pilot-alpha/d0547371-4e2c-5ab8-b76b-00b9b39f7460.jsonl": "d7bb59aa61cb60ebceb8c2f6fa56bd81047f606632a89537b1ec64824b23641c",
+    "corpus/.claude/projects/-workspace-pilot-beta/cbde11e3-a3ad-5104-a31e-a12d7748e31e.jsonl": "2e50a89475aab1667343e16d47bf5ac4240e9f03eb944e9684d2e79d4f244d95",
+    "corpus/.claude/projects/-workspace-pilot-alpha/9c30878f-6620-5641-b783-4d415a25e40f.jsonl": "64f34b45c30f5cdc0216e228a067d8ebcaf823d8227e6a14d560660af357d2cd",
+    "corpus/.claude/projects/-workspace-pilot-beta/8ebaa697-1f77-555d-9080-ebf7f30fbffc.jsonl": "43915259a8e48a76f6c1cd1b7b7fb42e089aa8a90136573c1bfc9b3284296aa6",
+    "corpus/.claude/projects/-workspace-pilot-alpha/ca841e10-7866-5048-b725-056f2161ed1f.jsonl": "8d987713988d1afe0a8204ec3e4d688b970bae7e24eb86b35103bcd01553fc4a",
+    "corpus/.claude/projects/-workspace-pilot-beta/886472de-9048-5beb-8da1-fe7617b5dbb1.jsonl": "177073678e618c4f963a4f528d995f95b4054e815700fe622876c04895fc77a7",
+    "corpus/.claude/projects/-workspace-pilot-alpha/1c55fc17-0731-5169-ab57-afdf7dbf9917.jsonl": "597e468ab5a0cb74a2d2ecb973090879d88ac6c404fd601b41948f3fd24c20fa",
+    "corpus/.claude/projects/-workspace-pilot-beta/c1550ea4-c410-5ec7-a388-af424f415916.jsonl": "89ff91598c9f54671410b0f487d046a01ac5e5650a11fcaa96e734f24cb32147",
+    "corpus/.claude/projects/-workspace-pilot-alpha/6477727e-6180-5094-9866-35fa504065c8.jsonl": "604211e06f6e67f72f1705711d4dcde3dcf5cdf13f2c82baff94a386b3a9e164",
+    "corpus/.claude/projects/-workspace-pilot-beta/d75b174c-8e76-50c6-9fdd-76026d93e375.jsonl": "bafe4ed21294bf445a75fa512acd4c641ccab1ae126bbda019aed719066d356e",
+    "corpus/.claude/projects/-workspace-pilot-alpha/3e1d51ab-0a9d-5781-ab68-6a25cd0d7d3f.jsonl": "268b71e029f0de16893436378df6eabc73c57ca5608a7efd066e361f06d42e64",
+    "corpus/.claude/projects/-workspace-pilot-beta/018e2414-db62-582b-b124-d77e3428a8e9.jsonl": "902d813f03481b0296ad375f8252521a37c4b63422094ac062a8e78ea981b0a1",
+    "corpus/.claude/projects/-workspace-pilot-alpha/18893543-a85c-5e91-b1f0-68c7c6b17834.jsonl": "07b50a927ad845f8dba3244a0930490b25c2a873398c647d9c4e9838733b0a32",
+    "corpus/.claude/projects/-workspace-pilot-beta/c853e1bd-b295-5cb4-9eb4-aaad3bccbccf.jsonl": "68b13f49cb435b53ebf5828860334588d784b80b3507133fb60bdeb786319a35",
+    "corpus/.claude/projects/-workspace-pilot-alpha/825d7cd8-bf99-56fb-8957-27296560bfa4.jsonl": "8511c1f9cb1424317a79e21bb5a64e183ed06147e7213b472369f28ba09a9af4",
+    "corpus/.claude/projects/-workspace-pilot-beta/4268a39d-7f6c-5653-b266-78e2b8690bfb.jsonl": "60583ec05a55ce892a64ba31f58b5d9bf035a7aac8b651cda021739a22ddc3ee",
+    "corpus/.claude/projects/-workspace-pilot-alpha/3301eb24-396e-513e-bd66-1200539ba2b8.jsonl": "4a29eb08d953a98e6f9ae863d8d65b7d158c38bca4be3eea97987fc88c25ce77",
+    "corpus/.claude/projects/-workspace-pilot-beta/6d6e1a87-5572-5ef2-9a85-17f539d72ca5.jsonl": "6267ba9361213754674faf4a7f01c814d5b7201176882c8f3b7d3e54bf28847a",
+    "corpus/.claude/projects/-workspace-pilot-alpha/a04fb9d6-9171-5ff3-8b0c-486aa1827fea.jsonl": "3b80c0a25e31b887a1236c8bc02d0cb123f3761aac3265a6a645cd202d44e632",
+    "corpus/.claude/projects/-workspace-pilot-beta/dcf76738-5c21-5c63-83d8-879f239d184e.jsonl": "0825adc39f419b08cbe09b009a28882e8c25e33709835bb547a2f8775fde26b7",
+    "corpus/.claude/projects/-workspace-pilot-alpha/29c66df6-5f1e-5b6a-b7f3-e42a573c6d1a.jsonl": "5244f6b86e0f87d6cbe5f35a490814419bf831afa2b262115acc3a631c99318c",
+    "corpus/.claude/projects/-workspace-pilot-beta/defe004b-2cea-5197-b182-e74062e4bbe3.jsonl": "b207cf3a697b5a4fd4afefae681f7642d2522d4c7d69456eb66696bba2296ec5",
+    "corpus/.claude/projects/-workspace-pilot-alpha/bf5dd52e-d3a7-50b5-97e3-0adb8f981740.jsonl": "ed00f20aafa3b06c13f7de5a921fd1ac939b30119b4f61d0486269eed245bc66",
+    "corpus/.claude/projects/-workspace-pilot-beta/90367528-a581-555a-9704-dc56bf7d648a.jsonl": "8c22e93417b0ff30bdbb7a81d30d67edc6862a25187f14dc7a2fdf2ce39bcba0",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-ba597816-606b-5c94-a7bd-188b916eaf4b.jsonl": "099f72ad3c11068127083feadc697290f615993c1898c7dbc3437a22f787161c",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-e15da57a-5a53-5a00-99f8-0e9e291167af.jsonl": "ffbca418401f30133963e99a36d4f05bdffe80a5102f7675fb5de1df20d7b743",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-35012595-892b-5feb-bff6-4afa03657a83.jsonl": "33cb3017e922d0916bbbce262b2e8f676eb00ccff804b13888d1791d24231aeb",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-56ac2c9b-d8c2-56c1-8c2c-e232d7215bf0.jsonl": "dc42f7b6b82dd74829e2e2a70099a086860c9cdc528e3ab5af15a756f63fa1e4",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-4f3f0956-4bd7-5308-83f1-698a0e2d8ee0.jsonl": "720feb154f57ca4d976575249dcffc46f79e7f719b88bbe769b16644b51d42a6",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-5287f7f4-63ac-5cf7-a7ea-cf5593e82a68.jsonl": "f088e23e2123499f0dfc183456b5753a8dc56027188b7be7815ae06c1bc24325",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-52f691c2-41fc-5a9a-b5a5-59803f4614db.jsonl": "026ace4aed1832291706fc5dbb7ea0925f9ab96ec9b18473a7ca9e895a6ba80d",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-296a0a8c-58cf-5e9a-942b-4ac0656a1921.jsonl": "23bdb47717a7780af8664b7718355ae195ea49f5d7c9441be2d1240f906085bd",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-3d5c4c81-592b-5180-8680-26e0891abb95.jsonl": "7bfdb264156ae64022cd736b9504b20c5e86c85a7a94c2d665a63712e33dc9a6",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-725c4475-8e48-5982-b388-b567b4c16c16.jsonl": "cd03898f5d56d224c7837b38961289fd1f832d9526cb3ddc9366d57d4e887d35",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-833909db-ece0-58a7-924d-1588abc18ac4.jsonl": "2177f6b503a8cd974b5d35b88a8279ba149a537e51c6ce3fec4c13be2d9d1bdd",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-51ca4199-59a4-52a1-8773-d3d092c272e5.jsonl": "c7e4348c2ffa14a90273348eb4a9e6f8e4f9fea5d7b2756abf9f7836115ced2b",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-e4c9c953-df9e-51d0-812b-58799be4a095.jsonl": "0aa020e51f89f2bbb53b115c9c15b075db5ac07e3d1342797221e56fce3e523d",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-74d0690d-727a-544b-9862-8b12fd28efb4.jsonl": "177d7829c22d03f14176d0be4a25f80f8b65ec44af693a78840f552f0c4c56d6",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-fed4614c-af61-55fc-ba75-f91f2fc5db15.jsonl": "377e59ab82d7463527d1f3bad7ca3c020b941a44c12f01ef6dd2fb9eab9dd1b2",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-d980eac7-39c6-5ae5-ba34-db3e8dcf8db5.jsonl": "6c6668535a4288bd168c749076ee2dc5413ab5862d6ad3a90b34b8973dc5966d",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-8de1b9eb-9f5b-5353-8eb9-dcffbf7f48a8.jsonl": "6d0536ff034e6dd698196670d4170bb2d5b2d128bf7a6ad132718049e1568e2c",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-32437350-b93e-5a1f-a054-7775188f6fa7.jsonl": "99955eccbcca06211a81e0ead8931ddfbc63c104a7ed306d640ea7f4119ddfd1",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-02e73052-e24e-5375-b878-08b79a05f28a.jsonl": "33f337788ce7680814354bbd2dceb92a8480e619f04d9e8b2b977cb3318d16e8",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-fb3f3e8a-e921-58ba-a3ba-b4db353dbf4a.jsonl": "09610c14ad636325219d2c601ab4fee00193529ff44cede9ef040b59c9235f5a",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-254c7917-21ca-5682-9bf2-9205ddd669ba.jsonl": "0acdadf82f10928e7098782f3d0d7d4138cb10721dffb451ccf02b6b7c1756a2",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-be2b5c4f-11ef-5103-be97-ba958f5d5801.jsonl": "3a19d9a91465d6d5c27fac3e0530b11488d9aa63d9b53a2b783df5574d48dd19",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-fe321738-20d3-59bb-a3a8-68884f8c1217.jsonl": "cf2490432ce9c164addb09f39e01d82aa4c97593774e9cecf4d2aaa724951153",
+    "corpus/.codex/sessions/2026/10/13/rollout-2026-10-13T12-00-00-67c912b5-d820-554f-ba49-e7997f6fa84b.jsonl": "cabc96daa63ae8a4ba8590219cd5d7fd8482a209f2107e6b4e3e9124e5c69be5"
+  },
+  "messages": 960,
+  "bytes": 2463364
+}

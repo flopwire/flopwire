@@ -1,0 +1,25 @@
+{
+  "source": "messaging.json.gz",
+  "recovery": {
+    "flopwire": {
+      "message_id": "mbfefa361a999ddc5",
+      "pass": true,
+      "case": "accepted unread message, graceful service restart, recipient retrieval"
+    },
+    "agent-mail": {
+      "message_id": "32",
+      "pass": true,
+      "case": "accepted unread message, graceful service restart, recipient retrieval"
+    }
+  },
+  "versions": {
+    "flopwire": {
+      "version": "dev",
+      "sha256": "3bc8905bf838ad4fa1dcf6c4a98bc43cf215f28e6fa1bd3d6f55a772b22896d5"
+    },
+    "agent-mail": {
+      "version": "am 0.3.38",
+      "sha256": "107e18d9584decfeacf008b12785a318a7b116765defc1ea52dd79def786d8ee"
+    }
+  }
+}

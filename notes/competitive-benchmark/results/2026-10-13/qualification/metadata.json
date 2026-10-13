@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-13",
+  "flopwire_source_commit": "8023e172ecbd7e794e732a3c57b62b4c4b994797",
+  "machine": {
+    "cpu": "Apple M1 Pro",
+    "memory_bytes": 17179869184,
+    "docker_memory_bytes": 8589934592,
+    "dedicated_runner": false
+  },
+  "langfuse_compose_source_commit": "3eb71e89be4fcb52e9b9015b1e4090982d826945",
+  "image_digests": {
+    "web": "docker.langfuse.com/langfuse/langfuse@sha256:b5f4306480d844b2bce43ecd82960cefc0b219e5164ea588ea45ed806a41a4c9",
+    "worker": "docker.langfuse.com/langfuse/langfuse-worker@sha256:5f0e9e0da70b0c5d91ad9158941ca042c25c936d371524a1454226ebc5f12093",
+    "clickhouse": "clickhouse/clickhouse-server@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6"
+  },
+  "agent_mail_release": "v0.3.38",
+  "agent_mail_binary_sha256": "107e18d9584decfeacf008b12785a318a7b116765defc1ea52dd79def786d8ee",
+  "negative_controls": {
+    "query": "absentquokka",
+    "flopwire": "zero hits",
+    "langfuse": "zero observations",
+    "agentsview": "zero matches"
+  },
+  "collection_notes": [
+    "Main retrieval products randomized together, seed 1; rg baseline collected separately.",
+    "Messaging and retrieval overlapped briefly on the shared laptop.",
+    "Transport corpus has separate recent timestamps for simulated live sessions.",
+    "Recovery rerun used separate Flopwire test sessions to respect the 30-send hourly allowance."
+  ],
+  "runner_sha256": {
+    "scripts/competitive-pilot.py": "041df3cc31c4603f13701679dde1981602f6e4afd8b37a7f2f4a231a757bbb8c",
+    "scripts/competitive-messaging.py": "847f9304bd65a10b4fb9996a2fbd97b6fddaf72041669f4d782ac087ce57b8b0"
+  },
+  "note_on_runner_hashes": "Final reviewed runners include pre-measurement import validation, rg support and separate recovery identities added during qualification."
+}

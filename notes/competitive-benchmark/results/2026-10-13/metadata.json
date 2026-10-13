@@ -1,6 +1,6 @@
 {
   "date": "2026-10-13",
-  "flopwire_source_commit": "8023e172ecbd7e794e732a3c57b62b4c4b994797",
+  "flopwire_source_commit": "f83db684e912ea77c08ac02264996f55cf1f4993",
   "machine": {
     "cpu": "Apple M1 Pro",
     "memory_bytes": 17179869184,
@@ -22,14 +22,14 @@
     "agentsview": "zero matches"
   },
   "collection_notes": [
-    "Main retrieval products randomized together, seed 1; rg baseline collected separately.",
-    "Messaging and retrieval overlapped briefly on the shared laptop.",
-    "Transport corpus has separate recent timestamps for simulated live sessions.",
-    "Recovery rerun used separate Flopwire test sessions to respect the 30-send hourly allowance."
+    "All four retrieval interfaces randomized together, seed 1; 30 samples per applicable query.",
+    "Messaging ran after retrieval completed.",
+    "Shared development laptop; no controlled cold filesystem cache.",
+    "Recovery used separate Flopwire test identities to preserve the default hourly allowance."
   ],
   "runner_sha256": {
     "scripts/competitive-pilot.py": "041df3cc31c4603f13701679dde1981602f6e4afd8b37a7f2f4a231a757bbb8c",
     "scripts/competitive-messaging.py": "847f9304bd65a10b4fb9996a2fbd97b6fddaf72041669f4d782ac087ce57b8b0"
   },
-  "note_on_runner_hashes": "Final reviewed runners include pre-measurement import validation, rg support and separate recovery identities added during qualification."
+  "tested_benchmark_commit": "5c60e900b3c67f7870f360489f65fa9cfa8ab10f"
 }

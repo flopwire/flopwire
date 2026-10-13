@@ -1,0 +1,9 @@
+{
+  "langfuse_observations": 960,
+  "langfuse_sessions": 48,
+  "langfuse_canonical_message_ids_complete": true,
+  "flopwire_conversations": 48,
+  "flopwire_message_rows": 1008,
+  "agentsview_sessions": 48,
+  "agentsview_message_rows": 960
+}

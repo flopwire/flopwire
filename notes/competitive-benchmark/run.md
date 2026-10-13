@@ -77,8 +77,7 @@ runs in a fresh process; the AgentsView service remains warm. Langfuse
 uses direct HTTP requests to a persistent service. The runner preserves
 command failures and mismatched attribution in `results.json`.
 
-For this dated pilot, `rg` was run separately. The command above includes
-it in the randomized schedule for future runs.
+For this dated pilot, `rg` was included in the same randomized schedule.
 
 ## Measure messaging
 
