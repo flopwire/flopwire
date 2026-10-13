@@ -99,9 +99,9 @@ func ExtractCommitEvidence(messages []transcript.Message) []CommitEvidence {
 				base := CommitEvidence{Operation: op, Command: evidenceRef(m), Result: evidenceRef(m), CommandDirectory: cwd, DirectoryKnown: known, Outcome: outcome}
 				printed := false
 				if g.printed && printedCommandsSafe(cmds) {
-					for _, hit := range evidenceCommitOut().FindAllStringSubmatch(out, -1) {
+					for _, hash := range printedEvidenceHashes(out) {
 						e := base
-						e.Hash = hit[1]
+						e.Hash = hash
 						events = append(events, e)
 						printed = true
 					}
@@ -231,9 +231,9 @@ func ExtractCommitEvidence(messages []transcript.Message) []CommitEvidence {
 		}
 		printed := false
 		if p.g.printed && printedOutputSafe(p.m) {
-			for _, match := range evidenceCommitOut().FindAllStringSubmatch(out, -1) {
+			for _, hash := range printedEvidenceHashes(out) {
 				e := base
-				e.Hash = match[1]
+				e.Hash = hash
 				events = append(events, e)
 				printed = true
 			}
@@ -306,6 +306,20 @@ func pollHandle(m transcript.Message) string {
 var evidenceCommitOut = sync.OnceValue(func() *regexp.Regexp {
 	return regexp.MustCompile(`(?m)^\[(?:detached HEAD|[^\]\s]+)(?: \([^)\n]*\))? ([0-9a-f]{7,64})\] `)
 })
+
+// Repeated banners within one addressed output are one observation. Separate
+// executions and distinct poll evidence retain their own provenance.
+func printedEvidenceHashes(out string) []string {
+	seen := map[string]bool{}
+	var hashes []string
+	for _, hit := range evidenceCommitOut().FindAllStringSubmatch(out, -1) {
+		if !seen[hit[1]] {
+			seen[hit[1]] = true
+			hashes = append(hashes, hit[1])
+		}
+	}
+	return hashes
+}
 
 func evidenceOperation(cmds []shellCmd) (string, string, bool) {
 	op, cwd := "", ""

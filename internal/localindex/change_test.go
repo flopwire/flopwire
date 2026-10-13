@@ -151,7 +151,10 @@ func TestChangeSchema13UpgradeBackfillsRetainedMissingSources(t *testing.T) {
 				return err
 			}
 		}
-		return nil
+		// Old indexes retain repeated banners verbatim. The additive migration
+		// must project one observation rather than fail its unique constraint.
+		_, err := w.exec(`UPDATE messages SET text=? WHERE kind='tool_result'`, compress("[main "+h[:7]+"] fix\n[main "+h[:7]+"] fix"))
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +173,33 @@ func TestChangeSchema13UpgradeBackfillsRetainedMissingSources(t *testing.T) {
 	}
 	if row, err := upgraded.Messages(ctx, []int64{commandID}); err != nil || len(row) != 1 || !strings.Contains(row[0].Text, "git -C") {
 		t.Fatalf("retained command unavailable %+v %v", row, err)
+	}
+}
+
+func TestChangeConcurrentPollsRetainDistinctEvidenceAndStableIDs(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	src := source(t, s, transcript.AgentCodex, "/p/polls.jsonl")
+	h := strings.Repeat("a", 40)
+	pair := changePair("polls", 0, h)
+	pair[1].Text = "Chunk ID: synthetic\nProcess running with session ID 42\nOutput:\n"
+	poll := func(id string, ordinal int64, kind transcript.Kind, text string) *transcript.Message {
+		m := msg("polls", id, ordinal, kind, text)
+		m.ToolName = "write_stdin"
+		m.ToolCallID = strings.TrimSuffix(id, "-result")
+		return m
+	}
+	rows := append(pair, poll("poll-a", 3, transcript.KindToolCall, `{"session_id":42}`), poll("poll-b", 4, transcript.KindToolCall, `{"session_id":42}`), poll("poll-a-result", 5, transcript.KindToolResult, "[main "+h+"] fix"), poll("poll-b-result", 6, transcript.KindToolResult, "[main "+h+"] fix"))
+	apply(t, s, Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentCodex, SessionID: "polls", Cwd: "/repo"}}, Messages: rows})
+	got, before, _, err := s.ChangeRecords(ctx, []string{h}, Filter{}, -1, 0)
+	if err != nil || len(got) != 2 || got[0].CommandID != got[1].CommandID || got[0].ResultID != got[1].ResultID || got[0].Evidence.RevealResult.NativeID == got[1].Evidence.RevealResult.NativeID {
+		t.Fatalf("distinct poll provenance lost: %+v %v", got, err)
+	}
+	if err := s.write(ctx, func(w *writeTx) error { return w.refreshChangeEvents(got[0].ConversationID) }); err != nil {
+		t.Fatal(err)
+	}
+	after, state, _, err := s.ChangeRecords(ctx, []string{h}, Filter{}, -1, 0)
+	if err != nil || len(after) != 2 || after[0].ID != got[0].ID || after[1].ID != got[1].ID || state.Revision != before.Revision {
+		t.Fatalf("refresh changed stable observations: %+v %v", after, err)
 	}
 }
 func TestChangePlacementAndConversationVisibilityInvalidates(t *testing.T) {
