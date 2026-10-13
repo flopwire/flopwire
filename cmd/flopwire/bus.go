@@ -524,7 +524,7 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 		if cloud > 0 {
 			cloudNote = "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply"
 		}
-		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: with its human's next prompt%s. Address one by its first column, or a person as @user]\n",
+		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: when its session resumes%s. Address one by its first column, or a person as @user]\n",
 			shown, plural(shown, "session", "sessions"), own, cloudNote)
 	}
 	_, err := io.WriteString(w, b.String())
@@ -543,7 +543,7 @@ func plural(n int, one, many string) string {
 // Arrival is when a sent message reaches its recipient.
 const (
 	arriveNextToolCall = "next_tool_call"  // a busy session: at its next tool call
-	arriveNextPrompt   = "next_prompt"     // an idle session: with its human's next prompt
+	arriveNextPrompt   = "next_prompt"     // an idle session: at its next prompt/resumption hook
 	arriveAccepted     = "when_accepted"   // held until the recipient's human accepts the sender
 	arriveNextSession  = "next_session"    // @user with no live session: their next session
 	arriveIfResumed    = "only_if_resumed" // a session that is not running
@@ -650,9 +650,9 @@ func arrival(r busproto.SendResponse) string {
 // its human's next prompt, never by starting a turn.
 const (
 	// The recipient is busy: a reply may come within this turn.
-	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits for your user's next prompt. Keep working, or wait briefly if you need it to continue."
+	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits until your session resumes. Keep working, or wait briefly if you need it to continue."
 	// Idle, held, queued for @user, or not running: no reply until a
-	// human acts.
+	// session resumes.
 	nextNoWait = "Do not wait for the reply; tell your user you asked."
 	// A cloud session gets messages pushed and has no route back.
 	nextCloud = "No reply will come: a cloud session cannot send messages. Tell your user you asked; its human sees the answer in that session."
@@ -706,7 +706,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		case to.Live && to.Busy:
 			line = head + ": busy, arrives at its next tool call"
 		case to.Live:
-			line = head + ": idle, arrives with its human's next prompt"
+			line = head + ": idle, arrives when its session resumes"
 		default:
 			line = head + ": not running, arrives only if it resumes; expires " + expiry(r.ExpiresAt)
 		}
@@ -720,7 +720,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		case to.Live && to.Busy:
 			line = fmt.Sprintf("sent %s to %s: a busy session%s takes it, arrives at its next tool call", r.ID, who, on)
 		case to.Live:
-			line = fmt.Sprintf("sent %s to %s: an idle session%s takes it, arrives with its human's next prompt", r.ID, who, on)
+			line = fmt.Sprintf("sent %s to %s: an idle session%s takes it, arrives when its session resumes", r.ID, who, on)
 		default:
 			line = fmt.Sprintf("queued %s for %s: no live session%s; expires %s", r.ID, who, on, expiry(r.ExpiresAt))
 		}

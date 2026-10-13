@@ -234,3 +234,14 @@ for new sends; it leaves older snapshots unknown rather than inferring them
 from mutable session data. Older rows can still match a recorded path on the
 sending device. Upgrade the server and apply migrations before using the new
 client command or MCP tool.
+
+### Delivery while a parent session waits
+
+Messages enter the addressed session at its next eligible hook. A parent that
+has stopped while background agents run waits until it resumes, through a
+human prompt or a harness task notification. Child tool calls do not deliver
+messages to the parent. Flopwire does not start a turn to deliver a message.
+The receipt's `next_prompt` value includes these prompt/resumption hooks.
+For Claude, a witnessed parent Stop overrides a busy registry entry; after a
+device-agent restart, presence falls back to the registry until another parent
+hook supplies turn evidence.

@@ -584,7 +584,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		key := placeKey{transcript.Agent(s.Agent), s.SessionID}
 		switch key.agent {
 		case transcript.AgentClaude:
-			out[i].Busy = reg.busy[s.SessionID]
+			out[i].Busy = a.claudeTurnBusy(s.SessionID, reg.busy[s.SessionID])
 		case transcript.AgentCodex:
 			if t := paths[key]; t != nil {
 				out[i].Busy = a.rollouts.busy(t.path, rollouts)

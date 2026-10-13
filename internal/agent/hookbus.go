@@ -126,6 +126,27 @@ func (a *Agent) hookBusy(harness transcript.Agent, session string) (bool, time.T
 	return true, v.start
 }
 
+// claudeTurnBusy prefers witnessed parent-turn evidence over the registry,
+// which can remain busy while only background agents run. With no evidence
+// (including after a device-agent restart), keep the registry's answer. A
+// witnessed Stop stays authoritative for a live holder until a newer parent
+// event; an expired running event cannot prove either busy or idle.
+func (a *Agent) claudeTurnBusy(session string, registryBusy bool) bool {
+	a.turns.mu.Lock()
+	defer a.turns.mu.Unlock()
+	v, ok := a.turns.m[placeKey{transcript.AgentClaude, session}]
+	if !ok {
+		return registryBusy
+	}
+	if !v.idleSince.IsZero() {
+		return false
+	}
+	if v.busy && a.now().Sub(v.at) <= hookBusyCap {
+		return true
+	}
+	return registryBusy
+}
+
 // hookTurnEnded records that the turn whose last event's hook started at
 // start ended without a Stop. A later event stands.
 func (a *Agent) hookTurnEnded(harness transcript.Agent, session string, start time.Time) {

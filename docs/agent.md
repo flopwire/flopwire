@@ -1317,7 +1317,7 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    a reply. With `--text`, the receipt is one line, for example:
 
    ```text
-   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt
+   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives when its session resumes
    ```
 
 4. Check what you sent:
