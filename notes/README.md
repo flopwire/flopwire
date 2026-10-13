@@ -26,4 +26,5 @@ disagree, the code and `punch-list.md` win.
 | [`reparse.md`](reparse.md) | Versioned reparse on the server: parser versions, staleness and the background worker. |
 | [`perf-guards.md`](perf-guards.md) | The CI performance guards decided 2026-09-30: query plans, scale and query-count tests. |
 | [`reference-repos.md`](reference-repos.md) | Repositories studied or ported from, with licenses and what was taken. |
+| [`competitive-benchmark/README.md`](competitive-benchmark/README.md) | Competitor shortlist, benchmark protocol, reproducible runners and the 2026-10-13 retrieval and messaging pilot. |
 | [`mvp_scope.md`](mvp_scope.md) | Historical: the CASS-era MVP scope. The architecture it describes is gone; the product boundaries (one org, invited accounts, raw retention) still hold. |
