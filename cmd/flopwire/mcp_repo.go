@@ -17,7 +17,7 @@ import (
 // chdir here: one server can serve several calling threads concurrently.
 func mcpRepoArgs(ctx context.Context, r *retriever, name string, args map[string]any) (map[string]any, error) {
 	switch name {
-	case "flopwire_grep", "flopwire_search", "flopwire_sessions", "flopwire_messages", "flopwire_peers", "flopwire_send":
+	case "flopwire_change", "flopwire_grep", "flopwire_search", "flopwire_sessions", "flopwire_messages", "flopwire_peers", "flopwire_send":
 	default:
 		return args, nil
 	}

@@ -67,7 +67,7 @@ func TestMCPRepoToolDefaultsAndRelativePaths(t *testing.T) {
 	cwd := filepath.Join(t.TempDir(), "repo", "sub")
 	r := &retriever{callerCwd: func(_ context.Context, _ local.Caller) (string, error) { return cwd, nil }}
 	ctx := withMCPMeta(t.Context(), true, map[string]any{"threadId": "thread"})
-	for _, tool := range []string{"flopwire_grep", "flopwire_search", "flopwire_sessions", "flopwire_messages", "flopwire_peers", "flopwire_send"} {
+	for _, tool := range []string{"flopwire_change", "flopwire_grep", "flopwire_search", "flopwire_sessions", "flopwire_messages", "flopwire_peers", "flopwire_send"} {
 		for _, repo := range []string{".", "..", "./child", "../sibling"} {
 			got, err := mcpRepoArgs(ctx, r, tool, map[string]any{"repo": repo})
 			if err != nil || got["repo"] != filepath.Join(cwd, repo) {
@@ -84,7 +84,7 @@ func TestMCPRepoToolDefaultsAndRelativePaths(t *testing.T) {
 func TestMCPRepoUnavailableNeverUsesProcessCwd(t *testing.T) {
 	ctx := withMCPMeta(t.Context(), true, map[string]any{"threadId": "thread"})
 	for _, r := range []*retriever{{}, {callerCwd: func(context.Context, local.Caller) (string, error) { return "", errors.New("not recorded") }}, {callerCwd: func(context.Context, local.Caller) (string, error) { return "relative", nil }}} {
-		for _, tool := range []string{"flopwire_sessions", "flopwire_messages"} {
+		for _, tool := range []string{"flopwire_change", "flopwire_sessions", "flopwire_messages"} {
 			_, err := mcpCall(ctx, r, tool, map[string]any{"repo": "."})
 			if err == nil || !strings.Contains(err.Error(), "absolute path or repository name") {
 				t.Fatalf("%s: %v", tool, err)

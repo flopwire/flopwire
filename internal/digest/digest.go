@@ -288,7 +288,7 @@ func AppendRows(prev []byte, c Conv, fold, count []*transcript.Message, failed, 
 		n.Usage = d.State.Usage
 	}
 	for _, m := range count {
-		if m.Superseded {
+		if m.Superseded || IsEvidenceOnly(m) {
 			continue
 		}
 		if m.OnActivePath == nil || *m.OnActivePath {
@@ -477,8 +477,14 @@ func (d *Digest) root() string {
 }
 
 // Fold reads one message into the digest.
+// IsEvidenceOnly identifies additional captured proof records. These remain
+// readable and indexable, but do not alter the pre-existing session summary.
+func IsEvidenceOnly(m *transcript.Message) bool {
+	return m.Kind == transcript.KindToolResult && m.Enrichment["command_completion"] == true && m.Enrichment["completion_legacy"] != true
+}
+
 func (d *Digest) Fold(m *transcript.Message) {
-	if m.Superseded {
+	if m.Superseded || IsEvidenceOnly(m) {
 		return
 	}
 	switch m.Kind {

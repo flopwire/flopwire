@@ -719,7 +719,7 @@ const convCols = `c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(
 // replaced rows has not recounted yet (digest_stale), or before the first
 // digest, the rows are counted.
 const messageCount = `CASE WHEN c.digest IS NULL OR c.digest_stale
-	THEN (SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE)
+	THEN (SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE AND (mm.kind<>'tool_result' OR mm.enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb OR mm.enrichment->'completion_legacy'='true'::jsonb))
 	ELSE (SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) END`
 
 // liveSQL is whether a conversation c of device d is live: active within

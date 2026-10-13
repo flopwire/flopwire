@@ -868,10 +868,14 @@ func (w *writeTx) maskRow(t redactTarget, masked string) (Tombstone, error) {
 	if err := w.ftsDelete(t.id); err != nil {
 		return Tombstone{}, err
 	}
-	if _, err := w.exec(`UPDATE messages SET text = ?, text_len = ? WHERE id = ?`, p.z, len(masked), t.id); err != nil {
+	if _, err := w.exec(`UPDATE messages SET text = ?, text_len = ?, enrichment = CASE WHEN json_extract(enrichment,'$.command_completion')=1 THEN
+ CASE WHEN json_extract(enrichment,'$.completion_legacy')=1 THEN '{"command_completion":true,"completion_legacy":true}' ELSE '{"command_completion":true}' END ELSE NULL END WHERE id = ?`, p.z, len(masked), t.id); err != nil {
 		return Tombstone{}, err
 	}
 	w.ftsInsert(t.id, p)
+	if err := w.refreshChangeEvents(t.conv); err != nil {
+		return Tombstone{}, err
+	}
 	return ts, nil
 }
 

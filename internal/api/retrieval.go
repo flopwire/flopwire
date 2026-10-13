@@ -54,6 +54,7 @@ const (
 )
 
 func (a *API) retrievalRoutes(r chi.Router) {
+	r.Get("/v1/change", a.readerOnly(a.limited(a.change)))
 	r.Get("/v1/search", a.readerOnly(a.limited(a.search)))
 	r.Get("/v1/grep", a.readerOnly(a.limited(a.grep)))
 	r.Get("/v1/sessions", a.readerOnly(a.limited(a.sessions)))

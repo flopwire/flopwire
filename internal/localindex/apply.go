@@ -857,6 +857,9 @@ func (s *Store) PurgeConversation(ctx context.Context, agent transcript.Agent, s
 		if err := ids.Err(); err != nil {
 			return err
 		}
+		if err := w.removeChangeEvents(convID); err != nil {
+			return err
+		}
 		for _, stmt := range []string{
 			`DELETE FROM messages WHERE conversation_id = ?`,
 			`DELETE FROM companions WHERE conversation_id = ?`,

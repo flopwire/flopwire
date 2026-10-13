@@ -101,6 +101,8 @@ func run(parent context.Context, args []string) error {
 		return claim(ctx, args[1:])
 	case "enroll":
 		return enroll(ctx, args[1:])
+	case "change":
+		return changeCmd(ctx, args[1:])
 	case "grep", "find":
 		return toolCmd(ctx, "grep", args[1:])
 	case "search", "sessions", "read":
@@ -159,6 +161,7 @@ const usageText = `Usage: flopwire <command>
   claim       claim an invitation
   enroll      bind this installation as a device
   grep        regex search over agent transcripts, like rg (find is an alias)
+  change      find captured commit evidence by repository and full commit IDs
   search      ranked keyword search
   sessions    list sessions, newest first
   read        read a message or session at an address that grep, search or sessions print

@@ -1,8 +1,8 @@
 # Searching transcripts
 
-Flopwire gives people and agents four tools over coding-agent transcripts
+Flopwire gives people and agents five tools over coding-agent transcripts
 (Claude Code, Codex, Devin, opencode). The CLI and the MCP server have the same
-four, with the same flags and the same output. `grep`, `search` and
+tools, with the same query semantics and output. `grep`, `search` and
 `read` print text by default (`--json` for JSON). `sessions` prints JSON
 by default (`--text` for readable rows). See [Output](#output).
 
@@ -12,13 +12,62 @@ by default (`--text` for readable rows). See [Output](#output).
 | search | `flopwire search` | `flopwire_search` | Ranked keyword matches, including plain-language queries |
 | sessions | `flopwire sessions` | `flopwire_sessions` | Listing or globbing sessions |
 | read | `flopwire read` | `flopwire_read` | Reading what an address points to |
+| change | `flopwire change` | `flopwire_change` | Finding sessions with evidence of a commit |
 
-All four search the shared server after enrollment and the local index
+These tools search the shared server after enrollment and the local index
 before enrollment. Use `--local` for this device, or `--server` to select
 the server explicitly. `--index PATH` selects a local index unless
 `--server` is also set. Text answers show a scope header; JSON answers
 include `scope.kind` (`local` or `shared`) and the shared server URL.
-Server failures return an error and never switch to local search. `flopwire <tool> --help` shows three examples and every flag.
+Server failures return an error and never switch to local search. `flopwire <tool> --help` shows its flags.
+
+## Commit evidence
+
+Use `change` to find the sessions that recorded a commit. Supply a repository
+and one or more full commit IDs:
+
+```sh
+flopwire change --repo . 0123456789abcdef0123456789abcdef01234567
+```
+
+The MCP call uses `flopwire_change` with `repo` and a `commits` array.
+Both interfaces return JSON. Each match identifies a session, the observed
+hash, matching input IDs, the operation, and command/result addresses for
+`read`. A quiet commit or delayed result can include additional reveal
+addresses. Read those records before attributing a change.
+When `command_raw` or `reveal_command_raw` is true, read that command address
+with `raw=true` (CLI: `--raw`). The command and output share one captured
+completion record. The raw record must still be available locally or in the
+server archive.
+
+Several sessions can match the same input. An abbreviated hash stays a prefix
+match even when it matches only one submitted ID. The execution outcome refers
+to the command as a whole: a later failure can follow a successful commit.
+An unknown operation or directory remains unknown. Repository filtering uses
+session placement, so it can miss work performed in another repository.
+The caller's own sessions and descendants are included.
+
+Submit at most 100 full SHA-1 or SHA-256 IDs. The default page contains 20
+evidence events. Pass `next_cursor` as `cursor` to continue the same query.
+A session can appear on several pages. New appends appear in a new lookup.
+If `restart_required` is true, repeat the query without a cursor.
+
+`coverage` reports the visible index and indexing lag. It does not establish
+complete history. Missing captures, unsupported commands, redaction, and
+rewritten hashes can leave gaps. An empty result means no evidence matched
+in the searched index.
+Server lookups refresh a bounded batch of changed conversations before
+searching. Pending conversations report indexing lag; repeat the lookup to
+continue indexing.
+`source_text_truncated` reports captured messages whose text was capped before
+indexing. Commit output outside the retained text cannot match. Server backfill
+also bounds each conversation to 100,000 tool records and 64 MiB of retained
+tool text and metadata; a larger conversation reports truncated coverage.
+
+For a squash merge, the calling agent can use its own GitHub access to obtain
+the PR's original commit IDs and submit those IDs together. Flopwire does not
+invoke GitHub or verify that the supplied IDs belong to a PR. PR mentions
+remain available through `grep`.
 
 ## Coverage observations
 

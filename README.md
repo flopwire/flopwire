@@ -47,7 +47,7 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 | Device agent (`flopwire agent run`) | Watches eligible transcripts in configured Claude Code, Codex, Devin CLI and opencode roots, plus verified Claude Desktop Local Code and local Cowork evidence. Keeps a local SQLite index. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
 | Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
 | Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
-| MCP server (`flopwire mcp`) | The same four search tools for agents, shared after enrollment or `--local`, and the four messaging tools, over stdio. |
+| MCP server (`flopwire mcp`) | The same five retrieval tools for agents, shared after enrollment or `--local`, and the four messaging tools, over stdio. |
 | Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex, Devin CLI and opencode, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
 | Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
 | Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
@@ -183,7 +183,7 @@ observed limits. An empty queue does not prove complete history coverage.
 
 ## Search
 
-Four tools, in the CLI and in MCP. They search the shared server after
+Five tools, in the CLI and in MCP. They search the shared server after
 enrollment and the local index before enrollment. Use `--local` to search
 only this device, or `--server` to select the server explicitly. An explicit
 `--index PATH` selects a local index unless `--server` is also set.
@@ -194,6 +194,7 @@ flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, li
 flopwire search 'how did we handle income verification?'              # ranked keywords
 flopwire sessions 'api*' --since 7d                                   # newest first, JSON
 flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an address a result printed
+flopwire change --repo . 0123456789abcdef0123456789abcdef01234567     # captured commit evidence
 ```
 
 - `grep`, `search` and `read` print text (`--json` for JSON). Hits group
@@ -240,9 +241,14 @@ default_tools_approval_mode = "approve"
 ```
 
 The search tools are `flopwire_grep`, `flopwire_search`,
-`flopwire_sessions` and `flopwire_read`. They only read, and answer as
+`flopwire_sessions`, `flopwire_read`, and `flopwire_change`. They only read, and answer as
 the CLI does, as one text block. The plugin searches the shared server
 after enrollment. Add `"--local"` to `args` to search only this device.
+
+Use `flopwire_change` with a repository and full commit IDs to find captured
+command/result evidence linking commits to sessions. See
+[commit evidence](docs/search.md#commit-evidence) for prefix matches,
+pagination, and squash-merge lookup.
 
 The messaging tools are `flopwire_messages`, `flopwire_peers`, `flopwire_send`
 and `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a

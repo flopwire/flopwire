@@ -84,7 +84,7 @@ func TestGrepSearchAndFilters(t *testing.T) {
 	}
 	// Regex, smart case, grep line semantics, newest message first (D7).
 	page = grepFor(t, b, pat(`^exit (code|status) \d$`), format.Filters{})
-	if hitIDs(page.Hits) != "24,7,97,63" || page.Hits[0].Lines[0].N != 2 || page.Hits[0].Lines[0].Text != "exit code 2" {
+	if hitIDs(page.Hits) != "24,7,101,63" || page.Hits[0].Lines[0].N != 2 || page.Hits[0].Lines[0].Text != "exit code 2" {
 		t.Fatalf("regex: %s %+v", hitIDs(page.Hits), page.Hits[0].Lines)
 	}
 	if page = grepFor(t, b, pat(`CHI\.New(Router|Mux)`), format.Filters{}); len(page.Hits) != 0 {
@@ -100,12 +100,12 @@ func TestGrepSearchAndFilters(t *testing.T) {
 		f    format.Filters
 		want string
 	}{
-		{"agent+kind", format.Filters{Agent: "codex", Kinds: []string{"assistant"}}, "98,100"},
-		{"exclude subagents", format.Filters{Agent: "codex", Kinds: []string{"assistant"}, ExcludeSubagents: true}, "98"},
-		{"tool", format.Filters{Tools: []string{"EXEC_COMMAND"}}, "97,59"},
+		{"agent+kind", format.Filters{Agent: "codex", Kinds: []string{"assistant"}}, "102,104"},
+		{"exclude subagents", format.Filters{Agent: "codex", Kinds: []string{"assistant"}, ExcludeSubagents: true}, "102"},
+		{"tool", format.Filters{Tools: []string{"EXEC_COMMAND"}}, "101,59"},
 		{"exclude kind", format.Filters{Agent: "codex", ExcludeKinds: []string{"tool_result", "assistant"}}, ""},
 		{"repo glob", format.Filters{Repo: "oracle-b*"}, "59"},
-		{"repo path", format.Filters{Repo: "/tmp/oracle-alpha"}, "98,97,100"},
+		{"repo path", format.Filters{Repo: "/tmp/oracle-alpha"}, "102,101,104"},
 	} {
 		if got := hitIDs(grepFor(t, b, grep.Spec{Patterns: []string{"chi.New"}, Fixed: true}, tc.f).Hits); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)

@@ -16,6 +16,11 @@ import (
 // when full (a counted attribute changed, rows superseded, no digest
 // yet) the aggregates are recounted over the live rows.
 func (w *writeTx) refreshDigest(convID int64, msgs, added []*transcript.Message, full bool) error {
+	if full || changeRelevant(msgs) {
+		if err := w.refreshChangeEvents(convID); err != nil {
+			return err
+		}
+	}
 	var (
 		prev, cwd, root, branches, remote, title sql.NullString
 		start, last                              sql.NullInt64
@@ -78,7 +83,7 @@ const (
 func (w *writeTx) digestCounts(convID int64, agent, session, device string) (digest.Counts, error) {
 	n := digest.Counts{Messages: map[string]int{}, Tools: map[string]int{}}
 	rows, err := w.tx.QueryContext(w.ctx, `SELECT kind, ifnull(tool_name, ''), count(*) FROM messages
-		WHERE conversation_id = ? AND superseded = 0 AND on_active_path IS NOT 0 GROUP BY 1, 2`, convID)
+		WHERE conversation_id = ? AND superseded = 0 AND on_active_path IS NOT 0 AND NOT (kind='tool_result' AND ifnull(json_extract(enrichment,'$.command_completion'),0)=1 AND ifnull(json_extract(enrichment,'$.completion_legacy'),0)<>1) GROUP BY 1, 2`, convID)
 	if err != nil {
 		return n, err
 	}
@@ -99,7 +104,7 @@ func (w *writeTx) digestCounts(convID int64, agent, session, device string) (dig
 		return n, err
 	}
 	row, err := w.queryRow(`SELECT count(DISTINCT ifnull(tool_call_id, id)) FROM messages
-		WHERE conversation_id = ? AND superseded = 0 AND on_active_path IS NOT 0 AND is_error = 1`, convID)
+		WHERE conversation_id = ? AND superseded = 0 AND on_active_path IS NOT 0 AND NOT (kind='tool_result' AND ifnull(json_extract(enrichment,'$.command_completion'),0)=1 AND ifnull(json_extract(enrichment,'$.completion_legacy'),0)<>1) AND is_error = 1`, convID)
 	if err != nil {
 		return n, err
 	}
@@ -160,7 +165,7 @@ func (w *writeTx) newFailed(convID int64, msgs []*transcript.Message) (int, erro
 	n := 0
 	calls := map[string]int{}
 	for _, m := range msgs {
-		if !m.IsError || m.Superseded || m.OnActivePath != nil && !*m.OnActivePath {
+		if digest.IsEvidenceOnly(m) || !m.IsError || m.Superseded || m.OnActivePath != nil && !*m.OnActivePath {
 			continue
 		}
 		if m.ToolCallID == "" {
@@ -171,7 +176,7 @@ func (w *writeTx) newFailed(convID int64, msgs []*transcript.Message) (int, erro
 	}
 	for id, k := range calls {
 		row, err := w.queryRow(`SELECT count(*) FROM messages
-			WHERE conversation_id = ? AND tool_call_id = ? AND is_error = 1 AND superseded = 0 AND on_active_path IS NOT 0`, convID, id)
+			WHERE conversation_id = ? AND tool_call_id = ? AND is_error = 1 AND superseded = 0 AND on_active_path IS NOT 0 AND NOT (kind='tool_result' AND ifnull(json_extract(enrichment,'$.command_completion'),0)=1 AND ifnull(json_extract(enrichment,'$.completion_legacy'),0)<>1)`, convID, id)
 		if err != nil {
 			return 0, err
 		}
