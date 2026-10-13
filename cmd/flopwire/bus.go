@@ -647,7 +647,7 @@ func arrival(r busproto.SendResponse) string {
 // already says when the request arrives and why; next says only what
 // that means for the reply, without repeating it. Both are true in every
 // harness: a reply is delivered at the sender's next tool call or with
-// its human's next prompt, never by starting a turn.
+// a prompt/resumption hook, never by starting a turn.
 const (
 	// The recipient is busy: a reply may come within this turn.
 	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits until your session resumes. Keep working, or wait briefly if you need it to continue."

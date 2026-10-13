@@ -769,8 +769,9 @@ The harness hooks run `flopwire hook`. The command does two jobs:
 | Any other event | Nothing. It only asks for the upload. |
 
 A message arrives inside a running turn, at the next tool call, or with the
-human's next prompt. A message never wakes an idle session and never
-starts a turn.
+session's next prompt or resumption hook, including a background task
+notification. Child tool calls do not deliver messages to a stopped parent.
+A message never wakes an idle session and never starts a turn.
 
 A hook never fails a turn. `flopwire hook` exits 0 and prints nothing in
 these cases:

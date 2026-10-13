@@ -1310,3 +1310,20 @@ func TestPeersTextUsesAuthoritativeIdleAge(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestStoppedParentReceiptWaitsForResumption(t *testing.T) {
+	r := busproto.SendResponse{ID: "msynthetic", State: busproto.StateQueued, Intent: busproto.IntentRequest, To: busproto.Recipient{Session: "parent-session", Agent: "claude", Live: true, IdleKnown: true, IdleSince: t0}}
+	if arrival(r) != arriveNextPrompt {
+		t.Fatalf("idle protocol value: %q", arrival(r))
+	}
+	if line := sendOutcome(r); !strings.Contains(line, "arrives when its session resumes") || strings.Contains(line, "next tool call") {
+		t.Fatalf("stopped parent receipt: %s", line)
+	}
+	if sendNext(r) != nextNoWait {
+		t.Fatalf("stopped parent should not wait: %s", sendNext(r))
+	}
+	r.To.Busy = true
+	if arrival(r) != arriveNextToolCall || sendNext(r) != nextBusy {
+		t.Fatalf("resumed parent: %s / %s", arrival(r), sendNext(r))
+	}
+}
