@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -46,6 +47,9 @@ func BenchmarkGrepRequiredSpans(b *testing.B) {
 					b.Fatal(err)
 				}
 				b.Logf("candidate predicate parameters=%d", len(q.args))
+				// Keep row materialization identical to the deployed baseline;
+				// this benchmark isolates predicates from page hydration changes.
+				sql := `SELECT ` + hitCols + `,m.content_sha,m.text FROM ` + from + ` WHERE ` + q.sql() + ` ORDER BY m.ts DESC NULLS LAST,m.id LIMIT ` + strconv.Itoa(maxCandidates)
 				b.ResetTimer()
 				var total time.Duration
 				for j := 0; j < b.N; j++ {
@@ -57,7 +61,7 @@ func BenchmarkGrepRequiredSpans(b *testing.B) {
 					}
 					cursor := fmt.Sprintf("requirements_%v", spans)
 					start := time.Now()
-					_, err = tx.Exec(ctx, `DECLARE `+cursor+` NO SCROLL CURSOR FOR `+grepCandidates(q, false), q.args...)
+					_, err = tx.Exec(ctx, `DECLARE `+cursor+` NO SCROLL CURSOR FOR `+sql, q.args...)
 					if err == nil {
 						rows, e := tx.Query(ctx, `FETCH 256 FROM `+cursor)
 						err = e

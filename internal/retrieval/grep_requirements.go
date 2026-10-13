@@ -98,10 +98,7 @@ func literalRequirements(re *syntax.Regexp, remaining *int) (*literalRequirement
 			return n, true
 		}
 	case syntax.OpAlternate:
-		n := &literalRequirement{op: " AND "}
-		if re.Op == syntax.OpAlternate {
-			n.op = " OR "
-		}
+		n := &literalRequirement{op: " OR "}
 		for _, sub := range re.Sub {
 			child, ok := literalRequirements(sub, remaining)
 			if !ok {
@@ -109,11 +106,8 @@ func literalRequirements(re *syntax.Regexp, remaining *int) (*literalRequirement
 			}
 			if child == nil {
 				// An unconstrained alternate may match without any other
-				// branch's literals. Concatenation may retain its siblings.
-				if re.Op == syntax.OpAlternate {
-					return nil, true
-				}
-				continue
+				// branch's literals.
+				return nil, true
 			}
 			n.sub = append(n.sub, child)
 		}
@@ -127,6 +121,9 @@ func literalRequirements(re *syntax.Regexp, remaining *int) (*literalRequirement
 }
 
 func literalLeaf(literals []string, remaining *int) (*literalRequirement, bool) {
+	if len(literals) == 0 {
+		return nil, true
+	}
 	for _, s := range literals {
 		if s == "" || strings.ContainsRune(s, 0) || !likeIndexable(s) {
 			return nil, true
