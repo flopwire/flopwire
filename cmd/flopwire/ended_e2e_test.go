@@ -37,7 +37,7 @@ func TestHookEndToEndSessionEnded(t *testing.T) {
 	}
 	waitPeer(t, sock, e2eA, e2eB) // presence read: B is held
 	out, err := busCLI(t, sock, e2eA, "", "send", "e2e0bbbb", "--", "for a session that is killed")
-	if err != nil || !strings.Contains(out, "idle, arrives with its human's next prompt") {
+	if err != nil || !strings.Contains(out, "idle, arrives when its session resumes") {
 		t.Fatalf("send: %q %v", out, err)
 	}
 	if err := proc.Process.Kill(); err != nil {
