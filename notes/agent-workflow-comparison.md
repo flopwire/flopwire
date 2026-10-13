@@ -1,21 +1,15 @@
 # Agent workflow comparison
 
 Reviewed 2026-10-13. Flopwire source: `f83db684e912ea77c08ac02264996f55cf1f4993`.
-Gas Town is excluded at the user's request.
 
-Flopwire's strongest candidate advantage is the integrated route from
-historical evidence to a live coding session and a new request. Several
-alternatives already capture history and expose it to agents. This table
-compares individual product capabilities; it does not establish a unique
-feature or an overall UX winner.
+Flopwire's candidate advantage is finding prior evidence, identifying the
+responsible live session and contacting it. The table compares documented
+capabilities; agent success remains unmeasured. Gas Town is excluded.
 
 ## Feature table
 
-**Yes** means documented native support, including configuration where
-stated. **Partial** means a narrower or different workflow. **NE** means
-not established in the reviewed interfaces; it does not prove absence.
-**No** is used for explicit Flopwire gaps. These are capability labels,
-not agent success scores.
+**Partial** means narrower support. **NE** means support was not established
+in the reviewed interfaces. **No** marks a confirmed Flopwire gap.
 
 | Agent workflow | Flopwire | AgentsView | MCP Agent Mail Rust | Entire | SpecStory | Langfuse |
 |---|---|---|---|---|---|---|
@@ -31,26 +25,14 @@ not agent success scores.
 | Resume a captured session in another harness | No built-in cross-harness resume | NE | NE | Native resume; cross-harness NE | Supported target harnesses | NE |
 | Analyze behavior and evaluate outputs | Session digests and failure counts | Usage, costs and activity insights; evals NE | Coordination views; model evals NE | Activity/token summaries; evals NE | Analytics; evals NE | Trace analysis, costs, failures and evaluations |
 
-Sources and important qualifications follow below. A stored session's
-recent activity does not establish a routable live agent. Acknowledgment
-does not establish a substantive reply. Successful message recovery after
-a restart does not establish task resumption.
+Live contact requires a routable recipient, not just recent archive activity.
+Receipts and restart recovery measure transport; they do not establish a reply
+or resumed work.
 
-## What the table says about choosing a product
-
-| Product | Most relevant reason to compare it |
-|---|---|
-| Flopwire | Recover coding evidence, identify the responsible session, then contact that session or person across harnesses and machines |
-| AgentsView | Richer historical retrieval, meaning-based search and revision-aware evidence reads |
-| MCP Agent Mail | Explicit coordination: contacts, threads, acknowledgments, file reservations and macros |
-| Entire | Git-linked checkpoints and explanations of the context behind changes |
-| SpecStory | Captured session search and continuation into another supported agent |
-| Langfuse | Inspection and evaluation of agent behavior, failures and cost |
-
-These are workflow interpretations of documented capabilities. They are
-not measured rankings. A combined CASS and Agent Mail installation is
-also a relevant alternative to test; separate products can supply parts
-of Flopwire's combined workflow.
+Flopwire connects retrieval and live coordination. AgentsView adds semantic
+retrieval; Agent Mail adds reservations; Entire links changes to checkpoints;
+SpecStory supports cross-harness resume; Langfuse adds evaluations. A combined
+CASS and Agent Mail installation also merits a trial.
 
 ## Agent UX spot check
 
@@ -84,6 +66,9 @@ tool familiarity differed. This is an informal usability example, not a
 blinded experiment or evidence that one product's agents perform better.
 Neither task established a complete rationale-to-owner-to-reply workflow.
 
+<details>
+<summary>Commands and source addresses</summary>
+
 The commands, excluding local binary and synthetic index paths, were:
 
 ```sh
@@ -103,6 +88,8 @@ address uses its stable byte-derived ordinal; AgentsView uses message
 ordinal 7 and reports transcript revision 1. The ordinals are different
 addressing systems, not different decisions.
 
+</details>
+
 ## What good agent UX should pass
 
 | Scenario | Observable pass criterion |
@@ -120,24 +107,22 @@ answers. Keep feature availability separate from successful agent use.
 
 ## Flopwire priorities exposed by the comparison
 
-1. **Teach the existing coordination history.** `flopwire_messages` already
+1. **Teach retained-message retrieval.** `flopwire_messages` already
    lists retained repo threads and opens full messages. It appears in the
    MCP catalog, but the main messaging skill does not teach it and the
    README still describes three messaging tools. Update the normal agent
-   workflow before adding another history feature.
+   workflow.
 2. **Simplify change-to-owner resolution.** Commit digests record what the
    transcript proves. A squash-merged main SHA can require recovering the
    PR and original branch. Teach the fallback and investigate a resolver
    that returns evidence and ambiguity explicitly.
-3. **Reduce context and address bookkeeping.** Full-address output and
-   bounded reads already exist. Improve defaults or instructions using
-   task trials before inventing another retrieval surface.
-4. **Evaluate a concrete handoff view.** Recovering a transcript is only
-   part of resuming work. A useful handoff names goals, decisions, rejected
-   attempts, tests, blockers and source links. Compare this against native
-   resume workflows and Agent Mail's thread macros.
+3. **Simplify evidence reads.** Full-address output and
+   bounded reads already exist. Test simpler defaults and instructions.
+4. **Handoffs are deferred.** Test whether existing retrieval is enough to
+   resume work before proposing a separate feature.
 
-## Evidence and version boundaries
+<details>
+<summary>Sources, versions and untested capabilities</summary>
 
 ### Flopwire
 
@@ -212,3 +197,5 @@ required. The pilot imported canonical text through a custom OTLP adapter.
 That result does not qualify native coding-agent capture or its agent UX.
 No general native-history backfill or live-peer messaging workflow was
 established in the reviewed sources.
+
+</details>
