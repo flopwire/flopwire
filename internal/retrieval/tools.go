@@ -92,7 +92,10 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	startupStage := "acquiring the read transaction and setting its timeout"
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
-	err = s.read(ctx, b, func(tx pgx.Tx) error {
+	// The candidate cursor and page hydration must observe one snapshot,
+	// as the previous full-row cursor did, even when another request edits,
+	// hides, redacts or deletes a candidate between these statements.
+	err = s.readTransaction(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
 		if narrows {
 			startupStage = "resolving filtered sessions"
 			// The filtered conversations first, so the candidate query
@@ -127,6 +130,25 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err != nil {
 				return err
 			}
+			ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+			if err != nil {
+				return err
+			}
+			if len(ids) == 0 {
+				break
+			}
+			startupStage = "loading candidate bodies and metadata"
+			left = time.Until(deadline)
+			if left <= 0 {
+				return context.DeadlineExceeded
+			}
+			if err := setTimeout(ctx, tx, left); err != nil {
+				return err
+			}
+			rows, err = tx.Query(ctx, grepCandidateBodies, ids)
+			if err != nil {
+				return err
+			}
 			got, more := 0, true
 			for rows.Next() {
 				var sha []byte
@@ -152,6 +174,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if !more || got == 0 {
 				break
 			}
+			startupStage = "fetching candidate IDs"
 		}
 		if checked >= maxCandidates {
 			page.Truncated = true
@@ -234,8 +257,13 @@ func grepCandidates(q *query, oldest bool) string {
 	if oldest {
 		order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
 	}
-	return `SELECT ` + hitCols + `,m.content_sha,m.text FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
+	return `SELECT m.id FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
 }
+
+// Only one cursor page is hydrated. WITH ORDINALITY retains its exact order,
+// including timestamp ties, undated rows, and the oldest-first direction.
+const grepCandidateBodies = `SELECT ` + hitCols + `,m.content_sha,m.text
+ FROM unnest($1::uuid[]) WITH ORDINALITY page(id,n) JOIN ` + from + ` ON page.id=m.id ORDER BY page.n`
 
 // grepConvCap bounds the conversations grep resolves before its scan
 // when a filter names them (grepConversations). Under it, the candidate

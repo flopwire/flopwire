@@ -627,7 +627,11 @@ func followUp(ctx context.Context) (context.Context, context.CancelFunc) {
 // read runs fn in a read-only transaction whose statements Postgres stops
 // after b, so a slow query cannot hold a pooled connection past its budget.
 func (s *Store) read(ctx context.Context, b time.Duration, fn func(pgx.Tx) error) error {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	return s.readTransaction(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly}, fn)
+}
+
+func (s *Store) readTransaction(ctx context.Context, b time.Duration, opts pgx.TxOptions, fn func(pgx.Tx) error) error {
+	tx, err := s.Pool.BeginTx(ctx, opts)
 	if err != nil {
 		return cutShort(ctx, err)
 	}

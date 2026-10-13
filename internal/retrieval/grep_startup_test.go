@@ -23,6 +23,7 @@ func TestGrepStartupTimeoutStages(t *testing.T) {
 		{"sessions", "SELECT c.id::text FROM", "resolving filtered sessions", format.Filters{Agent: "claude"}},
 		{"declare", "DECLARE grep_candidates", "declaring the candidate cursor", format.Filters{}},
 		{"fetch", "FETCH 256 FROM grep_candidates", "fetching the first candidate page", format.Filters{}},
+		{"hydrate", "WITH ORDINALITY", "loading candidate bodies and metadata", format.Filters{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFindFixture(t)
