@@ -80,6 +80,13 @@ Assign an operation only when command/result association supports it. Wrapper
 scripts, absent output, and unsupported shell syntax remain gaps. Test quiet
 commits, failed compound commands, directory changes, cherry-picks, and reverts.
 
+Pair commands and results through parsed IDs within the same source/session.
+Text containing an ID or a nearby URL is insufficient. Add fixtures for delayed
+results returned by a later poll and self-contained command-completion records.
+Preserve execution outcome separately: a failed compound command can still
+contain evidence of an earlier successful commit. Settle this event contract
+before designing the index schema.
+
 Keep the command's observed directory separate from the session's repository.
 A session can commit in another repository. Label the command repository known
 only when captured placement evidence supports it; today's path or remote is
@@ -134,6 +141,31 @@ merge. Looking up the PR's original commits remains useful.
 
 Flopwire already stores captured sessions. Deriving the links there avoids adding
 Entire's Git hooks, checkpoint refs, and separate publication queue to this feature.
+
+</details>
+
+<details>
+<summary>Lessons from Agentboard's GitHub parsing</summary>
+
+Reviewed Agentboard `ab34776d` locally on 2026-10-13.
+Its [PR extractor][agentboard-extractor] recognizes command invocations, handles
+shell wrappers, and uses call/result pairing or self-contained Codex command
+records. Claude's `pr-link` records supply another session-to-PR association.
+These are useful fixture patterns for Flopwire's existing parser.
+
+All 54 extractor tests passed. Two additional synthetic checks showed why its
+results should remain associations: an unrelated result containing a pending
+call ID in its text was accepted; a failed create containing an existing PR URL
+was accepted too. The fallback also accepts result URLs within ten lines of an
+unrecognized create record. These signals cannot establish commit production.
+
+Borrow the fixtures and exact event matching approach. Keep weak associations
+out of commit results. Explicit `pr-link` support can be added separately as PR
+association evidence; it is unnecessary for the first commit lookup.
+
+Agentboard's separate [metadata fetcher][agentboard-info] invokes `gh` from its
+server. Keep that credential choice separate: this proposal leaves `gh` with
+the calling agent.
 
 </details>
 
@@ -244,3 +276,5 @@ and rebase the topic onto a new base; inspect their messages and IDs.
 [entire-push]: https://github.com/entireio/cli/blob/v0.11.4/cmd/entire/cli/strategy/manual_commit_push.go
 [entire-refs]: https://github.com/entireio/cli/blob/v0.11.4/cmd/entire/cli/checkpoint/refs_store.go
 [github-squash]: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/configuring-commit-squashing-for-pull-requests
+[agentboard-extractor]: https://github.com/gbasin/agentboard/blob/ab34776d7d1a23fdf55bf094f41af4f8300f21db/src/server/prExtractor.ts
+[agentboard-info]: https://github.com/gbasin/agentboard/blob/ab34776d7d1a23fdf55bf094f41af4f8300f21db/src/server/prInfo.ts
