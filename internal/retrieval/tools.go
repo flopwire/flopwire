@@ -99,6 +99,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	// as the previous full-row cursor did, even when another request edits,
 	// hides, redacts or deletes a candidate between these statements.
 	err = s.readTransaction(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
+		var narrowedConversations []string
 		if narrows {
 			startupStage = "resolving filtered sessions"
 			// The filtered conversations first, so the candidate query
@@ -112,12 +113,58 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 				return nil // no conversation passes the filters: nothing to scan
 			}
 			if ok {
+				narrowedConversations = ids
 				q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
 			}
 			broad = !ok
 		}
+		candidateSQL := grepCandidates(q, gq.Sort == format.SortOldest)
+		// A successful conversation narrowing gives metadata selection an
+		// indexed entry point. Without it, even a metadata-only scan may
+		// visit the entire corpus before applying kind/time filters.
+		if !gq.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
+			startupStage = "planning text candidates"
+			left := time.Until(deadline)
+			if left <= 0 {
+				return context.DeadlineExceeded
+			}
+			if err := setTimeout(ctx, tx, left); err != nil {
+				return err
+			}
+			textBroad, err := grepPlanNeedsMetadata(ctx, tx, q, gq.Sort == format.SortOldest, deadline)
+			if err != nil {
+				return err
+			}
+			if textBroad {
+				startupStage = "resolving filtered messages"
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
+				}
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
+				ids, complete, err := grepMetadataCandidates(ctx, tx, f, narrowedConversations)
+				if err != nil {
+					return err
+				}
+				if complete {
+					if len(ids) == 0 {
+						return nil
+					}
+					candidateSQL = grepFilteredCandidates(q, ids, gq.Sort == format.SortOldest)
+				}
+			}
+		}
 		startupStage = "declaring the candidate cursor"
-		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+grepCandidates(q, gq.Sort == format.SortOldest), q.args...); err != nil {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return context.DeadlineExceeded
+		}
+		if err := setTimeout(ctx, tx, left); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+candidateSQL, q.args...); err != nil {
 			return err
 		}
 		startupStage = "fetching the first candidate page"

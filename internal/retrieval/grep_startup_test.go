@@ -21,6 +21,7 @@ func TestGrepStartupTimeoutStages(t *testing.T) {
 	}{
 		{"transaction", "begin", "acquiring the read transaction", format.Filters{}},
 		{"sessions", "SELECT c.id::text FROM", "resolving filtered sessions", format.Filters{Agent: "claude"}},
+		{"planning", "EXPLAIN (FORMAT JSON)", "planning text candidates", format.Filters{Session: "sess-1", Kinds: []string{"user"}}},
 		{"declare", "DECLARE grep_candidates", "declaring the candidate cursor", format.Filters{}},
 		{"fetch", "FETCH 256 FROM grep_candidates", "fetching the first candidate page", format.Filters{}},
 		{"hydrate", "WITH ORDINALITY", "loading candidate bodies and metadata", format.Filters{}},
@@ -32,7 +33,7 @@ func TestGrepStartupTimeoutStages(t *testing.T) {
 			s := f.stallStore(plan)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			page, err := s.Grep(ctx, format.GrepQuery{Pattern: "upload", Fixed: true}, tc.filters)
+			page, err := s.Grep(ctx, format.GrepQuery{Pattern: "upload", Fixed: tc.name != "planning"}, tc.filters)
 			if err != nil {
 				t.Fatal(err)
 			}
