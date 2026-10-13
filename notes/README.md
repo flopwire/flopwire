@@ -23,6 +23,7 @@ disagree, the code and `punch-list.md` win.
 | [`launch-readiness/state-machine-walks.md`](launch-readiness/state-machine-walks.md) | Concrete-state walks for deletion, backup and restore, quotas and collection. |
 | [`agent-ux.md`](agent-ux.md) | The agent UX review of the retrieval tools and MCP server (2026-09-30), with later dated evaluations such as read's `messages_before`/`messages_after`. |
 | [`agent-workflow-comparison.md`](agent-workflow-comparison.md) | Feature comparison across Flopwire and five alternatives, agent context-recovery spot checks, and workflow evaluation criteria. |
+| [`agent-interface-review.md`](agent-interface-review.md) | Agent tool workflows, retrieval and contact friction, and focused MCP probes. |
 | [`redaction.md`](redaction.md) | What is redacted, where, and how masks keep byte addresses stable. |
 | [`reparse.md`](reparse.md) | Versioned reparse on the server: parser versions, staleness and the background worker. |
 | [`perf-guards.md`](perf-guards.md) | The CI performance guards decided 2026-09-30: query plans, scale and query-count tests. |
