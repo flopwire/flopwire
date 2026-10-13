@@ -122,8 +122,8 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		// A successful conversation narrowing gives metadata selection an
 		// indexed entry point. Without it, even a metadata-only scan may
 		// visit the entire corpus before applying kind/time filters.
-		if len(narrowedConversations) > 0 && grepMetadataUseful(f) {
-			startupStage = "resolving filtered messages"
+		if !gq.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
+			startupStage = "planning text candidates"
 			left := time.Until(deadline)
 			if left <= 0 {
 				return context.DeadlineExceeded
@@ -131,15 +131,29 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err := setTimeout(ctx, tx, left); err != nil {
 				return err
 			}
-			ids, complete, err := grepMetadataCandidates(ctx, tx, f, narrowedConversations)
+			textBroad, err := grepPlanNeedsMetadata(ctx, tx, q, gq.Sort == format.SortOldest, deadline)
 			if err != nil {
 				return err
 			}
-			if complete {
-				if len(ids) == 0 {
-					return nil
+			if textBroad {
+				startupStage = "resolving filtered messages"
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
 				}
-				candidateSQL = grepFilteredCandidates(q, ids, gq.Sort == format.SortOldest)
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
+				ids, complete, err := grepMetadataCandidates(ctx, tx, f, narrowedConversations)
+				if err != nil {
+					return err
+				}
+				if complete {
+					if len(ids) == 0 {
+						return nil
+					}
+					candidateSQL = grepFilteredCandidates(q, ids, gq.Sort == format.SortOldest)
+				}
 			}
 		}
 		startupStage = "declaring the candidate cursor"

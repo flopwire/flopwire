@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func BenchmarkGrepFilteredCandidates(b *testing.B) {
 	s, _ := perfCorpus(b, 400, 10)
 	ctx := context.Background()
 	if _, err := s.Pool.Exec(ctx, `UPDATE messages m SET kind=CASE WHEN ordinal%5=0 THEN 'assistant' ELSE 'tool_result' END,
- text=CASE WHEN ordinal%5=0 THEN CASE WHEN conversation_id=md5('c1')::uuid THEN 'zebracorn read:project gh auth refresh' ELSE 'ordinary assistant record' END
+ text=CASE WHEN ordinal%5=0 THEN CASE WHEN conversation_id=md5('c1')::uuid THEN 'zebracorn rarealpha read:project gh auth refresh' ELSE 'ordinary assistant record' END
  ELSE (SELECT string_agg(md5(m.id::text||g),'') FROM generate_series(1,1024) g)||' read:unrelated project gh auth unrelated refresh INSUFFICIENT_unrelated SCOPES' END`); err != nil {
 		b.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func BenchmarkGrepFilteredCandidates(b *testing.B) {
 		b.Fatal(err)
 	}
 	f := format.Filters{Agent: "claude", Kinds: []string{"assistant"}, Since: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
-	for _, pattern := range []string{`read:project|gh auth refresh|INSUFFICIENT_SCOPES`, `zebracorn`} {
+	for _, pattern := range []string{`read:project|gh auth refresh|INSUFFICIENT_SCOPES`, `zebracorn`, `rarealpha|rarebeta`} {
 		plan, err := grep.Compile(format.GrepQuery{Pattern: pattern})
 		if err != nil {
 			b.Fatal(err)
@@ -54,11 +55,12 @@ func BenchmarkGrepFilteredCandidates(b *testing.B) {
 			b.Fatalf("metadata %v %v", complete, err)
 		}
 		tx.Rollback(ctx)
+		originalQuery := &query{conds: slices.Clone(q.conds), args: slices.Clone(q.args)}
 		original := grepCandidates(q, false)
 		filtered := grepFilteredCandidates(q, ids, false)
 		// Original SQL predates the extra eligible-ID argument.
 		originalArgs := q.args[:len(q.args)-1]
-		for _, mode := range []string{"gin", "metadata"} {
+		for _, mode := range []string{"gin", "metadata", "adaptive"} {
 			b.Run(pattern+"/"+mode, func(b *testing.B) {
 				sql, args := original, originalArgs
 				if mode == "metadata" {
@@ -72,20 +74,44 @@ func BenchmarkGrepFilteredCandidates(b *testing.B) {
 				if err := json.Unmarshal(raw, &explain); err != nil {
 					b.Fatal(err)
 				}
-				b.Logf("candidate execution_ms=%.3f", explain[0]["Execution Time"])
+				b.Logf("candidate execution_ms=%.3f planning_ms=%.3f", explain[0]["Execution Time"], explain[0]["Planning Time"])
 				b.ResetTimer()
 				for range b.N {
 					tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 					if err != nil {
 						b.Fatal(err)
 					}
+					defer tx.Rollback(ctx)
 					start := time.Now()
 					if mode == "metadata" {
 						if _, complete, err := grepMetadataCandidates(ctx, tx, f, convs); err != nil || !complete {
 							b.Fatalf("metadata %v %v", complete, err)
 						}
 					}
-					rows, err := tx.Query(ctx, sql, args...)
+					candidateSQL, candidateArgs := sql, args
+					if mode == "adaptive" && pattern != "zebracorn" {
+						planStart := time.Now()
+						useMetadata, err := grepPlanNeedsMetadata(ctx, tx, originalQuery, false, time.Now().Add(10*time.Second))
+						b.Logf("adaptive planning_ms=%.3f choose_metadata=%v error=%v", float64(time.Since(planStart).Microseconds())/1000, useMetadata, err)
+						if err != nil {
+							b.Fatal(err)
+						}
+						if useMetadata {
+							currentIDs, complete, err := grepMetadataCandidates(ctx, tx, f, convs)
+							if err != nil {
+								b.Fatal(err)
+							}
+							if complete {
+								currentQuery := &query{conds: slices.Clone(originalQuery.conds), args: slices.Clone(originalQuery.args)}
+								candidateSQL = grepFilteredCandidates(currentQuery, currentIDs, false)
+								candidateArgs = currentQuery.args
+							}
+						}
+					}
+					if _, err := tx.Exec(ctx, `DECLARE benchmark_filtered NO SCROLL CURSOR FOR `+candidateSQL, candidateArgs...); err != nil {
+						b.Fatal(err)
+					}
+					rows, err := tx.Query(ctx, `FETCH ALL FROM benchmark_filtered`)
 					if err != nil {
 						b.Fatal(err)
 					}
