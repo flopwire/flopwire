@@ -1,9 +1,63 @@
 # Run the pilot
 
-Use Python 3.10 or later. The runners use the Python standard library.
-Use a fresh output directory for each run. Existing output is preserved.
+Requires Python 3.10+, Flopwire, AgentsView and Agent Mail binaries, and a
+dedicated local Langfuse project. Product flags are optional. Each run uses
+a fresh output directory with isolated product state.
 
-## Prepare the products
+## Measure retrieval
+
+```sh
+python3 scripts/competitive-pilot.py \
+  --root /tmp/competitive-retrieval-run-1 \
+  --flopwire /tmp/flopwire-pilot \
+  --agentsview /tmp/pilot-tools/agentsview \
+  --langfuse-env /tmp/pilot-langfuse/.env \
+  --langfuse-url http://127.0.0.1:43180 \
+  --rg /opt/homebrew/bin/rg \
+  --runs 30 --seed 1
+```
+
+Omit a product flag to skip that product. The output includes
+`manifest.json`, `results.json`, first response files and a server log.
+Each CLI query runs in a fresh process; services remain warm. Failures and
+attribution mismatches are retained in `results.json`.
+
+## Measure messaging
+
+```sh
+python3 scripts/competitive-messaging.py \
+  --root /tmp/competitive-messaging-run-1 \
+  --flopwire /tmp/flopwire-pilot \
+  --agent-mail /tmp/pilot-tools/am \
+  --runs 30 --seed 1
+```
+
+Keep the output path short enough for a Unix socket. The runner starts
+both local servers. Agent Mail uses an available loopback port and a fresh
+archive. Flopwire indexes generated transcripts and uses recent activity
+as its presence signal. Synthetic hooks retrieve messages. Recovery uses
+a separate Flopwire sender to respect the default hourly send allowance.
+
+The output includes `messaging-results.json`, a corpus manifest and server
+logs. The runner stops its own processes after the run. It does not run a
+model or register sessions on the user's message network.
+
+## Check results and stop Langfuse
+
+```sh
+python3 scripts/competitive-pilot-test.py
+```
+
+The runners stop their own processes. Inspect failures in the result files,
+then run `docker compose down` for the dedicated Langfuse project. Keep its
+volumes and scratch evidence until review is complete.
+
+The pilot measures exact retrieval and transport. See the
+[specification](README.md) for relevance, model-visible delivery and agent
+outcome experiments.
+
+<details>
+<summary>Install pilot binaries</summary>
 
 1. Build Flopwire from the commit under test.
 
@@ -20,12 +74,13 @@ Use a fresh output directory for each run. Existing output is preserved.
 6. Check its archive against the release's checksum file.
 7. Extract the binaries into the same tools directory.
 
-The runners never install plugins or change the user's agent configuration.
-They create isolated homes and product state below the output directory.
-Run them from a checkout that the Agent Mail server can access; its release
+Run from a checkout that the Agent Mail server can access; its release
 may discover a web asset folder from the current directory.
 
-## Prepare Langfuse locally
+</details>
+
+<details>
+<summary>Set up the isolated Langfuse project</summary>
 
 Follow Langfuse's [Docker Compose guide](https://langfuse.com/self-hosting/deployment/docker-compose).
 The pilot used the upstream compose file at commit
@@ -55,64 +110,4 @@ Observations API v2. Older deployments may require a different adapter.
 Pass only the local pilot `.env` file. The runner will write synthetic
 observations to the project named by those keys.
 
-## Measure retrieval
-
-Replace the example binary paths with the extracted binaries.
-
-```sh
-python3 scripts/competitive-pilot.py \
-  --root /tmp/competitive-retrieval-run-1 \
-  --flopwire /tmp/flopwire-pilot \
-  --agentsview /tmp/pilot-tools/agentsview \
-  --langfuse-env /tmp/pilot-langfuse/.env \
-  --langfuse-url http://127.0.0.1:43180 \
-  --rg /opt/homebrew/bin/rg \
-  --runs 30 --seed 1
-```
-
-Omit a product flag to skip that product. The output includes
-`manifest.json`, `results.json`, first response files and a server log.
-The runner stops its own AgentsView process after the run. Each CLI query
-runs in a fresh process; the AgentsView service remains warm. Langfuse
-uses direct HTTP requests to a persistent service. The runner preserves
-command failures and mismatched attribution in `results.json`.
-
-For this dated pilot, `rg` was included in the same randomized schedule.
-
-## Measure messaging
-
-```sh
-python3 scripts/competitive-messaging.py \
-  --root /tmp/competitive-messaging-run-1 \
-  --flopwire /tmp/flopwire-pilot \
-  --agent-mail /tmp/pilot-tools/am \
-  --runs 30 --seed 1
-```
-
-Keep the output path short enough for a Unix socket. The runner starts
-both local servers. Agent Mail uses an available loopback port and a fresh
-archive. Flopwire indexes generated transcripts and uses recent activity
-as its presence signal. Synthetic hooks retrieve messages. Recovery uses
-a separate Flopwire sender to respect the default hourly send allowance.
-
-The output includes `messaging-results.json`, a corpus manifest and server
-logs. The runner stops its own processes after the run. It does not run a
-model or register sessions on the user's message network.
-
-## Validate and stop
-
-1. Run the attribution and scoring checks.
-
-   ```sh
-   python3 scripts/competitive-pilot-test.py
-   ```
-
-2. Inspect every command failure and correctness failure in the results.
-3. Keep unsupported cases separate from failures.
-4. Record the product releases and image digests.
-5. Stop the dedicated Langfuse compose project with `docker compose down`.
-6. Retain its volumes and the scratch evidence until review is complete.
-
-The pilot runners do not measure cold filesystem caches, model-visible
-delivery, crash durability, relevance ranking or agent task success. Use
-the [specification](README.md) for those experiments.
+</details>

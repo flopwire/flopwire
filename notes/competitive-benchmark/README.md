@@ -1,41 +1,15 @@
 # Competitive benchmark
 
-## Decision and scope
-
-Use this benchmark to decide which Flopwire improvements help developers
-recover previous work and coordinate existing coding sessions. The first
-pilot qualifies the measurement methods. A later experiment measures agent
-task outcomes. Publish comparisons only after repeated, comparable runs.
+Compare how products help agents recover prior work and coordinate coding
+sessions. Start with the [pilot results](pilot-2026-10-13.md) or
+[run instructions](run.md). The pilot checks exact retrieval and transport;
+agent task outcomes require a later experiment.
 
 Gas Town is excluded at the user's request.
 
 The initial pilot includes Flopwire, MCP Agent Mail, AgentsView and Langfuse.
 Entire, SpecStory, CASS, LangSmith and Braintrust remain candidates for the
-next round. Compare products within the workflows they support. A missing
-workflow is a capability gap; it is not a failed query or a zero score.
-
-## Candidate qualification
-
-Record the release, deployment mode, license, capture requirements, API
-access, maintenance and usage evidence for every candidate. Keep stars,
-vendor usage claims and independent deployment evidence in separate fields.
-Stars and funding establish attention and backing; they do not measure
-active usage or technical performance.
-
-| Candidate | Relevant workflow | Evidence and documentation |
-|---|---|---|
-| MCP Agent Mail | Discover agents, exchange messages, retrieve mail history, reserve files | [Rust release and source](https://github.com/Dicklesworthstone/mcp_agent_mail_rust); [product](https://www.mcpagentmail.com/) |
-| AgentsView | Capture existing coding transcripts, search messages and tools, expose history to agents | [Product](https://www.agentsview.io/); [configuration](https://www.agentsview.io/docs/configuration/) |
-| Entire | Connect commits to sessions and recover development intent | [Product](https://entire.io/); [company announcement](https://entire.io/blog/hello-entire-world) |
-| SpecStory | Capture coding sessions and search synced history | [Cloud documentation](https://docs.specstory.com/cloud/overview) |
-| CASS | Search local and remotely collected coding sessions | [Source and releases](https://github.com/Dicklesworthstone/coding_agent_session_search) |
-| Langfuse | Store and query observations and conversation sessions | [Full-text search](https://langfuse.com/docs/observability/features/full-text-search); [coding-agent capture](https://langfuse.com/coding-agents); [adopter references](https://langfuse.com/users) |
-| LangSmith | Store, inspect, query and evaluate agent traces | [Observability](https://www.langchain.com/langsmith/observability); [customer evidence](https://www.langchain.com/customers); [CLI](https://github.com/langchain-ai/langsmith-cli) |
-| Braintrust | Store and search traces, inspect tool spans, create evaluations | [Tracing](https://www.braintrust.dev/learn/tracing/v0); [customer evidence](https://www.braintrust.dev/customers) |
-
-These references were checked on 2026-10-13. Advertised features remain
-unverified until exercised in the selected release. Phoenix is a reserve
-candidate for an additional self-hosted trace comparison.
+next round. Compare supported workflows; record unsupported cases separately.
 
 ## Three experiments
 
@@ -125,6 +99,9 @@ Use hidden deterministic tests for code outcomes. Review rationale and
 citation quality blind to the product. An LLM judge may assist only after
 calibration against human ratings. The pilot does not run this experiment.
 
+<details>
+<summary>Measurement protocol</summary>
+
 ## Fair measurement
 
 1. Pin product releases and record binary checksums or container digests.
@@ -158,16 +135,36 @@ must not inflate recall. Keep substring, token, phrase, regex and semantic
 queries in separate categories. A regex unsupported by a trace API is
 `unsupported`, not a false negative.
 
-## Pilot deliverables
+</details>
 
-- A reproducible synthetic corpus and independent labels.
-- Version, checksum and deployment records.
-- Exact commands and per-invocation timings.
-- Retrieval correctness and messaging transport evidence.
-- A dated results note that states failures and unmeasured capabilities.
-- A follow-up plan for realistic history and real-agent trials.
+<details>
+<summary>Candidate qualification and sources</summary>
 
-Extend the existing [performance framework](../../docs/perf/README.md)
-where its corpus or checks fit. Keep competitor-specific import and query
-adapters outside Flopwire's production code. The pilot must not mutate
-the user's existing indexes or message network.
+## Candidate qualification
+
+Record the release, deployment mode, license, capture requirements, API
+access, maintenance and usage evidence for every candidate. Keep stars,
+vendor usage claims and independent deployment evidence in separate fields.
+Stars and funding establish attention and backing; they do not measure
+active usage or technical performance.
+
+| Candidate | Relevant workflow | Evidence and documentation |
+|---|---|---|
+| MCP Agent Mail | Discover agents, exchange messages, retrieve mail history, reserve files | [Rust release and source](https://github.com/Dicklesworthstone/mcp_agent_mail_rust); [product](https://www.mcpagentmail.com/) |
+| AgentsView | Capture existing coding transcripts, search messages and tools, expose history to agents | [Product](https://www.agentsview.io/); [configuration](https://www.agentsview.io/docs/configuration/) |
+| Entire | Connect commits to sessions and recover development intent | [Product](https://entire.io/); [company announcement](https://entire.io/blog/hello-entire-world) |
+| SpecStory | Capture coding sessions and search synced history | [Cloud documentation](https://docs.specstory.com/cloud/overview) |
+| CASS | Search local and remotely collected coding sessions | [Source and releases](https://github.com/Dicklesworthstone/coding_agent_session_search) |
+| Langfuse | Store and query observations and conversation sessions | [Full-text search](https://langfuse.com/docs/observability/features/full-text-search); [coding-agent capture](https://langfuse.com/coding-agents); [adopter references](https://langfuse.com/users) |
+| LangSmith | Store, inspect, query and evaluate agent traces | [Observability](https://www.langchain.com/langsmith/observability); [customer evidence](https://www.langchain.com/customers); [CLI](https://github.com/langchain-ai/langsmith-cli) |
+| Braintrust | Store and search traces, inspect tool spans, create evaluations | [Tracing](https://www.braintrust.dev/learn/tracing/v0); [customer evidence](https://www.braintrust.dev/customers) |
+
+These references were checked on 2026-10-13. Advertised features remain
+unverified until exercised in the selected release. Phoenix is a reserve
+candidate for an additional self-hosted trace comparison.
+
+</details>
+
+Keep competitor adapters outside production code. Use isolated indexes and
+message identities. Reuse the [performance framework](../../docs/perf/README.md)
+where applicable.
