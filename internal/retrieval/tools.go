@@ -18,6 +18,10 @@ import (
 // maxCandidates bounds the rows one grep reads and verifies.
 const maxCandidates = 200000
 
+// Unindexed session scans bound both verification work and body bytes.
+const grepSessionScanRows = 20000
+const grepSessionScanBytes = 32 << 20
+
 func pageLimit(n int) int {
 	switch {
 	case n <= 0:
@@ -34,7 +38,8 @@ func pageLimit(n int) int {
 // texts collapsed, -m and the offset applied, and totals for the footer.
 // Whole literal alternatives or the planner's required trigrams select
 // candidates through pg_trgm, and Go's regexp verifies each one. A pattern
-// with no trigram the index can use would scan every message; it is refused.
+// with no usable text-index constraint requires an explicit session and uses
+// a bounded filtered scan.
 //
 // The query budget (the context's deadline, else DefaultBudget) bounds the
 // scan; when it runs out, the hits verified so far come back with a reason.
@@ -59,13 +64,9 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	q := &query{}
 	var cond string
 	if !gq.Fixed {
-		// Preserve the existing refusal of regexes with no usable
-		// required trigram, even if a whole ILIKE could index them.
-		if indexable(plan.Query) != nil {
-			cond = literalRegexpCond(q, plan.Re)
-			if cond == "" {
-				cond = requiredRegexpCond(q, plan.Re)
-			}
+		cond = literalRegexpCond(q, plan.Re)
+		if cond == "" {
+			cond = requiredRegexpCond(q, plan.Re)
 		}
 		if cond == "" {
 			cond = trigramCond(q, plan.Query)
@@ -76,22 +77,33 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		// planner's 3-character runs leave out.
 		cond = "m.text ILIKE " + q.arg("%"+likeEscape(gq.Pattern)+"%")
 	}
+	unindexed := cond == ""
 	page := &format.Page{Hits: []format.Hit{}, Offset: gq.Offset, Exact: true}
 	switch cond {
 	case "false":
 		return page, nil
 	case "":
-		return nil, fmt.Errorf("%w: the pattern has no run of 3 letters or digits that every match must contain, so the index cannot narrow it and it would scan every message; add a literal of at least 3 letters or digits", ErrBadRequest)
+		if f.Session == "" {
+			return nil, fmt.Errorf("%w: the text index cannot narrow every alternative of this pattern; specify a session for a bounded scan, use fixed_strings if you intended one literal string, or add an indexable literal to each alternative (escape dots for literal versions)", ErrBadRequest)
+		}
+		page.Notes = append(page.Notes, "unindexed: scanning messages in the selected session and its permitted subagents with the original pattern")
 	}
-	q.where(cond)
+	if !unindexed {
+		q.where(cond)
+	}
 	if err := hitFilters(q, f); err != nil {
 		return nil, err
 	}
 	col := grep.NewCollector(plan.Re, gq)
 	checked := 0
+	var verifiedBytes int64
 	narrows, broad := grepNarrows(f), false
 	b := budget(ctx)
 	deadline := time.Now().Add(b)
+	direction := "newest first"
+	if gq.Sort == format.SortOldest {
+		direction = "oldest first"
+	}
 	startupStage := "acquiring the read transaction and setting its timeout"
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
@@ -117,12 +129,18 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 				q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
 			}
 			broad = !ok
+			if unindexed && !ok {
+				return fmt.Errorf("%w: the selected session tree exceeds %d conversations; narrow the session or use an indexable pattern", ErrBadRequest, grepConvCap)
+			}
 		}
 		candidateSQL := grepCandidates(q, gq.Sort == format.SortOldest)
+		if unindexed {
+			candidateSQL = grepCandidatesLimit(q, gq.Sort == format.SortOldest, grepSessionScanRows+1)
+		}
 		// A successful conversation narrowing gives metadata selection an
 		// indexed entry point. Without it, even a metadata-only scan may
 		// visit the entire corpus before applying kind/time filters.
-		if !gq.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
+		if !unindexed && !gq.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
 			startupStage = "planning text candidates"
 			left := time.Until(deadline)
 			if left <= 0 {
@@ -195,6 +213,39 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err := setTimeout(ctx, tx, left); err != nil {
 				return err
 			}
+			if unindexed {
+				// Use actual stored byte lengths, not ingestion's text_len, and
+				// exclude oversized bodies before sending them to the client.
+				rows, err = tx.Query(ctx, grepCandidateSizes, ids)
+				if err != nil {
+					return err
+				}
+				sizes, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+				if err != nil {
+					return err
+				}
+				allowed, bytes := 0, verifiedBytes
+				for _, size := range sizes {
+					if checked+allowed >= grepSessionScanRows || bytes+size > grepSessionScanBytes {
+						page.Truncated = true
+						page.Reason = fmt.Sprintf("unindexed session scan reached its %d-message or %d-byte verification limit; narrow the filters or use an indexable pattern", grepSessionScanRows, grepSessionScanBytes)
+						break
+					}
+					allowed++
+					bytes += size
+				}
+				ids = ids[:allowed]
+				if len(ids) == 0 {
+					break
+				}
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
+				}
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
+			}
 			rows, err = tx.Query(ctx, grepCandidateBodies, ids)
 			if err != nil {
 				return err
@@ -209,6 +260,8 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 					return err
 				}
 				got++
+
+				verifiedBytes += int64(len(body))
 				checked++
 				r := grep.Row{Session: h.SessionID, Text: body, Ref: h}
 				copy(r.SHA[:], sha)
@@ -221,14 +274,14 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err := rows.Err(); err != nil {
 				return err
 			}
-			if !more || got == 0 {
+			if !more || got == 0 || page.Truncated {
 				break
 			}
 			startupStage = "fetching candidate IDs"
 		}
 		if checked >= maxCandidates {
 			page.Truncated = true
-			page.Reason = fmt.Sprintf("stopped after verifying %d candidates, newest first; narrow the pattern or the filters", checked)
+			page.Reason = fmt.Sprintf("stopped after verifying %d candidates, %s; narrow the pattern or the filters", checked, direction)
 		}
 		return nil
 	})
@@ -241,13 +294,16 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			}
 			page.Reason = fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), startupStage, raise)
 		} else {
-			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked)
+			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, %s; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked, direction)
 		}
 		if broad {
 			page.Notes = append(page.Notes, fmt.Sprintf("the filters admit more than %d conversations, so the scan was not narrowed to them first", grepConvCap))
 		}
 	} else if err != nil {
 		return nil, err
+	}
+	if unindexed && page.Truncated {
+		page.Notes = append(page.Notes, "hit-offset pagination does not resume an incomplete session scan; narrow the filters to search the remaining messages")
 	}
 	if gq.Sort == format.SortRelevance && page.Truncated {
 		page.Notes = append(page.Notes, "ranked by matches per message among the messages checked")
@@ -303,17 +359,26 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 // 3,100 without the index. Grep's cost stays bounded by its candidates
 // instead (TestGrepOldMatchesScalingConstant).
 func grepCandidates(q *query, oldest bool) string {
+	return grepCandidatesLimit(q, oldest, maxCandidates)
+}
+
+func grepCandidatesLimit(q *query, oldest bool, limit int) string {
 	order := ` ORDER BY m.ts DESC NULLS LAST, m.id LIMIT `
 	if oldest {
 		order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
 	}
-	return `SELECT m.id FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
+	return `SELECT m.id FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(limit)
 }
 
 // Only one cursor page is hydrated. WITH ORDINALITY retains its exact order,
 // including timestamp ties, undated rows, and the oldest-first direction.
 const grepCandidateBodies = `SELECT ` + hitCols + `,m.content_sha,m.text
  FROM unnest($1::uuid[]) WITH ORDINALITY page(id,n) JOIN ` + from + ` ON page.id=m.id ORDER BY page.n`
+
+// Length inspection preserves cursor order and runs in the same snapshot as
+// body hydration. octet_length is accurate even when text_len is stale.
+const grepCandidateSizes = `SELECT octet_length(m.text)::bigint
+ FROM unnest($1::uuid[]) WITH ORDINALITY page(id,n) JOIN messages m ON page.id=m.id ORDER BY page.n`
 
 // grepConvCap bounds the conversations grep resolves before its scan
 // when a filter names them (grepConversations). Under it, the candidate
