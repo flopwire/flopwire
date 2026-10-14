@@ -41,6 +41,12 @@ pin rotation preserve an enrolled device's inbox. Credentials without a
 device ID use a token fingerprint to distinguish principals. Standalone
 messaging uses a separate inbox.
 
+On upgrade, the old `bus.db` stays untouched. Its messages and receipts do
+not resume automatically because the file does not record its server or
+device owner. The agent logs this decision and opens a separate authority
+inbox. Do not rename or copy the old database into an authority inbox:
+that would assign unverified message bodies and receipts to that authority.
+
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
 

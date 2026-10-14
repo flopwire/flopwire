@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,5 +209,92 @@ func TestAuthorityBusPathUnboundTokens(t *testing.T) {
 	enrolled, _ := authorityBusPath("root", cfg, true)
 	if enrolled == b {
 		t.Fatal("token and device namespaces overlap")
+	}
+}
+
+func TestLegacyInboxPreservedWithoutResuming(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "bus.db")
+	legacy, err := devicebus.Open(legacyPath, devicebus.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := json.Marshal(busproto.Envelope{ID: "legacy-private", Body: "legacy private body", ToSession: "session", ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,envelope,state,created_at,expires_at,ack) VALUES('legacy-private','server',1,'session','','','','',?,'delivered',?,?, 'owed')`, string(envelope), time.Now().UnixMilli(), time.Now().Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := json.Marshal(busproto.Envelope{ID: "legacy-pending", Body: "legacy pending private body", ToSession: "session", ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,envelope,state,created_at,expires_at) VALUES('legacy-pending','server',2,'session','','','','',?,'queued',?,?)`, string(pending), time.Now().UnixMilli(), time.Now().Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == busproto.PathAck {
+			requests.Add(1)
+		}
+		json.NewEncoder(w).Encode(busproto.PollResponse{Now: time.Now()})
+	}))
+	defer srv.Close()
+	cc := client.Config{Server: srv.URL, Token: "device-token", DeviceID: "device"}
+	var logs bytes.Buffer
+	for _, connected := range []bool{false, true} {
+		cfg := devicebus.Config{Logger: slog.New(slog.NewTextHandler(&logs, nil)), AckDelay: time.Millisecond}
+		if connected {
+			cfg.Connect = busConnect(cc, func() (client.Config, error) { return cc, nil })
+		}
+		fresh := openAuthorityBus(dir, cc, cfg)
+		if fresh == nil {
+			t.Fatal("fresh authority inbox failed")
+		}
+		got, err := fresh.Take(t.Context(), "session", "", devicebus.Limit{})
+		if err != nil || len(got) != 0 {
+			t.Fatalf("resumed legacy body: %+v %v", got, err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- fresh.Run(ctx) }()
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("legacy inbox modified")
+	}
+	if requests.Load() != 0 {
+		t.Fatal("legacy receipt resumed")
+	}
+	if !strings.Contains(logs.String(), "legacy inbox preserved without resuming") {
+		t.Fatalf("migration not logged: %s", logs.String())
 	}
 }

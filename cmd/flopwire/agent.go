@@ -339,10 +339,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
 		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
-		busPath, pathErr := authorityBusPath(dir, cc, connect != nil)
-		if pathErr != nil {
-			log.Error("agent: messaging off: invalid inbox authority", "err", pathErr)
-		} else if b := openBus(busPath, devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
+		if b := openAuthorityBus(dir, cc, devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -684,6 +681,23 @@ func authorityBusPath(dir string, cc client.Config, connected bool) (string, err
 	}
 	sum := sha256.Sum256([]byte(identity))
 	return filepath.Join(dir, "bus-"+hex.EncodeToString(sum[:])+".db"), nil
+}
+
+// openAuthorityBus preserves the old ownerless inbox without guessing which
+// server or device received its messages. Only explicitly bound inboxes resume.
+func openAuthorityBus(dir string, cc client.Config, cfg devicebus.Config) *devicebus.Bus {
+	path, err := authorityBusPath(dir, cc, cfg.Connect != nil)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("agent: messaging off: invalid inbox authority", "err", err)
+		}
+		return nil
+	}
+	legacy := filepath.Join(dir, "bus.db")
+	if _, err := os.Lstat(legacy); err == nil && cfg.Logger != nil {
+		cfg.Logger.Warn("agent: legacy inbox preserved without resuming: its server and device owner are unknown; messaging uses a separate authority inbox", "path", legacy)
+	}
+	return openBus(path, cfg)
 }
 
 // openBus opens the local message inbox. One that cannot be opened (a
