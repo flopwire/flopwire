@@ -44,7 +44,7 @@ The final distinct-address non-race run used 1,000 synthetic messages of about 2
 | Literal-free, matches every message | 1,000 | 839 ms | 18,975 ms | 1,000 |
 | Literal-free, no matches | 0 | 57 ms | 425 ms | 0 |
 
-Each completed traversal matched the Go oracle's complete UUID set. The zero-hit row's first page is incomplete: only the final page can establish absence. New-scan startup alone cost 36–133 ms. The remaining first-page time is mainly the sequential authoritative read path for matching messages; these observations do not isolate every component.
+Each completed traversal matched the Go oracle's complete UUID set. The zero-hit row's first page is incomplete: only the final page can establish absence. New-scan startup alone cost 39–133 ms. The remaining first-page time is mainly the sequential authoritative read path for matching messages; these observations do not isolate every component.
 
 These are single-run observations on a heavily loaded developer machine, not percentiles, capacity targets, or a controlled speed comparison with PostgreSQL. During this session, recorded host load averages were 244/151/103 on a 10-core, 16 GiB Mac running macOS 26.2 and Go 1.26.6. PostgreSQL ran in local Docker. No clean-host repeat or representative 30-person corpus was measured.
 
