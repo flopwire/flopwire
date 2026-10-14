@@ -105,7 +105,7 @@ func TestControlPendingExcerptIndexModeContract(t *testing.T) {
 				}
 				defer response.Body.Close()
 				if response.StatusCode != http.StatusOK {
-					return "", fmt.Errorf("synthetic read status %d", response.StatusCode)
+					return "", &client.APIError{StatusCode: response.StatusCode}
 				}
 				var excerpt string
 				err = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&excerpt)
