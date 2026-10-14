@@ -587,8 +587,9 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 }
 
 // mcpRetrievalCall runs one retrieval tool and returns its answer: text,
-// or in JSON mode compact JSON within the budget. In JSON mode a
-// failure's text is the JSON error object.
+// or in JSON mode compact JSON within the budget. An operational failure
+// uses a JSON error object in JSON mode; incomplete grep keeps its rendered
+// partial answer.
 func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
 	o, asJSON, err := mcpOpts(name, args)
 	if err != nil {
