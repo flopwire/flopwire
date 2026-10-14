@@ -56,6 +56,13 @@ If `restart_required` is true, repeat the query without a cursor.
 complete history. Missing captures, unsupported commands, redaction, and
 rewritten hashes can leave gaps. An empty result means no evidence matched
 in the searched index.
+Printed commit banners are excluded when the same shell command runs arbitrary
+programs, such as `python prepare.py && gofmt -w main.go && git commit -m fix`.
+The captured output belongs to the whole execution. It cannot prove which
+program printed a banner. This can exclude a real commit even when the command
+succeeds. Run Git in a separate captured execution to retain its printed
+evidence. A separate Git completion remains eligible even when a wrapper also
+runs preparation commands.
 Server lookups refresh a bounded batch of changed conversations before
 searching. Pending conversations report indexing lag; repeat the lookup to
 continue indexing.
