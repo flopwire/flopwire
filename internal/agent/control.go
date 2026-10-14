@@ -306,6 +306,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			a.cfg.Bus.Recheck()
 		}
 	case req.Op == "redact":
+		if a.cfg.Bus != nil {
+			a.cfg.Bus.InvalidateReferences()
+			defer a.cfg.Bus.InvalidateReferences()
+		}
 		resp.Redacted, err = RedactLocal(ctx, a.store, req.Address, req.AllCopies)
 		resp.OK = err == nil
 		if err != nil {
