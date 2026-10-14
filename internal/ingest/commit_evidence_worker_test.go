@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -71,7 +72,7 @@ func TestCommitEvidenceWorkerTimeoutDefersAndProgresses(t *testing.T) {
 	e.exec(`CREATE FUNCTION slow_evidence() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.conversation_id::text='` + first + `' THEN PERFORM pg_sleep(2); END IF; RETURN NEW; END $$`)
 	e.exec(`CREATE TRIGGER slow_evidence BEFORE INSERT ON commit_evidence FOR EACH ROW EXECUTE FUNCTION slow_evidence()`)
 	w := &CommitEvidenceWorker{Pool: e.pool, Timeout: 100 * time.Millisecond}
-	if worked, err := w.step(e.ctx, false); !worked || err == nil {
+	if worked, err := w.step(e.ctx, false, new(string)); !worked || err == nil {
 		t.Fatalf("timeout: worked=%v err=%v", worked, err)
 	}
 	if e.count(`SELECT count(*) FROM commit_evidence_dirty WHERE conversation_id=$1 AND retry_after>now()`, first) != 1 {
@@ -81,7 +82,7 @@ func TestCommitEvidenceWorkerTimeoutDefersAndProgresses(t *testing.T) {
 		t.Fatal("partial projection published")
 	}
 	w.Timeout = 2 * time.Second
-	if worked, err := w.step(e.ctx, false); !worked || err != nil {
+	if worked, err := w.step(e.ctx, false, new(string)); !worked || err != nil {
 		t.Fatalf("progress: worked=%v err=%v", worked, err)
 	}
 	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, second) != 1 {
@@ -133,7 +134,7 @@ func TestCommitEvidenceWorkerSkipsLockedConversation(t *testing.T) {
 	if _, err = tx.Exec(e.ctx, `SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, first); err != nil {
 		t.Fatal(err)
 	}
-	if worked, err := (&CommitEvidenceWorker{Pool: e.pool}).step(e.ctx, false); !worked || err != nil {
+	if worked, err := (&CommitEvidenceWorker{Pool: e.pool}).step(e.ctx, false, new(string)); !worked || err != nil {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, second) != 1 {
@@ -150,7 +151,7 @@ func TestCommitEvidenceWorkerRecentAndFairSelections(t *testing.T) {
 	e.exec(`UPDATE source_parse_state SET parsed_at=now()-interval '1 day' WHERE source_id=(SELECT source_id FROM conversations WHERE id=$1)`, old)
 	e.exec(`UPDATE source_parse_state SET parsed_at=now() WHERE source_id=(SELECT source_id FROM conversations WHERE id=$1)`, recent)
 	w := &CommitEvidenceWorker{Pool: e.pool}
-	if _, err := w.step(e.ctx, true); err != nil {
+	if _, err := w.step(e.ctx, true, new(string)); err != nil {
 		t.Fatal(err)
 	}
 	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, recent) != 1 {
@@ -158,10 +159,50 @@ func TestCommitEvidenceWorkerRecentAndFairSelections(t *testing.T) {
 	}
 	// A hot source becomes dirty again before the next turn.
 	e.exec(`UPDATE messages SET text=text||' ' WHERE conversation_id=$1 AND kind='tool_result'`, recent)
-	if _, err := w.step(e.ctx, false); err != nil {
+	if _, err := w.step(e.ctx, false, new(string)); err != nil {
 		t.Fatal(err)
 	}
 	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, old) != 1 {
 		t.Fatal("hot recent source starved historical work")
+	}
+}
+
+func TestCommitEvidenceWorkerHotFailureCannotPinHistory(t *testing.T) {
+	e := newEnv(t)
+	ids := []string{workerCommit(t, e), workerCommit(t, e), workerCommit(t, e)}
+	sort.Strings(ids)
+	first, second, third := ids[0], ids[1], ids[2]
+	e.exec(`CREATE FUNCTION failing_evidence() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.conversation_id::text='` + first + `' THEN RAISE EXCEPTION 'synthetic projection failure'; END IF; RETURN NEW; END $$`)
+	e.exec(`CREATE TRIGGER failing_evidence BEFORE INSERT ON commit_evidence FOR EACH ROW EXECUTE FUNCTION failing_evidence()`)
+	e.exec(`UPDATE source_parse_state SET parsed_at=now()+interval '1 day' WHERE source_id=(SELECT source_id FROM conversations WHERE id=$1)`, first)
+	w := &CommitEvidenceWorker{Pool: e.pool}
+	after := ""
+	if worked, err := w.step(e.ctx, false, &after); !worked || err == nil {
+		t.Fatalf("initial failure worked=%v err=%v", worked, err)
+	}
+	mutate := func() {
+		e.exec(`UPDATE messages SET text=text||' ' WHERE conversation_id=$1 AND kind='tool_result'`, first)
+	}
+	mutate() // The durable trigger clears retry_after and advances revision.
+	if _, err := w.step(e.ctx, false, &after); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, second) != 1 {
+		t.Fatal("hot low UUID pinned historical selection")
+	}
+	mutate()
+	if worked, err := w.step(e.ctx, true, &after); !worked || err == nil {
+		t.Fatalf("recent failure worked=%v err=%v", worked, err)
+	}
+	mutate()
+	if _, err := w.step(e.ctx, false, &after); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, third) != 1 {
+		t.Fatal("recent failure reset historical progress")
+	}
+	mutate()
+	if worked, err := w.step(e.ctx, false, &after); !worked || err == nil || after != first {
+		t.Fatalf("historical wrap worked=%v err=%v bookmark=%s", worked, err, after)
 	}
 }

@@ -20,8 +20,9 @@ type CommitEvidenceWorker struct {
 
 func (w *CommitEvidenceWorker) Run(ctx context.Context) {
 	recent := true
+	after := ""
 	for ctx.Err() == nil {
-		worked, err := w.step(ctx, recent)
+		worked, err := w.step(ctx, recent, &after)
 		recent = !recent
 		if err != nil && ctx.Err() == nil && w.Log != nil {
 			w.Log.Warn("commit evidence projection retry", "error", err)
@@ -40,7 +41,7 @@ func (w *CommitEvidenceWorker) Run(ctx context.Context) {
 	}
 }
 
-func (w *CommitEvidenceWorker) step(ctx context.Context, recent bool) (bool, error) {
+func (w *CommitEvidenceWorker) step(ctx context.Context, recent bool, after *string) (bool, error) {
 	timeout := w.Timeout
 	if timeout <= 0 {
 		timeout = 2 * time.Second
@@ -55,18 +56,39 @@ func (w *CommitEvidenceWorker) step(ctx context.Context, recent bool) (bool, err
 	var conv string
 	var revision int64
 	order := "c.id"
+	bookmark := *after
 	if recent {
 		order = "p.parsed_at DESC NULLS LAST,c.id"
+		bookmark = ""
 	}
-	err = tx.QueryRow(work, `SELECT c.id::text,d.revision FROM conversations c JOIN commit_evidence_dirty d ON d.conversation_id=c.id
+	selectNext := func() error {
+		where := ""
+		var args []any
+		if bookmark != "" {
+			where = " AND c.id>$1::uuid"
+			args = []any{bookmark}
+		}
+		return tx.QueryRow(work, `SELECT c.id::text,d.revision FROM conversations c JOIN commit_evidence_dirty d ON d.conversation_id=c.id
  LEFT JOIN source_parse_state p ON p.source_id=c.source_id
  WHERE c.hidden_at IS NULL AND NOT d.limited AND (d.retry_after IS NULL OR d.retry_after<=now())
- ORDER BY `+order+` FOR UPDATE OF c SKIP LOCKED LIMIT 1`).Scan(&conv, &revision)
+ `+where+` ORDER BY `+order+` FOR UPDATE OF c SKIP LOCKED LIMIT 1`, args...).Scan(&conv, &revision)
+	}
+	err = selectNext()
+	if errors.Is(err, pgx.ErrNoRows) && !recent && bookmark != "" {
+		bookmark = ""
+		*after = ""
+		err = selectNext()
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if !recent {
+		// Advance even when projection fails or a concurrent mutation clears
+		// its retry delay. Hot or poisoned UUIDs cannot pin historical work.
+		*after = conv
 	}
 	err = RefreshCommitEvidence(work, tx, conv)
 	if err == nil {
