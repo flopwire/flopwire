@@ -3,6 +3,7 @@ package localindex
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -146,7 +147,31 @@ type RepoDir struct {
 // facts --repo resolves against. An ambiguous recovery's candidates are
 // not counted: the session keeps matching by its directory only.
 func (s *Store) RepoDirs(ctx context.Context) ([]RepoDir, error) {
-	rows, err := s.DB().QueryContext(ctx, `SELECT DISTINCT ifnull(nullif(worktree_root, ''), ifnull(cwd, '')), ifnull(main_root, ''), ifnull(remote, '')
+	return repoDirs(ctx, s.DB())
+}
+
+// ReadRepoDirs reads retained repository identities without opening the message
+// index or its FTS shards. It supports both full and sync-only retention, never
+// creates an index, and exposes no content-query capability.
+func ReadRepoDirs(ctx context.Context, path string) ([]RepoDir, error) {
+	db, err := sql.Open(sqliteDriver, dsn(path, true, 1, true)+"&mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return nil, err
+	}
+	if version != schemaVersion {
+		return nil, fmt.Errorf("localindex: %s has schema version %d, want %d: the agent rebuilds it on its next start", path, version, schemaVersion)
+	}
+	return repoDirs(ctx, db)
+}
+
+func repoDirs(ctx context.Context, db *sql.DB) ([]RepoDir, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT ifnull(nullif(worktree_root, ''), ifnull(cwd, '')), ifnull(main_root, ''), ifnull(remote, '')
 		FROM placements WHERE ifnull(main_root, '') <> '' OR ifnull(remote, '') <> ''`)
 	if err != nil {
 		return nil, err

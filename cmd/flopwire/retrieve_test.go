@@ -427,6 +427,10 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 	if err := client.Save(client.Config{Server: srv.URL, Token: "device"}); err != nil {
 		t.Fatal(err)
 	}
+	cc, err := client.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -441,6 +445,13 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 		}
 	}
 	t.Chdir(main)
+	// Unknown policy must not expand the caller's repository identity.
+	captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
+	if len(queries) != 1 || len(queries[0]["repo_checkout"])+len(queries[0]["repo_root"])+len(queries[0]["repo_remote"]) != 0 {
+		t.Fatalf("unknown policy expanded repository identity: %v", queries)
+	}
+	queries = nil
+	establishEmptyCollectionPolicy(t, cc)
 	captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
 	if len(queries) != 1 || queries[0].Get("repo") != main || !slices.Contains(queries[0]["repo_checkout"], main) || !slices.Contains(queries[0]["repo_root"], main) || slices.Contains(queries[0]["repo_root"], wt) {
 		t.Fatalf("sessions --server --repo . sent %v", queries)
@@ -475,6 +486,11 @@ func TestServerRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	if err := client.Save(client.Config{Server: srv.URL, Token: "device"}); err != nil {
 		t.Fatal(err)
 	}
+	cc, err := client.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	establishEmptyCollectionPolicy(t, cc)
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

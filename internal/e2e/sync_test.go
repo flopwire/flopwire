@@ -294,7 +294,10 @@ func TestTwoDeviceSync(t *testing.T) {
 		writeFile(t, p, b.String())
 		start := time.Now()
 		d2.start()
-		eventually(t, 10*time.Second, 20*time.Millisecond, "restarted agent socket", func() (bool, error) {
+		// Startup parses the new 72MiB transcript before serving the socket;
+		// this preparation can exceed 10s. Use the flush preparation budget.
+		// The committed/unacknowledged crash boundary is checked below.
+		eventually(t, 60*time.Second, 20*time.Millisecond, "restarted agent socket", func() (bool, error) {
 			c, err := net.DialTimeout("unix", d2.sock, time.Second)
 			if err != nil {
 				return false, err
@@ -302,6 +305,7 @@ func TestTwoDeviceSync(t *testing.T) {
 			c.Close()
 			return true, nil
 		})
+		r.Timings["pre_crash_startup"] = ms(time.Since(start))
 		flushed := make(chan error, 1)
 		go func() {
 			_, err := h.run(d2.env(), "", "agent", "flush", "--socket", d2.sock, "--timeout", "60s", "--path", p)
@@ -778,6 +782,10 @@ func TestTwoDeviceSync(t *testing.T) {
 		if n != 0 {
 			t.Errorf("deleted conversation has %d rows on the server", n)
 		}
+	})
+
+	h.scenario("zz-cross-device-ref-excerpts", func(t *testing.T, r *result) {
+		h.checkMessageExcerpts(t, d1, d2, r)
 	})
 }
 

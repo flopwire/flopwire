@@ -103,7 +103,7 @@ func (a *Agent) desktopCodeAuthorizationLocked(ctx context.Context, spec devices
 		return nil, err
 	}
 	policyKey := a.policy().key
-	userStamp, adminStamp := stampOf(a.cfg.UserRules), stampOf(a.cfg.AdminRulesCache)
+	userStamp, adminStamp := stampOf(a.cfg.UserRules), stampOf(a.adminCachePath())
 	digest := sha256.Sum256([]byte("desktop-code\x00" + root + "\x00" + signature + "\x00" + policyKey))
 	auth := &devicesync.CaptureAuthorization{
 		Origin: "desktop-code", Root: root,
@@ -128,7 +128,7 @@ func (a *Agent) desktopCodeAuthorizationLocked(ctx context.Context, spec devices
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if a.cfg.DesktopCodeRoot != root || a.policy().key != policyKey || stampOf(a.cfg.UserRules) != userStamp || stampOf(a.cfg.AdminRulesCache) != adminStamp {
+		if a.cfg.DesktopCodeRoot != root || a.policy().key != policyKey || stampOf(a.cfg.UserRules) != userStamp || stampOf(a.adminCachePath()) != adminStamp {
 			return errDesktopCodeHeld
 		}
 		current, err := desktopCodeSourceSignature(root, a.cfg.ClaudeProjects, spec)

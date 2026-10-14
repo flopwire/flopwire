@@ -131,6 +131,7 @@ func TestMessagesServerFailureAndMCPResults(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("FLOPWIRE_CONFIG"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
+	establishEmptyCollectionPolicy(t, cfg)
 	for _, f := range []string{"json", "text"} {
 		text, err := busMCPCall(context.Background(), &retriever{}, "flopwire_messages", map[string]any{"repo": root, "session": "ended-other-device", "format": f})
 		if err != nil || !strings.Contains(text, "canonical") || !strings.Contains(text, "synthetic preview") {

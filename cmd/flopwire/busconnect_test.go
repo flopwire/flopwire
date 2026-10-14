@@ -27,6 +27,10 @@ import (
 // server refuses that no rotation replaced is not retried.
 func TestBusConnectFollowsARotationInFlight(t *testing.T) {
 	calls := map[string]func(devicebus.Server) error{
+		"reference": func(s devicebus.Server) error {
+			_, err := s.(devicebus.ReferenceReader).ReadReference(t.Context(), "abcdef12/0")
+			return err
+		},
 		"send":  func(s devicebus.Server) error { _, err := s.Send(t.Context(), busproto.SendRequest{}); return err },
 		"poll":  func(s devicebus.Server) error { _, err := s.Poll(t.Context(), busproto.PollRequest{}); return err },
 		"claim": func(s devicebus.Server) error { _, err := s.Claim(t.Context(), busproto.ClaimRequest{}); return err },

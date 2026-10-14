@@ -13,6 +13,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
@@ -22,9 +23,22 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
+// OnceRequest specifies a one-shot pass without changing the running agent.
+// Connection is "local" or "upload"; upload binds the server and device.
+type OnceRequest struct {
+	Mode             string        `json:"mode"`
+	Connection       string        `json:"connection"`
+	Server           string        `json:"server,omitempty"`
+	TokenFingerprint string        `json:"token_fingerprint,omitempty"` // only for credentials without a device ID
+	DeviceID         string        `json:"device_id,omitempty"`
+	SyncTimeout      time.Duration `json:"sync_timeout"`
+}
+
 // Request is one control-socket request: a JSON object on one line.
 type Request struct {
-	// "flush", "pass", "status", "coverage", "repin", "redact" or "ping"; for the
+	Once *OnceRequest `json:"once,omitempty"`
+
+	// "flush", "pass", "once-v1", "status", "coverage", "repin", "redact" or "ping"; for the
 	// message bus "pending", "confirm", "held", "send", "peers", "inbox" or
 	// "root" (the session a subagent's Session belongs to, BusRoot), or
 	// "caller-context" (the exact local session's recorded working directory).
@@ -92,7 +106,8 @@ type Response struct {
 	Sync *devicesync.Status `json:"sync,omitempty"`
 	// ServerCopies (status): sessions path rules removed locally whose
 	// uploaded copies stay on the server (D18); nil when there are none.
-	ServerCopies *ServerCopies `json:"server_copies,omitempty"`
+	ServerCopies     *ServerCopies `json:"server_copies,omitempty"`
+	CollectionPolicy string        `json:"collection_policy,omitempty"`
 	// Placements (status): stored session placements by what placed them
 	// (localindex.PlacedBy*).
 	Placements map[string]int `json:"placements,omitempty"`
@@ -216,6 +231,21 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		}
 	case req.Op == "ping":
 		resp.OK = true
+	case req.Op == "once-v1":
+		c.SetDeadline(time.Time{})
+		onceCtx, stop := untilClientLeaves(ctx, c)
+		defer stop()
+		if req.Index == "" || !sameFile(req.Index, a.store.Path()) {
+			err = fmt.Errorf("one-shot request names a different index")
+		} else if req.Once == nil {
+			err = fmt.Errorf("one-shot execution contract is required")
+		} else {
+			err = a.OncePass(onceCtx, *req.Once)
+		}
+		resp.OK = err == nil
+		if err != nil {
+			resp.Error = err.Error()
+		}
 	case req.Op == "pass":
 		c.SetDeadline(time.Time{}) // a pass takes as long as the changed sources need
 		if req.Index != "" && !sameFile(req.Index, a.store.Path()) {
@@ -273,6 +303,12 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Sync = &v
 		}
 		resp.ServerCopies = a.serverCopiesNotice()
+		resp.CollectionPolicy = "known"
+		if a.cfg.PolicyAuthority == nil {
+			resp.CollectionPolicy = "local"
+		} else if a.policy().readiness == policyUnknown {
+			resp.CollectionPolicy = "unknown"
+		}
 		resp.Placements = a.placementCounts()
 		resp.Cowork, err = a.coworkStatusContext(ctx)
 		if err != nil {
@@ -306,6 +342,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			a.cfg.Bus.Recheck()
 		}
 	case req.Op == "redact":
+		if a.cfg.Bus != nil {
+			a.cfg.Bus.InvalidateReferences()
+			defer a.cfg.Bus.InvalidateReferences()
+		}
 		resp.Redacted, err = RedactLocal(ctx, a.store, req.Address, req.AllCopies)
 		resp.OK = err == nil
 		if err != nil {
@@ -448,8 +488,8 @@ func (a *Agent) placementCounts() map[string]int {
 
 // Pass runs one full pass on a running agent: a sweep of every source
 // (and Devin's store), then waits until the queue drains and the index has
-// committed. `flopwire agent run --once` asks for it over the control socket
-// when this agent holds the index lock (decision D12).
+// committed. OncePass adds the delegated one-shot execution contract and
+// remote upload completion when this agent holds the index lock (decision D12).
 //
 // A pass asked while the agent starts waits for the first discovery pass,
 // like a flush: run before load, its full merge would make load skip the
@@ -458,12 +498,61 @@ func (a *Agent) Pass(ctx context.Context) error {
 	if err := a.waitDiscovered(ctx); err != nil {
 		return err
 	}
+	a.refreshPolicy(ctx, false)
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
 	if err := a.sweep(ctx); err != nil {
 		return err
 	}
 	a.pollStores(ctx, true, true)
 	a.WaitIdle()
 	return a.store.Sync(ctx)
+}
+
+// OncePass validates the execution contract before discovery or mutation, then
+// waits for the same upload completion as a fresh one-shot process.
+func (a *Agent) OncePass(ctx context.Context, req OnceRequest) error {
+	mode := localindex.ModeFull
+	if a.store.SyncOnly() {
+		mode = localindex.ModeSyncOnly
+	}
+	if req.Mode != mode {
+		return fmt.Errorf("running agent mode is %s; requested %s; stop the agent before changing modes", mode, req.Mode)
+	}
+	connection := "local"
+	if a.cfg.Sync != nil {
+		connection = "upload"
+	}
+	if req.Connection != connection {
+		return fmt.Errorf("running agent connection is %s; requested %s; stop the agent before changing connections", connection, req.Connection)
+	}
+	if connection == "upload" {
+		server, err := client.NormalizeServer(a.cfg.Server)
+		if err != nil {
+			return err
+		}
+		requested, err := client.NormalizeServer(req.Server)
+		if err != nil {
+			return err
+		}
+		if server != requested || req.DeviceID != a.cfg.DeviceID {
+			return fmt.Errorf("running agent uses a different server or device; restart it before delegating")
+		}
+		if req.DeviceID == "" && (req.TokenFingerprint == "" || req.TokenFingerprint != a.cfg.SyncTokenFingerprint) {
+			return fmt.Errorf("running agent uses a different credential; restart it before delegating")
+		}
+		if a.cfg.DrainSync == nil {
+			return fmt.Errorf("running agent cannot guarantee upload completion")
+		}
+	}
+	if err := a.Pass(ctx); err != nil {
+		return err
+	}
+	if connection == "upload" {
+		return a.cfg.DrainSync(ctx, req.SyncTimeout)
+	}
+	return nil
 }
 
 func sameFile(a, b string) bool {
@@ -483,6 +572,8 @@ func Call(ctx context.Context, path string, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("agent not running (%s): %w", path, err)
 	}
 	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
 	if dl, ok := ctx.Deadline(); ok {
 		c.SetDeadline(dl)
 	}
@@ -492,6 +583,9 @@ func Call(ctx context.Context, path string, req Request) (Response, error) {
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
 		return Response{}, err
 	}
 	var resp Response

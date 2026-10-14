@@ -430,7 +430,7 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 		release()
 		return nil, err
 	}
-	policyKey, userStamp, adminStamp := a.policy().key, stampOf(a.cfg.UserRules), stampOf(a.cfg.AdminRulesCache)
+	policyKey, userStamp, adminStamp := a.policy().key, stampOf(a.cfg.UserRules), stampOf(a.adminCachePath())
 	digest, err := syncproto.PolicyPlacementsDigest(r)
 	if err != nil {
 		release()
@@ -463,7 +463,7 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if a.policy().key != policyKey || stampOf(a.cfg.UserRules) != userStamp || stampOf(a.cfg.AdminRulesCache) != adminStamp {
+		if a.policy().key != policyKey || stampOf(a.cfg.UserRules) != userStamp || stampOf(a.adminCachePath()) != adminStamp {
 			return errCoworkHeld
 		}
 		a.mu.Lock()

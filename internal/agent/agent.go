@@ -95,6 +95,8 @@ type Config struct {
 	// across workers (Codex rollouts have lines up to 14MB); default 16MB.
 	LineBudget int64
 
+	SyncTokenFingerprint   string                                                                  // SHA-256 token identity, only for credentials with no device ID
+	DrainSync              func(context.Context, time.Duration) error                              // waits for queued uploads; nil cannot complete delegated --once
 	Sync                   Sync                                                                    // nil: local indexing only
 	CoworkPolicy           CoworkPolicyClient                                                      // nil: Cowork sharing remains held
 	RecoveredPolicySources func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) // restriction-only receipts for the bound device
@@ -113,6 +115,7 @@ type Config struct {
 	Unplaceable     string
 	AdminRules      func(context.Context) (AdminPolicy, error)
 	AdminRulesCache string
+	PolicyAuthority *PolicyAuthority
 	AdminEvery      time.Duration
 	Home            string
 	// Withhold asks the server to delete what it holds of a session a
@@ -372,6 +375,11 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		a.log.Error("agent: reading stored placements; no upload until they load", "err", err)
 	}
 	a.refreshCowork(context.Background())
+	if admission, ok := cfg.Sync.(interface {
+		SetAdmission(func(devicesync.SourceSpec) error)
+	}); ok {
+		admission.SetAdmission(a.admitUpload)
+	}
 	if f, ok := cfg.Sync.(captureAuthorizer); ok {
 		f.SetAuthorize(a.authorizeCapture)
 	}
@@ -405,6 +413,9 @@ func (a *Agent) Once(ctx context.Context) error {
 		return err
 	}
 	a.refreshAdmin(ctx)
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup

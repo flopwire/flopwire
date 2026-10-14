@@ -267,7 +267,17 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}}
 	// A re-executed agent (it holds the lock already) rebuilt before.
 	opts.RebuildIndex = *rebuildIndex && opts.LockFile == nil
-	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log)
+	contract := agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local", SyncTimeout: *syncWait}
+	if *syncOnly {
+		contract.Mode = localindex.ModeSyncOnly
+	}
+	if !*noSync && ccErr == nil && cc.Server != "" && cc.Token != "" {
+		contract.Connection, contract.Server, contract.DeviceID = "upload", cc.Server, cc.DeviceID
+		if cc.DeviceID == "" {
+			contract.TokenFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(cc.Token)))
+		}
+	}
+	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log, contract)
 	if err != nil || store == nil {
 		return nil, err // store == nil: the running agent did the pass
 	}
@@ -284,7 +294,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		cfg.UserRuleList = cc.Denylist
 		cfg.Unplaceable = cc.Unplaceable
 		if cc.Server != "" && cc.Token != "" && !*noSync {
-			cfg.AdminRules = adminRules(cc)
+			cfg.AdminRules = adminRulesFrom(cc, loadSyncConfig)
+			cfg.PolicyAuthority = collectionPolicyAuthority(cc)
 			cfg.Withhold = withholdSession(cc, client.Load)
 			cfg.CoworkPolicy = coworkPolicyClient(cc, loadSyncConfig)
 			cfg.RecoveredPolicySources = recoveredPolicySources(cc, loadSyncConfig)
@@ -308,6 +319,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		if s != nil {
 			defer closeSync()
 			sched, cfg.Sync, startSyncRun = s, s, start
+			cfg.SyncTokenFingerprint = contract.TokenFingerprint
+			cfg.DrainSync = func(ctx context.Context, wait time.Duration) error { return drainSync(ctx, s, wait, log) }
 			// An enrolled device rotates its credential daily; a minted
 			// token (FLOPWIRE_TOKEN) never rotates.
 			if !*once && !tr.env {
@@ -327,7 +340,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
 		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
+		if b := openAuthorityBus(dir, cc, devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -356,7 +369,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		if *once && err == nil && sched != nil {
 			err = drainSync(ctx, sched, *syncWait, log)
 		}
-		if *once || err != nil {
+		if *once || err != nil && !errors.Is(err, agent.ErrPolicyUnknown) {
 			return nil, err
 		}
 		if st.Indexed.Load() >= reexecAfter {
@@ -471,10 +484,11 @@ const agentLockGrace = 3 * time.Second
 // openAgentIndex opens the index for writing. The index takes one writer
 // (decision D12): when another process holds it, a daemon fails after
 // agentLockGrace, and --once asks the running agent for a pass over the
-// control socket and waits for it, returning a nil store. A --once whose lock holder does not
+// control socket with its execution contract and waits for indexing and upload
+// completion, returning a nil store. A --once whose lock holder does not
 // answer on the socket (a daemon still in its initial pass, or another
 // --once) waits until it answers or releases the lock.
-func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger) (*localindex.Store, error) {
+func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger, contract agent.OnceRequest) (*localindex.Store, error) {
 	waiting := false
 	start := time.Now()
 	for {
@@ -496,13 +510,16 @@ func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options,
 			}
 			return nil, fmt.Errorf("agent already running (pid %d)", locked.PID)
 		}
-		_, err = agent.Call(ctx, socket, agent.Request{Op: "pass", Index: dbPath})
+		_, err = agent.Call(ctx, socket, agent.Request{Op: "once-v1", Index: dbPath, Once: &contract})
 		if err == nil {
 			log.Info("agent: the running agent did the pass", "pid", locked.PID)
 			return nil, nil
 		}
 		if !strings.HasPrefix(err.Error(), "agent not running") {
-			return nil, fmt.Errorf("agent (pid %d): %w", locked.PID, err)
+			if strings.HasPrefix(err.Error(), "unknown op ") {
+				return nil, fmt.Errorf("agent (pid %d) lacks delegated --once support; restart it with the current binary: %w", locked.PID, err)
+			}
+			return nil, fmt.Errorf("agent (pid %d): delegated --once: %w", locked.PID, err)
 		}
 		if !waiting {
 			waiting = true
@@ -647,6 +664,43 @@ func recoveredPolicySources(cc client.Config, load func() (client.Config, error)
 	}
 }
 
+// authorityBusPath keeps message bodies and pending receipts with the server
+// and enrolled device that received them. Credentials and TLS pins can rotate
+// without changing the inbox. Standalone messaging has its own namespace.
+func authorityBusPath(dir string, cc client.Config, connected bool) (string, error) {
+	identity := "standalone"
+	if connected {
+		server, err := client.NormalizeServer(cc.Server)
+		if err != nil {
+			return "", err
+		}
+		identity = "server\x00" + server + "\x00device\x00" + cc.DeviceID
+		if cc.DeviceID == "" {
+			// An unbound token can name a different principal on the same server.
+			identity = "server\x00" + server + "\x00token\x00" + cc.Token
+		}
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return filepath.Join(dir, "bus-"+hex.EncodeToString(sum[:])+".db"), nil
+}
+
+// openAuthorityBus preserves the old ownerless inbox without guessing which
+// server or device received its messages. Only explicitly bound inboxes resume.
+func openAuthorityBus(dir string, cc client.Config, cfg devicebus.Config) *devicebus.Bus {
+	path, err := authorityBusPath(dir, cc, cfg.Connect != nil)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("agent: messaging off: invalid inbox authority", "err", err)
+		}
+		return nil
+	}
+	legacy := filepath.Join(dir, "bus.db")
+	if _, err := os.Lstat(legacy); err == nil && cfg.Logger != nil {
+		cfg.Logger.Warn("agent: legacy inbox preserved without resuming: its server and device owner are unknown; messaging uses a separate authority inbox", "path", legacy)
+	}
+	return openBus(path, cfg)
+}
+
 // openBus opens the local message inbox. One that cannot be opened (a
 // damaged file, a full disk) turns messaging off with an error in the
 // log; it never stops indexing and upload.
@@ -669,6 +723,7 @@ func openBus(path string, cfg devicebus.Config) *devicebus.Bus {
 // agent's own rotation refuses the old token at its commit, before the
 // config save that names the new one (issue #110), as syncTransport does.
 func busConnect(cc client.Config, load func() (client.Config, error)) func() (devicebus.Server, string) {
+	load = deviceBoundConfig(cc, load)
 	var mu sync.Mutex
 	server, _ := client.NormalizeServer(cc.Server)
 	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
@@ -676,7 +731,7 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 		mu.Lock()
 		defer mu.Unlock()
 		cur := cc
-		if c, same := savedConfig(server, load); same {
+		if c, same := savedConfig(server, load); same && (cc.DeviceID != "" || c.Token == cc.Token) {
 			cur = c
 		}
 		if cur.TLSFingerprint != pin {
@@ -730,6 +785,10 @@ func (r rotatingBus) Send(ctx context.Context, req busproto.SendRequest) (buspro
 	return retryRotated(ctx, r, req, client.Bus.Send)
 }
 
+func (r rotatingBus) ReadReference(ctx context.Context, ref string) (string, error) {
+	return retryRotated(ctx, r, ref, client.Bus.ReadReference)
+}
+
 func (r rotatingBus) Poll(ctx context.Context, req busproto.PollRequest) (busproto.PollResponse, error) {
 	return retryRotated(ctx, r, req, client.Bus.Poll)
 }
@@ -757,7 +816,7 @@ func adminRulesFrom(cc client.Config, load func() (client.Config, error)) func(c
 	return func(ctx context.Context) (agent.AdminPolicy, error) {
 		mu.Lock()
 		cur := cc
-		if c, same := savedConfig(server, load); same {
+		if c, same := savedConfig(server, load); same && c.DeviceID == cc.DeviceID && (cc.DeviceID != "" || c.Token == cc.Token) {
 			cur = c
 		}
 		if cur.TLSFingerprint != pin {
@@ -1063,6 +1122,9 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		printExtractionSummary(w, resp.Extraction)
 	}
 	st := resp.Sync
+	if resp.CollectionPolicy == "unknown" {
+		fmt.Fprintln(w, "collection and uploads paused: current server policy unknown; existing data retained")
+	}
 	if c := resp.ServerCopies; c != nil {
 		fmt.Fprintf(w, "path rules removed %d sessions from the local index (latest %s).\n", c.Count, c.At.Local().Format(time.DateTime))
 		fmt.Fprintln(w, "  Uploaded copies stay on the server unless an admin rule covers them (the server deletes those); for the rest the owner or an admin must delete them there:")
@@ -1219,4 +1281,13 @@ func hookSource(raw []byte) (path, session string) {
 		return ""
 	}
 	return str("transcript_path", "rollout_path"), str("session_id", "thread-id", "thread_id")
+}
+
+func collectionPolicyAuthority(cc client.Config) *agent.PolicyAuthority {
+	owner := &agent.PolicyAuthority{Server: cc.Server, DeviceID: cc.DeviceID}
+	if cc.DeviceID == "" {
+		fingerprint := sha256.Sum256([]byte(cc.Token))
+		owner.TokenFingerprint = fmt.Sprintf("%x", fingerprint)
+	}
+	return owner
 }
