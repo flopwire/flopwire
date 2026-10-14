@@ -562,30 +562,8 @@ func mcpArgs(name string) []string {
 	return nil
 }
 
-// mcpPageOutcome exposes completeness independently of the rendered text.
-// TotalHits is a lower bound when Exact is false; it is not candidates checked.
-type mcpPageOutcome struct {
-	Status    string `json:"status"`
-	Exact     bool   `json:"exact"`
-	Truncated bool   `json:"truncated"`
-	TotalHits int    `json:"total_hits"`
-	Reason    string `json:"reason,omitempty"`
-}
-
-func pageOutcome(page *format.Page) *mcpPageOutcome {
-	status := "complete"
-	if !page.Exact || page.Truncated {
-		status = "partial"
-	}
-	return &mcpPageOutcome{Status: status, Exact: page.Exact, Truncated: page.Truncated, TotalHits: page.Total, Reason: page.Reason}
-}
-
 // mcpCall runs one tool and returns its answer: one text block.
 func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
-	return mcpCallWithPage(ctx, r, name, args, nil)
-}
-
-func mcpCallWithPage(ctx context.Context, r *retriever, name string, args map[string]any, observe func(*format.Page)) (string, error) {
 	var err error
 	args, err = mcpRepoArgs(ctx, r, name, args)
 	if err != nil {
@@ -605,17 +583,13 @@ func mcpCallWithPage(ctx context.Context, r *retriever, name string, args map[st
 	if name == "flopwire_change" {
 		return changeMCPCall(ctx, r, args)
 	}
-	return mcpRetrievalCallWithPage(ctx, r, name, args, observe)
+	return mcpRetrievalCall(ctx, r, name, args)
 }
 
 // mcpRetrievalCall runs one retrieval tool and returns its answer: text,
 // or in JSON mode compact JSON within the budget. In JSON mode a
 // failure's text is the JSON error object.
 func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
-	return mcpRetrievalCallWithPage(ctx, r, name, args, nil)
-}
-
-func mcpRetrievalCallWithPage(ctx context.Context, r *retriever, name string, args map[string]any, observe func(*format.Page)) (string, error) {
 	o, asJSON, err := mcpOpts(name, args)
 	if err != nil {
 		err = badArg(err)
@@ -624,10 +598,13 @@ func mcpRetrievalCallWithPage(ctx context.Context, r *retriever, name string, ar
 	}
 	var b bytes.Buffer
 	if err == nil {
-		o.onPage = observe
 		err = runTool(ctx, r, o, &b, format.Style{MCP: true, Budget: format.MaxOutput}, selfMCP)
 	}
 	if err != nil {
+		var incomplete *incompleteRetrieval
+		if errors.As(err, &incomplete) {
+			return "", &mcpBusError{text: strings.ToValidUTF8(strings.TrimRight(b.String(), "\n"), "�")}
+		}
 		if o == nil {
 			// The arguments did not parse: JSON when the tool answers JSON
 			// by default, or format says so.
@@ -821,12 +798,7 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			case <-cctx.Done():
 				return
 			}
-			var outcome *mcpPageOutcome
-			text, err := mcpCallWithPage(cctx, r, p.Name, p.Arguments, func(page *format.Page) {
-				if p.Name == "flopwire_grep" {
-					outcome = pageOutcome(page)
-				}
-			})
+			text, err := mcpCall(cctx, r, p.Name, p.Arguments)
 			if cctx.Err() != nil && ctx.Err() == nil {
 				return // cancelled by the client: no response
 			}
@@ -842,9 +814,6 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 				}
 			}
 			res := map[string]any{"content": content}
-			if outcome != nil && !isErr {
-				res["structuredContent"] = outcome
-			}
 			if isErr {
 				res["isError"] = true
 			}

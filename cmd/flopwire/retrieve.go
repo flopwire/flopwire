@@ -300,12 +300,11 @@ var filterKeys = []string{"agent", "repo", "kind", "exclude-kind", "tool", "sess
 // opts are a tool's parsed options: from the command line or from MCP
 // arguments.
 type opts struct {
-	onPage func(*format.Page) // optional per-call observer before rendering
-	verb   string
-	pos    []string
-	vals   map[string]string   // string and int options by long name, as given
-	list   map[string][]string // -e
-	on     map[string]bool     // bool options
+	verb string
+	pos  []string
+	vals map[string]string   // string and int options by long name, as given
+	list map[string][]string // -e
+	on   map[string]bool     // bool options
 }
 
 func newOpts(verb string) *opts {
@@ -622,8 +621,8 @@ func pageInfos(p *format.Page) []*format.ConversationInfo {
 	return out
 }
 
-// incompleteRetrieval is a CLI status, after the partial answer was written.
-// It is separate from operational failures and is never returned over MCP.
+// incompleteRetrieval follows a rendered partial answer. CLI scans return it;
+// MCP grep returns it only when no matching candidate was verified.
 type incompleteRetrieval struct{ reason string }
 
 func (e *incompleteRetrieval) Error() string {
@@ -698,7 +697,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := emit(page, bounded, text); err != nil {
 			return err
 		}
-		if page.Truncated && !st.MCP {
+		if page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
 			return &incompleteRetrieval{reason: page.Reason}
 		}
 		return nil
@@ -747,9 +746,6 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		page, err := r.Grep(ctx, q, f)
 		if err != nil {
 			return err
-		}
-		if o.onPage != nil {
-			o.onPage(page)
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note

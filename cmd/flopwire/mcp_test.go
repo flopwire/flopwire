@@ -146,9 +146,8 @@ func TestMCPToolSchemasSelfDescribing(t *testing.T) {
 	}
 }
 
-// Outcome metadata is independent of text/JSON formatting and belongs to one
-// request, including when grep calls finish concurrently. Search has a
-// different Page counting contract and does not expose grep outcome metadata.
+// A timeout with no verified matches is an unsuccessful MCP grep call.
+// Useful partial hits and complete empty answers keep the one-answer contract.
 type outcomeBackend struct{ blockingBackend }
 
 func (*outcomeBackend) Grep(_ context.Context, q format.GrepQuery, _ format.Filters) (*format.Page, error) {
@@ -167,39 +166,26 @@ func (b *outcomeBackend) Search(ctx context.Context, q format.SearchQuery, f for
 	return &format.Page{Hits: []format.Hit{}}, nil
 }
 
-func TestMCPPageOutcomesOnWire(t *testing.T) {
+func TestMCPUnproductiveGrepTimeoutOnWire(t *testing.T) {
 	cases := []struct {
-		pattern, status  string
-		exact, truncated bool
-		total            int
+		pattern    string
+		isError    bool
+		partialHit bool
 	}{
-		{"empty", "complete", true, false, 0},
-		{"timeout", "partial", false, true, 0},
-		{"partial", "partial", false, true, 3},
-		{"capped", "partial", false, false, 200},
+		{"empty", false, false},
+		{"timeout", true, false},
+		{"partial", false, true},
+		{"capped", false, false},
 	}
 	var input strings.Builder
-	expected := map[int]struct {
-		status           string
-		exact, truncated bool
-		total            int
-	}{}
+	type expectedOutcome struct{ isError, partialHit bool }
+	expected := map[int]expectedOutcome{}
 	id := 0
-	for _, verb := range []string{"grep"} {
-		key := "pattern"
-		if verb == "search" {
-			key = "query"
-		}
-		for _, mode := range []string{"text", "json"} {
-			for _, tc := range cases {
-				id++
-				fmt.Fprintf(&input, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"flopwire_%s","arguments":{"%s":"%s","format":"%s"}}}`+"\n", id, verb, key, tc.pattern, mode)
-				expected[id] = struct {
-					status           string
-					exact, truncated bool
-					total            int
-				}{tc.status, tc.exact, tc.truncated, tc.total}
-			}
+	for _, mode := range []string{"text", "json"} {
+		for _, tc := range cases {
+			id++
+			fmt.Fprintf(&input, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"flopwire_grep","arguments":{"pattern":"%s","format":"%s"}}}`+"\n", id, tc.pattern, mode)
+			expected[id] = expectedOutcome{tc.isError, tc.partialHit}
 		}
 	}
 	input.WriteString(`{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"flopwire_search","arguments":{"query":"synthetic"}}}` + "\n")
@@ -217,40 +203,40 @@ func TestMCPPageOutcomesOnWire(t *testing.T) {
 				Content []struct {
 					Text string `json:"text"`
 				} `json:"content"`
-				Structured *mcpPageOutcome `json:"structuredContent"`
-				IsError    bool            `json:"isError"`
+				Structured any  `json:"structuredContent"`
+				IsError    bool `json:"isError"`
 			} `json:"result"`
 		}
 		if err := decoder.Decode(&response); err != nil {
 			t.Fatal(err)
 		}
+		if response.Result.Structured != nil || len(response.Result.Content) != 1 {
+			t.Fatalf("answer contract changed: %+v", response)
+		}
 		if response.ID == 99 {
 			searchResponses++
-			if response.Result.Structured != nil || response.Result.IsError {
-				t.Fatalf("search inherits grep counting metadata: %+v", response)
+			if response.Result.IsError {
+				t.Fatalf("search inherits grep timeout outcome: %+v", response)
 			}
 			continue
 		}
 		want, ok := expected[response.ID]
-		got := response.Result.Structured
-		if !ok || seen[response.ID] || got == nil {
+		if !ok || seen[response.ID] {
 			t.Fatalf("unexpected response: %+v", response)
 		}
 		seen[response.ID] = true
-		if got.Status != want.status || got.Exact != want.exact || got.Truncated != want.truncated || got.TotalHits != want.total || response.Result.IsError {
-			t.Fatalf("id %d: got %+v want %+v", response.ID, got, want)
+		text := response.Result.Content[0].Text
+		if response.Result.IsError != want.isError {
+			t.Fatalf("id %d isError=%v want %v", response.ID, response.Result.IsError, want.isError)
 		}
-		if want.total == 3 && !strings.Contains(response.Result.Content[0].Text, "synthetic partial match") {
-			t.Fatalf("verified partial hit lost: %+v", response)
+		if want.isError && (!strings.Contains(text, "checked 0 candidates") || !strings.Contains(text, "narrow with repo or since")) {
+			t.Fatalf("timeout diagnostic lost: %q", text)
 		}
-		if want.truncated && (got.Reason == "" || !strings.Contains(response.Result.Content[0].Text, "timed out")) {
-			t.Fatalf("partial diagnostic lost: %+v", response)
+		if want.partialHit && !strings.Contains(text, "synthetic partial match") {
+			t.Fatalf("verified partial hit lost: %q", text)
 		}
 	}
-	if searchResponses != 1 {
-		t.Fatalf("got %d search responses, want 1", searchResponses)
-	}
-	if len(seen) != len(expected) {
-		t.Fatalf("got %d responses, want %d", len(seen), len(expected))
+	if searchResponses != 1 || len(seen) != len(expected) {
+		t.Fatalf("got %d grep and %d search responses", len(seen), searchResponses)
 	}
 }

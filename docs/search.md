@@ -556,14 +556,10 @@ its partial results. The CLI warns on stderr and exits 2. JSON on stdout
 remains one valid result object. A scan or verification budget also exits 2.
 Complete searches exit 0, including searches with no matches. Operational
 failures exit 1. MCP returns partial results successfully, with `truncated`
-and a reason in JSON or a warning before the text results. Grep also returns MCP `structuredContent` with `status` (`complete` or `partial`),
-`exact`, `truncated`, `total_hits`, and an optional `reason`. This status
-describes scan and count completeness, even when the output format is text.
-`total_hits` is a lower bound when `exact=false`; a counting cap can report
-`status=partial` with `truncated=false`. Pagination and the output byte
-budget can still limit the hits displayed in a complete answer.
-A complete empty answer has `status=complete`; a timeout with no verified
-matches has `status=partial`. Partial results
+and a reason in JSON or a warning before the text results. A grep timeout with no verified matches sets MCP `isError=true` and keeps
+its rendered timeout reason and narrowing suggestion. Complete empty answers
+and useful partial answers remain successful MCP calls. Counting caps also
+remain successful and keep their lower-bound warning. Partial results
 cannot establish that a message does not exist. Keep warnings when filtering
 tool output. On the team server, `sessions`, `read` and raw reads have the
 same 10-second budget; one that runs out fails with 504 and says it
