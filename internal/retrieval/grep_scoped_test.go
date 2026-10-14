@@ -70,7 +70,9 @@ func TestGrepScopedScanBodyBudget(t *testing.T) {
 
 func TestGrepScopedScanRowBoundary(t *testing.T) {
 	f := newFindFixture(t)
-	ctx := context.Background()
+	// Exercise row limits independently of the default interactive timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), MaxBudget)
+	defer cancel()
 	// Nonmatching synthetic rows make the scan consume its full allowance.
 	_, err := f.s.Pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,ordinal,kind,ts,text,text_len,content_sha,source_generation,parser)
  SELECT gen_random_uuid(),$1,n,'assistant',$2::timestamptz + n*interval '1 microsecond','z',1,decode(repeat('00',32),'hex'),0,'test' FROM generate_series(1,$3::integer) n`, f.conv, time.Now(), grepSessionScanRows)
