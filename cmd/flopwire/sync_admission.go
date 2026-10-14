@@ -19,7 +19,7 @@ func serverParseWorkers(workers int) (int, error) {
 	if workers <= 0 {
 		workers = 4
 	}
-	if int64(workers) > math.MaxInt32-api.RetrievalConcurrency-1-store.PoolHeadroom {
+	if int64(workers) > math.MaxInt32-api.RetrievalConcurrency-2-store.PoolHeadroom {
 		return 0, fmt.Errorf("parse worker configuration exceeds supported database pool capacity")
 	}
 	return workers, nil
@@ -30,7 +30,7 @@ func flushAdmissionBudget(maxConns int32, workers int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	minimum := int64(api.RetrievalConcurrency) + int64(workers) + 1 + flushNonUploadHeadroom + 1
+	minimum := int64(api.RetrievalConcurrency) + int64(workers) + 2 + flushNonUploadHeadroom + 1
 	if int64(maxConns) < minimum {
 		return 0, fmt.Errorf("database pool configuration requires at least %d connections for serial flush admission; configured maximum is %d", minimum, maxConns)
 	}

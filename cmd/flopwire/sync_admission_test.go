@@ -14,22 +14,22 @@ func TestFlushAdmissionPoolBudget(t *testing.T) {
 		pool          int32
 		workers, want int
 	}{
-		{43, 2, 8}, {45, 4, 8}, {100, 4, 8}, {45, 0, 8}, {45, -3, 8},
+		{44, 2, 8}, {46, 4, 8}, {100, 4, 8}, {46, 0, 8}, {46, -3, 8},
 	} {
 		got, err := flushAdmissionBudget(tc.pool, tc.workers)
 		if err != nil || got != tc.want {
 			t.Fatalf("pool=%d workers=%d budget=%d err=%v", tc.pool, tc.workers, got, err)
 		}
 	}
-	// With four effective workers, 37 connections are reserved for search,
+	// With four effective workers, 38 connections are reserved for search,
 	// parse and other work; overrides leaving 1..7 flush slots stay bounded.
 	for slots := 1; slots < 8; slots++ {
-		got, err := flushAdmissionBudget(int32(37+slots), 4)
+		got, err := flushAdmissionBudget(int32(38+slots), 4)
 		if err != nil || got != slots {
 			t.Fatalf("shrunk pool: slots=%d got=%d err=%v", slots, got, err)
 		}
 	}
-	if _, err := flushAdmissionBudget(37, 4); err == nil || !strings.Contains(err.Error(), "at least 38") || !strings.Contains(err.Error(), "maximum is 37") {
+	if _, err := flushAdmissionBudget(38, 4); err == nil || !strings.Contains(err.Error(), "at least 39") || !strings.Contains(err.Error(), "maximum is 38") {
 		t.Fatalf("undersized pool error=%v", err)
 	}
 	if _, err := flushAdmissionBudget(math.MaxInt32, math.MaxInt32); err == nil {
@@ -54,7 +54,7 @@ func TestFlushAdmissionUsesEffectiveQueueWorkersAndPoolOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := flushAdmissionBudget(config.MaxConns, 4)
-	if err != nil || got != 2 {
+	if err != nil || got != 1 {
 		t.Fatalf("URL override budget=%d err=%v", got, err)
 	}
 }
