@@ -490,7 +490,7 @@ func (a *Agent) writeAdminCache(p AdminPolicy) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	dir, err := fsprobe.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
