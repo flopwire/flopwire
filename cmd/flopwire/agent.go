@@ -267,7 +267,17 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}}
 	// A re-executed agent (it holds the lock already) rebuilt before.
 	opts.RebuildIndex = *rebuildIndex && opts.LockFile == nil
-	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log)
+	contract := agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local", SyncTimeout: *syncWait}
+	if *syncOnly {
+		contract.Mode = localindex.ModeSyncOnly
+	}
+	if !*noSync && ccErr == nil && cc.Server != "" && cc.Token != "" {
+		contract.Connection, contract.Server, contract.DeviceID = "upload", cc.Server, cc.DeviceID
+		if cc.DeviceID == "" {
+			contract.TokenFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(cc.Token)))
+		}
+	}
+	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log, contract)
 	if err != nil || store == nil {
 		return nil, err // store == nil: the running agent did the pass
 	}
@@ -308,6 +318,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		if s != nil {
 			defer closeSync()
 			sched, cfg.Sync, startSyncRun = s, s, start
+			cfg.SyncTokenFingerprint = contract.TokenFingerprint
+			cfg.DrainSync = func(ctx context.Context, wait time.Duration) error { return drainSync(ctx, s, wait, log) }
 			// An enrolled device rotates its credential daily; a minted
 			// token (FLOPWIRE_TOKEN) never rotates.
 			if !*once && !tr.env {
@@ -471,10 +483,11 @@ const agentLockGrace = 3 * time.Second
 // openAgentIndex opens the index for writing. The index takes one writer
 // (decision D12): when another process holds it, a daemon fails after
 // agentLockGrace, and --once asks the running agent for a pass over the
-// control socket and waits for it, returning a nil store. A --once whose lock holder does not
+// control socket with its execution contract and waits for indexing and upload
+// completion, returning a nil store. A --once whose lock holder does not
 // answer on the socket (a daemon still in its initial pass, or another
 // --once) waits until it answers or releases the lock.
-func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger) (*localindex.Store, error) {
+func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger, contract agent.OnceRequest) (*localindex.Store, error) {
 	waiting := false
 	start := time.Now()
 	for {
@@ -496,13 +509,16 @@ func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options,
 			}
 			return nil, fmt.Errorf("agent already running (pid %d)", locked.PID)
 		}
-		_, err = agent.Call(ctx, socket, agent.Request{Op: "pass", Index: dbPath})
+		_, err = agent.Call(ctx, socket, agent.Request{Op: "once-v1", Index: dbPath, Once: &contract})
 		if err == nil {
 			log.Info("agent: the running agent did the pass", "pid", locked.PID)
 			return nil, nil
 		}
 		if !strings.HasPrefix(err.Error(), "agent not running") {
-			return nil, fmt.Errorf("agent (pid %d): %w", locked.PID, err)
+			if strings.HasPrefix(err.Error(), "unknown op ") {
+				return nil, fmt.Errorf("agent (pid %d) lacks delegated --once support; restart it with the current binary: %w", locked.PID, err)
+			}
+			return nil, fmt.Errorf("agent (pid %d): delegated --once: %w", locked.PID, err)
 		}
 		if !waiting {
 			waiting = true

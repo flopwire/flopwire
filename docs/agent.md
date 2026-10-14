@@ -136,8 +136,16 @@ index waits 3 seconds for the lock, then exits with
 `agent already running (pid N)`. The wait covers `flopwire mcp`, which
 holds the lock for a moment when it creates an empty index on a device
 whose agent never ran. `flopwire agent run --once`
-asks the running agent for a pass over the control socket and waits for it
-to finish. If the index is locked and no agent answers yet, `--once` waits.
+asks the running agent for a pass over the control socket. It waits for local
+commit and upload acknowledgment. `--sync-timeout` bounds the upload wait
+(default 5 minutes), as it does for a fresh process. The running agent must
+match the requested retention mode and local or upload connection. Upload
+requests must also match its server and device. A token without a device ID
+must match the running agent's credential. A mismatch fails without
+changing the running agent or rebuilding the index. Stop the agent before
+changing these settings. Older agents that lack this execution contract must
+be restarted with the current binary. If the index is locked and no agent
+answers yet, `--once` waits.
 The search commands open the index read-only and never take the lock.
 
 ## Local redactions: what they guarantee
