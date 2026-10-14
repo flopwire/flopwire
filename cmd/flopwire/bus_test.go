@@ -1022,6 +1022,11 @@ func TestPeersRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	if err := client.Save(client.Config{Server: "https://flopwire.example.test", Token: "device"}); err != nil {
 		t.Fatal(err)
 	}
+	cc, err := client.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	establishEmptyCollectionPolicy(t, cc)
 	asCaller(t, claudeSelf)
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

@@ -241,3 +241,30 @@ func TestAgentCredentialFlapSettles(t *testing.T) {
 		}
 	}
 }
+
+func TestDaemonStartsPausedWhenCollectionPolicyIsUnknown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "flopwire", "config.json"))
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
+	t.Setenv(client.EnvToken, "")
+	t.Setenv(client.EnvServer, "")
+	srv, _ := fakeBusServer(t)
+	if err := client.Save(client.Config{Server: srv.URL, Token: "device-token", DeviceID: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(shortSockDir(t), "paused.sock")
+	runctx, cancel := context.WithCancel(t.Context())
+	done := runAgentAsync(t, runctx, home, sock)
+	defer func() { cancel(); <-done }()
+	resp, err := agent.Call(t.Context(), sock, agent.Request{Op: "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.CollectionPolicy != "unknown" {
+		t.Fatalf("daemon policy state = %q", resp.CollectionPolicy)
+	}
+	resp, err = agent.Call(t.Context(), sock, agent.Request{Op: "pass"})
+	if err == nil || !strings.Contains(err.Error(), "policy is known") {
+		t.Fatalf("delegated pass = %+v, %v", resp, err)
+	}
+}

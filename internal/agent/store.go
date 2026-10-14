@@ -259,6 +259,9 @@ var _ transcript.SessionSuperseder = (*storeSink)(nil)
 // first, then every row again, then rows the new parse did not emit are
 // superseded and the source records the new parser version.
 func (a *Agent) parseStore(ctx context.Context, d *storeState, id transcript.Identity, full bool) error {
+	if a.policy().readiness == policyUnknown {
+		return nil
+	}
 	p := d.parser
 	if full || p == nil {
 		p = d.h.newParser()

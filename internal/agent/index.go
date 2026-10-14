@@ -27,6 +27,9 @@ import (
 func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	a.captureScopeMu.RLock()
 	defer a.captureScopeMu.RUnlock()
+	if a.policy().readiness == policyUnknown {
+		return false, nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !a.coworkSafe(t) {
@@ -401,6 +404,9 @@ func (a *Agent) notify(t *target) bool {
 func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 	a.captureScopeMu.RLock()
 	defer a.captureScopeMu.RUnlock()
+	if a.policy().readiness == policyUnknown {
+		return nil
+	}
 	if !a.coworkSafe(t) {
 		return nil
 	}
@@ -476,6 +482,9 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 // applyStubs records a conversation for each orphaned Claude session (its
 // transcript was cleaned up, its tool-results/ remain), once per process.
 func (a *Agent) applyStubs(ctx context.Context, f *found) {
+	if a.policy().readiness == policyUnknown {
+		return
+	}
 	pv := a.policy()
 	var todo []*transcript.Conversation
 	for _, c := range f.stubs {

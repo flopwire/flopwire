@@ -222,6 +222,7 @@ func TestAdminRulesAreAFloor(t *testing.T) {
 	f, file, _ := rulesFixture(t, "-", "allow /tmp/**")
 	cache := filepath.Join(t.TempDir(), "admin.json")
 	f.cfg.AdminRulesCache = cache
+	f.cfg.PolicyAuthority = &PolicyAuthority{Server: "https://policy.example", DeviceID: "test-device"}
 	f.cfg.AdminRules = func(context.Context) (AdminPolicy, error) {
 		return AdminPolicy{Rules: []string{"local:/tmp/oracle-alpha"}}, nil
 	}
@@ -442,8 +443,13 @@ func TestDevicePolicyAndUploads(t *testing.T) {
 	user := filepath.Join(dir, "path-rules")
 	os.WriteFile(user, []byte("local "+filepath.Join(real, "app-secret")+"\n"), 0o600)
 	cache := filepath.Join(dir, "admin-path-rules.json")
-	os.WriteFile(cache, []byte(`{"rules":["deny repo:github.com/acme/*"]}`), 0o600)
-	pol := DevicePolicy(Config{UserRules: user, UserRuleList: []string{"deny /listed"}, AdminRulesCache: cache, Home: dir})
+	cfg := Config{UserRules: user, UserRuleList: []string{"deny /listed"}, AdminRulesCache: cache, Home: dir, PolicyAuthority: &PolicyAuthority{Server: "https://policy.example", DeviceID: "test-device"}}
+	cfg.defaults()
+	ca := &Agent{cfg: cfg, log: cfg.Logger}
+	if err := ca.writeAdminCache(AdminPolicy{Rules: []string{"deny repo:github.com/acme/*"}}); err != nil {
+		t.Fatal(err)
+	}
+	pol := DevicePolicy(cfg)
 	for _, c := range []struct {
 		pl   pathpolicy.Placement
 		want bool
