@@ -28,15 +28,19 @@ its result only if its captured epoch and credential still match. Local
 redaction requests and observed path-policy changes invalidate before and after
 their operation. Repinning or rechecking credentials and failed message polls
 also invalidate. An observed authorization denial (HTTP 401 or 403) clears
-all snapshots and discards earlier successes in the same batch. An unsuccessful
-refresh otherwise removes the affected snapshots.
-Still-valid snapshots remain usable while a refresh is in flight.
+all snapshots and discards earlier successes in the same batch. Still-valid
+snapshots are reused without another read or an expiry extension.
+Expired entries are removed before a later poll attempts their references again.
+Missing, empty, or failed results leave those references without snapshots. A
+batch deadline does not delete still-valid entries it did not read.
 
 A server-side redaction or permission change on another device is not an
 instantaneous local event. Until this device observes it, an already prepared
 snapshot may be served within the 30-second window. Expiry is checked when the
-hook takes the excerpt. Text already inserted into an agent's context cannot be
-recalled. Strict authorization at the instant of hook delivery would require a
+hook takes the excerpt. Refetch begins only after expiry, when another poll
+returns the envelope. Between expiry and the next successful read, the hook
+prints the reference address without an excerpt. Text already inserted into an
+agent's context cannot be recalled. Strict authorization at the instant of hook delivery would require a
 different protocol and timing contract.
 
 ## Raw reproduction
@@ -155,5 +159,9 @@ local retention as storage policy. Any future persistent excerpt cache would
 need its own deletion and recovery contract.
 
 The one-second and 30-second values are product bounds, not measured universal
-optima. Successful local tests establish the exercised schedules and workload;
+optima. Reusing valid entries lets later missing references use the read budget.
+Stable poll ordering, slow or repeatedly failing earlier references, and the
+128-entry bound can still prevent later references from receiving excerpts.
+This cache provides no universal fairness guarantee. Successful local tests
+establish the exercised schedules and workload;
 they do not establish production tail latency or instantaneous revocation.

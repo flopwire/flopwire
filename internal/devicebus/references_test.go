@@ -89,6 +89,9 @@ func TestReferenceInflightFences(t *testing.T) {
 			}
 			close(release)
 			referenceTestWait(t, done)
+			if len(f.bus.references) != 0 {
+				t.Fatalf("fenced result entered cache before getter: %v", f.bus.references)
+			}
 			if got := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(got) != 0 {
 				t.Fatalf("fenced result survived: %v", got)
 			}
@@ -160,11 +163,14 @@ func TestReferenceBatchAndCacheBounds(t *testing.T) {
 	}
 }
 
-func TestReferenceRefreshDeniedRemovesSnapshot(t *testing.T) {
+func TestReferenceExpiredSnapshotRefetchMissingLeavesNoText(t *testing.T) {
 	f := newReferenceTestFixture(t)
 	m := f.message("synthetic-denied")
 	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
-	f.server.read = func(context.Context, string) (string, error) { return "", errors.New("synthetic forbidden") }
+	f.clock.Add(int64(referenceAge))
+	f.server.read = func(context.Context, string) (string, error) {
+		return "", &client.APIError{StatusCode: http.StatusNotFound}
+	}
 	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
 	if got := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(got) != 0 {
 		t.Fatalf("denied refresh retained text: %v", got)
@@ -288,32 +294,29 @@ func TestReferenceBlockedReadLeavesQueuedMessageDeliverable(t *testing.T) {
 	}
 }
 
-func TestReferenceRefreshKeepsValidTextUntilDeniedResponse(t *testing.T) {
+func TestReferenceExpiredSnapshotUnavailableDuringRefetch(t *testing.T) {
 	f := newReferenceTestFixture(t)
-	m := f.message("synthetic-refresh")
+	m := f.message("synthetic-expired-refetch")
 	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+	f.clock.Add(int64(referenceAge))
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	f.server.read = func(context.Context, string) (string, error) {
 		close(entered)
 		<-release
-		return "", errors.New("synthetic forbidden after refresh")
+		return "user: synthetic replacement", nil
 	}
 	go func() { defer close(done); f.bus.prepareReferences(ctx, []busproto.Envelope{m}) }()
 	referenceTestWait(t, entered)
-	during := f.bus.ReferenceExcerpts([]busproto.Envelope{m})
-	if during[m.Refs[0]] != "user: synthetic authorized fact" {
-		t.Errorf("refresh removed still-valid text before response: %v", during)
+	if during := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(during) != 0 {
+		t.Errorf("expired text served while refetch blocked: %v", during)
 	}
 	if f.server.calls.Load() != 2 {
-		t.Error("hook triggered another network read during refresh")
+		t.Error("hook made extra network read")
 	}
 	close(release)
 	referenceTestWait(t, done)
-	if after := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(after) != 0 {
-		t.Fatalf("denied refresh retained old text: %v", after)
-	}
-	if f.server.calls.Load() != 2 {
-		t.Fatal("hook triggered another network read after denied refresh")
+	if after := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); after[m.Refs[0]] != "user: synthetic replacement" {
+		t.Fatalf("refetch failed: %v", after)
 	}
 }
 
@@ -367,5 +370,125 @@ func TestReferenceAuthorizationFailureInvalidatesBatchAndExistingSnapshots(t *te
 				}
 			}
 		})
+	}
+}
+
+func TestReferenceFreshSnapshotSkippedWithoutExpiryExtension(t *testing.T) {
+	f := newReferenceTestFixture(t)
+	m := f.message("synthetic-fresh")
+	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+	key := referenceKey{m.ID, m.Refs[0]}
+	expiry := f.bus.references[key].expires
+	f.clock.Add(int64(referenceAge - time.Nanosecond))
+	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+	if f.server.calls.Load() != 1 {
+		t.Fatal("fresh snapshot was fetched again")
+	}
+	if got := f.bus.references[key].expires; !got.Equal(expiry) {
+		t.Fatalf("skip extended expiry: %v -> %v", expiry, got)
+	}
+	f.clock.Add(int64(time.Nanosecond))
+	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+	if f.server.calls.Load() != 2 {
+		t.Fatal("snapshot not refetched at expiry")
+	}
+	if got := f.bus.references[key].expires; !got.Equal(expiry.Add(referenceAge)) {
+		t.Fatalf("replacement expiry = %v", got)
+	}
+}
+
+func TestReferenceTransientFailureKeepsOtherValidSnapshotExpiry(t *testing.T) {
+	for _, failure := range []error{errors.New("synthetic unavailable"), context.DeadlineExceeded, &client.APIError{StatusCode: http.StatusServiceUnavailable}} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			f := newReferenceTestFixture(t)
+			m := f.message("synthetic-transient")
+			f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+			key := referenceKey{m.ID, m.Refs[0]}
+			before := f.bus.references[key]
+			f.clock.Add(int64(26 * time.Second))
+			missing := f.message("synthetic-transient-missing")
+			missing.Refs = []string{"abcdefgh/8"}
+			f.server.read = func(context.Context, string) (string, error) { return "", failure }
+			f.bus.prepareReferences(ctx, []busproto.Envelope{m, missing})
+			if after := f.bus.references[key]; after != before {
+				t.Fatalf("transient failure changed valid snapshot: before %+v after %+v", before, after)
+			}
+			if f.server.calls.Load() != 2 {
+				t.Fatal("valid snapshot refetched before expiry")
+			}
+			if got := f.bus.ReferenceExcerpts([]busproto.Envelope{missing}); len(got) != 0 {
+				t.Fatalf("transient failure created text: %v", got)
+			}
+		})
+	}
+}
+
+func TestReferenceCanceledBatchKeepsUnattemptedSnapshot(t *testing.T) {
+	f := newReferenceTestFixture(t)
+	old := f.message("synthetic-unattempted")
+	f.bus.prepareReferences(ctx, []busproto.Envelope{old})
+	key := referenceKey{old.ID, old.Refs[0]}
+	before := f.bus.references[key]
+	f.clock.Add(int64(referenceAge / 2))
+	incoming := f.message("synthetic-missing-before-refresh")
+	incoming.Refs = []string{"abcdefgh/8"}
+	entered, done := make(chan struct{}), make(chan struct{})
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	f.server.read = func(c context.Context, ref string) (string, error) {
+		if ref != incoming.Refs[0] {
+			t.Errorf("refresh preceded missing ref: %s", ref)
+		}
+		close(entered)
+		<-c.Done()
+		return "", c.Err()
+	}
+	go func() { defer close(done); f.bus.prepareReferences(readCtx, []busproto.Envelope{old, incoming}) }()
+	referenceTestWait(t, entered)
+	cancel()
+	referenceTestWait(t, done)
+	if after := f.bus.references[key]; after != before {
+		t.Fatalf("unattempted ref lost original snapshot: before %+v after %+v", before, after)
+	}
+	if f.server.calls.Load() != 2 {
+		t.Fatalf("batch continued after cancellation: calls %d", f.server.calls.Load())
+	}
+}
+
+func TestReferenceValidSnapshotsLetLaterMissingEnvelopeProgress(t *testing.T) {
+	f := newReferenceTestFixture(t)
+	first, second, third := f.message("synthetic-m1"), f.message("synthetic-m2"), f.message("synthetic-m3")
+	second.Refs = []string{"abcdefgh/1"}
+	third.Refs = []string{"abcdefgh/2"}
+	f.bus.prepareReferences(ctx, []busproto.Envelope{first, second})
+	f.clock.Add(int64(26 * time.Second))
+	var order []string
+	f.server.read = func(_ context.Context, ref string) (string, error) {
+		order = append(order, ref)
+		return "user: synthetic refreshed fact", nil
+	}
+	f.bus.prepareReferences(ctx, []busproto.Envelope{first, second, third})
+	if len(order) == 0 || order[0] != third.Refs[0] {
+		t.Fatalf("valid snapshots prevented missing third envelope progress: %v", order)
+	}
+	if got := f.bus.ReferenceExcerpts([]busproto.Envelope{third}); got[third.Refs[0]] == "" {
+		t.Fatal("missing envelope did not make progress")
+	}
+}
+
+func TestReferenceDefinitiveMissClearsSnapshotEvenWhenBatchCanceled(t *testing.T) {
+	f := newReferenceTestFixture(t)
+	m := f.message("synthetic-missing-at-cancel")
+	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+	f.clock.Add(int64(referenceAge))
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	f.server.read = func(context.Context, string) (string, error) {
+		cancel()
+		return "", &client.APIError{StatusCode: http.StatusNotFound}
+	}
+	f.bus.prepareReferences(readCtx, []busproto.Envelope{m})
+	if got := f.bus.references[referenceKey{m.ID, m.Refs[0]}]; got.text != "" {
+		t.Fatalf("observed 404 retained old text after cancellation: %+v", got)
 	}
 }

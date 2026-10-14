@@ -55,21 +55,31 @@ func (b *Bus) prepareReferences(ctx context.Context, msgs []busproto.Envelope) {
 	started := b.cfg.Now()
 	b.mu.Lock()
 	epoch := b.referenceEpoch
+	existing := make(map[referenceKey]bool, len(b.references))
 	for k, v := range b.references {
 		if !started.Before(v.expires) || v.credential != credential {
 			delete(b.references, k)
+		} else {
+			existing[k] = true
 		}
 	}
 	b.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, referenceWait)
 	defer cancel()
 	ready := make(map[referenceKey]referenceSnapshot)
-	// The batch is bounded independently of the server's inbox limit.
+	// Reuse every still-valid snapshot without extending its expiry.
 	reads := 0
 	for _, m := range msgs {
 		for i, ref := range m.Refs {
 			if i >= busrender.MaxRefs || reads >= referenceEntries || ctx.Err() != nil {
 				break
+			}
+			key := referenceKey{m.ID, ref}
+			if existing[key] {
+				continue
+			}
+			if _, done := ready[key]; done {
+				continue
 			}
 			addr, err := format.ParseAddress(ref)
 			if err != nil || addr.Kind != format.AddrMessage {
@@ -77,8 +87,8 @@ func (b *Bus) prepareReferences(ctx context.Context, msgs []busproto.Envelope) {
 			}
 			reads++
 			text, err := reader.ReadReference(ctx, ref)
-			var denied *client.APIError
-			if errors.As(err, &denied) && (denied.StatusCode == http.StatusUnauthorized || denied.StatusCode == http.StatusForbidden) {
+			var apiErr *client.APIError
+			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
 				b.InvalidateReferences()
 				return
 			}
@@ -86,27 +96,23 @@ func (b *Bus) prepareReferences(ctx context.Context, msgs []busproto.Envelope) {
 				continue
 			}
 			text = format.Cut(text, 1, 4*busrender.MaxExcerptBytes).Text
-			ready[referenceKey{m.ID, ref}] = referenceSnapshot{text, credential, started.Add(referenceAge)}
+			ready[key] = referenceSnapshot{text, credential, started.Add(referenceAge)}
 		}
 	}
+
 	_, current := b.cfg.Connect()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if epoch != b.referenceEpoch || current != credential || !b.cfg.Now().Before(started.Add(referenceAge)) {
 		return
 	}
-	// Keep valid snapshots usable during refresh; replace them atomically
-	// when the read completes, including removing denied/missing results.
-	for _, m := range msgs {
-		for _, ref := range m.Refs {
-			delete(b.references, referenceKey{m.ID, ref})
-		}
-	}
+	// Unattempted refs leave existing valid snapshots and their expiry intact.
+
 	if b.references == nil {
 		b.references = make(map[referenceKey]referenceSnapshot)
 	}
 	for k, v := range ready {
-		if len(b.references) >= referenceEntries {
+		if _, held := b.references[k]; !held && len(b.references) >= referenceEntries {
 			// Discard an old snapshot, never a durable message or receipt.
 			var oldest referenceKey
 			var at time.Time
