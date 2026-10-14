@@ -76,7 +76,11 @@ sync-only at `internal/localindex/store.go:391`, although sync-only retains
 placements. Deleted worktrees therefore lose their recorded main checkout and
 remote during shared query expansion. The server does not resolve an absolute
 path into repository identity (`internal/retrieval/repo.go:54`). Full versus
-minimal retention changes the shared query's scope.
+minimal retention changes the shared query's scope. The same metadata helper
+feeds CLI `peers --repo` (`cmd/flopwire/bus.go:359`) and retained-message queries
+(`cmd/flopwire/messages.go:120`). Peers can narrow their scope; messages can
+reject a deleted worktree as unknown. The daemon's `BusRepoKey` reads its live
+store directly and does not have this read-only-open defect.
 
 ```text
 t0 filesystem = {old worktree: absent}
@@ -88,10 +92,14 @@ t2 sync-only read-only open fails -> expansion has only the old path
 ```
 
 Replay: `TestAuditSyncOnlyMetadataUnavailable` and
-`TestAuditDeletedRepoNeedsPlacements`. The latter compares the resolved filter,
-not a live server's result count.
+`TestAuditDeletedRepoNeedsPlacements`. The latter is a supporting illustration:
+it compares the resolved filter with and without metadata, not sync-only
+behavior or a live server's result count.
+The former directly reproduces sync-only's loss of available metadata.
 
 Fix: expose retained placement metadata independently of message/FTS access.
+A metadata-only open path can be sufficient; a separate metadata database is not
+required. It must also avoid treating absent FTS shards as absent metadata.
 Do not make explicit local content queries succeed on sync-only. Gate: run the
 same shared query with a live checkout, a deleted worktree, and a remote clone
 in full and sync-only modes; assert identical authorized result IDs and filters.
@@ -107,7 +115,7 @@ and commit, not remote upload acknowledgment.
 
 ```text
 t0 daemon = {mode: full, index lock: held, upload queue: pending}
-   caller = {once: true, sync-only: true, sync-wait: 1s}
+   caller = {once: true, sync-only: true, sync-timeout: 1s}
 t1 caller sends {op: pass, index: path}; constraints are absent
 t2 daemon replies success after local commit
    caller exits success; mode remains full; remote completion is not checked
@@ -118,15 +126,18 @@ requests are discarded using a real writer lock and synthetic socket responder.
 It does not prove a real upload completed or failed. The upload-drain difference
 follows from the early return and `Pass` implementation.
 
-Fix: give delegated execution a contract that checks mode/connection constraints
-and waits for the requested completion stage, or reject incompatible requests.
-Gate: actual daemon with server blocked; fresh and delegated `--once --sync-wait`
+Fix: reject incompatible delegated mode/connection requests, and carry the
+requested completion stage and timeout for compatible passes. Do not silently
+honor a different retention mode: switching modes rebuilds the index and needs
+an explicit transition operation.
+Gate: actual daemon with server blocked; fresh and delegated `--once --sync-timeout`
 must report equivalent completion or timeout. Conflicting `--sync-only` and
 `--no-sync` must never silently succeed under another mode.
 
 ### 3. Durable inbox state lacks a server/device owner
 
-**Reproduced at devicebus boundary; P1 before authority switching.**
+**Reproduced at devicebus boundary; P2 in current operation, an explicit gate
+before making authority transitions automatic.**
 The common config directory always supplies `bus.db`
 (`cmd/flopwire/agent.go:329`). Rows have `origin=server/local` but no authority
 namespace (`internal/devicebus/store.go:43`). `TakeWith` filters by session and
@@ -144,6 +155,10 @@ receipt misrouting, not that B accepts that receipt. The same OS user and
 recipient session are required. A successful new poll can remove old queued
 rows, but standalone never polls and startup receipts can precede reconciliation.
 Same-authority offline/restart delivery is intentional and must remain intact.
+Delivering an already-addressed cached message after going standalone could be
+an intentional policy; sending its receipt to a different server is the clear
+authority error. Manual server switching and restart already exist, so this
+should not be deferred on the premise that switching is unsupported.
 Ordinary same-server login is not proven to change the enrolled account.
 
 Fix: bind durable queue/receipt state to normalized server plus enrolled device
@@ -160,10 +175,17 @@ same-authority restart to prove no message or receipt loss.
 (`internal/agent/policy.go:324`). Startup preloads that result, and a failed
 fetch keeps it. The documented last-known offline floor then becomes ordinary
 user policy. A known sensitive placement can become allowed for local indexing.
-Server-side policy enforcement remains a separate protection.
+Server-side policy enforcement remains a separate protection. Shared query
+expansion also uses `DevicePolicy` through `deviceUploads`
+(`cmd/flopwire/retrieve.go:171`), so loss of the floor can widen which checkout
+identities are named to the server; this is not proof of server visibility bypass.
 
 Replay: `TestAuditCorruptAdminCacheDropsFloor` calls actual `DevicePolicy` with
 a valid deny cache and then truncated JSON; its decision changes deny to allow.
+
+The synthetic truncated JSON is fault injection, not evidence of a normal
+write tearing: production uses a temporary file and rename. Deleted/unreadable
+cache files and unsuccessful cache persistence also need explicit behavior.
 
 Fix: represent valid, absent, and unreadable policy states separately. Retain a
 recoverable last-known policy and define which collection may proceed without
@@ -176,7 +198,8 @@ must have an explicit rule rather than accidentally inheriting error behavior.
 **Source-traced; P2.** `admin-path-rules.json` has policy and timestamp but no
 server identity (`internal/agent/policy.go:319`;
 `cmd/flopwire/agent.go:102`). Server-switch login clears login state, not this
-cache. An offline restart under B can preload A's restrictions; standalone may
+cache. An offline restart under B can preload A's restrictions and applying
+those deny rules can purge local indexed rows; standalone may
 also retain them. Whether standalone should keep the last administrator's floor
 is a product choice, but the implementation cannot distinguish the authorities.
 
@@ -198,6 +221,11 @@ Replay: `TestAuditRawGenerationMismatch` substitutes unrelated archive bytes
 and observes acceptance for the unchanged indexed address. This demonstrates
 missing validation, not an actual server rewrite timeline. The archive fake is
 not evidence that a particular production rewrite has occurred.
+
+Fallback is limited to the generation the local index considers current;
+older indexed generations are already refused. The risk concerns disagreement
+between that local current generation and the server's latest archive, not all
+historical raw reads.
 
 Fix: establish a content/record identity across archive and index, or return an
 explicit evidence-unavailable/mismatch result. Do not substitute the local
@@ -228,12 +256,17 @@ the correct record or a clear error, never unrelated bytes.
 ## Redesign sequence
 
 1. Land the bounded excerpt authority correction after final review/checks.
-2. Separate placement/operational metadata access from optional message indexes.
-3. Bind inboxes, receipts, and policy caches to explicit authority identities;
-   specify transition behavior and preserve same-authority offline recovery.
-4. Make delegated execution carry and enforce its completion/mode contract.
-5. Establish verifiable archive record identity for raw evidence.
-6. Qualify the minimal-storage default and any migration only after these
+2. Expose placement metadata without requiring message indexes or FTS shards.
+   This is the smallest direct blocker for connected minimal-storage parity.
+3. Reject incompatible delegated execution and preserve upload-completion and
+   timeout semantics for compatible passes.
+4. Represent policy-cache validity explicitly and qualify offline behavior.
+5. Bind inboxes, receipts, and policy caches to authority identities. Specify
+   transitions and preserve same-authority offline recovery. Design this in
+   parallel with the smaller fixes; manual server changes already exist.
+6. Establish verifiable archive record identity, with an explicit unavailable
+   result as a safe interim option rather than silently returning mismatched bytes.
+7. Qualify the minimal-storage default and any migration only after these
    contracts pass the mode/authority matrix.
 
 The common design is explicit scope at the operation boundary: authority,
