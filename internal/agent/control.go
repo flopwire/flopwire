@@ -106,7 +106,8 @@ type Response struct {
 	Sync *devicesync.Status `json:"sync,omitempty"`
 	// ServerCopies (status): sessions path rules removed locally whose
 	// uploaded copies stay on the server (D18); nil when there are none.
-	ServerCopies *ServerCopies `json:"server_copies,omitempty"`
+	ServerCopies     *ServerCopies `json:"server_copies,omitempty"`
+	CollectionPolicy string        `json:"collection_policy,omitempty"`
 	// Placements (status): stored session placements by what placed them
 	// (localindex.PlacedBy*).
 	Placements map[string]int `json:"placements,omitempty"`
@@ -302,6 +303,12 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			resp.Sync = &v
 		}
 		resp.ServerCopies = a.serverCopiesNotice()
+		resp.CollectionPolicy = "known"
+		if a.cfg.PolicyAuthority == nil {
+			resp.CollectionPolicy = "local"
+		} else if a.policy().readiness == policyUnknown {
+			resp.CollectionPolicy = "unknown"
+		}
 		resp.Placements = a.placementCounts()
 		resp.Cowork, err = a.coworkStatusContext(ctx)
 		if err != nil {
@@ -490,6 +497,10 @@ func (a *Agent) placementCounts() map[string]int {
 func (a *Agent) Pass(ctx context.Context) error {
 	if err := a.waitDiscovered(ctx); err != nil {
 		return err
+	}
+	a.refreshPolicy(ctx, false)
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
 	}
 	if err := a.sweep(ctx); err != nil {
 		return err

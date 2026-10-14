@@ -169,9 +169,11 @@ func deviceUploads() func(pathpolicy.Placement) bool {
 	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
 	if cc, err := client.Load(); err == nil {
 		cfg.UserRuleList, cfg.Unplaceable = cc.Denylist, cc.Unplaceable
+		if cc.Server != "" {
+			cfg.PolicyAuthority = collectionPolicyAuthority(cc)
+		}
 	}
-	pol := agent.DevicePolicy(cfg)
-	return func(pl pathpolicy.Placement) bool { return agent.Uploads(pol, pl) }
+	return func(pl pathpolicy.Placement) bool { return agent.DeviceUploads(cfg, pl) }
 }
 
 // noIndexError: the local index does not exist yet, because the device

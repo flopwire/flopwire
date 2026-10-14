@@ -128,9 +128,18 @@ type Scheduler struct {
 	halted         error               // a permanent error (TLS pin mismatch): no flush until Repin succeeds
 	recheck        bool                // Recheck asked for a Repin now
 	repinAt        time.Time           // while halted: the next periodic Repin
+	admission      func(SourceSpec) error
 	filter         func(SourceSpec) bool
 	bound          func(SourceSpec) (int64, bool)
 	authorize      func(context.Context, SourceSpec) (*CaptureAuthorization, error)
+}
+
+// SetAdmission installs a temporary readiness check before filtering or capture.
+// An error retains the job for retry; a filter rejection instead discards it.
+func (s *Scheduler) SetAdmission(fn func(SourceSpec) error) {
+	s.mu.Lock()
+	s.admission = fn
+	s.mu.Unlock()
 }
 
 // SetFilter installs a check run before each flush: a source it rejects
@@ -553,6 +562,15 @@ type turnResult struct {
 
 func (s *Scheduler) perform(ctx context.Context, path string, j *job, epoch uint64, filter func(SourceSpec) bool, bound func(SourceSpec) (int64, bool), authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)) turnResult {
 	r := turnResult{ctx: ctx, path: path, job: j, epoch: epoch}
+	s.mu.Lock()
+	admission := s.admission
+	s.mu.Unlock()
+	if admission != nil {
+		if err := admission(j.spec); err != nil {
+			r.err = err
+			return r
+		}
+	}
 	upTo, bounded := boundOf(bound, j.spec)
 	if filter != nil && !filter(j.spec) || bounded && upTo < 0 {
 		r.dropped = true

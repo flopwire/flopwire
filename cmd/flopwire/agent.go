@@ -294,7 +294,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		cfg.UserRuleList = cc.Denylist
 		cfg.Unplaceable = cc.Unplaceable
 		if cc.Server != "" && cc.Token != "" && !*noSync {
-			cfg.AdminRules = adminRules(cc)
+			cfg.AdminRules = adminRulesFrom(cc, loadSyncConfig)
+			cfg.PolicyAuthority = collectionPolicyAuthority(cc)
 			cfg.Withhold = withholdSession(cc, client.Load)
 			cfg.CoworkPolicy = coworkPolicyClient(cc, loadSyncConfig)
 			cfg.RecoveredPolicySources = recoveredPolicySources(cc, loadSyncConfig)
@@ -368,7 +369,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		if *once && err == nil && sched != nil {
 			err = drainSync(ctx, sched, *syncWait, log)
 		}
-		if *once || err != nil {
+		if *once || err != nil && !errors.Is(err, agent.ErrPolicyUnknown) {
 			return nil, err
 		}
 		if st.Indexed.Load() >= reexecAfter {
@@ -815,7 +816,7 @@ func adminRulesFrom(cc client.Config, load func() (client.Config, error)) func(c
 	return func(ctx context.Context) (agent.AdminPolicy, error) {
 		mu.Lock()
 		cur := cc
-		if c, same := savedConfig(server, load); same {
+		if c, same := savedConfig(server, load); same && c.DeviceID == cc.DeviceID && (cc.DeviceID != "" || c.Token == cc.Token) {
 			cur = c
 		}
 		if cur.TLSFingerprint != pin {
@@ -1121,6 +1122,9 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 		printExtractionSummary(w, resp.Extraction)
 	}
 	st := resp.Sync
+	if resp.CollectionPolicy == "unknown" {
+		fmt.Fprintln(w, "collection and uploads paused: current server policy unknown; existing data retained")
+	}
 	if c := resp.ServerCopies; c != nil {
 		fmt.Fprintf(w, "path rules removed %d sessions from the local index (latest %s).\n", c.Count, c.At.Local().Format(time.DateTime))
 		fmt.Fprintln(w, "  Uploaded copies stay on the server unless an admin rule covers them (the server deletes those); for the rest the owner or an admin must delete them there:")
@@ -1277,4 +1281,13 @@ func hookSource(raw []byte) (path, session string) {
 		return ""
 	}
 	return str("transcript_path", "rollout_path"), str("session_id", "thread-id", "thread_id")
+}
+
+func collectionPolicyAuthority(cc client.Config) *agent.PolicyAuthority {
+	owner := &agent.PolicyAuthority{Server: cc.Server, DeviceID: cc.DeviceID}
+	if cc.DeviceID == "" {
+		fingerprint := sha256.Sum256([]byte(cc.Token))
+		owner.TokenFingerprint = fmt.Sprintf("%x", fingerprint)
+	}
+	return owner
 }

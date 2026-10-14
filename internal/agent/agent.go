@@ -115,6 +115,7 @@ type Config struct {
 	Unplaceable     string
 	AdminRules      func(context.Context) (AdminPolicy, error)
 	AdminRulesCache string
+	PolicyAuthority *PolicyAuthority
 	AdminEvery      time.Duration
 	Home            string
 	// Withhold asks the server to delete what it holds of a session a
@@ -374,6 +375,11 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		a.log.Error("agent: reading stored placements; no upload until they load", "err", err)
 	}
 	a.refreshCowork(context.Background())
+	if admission, ok := cfg.Sync.(interface {
+		SetAdmission(func(devicesync.SourceSpec) error)
+	}); ok {
+		admission.SetAdmission(a.admitUpload)
+	}
 	if f, ok := cfg.Sync.(captureAuthorizer); ok {
 		f.SetAuthorize(a.authorizeCapture)
 	}
@@ -407,6 +413,9 @@ func (a *Agent) Once(ctx context.Context) error {
 		return err
 	}
 	a.refreshAdmin(ctx)
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup

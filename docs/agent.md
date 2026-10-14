@@ -26,7 +26,7 @@ The agent uses these paths:
 | Sync spool | `<config dir>/flopwire/spool`, at most 1GiB | `--spool-cap` (bytes) |
 | Message inbox | `<config dir>/flopwire/bus-<authority hash>.db` | none |
 | User path rules | `<config dir>/flopwire/path-rules` | none |
-| Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json` | none |
+| Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json.<authority hash>` | none |
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
 | Desktop Local Code container | `~/Library/Application Support/Claude/claude-code-sessions` on macOS; no default on other platforms | `--desktop-code-root`; `-` disables |
 | Cowork container | `~/Library/Application Support/Claude/local-agent-mode-sessions` on macOS; no default on other platforms | `--cowork-root`; `-` disables |
@@ -1511,8 +1511,19 @@ deny repo:github.com/acme/*
   `PUT /v1/admin/policy` or the console's Collection policy page, written
   `local:PATTERN`, `local:repo:PATTERN` or a bare deny pattern). The
   agent fetches them at start and every 10 minutes, and keeps the last
-  copy in `admin-path-rules.json`, so an offline start still applies
-  them. Your rules can make an admin rule stricter but not looser.
+  copy in `admin-path-rules.json.<authority hash>`. The hash identifies
+  the normalized server and enrolled device. A credential without a device
+  ID uses a token fingerprint. An offline start uses valid saved rules for
+  that same authority, including an empty rule set. Saved rules do not expire.
+  Your rules can make an admin rule stricter but not looser.
+- If connected rules are missing, unreadable, or belong to another authority,
+  collection and uploads pause until the server supplies valid rules. Existing
+  indexed data stays in place. Queued uploads retry after rules become known.
+  Cache write errors appear in the log; fetched rules remain active for the
+  current process, but an offline restart may pause if those rules were not
+  saved. Each authority's saved rules remain separate. Legacy unowned cache
+  files remain untouched and require a fresh fetch. Standalone and `--no-sync`
+  collection use local rules without a cached administrator floor.
 - The server also applies the admin rules when it parses an upload. It
   does not store a session that an admin `deny` or `local` rule covers.
   The server sees only the directory and remote that the transcript

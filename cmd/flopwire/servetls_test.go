@@ -294,3 +294,27 @@ func TestAdminRulesUsePinnedClient(t *testing.T) {
 		t.Fatal("a pin mismatch was accepted")
 	}
 }
+
+func TestAdminRulesRemainBoundToPolicyAuthority(t *testing.T) {
+	for _, tc := range []struct{ name, initialDevice, savedDevice, savedToken, wantToken string }{
+		{"other enrolled device", "d1", "d2", "token2", "token1"},
+		{"same device rotation", "d1", "d1", "token2", "token2"},
+		{"unbound token principal", "", "", "token2", "token1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"path_rules": []string{"local /" + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")}})
+			}))
+			defer srv.Close()
+			initial := client.Config{Server: srv.URL, DeviceID: tc.initialDevice, Token: "token1"}
+			saved := client.Config{Server: srv.URL, DeviceID: tc.savedDevice, Token: tc.savedToken}
+			got, err := adminRulesFrom(initial, func() (client.Config, error) { return saved, nil })(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Rules) != 1 || got.Rules[0] != "local /"+tc.wantToken {
+				t.Fatalf("policy fetched with wrong authority: %+v", got)
+			}
+		})
+	}
+}
