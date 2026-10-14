@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -99,7 +100,7 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 		}
 		resp, err := s.PolicyPlacements(r.Context(), deviceID, &req)
 		if err != nil {
-			s.fail(w, err)
+			s.fail(r.Context(), w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -111,7 +112,7 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 		}
 		missing, err := s.Has(r.Context(), deviceID, req.Hashes)
 		if err != nil {
-			s.fail(w, err)
+			s.fail(r.Context(), w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, syncproto.HasResponse{Version: syncproto.Version, Missing: missing})
@@ -139,7 +140,7 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 		}
 		resp, err := s.Flush(r.Context(), deviceID, h, pr)
 		if err != nil {
-			s.fail(w, err)
+			s.fail(r.Context(), w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -148,14 +149,20 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 	}
 }
 
-func (s *Server) fail(w http.ResponseWriter, err error) {
+func (s *Server) fail(ctx context.Context, w http.ResponseWriter, err error) {
 	var e *Error
 	if errors.As(err, &e) {
 		writeErr(w, e)
 		return
 	}
 	if s.Log != nil {
-		s.Log.Error("sync request failed", "error", err)
+		// Only downgrade cancellation when the request itself was canceled.
+		// An operation canceled under a live request remains a server error.
+		if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+			s.Log.Debug("sync request canceled", "error", err)
+		} else {
+			s.Log.Error("sync request failed", "error", err)
+		}
 	}
 	writeErr(w, &Error{http.StatusServiceUnavailable, "unavailable", "sync temporarily unavailable"})
 }
