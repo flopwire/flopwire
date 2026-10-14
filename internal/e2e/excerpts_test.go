@@ -95,7 +95,13 @@ func (h *harness) checkMessageExcerpts(t *testing.T, sender, recipient *device, 
 		if sent.State != busproto.StateQueued || sent.To.Session != recipient.claudeSID || sent.To.Agent != "claude" {
 			t.Fatalf("%s reference routing: %+v", mode, sent)
 		}
-		inbox, err := sql.Open("sqlite", "file:"+filepath.Join(filepath.Dir(recipient.cfg), "bus.db")+"?mode=ro&_pragma=busy_timeout(1000)")
+		// This fixture enrolls one authority. Inspect its exact inbox rather
+		// than the ownerless legacy database or a newly created empty file.
+		inboxes, err := filepath.Glob(filepath.Join(filepath.Dir(recipient.cfg), "bus-*.db"))
+		if err != nil || len(inboxes) != 1 {
+			t.Fatalf("%s recipient authority inboxes: %v (want exactly one): %v", mode, inboxes, err)
+		}
+		inbox, err := sql.Open("sqlite", "file:"+inboxes[0]+"?mode=ro&_pragma=busy_timeout(1000)")
 		if err != nil {
 			t.Fatal(err)
 		}
