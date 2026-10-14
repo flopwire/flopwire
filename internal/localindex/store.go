@@ -747,3 +747,6 @@ func (w *writeTx) closeStmts() {
 		st.Close()
 	}
 }
+
+// SyncOnly reports whether this writer retains only upload metadata.
+func (s *Store) SyncOnly() bool { return s.opts.SyncOnly }

@@ -618,3 +618,36 @@ func TestControlFailureNoticeSenderResumeDoesNotRenewAcknowledgement(t *testing.
 		t.Fatalf("resume renewed a settled failure: %+v", r.Failures)
 	}
 }
+
+func TestControlOnceStandalone(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sync = nil
+	f.cfg.Sweep, f.cfg.FastLane = time.Hour, time.Hour
+	f.a = New(f.store, f.cfg)
+	runCtx, cancel := context.WithCancel(ctx)
+	sock := filepath.Join(shortTemp(t), "a.sock")
+	done := make(chan error, 2)
+	go func() { done <- f.a.Run(runCtx) }()
+	go func() { done <- f.a.Serve(runCtx, sock) }()
+	defer func() { cancel(); <-done; <-done }()
+	waitFor(t, func() bool { _, err := Call(ctx, sock, Request{Op: "ping"}); return err == nil })
+	f.a.WaitIdle()
+	appendFile(t, f.path(alphaRel), claudeUser("c1000000-0000-4000-8000-0000000000bf", "standalone delegated pangolin"))
+	bad := OnceRequest{Mode: "full", Connection: "upload", Server: "https://server.example"}
+	if _, err := Call(ctx, sock, Request{Op: "once-v1", Index: f.store.Path(), Once: &bad}); err == nil {
+		t.Fatal("standalone accepted an upload contract")
+	}
+	if len(f.find("standalone delegated pangolin", false)) != 0 {
+		t.Fatal("incompatible request indexed before rejection")
+	}
+	good := OnceRequest{Mode: "full", Connection: "local"}
+	if _, err := Call(ctx, sock, Request{Op: "once-v1", Index: f.store.Path(), Once: &good}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.find("standalone delegated pangolin", false)) != 1 {
+		t.Fatal("compatible standalone pass did not index")
+	}
+	if _, err := Call(ctx, sock, Request{Op: "once-v1", Index: f.store.Path()}); err == nil {
+		t.Fatal("missing contract accepted")
+	}
+}

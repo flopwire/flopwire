@@ -97,7 +97,7 @@ func TestAgentWaitsOutAShortLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.AfterFunc(300*time.Millisecond, func() { held.Close() })
-	s, err := openAgentIndex(t.Context(), db, localindex.Options{}, false, filepath.Join(dir, "a.sock"), log)
+	s, err := openAgentIndex(t.Context(), db, localindex.Options{}, false, filepath.Join(dir, "a.sock"), log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if err != nil {
 		t.Fatalf("daemon after a short-lived lock holder: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestAgentOneWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = openAgentIndex(ctx, db, localindex.Options{}, false, sock, log)
+	_, err = openAgentIndex(ctx, db, localindex.Options{}, false, sock, log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if want := fmt.Sprintf("agent already running (pid %d)", os.Getpid()); err == nil || err.Error() != want {
 		t.Fatalf("second daemon: %v, want %q", err, want)
 	}
@@ -140,11 +140,11 @@ func TestAgentOneWriter(t *testing.T) {
 		c.Write([]byte(`{"ok":true}` + "\n"))
 		c.Close()
 	}()
-	s, err := openAgentIndex(ctx, db, localindex.Options{}, true, sock, log)
+	s, err := openAgentIndex(ctx, db, localindex.Options{}, true, sock, log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if err != nil || s != nil {
 		t.Fatalf("--once with an agent: %v %v", s, err)
 	}
-	if req := <-got; req.Op != "pass" || req.Index != db {
+	if req := <-got; req.Op != "once-v1" || req.Index != db || req.Once == nil || req.Once.Mode != localindex.ModeFull || req.Once.Connection != "local" {
 		t.Fatalf("request %+v", req)
 	}
 	ln.Close()
@@ -152,7 +152,7 @@ func TestAgentOneWriter(t *testing.T) {
 
 	// --once while the holder does not answer: wait until it exits.
 	time.AfterFunc(300*time.Millisecond, func() { held.Close() })
-	s, err = openAgentIndex(ctx, db, localindex.Options{}, true, sock, log)
+	s, err = openAgentIndex(ctx, db, localindex.Options{}, true, sock, log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if err != nil || s == nil {
 		t.Fatalf("--once after the holder exits: %v", err)
 	}
@@ -352,7 +352,11 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
 	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
-	if err := os.WriteFile(filepath.Join(dir, "bus.db"), []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
+	busPath, err := authorityBusPath(dir, client.Config{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(busPath, []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	empty := t.TempDir()
@@ -466,5 +470,47 @@ func TestAgentStatusCoworkUsesCurrentDiagnostics(t *testing.T) {
 				t.Fatalf("obsolete policy warning in status:\n%s", b.String())
 			}
 		})
+	}
+}
+
+func TestAgentOnceRejectsOldControlProtocol(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "index.db")
+	held, err := localindex.Open(db, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	socketDir, err := os.MkdirTemp("/tmp", "fw-old-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	sock := filepath.Join(socketDir, "a.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		line, _ := bufio.NewReader(c).ReadBytes('\n')
+		var req agent.Request
+		json.Unmarshal(line, &req)
+		json.NewEncoder(c).Encode(agent.Response{Error: "unknown op " + req.Op})
+	}()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	store, err := openAgentIndex(c, db, localindex.Options{}, true, sock, log, agent.OnceRequest{Mode: "full", Connection: "local"})
+	<-done
+	if store != nil || err == nil || !strings.Contains(err.Error(), "lacks delegated --once support; restart it with the current binary: unknown op once-v1") {
+		t.Fatalf("old protocol claimed completion: %v %v", store, err)
 	}
 }

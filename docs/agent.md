@@ -24,15 +24,28 @@ The agent uses these paths:
 | Local redactions | `index.db.redactions.jsonl` beside the index, `index.db.redactions.jsonl.prev` (its copy before the last redaction) and the key `index.db.redactions.key`; see [recover the local index](#recover-the-local-index) | follows the index |
 | Control socket | `<config dir>/flopwire/agent.sock` | `--socket` |
 | Sync spool | `<config dir>/flopwire/spool`, at most 1GiB | `--spool-cap` (bytes) |
-| Message inbox | `<config dir>/flopwire/bus.db` | none |
+| Message inbox | `<config dir>/flopwire/bus-<authority hash>.db` | none |
 | User path rules | `<config dir>/flopwire/path-rules` | none |
-| Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json` | none |
+| Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json.<authority hash>` | none |
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
 | Desktop Local Code container | `~/Library/Application Support/Claude/claude-code-sessions` on macOS; no default on other platforms | `--desktop-code-root`; `-` disables |
 | Cowork container | `~/Library/Application Support/Claude/local-agent-mode-sessions` on macOS; no default on other platforms | `--cowork-root`; `-` disables |
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
 | opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
+
+Message inboxes belong to one normalized server URL and enrolled device ID.
+Switching servers or devices opens a separate inbox. Returning to the same
+server and device resumes its pending messages and receipts. Token and TLS
+pin rotation preserve an enrolled device's inbox. Credentials without a
+device ID use a token fingerprint to distinguish principals. Standalone
+messaging uses a separate inbox.
+
+On upgrade, the old `bus.db` stays untouched. Its messages and receipts do
+not resume automatically because the file does not record its server or
+device owner. The agent logs this decision and opens a separate authority
+inbox. Do not rename or copy the old database into an authority inbox:
+that would assign unverified message bodies and receipts to that authority.
 
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
@@ -136,8 +149,16 @@ index waits 3 seconds for the lock, then exits with
 `agent already running (pid N)`. The wait covers `flopwire mcp`, which
 holds the lock for a moment when it creates an empty index on a device
 whose agent never ran. `flopwire agent run --once`
-asks the running agent for a pass over the control socket and waits for it
-to finish. If the index is locked and no agent answers yet, `--once` waits.
+asks the running agent for a pass over the control socket. It waits for local
+commit and upload acknowledgment. `--sync-timeout` bounds the upload wait
+(default 5 minutes), as it does for a fresh process. The running agent must
+match the requested retention mode and local or upload connection. Upload
+requests must also match its server and device. A token without a device ID
+must match the running agent's credential. A mismatch fails without
+changing the running agent or rebuilding the index. Stop the agent before
+changing these settings. Older agents that lack this execution contract must
+be restarted with the current binary. If the index is locked and no agent
+answers yet, `--once` waits.
 The search commands open the index read-only and never take the lock.
 
 ## Local redactions: what they guarantee
@@ -817,7 +838,7 @@ the session gets messages, so no message arrives before the instruction.
 If the `SessionStart` hook is killed or starts too late, the session's
 next `UserPromptSubmit` or `PostToolUse` hook prints it. Two hook
 configurations that both run `SessionStart` print it once. The agent keeps
-the confirmation in `bus.db`, so a restart does not print it again. After
+the confirmation in its authority inbox database, so a restart does not print it again. After
 3 unconfirmed leases the agent stops offering it.
 
 A `SessionStart` with the source `resume`, `compact` or `clear` that
@@ -1230,7 +1251,7 @@ A session resumes when a hook of it runs that started after the end, or
 when its harness file names a newer process. A resumed session receives
 its new messages. Messages that were already `undelivered` stay so.
 
-The agent keeps this state in `bus.db`. A session that its harness file
+The agent keeps this state in its authority inbox database. A session that its harness file
 showed before an agent restart, and that is gone after it, ends at the
 first presence checks after the restart.
 
@@ -1490,8 +1511,19 @@ deny repo:github.com/acme/*
   `PUT /v1/admin/policy` or the console's Collection policy page, written
   `local:PATTERN`, `local:repo:PATTERN` or a bare deny pattern). The
   agent fetches them at start and every 10 minutes, and keeps the last
-  copy in `admin-path-rules.json`, so an offline start still applies
-  them. Your rules can make an admin rule stricter but not looser.
+  copy in `admin-path-rules.json.<authority hash>`. The hash identifies
+  the normalized server and enrolled device. A credential without a device
+  ID uses a token fingerprint. An offline start uses valid saved rules for
+  that same authority, including an empty rule set. Saved rules do not expire.
+  Your rules can make an admin rule stricter but not looser.
+- If connected rules are missing, unreadable, or belong to another authority,
+  collection and uploads pause until the server supplies valid rules. Existing
+  indexed data stays in place. Queued uploads retry after rules become known.
+  Cache write errors appear in the log; fetched rules remain active for the
+  current process, but an offline restart may pause if those rules were not
+  saved. Each authority's saved rules remain separate. Legacy unowned cache
+  files remain untouched and require a fresh fetch. Standalone and `--no-sync`
+  collection use local rules without a cached administrator floor.
 - The server also applies the admin rules when it parses an upload. It
   does not store a session that an admin `deny` or `local` rule covers.
   The server sees only the directory and remote that the transcript
