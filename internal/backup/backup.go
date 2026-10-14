@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -108,8 +109,13 @@ type State struct {
 	Error     string    `json:"error,omitempty"`
 }
 
+const DefaultObjectWorkers = 16
+const MaxObjectWorkers = 32
+
 // Options are the operator's acknowledgements for Create.
 type Options struct {
+	// ObjectWorkers bounds concurrent object copies. Zero uses DefaultObjectWorkers.
+	ObjectWorkers int
 	// EncryptedDestination acknowledges that the output is encrypted.
 	EncryptedDestination bool
 	// AllowPendingRedactionRepair takes the backup even while archived
@@ -134,6 +140,13 @@ const pendingRepairSQL = `SELECT count(*), count(*) FILTER (WHERE p.quarantined_
 func Create(ctx context.Context, databaseURL string, objects *minio.Client, bucket, output string, opts Options) (manifest Manifest, err error) {
 	if !opts.EncryptedDestination {
 		return manifest, errors.New("production backup requires --encrypted-destination acknowledgement")
+	}
+	workers := opts.ObjectWorkers
+	if workers == 0 {
+		workers = DefaultObjectWorkers
+	}
+	if workers < 1 || workers > MaxObjectWorkers {
+		return manifest, fmt.Errorf("object workers must be between 1 and %d", MaxObjectWorkers)
 	}
 	info, statErr := os.Stat(output)
 	if statErr == nil && (!info.IsDir() || directoryNotEmpty(output)) {
@@ -216,29 +229,12 @@ func Create(ctx context.Context, databaseURL string, objects *minio.Client, buck
 	}
 	manifest.Version, manifest.CreatedAt = manifestVersion, time.Now().UTC()
 	manifest.DatabaseFile, manifest.DatabaseSize, manifest.DatabaseSHA256 = "postgres.dump", dbSize, dbSum
-	for i, entry := range manifest.Objects {
-		if !safeKey(entry.Key) {
-			return manifest, fmt.Errorf("unsafe object key in database: %q", entry.Key)
-		}
-		target := filepath.Join(output, "objects", filepath.FromSlash(entry.Key))
-		if err = os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-			return manifest, err
-		}
-		if err = objects.FGetObject(ctx, bucket, entry.Key, target, minio.GetObjectOptions{}); err != nil {
-			return manifest, fmt.Errorf("copy object %s: %w", entry.Key, err)
-		}
-		sums, hashErr := fileSums(target, entry.RawSize)
-		if hashErr != nil {
-			return manifest, hashErr
-		}
-		if sums.blake3 != entry.BLAKE3 || sums.size != entry.Size {
-			return manifest, fmt.Errorf("snapshot object mismatch: %s", entry.Key)
-		}
-		manifest.Objects[i].SHA256 = sums.sha256
-		if err = syncFileAndDir(target); err != nil {
-			return manifest, fmt.Errorf("sync object %s: %w", entry.Key, err)
-		}
+	if err = copyObjects(ctx, manifest.Objects, workers, func(ctx context.Context, entry Entry) (string, error) {
+		return copyObject(ctx, objects, bucket, output, entry, syncFileAndDir)
+	}); err != nil {
+		return manifest, err
 	}
+
 	raw, marshalErr := json.MarshalIndent(manifest, "", "  ")
 	if marshalErr != nil {
 		return manifest, marshalErr
@@ -251,6 +247,79 @@ func Create(ctx context.Context, databaseURL string, objects *minio.Client, buck
 		return manifest, err
 	}
 	return manifest, nil
+}
+
+// copyObjects owns one manifest index per task. It cancels on the first failure
+// and joins every worker before returning, so Create keeps its purge lock until
+// no object writes remain and publishes the manifest only after durable copies.
+func copyObjects(ctx context.Context, entries []Entry, workers int, copy func(context.Context, Entry) (string, error)) error {
+	for _, entry := range entries {
+		if !safeKey(entry.Key) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Key))) != entry.Key {
+			return fmt.Errorf("unsafe object key in database: %q", entry.Key)
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+	for w := 0; w < min(workers, len(entries)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				sum, err := copy(ctx, entries[i])
+				if err != nil {
+					once.Do(func() { firstErr = err; cancel() })
+					return
+				}
+				entries[i].SHA256 = sum
+			}
+		}()
+	}
+dispatch:
+	for i := range entries {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- i:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
+}
+
+type objectDownloader interface {
+	FGetObject(context.Context, string, string, string, minio.GetObjectOptions) error
+}
+
+func copyObject(ctx context.Context, objects objectDownloader, bucket, output string, entry Entry, syncTarget func(string) error) (string, error) {
+	target := filepath.Join(output, "objects", filepath.FromSlash(entry.Key))
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		return "", err
+	}
+	if err := objects.FGetObject(ctx, bucket, entry.Key, target, minio.GetObjectOptions{}); err != nil {
+		return "", fmt.Errorf("copy object %s: %w", entry.Key, err)
+	}
+	sums, err := fileSums(target, entry.RawSize)
+	if err != nil {
+		return "", fmt.Errorf("verify object %s: %w", entry.Key, err)
+	}
+	if sums.blake3 != entry.BLAKE3 || sums.size != entry.Size {
+		return "", fmt.Errorf("snapshot object mismatch: %s", entry.Key)
+	}
+	if err = syncTarget(target); err != nil {
+		return "", fmt.Errorf("sync object %s: %w", entry.Key, err)
+	}
+	return sums.sha256, nil
 }
 
 func Verify(output string) (Manifest, error) {

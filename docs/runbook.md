@@ -439,6 +439,10 @@ when the deployment threat model requires encryption at rest. Restrict host
 and volume access. The backup command always requires an explicit
 acknowledgement that its destination is encrypted.
 
+Object copies use 16 workers by default. Set `--object-workers` from 1 to 32 to
+control disk, memory, and object-store load. Use `--object-workers=1` for serial
+copies. Each object is verified and synced before the manifest is published.
+
 The backup command takes one Postgres snapshot, lists the committed chunk
 objects from it, dumps the database from the same snapshot, and copies each
 object, checking it against its BLAKE3 content address. It holds a shared
