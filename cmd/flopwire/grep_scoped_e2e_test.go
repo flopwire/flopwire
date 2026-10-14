@@ -32,7 +32,9 @@ func TestMCPScopedGrepEndToEndServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	pg := store.NewPostgres(pool, nil, "")
-	server := httptest.NewServer(api.New(pg, api.Config{Logger: quiet, Retrieval: &retrieval.Store{Pool: pool}}).Handler(nil))
+	continuations := retrieval.NewGrepContinuations(pool)
+	t.Cleanup(continuations.Close)
+	server := httptest.NewServer(api.New(pg, api.Config{Logger: quiet, Retrieval: &retrieval.Store{Pool: pool, GrepContinuations: continuations}}).Handler(nil))
 	t.Cleanup(server.Close)
 	owner, login := seedAdmin(t, pg)
 	enrolled := apiCall(t, server.URL, login, "POST", "/v1/devices", map[string]string{"name": "grep-test", "platform": "darwin"})
@@ -166,4 +168,69 @@ func TestMCPScopedGrepEndToEndServer(t *testing.T) {
 			}
 		})
 	}
+	t.Run("Continuation snapshot replay and redaction", func(t *testing.T) {
+		scanConv := addSession("synthetic-continuation")
+		for i := 1; i <= 3; i++ {
+			addMessage(scanConv, i, "continuation needle", now.Add(time.Duration(i)*time.Second))
+		}
+		args := func(cursor string) map[string]any {
+			a := map[string]any{"pattern": "continuation needle", "fixed_strings": true, "continue": true, "session": "synthetic-continuation", "sort": "oldest", "limit": float64(1), "format": "json"}
+			if cursor != "" {
+				a["cursor"] = cursor
+			}
+			return a
+		}
+		firstOut := call(args(""))
+		first := page(firstOut)
+		if firstOut.IsError || first.Scan == nil || first.Scan.Status != "more" || first.Scan.NextCursor == "" || len(first.Hits) != 1 {
+			t.Fatalf("first scan: %+v %+v", firstOut, first)
+		}
+		addMessage(scanConv, 4, "continuation needle NEW", now.Add(4*time.Second))
+		secondOut := call(args(first.Scan.NextCursor))
+		second := page(secondOut)
+		if secondOut.IsError || second.Scan == nil || len(second.Hits) != 1 || second.Hits[0].Address == first.Hits[0].Address || second.Scan.NextCursor == "" {
+			t.Fatalf("second scan: %+v %+v", secondOut, second)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE messages SET text='[redacted]' WHERE id=$1`, second.Hits[0].MessageID); err != nil {
+			t.Fatal(err)
+		}
+		replayOut := call(args(first.Scan.NextCursor))
+		replay := page(replayOut)
+		if replayOut.IsError || replay.Scan == nil || len(replay.Hits) != 0 || replay.Scan.NextCursor != second.Scan.NextCursor || strings.Contains(replayOut.Content[0].Text, "continuation needle") {
+			t.Fatalf("redacted replay leaked or lost cursor: %+v %+v", replayOut, replay)
+		}
+		last := page(call(args(second.Scan.NextCursor)))
+		if last.Scan == nil || len(last.Hits) != 1 || last.Hits[0].Ordinal != 3 {
+			t.Fatalf("snapshot changed: %+v", last)
+		}
+		if last.Scan.Status != "complete" {
+			done := page(call(args(last.Scan.NextCursor)))
+			if done.Scan == nil || done.Scan.Status != "complete" || len(done.Hits) != 0 {
+				t.Fatalf("snapshot not complete: %+v", done)
+			}
+		}
+		seen := map[string]bool{}
+		cursor := ""
+		for i := 0; i < 5; i++ {
+			out := call(args(cursor))
+			p := page(out)
+			if out.IsError || p.Scan == nil || len(p.Hits) > 1 || p.Next != 0 {
+				t.Fatalf("fresh scan: %+v %+v", out, p)
+			}
+			for _, h := range p.Hits {
+				if seen[h.Address] {
+					t.Fatalf("duplicate address: %s", h.Address)
+				}
+				seen[h.Address] = true
+			}
+			if p.Scan.Status == "complete" {
+				break
+			}
+			cursor = p.Scan.NextCursor
+		}
+		if len(seen) != 3 || !seen["synthetic-continuation/4"] {
+			t.Fatalf("fresh scan omitted messages: %v", seen)
+		}
+	})
+
 }

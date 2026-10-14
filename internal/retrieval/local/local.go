@@ -208,6 +208,9 @@ func ResolveRepo(repo string) string {
 // with every matching line (and context lines), collapsed by identical
 // text, counted for the footer.
 func (b *Backend) Grep(ctx context.Context, q format.GrepQuery, f format.Filters) (*format.Page, error) {
+	if q.Continue || q.Cursor != "" {
+		return nil, fmt.Errorf("%w: resumable grep requires the hosted server; use --server", format.ErrBadRequest)
+	}
 	lf, err := b.filter(ctx, f)
 	if err != nil {
 		return nil, err

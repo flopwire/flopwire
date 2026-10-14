@@ -229,6 +229,7 @@ type flagDef struct {
 var flagDefs = []flagDef{
 	{"regexp", 'e', fList, "g"},
 	{"only-matching", 'o', fBool, "g"},
+	{"continue", 0, fBool, "g"},
 	{"multiline", 'U', fBool, "g"},
 	{"fixed-strings", 'F', fBool, "g"},
 	{"ignore-case", 'i', fBool, "g"},
@@ -246,7 +247,7 @@ var flagDefs = []flagDef{
 	{"max-count", 'm', fInt, "g"},
 	{"limit", 0, fInt, "gslrpi"},
 	{"offset", 0, fInt, "gs"},
-	{"cursor", 0, fString, "lri"},
+	{"cursor", 0, fString, "glri"},
 	{"sort", 0, fString, "gsl"},
 	{"matching", 0, fString, "s"},
 	{"no-heading", 0, fBool, "gs"},
@@ -691,7 +692,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := emit(page, bounded, text); err != nil {
 			return err
 		}
-		if page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
+		if page.Scan == nil && page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
 			return &incompleteRetrieval{reason: page.Reason}
 		}
 		return nil
@@ -713,6 +714,8 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := spec.Query(&q); err != nil {
 			return err
 		}
+		q.Cursor = o.vals["cursor"]
+		q.Continue = o.on["continue"] || q.Cursor != ""
 		q.OnlyMatching, q.Multiline = o.on["only-matching"], o.on["multiline"]
 		if q.Timeout, err = o.timeout(); err != nil {
 			return badArg(err)
@@ -1039,10 +1042,11 @@ var toolHelp = map[string]string{
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
   flopwire grep -l flaky --repo flopwire --agent codex  sessions with matches
 
-Hits group under a header per session: its id, then key=value fields (a value with a space,
-quote or = is a JSON string), newest first; the address for read is SESSION/ORDINAL:LINE.
-  ## SESSION agent=claude ended=2026-09-23 repo=api branch=main failed=1 intent="..."
-  ORDINAL:LINE kind/tool: text        (--no-heading: SESSION/ORDINAL:LINE: [attribution] text)
+Scan     --continue: hosted content, newest/oldest, <=20 hits; expires after 2 minutes.
+         Follow scan.next_cursor as --cursor with unchanged pattern/filters; last 4 pages replay.
+         Use absolute --since/--until: relative times re-resolve and fail cursor binding.
+         Fresh scan replaces your snapshot; complete finishes it; new messages need a new scan.
+Hits     Session header, then ORDINAL:LINE kind/tool: text; read at SESSION/ORDINAL:LINE.
 Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a match spans
          lines of one message)  (-n, -r accepted)
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
@@ -1055,8 +1059,7 @@ Filters  --agent claude,codex,devin,opencode  --repo .|PATH|NAME|GLOB  --branch 
 Source   shared after enrollment, local before; --local / --server; --index PATH
 Kinds    user assistant tool_call tool_result thinking system agent_message injected (hidden
          unless --kind names it). Times are UTC: 7d, 24h, 2026-09-23, '2026-09-23 10:00Z'.
-Live: active in the last 10 minutes or open in its harness. An agent's own session is left
-out (a human at a terminal sees all); --session self searches only it.
+Live: active within 10m or open in harness; own session excluded; --session self selects it.
 `,
 	"search": `flopwire search — ranked lexical search for natural-language questions; use grep for exact strings
 

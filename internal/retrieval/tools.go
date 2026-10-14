@@ -44,6 +44,9 @@ func pageLimit(n int) int {
 // The query budget (the context's deadline, else DefaultBudget) bounds the
 // scan; when it runs out, the hits verified so far come back with a reason.
 func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters) (*format.Page, error) {
+	if gq.Continue || gq.Cursor != "" {
+		return s.continueGrep(ctx, gq, f)
+	}
 	if gq.Pattern == "" {
 		return nil, fmt.Errorf("%w: pattern is empty", ErrBadRequest)
 	}

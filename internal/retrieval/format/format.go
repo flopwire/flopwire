@@ -539,12 +539,21 @@ const (
 	OutlineArgs     = 120
 )
 
+// GrepScan describes bounded progress through a hosted grep snapshot.
+type GrepScan struct {
+	Status     string    `json:"status"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+	Checked    int       `json:"checked"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+}
+
 // Page is a grep or search answer. A page cut short by the query budget
 // is still an answer, never an error: Truncated is set and Reason says
-// what was checked.
+// what was checked. Resumable grep reports progress separately in Scan.
 type Page struct {
-	Scope *Scope `json:"scope,omitempty"`
-	Hits  []Hit  `json:"hits"`
+	Scan  *GrepScan `json:"scan,omitempty"`
+	Scope *Scope    `json:"scope,omitempty"`
+	Hits  []Hit     `json:"hits"`
 	// Sessions is grep's -l/-c answer: sessions with matches, newest hit
 	// first, Hits set on each.
 	Sessions []ConversationInfo `json:"sessions,omitempty"`
@@ -612,6 +621,9 @@ const (
 // GrepQuery is a grep request. Pattern is an RE2 regular expression
 // (multi-line: ^ and $ match at line breaks), or a literal when Fixed.
 type GrepQuery struct {
+	Authority     string `json:"-"`
+	Continue      bool   `json:"continue,omitempty"`
+	Cursor        string `json:"cursor,omitempty"`
 	Pattern       string `json:"pattern"`
 	Fixed         bool   `json:"fixed,omitempty"`
 	CaseSensitive bool   `json:"case_sensitive,omitempty"`
@@ -636,6 +648,12 @@ type GrepQuery struct {
 // Values encodes q as URL query parameters (the filters go separately).
 func (q GrepQuery) Values(v url.Values) url.Values {
 	v.Set("pattern", q.Pattern)
+	if q.Continue || q.Cursor != "" {
+		v.Set("continue", "true")
+	}
+	if q.Cursor != "" {
+		v.Set("cursor", q.Cursor)
+	}
 	v.Set("regex", strconv.FormatBool(!q.Fixed))
 	v.Set("case_sensitive", strconv.FormatBool(q.CaseSensitive))
 	setNum(v, "offset", q.Offset)
@@ -660,7 +678,15 @@ func (q GrepQuery) Values(v url.Values) url.Values {
 
 // ParseGrepQuery is the inverse of Values.
 func ParseGrepQuery(v url.Values) (GrepQuery, error) {
-	q := GrepQuery{Pattern: v.Get("pattern"), Mode: v.Get("mode")}
+	q := GrepQuery{Pattern: v.Get("pattern"), Mode: v.Get("mode"), Cursor: v.Get("cursor")}
+	if raw := v.Get("continue"); raw != "" {
+		var err error
+		q.Continue, err = strconv.ParseBool(raw)
+		if err != nil {
+			return q, fmt.Errorf("continue: bad value")
+		}
+	}
+	q.Continue = q.Continue || q.Cursor != ""
 	regex, _ := strconv.ParseBool(v.Get("regex"))
 	q.Fixed = !regex
 	q.CaseSensitive, _ = strconv.ParseBool(v.Get("case_sensitive"))

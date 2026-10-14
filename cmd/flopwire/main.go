@@ -233,11 +233,18 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+2)
+	grepContinuations := envBool("FLOPWIRE_GREP_CONTINUATIONS", false)
+	// Retained search snapshots use dedicated admission capacity in the
+	// existing pool, outside the interactive and upload budgets.
+	searchConnections := 0
+	if grepContinuations {
+		searchConnections = 4
+	}
+	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+2+searchConnections)
 	if err != nil {
 		return err
 	}
-	flushSlots, err := flushAdmissionBudget(poolCfg.MaxConns, workers)
+	flushSlots, err := flushAdmissionBudget(poolCfg.MaxConns-int32(searchConnections), workers)
 	if err != nil {
 		return err
 	}
@@ -288,10 +295,15 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 	messageBus := &bus.Store{Pool: pool, Stopping: ctx.Done(), Retention: retention}
+	searchStore := &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession}
+	if grepContinuations {
+		searchStore.GrepContinuations = retrieval.NewGrepContinuations(pool)
+		defer searchStore.GrepContinuations.Close()
+	}
 	slog.Info("message bus retention", "retention", retention.String(), "applies_to", "delivered, read, expired, refused and undelivered messages after their expiry, with their audit rows")
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
 		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser, Admission: admission}, Parse: parser,
-		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
+		Retrieval:         searchStore,
 		Bus:               messageBus,
 		TrustedProxyCIDRs: envList("FLOPWIRE_TRUSTED_PROXY_CIDRS"),
 		AuthRate:          api.Rate{Burst: envInt("FLOPWIRE_AUTH_RATE_BURST", 10), Refill: envDuration("FLOPWIRE_AUTH_RATE_REFILL", time.Minute)}})
