@@ -779,6 +779,10 @@ func TestTwoDeviceSync(t *testing.T) {
 			t.Errorf("deleted conversation has %d rows on the server", n)
 		}
 	})
+
+	h.scenario("zz-cross-device-ref-excerpts", func(t *testing.T, r *result) {
+		h.checkMessageExcerpts(t, d1, d2, r)
+	})
 }
 
 // consistency compares, for every transcript on the device, a fresh parse

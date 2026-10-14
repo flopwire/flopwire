@@ -301,6 +301,7 @@ func (b *Bus) runServer(ctx context.Context) {
 // polling until the saved one changes (as sync does), a server without the
 // bus disables it for a while, anything else backs off.
 func (b *Bus) pollFailed(ctx context.Context, a pollAnswer, backoff time.Duration) (*halt, time.Duration, time.Time) {
+	b.InvalidateReferences()
 	now := b.cfg.Now()
 	var be *busproto.Error
 	var ae *client.APIError
@@ -392,6 +393,11 @@ func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked ti
 	if err := b.st.importFailures(ctx, failures, now); err != nil {
 		return err
 	}
+	references := slices.Clone(resp.Messages)
+	for _, c := range resp.Claimable {
+		references = append(references, c.Message)
+	}
+	b.prepareReferences(ctx, references)
 	if err := b.st.reconcile(ctx, resp.Messages, offered, now); err != nil {
 		return err
 	}

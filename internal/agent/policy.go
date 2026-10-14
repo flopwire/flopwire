@@ -132,6 +132,10 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 	if same && a.polApplied {
 		return
 	}
+	if a.cfg.Bus != nil {
+		a.cfg.Bus.InvalidateReferences()
+		defer a.cfg.Bus.InvalidateReferences()
+	}
 	a.setPolicy(ctx, pol)
 	a.polApplied = true
 }
