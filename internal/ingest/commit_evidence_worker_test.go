@@ -89,6 +89,36 @@ func TestCommitEvidenceWorkerTimeoutDefersAndProgresses(t *testing.T) {
 	}
 }
 
+func TestCommitEvidenceWorkerCancelsActiveProjection(t *testing.T) {
+	e := newEnv(t)
+	conv := workerCommit(t, e)
+	e.exec(`CREATE FUNCTION sleeping_evidence() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$`)
+	e.exec(`CREATE TRIGGER sleeping_evidence BEFORE INSERT ON commit_evidence FOR EACH ROW EXECUTE FUNCTION sleeping_evidence()`)
+	ctx, cancel := context.WithCancel(e.ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); (&CommitEvidenceWorker{Pool: e.pool}).Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	deadline := time.Now().Add(5 * time.Second)
+	for e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='PgSleep'`) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("projection never reached blocking trigger")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active projection did not join")
+	}
+	if e.count(`SELECT count(*) FROM commit_evidence WHERE conversation_id=$1`, conv) != 0 {
+		t.Fatal("cancelled projection published partial evidence")
+	}
+	if e.count(`SELECT count(*) FROM commit_evidence_dirty WHERE conversation_id=$1 AND retry_after IS NULL`, conv) != 1 {
+		t.Fatal("shutdown changed durable retry state")
+	}
+}
+
 func TestCommitEvidenceWorkerSkipsLockedConversation(t *testing.T) {
 	e := newEnv(t)
 	first, second := workerCommit(t, e), workerCommit(t, e)
