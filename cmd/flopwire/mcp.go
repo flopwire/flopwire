@@ -404,7 +404,7 @@ func mcpTools() []any {
 		changeMCPTool(),
 		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. After flopwire_change, use a literal SHA for fallback transcript search; add repo or since to narrow related searches. Broad alternatives can exhaust the budget before checking a candidate. For ranked keyword matches use flopwire_search.", "grep",
 			map[string]any{
-				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; needs a run of 3 letters or digits every match contains"),
+				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; use session for bounded scanning when the server cannot index the pattern"),
 				"fixed_strings":   prop("boolean", "pattern is a literal string"),
 				"ignore_case":     prop("boolean", "default: smart case (case-sensitive only when the pattern has an uppercase letter)"),
 				"case_sensitive":  prop("boolean", "match case even without an uppercase letter"),

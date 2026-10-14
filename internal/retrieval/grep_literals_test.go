@@ -86,7 +86,7 @@ func TestLiteralRegexpFallback(t *testing.T) {
 }
 
 func TestLiteralRegexpExistingBadRequests(t *testing.T) {
-	for _, pattern := range []string{"", "[", "foo|x", "go to", ".*"} {
+	for _, pattern := range []string{"", "[", "foo|x", ".*"} {
 		_, err := (&Store{}).Grep(context.Background(), format.GrepQuery{Pattern: pattern}, format.Filters{})
 		if !errors.Is(err, ErrBadRequest) {
 			t.Fatalf("pattern %q: want bad request, got %v", pattern, err)

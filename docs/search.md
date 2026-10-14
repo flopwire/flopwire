@@ -570,10 +570,28 @@ messages, up to 5000 conversations. A session's last activity is never
 before its newest message, so `--since` admits every session with a
 message in range, whatever its agent reports.
 
-A regex with no run of 3 letters or digits that every match must contain
-cannot use the trigram index. The local index then checks only the
-newest 20,000 messages that pass the filters. The team server refuses
-it: add a literal of at least 3 letters or digits, or a filter.
+Grep selects index candidates when it can, then verifies the original regex.
+Literal alternatives can use the index even when they contain short words
+separated by punctuation. A query does not need one literal shared by all
+alternatives.
+
+When no text index strategy applies, the local index scans up to 20,000
+messages that pass the filters. The team server also supports a bounded scan
+when you name a session with `--session` (MCP: `session`). That scope includes
+the session's subagents unless excluded. The server checks up to 20,000
+messages and 32 MiB of message text within the original timeout. The scan
+preserves the regex, filters, and requested sort order. It does not escape
+punctuation, drop alternatives, or retry with a new timeout.
+
+For example, `4040|kickstart|0.31.0` can use a bounded session scan. Its dots
+remain regex wildcards. Use `4040|kickstart|0\.31\.0` if you intend literal
+dots; that pattern can use indexed literal alternatives without session scope.
+
+A scan that reaches a budget reports incomplete results, even if it found no
+matches. Result offsets page through found hits; they do not resume scanning
+unchecked messages. Narrow the scope or time window to finish a truncated
+scan. Without an explicit session, the server rejects patterns it cannot
+index and suggests a session-scoped search.
 
 ## Your own session
 
