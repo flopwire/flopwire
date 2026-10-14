@@ -131,7 +131,7 @@ func TestFindRE2SemanticsAndRefusesUnindexed(t *testing.T) {
 		}
 	}
 	for _, p := range []string{`.`, `a.b`, `.*`, `\d+`, `^$`, `[a-z]{5}`, `ab|xyz`} {
-		if _, err := f.find(p, true, false); !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "scan every message") {
+		if _, err := f.find(p, true, false); !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "specify a session") {
 			t.Errorf("unindexed %q: %v", p, err)
 		}
 	}
@@ -423,6 +423,23 @@ func TestServerAgentListAndSelfExclusion(t *testing.T) {
 	in := format.Filters{Session: "sess-1"}
 	if p, err = f.s.Grep(ctx, format.GrepQuery{Pattern: "pangolin"}, in); err != nil || sessionsOf(p.Hits) != "agent-x,agent-y,sess-1" {
 		t.Fatalf("grep session: %s %v", sessionsOf(p.Hits), err)
+	}
+	// The unindexed fallback retains the same session-tree and visibility filters.
+	for _, tc := range []struct {
+		filters format.Filters
+		want    string
+	}{
+		{format.Filters{Session: "sess-1"}, "agent-x,agent-y,sess-1"},
+		{format.Filters{Session: "sess-1", ExcludeSubagents: true}, "sess-1"},
+		{format.Filters{Session: "sess-1", ExcludeSession: "agent-x"}, "sess-1"},
+	} {
+		p, err = f.s.Grep(ctx, format.GrepQuery{Pattern: "."}, tc.filters)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sessionsOf(p.Hits) != tc.want || !p.Exact || p.Truncated {
+			t.Fatalf("unindexed session tree: %+v", p)
+		}
 	}
 	if p, err = f.s.Search(ctx, format.SearchQuery{Query: "pangolin"}, format.Filters{Session: "oth"}); err != nil || sessionsOf(p.Hits) != "other" {
 		t.Fatalf("search session: %s %v", sessionsOf(p.Hits), err)
