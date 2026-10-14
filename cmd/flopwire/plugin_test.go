@@ -271,7 +271,7 @@ func TestClaudePluginSkill(t *testing.T) {
 	if n := strings.Count(string(m[3]), "\n"); n > 60 {
 		t.Errorf("skill body is %d lines; keep it short", n)
 	}
-	for _, tool := range []string{"flopwire_sessions", "flopwire_peers", "flopwire_send"} {
+	for _, tool := range []string{"flopwire_change", "flopwire_read", "flopwire_sessions", "flopwire_peers", "flopwire_send"} {
 		if !bytes.Contains(m[3], []byte(tool)) {
 			t.Errorf("skill does not name %s", tool)
 		}
