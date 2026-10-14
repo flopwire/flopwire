@@ -267,7 +267,9 @@ type Bus struct {
 	localSeq           int64
 	// skewLows are the recent poll answers' lower bounds on the clocks'
 	// skew (learnSkew); the poll loop alone uses them.
-	skewLows []time.Duration
+	skewLows       []time.Duration
+	references     map[referenceKey]referenceSnapshot
+	referenceEpoch uint64
 }
 
 // Open opens (creating) the local inbox at path.
@@ -345,6 +347,7 @@ func (b *Bus) Run(ctx context.Context) error {
 // Recheck asks a stopped bus to re-read the saved credential now (after
 // `flopwire login` saved a new token or pin).
 func (b *Bus) Recheck() {
+	b.InvalidateReferences()
 	select {
 	case b.recheck <- struct{}{}:
 	default:

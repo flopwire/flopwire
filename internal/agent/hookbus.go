@@ -171,6 +171,9 @@ var ExcerptBudget = 50 * time.Millisecond
 // Other address kinds, sessions the index does not hold or holds more
 // than one match for, and lookups past ExcerptBudget get none.
 func (a *Agent) refExcerpts(ctx context.Context, msgs []busproto.Envelope) map[string]string {
+	if a.cfg.Bus != nil && !a.cfg.Bus.Local() {
+		return a.cfg.Bus.ReferenceExcerpts(msgs)
+	}
 	if a.store == nil {
 		return nil
 	}
@@ -217,14 +220,7 @@ func (a *Agent) excerpt(ctx context.Context, ref string) string {
 		}
 		text = lines[addr.Line-1]
 	}
-	text = strings.Join(strings.Fields(format.Clean(text)), " ")
-	if len(text) > 4*busrender.MaxExcerptBytes {
-		text = format.ClipAround(text, 0, 4*busrender.MaxExcerptBytes)
-	}
-	if row.Role != "" {
-		text = row.Role + ": " + text
-	}
-	return text
+	return busrender.ReferenceText(text, row.Role)
 }
 
 // hookIdleSince exposes only a witnessed Stop. Busy-cap expiry and an

@@ -730,6 +730,10 @@ func (r rotatingBus) Send(ctx context.Context, req busproto.SendRequest) (buspro
 	return retryRotated(ctx, r, req, client.Bus.Send)
 }
 
+func (r rotatingBus) ReadReference(ctx context.Context, ref string) (string, error) {
+	return retryRotated(ctx, r, ref, client.Bus.ReadReference)
+}
+
 func (r rotatingBus) Poll(ctx context.Context, req busproto.PollRequest) (busproto.PollResponse, error) {
 	return retryRotated(ctx, r, req, client.Bus.Poll)
 }
