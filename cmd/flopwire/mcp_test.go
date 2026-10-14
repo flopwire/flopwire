@@ -209,6 +209,7 @@ func TestMCPPageOutcomesOnWire(t *testing.T) {
 	}
 	decoder := json.NewDecoder(&output)
 	seen := map[int]bool{}
+	searchResponses := 0
 	for decoder.More() {
 		var response struct {
 			ID     int `json:"id"`
@@ -224,6 +225,7 @@ func TestMCPPageOutcomesOnWire(t *testing.T) {
 			t.Fatal(err)
 		}
 		if response.ID == 99 {
+			searchResponses++
 			if response.Result.Structured != nil || response.Result.IsError {
 				t.Fatalf("search inherits grep counting metadata: %+v", response)
 			}
@@ -244,6 +246,9 @@ func TestMCPPageOutcomesOnWire(t *testing.T) {
 		if want.truncated && (got.Reason == "" || !strings.Contains(response.Result.Content[0].Text, "timed out")) {
 			t.Fatalf("partial diagnostic lost: %+v", response)
 		}
+	}
+	if searchResponses != 1 {
+		t.Fatalf("got %d search responses, want 1", searchResponses)
 	}
 	if len(seen) != len(expected) {
 		t.Fatalf("got %d responses, want %d", len(seen), len(expected))
