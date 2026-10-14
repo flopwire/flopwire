@@ -27,7 +27,9 @@ An invalidation increments an epoch and clears prepared text. A read can publish
 its result only if its captured epoch and credential still match. Local
 redaction requests and observed path-policy changes invalidate before and after
 their operation. Repinning or rechecking credentials and failed message polls
-also invalidate. An unsuccessful refresh removes the affected snapshots.
+also invalidate. An observed authorization denial (HTTP 401 or 403) clears
+all snapshots and discards earlier successes in the same batch. An unsuccessful
+refresh otherwise removes the affected snapshots.
 Still-valid snapshots remain usable while a refresh is in flight.
 
 A server-side redaction or permission change on another device is not an

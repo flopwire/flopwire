@@ -92,9 +92,22 @@ func (h *harness) checkMessageExcerpts(t *testing.T, sender, recipient *device, 
 		if err != nil {
 			t.Fatal(err)
 		}
+		if sent.State != busproto.StateQueued || sent.To.Session != recipient.claudeSID || sent.To.Agent != "claude" {
+			t.Fatalf("%s reference routing: %+v", mode, sent)
+		}
+		inbox, err := sql.Open("sqlite", "file:"+filepath.Join(filepath.Dir(recipient.cfg), "bus.db")+"?mode=ro&_pragma=busy_timeout(1000)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { inbox.Close() })
+		// Status.Pending counts every session's messages and can be nonzero
+		// before this send reaches the restarted recipient's local inbox.
 		eventually(t, time.Minute, 100*time.Millisecond, mode+" message queued", func() (bool, error) {
-			resp, err := agent.Call(t.Context(), recipient.sock, agent.Request{Op: "status"})
-			return err == nil && resp.Bus != nil && resp.Bus.Pending > 0, err
+			var count int
+			err := inbox.QueryRowContext(t.Context(), `SELECT count(*) FROM devbus_messages
+				WHERE id=? AND to_session=? AND to_agent='claude' AND from_session=?
+				AND state='queued' AND expires_at>?`, sent.ID, recipient.claudeSID, sender.claudeSID, time.Now().UnixMilli()).Scan(&count)
+			return count == 1, err
 		})
 		input, _ := json.Marshal(map[string]string{"session_id": recipient.claudeSID, "transcript_path": recipient.claudePath, "hook_event_name": "PostToolUse", "cwd": "/tmp/e2e-growth"})
 		start := time.Now()
@@ -115,6 +128,12 @@ func (h *harness) checkMessageExcerpts(t *testing.T, sender, recipient *device, 
 		want := `<flopwire-ref address="` + ref + `">user: ` + line + `</flopwire-ref>`
 		if !strings.Contains(output.Hook.Context, sent.ID) || !strings.Contains(output.Hook.Context, want) {
 			t.Fatalf("%s remote line excerpt missing: want %s; hook %s", mode, want, raw)
+		}
+		var state string
+		err = inbox.QueryRowContext(t.Context(), `SELECT state FROM devbus_messages WHERE id=? AND to_session=? AND to_agent='claude'`, sent.ID, recipient.claudeSID).Scan(&state)
+		inbox.Close()
+		if err != nil || state != "delivered" {
+			t.Fatalf("%s exact message receipt: state=%s: %v", mode, state, err)
 		}
 		if mode == "sync-only" {
 			db, err := sql.Open("sqlite", "file:"+recipient.index+"?mode=ro")

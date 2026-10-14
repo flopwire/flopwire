@@ -2,10 +2,13 @@ package devicebus
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 )
 
@@ -74,6 +77,11 @@ func (b *Bus) prepareReferences(ctx context.Context, msgs []busproto.Envelope) {
 			}
 			reads++
 			text, err := reader.ReadReference(ctx, ref)
+			var denied *client.APIError
+			if errors.As(err, &denied) && (denied.StatusCode == http.StatusUnauthorized || denied.StatusCode == http.StatusForbidden) {
+				b.InvalidateReferences()
+				return
+			}
 			if err != nil || text == "" || ctx.Err() != nil {
 				continue
 			}

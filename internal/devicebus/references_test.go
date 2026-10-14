@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/client"
 )
 
 type referenceTestServer struct {
@@ -329,5 +331,41 @@ func TestReferenceUnavailableDeviceClearsSnapshots(t *testing.T) {
 	f.bus.cfg.NoDevice = nil
 	if got := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(got) != 0 {
 		t.Fatalf("reenabling revived an invalidated snapshot: %v", got)
+	}
+}
+
+func TestReferenceAuthorizationFailureInvalidatesBatchAndExistingSnapshots(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			f := newReferenceTestFixture(t)
+			old := f.message("synthetic-old-authorization")
+			old.Refs = []string{"abcdefgh/9"}
+			f.bus.prepareReferences(ctx, []busproto.Envelope{old})
+			incoming := f.message("synthetic-batch-authorization")
+			incoming.Refs = []string{"abcdefgh/0", "abcdefgh/1", "abcdefgh/2"}
+			f.server.read = func(_ context.Context, ref string) (string, error) {
+				if ref == "abcdefgh/1" {
+					return "", fmt.Errorf("synthetic wrapped read: %w", &client.APIError{StatusCode: status})
+				}
+				return "user: synthetic batch success", nil
+			}
+			f.bus.prepareReferences(ctx, []busproto.Envelope{incoming})
+			got := f.bus.ReferenceExcerpts([]busproto.Envelope{old, incoming})
+			if status == http.StatusNotFound {
+				if len(got) != 3 || got[old.Refs[0]] != "user: synthetic authorized fact" || got[incoming.Refs[0]] != "user: synthetic batch success" || got[incoming.Refs[2]] != "user: synthetic batch success" {
+					t.Fatalf("404 invalidated unrelated snapshots: %v", got)
+				}
+				if f.server.calls.Load() != 4 {
+					t.Fatalf("404 aborted batch: calls %d", f.server.calls.Load())
+				}
+			} else {
+				if len(got) != 0 || len(f.bus.references) != 0 {
+					t.Fatalf("authorization failure retained old or partial batch snapshots: %v", got)
+				}
+				if f.server.calls.Load() != 3 {
+					t.Fatalf("authorization failure did not stop reads immediately: %d", f.server.calls.Load())
+				}
+			}
+		})
 	}
 }
