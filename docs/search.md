@@ -34,7 +34,8 @@ order, with at most 20 hits per call. It rejects offsets, per-session match caps
 session/count output, and relevance order. Local search does not support it.
 
 `scan.status` is `more`, `complete`, `overloaded`, or `restart_required`.
-`scan.checked` counts candidates verified in this call, not all matching messages.
+`scan.checked` counts candidates verified for this page, not all matching messages.
+Replays report that original page count.
 An empty `more` page still advances the search. An empty `complete` page ends
 traversal; it does not mean earlier pages had no matches. Output budgets shorten
 excerpts but preserve every result address. Use `read` for omitted context.
@@ -46,8 +47,9 @@ Changed, hidden, deleted, and redacted messages can disappear. Credential author
 is checked again before the response. These checks do not retroactively recall
 content returned before a change.
 
-Snapshots expire after two minutes. The last four pages can be replayed with their
-incoming cursors; replay rechecks visibility and never fills gaps with other hits.
+Snapshots expire after two minutes. The last four continuation pages can be replayed
+with their incoming cursors; replay rechecks visibility and never fills gaps with
+other hits. The initial request has no incoming cursor; retrying it starts fresh.
 A fresh search replaces that user's previous search. Restart, deployment, expiry,
 or an evicted replay page requires a fresh search without a cursor. Cursors belong
 to one server process; requests must reach that process. Device credential rotation

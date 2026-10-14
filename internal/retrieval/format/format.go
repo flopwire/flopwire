@@ -539,9 +539,6 @@ const (
 	OutlineArgs     = 120
 )
 
-// Page is a grep or search answer. A page cut short by the query budget
-// is still an answer, never an error: Truncated is set and Reason says
-// what was checked.
 // GrepScan describes bounded progress through a hosted grep snapshot.
 type GrepScan struct {
 	Status     string    `json:"status"`
@@ -550,6 +547,9 @@ type GrepScan struct {
 	ExpiresAt  time.Time `json:"expires_at,omitempty"`
 }
 
+// Page is a grep or search answer. A page cut short by the query budget
+// is still an answer, never an error: Truncated is set and Reason says
+// what was checked. Resumable grep reports progress separately in Scan.
 type Page struct {
 	Scan  *GrepScan `json:"scan,omitempty"`
 	Scope *Scope    `json:"scope,omitempty"`
