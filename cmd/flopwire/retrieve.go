@@ -621,8 +621,8 @@ func pageInfos(p *format.Page) []*format.ConversationInfo {
 	return out
 }
 
-// incompleteRetrieval is a CLI status, after the partial answer was written.
-// It is separate from operational failures and is never returned over MCP.
+// incompleteRetrieval follows a rendered partial answer. CLI scans return it;
+// MCP grep returns it only when no matching candidate was verified.
 type incompleteRetrieval struct{ reason string }
 
 func (e *incompleteRetrieval) Error() string {
@@ -697,7 +697,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := emit(page, bounded, text); err != nil {
 			return err
 		}
-		if page.Truncated && !st.MCP {
+		if page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
 			return &incompleteRetrieval{reason: page.Reason}
 		}
 		return nil

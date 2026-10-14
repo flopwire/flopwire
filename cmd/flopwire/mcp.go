@@ -294,7 +294,7 @@ Layout: grep and search group hits under one header per session: "## SESSION age
 
 Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its start), a message id, a transcript /path.jsonl:LINE, or "self" (your own session). Ordinals are stable ids, not positions: use messages_before/messages_after to step through a session.
 
-grep, search and read answer text (format="json": compact JSON); flopwire_sessions answers JSON (format="text": rows). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note, never an error. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
+grep, search and read answer text (format="json": compact JSON); flopwire_sessions answers JSON (format="text": rows). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note. A truncated grep with no verified matches returns isError=true; useful partial answers remain successful. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
 
 Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions: its next_cursor).
 
@@ -402,7 +402,7 @@ func mcpTool(name, title, desc, verb string, own map[string]any, required ...str
 func mcpTools() []any {
 	return append([]any{
 		changeMCPTool(),
-		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For ranked keyword matches use flopwire_search.", "grep",
+		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. After flopwire_change, use a literal SHA for fallback transcript search; add repo or since to narrow related searches. Broad alternatives can exhaust the budget before checking a candidate. For ranked keyword matches use flopwire_search.", "grep",
 			map[string]any{
 				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; needs a run of 3 letters or digits every match contains"),
 				"fixed_strings":   prop("boolean", "pattern is a literal string"),
@@ -587,8 +587,9 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 }
 
 // mcpRetrievalCall runs one retrieval tool and returns its answer: text,
-// or in JSON mode compact JSON within the budget. In JSON mode a
-// failure's text is the JSON error object.
+// or in JSON mode compact JSON within the budget. An operational failure
+// uses a JSON error object in JSON mode; incomplete grep keeps its rendered
+// partial answer.
 func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
 	o, asJSON, err := mcpOpts(name, args)
 	if err != nil {
@@ -601,6 +602,10 @@ func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[s
 		err = runTool(ctx, r, o, &b, format.Style{MCP: true, Budget: format.MaxOutput}, selfMCP)
 	}
 	if err != nil {
+		var incomplete *incompleteRetrieval
+		if errors.As(err, &incomplete) {
+			return "", &mcpBusError{text: strings.ToValidUTF8(strings.TrimRight(b.String(), "\n"), "�")}
+		}
 		if o == nil {
 			// The arguments did not parse: JSON when the tool answers JSON
 			// by default, or format says so.
