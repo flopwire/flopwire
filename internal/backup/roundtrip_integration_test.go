@@ -88,7 +88,7 @@ func TestBackupVerifyRestoreRoundTrip(t *testing.T) {
 	if _, err = Create(ctx, sourceURL, objects, bucket, dir, Options{}); err == nil {
 		t.Fatal("backup without the encrypted-destination acknowledgement succeeded")
 	}
-	manifest, err := Create(ctx, sourceURL, objects, bucket, dir, Options{EncryptedDestination: true})
+	manifest, err := Create(ctx, sourceURL, objects, bucket, dir, Options{EncryptedDestination: true, ObjectWorkers: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,4 +155,24 @@ func TestBackupVerifyRestoreRoundTrip(t *testing.T) {
 			t.Fatalf("restored object %s does not match its content address", entry.Key)
 		}
 	}
+	// A missing snapshot-owned object must never publish a valid backup,
+	// even when another worker can finish its copy.
+	if err = objects.RemoveObject(ctx, bucket, manifest.Objects[0].Key, minio.RemoveObjectOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	failedDir := filepath.Join(t.TempDir(), "failed-backup")
+	if _, err = Create(ctx, sourceURL, objects, bucket, failedDir, Options{EncryptedDestination: true, ObjectWorkers: 2}); err == nil {
+		t.Fatal("backup with a missing snapshot object succeeded")
+	}
+	if _, err = os.Stat(filepath.Join(failedDir, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("failed backup published manifest: %v", err)
+	}
+	failedState, err := os.ReadFile(filepath.Join(failedDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(failedState, &state); err != nil || state.Status != "failed" {
+		t.Fatalf("failed backup state=%s err=%v", failedState, err)
+	}
+
 }

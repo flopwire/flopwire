@@ -73,6 +73,35 @@ func TestCopyObjectsBoundAndStableManifest(t *testing.T) {
 	}
 }
 
+func TestCopyObjectsOutOfOrderCompletionKeepsHashesAtTheirIndexes(t *testing.T) {
+	entries := []Entry{{Key: "a"}, {Key: "b"}}
+	started := make(chan string, 2)
+	releaseA := make(chan struct{})
+	completedB := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- copyObjects(t.Context(), entries, 2, func(ctx context.Context, e Entry) (string, error) {
+			started <- e.Key
+			if e.Key == "a" {
+				<-releaseA
+			} else {
+				close(completedB)
+			}
+			return "sum-" + e.Key, nil
+		})
+	}()
+	receive(t, started)
+	receive(t, started)
+	receive(t, completedB)
+	close(releaseA)
+	if err := receive(t, result); err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Key != "a" || entries[0].SHA256 != "sum-a" || entries[1].Key != "b" || entries[1].SHA256 != "sum-b" {
+		t.Fatalf("entries=%+v", entries)
+	}
+}
+
 func TestCopyObjectsFailureCancelsAndJoins(t *testing.T) {
 	entries := []Entry{{Key: "a"}, {Key: "b"}, {Key: "c"}}
 	started := make(chan string, 2)
