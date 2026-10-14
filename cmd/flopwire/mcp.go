@@ -296,7 +296,7 @@ Addresses: flopwire_read accepts SESSION/ORDINAL[:LINE], SESSION (read from its 
 
 grep, search and read answer text (format="json": compact JSON); flopwire_sessions answers JSON (format="text": rows). Lines in [brackets] before the hits qualify them (a partial scan, an any-term retry); the footer after them gives totals and the exact arguments of the next page. Times are UTC. An answer stops at about 24000 bytes and the footer says where to go on. A query stops after 10s by default (timeout, up to 60s) and returns what it found with a note. A truncated grep with no verified matches returns isError=true; useful partial answers remain successful. Your own session is left out unless include_self is true; session="self" searches only your own session. A session is live while active in the last 10 minutes or open in its harness; exclude_live leaves live sessions out.
 
-Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions: its next_cursor).
+Shared filters (grep, search; sessions takes those that apply): agent, repo, branch, since, until, kind, exclude_kind, tool, session, device, user, exclude_subagents, exclude_live, include_superseded, include_branches, include_self, sort, limit (default 20, max 500), offset (grep, search) or cursor (sessions: its next_cursor; hosted grep: scan.next_cursor). Hosted grep continue=true starts a bounded snapshot scan; preserve pattern and filters when following cursor. scan.status=more requires continuation even with no hits; complete finishes that snapshot; restart_required requires a fresh search; overloaded means retry. Scan hits are new matching messages in this page; read each address for full context. Snapshots expire after 2 minutes; starting a fresh scan replaces the same user's previous snapshot. Only the last 4 pages can be replayed. Scan limit is at most 20 hits. Use absolute since/until timestamps: relative times re-resolve between calls and fail cursor binding.
 
 ` + mcpBusInstructions
 
@@ -355,6 +355,10 @@ func filterProps(verb string) map[string]any {
 		names = append(names, "offset", "kind", "exclude_kind", "tool", "session", "include_superseded", "include_branches", "no_heading")
 	}
 	props := map[string]any{"format": formatProp(verb)}
+	if verb == "grep" {
+		props["continue"] = prop("boolean", "start a bounded hosted snapshot scan (2-minute expiry, max 20 hits); replaces your previous snapshot; follow scan.next_cursor with unchanged pattern and absolute time filters")
+		props["cursor"] = prop("string", "resume scan.next_cursor; implies continue; hosted content grep with newest/oldest sort only")
+	}
 	for _, n := range names {
 		typ := "string"
 		switch n {

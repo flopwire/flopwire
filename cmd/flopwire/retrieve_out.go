@@ -211,11 +211,16 @@ func budgetHint(budget int, next string) string {
 // alone passes the budget keeps its first lines.
 func boundPage(kind string, p *format.Page, mode string, budget int, mcp bool) pageJSON {
 	cp := *p
+	if p.Scan != nil {
+		cp = *format.BoundGrepScan(p, budget)
+	}
 	if cp.Hits == nil {
 		cp.Hits = []format.Hit{}
 	}
 	out := pageJSON{Kind: kind, Page: &cp}
-	if fitsBudget(out, budget) {
+	// A snapshot cursor advances past this entire batch. Keep every message
+	// so client output clipping cannot silently skip verified results.
+	if p.Scan != nil || fitsBudget(out, budget) {
 		return out
 	}
 	cut := func(next int) {

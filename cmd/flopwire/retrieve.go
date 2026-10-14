@@ -229,6 +229,7 @@ type flagDef struct {
 var flagDefs = []flagDef{
 	{"regexp", 'e', fList, "g"},
 	{"only-matching", 'o', fBool, "g"},
+	{"continue", 0, fBool, "g"},
 	{"multiline", 'U', fBool, "g"},
 	{"fixed-strings", 'F', fBool, "g"},
 	{"ignore-case", 'i', fBool, "g"},
@@ -246,7 +247,7 @@ var flagDefs = []flagDef{
 	{"max-count", 'm', fInt, "g"},
 	{"limit", 0, fInt, "gslrpi"},
 	{"offset", 0, fInt, "gs"},
-	{"cursor", 0, fString, "lri"},
+	{"cursor", 0, fString, "glri"},
 	{"sort", 0, fString, "gsl"},
 	{"matching", 0, fString, "s"},
 	{"no-heading", 0, fBool, "gs"},
@@ -691,7 +692,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := emit(page, bounded, text); err != nil {
 			return err
 		}
-		if page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
+		if page.Scan == nil && page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
 			return &incompleteRetrieval{reason: page.Reason}
 		}
 		return nil
@@ -713,6 +714,8 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := spec.Query(&q); err != nil {
 			return err
 		}
+		q.Cursor = o.vals["cursor"]
+		q.Continue = o.on["continue"] || q.Cursor != ""
 		q.OnlyMatching, q.Multiline = o.on["only-matching"], o.on["multiline"]
 		if q.Timeout, err = o.timeout(); err != nil {
 			return badArg(err)
@@ -1038,6 +1041,14 @@ var toolHelp = map[string]string{
   flopwire grep 'upload\.test.*timeout'               RE2 regex; smart case
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
   flopwire grep -l flaky --repo flopwire --agent codex  sessions with matches
+
+--continue starts a bounded hosted snapshot scan (content, newest/oldest sort).
+Follow scan.next_cursor as --cursor with the same pattern and filters. A terminal
+scan page completes the snapshot; newly ingested messages require a new search.
+Snapshots expire after 2 minutes. A fresh scan replaces your previous snapshot.
+Only the last 4 pages can be replayed. --limit accepts at most 20 scan hits.
+Use absolute --since/--until timestamps: relative times change between requests
+and fail cursor binding.
 
 Hits group under a header per session: its id, then key=value fields (a value with a space,
 quote or = is a JSON string), newest first; the address for read is SESSION/ORDINAL:LINE.

@@ -55,8 +55,9 @@ var (
 
 // Store is the server-side retrieval backend.
 type Store struct {
-	Pool    *pgxpool.Pool
-	Objects ingest.Objects
+	GrepContinuations *GrepContinuations
+	Pool              *pgxpool.Pool
+	Objects           ingest.Objects
 	// RefreshSession prioritizes background re-derivation after an authorized read.
 	RefreshSession func(context.Context, string)
 	tx             pgx.Tx // the budgeted transaction, on the copy budgeted hands on

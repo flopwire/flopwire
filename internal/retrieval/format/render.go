@@ -269,8 +269,21 @@ func budgetNote(st Style) string {
 // SESSION:COUNT. A footer gives the totals and the next offset; the
 // budget (Style.Budget) ends the page early and the footer says so.
 func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
+	if p.Scan != nil {
+		p = BoundGrepScan(p, st.Budget)
+		st.Budget = 0
+	}
+
 	e := &errWriter{w: w}
 	notes(e, p)
+	if p.Scan != nil {
+		s := p.Scan
+		if s.NextCursor != "" {
+			e.printf("[scan: %s; %d messages checked; next: %s]\n", Clean(s.Status), s.Checked, st.cursor(s.NextCursor))
+		} else {
+			e.printf("[scan: %s; %d messages checked]\n", Clean(s.Status), s.Checked)
+		}
+	}
 	switch mode {
 	case ModeSessions, ModeCount:
 		lines, err := units(st, len(p.Sessions), func(e *errWriter, i int) {
@@ -352,6 +365,11 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 		e.printf("%s", b)
 	}
 	shown, next, cut := len(blocks), p.Next, ""
+	if p.Scan != nil {
+		e.printf("[%d matching messages in this scan page]\n", shown)
+		excluded(e, p.Excluded)
+		return e.err
+	}
 	if shown < len(p.Hits) {
 		next, cut = p.Offset+shown, budgetNote(st)
 	}

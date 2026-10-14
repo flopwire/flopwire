@@ -21,6 +21,51 @@ the server explicitly. `--index PATH` selects a local index unless
 include `scope.kind` (`local` or `shared`) and the shared server URL.
 Server failures return an error and never switch to local search. `flopwire <tool> --help` shows its flags.
 
+## Resumable hosted grep (opt-in)
+
+Set `FLOPWIRE_GREP_CONTINUATIONS=true` on the server to enable this experimental
+mode. It uses the existing Postgres database. The default is disabled.
+
+Start with `flopwire grep 'pattern' --continue --json`. Pass `scan.next_cursor`
+as `--cursor` with the same pattern, filters, and limit. MCP uses `continue=true`
+and `cursor`. Use an absolute `since` or `until` value when paging; relative
+times resolve again on each call. This mode supports content in newest or oldest
+order, with at most 20 hits per call. It rejects offsets, per-session match caps,
+session/count output, and relevance order. Local search does not support it.
+
+`scan.status` is `more`, `complete`, `overloaded`, or `restart_required`.
+`scan.checked` counts candidates verified in this call, not all matching messages.
+An empty `more` page still advances the search. An empty `complete` page ends
+traversal; it does not mean earlier pages had no matches. Output budgets shorten
+excerpts but preserve every result address. Use `read` for omitted context.
+
+Each search fixes the committed history visible when its database snapshot starts.
+It returns each distinct message address once, including identical text at different
+addresses. Each response rechecks current visibility and the exact message body.
+Changed, hidden, deleted, and redacted messages can disappear. Credential authority
+is checked again before the response. These checks do not retroactively recall
+content returned before a change.
+
+Snapshots expire after two minutes. The last four pages can be replayed with their
+incoming cursors; replay rechecks visibility and never fills gaps with other hits.
+A fresh search replaces that user's previous search. Restart, deployment, expiry,
+or an evicted replay page requires a fresh search without a cursor. Cursors belong
+to one server process; requests must reach that process. Device credential rotation
+preserves cursor identity; different login sessions or minted tokens do not.
+
+The server retains at most four searches and one per user. Busy searches and full
+admission return `overloaded`; retry the same request. Each call verifies at most
+256 candidates or 8 MiB of bodies. A body over 2 MiB or 32,768 distinct matching
+addresses ends the search explicitly; narrow the query. The server reserves four
+pool connections when enabled. Explicit pool limits must leave the existing
+retrieval, upload, and maintenance capacity available.
+
+Postgres candidate planning and sorting can still consume the request timeout
+before the first match. A database timeout invalidates the snapshot and returns
+`restart_required`. This mode is not a claim of capacity for 30 simultaneous users.
+Short-lived snapshots still retain old database row versions until closed; qualify
+this mode with representative ingestion and search load before enabling it broadly.
+
 ## Commit evidence
 
 Use `change` to find the sessions that recorded a commit. Supply a repository
