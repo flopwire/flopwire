@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/agent"
@@ -36,8 +38,17 @@ func TestRetainedRepoMetadataSharedScope(t *testing.T) {
 		}
 	}
 	var queries []url.Values
+	var policyFetches atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/sync/coverage" {
+		if r.URL.Path == "/v1/policy" {
+			policyFetches.Add(1)
+			if r.Header.Get("Authorization") != "Bearer device" {
+				t.Error("policy fetch lost enrolled credential")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"path_rules": []string{}, "unplaceable": "local"})
+			return
+		}
+		if r.URL.Path != "/v1/sessions" && r.URL.Path != busproto.PathMessages {
 			http.NotFound(w, r)
 			return
 		}
@@ -52,6 +63,22 @@ func TestRetainedRepoMetadataSharedScope(t *testing.T) {
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	if err := client.Save(client.Config{Server: srv.URL, Token: "device", DeviceID: "enrolled-device"}); err != nil {
 		t.Fatal(err)
+	}
+	// Establish the connected device's actual policy cache through the public
+	// agent path. Empty native roots keep this fixture independent of host data.
+	empty := t.TempDir()
+	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "bootstrap.db"))
+	bootstrapCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if lock, err := runAgent(bootstrapCtx, []string{"--once", "--socket", filepath.Join(shortSockDir(t), "bootstrap.sock"), "--desktop-code-root", "-", "--cowork-root", "-", "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--mem-limit", "0", "--sync-timeout", "1s"}); err != nil {
+		t.Fatal(err)
+	} else if lock != nil {
+		lock.Close()
+		t.Fatal("bootstrap unexpectedly requested re-exec")
+	}
+	cancel()
+	if policyFetches.Load() == 0 {
+		t.Fatal("bootstrap did not fetch connected policy")
 	}
 	want := map[string]string{}
 	for _, mode := range []string{"full", "sync-only", "missing-fts"} {
