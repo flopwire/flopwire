@@ -9,7 +9,7 @@ func TestReferenceTextBoundsSourceBeforeNormalization(t *testing.T) {
 	for _, tc := range []struct{ text, want string }{
 		{"one\n two", "user: one two"},
 		{strings.Repeat(" ", 640) + "outside window", ""},
-		{"\x1b[31mred\x1b[0m", "user: red"},
+		{"\x1b[31mred\x1b[0m", "user: ␛[31mred␛[0m"},
 		{"", ""},
 	} {
 		if got := ReferenceText(tc.text, "user"); got != tc.want {
