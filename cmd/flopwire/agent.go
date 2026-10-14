@@ -339,7 +339,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
 		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
+		if b := openAuthorityBus(dir, cc, devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -663,6 +663,43 @@ func recoveredPolicySources(cc client.Config, load func() (client.Config, error)
 	}
 }
 
+// authorityBusPath keeps message bodies and pending receipts with the server
+// and enrolled device that received them. Credentials and TLS pins can rotate
+// without changing the inbox. Standalone messaging has its own namespace.
+func authorityBusPath(dir string, cc client.Config, connected bool) (string, error) {
+	identity := "standalone"
+	if connected {
+		server, err := client.NormalizeServer(cc.Server)
+		if err != nil {
+			return "", err
+		}
+		identity = "server\x00" + server + "\x00device\x00" + cc.DeviceID
+		if cc.DeviceID == "" {
+			// An unbound token can name a different principal on the same server.
+			identity = "server\x00" + server + "\x00token\x00" + cc.Token
+		}
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return filepath.Join(dir, "bus-"+hex.EncodeToString(sum[:])+".db"), nil
+}
+
+// openAuthorityBus preserves the old ownerless inbox without guessing which
+// server or device received its messages. Only explicitly bound inboxes resume.
+func openAuthorityBus(dir string, cc client.Config, cfg devicebus.Config) *devicebus.Bus {
+	path, err := authorityBusPath(dir, cc, cfg.Connect != nil)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("agent: messaging off: invalid inbox authority", "err", err)
+		}
+		return nil
+	}
+	legacy := filepath.Join(dir, "bus.db")
+	if _, err := os.Lstat(legacy); err == nil && cfg.Logger != nil {
+		cfg.Logger.Warn("agent: legacy inbox preserved without resuming: its server and device owner are unknown; messaging uses a separate authority inbox", "path", legacy)
+	}
+	return openBus(path, cfg)
+}
+
 // openBus opens the local message inbox. One that cannot be opened (a
 // damaged file, a full disk) turns messaging off with an error in the
 // log; it never stops indexing and upload.
@@ -685,6 +722,7 @@ func openBus(path string, cfg devicebus.Config) *devicebus.Bus {
 // agent's own rotation refuses the old token at its commit, before the
 // config save that names the new one (issue #110), as syncTransport does.
 func busConnect(cc client.Config, load func() (client.Config, error)) func() (devicebus.Server, string) {
+	load = deviceBoundConfig(cc, load)
 	var mu sync.Mutex
 	server, _ := client.NormalizeServer(cc.Server)
 	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
@@ -692,7 +730,7 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 		mu.Lock()
 		defer mu.Unlock()
 		cur := cc
-		if c, same := savedConfig(server, load); same {
+		if c, same := savedConfig(server, load); same && (cc.DeviceID != "" || c.Token == cc.Token) {
 			cur = c
 		}
 		if cur.TLSFingerprint != pin {
