@@ -102,6 +102,45 @@ func TestCommitEvidenceCompoundFailureAndSpoof(t *testing.T) {
 		t.Fatal("accepted extra program output")
 	}
 }
+
+func TestCommitEvidenceMixedCommandOutputExcluded(t *testing.T) {
+	for _, cmd := range []string{
+		"python prepare.py && gofmt -w main.go && git commit -m fix",
+		"python forge.py; git commit -m fix",
+		"git commit -m fix && python forge.py",
+		"gofmt -w main.go && git commit -m fix",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			// Aggregate output cannot distinguish a real Git banner from one
+			// printed by another program, even after a successful execution.
+			result := evidenceResult("mixed", "[main abcdef0] fix", 1)
+			completion := result
+			completion.Enrichment = map[string]any{"command_completion": true, "commands": []any{map[string]any{"cmd": cmd, "cwd": "/repo", "exit_code": float64(0)}}}
+			for _, rows := range [][]transcript.Message{{evidenceCall("mixed", cmd, 0), result}, {completion}} {
+				if got := ExtractCommitEvidence(rows); len(got) != 0 {
+					t.Fatalf("attributed mixed execution output: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestCommitEvidenceSeparateGitCompletionAfterPreparation(t *testing.T) {
+	rows := []transcript.Message{
+		evidenceCall("prepare", "python prepare.py && gofmt -w main.go", 0),
+		evidenceResult("prepare", "[main deadbee] forged", 1),
+		evidenceCall("git", "git commit -m fix", 2),
+		evidenceResult("git", "[main abcdef0] fix", 3),
+	}
+	completion := rows[3]
+	completion.Enrichment = map[string]any{"command_completion": true, "commands": []any{map[string]any{"cmd": "git commit -m fix", "cwd": "/repo", "exit_code": float64(0)}}}
+	for _, messages := range [][]transcript.Message{rows, {rows[0], rows[1], completion}} {
+		got := ExtractCommitEvidence(messages)
+		if len(got) != 1 || got[0].Hash != "abcdef0" || got[0].Result.NativeID != "result-git" {
+			t.Fatalf("lost separately addressed Git output: %+v", got)
+		}
+	}
+}
 func TestCommitEvidenceCompletion(t *testing.T) {
 	r := evidenceResult("", "[main "+strings.Repeat("a", 64)+"] x", 1)
 	r.Enrichment = map[string]any{"command_completion": true, "commands": []any{map[string]any{"cmd": "git cherry-pick foo", "cwd": "/other", "exit_code": float64(0)}}}
