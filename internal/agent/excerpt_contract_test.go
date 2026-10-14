@@ -43,7 +43,7 @@ func TestControlPendingExcerptIndexModeContract(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t, "-")
-			if err := os.WriteFile(f.path(alphaRel), []byte(claudeUser("c9000000-0000-4000-8000-000000000099", text)), 0600); err != nil {
+			if err := os.WriteFile(f.path(alphaRel), []byte(claudeUser("c9000000-0000-4000-8000-000000000099", "Different local text must never replace the authorized shared excerpt.")), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if c.syncOnly {

@@ -28,7 +28,10 @@ its result only if its captured epoch and credential still match. Local
 redaction requests and observed path-policy changes invalidate before and after
 their operation. Repinning or rechecking credentials and failed message polls
 also invalidate. An observed authorization denial (HTTP 401 or 403) clears
-all snapshots and discards earlier successes in the same batch. Still-valid
+all snapshots and discards earlier successes in the same batch. The current
+read API returns 403 for credential-level read-scope denial; invisible
+individual addresses return 404. Repeated credential denial therefore keeps
+all excerpts unavailable while ordinary message delivery continues. Still-valid
 snapshots are reused without another read or an expiry extension.
 Expired entries are removed before a later poll attempts their references again.
 Missing, empty, or failed results leave those references without snapshots. A
@@ -87,6 +90,8 @@ indexing also fails when `R` exists only on another device.
 The poll loop prepares references from direct and claimable envelopes under one
 batch deadline. Claimable messages still require the existing successful claim
 before they enter the inbox. Preparation does not grant delivery ownership.
+Preparing a claimable envelope consumes read budget even if this device later
+loses the claim.
 
 ```
 t0 server = {R: original}; inbox = {}; cache = {}; epoch = 4

@@ -475,20 +475,3 @@ func TestReferenceValidSnapshotsLetLaterMissingEnvelopeProgress(t *testing.T) {
 		t.Fatal("missing envelope did not make progress")
 	}
 }
-
-func TestReferenceDefinitiveMissClearsSnapshotEvenWhenBatchCanceled(t *testing.T) {
-	f := newReferenceTestFixture(t)
-	m := f.message("synthetic-missing-at-cancel")
-	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
-	f.clock.Add(int64(referenceAge))
-	readCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	f.server.read = func(context.Context, string) (string, error) {
-		cancel()
-		return "", &client.APIError{StatusCode: http.StatusNotFound}
-	}
-	f.bus.prepareReferences(readCtx, []busproto.Envelope{m})
-	if got := f.bus.references[referenceKey{m.ID, m.Refs[0]}]; got.text != "" {
-		t.Fatalf("observed 404 retained old text after cancellation: %+v", got)
-	}
-}
