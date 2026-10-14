@@ -314,3 +314,20 @@ func TestReferenceRefreshKeepsValidTextUntilDeniedResponse(t *testing.T) {
 		t.Fatal("hook triggered another network read after denied refresh")
 	}
 }
+
+func TestReferenceUnavailableDeviceClearsSnapshots(t *testing.T) {
+	f := newReferenceTestFixture(t)
+	m := f.message("synthetic-unavailable")
+	f.bus.prepareReferences(ctx, []busproto.Envelope{m})
+	if len(f.bus.ReferenceExcerpts([]busproto.Envelope{m})) != 1 {
+		t.Fatal("missing initial snapshot")
+	}
+	f.bus.cfg.NoDevice = func() string { return "credential revoked" }
+	if got := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(got) != 0 {
+		t.Fatalf("disabled device retained text: %v", got)
+	}
+	f.bus.cfg.NoDevice = nil
+	if got := f.bus.ReferenceExcerpts([]busproto.Envelope{m}); len(got) != 0 {
+		t.Fatalf("reenabling revived an invalidated snapshot: %v", got)
+	}
+}

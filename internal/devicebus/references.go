@@ -119,6 +119,10 @@ func (b *Bus) ReferenceExcerpts(msgs []busproto.Envelope) map[string]string {
 	if b.Local() {
 		return nil
 	}
+	if b.cfg.NoDevice != nil && b.cfg.NoDevice() != "" {
+		b.InvalidateReferences()
+		return nil
+	}
 	_, credential := b.cfg.Connect()
 	now := b.cfg.Now()
 	b.mu.Lock()
