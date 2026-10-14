@@ -42,8 +42,11 @@ func TestMCPScopedGrepEndToEndServer(t *testing.T) {
 	addSession := func(session string) string {
 		t.Helper()
 		conv := uuid.NewString()
-		_, err := pool.Exec(ctx, `INSERT INTO conversations(id,agent,session_id,device_id,user_id,repo_root,last_activity_at) VALUES($1,'codex',$2,$3,$4,'/synthetic/grep',$5)`, conv, session, device, owner, now)
+		_, err := pool.Exec(ctx, `INSERT INTO conversations(id,agent,session_id,device_id,user_id,repo_root) VALUES($1,'codex',$2,$3,$4,'/synthetic/grep')`, conv, session, device, owner)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE conversation_activity SET last_activity_at=$2 WHERE conversation_id=$1`, conv, now); err != nil {
 			t.Fatal(err)
 		}
 		return conv
