@@ -24,7 +24,7 @@ The agent uses these paths:
 | Local redactions | `index.db.redactions.jsonl` beside the index, `index.db.redactions.jsonl.prev` (its copy before the last redaction) and the key `index.db.redactions.key`; see [recover the local index](#recover-the-local-index) | follows the index |
 | Control socket | `<config dir>/flopwire/agent.sock` | `--socket` |
 | Sync spool | `<config dir>/flopwire/spool`, at most 1GiB | `--spool-cap` (bytes) |
-| Message inbox | `<config dir>/flopwire/bus.db` | none |
+| Message inbox | `<config dir>/flopwire/bus-<authority hash>.db` | none |
 | User path rules | `<config dir>/flopwire/path-rules` | none |
 | Admin path rules cache | `<config dir>/flopwire/admin-path-rules.json` | none |
 | Claude projects | `~/.claude/projects` | `--claude-projects` or `CLAUDE_CONFIG_DIR` |
@@ -33,6 +33,13 @@ The agent uses these paths:
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
 | opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
+
+Message inboxes belong to one normalized server URL and enrolled device ID.
+Switching servers or devices opens a separate inbox. Returning to the same
+server and device resumes its pending messages and receipts. Token and TLS
+pin rotation preserve an enrolled device's inbox. Credentials without a
+device ID use a token fingerprint to distinguish principals. Standalone
+messaging uses a separate inbox.
 
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
@@ -825,7 +832,7 @@ the session gets messages, so no message arrives before the instruction.
 If the `SessionStart` hook is killed or starts too late, the session's
 next `UserPromptSubmit` or `PostToolUse` hook prints it. Two hook
 configurations that both run `SessionStart` print it once. The agent keeps
-the confirmation in `bus.db`, so a restart does not print it again. After
+the confirmation in its authority inbox database, so a restart does not print it again. After
 3 unconfirmed leases the agent stops offering it.
 
 A `SessionStart` with the source `resume`, `compact` or `clear` that
@@ -1238,7 +1245,7 @@ A session resumes when a hook of it runs that started after the end, or
 when its harness file names a newer process. A resumed session receives
 its new messages. Messages that were already `undelivered` stay so.
 
-The agent keeps this state in `bus.db`. A session that its harness file
+The agent keeps this state in its authority inbox database. A session that its harness file
 showed before an agent restart, and that is gone after it, ends at the
 first presence checks after the restart.
 

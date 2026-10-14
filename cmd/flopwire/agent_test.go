@@ -352,7 +352,11 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
 	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
-	if err := os.WriteFile(filepath.Join(dir, "bus.db"), []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
+	busPath, err := authorityBusPath(dir, client.Config{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(busPath, []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	empty := t.TempDir()
