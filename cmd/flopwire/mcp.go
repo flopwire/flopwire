@@ -402,7 +402,7 @@ func mcpTool(name, title, desc, verb string, own map[string]any, required ...str
 func mcpTools() []any {
 	return append([]any{
 		changeMCPTool(),
-		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For ranked keyword matches use flopwire_search.", "grep",
+		mcpTool("flopwire_grep", "Grep transcripts", "Grep past coding-agent transcripts, like rg: an RE2 regex (smart case) or a literal (fixed_strings). Use it for exact text: an error message, an identifier, a command, a path, a config key. Hits are grouped under a header per session (## SESSION agent=A ended=DATE repo=R branch=B … intent=\"…\"); each matching line prints as ORDINAL:LINE kind/tool: text, newest first (sort=oldest|relevance), cut to 300 bytes around the match, identical messages shown once (+N copies), then a totals footer with the next offset. The address for flopwire_read is SESSION/ORDINAL:LINE. output_mode=sessions lists the sessions with matches instead. For a known commit, start with its literal SHA; add repo or since to narrow related searches. Broad alternatives can exhaust the budget before checking a candidate. For ranked keyword matches use flopwire_search.", "grep",
 			map[string]any{
 				"pattern":         prop("string", "RE2 regex; ^ and $ match at line breaks; needs a run of 3 letters or digits every match contains"),
 				"fixed_strings":   prop("boolean", "pattern is a literal string"),
@@ -562,8 +562,30 @@ func mcpArgs(name string) []string {
 	return nil
 }
 
+// mcpPageOutcome exposes completeness independently of the rendered text.
+// TotalHits is a lower bound when Exact is false; it is not candidates checked.
+type mcpPageOutcome struct {
+	Status    string `json:"status"`
+	Exact     bool   `json:"exact"`
+	Truncated bool   `json:"truncated"`
+	TotalHits int    `json:"total_hits"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func pageOutcome(page *format.Page) *mcpPageOutcome {
+	status := "complete"
+	if !page.Exact || page.Truncated {
+		status = "partial"
+	}
+	return &mcpPageOutcome{Status: status, Exact: page.Exact, Truncated: page.Truncated, TotalHits: page.Total, Reason: page.Reason}
+}
+
 // mcpCall runs one tool and returns its answer: one text block.
 func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
+	return mcpCallWithPage(ctx, r, name, args, nil)
+}
+
+func mcpCallWithPage(ctx context.Context, r *retriever, name string, args map[string]any, observe func(*format.Page)) (string, error) {
 	var err error
 	args, err = mcpRepoArgs(ctx, r, name, args)
 	if err != nil {
@@ -583,13 +605,17 @@ func mcpCall(ctx context.Context, r *retriever, name string, args map[string]any
 	if name == "flopwire_change" {
 		return changeMCPCall(ctx, r, args)
 	}
-	return mcpRetrievalCall(ctx, r, name, args)
+	return mcpRetrievalCallWithPage(ctx, r, name, args, observe)
 }
 
 // mcpRetrievalCall runs one retrieval tool and returns its answer: text,
 // or in JSON mode compact JSON within the budget. In JSON mode a
 // failure's text is the JSON error object.
 func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[string]any) (string, error) {
+	return mcpRetrievalCallWithPage(ctx, r, name, args, nil)
+}
+
+func mcpRetrievalCallWithPage(ctx context.Context, r *retriever, name string, args map[string]any, observe func(*format.Page)) (string, error) {
 	o, asJSON, err := mcpOpts(name, args)
 	if err != nil {
 		err = badArg(err)
@@ -598,6 +624,7 @@ func mcpRetrievalCall(ctx context.Context, r *retriever, name string, args map[s
 	}
 	var b bytes.Buffer
 	if err == nil {
+		o.onPage = observe
 		err = runTool(ctx, r, o, &b, format.Style{MCP: true, Budget: format.MaxOutput}, selfMCP)
 	}
 	if err != nil {
@@ -794,7 +821,12 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 			case <-cctx.Done():
 				return
 			}
-			text, err := mcpCall(cctx, r, p.Name, p.Arguments)
+			var outcome *mcpPageOutcome
+			text, err := mcpCallWithPage(cctx, r, p.Name, p.Arguments, func(page *format.Page) {
+				if p.Name == "flopwire_grep" {
+					outcome = pageOutcome(page)
+				}
+			})
 			if cctx.Err() != nil && ctx.Err() == nil {
 				return // cancelled by the client: no response
 			}
@@ -810,6 +842,9 @@ func handleMCP(ctx context.Context, r *retriever, line []byte, send func(any), m
 				}
 			}
 			res := map[string]any{"content": content}
+			if outcome != nil && !isErr {
+				res["structuredContent"] = outcome
+			}
 			if isErr {
 				res["isError"] = true
 			}

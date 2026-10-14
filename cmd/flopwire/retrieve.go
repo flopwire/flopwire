@@ -300,11 +300,12 @@ var filterKeys = []string{"agent", "repo", "kind", "exclude-kind", "tool", "sess
 // opts are a tool's parsed options: from the command line or from MCP
 // arguments.
 type opts struct {
-	verb string
-	pos  []string
-	vals map[string]string   // string and int options by long name, as given
-	list map[string][]string // -e
-	on   map[string]bool     // bool options
+	onPage func(*format.Page) // optional per-call observer before rendering
+	verb   string
+	pos    []string
+	vals   map[string]string   // string and int options by long name, as given
+	list   map[string][]string // -e
+	on     map[string]bool     // bool options
 }
 
 func newOpts(verb string) *opts {
@@ -746,6 +747,9 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		page, err := r.Grep(ctx, q, f)
 		if err != nil {
 			return err
+		}
+		if o.onPage != nil {
+			o.onPage(page)
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
