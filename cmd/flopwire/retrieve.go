@@ -149,18 +149,10 @@ func scopeNote(scope *format.Scope) string {
 	return "[scope: local device]"
 }
 
-// localRepoDirs is what the local index at indexPath knows of where
-// sessions ran (localindex.Store.RepoDirs), nil when there is no index.
+// localRepoDirs reads retained placement identities independently of local
+// message/FTS availability, nil when metadata is unavailable.
 func localRepoDirs(ctx context.Context, indexPath string) []localindex.RepoDir {
-	if _, err := os.Stat(indexPath); err != nil {
-		return nil
-	}
-	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
-	if err != nil {
-		return nil
-	}
-	defer s.Close()
-	dirs, _ := s.RepoDirs(ctx)
+	dirs, _ := localindex.ReadRepoDirs(ctx, indexPath)
 	return dirs
 }
 
@@ -177,9 +169,11 @@ func deviceUploads() func(pathpolicy.Placement) bool {
 	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
 	if cc, err := client.Load(); err == nil {
 		cfg.UserRuleList, cfg.Unplaceable = cc.Denylist, cc.Unplaceable
+		if cc.Server != "" {
+			cfg.PolicyAuthority = collectionPolicyAuthority(cc)
+		}
 	}
-	pol := agent.DevicePolicy(cfg)
-	return func(pl pathpolicy.Placement) bool { return agent.Uploads(pol, pl) }
+	return func(pl pathpolicy.Placement) bool { return agent.DeviceUploads(cfg, pl) }
 }
 
 // noIndexError: the local index does not exist yet, because the device

@@ -26,6 +26,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -47,10 +49,18 @@ import (
 
 // policyView is the rules in force and their generation; it changes as a
 // whole.
+type policyReadiness uint8
+
+const (
+	policyReady policyReadiness = iota
+	policyUnknown
+)
+
 type policyView struct {
-	pol pathpolicy.Policy
-	gen uint64
-	key string // canonical form, to detect a change
+	readiness policyReadiness
+	pol       pathpolicy.Policy
+	gen       uint64
+	key       string // canonical form, to detect a change
 }
 
 func policyKey(p pathpolicy.Policy) string {
@@ -102,9 +112,12 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 			if ctx.Err() == nil {
 				a.log.Info("agent: admin path rules not fetched; using the last known", "err", err)
 			}
+		} else if err := validateAdminPolicy(rules); err != nil {
+			a.log.Error("agent: invalid fetched collection policy; keeping last known rules", "err", err)
 		} else {
 			fetched = &rules
 		}
+
 	}
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
@@ -115,19 +128,30 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 		a.userStamp, changed = st, true
 	}
 	if !a.polLoaded {
-		a.adminRaw = a.readAdminCache()
+		a.loadAdminCache()
 	}
-	if fetched != nil && (!slices.Equal(fetched.Rules, a.adminRaw.Rules) || fetched.Unplaceable != a.adminRaw.Unplaceable) {
-		a.adminRaw, changed = *fetched, true
-		a.writeAdminCache(*fetched)
+	if fetched != nil {
+		changed = changed || a.policy().readiness == policyUnknown || !slices.Equal(fetched.Rules, a.adminRaw.Rules) || fetched.Unplaceable != a.adminRaw.Unplaceable
+		a.adminRaw = *fetched
+		if err := a.writeAdminCache(*fetched); err != nil {
+			a.stats.Errors.Add(1)
+			a.log.Error("agent: admin path rules active but cache could not be saved; offline restart may pause collection", "err", err)
+		}
 	}
 	a.polLoaded = true
 	if !changed {
 		return
 	}
+	if a.policy().readiness == policyUnknown && fetched == nil {
+		a.log.Warn("agent: collection and uploads paused until current authority policy is available")
+		return
+	}
 	pol := a.buildPolicy()
 	a.mu.Lock()
-	same := a.pol.key == policyKey(pol)
+	same := a.pol.key == policyKey(pol) && a.pol.readiness == policyReady
+	if a.pol.readiness == policyUnknown {
+		a.pol = &policyView{pol: pol, key: policyKey(pol), gen: a.pol.gen + 1, readiness: policyReady}
+	}
 	a.mu.Unlock()
 	if same && a.polApplied {
 		return
@@ -146,13 +170,13 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 func (a *Agent) preloadPolicy() {
 	a.polMu.Lock()
 	defer a.polMu.Unlock()
-	a.adminRaw = a.readAdminCache()
+	a.loadAdminCache()
 	if a.cfg.UserRules != "" {
 		a.userStamp = stampOf(a.cfg.UserRules)
 	}
 	a.polLoaded = true
 	pol := a.buildPolicy()
-	a.pol = &policyView{pol: pol, gen: 1, key: policyKey(pol)}
+	a.pol = &policyView{pol: pol, gen: 1, key: policyKey(pol), readiness: a.pol.readiness}
 }
 
 // buildPolicy parses the user and admin rules, with "~" as this user's
@@ -214,7 +238,7 @@ func DevicePolicy(cfg Config) pathpolicy.Policy {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 	a := &Agent{cfg: cfg, log: cfg.Logger}
-	a.adminRaw = a.readAdminCache()
+	a.loadAdminCache()
 	return a.buildPolicy()
 }
 
@@ -320,39 +344,166 @@ type AdminPolicy struct {
 	Unplaceable string   `json:"unplaceable,omitempty"`
 }
 
-type adminCache struct {
-	AdminPolicy
-	FetchedAt time.Time `json:"fetched_at"`
+// PolicyAuthority identifies the server and enrollment that owns saved rules.
+// A nil Config.PolicyAuthority means standalone local collection. For older
+// credentials without a device ID, TokenFingerprint is SHA256 of the token.
+type PolicyAuthority struct {
+	Server           string
+	DeviceID         string
+	TokenFingerprint string
 }
 
-func (a *Agent) readAdminCache() AdminPolicy {
-	if a.cfg.AdminRulesCache == "" {
-		return AdminPolicy{}
+type adminCache struct {
+	AdminPolicy
+	Authority string    `json:"authority"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+type adminCacheState uint8
+
+const (
+	adminCacheAbsent adminCacheState = iota
+	adminCacheValid
+	adminCacheUnreadable
+)
+
+type adminCacheResult struct {
+	state  adminCacheState
+	policy AdminPolicy
+	err    error
+}
+
+// A cache belongs to one server and enrolled device. Legacy unowned files stay
+// untouched and cannot establish a current authority's collection permission.
+func (a *Agent) adminAuthority() string {
+	if a.cfg.PolicyAuthority == nil {
+		return ""
 	}
-	b, err := fsprobe.ReadFile(a.cfg.AdminRulesCache)
+	owner := a.cfg.PolicyAuthority
+	server, err := client.NormalizeServer(owner.Server)
 	if err != nil {
-		return AdminPolicy{}
+		return ""
+	}
+	identity := "device\x00" + owner.DeviceID
+	if owner.DeviceID == "" {
+		if owner.TokenFingerprint == "" {
+			return ""
+		}
+		identity = "token\x00" + owner.TokenFingerprint
+	}
+	sum := sha256.Sum256([]byte(server + "\x00" + identity))
+	return fmt.Sprintf("%x", sum)
+}
+func (a *Agent) adminCachePath() string {
+	if a.cfg.AdminRulesCache == "" || a.adminAuthority() == "" {
+		return ""
+	}
+	return a.cfg.AdminRulesCache + "." + a.adminAuthority()
+}
+func validateAdminPolicy(p AdminPolicy) error {
+	if _, err := pathpolicy.ParseRules(p.Rules); err != nil {
+		return err
+	}
+	if p.Unplaceable != "" {
+		if _, ok := pathpolicy.ParseUnplaceable(p.Unplaceable); !ok {
+			return errors.New("invalid unplaceable policy")
+		}
+	}
+	return nil
+}
+
+func (a *Agent) readAdminCache() adminCacheResult {
+	path := a.adminCachePath()
+	if path == "" {
+		return adminCacheResult{state: adminCacheAbsent}
+	}
+	b, err := fsprobe.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return adminCacheResult{state: adminCacheAbsent}
+	}
+	if err != nil {
+		return adminCacheResult{state: adminCacheUnreadable, err: err}
 	}
 	var c adminCache
 	if err := json.Unmarshal(b, &c); err != nil {
-		a.log.Error("agent: admin path rules cache unreadable", "file", a.cfg.AdminRulesCache, "err", err)
-		return AdminPolicy{}
+		return adminCacheResult{state: adminCacheUnreadable, err: err}
 	}
-	return c.AdminPolicy
-}
-
-func (a *Agent) writeAdminCache(p AdminPolicy) {
-	if a.cfg.AdminRulesCache == "" {
-		return
+	if c.Authority != a.adminAuthority() || c.FetchedAt.IsZero() {
+		return adminCacheResult{state: adminCacheUnreadable, err: errors.New("cache authority or timestamp missing/mismatched")}
 	}
-	b, _ := json.Marshal(adminCache{AdminPolicy: p, FetchedAt: time.Now().UTC()})
-	tmp := a.cfg.AdminRulesCache + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err == nil {
-		err = os.Rename(tmp, a.cfg.AdminRulesCache)
-		if err != nil {
-			a.log.Warn("agent: admin path rules cache", "err", err)
+	if _, err := pathpolicy.ParseRules(c.Rules); err != nil {
+		return adminCacheResult{state: adminCacheUnreadable, err: err}
+	}
+	if c.Unplaceable != "" {
+		if _, ok := pathpolicy.ParseUnplaceable(c.Unplaceable); !ok {
+			return adminCacheResult{state: adminCacheUnreadable, err: errors.New("invalid cached unplaceable policy")}
 		}
 	}
+	return adminCacheResult{state: adminCacheValid, policy: c.AdminPolicy}
+}
+func (a *Agent) loadAdminCache() {
+	if a.pol == nil {
+		a.pol = &policyView{}
+	}
+	if a.cfg.PolicyAuthority == nil {
+		a.adminRaw = AdminPolicy{}
+		return
+	}
+	r := a.readAdminCache()
+	if r.state == adminCacheValid {
+		a.adminRaw = r.policy
+		return
+	}
+	a.pol.readiness = policyUnknown
+	if r.err != nil {
+		a.log.Error("agent: admin policy cache unreadable; collection paused", "err", r.err)
+	}
+}
+func (a *Agent) writeAdminCache(p AdminPolicy) error {
+	path := a.adminCachePath()
+	if path == "" {
+		return errors.New("admin policy cache has no authority or path")
+	}
+	b, err := json.Marshal(adminCache{AdminPolicy: p, Authority: a.adminAuthority(), FetchedAt: time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".admin-policy-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	dir, err := fsprobe.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+// DeviceUploads applies only known current-authority policy to repository names.
+func DeviceUploads(cfg Config, pl pathpolicy.Placement) bool {
+	cfg.defaults()
+	a := &Agent{cfg: cfg, log: cfg.Logger, pol: &policyView{}}
+	a.loadAdminCache()
+	return a.pol.readiness == policyReady && Uploads(a.buildPolicy(), pl)
 }
 
 // setPolicy puts pol in force after a rule change (or at start): stored
@@ -379,6 +530,9 @@ func (a *Agent) setPolicy(ctx context.Context, pol pathpolicy.Policy) {
 // lets it upload), and conversations a deny rule now covers are purged.
 // It also runs after the recovery pass changed placements.
 func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) error {
+	if a.policy().readiness == policyUnknown {
+		return nil
+	}
 	var failures []error
 	a.mu.Lock()
 	a.pol = &policyView{pol: pol, gen: a.pol.gen + 1, key: policyKey(pol)}
@@ -615,6 +769,9 @@ func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, kn
 // it when a rule could deny it (worstMode), and ask again later.
 func (a *Agent) modeOf(t *target) (mode pathpolicy.Mode, known bool) {
 	pv := a.policy()
+	if pv.readiness == policyUnknown {
+		return pathpolicy.Local, false
+	}
 	if a.desktopCodeScoped(t.path) {
 		d, k, _ := a.decisionOf(pv, t)
 		if !k && pv.pol.Empty() {
@@ -730,9 +887,22 @@ func (a *Agent) loadStoreModes(ctx context.Context, d *storeState, pv *policyVie
 	a.mu.Unlock()
 }
 
+// ErrPolicyUnknown reports a temporary collection and upload pause, not a deny.
+var ErrPolicyUnknown = errors.New("agent: collection and uploads paused until current authority collection policy is known")
+
+func (a *Agent) admitUpload(devicesync.SourceSpec) error {
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
+	return nil
+}
+
 // allowUpload is the sync scheduler's filter: it drops a queued flush the
 // rules no longer allow (a deny or local rule added after the capture).
 func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
+	if a.policy().readiness == policyUnknown {
+		return false
+	}
 	a.mu.Lock()
 	historyReadErr := a.coworkHistoryReadErr
 	a.mu.Unlock()
@@ -1242,6 +1412,9 @@ func WithholdSession(server, token string, hc *http.Client) func(context.Context
 // parser yet, or whose verdict is not allow, is not read at all (-1): it
 // is handed to sync again once parsed.
 func (a *Agent) uploadBound(spec devicesync.SourceSpec) (int64, bool) {
+	if a.policy().readiness == policyUnknown {
+		return -1, true
+	}
 	if spec.Export || a.policy().pol.Empty() {
 		return 0, false
 	}

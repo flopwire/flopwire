@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -95,7 +96,23 @@ func (h *harness) checkMessageExcerpts(t *testing.T, sender, recipient *device, 
 		if sent.State != busproto.StateQueued || sent.To.Session != recipient.claudeSID || sent.To.Agent != "claude" {
 			t.Fatalf("%s reference routing: %+v", mode, sent)
 		}
-		inbox, err := sql.Open("sqlite", "file:"+filepath.Join(filepath.Dir(recipient.cfg), "bus.db")+"?mode=ro&_pragma=busy_timeout(1000)")
+		// Earlier credential lifecycle scenarios retain their old inboxes.
+		// Select the current enrolled authority using the persisted filename
+		// contract, then require this exact database to hold the sent message.
+		recipientConfig := load(recipient.cfg)
+		if recipientConfig.DeviceID == "" {
+			t.Fatalf("%s recipient has no enrolled device identity", mode)
+		}
+		recipientServer, err := client.NormalizeServer(recipientConfig.Server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authority := sha256.Sum256([]byte("server\x00" + recipientServer + "\x00device\x00" + recipientConfig.DeviceID))
+		inboxPath := filepath.Join(filepath.Dir(recipient.cfg), fmt.Sprintf("bus-%x.db", authority))
+		if _, err := os.Stat(inboxPath); err != nil {
+			t.Fatalf("%s current recipient authority inbox: %v", mode, err)
+		}
+		inbox, err := sql.Open("sqlite", "file:"+inboxPath+"?mode=ro&_pragma=busy_timeout(1000)")
 		if err != nil {
 			t.Fatal(err)
 		}
