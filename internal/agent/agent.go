@@ -95,6 +95,8 @@ type Config struct {
 	// across workers (Codex rollouts have lines up to 14MB); default 16MB.
 	LineBudget int64
 
+	SyncTokenFingerprint   string                                                                  // SHA-256 token identity, only for credentials with no device ID
+	DrainSync              func(context.Context, time.Duration) error                              // waits for queued uploads; nil cannot complete delegated --once
 	Sync                   Sync                                                                    // nil: local indexing only
 	CoworkPolicy           CoworkPolicyClient                                                      // nil: Cowork sharing remains held
 	RecoveredPolicySources func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) // restriction-only receipts for the bound device
