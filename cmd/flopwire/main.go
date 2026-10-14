@@ -233,7 +233,7 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+1)
+	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+2)
 	if err != nil {
 		return err
 	}
@@ -274,6 +274,13 @@ func serve(ctx context.Context, args []string) error {
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
 	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
+	projectionCtx, stopProjection := context.WithCancel(ctx)
+	projectionDone := make(chan struct{})
+	go func() {
+		defer close(projectionDone)
+		(&ingest.CommitEvidenceWorker{Pool: pool, Log: slog.Default()}).Run(projectionCtx)
+	}()
+	defer func() { stopProjection(); <-projectionDone }()
 	// The server's ctx ends at shutdown: a waiting poll answers then,
 	// inside the shutdown grace, instead of being cut.
 	retention, err := busRetention(os.Getenv("FLOPWIRE_BUS_RETENTION"))
