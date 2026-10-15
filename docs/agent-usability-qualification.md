@@ -174,10 +174,19 @@ The remaining qualification gates are:
   integrated build. The focused regression tests qualify the individual fixes.
 - Repeat the original broad historical query against an updated shared server.
   Record elapsed time, candidate checks, completeness, and timeout recovery.
-- Exercise ambiguous decisions and long-running MCP processes across credential
-  rotation. The successful decision-recovery cases do not cover these paths.
 - Keep GUI-client delivery and hosted concurrency qualification separate from
   the passing local CLI request/reply and installed-hook trials.
+
+Long-running MCP credential rotation already has recorded subprocess E2E
+qualification in [the v0.1.0 readiness record](releases/v0.1.0-readiness.md),
+with maintained coverage in `internal/e2e/mcp_rotation_test.go`. Targeted client
+race tests passed again at `237b144`. Incomplete-result behavior has CLI and MCP
+regression coverage: complete empty results succeed, zero-hit timeouts return
+an error, and useful partial hits retain explicit limits. The CLI warns that
+no absence conclusion is justified. These targeted race tests also passed at
+`237b144`; they establish output behavior, not universal model interpretation.
+An ambiguous-decision trial adds model-behavior confidence; no observed defect
+currently makes it a release blocker.
 
 The historical recovery and attribution traces are summarized here rather than
 committed verbatim because they contain private history. Their installed MCP
