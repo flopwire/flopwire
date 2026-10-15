@@ -161,7 +161,8 @@ func (s *Scheduler) SetBound(fn func(SourceSpec) (int64, bool)) {
 	s.mu.Unlock()
 }
 
-// SetAuthorize installs a lease acquired for each flush, including retries.
+// SetAuthorize installs a lease acquired before capture or upload, including retries.
+// Proven settled ordinary files can finish without acquiring a lease.
 // Returning nil authorization leaves ordinary collectors unchanged. Any
 // returned lease is released even when acquisition also returns an error.
 func (s *Scheduler) SetAuthorize(fn func(context.Context, SourceSpec) (*CaptureAuthorization, error)) {
@@ -953,6 +954,9 @@ func (s *Scheduler) syncJobTurn(ctx context.Context, j *job, upTo int64, bounded
 		return syncDone, err
 	}
 	defer lease.release()
+	if !bounded && j.action == captureSource && !j.spec.Export && j.export == nil && j.exportFn == nil && s.sy.noWork(ctx, j.spec) {
+		return syncDone, nil
+	}
 	var auth *CaptureAuthorization
 	if authorize != nil {
 		var err error
