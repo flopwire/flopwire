@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/client"
@@ -42,6 +43,7 @@ type crashHeaderKey struct{}
 type crashRequest struct {
 	header *syncproto.FlushHeader
 	ctx    context.Context
+	size   int64
 }
 
 func newCrashProxy(upstream, pin, path string, size int64) (*crashProxy, error) {
@@ -107,7 +109,7 @@ func newCrashProxy(upstream, pin, path string, size int64) (*crashProxy, error) 
 			event.Err = fmt.Errorf("flush HTTP status %d", res.StatusCode)
 		} else if err := json.Unmarshal(raw, &event.Response); err != nil {
 			event.Err = err
-		} else if r := event.Response; r.Version != syncproto.Version || (r.Status != syncproto.StatusOK && r.Status != syncproto.StatusPartial) || r.AckedEntries <= 0 || r.AckedOffset <= 0 || r.AckedOffset >= p.size || r.Generation != h.Generation {
+		} else if r := event.Response; r.Version != syncproto.Version || (r.Status != syncproto.StatusOK && r.Status != syncproto.StatusPartial) || r.AckedEntries <= 0 || r.AckedOffset <= 0 || r.AckedOffset >= match.size || r.Generation != h.Generation {
 			event.Err = fmt.Errorf("missed partial commit boundary: %+v", r)
 		}
 		p.reached <- event
@@ -125,8 +127,11 @@ func newCrashProxy(upstream, pin, path string, size int64) (*crashProxy, error) 
 				return
 			}
 			r.Body = &replayBody{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), r.Body), original: r.Body}
-			if h.Source.Path == p.path {
-				r = r.WithContext(context.WithValue(r.Context(), crashHeaderKey{}, &crashRequest{header: h, ctx: r.Context()}))
+			p.mu.Lock()
+			path, size := p.path, p.size
+			p.mu.Unlock()
+			if path != "" && h.Source.Path == path {
+				r = r.WithContext(context.WithValue(r.Context(), crashHeaderKey{}, &crashRequest{header: h, ctx: r.Context(), size: size}))
 			}
 		}
 		proxy.ServeHTTP(w, r)
@@ -139,7 +144,18 @@ type replayBody struct {
 	original io.Closer
 }
 
-func (b *replayBody) Close() error        { return b.original.Close() }
+func (b *replayBody) Close() error { return b.original.Close() }
+func (p *crashProxy) arm(path string, size int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.path, p.size = path, size
+}
+func (p *crashProxy) disarm() {
+	p.mu.Lock()
+	p.path = ""
+	p.mu.Unlock()
+	p.unblock()
+}
 func (p *crashProxy) unblock()            { p.once.Do(func() { close(p.release) }) }
 func (p *crashProxy) close()              { p.unblock(); p.cancel(); p.server.Close() }
 func (p *crashProxy) fingerprint() string { return client.Fingerprint(p.server.Certificate().Raw) }
@@ -161,4 +177,85 @@ func setDeviceEndpoint(path, server, pin string) error {
 		return err
 	}
 	return os.WriteFile(path, append(raw, '\n'), 0600)
+}
+
+// The same pinned endpoint forwards normally before arming, holds only the
+// selected source at the crash boundary, and forwards again after disarming.
+func TestCrashProxyStableEndpointGate(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h, _, err := syncproto.DecodeFlush(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		json.NewEncoder(w).Encode(syncproto.FlushResponse{Version: syncproto.Version, Status: syncproto.StatusPartial, Generation: h.Generation, AckedEntries: 1, AckedOffset: 1})
+	}))
+	defer upstream.Close()
+	gate, err := newCrashProxy(upstream.URL, "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.close()
+	endpoint, pin := gate.server.URL, gate.fingerprint()
+	hc := client.NewHTTPClient(pin)
+	call := func(path string) error {
+		var frame bytes.Buffer
+		header := syncproto.FlushHeader{Version: syncproto.Version, Source: syncproto.Source{Path: path, FileID: "test", Agent: "codex", StorageKind: "jsonl_append"}, CapturedAt: time.Now(), Chunker: syncproto.ChunkerParams{Algorithm: "fastcdc-v1.0.0", Min: 1, Avg: 2, Max: 4}}
+		if err := syncproto.EncodeFlush(&frame, &syncproto.FlushRequest{Header: header, Payload: bytes.NewReader(nil)}); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+syncproto.PathFlush, &frame)
+		if err != nil {
+			return err
+		}
+		res, err := hc.Do(req)
+		if err != nil {
+			return err
+		}
+		defer res.Body.Close()
+		io.Copy(io.Discard, res.Body)
+		if res.StatusCode != http.StatusOK {
+			return fmt.Errorf("flush status %d", res.StatusCode)
+		}
+		return nil
+	}
+	if err := call("/target"); err != nil {
+		t.Fatal(err)
+	}
+	gate.arm("/target", 10)
+	done := make(chan error, 1)
+	go func() { done <- call("/target") }()
+	select {
+	case event := <-gate.reached:
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("armed gate did not observe commit")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("response escaped armed gate: %v", err)
+	default:
+	}
+	if err := call("/other"); err != nil {
+		t.Fatal(err)
+	}
+	gate.disarm()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("disarm did not release response")
+	}
+	if err := call("/target"); err != nil {
+		t.Fatal(err)
+	}
+	if gate.server.URL != endpoint || gate.fingerprint() != pin {
+		t.Fatal("gate changed authority")
+	}
 }

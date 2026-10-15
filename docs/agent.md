@@ -340,7 +340,8 @@ Older indexes with sync state have no recorded owner. The agent preserves
 that state and refuses uploads. It does not assign old captures or server
 acknowledgments to the current login. A fresh `--db` path leaves the old
 queue and legacy spool untouched. Keep them until their ownership and
-migration have been resolved.
+migration have been resolved. This release has no command to assign an
+owner to a legacy queue.
 
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
