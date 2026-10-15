@@ -25,6 +25,13 @@ def auth(last=NOW, expires=NOW + datetime.timedelta(days=1), readable=True):
 
 
 class CredentialGuardTests(unittest.TestCase):
+    def test_source_read_checks_full_returned_identity(self):
+        owner = "01a13fd2-e7ae-7303-93a0-5235f7d5a5d1"
+        result = {"conversation": {"session_id": owner}, "messages": [{"text": "synthetic source"}]}
+        self.assertTrue(qualification.source_read("flopwire read 01a13fd2/123", result, owner))
+        self.assertFalse(qualification.source_read("flopwire read 01a13fd2/123", result, "different-owner"))
+        self.assertFalse(qualification.source_read("flopwire read 01a13fd2/123", {"conversation": {"session_id": owner}}, owner))
+
     def test_probe_metadata_cases(self):
         for name, raw, reason in [
             ("fresh", auth(), None),

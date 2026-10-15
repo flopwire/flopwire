@@ -65,6 +65,13 @@ def checked_auth(raw, now=None):
     raise RuntimeError("Codex access token expiry is unreadable; run codex normally to refresh before retrying")
 
 
+def source_read(command, result, owner):
+    # Read addresses use a variable-length unique prefix; verify the full
+    # identity returned with the source evidence rather than its spelling.
+    return (" read " in command and result.get("conversation", {}).get("session_id") == owner
+            and bool(result.get("messages")))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
@@ -157,11 +164,11 @@ def main():
         refused_unknown = False
         inspected_source = False
         for item in commands:
-            inspected_source |= " read " in item.get("command", "") and owner[:9] in item.get("command", "")
             try:
                 value = json.loads(item.get("aggregated_output", ""))
             except json.JSONDecodeError:
                 continue
+            inspected_source |= source_read(item.get("command", ""), value, owner)
             if value.get("kind") == "send_receipt":
                 receipts.append(value)
             refused_unknown |= value.get("error", {}).get("code") == "unknown_recipient"
