@@ -37,7 +37,7 @@ type grepCandidatePlan struct {
 func grepGlobalTextRows(p grepCandidatePlan) (float64, bool) {
 	switch p.Node {
 	case "Bitmap Index Scan":
-		return p.Rows, p.Index == "messages_text_trgm_idx"
+		return p.Rows, p.Index == "messages_text_trgm_idx" || p.Index == "messages_tool_call_trgm_idx"
 	case "BitmapOr":
 		if len(p.Plans) == 0 {
 			return 0, false

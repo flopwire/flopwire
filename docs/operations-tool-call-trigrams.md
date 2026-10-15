@@ -36,6 +36,7 @@ WHERE e.extname='pg_trgm'
    checks the target table, column, access method, operator class,
    collation, predicate, and index options. It refuses a wrong or invalid
    index with the same name. It does not replace that index.
+   Do not run concurrent DROP, REINDEX, or other index DDL during adoption.
 5. If the concurrent build fails, inspect the remaining index before retrying.
    Remove an invalid build only through the approved operational procedure.
    Do not use `IF NOT EXISTS` to conceal an incomplete build.

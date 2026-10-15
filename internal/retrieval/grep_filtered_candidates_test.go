@@ -209,6 +209,10 @@ func TestGrepMetadataPlanGate(t *testing.T) {
 		want bool
 	}{
 		{"global GIN postfilter", heap, true},
+		{"tool-call GIN postfilter", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "Bitmap Index Scan", Index: "messages_tool_call_trgm_idx", Rows: 704}}}, true},
+		{"OR full and tool-call GIN", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "BitmapOr", Rows: 704, Plans: []grepCandidatePlan{text, {Node: "Bitmap Index Scan", Index: "messages_tool_call_trgm_idx", Rows: 704}}}}}, true},
+		{"rare tool-call GIN", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "Bitmap Index Scan", Index: "messages_tool_call_trgm_idx", Rows: 64}}}, false},
+		{"unknown index", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "Bitmap Index Scan", Index: "unknown_trgm_idx", Rows: 704}}}, false},
 		{"OR global GIN", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "BitmapOr", Rows: 704, Plans: []grepCandidatePlan{text, text}}}}, true},
 		{"OR estimate overrides children", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "BitmapOr", Rows: 64, Plans: []grepCandidatePlan{text, text}}}}, false},
 		{"rare text", grepCandidatePlan{Node: "Bitmap Heap Scan", Relation: "messages", Filter: "metadata", Plans: []grepCandidatePlan{{Node: "Bitmap Index Scan", Index: "messages_text_trgm_idx", Rows: 64}}}, false},
