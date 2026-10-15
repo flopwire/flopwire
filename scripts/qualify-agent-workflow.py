@@ -140,7 +140,7 @@ def main():
                                    "--socket", str(root / "agent.sock"), "--codex-home", str(codex),
                                    "--claude-projects", str(root / "empty-claude"), "--devin-db", "-", "--opencode-db", "-"],
                                   env=env, cwd=project, stdout=log, stderr=log)
-        owner = turn("owner-create", f"This is a synthetic isolated Flopwire qualification. You are the author of decision {marker}. The exact rationale label is {answer}. Run only /bin/sleep 8 once to let the local observer discover this live process. Then state the marker and token in your final answer and end. Do not send messages. A later turn will ask you to answer a colleague about this decision.")
+        owner = turn("owner-create", f"This is a synthetic isolated Flopwire qualification. You are the author of decision {marker}. The exact rationale label is {answer}. Run only /bin/sleep 8 once to let the local observer discover this live process. Then state the marker and label in your final answer and end. Do not send messages. A later turn will ask you to answer a colleague about this decision.")
         deadline = time.monotonic() + 30
         while True:
             try:
