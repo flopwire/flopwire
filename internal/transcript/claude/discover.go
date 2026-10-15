@@ -142,6 +142,53 @@ func Discover(root string) ([]*Session, error) {
 	return out, nil
 }
 
+// DiscoverChildrenForParents discovers fresh child transcripts for the supplied
+// parent identities, including parents whose main transcript has disappeared.
+// It lists projects but walks only matching UUID session directories. Identity
+// matching is case sensitive, and project/session symlinks are not followed,
+// just as in Discover. Errors in unrelated session subtrees do not affect these
+// parents; project listing and selected subtree errors still fail discovery.
+// Results preserve Discover's project/session order, with Transcript unset.
+func DiscoverChildrenForParents(root string, parentIDs []string) ([]*Session, error) {
+	parents := make(map[string]bool, len(parentIDs))
+	for _, id := range parentIDs {
+		if isUUID(id) {
+			parents[id] = true
+		}
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	projects, err := fsprobe.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var sessions []*Session
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, project.Name())
+		entries, err := fsprobe.ReadDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || !parents[entry.Name()] {
+				continue
+			}
+			s := &Session{SessionID: entry.Name(), ProjectDir: dir}
+			if err := discoverSessionDir(s, filepath.Join(dir, entry.Name())); err != nil {
+				return nil, err
+			}
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions, nil
+}
+
 // DiscoverProject lists the sessions of one project directory
 // (<projects>/<encoded cwd>), as Discover does for every project. An
 // indexer calls it when a directory event names that project.
