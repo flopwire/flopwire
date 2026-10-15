@@ -20,10 +20,12 @@ func TestSchedulerNoWorkPreservesConcurrentNotification(t *testing.T) {
 	more := jsonlLines(51, 3, 100)
 	appendFile(t, sp.Path, data)
 	e.sync(sp)
-	if !e.sy.noWork(t.Context(), sp) {
+	if !e.sy.noWork(t.Context(), sp, -1) {
 		t.Fatal("fixture not settled")
 	}
 	sc := NewScheduler(e.sy, SchedulerConfig{})
+	// Exercise the production scheduler bound callback as well as Run.
+	sc.SetBound(func(SourceSpec) (int64, bool) { return int64(len(data) + len(more)), true })
 	var stats, auths atomic.Int32
 	sc.SetAuthorize(func(context.Context, SourceSpec) (*CaptureAuthorization, error) { auths.Add(1); return nil, nil })
 	fsprobe.SetHook(func(op fsprobe.Op, path string) {

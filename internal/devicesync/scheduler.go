@@ -954,7 +954,11 @@ func (s *Scheduler) syncJobTurn(ctx context.Context, j *job, upTo int64, bounded
 		return syncDone, err
 	}
 	defer lease.release()
-	if !bounded && j.action == captureSource && !j.spec.Export && j.export == nil && j.exportFn == nil && s.sy.noWork(ctx, j.spec) {
+	proofBound := int64(-1)
+	if bounded {
+		proofBound = upTo
+	}
+	if (!bounded || upTo >= 0) && j.action == captureSource && !j.spec.Export && j.export == nil && j.exportFn == nil && s.sy.noWork(ctx, j.spec, proofBound) {
 		return syncDone, nil
 	}
 	var auth *CaptureAuthorization

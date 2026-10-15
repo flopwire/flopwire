@@ -173,7 +173,10 @@ func TestSchedulerSettledFilesDoNoCaptureWork(t *testing.T) {
 		return nil, errors.New("settled source requested authorization")
 	}
 	for _, sp := range specs {
-		outcome, err := sc.syncJobTurn(ctx, &job{spec: sp}, -1, false, authorize)
+		if e.sy.noWork(ctx, sp, int64(len(data)-1)) {
+			t.Fatal("partial bound must not qualify")
+		}
+		outcome, err := sc.syncJobTurn(ctx, &job{spec: sp}, int64(len(data)), true, authorize)
 		if err != nil || outcome != syncDone {
 			t.Fatalf("settled turn: outcome=%v err=%v", outcome, err)
 		}

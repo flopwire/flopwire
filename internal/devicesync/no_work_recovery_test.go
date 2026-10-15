@@ -42,7 +42,7 @@ func TestSchedulerNoWorkPendingRecovery(t *testing.T) {
 	}
 	e.requireServerHas(sp.Path, fileIDOf(t, sp.Path), 0, data)
 	beforeCalls, beforeFlush := calls, e.flushes()
-	if !e.sy.noWork(ctx, sp) {
+	if !e.sy.noWork(ctx, sp, -1) {
 		t.Fatal("fully recovered source should be settled")
 	}
 	if _, err := sc.syncJobTurn(ctx, &job{spec: sp}, -1, false, authorize); err != nil {
