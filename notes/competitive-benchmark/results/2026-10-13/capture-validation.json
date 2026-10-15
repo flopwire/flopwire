@@ -1,0 +1,17 @@
+{
+  "source": "retrieval.json.gz",
+  "validation": {
+    "flopwire": {
+      "sessions": 48,
+      "message_rows": 1008
+    },
+    "agentsview": {
+      "sessions": 48,
+      "message_rows": 960
+    },
+    "langfuse": {
+      "observations": 960,
+      "source_ids_complete": true
+    }
+  }
+}

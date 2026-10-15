@@ -1,0 +1,44 @@
+{
+  "source": "messaging.json.gz",
+  "summary": {
+    "flopwire": {
+      "attempts": 30,
+      "correct": 30,
+      "acceptance_ms": {
+        "n": 30,
+        "p50_ms": 26.416728971526027,
+        "p95_ms": 84.2467499896884
+      },
+      "recipient_fetch_ms": {
+        "n": 30,
+        "p50_ms": 22.138771135360003,
+        "p95_ms": 76.429707929492
+      },
+      "hook_output_ms": {
+        "n": 30,
+        "p50_ms": 51.57272960059345,
+        "p95_ms": 160.8961671590805
+      }
+    },
+    "agent-mail": {
+      "attempts": 30,
+      "correct": 30,
+      "acceptance_ms": {
+        "n": 30,
+        "p50_ms": 40.07404181174934,
+        "p95_ms": 75.51416661590338
+      },
+      "recipient_fetch_ms": {
+        "n": 30,
+        "p50_ms": 14.724645996466279,
+        "p95_ms": 24.172457866370678
+      },
+      "inbox_visible_ms": {
+        "n": 30,
+        "p50_ms": 56.69362493790686,
+        "p95_ms": 88.4745828807354
+      }
+    }
+  },
+  "note": "Summary of the 60 completed transport samples; original extra recovery attempt failed at Flopwire default session rate limit and remains in messaging.json."
+}
