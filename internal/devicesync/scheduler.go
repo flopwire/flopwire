@@ -104,8 +104,9 @@ type failure struct {
 // A hook Flush resets the backoff. Notify and Flush never block on the
 // network, so local indexing is never held up by sync.
 type Scheduler struct {
-	sy  *Syncer
-	cfg SchedulerConfig
+	work schedulerWork
+	sy   *Syncer
+	cfg  SchedulerConfig
 
 	mu             sync.Mutex
 	waiting        map[string]*job // debouncing
@@ -949,6 +950,7 @@ func boundOf(fn func(SourceSpec) (int64, bool), spec SourceSpec) (int64, bool) {
 }
 
 func (s *Scheduler) syncJobTurn(ctx context.Context, j *job, upTo int64, bounded bool, authorize func(context.Context, SourceSpec) (*CaptureAuthorization, error)) (pending syncOutcome, result error) {
+	defer s.work.turn.Begin().End()
 	lease, err := s.sy.acquireOperation(ctx, j.spec.Path)
 	if err != nil {
 		return syncDone, err
@@ -958,13 +960,21 @@ func (s *Scheduler) syncJobTurn(ctx context.Context, j *job, upTo int64, bounded
 	if bounded {
 		proofBound = upTo
 	}
-	if (!bounded || upTo >= 0) && j.action == captureSource && !j.spec.Export && j.export == nil && j.exportFn == nil && s.sy.noWork(ctx, j.spec, proofBound) {
-		return syncDone, nil
+	if (!bounded || upTo >= 0) && j.action == captureSource && !j.spec.Export && j.export == nil && j.exportFn == nil {
+		finish := s.work.proof.Begin()
+		settled := s.sy.noWork(ctx, j.spec, proofBound)
+		finish.End()
+		if settled {
+			s.work.settled.Add(1)
+			return syncDone, nil
+		}
 	}
 	var auth *CaptureAuthorization
 	if authorize != nil {
 		var err error
+		finish := s.work.authorize.Begin()
 		auth, err = authorize(ctx, j.spec)
+		finish.End()
 		if auth != nil {
 			if auth.Release != nil {
 				defer auth.Release()
@@ -990,5 +1000,6 @@ func (s *Scheduler) syncJobTurn(ctx context.Context, j *job, upTo int64, bounded
 	if !bounded {
 		upTo = -1
 	}
+	defer s.work.captureUpload.Begin().End()
 	return s.sy.syncTurnWithScratch(ctx, j.spec, export, upTo, auth, j.action, lease.scratch)
 }

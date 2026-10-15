@@ -171,6 +171,9 @@ For a release source archive, use the explicit version commands in
    flopwire agent status
    ```
 
+For local CPU and operation counters, use `flopwire agent diagnostics`. See
+[daemon work diagnostics](docs/agent-diagnostics.md) for interval measurements.
+
 Without step 3, the agent indexes locally and uploads nothing.
 
 Collection follows configured roots and path rules. Desktop Local Code uses

@@ -184,6 +184,19 @@ func TestSchedulerSettledFilesDoNoCaptureWork(t *testing.T) {
 	if opens != 0 || stats != count || authorizations != 0 || tr.has != 0 || tr.flush != 0 || e.sy.CaptureStats() != before {
 		t.Fatalf("settled sweep: opens=%d stats=%d authorizations=%d has=%d flush=%d captures before=%+v after=%+v", opens, stats, authorizations, tr.has, tr.flush, before, e.sy.CaptureStats())
 	}
+	diagnostics := sc.Diagnostics()
+	if diagnostics.SettledTurns != count {
+		t.Fatalf("settled diagnostics: %+v", diagnostics)
+	}
+	for _, op := range diagnostics.Operations {
+		want := uint64(0)
+		if op.Name == "turn" || op.Name == "no_work_probe" {
+			want = count
+		}
+		if op.Calls != want || op.Completed != want || op.InFlight != 0 {
+			t.Fatalf("operation diagnostics: %+v", op)
+		}
+	}
 	// An equal-length overwrite after the settled sweep requires a new lease.
 	changed := append([]byte(nil), data...)
 	changed[0] ^= 1

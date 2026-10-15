@@ -91,7 +91,8 @@ type Request struct {
 
 // Response answers a Request.
 type Response struct {
-	Coverage *coverage.Report `json:"coverage,omitempty"`
+	Diagnostics *DiagnosticsSnapshot `json:"diagnostics,omitempty"`
+	Coverage    *coverage.Report     `json:"coverage,omitempty"`
 	// Unavailable names status sections that could not be read. Their absent
 	// counters are unknown, rather than zero. Other health fields remain useful.
 	Unavailable map[string]string             `json:"unavailable,omitempty"`
@@ -229,6 +230,9 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "diagnostics":
+		snapshot := a.Diagnostics()
+		resp.Diagnostics, resp.OK = &snapshot, true
 	case req.Op == "ping":
 		resp.OK = true
 	case req.Op == "once-v1":

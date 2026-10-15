@@ -238,6 +238,8 @@ func (c *Config) defaults() {
 type sessionActivityReader func(context.Context, transcript.Agent, []string) (map[string]time.Time, error)
 
 type Agent struct {
+	work agentWork
+
 	// Optional ranking metadata; a failed read must not discard committed sync work.
 	sessionActivities sessionActivityReader
 
@@ -586,9 +588,12 @@ func (a *Agent) load(ctx context.Context) error {
 // sweep runs a full discovery pass, queues every file whose gate moved and
 // polls the harness stores.
 func (a *Agent) sweep(ctx context.Context) error {
+	defer a.work.sweep.Begin().End()
 	t0, cpu0 := time.Now(), cpuTime()
 	a.refreshPolicy(ctx, false)
+	refreshDone := a.work.refreshFromSweep.Begin()
 	a.refreshCowork(ctx)
+	refreshDone.End()
 	a.reconcileCoworkBounded(ctx)
 	f, err := a.discoverAll()
 	if err != nil {
