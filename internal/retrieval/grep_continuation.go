@@ -301,6 +301,23 @@ func (s *Store) startGrepWalk(ctx context.Context, w *grepWalk) error {
 	if err = setTimeout(ctx, tx, min(budget(ctx), time.Until(w.expires))); err != nil {
 		return err
 	}
+	// As in ordinary grep, resolve a bounded scoped conversation set first.
+	// Without this indexed entry point a broad text bitmap can read the whole
+	// corpus before applying a session or repository filter.
+	if grepNarrows(w.filters) {
+		ids, complete, err := grepConversations(ctx, tx, w.filters)
+		if err != nil {
+			return err
+		}
+		if complete {
+			q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
+		} else if cond == "" {
+			return fmt.Errorf("%w: the selected session tree exceeds %d conversations; narrow the session or use an indexable pattern", ErrBadRequest, grepConvCap)
+		}
+	}
+	if err = setTimeout(ctx, tx, min(budget(ctx), time.Until(w.expires))); err != nil {
+		return err
+	}
 	// No SQL LIMIT: exhaustion means the frozen candidate set was traversed.
 	order := " ORDER BY m.ts DESC NULLS LAST,m.id"
 	if w.query.Sort == format.SortOldest {
