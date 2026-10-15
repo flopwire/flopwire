@@ -9,16 +9,54 @@ Run: python3 scripts/qualify-agent-workflow.py --root /tmp/fwqual-new \
     --flopwire /tmp/flopwire-under-test
 Uses four paid model turns. A pass proves local inbox recovery after an
 explicit resume; it does not imply hook delivery or automatic session wake.
+Refuses auth copying when refresh could occur within 30 minutes, matching
+the installed probe. Run Codex normally to refresh its source login first.
 """
 import argparse
+import base64
+import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
-import shutil
 import subprocess
 import time
+
+
+def checked_auth(raw, now=None):
+    """Mirror cmd/flopwire/probe.go codexRefreshDue; never log token data."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    until = now + datetime.timedelta(minutes=30)
+    try:
+        auth = json.loads(raw)
+        tokens = auth.get("tokens")
+    except (ValueError, AttributeError):
+        raise RuntimeError("Codex auth.json is not a JSON object") from None
+    if not tokens or not tokens.get("refresh_token"):
+        return raw
+    try:
+        last = datetime.datetime.fromisoformat(auth["last_refresh"].replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            raise ValueError()
+    except (KeyError, ValueError, TypeError, AttributeError):
+        raise RuntimeError("Codex last_refresh is missing or unreadable; run codex normally to refresh before retrying") from None
+    if last + datetime.timedelta(days=8) <= until:
+        raise RuntimeError("Codex 8-day refresh is due; run codex normally to refresh before retrying")
+    try:
+        parts = tokens["access_token"].split(".")
+        if len(parts) != 3:
+            raise ValueError()
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        exp = float(claims["exp"])
+        if exp <= 0:
+            raise ValueError()
+        expiry = datetime.datetime.fromtimestamp(exp, datetime.timezone.utc)
+    except (KeyError, ValueError, TypeError, OverflowError, AttributeError):
+        raise RuntimeError("Codex access token expiry is unreadable; run codex normally to refresh before retrying") from None
+    if expiry - datetime.timedelta(minutes=5) <= until:
+        raise RuntimeError("Codex access token refresh is due; run codex normally to refresh before retrying")
+    return raw
 
 
 def main():
@@ -79,7 +117,9 @@ def main():
         return thread
 
     try:
-        shutil.copyfile(auth, codex / "auth.json")
+        auth_bytes = checked_auth(auth.read_bytes())
+        report["credential_refresh_guard_enforced"] = True
+        (codex / "auth.json").write_bytes(auth_bytes)
         (codex / "auth.json").chmod(0o600)
         report["codex_version"] = subprocess.check_output(["codex", "--version"], env=env, text=True).strip()
         log = (root / "daemon.log").open("w")
