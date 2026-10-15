@@ -64,7 +64,10 @@ retrieval, upload, and maintenance capacity available.
 
 Postgres candidate planning and sorting can still consume the request timeout
 before the first match. A database timeout invalidates the snapshot and returns
-`restart_required`. This mode is not a claim of capacity for 30 simultaneous users.
+`restart_required`. If grep times out before checking any candidates, try a
+quoted phrase with `search` for discovery, or use `sessions` to identify sessions
+and then grep within one. These alternatives do not establish complete
+chronological results. This mode is not a claim of capacity for 30 simultaneous users.
 Short-lived snapshots still retain old database row versions until closed; qualify
 this mode with representative ingestion and search load before enabling it broadly.
 
