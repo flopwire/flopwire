@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -100,8 +101,8 @@ func TestLiteralRegexpFoldBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := &query{}
-	if literalRegexpCond(q, plan.Re) == "" || len(q.args) != maxRegexpLiterals {
-		t.Fatalf("five long-s positions must yield 32 variants: %v", q.args)
+	if got := literalRegexpCond(q, plan.Re); got != "m.text ~ $1" || len(q.args) != 1 {
+		t.Fatalf("five long-s positions must use one factored predicate: %s %v", got, q.args)
 	}
 }
 
@@ -115,6 +116,13 @@ var literalEquivalenceQueries = []format.GrepQuery{
 	{Pattern: `a(?i:\x{17f})k`},
 	{Pattern: `a(?i:[k])s`},
 	{Pattern: "(?i:a(?-i:S)b)", CaseSensitive: true},
+	{Pattern: `\*\*\*:ask`},
+	{Pattern: `\(\?i\)ask`},
+	{Pattern: "cass search"},
+	{Pattern: "sssss"},
+	{Pattern: `fook%s_s\\x\.\[\]\(\)\{\}\+\?\*\|\^\$`},
+	{Pattern: "ask\nnext\r\ttab"},
+	{Pattern: "(ask)"},
 	{Pattern: "ask|sky"},
 	{Pattern: "ask|sky", CaseSensitive: true},
 	{Pattern: "(?i:ask)|(?-i:SKY)", CaseSensitive: true},
@@ -125,7 +133,7 @@ var literalEquivalenceTexts = []string{
 	"prefix 1f877ad98 suffix", "1F877AD98", "repo/additive-migrations-2049", "REPO/ADDITIVE-MIGRATIONS-2049",
 	"repo/additive-migrationſ-2049", "repo additive migrations 2049", "1f8---877---ad9---98",
 	"foobaz", "barbaz", "foo", "foo.bar", "aSb", "ASB", "asb", "AſB", "foobar\nfoobaz", "FOOBAZ", "quux", "ASK", "aſk", "asK", "aſK", "ſKy", "SKY", "sky", "sKy",
-	`foo%_\bar.baz`, `fooZZZbarXbaz`, "unrelated",
+	`foo%_\bar.baz`, "***:ask", "***:aſK", "(?i)ask", "(?i)aſK", "cass search", "caſſ ſearch", "ſſſſſ", "sssss", "ask\nnext\r\ttab", `fook%s_s\x.[](){}+?*|^$`, `fooK%ſ_ſ\x.[](){}+?*|^$`, `fooZZZbarXbaz`, "unrelated",
 }
 
 // Model ILIKE with ASCII folding only: no PostgreSQL Unicode fold behavior
@@ -138,7 +146,8 @@ func TestLiteralRegexpHitEquivalence(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := &query{}
-		if literalRegexpCond(q, plan.Re) == "" {
+		condition := literalRegexpCond(q, plan.Re)
+		if condition == "" {
 			t.Fatalf("unexpected fallback: %+v", gq)
 		}
 		for _, body := range literalEquivalenceTexts {
@@ -147,7 +156,11 @@ func TestLiteralRegexpHitEquivalence(t *testing.T) {
 				// Remove surrounding wildcards and undo LIKE escaping.
 				s := a.(string)
 				s = strings.NewReplacer(`\\`, `\`, `\%`, `%`, `\_`, `_`).Replace(s[1 : len(s)-1])
-				candidate = candidate || strings.Contains(asciiLower(body), asciiLower(s))
+				if strings.Contains(condition, "m.text ~ ") {
+					candidate = regexp.MustCompile(a.(string)).MatchString(body)
+				} else {
+					candidate = candidate || strings.Contains(asciiLower(body), asciiLower(s))
+				}
 			}
 			want := plan.Re.MatchString(body)
 			if got := candidate && plan.Re.MatchString(body); got != want {
