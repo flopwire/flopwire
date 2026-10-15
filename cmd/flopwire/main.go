@@ -1023,6 +1023,7 @@ func saveAuthLocked(server, pin string, out map[string]any) error {
 	if current, loadErr := client.LoadFile(); loadErr == nil {
 		cfg.Denylist = append([]string(nil), current.Denylist...)
 		cfg.Unplaceable = current.Unplaceable
+		cfg.Mode = current.Mode
 		currentServer, normalizeErr := client.NormalizeServer(current.Server)
 		if normalizeErr == nil && currentServer == normalized {
 			cfg = current

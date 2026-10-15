@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicebus"
+	"github.com/flopwire/flopwire/internal/localindex"
 )
 
 // fakeBusServer answers bus polls (counting them) and refuses the rest.
@@ -104,11 +106,31 @@ func TestAgentConnectsAfterFirstLogin(t *testing.T) {
 		return resp
 	}
 
+	assertMode := func(minimal bool) {
+		t.Helper()
+		index, err := localindex.Open(os.Getenv("FLOPWIRE_INDEX"), localindex.Options{ReadOnly: true})
+		if minimal {
+			if !errors.Is(err, localindex.ErrSyncOnly) {
+				if index != nil {
+					index.Close()
+				}
+				t.Fatalf("want minimal index: %v", err)
+			}
+		} else {
+			if err != nil {
+				t.Fatalf("want full index: %v", err)
+			}
+			index.Close()
+		}
+	}
+
 	// No config: the bus routes on the device.
 	done := runAgentAsync(t, ctx, home, sock)
 	if r := status(); r.Bus == nil || r.Bus.State != devicebus.StateLocal || r.Credential == nil || r.Credential.Source != credNone {
 		t.Fatalf("before login: bus %+v credential %+v", r.Bus, r.Credential)
 	}
+
+	assertMode(false)
 
 	// A device login is saved (login, then enroll).
 	if err := client.Save(client.Config{Server: srv.URL, Token: "dev", DeviceID: "d1", RotatedAt: time.Now().UTC()}); err != nil {
@@ -127,6 +149,8 @@ func TestAgentConnectsAfterFirstLogin(t *testing.T) {
 		t.Fatalf("after login: bus %+v credential %+v", r.Bus, r.Credential)
 	}
 
+	assertMode(true)
+
 	// The credential is removed: the agent restarts without a server and
 	// stops polling.
 	p, _ := client.Path()
@@ -138,6 +162,7 @@ func TestAgentConnectsAfterFirstLogin(t *testing.T) {
 	if r := status(); r.Bus == nil || r.Bus.State != devicebus.StateLocal || r.Credential == nil || r.Credential.Source != credNone {
 		t.Fatalf("after removal: bus %+v credential %+v", r.Bus, r.Credential)
 	}
+	assertMode(false)
 	n := polls.Load()
 	time.Sleep(300 * time.Millisecond)
 	if polls.Load() != n {
@@ -266,5 +291,24 @@ func TestDaemonStartsPausedWhenCollectionPolicyIsUnknown(t *testing.T) {
 	resp, err = agent.Call(t.Context(), sock, agent.Request{Op: "pass"})
 	if err == nil || !strings.Contains(err.Error(), "policy is known") {
 		t.Fatalf("delegated pass = %+v, %v", resp, err)
+	}
+}
+
+func TestCredentialWatcherStorageModes(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		noSync, minimal, automatic, want bool
+	}{
+		{name: "automatic standalone", automatic: true, want: true},
+		{name: "automatic connected minimal", minimal: true, automatic: true, want: true},
+		{name: "explicit full", want: true},
+		{name: "explicit minimal", minimal: true},
+		{name: "forced standalone", noSync: true, automatic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := watchCredentialForMode(tc.noSync, tc.minimal, tc.automatic); got != tc.want {
+				t.Fatalf("watch credentials = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

@@ -131,13 +131,22 @@ that live session.
 Use `--once` to index what changed and exit. Use `--no-sync` to index
 without upload. `flopwire agent run -h` lists every flag.
 
+When the client config's `mode` is empty, connected agents default to
+sync-only and standalone agents default to a full local index. This also
+applies to `FLOPWIRE_TOKEN` / `FLOPWIRE_SERVER` launches. An existing full
+index with message content requires an explicit choice before switching:
+use `--sync-only=false` to retain it, or `--sync-only` to remove its message
+rows and search shards. Empty indexes created by MCP can switch safely.
+Login preserves explicit mode settings across server changes.
+
 Use `--sync-only` (or `"mode": "sync-only"` in the client config) to upload
 without a local message index. The index file then keeps only sources,
 watermarks, conversations, placements and the sync spool. It has no
 message rows and no FTS shard files. Local `grep`, `search`, `read` and
 `sessions` fail with `this device is sync-only; use --server`. The flag
 overrides the config; `--sync-only=false` forces a full index. The mode
-needs a configured server. A change of mode rebuilds the index at the next
+needs a configured server. Use `--sync-only=false --no-sync` to run standalone
+with a full index when the config selects sync-only. A change of mode rebuilds the index at the next
 start: a switch to full parses every transcript again, and a switch to
 sync-only drops the message rows and the shard files.
 
@@ -322,7 +331,10 @@ it answers.
 The agent reads the server credential at startup. When a login is saved
 while it runs without one, or the saved credential is removed, the agent
 restarts itself within 2 seconds. It then uploads and polls the server, or
-runs local.
+runs local. Automatic storage mode follows this transition: connected
+uses minimal storage; credential removal restores a full standalone index.
+An explicitly selected sync-only agent keeps its last credential because
+it requires a server. Stop it before changing to standalone mode.
 
 A login to a different server while the agent runs does not restart it.
 Restart the agent yourself after you switch servers (see

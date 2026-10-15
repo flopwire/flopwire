@@ -151,7 +151,7 @@ func TestDelegatedOnceCompletion(t *testing.T) {
 				t.Fatal(err)
 			}
 			callCLI := func(extra ...string) error {
-				args := []string{"--once", "--db", st.Path(), "--socket", sock, "--mem-limit=0"}
+				args := []string{"--once", "--db", st.Path(), "--socket", sock, "--mem-limit=0", "--sync-only=" + map[bool]string{true: "true", false: "false"}[minimal]}
 				args = append(args, extra...)
 				_, err := runAgent(ctx, args)
 				return err

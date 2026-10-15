@@ -163,7 +163,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	syncWorkers := fs.Int("sync-workers", 1, "upload workers: 1 (default) or 2 (requires server support)")
 	noSync := fs.Bool("no-sync", false, "never upload, even with a configured server")
 	rebuildIndex := fs.Bool("rebuild-index", false, "drop the local index's rows and search files and index every transcript again; keeps sync state, placements and local redactions (see docs/agent.md#recover-the-local-index)")
-	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from the client config's "mode"`)
+	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from client config "mode", else minimal when connected and full when standalone`)
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
@@ -258,7 +258,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	// keeps its footprint flat as the index grows.
 	var a *agent.Agent
 	opts := localindex.Options{ReadConns: 2, ReadCacheMB: 2, WriteCacheMB: 8, ShardCacheMB: 4, DeferCommit: true,
-		SyncOnly: *syncOnly, LockFile: inheritedLock(*dbPath),
+		SyncOnly: *syncOnly, PreserveFullContent: automaticStorageMode(fs, cc), LockFile: inheritedLock(*dbPath),
 		OnCommitError: func(err error) {
 			log.Error("agent: index commit", "err", err)
 			if a != nil {
@@ -381,12 +381,13 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 	}
 	// A server credential saved or removed while the agent runs restarts
-	// it (watchCredential): the server is wired only here. Sync-only mode
+	// it (watchCredential): the server is wired only here. Automatic mode
+	// follows credentials back to a full standalone index. Explicit sync-only
 	// needs its server, so it keeps the last credential instead.
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
 	var restart atomic.Bool
-	if !*noSync && !*syncOnly {
+	if watchCredentialForMode(*noSync, *syncOnly, automaticStorageMode(fs, cc)) {
 		wired := ccErr == nil && cc.Server != "" && cc.Token != ""
 		go watchCredential(runCtx, credentialWatchEvery, wired, client.Load, func(why string) {
 			log.Info("agent: " + why)
@@ -412,6 +413,10 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		return nil, err
 	}
 	return nil, nil
+}
+
+func watchCredentialForMode(noSync, syncOnly, automatic bool) bool {
+	return !noSync && (!syncOnly || automatic)
 }
 
 // credentialWatchEvery is how often a running agent re-reads the client
@@ -462,7 +467,8 @@ func watchCredential(ctx context.Context, every time.Duration, wired bool, load 
 
 // resolveSyncOnly settles the index mode: the --sync-only flag when given
 // (--sync-only=false forces a full index), else the client config's
-// "mode" ("full", the default, or "sync-only").
+// "mode" ("full" or "sync-only"). Empty selects minimal when connected
+// and full when standalone; the writer protects an existing full index.
 func resolveSyncOnly(fs *flag.FlagSet, syncOnly *bool, cc client.Config, ccErr error) error {
 	set := false
 	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "sync-only" })
@@ -470,13 +476,29 @@ func resolveSyncOnly(fs *flag.FlagSet, syncOnly *bool, cc client.Config, ccErr e
 		return nil
 	}
 	switch cc.Mode {
-	case "", localindex.ModeFull:
+	case "":
+		*syncOnly = cc.Server != "" && cc.Token != ""
+		if f := fs.Lookup("no-sync"); f != nil && f.Value.String() == "true" {
+			*syncOnly = false
+		}
+	case localindex.ModeFull:
+		*syncOnly = false
 	case localindex.ModeSyncOnly:
 		*syncOnly = true
 	default:
 		return fmt.Errorf("client config: mode %q not understood (want %q or %q)", cc.Mode, localindex.ModeFull, localindex.ModeSyncOnly)
 	}
 	return nil
+}
+
+// automaticStorageMode excludes explicit flags and saved retention choices.
+func automaticStorageMode(fs *flag.FlagSet, cc client.Config) bool {
+	if cc.Mode != "" {
+		return false
+	}
+	explicit := false
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "sync-only" })
+	return !explicit
 }
 
 // agentLockGrace is how long a daemon waits for the index lock before it

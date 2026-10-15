@@ -46,9 +46,47 @@ func TestTwoDeviceSync(t *testing.T) {
 	var corpus string
 	for _, d := range h.devs {
 		d.seed()
+		if d == d1 {
+			h.scenario("0-connected-storage-default", func(t *testing.T, r *result) {
+				d.start()
+				defer d.stop(false)
+				h.waitSessionSynced(t, d, transcript.AgentClaude, d.claudePath, d.claudeSID, 60*time.Second)
+				h.waitSessionSynced(t, d, transcript.AgentCodex, d.codexPath, d.codexSID, 60*time.Second)
+				hits, err := d.serverFind(d.codexNeedle)
+				if err != nil || len(hitsOn(hits, d)) == 0 {
+					t.Fatalf("automatic connected shared query: hits=%d: %v", len(hits), err)
+				}
+				db, err := sql.Open("sqlite", "file:"+d.index+"?mode=ro")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				var count int
+				var mode string
+				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM messages").Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRowContext(t.Context(), "SELECT value FROM meta WHERE key='mode'").Scan(&mode); err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 || mode != "sync-only" {
+					t.Fatalf("automatic connected retention: mode=%s messages=%d", mode, count)
+				}
+				for _, pattern := range []string{d.index + "-tok*", d.index + "-tri*"} {
+					shards, err := filepath.Glob(pattern)
+					if err != nil || len(shards) != 0 {
+						t.Fatalf("automatic connected search shards: %v: %v", shards, err)
+					}
+				}
+				r.Notes = append(r.Notes, "automatic connected mode: shared query succeeded, local messages=0, search shards absent")
+			})
+		}
 		if n, _ := strconv.Atoi(os.Getenv("FLOPWIRE_E2E_CORPUS")); n > 0 && d == d1 {
 			corpus = d.seedCorpus(t, n).String()
 		}
+		// Growth, offline search and consistency scenarios intentionally test
+		// the fully supported local index rather than automatic retention.
+		d.setMode("full")
 		d.start()
 	}
 	t.Cleanup(func() {

@@ -34,9 +34,9 @@ type Config struct {
 	// working directory, repo root or remote: "local" (the default: index,
 	// never upload), "upload" or "exclude". The server's setting is a floor.
 	Unplaceable string `json:"unplaceable,omitempty"`
-	// Mode is the device agent's index mode: "full" (the default: a local
-	// index to search, and upload when a server is configured) or
-	// "sync-only" (upload only; local search needs --server).
+	// Mode selects "full" (local message index) or "sync-only" (upload
+	// bookkeeping). Empty automatically selects sync-only when connected
+	// and full when standalone, without dropping existing message content.
 	Mode            string           `json:"mode,omitempty"`
 	PendingRotation *PendingRotation `json:"pending_rotation,omitempty"`
 	// The device credential's deadlines as the server last reported them

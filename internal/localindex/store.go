@@ -102,6 +102,8 @@ type Options struct {
 	// the other mode rebuilds it. A read-only Open of a sync-only index
 	// fails with ErrSyncOnly.
 	SyncOnly bool
+	// PreserveFullContent refuses an automatic switch that would drop message bodies.
+	PreserveFullContent bool
 	// ReadCacheMB is each read connection's page cache. Default 16. The
 	// agent, which reads only source rows, keeps it small: every pooled
 	// connection fills its cache as the database grows.
@@ -250,6 +252,21 @@ func openWriter(path string, opts Options) (*Store, error) {
 	mode := ModeFull
 	if opts.SyncOnly {
 		mode = ModeSyncOnly
+	}
+	if opts.SyncOnly && opts.PreserveFullContent {
+		var exists int
+		err := wdb.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')`).Scan(&exists)
+		if err == nil && exists != 0 {
+			var retained bool
+			err = wdb.QueryRow(`SELECT EXISTS(SELECT 1 FROM messages)`).Scan(&retained)
+			if err == nil && retained {
+				err = errors.New("automatic connected storage would remove local message content; use --sync-only=false to retain it, or --sync-only to explicitly remove the local message index")
+			}
+		}
+		if err != nil {
+			wdb.Close()
+			return nil, err
+		}
 	}
 	details, rebuilt, err := migrate(wdb, Details{Tok: opts.TokDetail, Tri: opts.TriDetail, TriParts: opts.TriParts}, mode, opts.RebuildIndex)
 	if err != nil {
