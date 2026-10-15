@@ -79,7 +79,7 @@ func readSyncAuthority(ctx context.Context, db syncStateReader, cfg client.Confi
 			return "", err
 		}
 		if nonempty != 0 {
-			return "", errors.New("sync state has no recorded server/device owner; connected agent startup is refused and saved state is preserved. Use a separate --db path for a fresh queue; do not rebuild this index to assign its old uploads")
+			return "", errors.New("sync state has no recorded server/device owner; connected agent startup is refused and saved state is preserved. After confirming the historical server and device, use flopwire agent assign-legacy-queue --db PATH --server URL --device-id ID. Use a separate --db path for a fresh queue; do not rebuild this index to assign its old uploads")
 		}
 	}
 	return "", nil
