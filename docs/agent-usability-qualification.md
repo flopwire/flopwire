@@ -46,6 +46,24 @@ Both agents printed excessive tool metadata during discovery. This belongs
 to the orchestration setup; the trials do not establish that changing
 Flopwire's native tool descriptions would remove it.
 
+## Conflicting evidence and a result boundary
+
+A fresh `gpt-6.1-sol` turn on Codex 0.162.1 used the combined `d253746`
+binary against three synthetic sessions: an investigation with successful
+workaround runs but no established cause, an unsupported assistant claim of
+a fix, and the owner's explicit deferral. The neutral task asked whether the
+issue was fixed and what its owner decided. It supplied no expected answer
+and required an initial search with `--limit 1` to expose pagination.
+
+The model used two searches, three reads, and one help call, all successful.
+After reading the first session, it broadened discovery and inspected the
+original investigation and owner decision. Its final answer rejected the
+unsupported fix claim, cited the owner, retained the unknown cause, and
+qualified the local index's unknown discovery coverage. Root reviewed the
+prompt, returned evidence, and final answer. This single synthetic trial adds
+confidence; it does not establish general relevance or exhaustive discovery.
+The guarded authentication copy and daemon were removed afterward.
+
 ## Producing-session attribution
 
 A separate fresh Sol agent investigated merged PR #256. It obtained original
@@ -185,8 +203,8 @@ regression coverage: complete empty results succeed, zero-hit timeouts return
 an error, and useful partial hits retain explicit limits. The CLI warns that
 no absence conclusion is justified. These targeted race tests also passed at
 `237b144`; they establish output behavior, not universal model interpretation.
-An ambiguous-decision trial adds model-behavior confidence; no observed defect
-currently makes it a release blocker.
+The conflicting-evidence trial above adds model-behavior confidence; no
+observed ambiguity-handling defect currently makes it a release blocker.
 
 The historical recovery and attribution traces are summarized here rather than
 committed verbatim because they contain private history. Their installed MCP
