@@ -1,14 +1,16 @@
 package local
 
 import (
-	"bytes"
-	"github.com/flopwire/flopwire/internal/localindex"
-	"github.com/flopwire/flopwire/internal/retrieval/format"
-	"github.com/flopwire/flopwire/internal/transcript"
-	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/retrieval/format"
+	"github.com/flopwire/flopwire/internal/retrieval/local/localtest"
+	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/codex"
 )
 
 // Minimal synthetic records reproduce the ordering and shell command shape of
@@ -28,16 +30,7 @@ func TestChangeCodexLiteralExecLiveShape(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 	src := transcript.Source{Agent: transcript.AgentCodex, Path: path, Parser: codex.Name, StorageKind: transcript.StorageJSONLAppend}
-	state, err := store.EnsureSource(ctx, src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var normalized transcript.Collector
-	parser := &codex.Parser{}
-	if _, err := parser.Parse(ctx, transcript.Input{Source: &src, R: bytes.NewReader(raw), Size: int64(len(raw))}, transcript.Cursor{}, &normalized); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.ApplyBatch(ctx, localindex.Batch{SourceID: state.ID, Generation: 1, NewGeneration: &transcript.Generation{Generation: 1, Size: int64(len(raw)), Complete: true}, Conversations: normalized.Conversations, Messages: normalized.Messages, AppliedParser: codex.Name}); err != nil {
+	if err := localtest.IndexSource(ctx, store, &codex.Parser{}, src); err != nil {
 		t.Fatal(err)
 	}
 	backend := &Backend{Store: store}
@@ -62,5 +55,15 @@ func TestChangeCodexLiteralExecLiveShape(t *testing.T) {
 		if _, err := backend.RawAt(ctx, match.CommandAddress); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	page, err := backend.Change(ctx, format.ChangeQuery{Commits: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, format.Filters{Repo: "/tmp/synthetic-live-writer"})
+	if err != nil || len(page.Matches) != 1 || page.Coverage.UnavailableSources != 1 {
+		t.Fatalf("missing-source coverage: %+v %v", page, err)
+	}
+	if data, err := backend.RawAt(ctx, page.Matches[0].CommandAddress); !errors.Is(err, ErrNotLocal) || data != nil {
+		t.Fatalf("missing-source evidence: %q %v", data, err)
 	}
 }

@@ -440,8 +440,16 @@ flopwire read 0b7e2c1a
   (`→ sub a85f12`). No tool output prints. `--limit` (default 200, at
   most 2000) and the output budget bound a page. The footer gives the
   `--cursor` that reads the next page. Any address in the session works.
-- `--raw` prints the transcript record's bytes. When the local file is
-  gone or replaced, the team server's copy is read by this device's path.
+- `--raw` prints the transcript record's bytes. Local reads verify a stored
+  head or tail content hash covering the requested range. An unchanged file
+  with a stable indexed change time also permits reads outside those regions.
+  Append does not hide indexed records covered by a matching stored hash.
+  Other ranges return unavailable until a stable index sweep; the full sweep
+  runs every 45 seconds by default (`--sweep` / `FLOPWIRE_SWEEP`). A write
+  during that interval can postpone availability until a later stable sweep.
+  Missing files and older local generations return an evidence-unavailable
+  error. To read archived evidence, use `--server` with an address obtained
+  from a server query. Local and server generation numbers are independent.
   On a terminal, control characters are shown as pictures. Into a pipe or
   a file, or with `--json`, the bytes are exact. Over MCP, `raw: true`
   answers the record's bytes whatever `format` says (the record is

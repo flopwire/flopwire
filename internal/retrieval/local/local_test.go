@@ -261,28 +261,15 @@ func TestReadAndRaw(t *testing.T) {
 	if _, err := b.Raw(ctx, "1", 2, 0, 10); !errors.Is(err, ErrNotLocal) {
 		t.Fatalf("old generation without a server: %v", err)
 	}
-	// V8: file gone: the server serves its latest copy, found by this
-	// device's path and file id, never by a text search.
+	// Missing local bytes cannot be attributed to an independently numbered
+	// archive generation, even when the configured server has a path match.
 	os.Remove(path)
 	if _, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) {
 		t.Fatalf("gone without a server: %v", err)
 	}
-	remote := &fakeRemote{data: []byte(lines[8])}
-	b.Remote = remote
-	data, err = b.RawAt(ctx, hit.Address)
-	if err != nil || string(data) != lines[8] || remote.got != path+"|-1|3980|605" || !strings.Contains(remote.fileID, ":") {
-		t.Fatalf("server fallback: %q %v %+v", data, err, remote)
+	if data, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) || data != nil {
+		t.Fatalf("unverified server fallback: %q %v", data, err)
 	}
-}
-
-type fakeRemote struct {
-	data        []byte
-	got, fileID string
-}
-
-func (f *fakeRemote) RawByPath(_ context.Context, path, fileID string, gen, off, n int64) ([]byte, error) {
-	f.got, f.fileID = fmt.Sprintf("%s|%d|%d|%d", path, gen, off, n), fileID
-	return f.data, nil
 }
 
 // addRows indexes extra messages into one new Claude session.

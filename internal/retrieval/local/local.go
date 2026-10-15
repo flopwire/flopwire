@@ -9,8 +9,7 @@
 //     any-term retry.
 //   - sessions: conversations by last activity.
 //   - read: a message and its neighbours by ordinal, located by address;
-//     raw bytes from the transcript file, or from the team server when the
-//     file is gone or replaced.
+//     raw bytes from the unchanged indexed transcript file.
 //
 // Message, conversation and source ids are the local index's integer ids,
 // rendered as decimal strings.
@@ -57,16 +56,9 @@ func IndexPath() string {
 	return filepath.Join(dir, "flopwire", "index.db")
 }
 
-// Remote is the team server, used for raw bytes the local file no longer
-// holds. client.HTTP implements it.
-type Remote interface {
-	RawByPath(ctx context.Context, path, fileID string, generation, offset, length int64) ([]byte, error)
-}
-
 // Backend serves the tools from a local index.
 type Backend struct {
-	Store  *localindex.Store
-	Remote Remote // optional
+	Store *localindex.Store
 }
 
 func bad(format_ string, args ...any) error {
