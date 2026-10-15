@@ -79,6 +79,56 @@ candidate retrieval starts. Ranked search helped discover examples; it did
 not establish complete chronological results. Session-scoped retrieval was
 fast once the relevant sessions were known.
 
+## Request, reply, and explicit resume
+
+The isolated CLI trial in [#287](https://github.com/flopwire/flopwire/pull/287)
+uses two real Sol sessions and synthetic history. The requester discovers and
+reads the original decision, checks the exact owner's presence, sends one
+request, and handles an unknown-recipient refusal. The controller explicitly
+resumes the owner. The owner reads its inbox and sends a reply linked to the
+request. The resumed requester verifies the sender, correlation IDs, and
+rationale token before answering.
+
+The final guarded trial passed those assertions at runner `371a5a8`, using
+a binary built from main `3fc0415`. The requester received
+`only_if_resumed`; sending did not start a turn. With no delivery hooks in
+this CLI fixture, an inbox read does not mark hook delivery. After the owner
+resumes and ends again, the original request can show
+`undelivered/session_ended` alongside an actual correlated reply. Those are
+separate observations, not contradictory task outcomes.
+
+The first attempt used an inconsistent sandbox on resume and failed truthfully.
+A later run exposed an assertion that incorrectly required nine characters
+of a session ID although the agent used a valid eight-character prefix.
+The runner now checks returned identity. These failures do not establish
+product failures. Earlier successful runs preceded the copied credential
+guard; they remain separate from the final guarded pass.
+
+The three task turns used 19 shell commands: nine help calls, one binary
+existence check, and nine operational calls. These include the intentional
+unknown-recipient refusal and one local-only `messages` error, recovered by
+using `inbox`. Top-level help returned exit 1 despite printing usage;
+[#290](https://github.com/flopwire/flopwire/pull/290) fixes that convention.
+The [synthetic final report](https://github.com/flopwire/flopwire/pull/287#issuecomment-6193869208)
+records the actual request and reply correlation.
+
+## Installed-plugin hook delivery
+
+The local installed-plugin probe passed `prompt-submit`, `framing`, and
+`hook-binary` on Codex 0.162.1 with `gpt-6.1-sol`, using candidate `18c126e`.
+The markers appeared in native `hooks.additional_context` developer records.
+Tool output or an agent quoting a marker did not count as delivery evidence.
+Copied credentials were removed and scratch processes stopped afterward.
+
+This required [#289](https://github.com/flopwire/flopwire/pull/289). The prior
+probe rejected credentials by age even when their readable token expiry was
+safe. Verified Codex 0.160.0 and 0.162.1 code gives readable expiry precedence
+and uses age only as a fallback. The corrected guard preserves its 30-minute
+safety horizon and conservative refusal when expiry is unreadable.
+
+This local CLI probe does not close the unexplained Codex IDE missed prompt
+in #228 or qualify every supported client and device combination.
+
 ## Changes and remaining qualification
 
 - [#284](https://github.com/flopwire/flopwire/pull/284) ports the cited-line
@@ -86,14 +136,33 @@ fast once the relevant sessions were known.
   before adding preceding context. Explicit offsets retain sequential paging.
   Local race tests, six local/server parity cases, and isolated E2E passed at
   `069537c`. An oversized cited line still requires a larger byte budget.
-- Commit lookup needs the repository-scope normalization fix found above.
-- MCP guidance needs the continuation option restrictions and a recovery path
-  for timeouts before any candidates are checked.
-- A real-agent request/reply trial is being qualified separately. Transport
-  tests alone do not establish that an agent identifies the correct recipient,
-  receives a correlated answer, and uses it to complete the task.
+- [#286](https://github.com/flopwire/flopwire/pull/286) accepts validated
+  expanded repository scopes in commit lookup. Missing scopes and resolver
+  errors remain errors; authenticated owner/device restrictions remain intact.
+- [#285](https://github.com/flopwire/flopwire/pull/285) documents continuation
+  option restrictions and recovery from timeouts before candidate checks.
+  It does not fix broad-grep startup latency.
+- [#291](https://github.com/flopwire/flopwire/issues/291) tracks first-candidate
+  latency. Isolated measurements found repeated text rechecks across Unicode
+  fold alternatives. A literal-only candidate optimization is under review;
+  the production latency observation remains unresolved until validated.
 
 Before declaring the workflow qualified, repeat the affected tasks on the
 final code. Include unavailable recipients, ambiguous evidence, partial
 results, and old MCP processes. Keep GUI-client delivery limitations and
 hosted concurrency claims separate from a passing local CLI trial.
+
+## Earlier CASS usage
+
+A retained September 29 audit counted 1,532 CASS command segments across
+165 sessions, including 889 searches, 114 expansions, 80 exports, and 18
+views. Its common workflow was ranked keyword search followed by evidence
+inspection. Agents sometimes piped exports into `rg`; CASS itself was not
+being used primarily through a grep-shaped API.
+
+That audit also reported help lookups in 123 sessions, 44 empty results among
+870 searches with captured output, and approximately 95 searches with error
+text. An independently reopened historical invocation confirmed an output
+envelope parsing mistake. These are historical observations, not recomputed
+rates or a controlled comparison with Flopwire. They do not establish that
+the old installation used semantic retrieval.
