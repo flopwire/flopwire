@@ -1,8 +1,11 @@
 # Local and remote boundary audit
 
 Audited revision: `883a467f427be88f05a58c2751a08f1cb30e6d86`, 2026-10-14.
-The excerpt correction is separate in PR #267. This audit changes no product
-behavior and does not switch existing devices to minimal storage.
+This report records the findings at the audited revision, not current product
+behavior. The excerpt correction landed in PR #267. Findings 1–5 were addressed
+in PRs #272–275. Follow-up qualification is recorded in [completion.md](completion.md).
+The archived replay deliberately reproduces old defects and must run against
+the audited revision; it is not a regression suite for current main.
 
 ## Judgment
 
