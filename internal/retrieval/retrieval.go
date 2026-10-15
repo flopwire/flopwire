@@ -325,6 +325,11 @@ func hitFilters(q *query, f format.Filters) error {
 	if len(f.Kinds) == 0 {
 		q.where("m.kind<>'injected'")
 	}
+	if len(f.Kinds) == 1 && f.Kinds[0] == "tool_call" {
+		// A constant lets generic prepared plans prove the partial trigram
+		// index predicate. Keep the shared filters (including kind) intact.
+		q.where("m.kind='tool_call'")
+	}
 	return filters(q, f)
 }
 
