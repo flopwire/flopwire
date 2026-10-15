@@ -454,6 +454,26 @@ func (d *device) codexMsg(role, text string) string {
 
 func jsonStr(s string) string { b, _ := json.Marshal(s); return string(b) }
 
+// setMode selects retention explicitly for fixtures that promise local search.
+func (d *device) setMode(mode string) {
+	raw, err := os.ReadFile(d.cfg)
+	if err != nil {
+		d.h.t.Fatal(err)
+	}
+	var cfg client.Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		d.h.t.Fatal(err)
+	}
+	cfg.Mode = mode
+	raw, err = json.Marshal(cfg)
+	if err != nil {
+		d.h.t.Fatal(err)
+	}
+	if err := os.WriteFile(d.cfg, raw, 0600); err != nil {
+		d.h.t.Fatal(err)
+	}
+}
+
 // start launches `flopwire agent run` for the device.
 func (d *device) start() {
 	d.mu.Lock()
