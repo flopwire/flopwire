@@ -2,7 +2,10 @@
 
 This record distinguishes executable contracts from the historical findings
 in [README.md](README.md). Remediation is tracked in PRs #278–282; exact tested
-revisions, run results and review records belong in those PRs.
+revisions, run results and review records belong in those PRs. The
+[final qualification record](https://github.com/flopwire/flopwire/pull/270#issuecomment-6183214735)
+records the combined source tree, all 15 passing sync scenarios, race suites,
+real archive regression and six historical reproductions.
 
 ## Contracts
 
