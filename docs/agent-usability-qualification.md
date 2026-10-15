@@ -112,6 +112,22 @@ using `inbox`. Top-level help returned exit 1 despite printing usage;
 The [synthetic final report](https://github.com/flopwire/flopwire/pull/287#issuecomment-6193869208)
 records the actual request and reply correlation.
 
+A combined-build repeat passed at temporary integration `d253746`, containing
+main `237b144` plus #286 (`f84ec01`), #289 (`020718d`), #290 (`9004471`),
+#292 (`690a4fb`), and #287 (`5ecd8b7`). It passed the same guarded source,
+refusal, ended-owner receipt, actual reply correlation, and final-answer
+assertions. Its 20 shell commands included nine successful help calls and
+expected unknown-recipient and server-only command errors. The latter was
+recovered through `inbox`. Authentication copies and the daemon were removed.
+
+An earlier combined run failed the exact-answer assertion because the model
+formatted the synthetic rationale as `token: decision-...`, triggering the
+expected assignment redactor. The fixture now calls it a label. Redaction
+rules and exact-answer assertions were not relaxed. The failed report is
+retained alongside the passing report. A subsequent wording-only correction
+at #287 `ed4b4da` removes one remaining prompt reference to “token”; four
+synthetic tests passed, without another paid workflow run.
+
 ## Installed-plugin hook delivery
 
 The local installed-plugin probe passed `prompt-submit`, `framing`, and
