@@ -62,7 +62,7 @@ func printAgentDiagnostics(w io.Writer, d agent.DiagnosticsSnapshot) error {
 		return err
 	}
 	if d.Sync != nil {
-		_, err := fmt.Fprintf(w, "Settled turns skipped: %d\n", d.Sync.SettledTurns)
+		_, err := fmt.Fprintf(w, "Settled turns avoiding authorization/capture: %d\n", d.Sync.SettledTurns)
 		return err
 	}
 	return nil

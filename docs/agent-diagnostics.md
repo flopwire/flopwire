@@ -57,12 +57,14 @@ elapsed time when it completes.
 | `refresh_cowork_lock_wait` | Wait for the scope-refresh serialization locks |
 | `refresh_cowork` | Desktop Code and Cowork scope refresh after lock acquisition |
 | `captured_claude_children` | Retained child-evidence lookup inside scope refresh |
-| `sync.turn` | Scheduled source turn, including source-operation lease acquisition |
+| `sync.turn` | Source sync work, including source-operation lease acquisition; excludes surrounding scheduler-hint reads and writes |
 | `sync.no_work_probe` | Read-only proof that an ordinary file is fully settled |
 | `sync.authorize` | Scheduler's authorization callback |
 | `sync.capture_upload` | Capture/upload operation, including I/O and network waits |
 
-`sync.settled_turns` counts successful no-work shortcuts. The `sync` section is
+`sync.settled_turns` counts turns that bypass authorization and capture after a
+settled-file proof. Scheduler bookkeeping still runs outside `sync.turn`; this
+counter does not mean the entire scheduled turn was skipped. The `sync` section is
 absent when the configured sync implementation does not expose these counters.
 Each operation reports calls, completed calls, in-flight calls, total wall time,
 and the maximum completed-call wall time since construction.
