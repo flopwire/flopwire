@@ -160,6 +160,7 @@ func (f *found) codexSources(srcs []transcript.Source, p transcript.Parser) {
 
 // discoverAll lists every Claude and Codex file.
 func (a *Agent) discoverAll() (*found, error) {
+	defer a.work.discover.Begin().End()
 	f := &found{}
 	sessions, err := claude.Discover(a.cfg.ClaudeProjects)
 	if err != nil {

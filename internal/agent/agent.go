@@ -238,6 +238,8 @@ func (c *Config) defaults() {
 type sessionActivityReader func(context.Context, transcript.Agent, []string) (map[string]time.Time, error)
 
 type Agent struct {
+	work agentWork
+
 	// Optional ranking metadata; a failed read must not discard committed sync work.
 	sessionActivities sessionActivityReader
 
@@ -586,9 +588,12 @@ func (a *Agent) load(ctx context.Context) error {
 // sweep runs a full discovery pass, queues every file whose gate moved and
 // polls the harness stores.
 func (a *Agent) sweep(ctx context.Context) error {
+	defer a.work.sweep.Begin().End()
 	t0, cpu0 := time.Now(), cpuTime()
 	a.refreshPolicy(ctx, false)
+	refreshDone := a.work.refreshFromSweep.Begin()
 	a.refreshCowork(ctx)
+	refreshDone.End()
 	a.reconcileCoworkBounded(ctx)
 	f, err := a.discoverAll()
 	if err != nil {
@@ -868,6 +873,7 @@ func (a *Agent) WaitIdle() {
 }
 
 func (a *Agent) index(ctx context.Context, t *target) error {
+	defer a.work.index.Begin().End()
 	if t.kind == kindCompanion {
 		return a.indexCompanion(ctx, t)
 	}
@@ -881,6 +887,7 @@ func (a *Agent) index(ctx context.Context, t *target) error {
 // warmEvery ticks; the rest wait for the sweep. The change time comes from
 // the last stat, so a session that goes quiet cools down by itself.
 func (a *Agent) fastLane(ctx context.Context) {
+	defer a.work.fastLane.Begin().End()
 	now := time.Now()
 	a.ticks++
 	warm := a.ticks%warmEvery == 0
@@ -919,6 +926,7 @@ const warmEvery = 10
 // an event already, and rescanning a project on every write of some other
 // file would cost a discovery per write.
 func (a *Agent) dirEvent(ctx context.Context, ev watchEvent, w *watcher) {
+	defer a.work.watcherEvent.Begin().End()
 	p := ev.path
 	a.mu.Lock()
 	t := a.targets[p]
@@ -1119,6 +1127,7 @@ func (a *Agent) shrinkIfIdle(ctx context.Context) {
 	if !idle {
 		return
 	}
+	defer a.work.idleTrim.Begin().End()
 	if err := a.store.ShrinkMemory(ctx); err != nil && ctx.Err() == nil {
 		a.log.Debug("agent: shrink memory", "err", err)
 	}

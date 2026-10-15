@@ -18,10 +18,13 @@ import (
 // durable, so pending uploads and CLI overlaps remain held after a restart or
 // disappearance of app metadata.
 func (a *Agent) refreshCowork(ctx context.Context) {
+	waitDone := a.work.refreshLockWait.Begin()
 	a.coworkMu.Lock()
 	defer a.coworkMu.Unlock()
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
+	waitDone.End()
+	defer a.work.refresh.Begin().End()
 	a.refreshDesktopCodeLocked(ctx)
 	a.refreshCoworkLocked(ctx)
 }
@@ -143,7 +146,9 @@ func (a *Agent) refreshCoworkLocked(ctx context.Context) {
 	for root, link := range parents {
 		parentRoots[root] = append([]string{a.cfg.ClaudeProjects, link.ProjectsRoot}, codeRoots[root]...)
 	}
+	childrenDone := a.work.capturedChildren.Begin()
 	childrenByParent, err := a.store.CapturedClaudeChildrenForParents(ctx, parentRoots)
+	childrenDone.End()
 	if err != nil {
 		registrationFailed = true
 		a.log.Warn("agent: Cowork historical child scope failed", "error", err)

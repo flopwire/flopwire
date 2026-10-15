@@ -131,6 +131,7 @@ func (a *Agent) pollStore(ctx context.Context, d *storeState, force, wait bool) 
 	if d.path == "" {
 		return
 	}
+	defer a.work.storePoll.Begin().End()
 	if !d.mu.TryLock() {
 		if !wait {
 			return // a poll (or a background re-parse) is running
