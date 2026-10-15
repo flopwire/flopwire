@@ -33,8 +33,6 @@ def main():
     codex = home / ".codex"
     codex.mkdir(parents=True)
     auth = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
-    shutil.copyfile(auth, codex / "auth.json")
-    (codex / "auth.json").chmod(0o600)
     project = root / "project"
     project.mkdir()
     env = {k: os.environ[k] for k in ("PATH", "TMPDIR", "LANG", "TERM") if k in os.environ}
@@ -46,9 +44,9 @@ def main():
     marker = "fwqual" + secrets.token_hex(6)
     answer = "decision-" + secrets.token_hex(8)
     report = {"model": args.model, "marker": marker, "scope": "real model, CLI retrieval and messaging, explicit CLI resume; no hook or MCP qualification", "turns": [],
-              "flopwire_sha256": hashlib.sha256(args.flopwire.read_bytes()).hexdigest(),
-              "codex_version": subprocess.check_output(["codex", "--version"], env=env, text=True).strip()}
+              "flopwire_sha256": hashlib.sha256(args.flopwire.read_bytes()).hexdigest()}
     daemon = None
+    log = None
 
     def cli(*parts, session=None):
         call_env = dict(env)
@@ -81,6 +79,9 @@ def main():
         return thread
 
     try:
+        shutil.copyfile(auth, codex / "auth.json")
+        (codex / "auth.json").chmod(0o600)
+        report["codex_version"] = subprocess.check_output(["codex", "--version"], env=env, text=True).strip()
         log = (root / "daemon.log").open("w")
         daemon = subprocess.Popen([binary, "agent", "run", "--no-sync", "--sweep", "1s", "--db", str(root / "index.db"),
                                    "--socket", str(root / "agent.sock"), "--codex-home", str(codex),
@@ -158,6 +159,8 @@ def main():
             except subprocess.TimeoutExpired:
                 daemon.kill()
                 daemon.wait()
+        if log:
+            log.close()
         (codex / "auth.json").unlink(missing_ok=True)
         (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 
