@@ -105,7 +105,7 @@ reads the original decision, checks the exact owner's presence, sends one
 request, and handles an unknown-recipient refusal. The controller explicitly
 resumes the owner. The owner reads its inbox and sends a reply linked to the
 request. The resumed requester verifies the sender, correlation IDs, and
-rationale token before answering.
+rationale label before answering.
 
 The final guarded trial passed those assertions at runner `371a5a8`, using
 a binary built from main `3fc0415`. The requester received
@@ -145,6 +145,25 @@ rules and exact-answer assertions were not relaxed. The failed report is
 retained alongside the passing report. A subsequent wording-only correction
 at #287 `ed4b4da` removes one remaining prompt reference to “token”; four
 synthetic tests passed, without another paid workflow run.
+
+A final product-build trial used `1ff3a82051a2bfadf082e5b888cf8238d840954b`
+(binary SHA256 `36360505cf78132987a969ac68f499563554a7f187f94fe1ce303f5e8354b5a5`)
+with the merged runner `e23125a`. The requester successfully read ordinary text
+output, but the runner accepted only JSON and stopped before the reply turns.
+[#294](https://github.com/flopwire/flopwire/pull/294), reviewed at `d0c75bb`,
+recognizes native text while retaining exact owner identity and nonempty source
+evidence checks. Five Python tests cover both formats and rejection cases.
+
+A guarded continuation reused the same two sessions, original source, request,
+and expected answer. It did not repeat the initial model turns. All source,
+refusal, ended-owner receipt, exact owner/reply correlation, and final-answer
+assertions passed with the fixed verifier. The four total model turns used
+19 shell commands, including eight successful help calls. The unknown-recipient
+refusal and server-only `messages` lookup were the expected nonzero results;
+the requester recovered the latter through `inbox`. The original failure report
+is preserved separately from the continuation report. Authentication was removed
+and the daemon stopped. This qualifies explicit local CLI resume and reply;
+it does not demonstrate automatic wake or final-server MCP behavior.
 
 ## Installed-plugin hook delivery
 
@@ -186,10 +205,17 @@ in #228 or qualify every supported client and device combination.
   a universal startup bound or validate the original private-history timeout.
   The PR retains the experiment report and sanitized reproduction evidence.
 
+Focused race regressions also passed against exact final product source
+`1ff3a82`: cited-line cuts and read budgets, expanded repository scopes,
+change-query validation/cursor binding, MCP scope expansion and rejection,
+HTTP authentication/scope contracts, and local completion attribution.
+`TestFocusedReadLocalServerParity` was explicitly skipped because this final
+run had no isolated PostgreSQL configured; earlier local/server parity remains
+separate evidence. These checks qualify final-source behavior, not a live
+updated installed-MCP or shared-server replay.
+
 The remaining qualification gates are:
 
-- Repeat cited-line reading and repository-scope attribution on the final
-  integrated build. The focused regression tests qualify the individual fixes.
 - Repeat the original broad historical query against an updated shared server.
   Record elapsed time, candidate checks, completeness, and timeout recovery.
 - Keep GUI-client delivery and hosted concurrency qualification separate from
