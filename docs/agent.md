@@ -343,6 +343,20 @@ queue and legacy spool untouched. Keep them until their ownership and
 migration have been resolved. This release has no command to assign an
 owner to a legacy queue.
 
+An environment or unenrolled token has no proven device identity. Its token
+hash owns the queue. Changing that token requires a fresh queue, including
+rotations that the operator expects to represent the same device. The agent
+does not borrow a saved device ID for an environment token.
+
+The authority key identifies a normalized server URL and enrolled device.
+It does not identify a server installation. A replacement server at the same
+URL with the same device identity cannot be distinguished by this key.
+
+The spool cap applies to the active queue. Preserved legacy and inactive
+queue spools still use disk space outside that cap. A fresh `--db` path
+leaves old captures pending. `--rebuild-index` preserves sync ownership and
+queue tables; it cannot assign or recover a refused queue.
+
 See [extraction diagnostics](extraction.md) for parser issue counts, source
 inspection, and JSON output.
 

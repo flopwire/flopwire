@@ -92,6 +92,10 @@ type Options struct {
 	// transcript again). Placements, devicesync's tables and the
 	// redaction sidecar are kept.
 	RebuildIndex bool
+	// BeforeMigrate validates external state after the exclusive writer lock is
+	// acquired and before any index rebuild or FTS mutation. It must only read
+	// db. A failure leaves the existing index and shards intact.
+	BeforeMigrate func(db *sql.DB) error
 	// SyncOnly keeps only the agent's bookkeeping (sources, watermarks,
 	// conversations, companions, placements): no message rows and no FTS
 	// shards (ModeSyncOnly). The mode is stored in the index; opening it in
@@ -237,6 +241,12 @@ func openWriter(path string, opts Options) (*Store, error) {
 	wdb.SetMaxOpenConns(1)
 	wdb.SetMaxIdleConns(1)
 	wdb.SetConnMaxLifetime(0)
+	if opts.BeforeMigrate != nil {
+		if err := opts.BeforeMigrate(wdb); err != nil {
+			wdb.Close()
+			return nil, err
+		}
+	}
 	mode := ModeFull
 	if opts.SyncOnly {
 		mode = ModeSyncOnly

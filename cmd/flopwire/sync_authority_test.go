@@ -141,3 +141,27 @@ func TestSyncAuthorityCorruptSpoolKeyFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncAuthorityMissingBindingRowDoesNotAdoptLegacyState(t *testing.T) {
+	db := authorityDB(t)
+	if _, err := devicesync.NewStore(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE devsync_authority(id INTEGER PRIMARY KEY,owner TEXT NOT NULL,spool_key TEXT NOT NULL); INSERT INTO devsync_known(hash) VALUES(x'01')`); err != nil {
+		t.Fatal(err)
+	}
+	cc := client.Config{Server: "https://example.test", DeviceID: "device"}
+	if _, err := readSyncAuthority(t.Context(), db, cc); err == nil || !strings.Contains(err.Error(), "no recorded") {
+		t.Fatalf("missing-row read = %v", err)
+	}
+	if _, err := bindSyncAuthority(t.Context(), db, cc); err == nil || !strings.Contains(err.Error(), "no recorded") {
+		t.Fatalf("missing-row bind = %v", err)
+	}
+	if key, err := savedSyncSpoolKey(t.Context(), db); err != nil || key != "" {
+		t.Fatalf("legacy maintenance path = %q %v", key, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM devsync_authority`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("missing legacy ownership was assigned")
+	}
+}

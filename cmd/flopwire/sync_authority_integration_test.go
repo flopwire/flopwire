@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -123,5 +125,113 @@ func TestPersistedUploadCannotRestartUnderAnotherAuthority(t *testing.T) {
 			t.Fatalf("A restart lost original capture: %v %+v", err, sc.Status())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A rejected connected startup must preserve the full index even when the
+// caller explicitly requests a retention rebuild. Validation holds the writer
+// lock before migration; the caller cannot race a different writer's binding.
+func TestAgentAuthorityRefusalPrecedesExplicitRetentionMigration(t *testing.T) {
+	for _, ownerless := range []bool{true, false} {
+		t.Run(map[bool]string{true: "ownerless", false: "foreign-authority"}[ownerless], func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, "index.db")
+			projects := filepath.Join(home, "projects")
+			writeClaudeSession(t, projects, "aaaaaaaa-0000-4000-8000-000000000001", "/synthetic/authority", "retained local authority sentinel")
+			t.Setenv("FLOPWIRE_CONFIG", filepath.Join(home, "config.json"))
+			t.Setenv("FLOPWIRE_INDEX", path)
+			t.Setenv(client.EnvServer, "")
+			t.Setenv(client.EnvToken, "")
+			args := []string{"--once", "--socket", filepath.Join(shortSockDir(t), "preflight.sock"), "--db", path, "--desktop-code-root", "-", "--cowork-root", "-", "--claude-projects", projects, "--codex-home", "-", "--devin-db", "-", "--opencode-db", "-", "--mem-limit", "0"}
+			if _, err := runAgent(t.Context(), append(args, "--no-sync")); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			if _, err := devicesync.NewStore(db); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO devsync_sources(id,path,spec,generation) VALUES(1,'/retained-capture','{"Path":"/retained-capture"}',7)`); err != nil {
+				t.Fatal(err)
+			}
+			if !ownerless {
+				// Seed a valid existing authority before the foreign credential is saved.
+				if _, err := db.Exec(`DELETE FROM devsync_sources`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := bindSyncAuthority(t.Context(), db, client.Config{Server: "https://old.example.test", DeviceID: "old-device"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`INSERT INTO devsync_sources(id,path,spec,generation) VALUES(1,'/retained-capture','{"Path":"/retained-capture"}',7)`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			snapshot := func() (int, string, string, string) {
+				t.Helper()
+				var count int
+				var text, queue, mode string
+				if err := db.QueryRow(`SELECT count(*),coalesce(group_concat(text),'') FROM messages`).Scan(&count, &text); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRow(`SELECT path||spec||generation FROM devsync_sources WHERE id=1`).Scan(&queue); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRow(`SELECT value FROM meta WHERE key='mode'`).Scan(&mode); err != nil {
+					t.Fatal(err)
+				}
+				return count, text, queue, mode
+			}
+			count, text, queue, mode := snapshot()
+			if count == 0 || !strings.Contains(text, "retained local authority sentinel") {
+				t.Fatal("fixture did not retain local messages")
+			}
+			shards := map[string][32]byte{}
+			files, err := filepath.Glob(path + "*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range files {
+				if strings.HasPrefix(p, path+"-tok") || strings.HasPrefix(p, path+"-tri") {
+					raw, err := os.ReadFile(p)
+					if err != nil {
+						t.Fatal(err)
+					}
+					shards[p] = sha256.Sum256(raw)
+				}
+			}
+			if len(shards) == 0 {
+				t.Fatal("fixture has no FTS shards")
+			}
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				http.Error(w, "unexpected startup request", 500)
+			}))
+			defer srv.Close()
+			if err := client.Save(client.Config{Server: srv.URL, Token: "new-token", DeviceID: "new-device"}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = runAgent(t.Context(), append(args, "--sync-only"))
+			if err == nil || !strings.Contains(err.Error(), "sync state") {
+				t.Fatalf("startup refusal = %v", err)
+			}
+			afterCount, afterText, afterQueue, afterMode := snapshot()
+			if afterCount != count || afterText != text || afterQueue != queue || afterMode != mode {
+				t.Fatal("refused startup modified local rows, retention mode or upload queue")
+			}
+			for p, sum := range shards {
+				raw, err := os.ReadFile(p)
+				if err != nil || sha256.Sum256(raw) != sum {
+					t.Fatalf("refused startup modified FTS shard %s: %v", filepath.Base(p), err)
+				}
+			}
+			if hits.Load() != 0 {
+				t.Fatal("refused startup contacted foreign authority")
+			}
+		})
 	}
 }

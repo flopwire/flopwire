@@ -129,3 +129,79 @@ func TestAgentPrepareLegacyTailsDefaultsAndInvalidArguments(t *testing.T) {
 		t.Fatal("missing database was created")
 	}
 }
+
+func TestAgentPrepareLegacyTailsResolvesSavedQueueSpool(t *testing.T) {
+	path, root, body := cliTailFixture(t)
+	key := strings.Repeat("ab", 16)
+	temporary := root + "-saved"
+	if err := os.Rename(root, temporary); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	scoped := filepath.Join(root, key)
+	if err := os.Rename(temporary, scoped); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(root, "legacy-untouched")
+	if err := os.WriteFile(sentinel, []byte("legacy spool retained"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE devsync_authority(id INTEGER PRIMARY KEY,owner TEXT NOT NULL,spool_key TEXT NOT NULL); INSERT INTO devsync_authority VALUES(1,'saved-owner',?)`, key); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FLOPWIRE_INDEX", path)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(filepath.Dir(root), "config.json"))
+	var out bytes.Buffer
+	if err := agentPrepareLegacyTails(t.Context(), nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "converted 1") {
+		t.Fatalf("did not prepare scoped tail: %s", out.String())
+	}
+	spool, err := devicesync.OpenSpool(scoped, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := spool.Tail(1, 0); err != nil || !found || !bytes.Equal(got, body) {
+		t.Fatal("saved queue tail not prepared")
+	}
+	if raw, err := os.ReadFile(sentinel); err != nil || string(raw) != "legacy spool retained" {
+		t.Fatal("maintenance changed legacy spool")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("maintenance modified queue binding/database")
+	}
+}
+
+func TestAgentPrepareLegacyTailsEmptyAuthorityTableUsesLegacySpool(t *testing.T) {
+	path, root, _ := cliTailFixture(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE devsync_authority(id INTEGER PRIMARY KEY,owner TEXT NOT NULL,spool_key TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	t.Setenv("FLOPWIRE_INDEX", path)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(filepath.Dir(root), "config.json"))
+	var out bytes.Buffer
+	if err := agentPrepareLegacyTails(t.Context(), nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "converted 1") {
+		t.Fatalf("missing binding row did not retain legacy path: %s", out.String())
+	}
+}
