@@ -507,7 +507,20 @@ func (a *Agent) Pass(ctx context.Context) error {
 	}
 	a.pollStores(ctx, true, true)
 	a.WaitIdle()
-	return a.store.Sync(ctx)
+	if err := a.store.Sync(ctx); err != nil {
+		return err
+	}
+	// Match Once: newly discovered deleted-worktree sessions are withheld
+	// until recovery settles their placements. An empty upload queue before
+	// this step does not mean the pass has offered all eligible transcripts.
+	if a.recoverAndEnforce(ctx) {
+		if err := a.sweep(ctx); err != nil {
+			return err
+		}
+		a.WaitIdle()
+		return a.store.Sync(ctx)
+	}
+	return ctx.Err()
 }
 
 // OncePass validates the execution contract before discovery or mutation, then
