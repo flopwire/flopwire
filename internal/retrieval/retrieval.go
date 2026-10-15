@@ -384,6 +384,15 @@ func literalRegexpCond(q *query, re *regexp.Regexp) string {
 			return ""
 		}
 	}
+	// A single folded literal can have many Unicode variants (long-s and
+	// Kelvin). One explicit literal expression avoids rechecking the same
+	// large body separately for each ILIKE alternative. Keep the existing
+	// eligibility bounds and all other expression shapes on their old path.
+	if len(literals) > 1 {
+		if pattern, ok := foldedLiteralPattern(ast); ok {
+			return "m.text ~ " + q.arg(pattern)
+		}
+	}
 	parts := make([]string, 0, len(literals))
 	for _, s := range literals {
 		parts = append(parts, "m.text ILIKE "+q.arg("%"+likeEscape(s)+"%"))
@@ -392,6 +401,37 @@ func literalRegexpCond(q *query, re *regexp.Regexp) string {
 		return parts[0]
 	}
 	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// foldedLiteralPattern emits PostgreSQL syntax only from literal runes, never
+// from user regexp syntax. Explicit Go fold orbits avoid locale-dependent ~*.
+func foldedLiteralPattern(ast *syntax.Regexp) (string, bool) {
+	for ast.Op == syntax.OpCapture {
+		ast = ast.Sub[0]
+	}
+	if ast.Op != syntax.OpLiteral || ast.Flags&syntax.FoldCase == 0 {
+		return "", false
+	}
+	var out strings.Builder
+	for _, r := range ast.Rune {
+		if r == 0 || r > unicode.MaxASCII {
+			return "", false
+		}
+		if next := unicode.SimpleFold(r); next != r {
+			out.WriteByte('[')
+			out.WriteRune(r)
+			for f := next; f != r; f = unicode.SimpleFold(f) {
+				out.WriteRune(f)
+			}
+			out.WriteByte(']')
+		} else {
+			if strings.ContainsRune(`\.^$[]()|*+?{}`, r) {
+				out.WriteByte('\\')
+			}
+			out.WriteRune(r)
+		}
+	}
+	return out.String(), true
 }
 
 const (
