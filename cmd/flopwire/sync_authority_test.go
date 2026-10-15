@@ -120,3 +120,24 @@ func TestSyncAuthorityUnenrolledTokenChangeDoesNotAdoptQueue(t *testing.T) {
 		t.Fatal("original token lost queue")
 	}
 }
+
+func TestSyncAuthorityCorruptSpoolKeyFailsClosed(t *testing.T) {
+	for _, key := range []string{"", "../legacy", "00", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"} {
+		t.Run(key, func(t *testing.T) {
+			db := authorityDB(t)
+			cc := client.Config{Server: "https://example.test", DeviceID: "device"}
+			if _, err := bindSyncAuthority(t.Context(), db, cc); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE devsync_authority SET spool_key=?`, key); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := bindSyncAuthority(t.Context(), db, cc); err == nil {
+				t.Fatal("accepted corrupt spool identity")
+			}
+			if _, err := savedSyncSpoolKey(t.Context(), db); err == nil {
+				t.Fatal("maintenance accepted corrupt spool identity")
+			}
+		})
+	}
+}
