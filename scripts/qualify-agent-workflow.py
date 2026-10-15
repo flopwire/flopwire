@@ -140,7 +140,7 @@ def main():
                                    "--socket", str(root / "agent.sock"), "--codex-home", str(codex),
                                    "--claude-projects", str(root / "empty-claude"), "--devin-db", "-", "--opencode-db", "-"],
                                   env=env, cwd=project, stdout=log, stderr=log)
-        owner = turn("owner-create", f"This is a synthetic isolated Flopwire qualification. You are the author of decision {marker}. The exact rationale token is {answer}. Run only /bin/sleep 8 once to let the local observer discover this live process. Then state the marker and token in your final answer and end. Do not send messages. A later turn will ask you to answer a colleague about this decision.")
+        owner = turn("owner-create", f"This is a synthetic isolated Flopwire qualification. You are the author of decision {marker}. The exact rationale label is {answer}. Run only /bin/sleep 8 once to let the local observer discover this live process. Then state the marker and token in your final answer and end. Do not send messages. A later turn will ask you to answer a colleague about this decision.")
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -154,7 +154,7 @@ def main():
             if time.monotonic() > deadline:
                 raise RuntimeError("owner never indexed and ended; inspect observer lifecycle")
             time.sleep(.2)
-        requester = turn("requester-discover", f"This is an isolated workflow trial. Use only the shell to run {binary} retrieval/messaging commands; do not inspect files, environment, process lists, or other tools. You need the rationale for decision {marker}. Discover the producing session from Flopwire transcript evidence, inspect enough evidence to distinguish author from later references, inspect its presence, and send that session one request with --intent request asking it to return its rationale token via a correlated reply. Do not invent session IDs. Use --help as needed. Also attempt one send to nonexistent session 00000000-0000-4000-8000-000000000000, report its refusal truthfully, and do not retry it. End after reporting evidence, target, request ID, delivery state, and limitations; you are not expected to receive a reply this turn.")
+        requester = turn("requester-discover", f"This is an isolated workflow trial. Use only the shell to run {binary} retrieval/messaging commands; do not inspect files, environment, process lists, or other tools. You need the rationale for decision {marker}. Discover the producing session from Flopwire transcript evidence, inspect enough evidence to distinguish author from later references, inspect its presence, and send that session one request with --intent request asking it to return its rationale label via a correlated reply. Do not invent session IDs. Use --help as needed. Also attempt one send to nonexistent session 00000000-0000-4000-8000-000000000000, report its refusal truthfully, and do not retry it. End after reporting evidence, target, request ID, delivery state, and limitations; you are not expected to receive a reply this turn.")
         sent = cli("inbox", "--sent", session=requester)
         (root / "sent-before-resume.json").write_text(json.dumps(sent, indent=2) + "\n")
         report.update(owner=owner, requester=requester)
@@ -177,8 +177,8 @@ def main():
         if len(receipts) != 1 or receipts[0].get("to", {}).get("session") != owner or receipts[0].get("arrives") != "only_if_resumed":
             raise RuntimeError("request did not target the exact ended owner with only_if_resumed receipt")
         report.update(inspected_source=True, refused_unknown=True, initial_arrives=receipts[0]["arrives"])
-        turn("owner-resume", f"You are explicitly resumed for the synthetic trial. Use only shell commands for {binary}. Read your Flopwire inbox, locate the request about decision {marker}, and answer the requesting session with the rationale token you recorded earlier. Send --intent done and --reply-to the actual request message ID. Do not send any other message. End by reporting the receipt.", owner)
-        turn("requester-verify", f"The harness explicitly resumed the controlled owner and has now resumed you. Use only shell commands for {binary}. Inspect the thread for your earlier request about {marker}. Verify the reply belongs to that request by reply_to/thread evidence and comes from the producing session. Report the rationale token, evidence IDs, and whether the initial send alone woke the ended owner. Do not send further messages.", requester)
+        turn("owner-resume", f"You are explicitly resumed for the synthetic trial. Use only shell commands for {binary}. Read your Flopwire inbox, locate the request about decision {marker}, and answer the requesting session with the rationale label you recorded earlier. Send --intent done and --reply-to the actual request message ID. Do not send any other message. End by reporting the receipt.", owner)
+        turn("requester-verify", f"The harness explicitly resumed the controlled owner and has now resumed you. Use only shell commands for {binary}. Inspect the thread for your earlier request about {marker}. Verify the reply belongs to that request by reply_to/thread evidence and comes from the producing session. Report the rationale label, evidence IDs, and whether the initial send alone woke the ended owner. Do not send further messages.", requester)
         final = cli("inbox", "--sent", session=requester)
         (root / "sent-after-resume.json").write_text(json.dumps(final, indent=2) + "\n")
         requests = [m for m in sent["messages"] if m.get("intent") == "request" and m.get("to_session") == owner]
