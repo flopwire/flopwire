@@ -22,7 +22,7 @@ history and authentication files out of the repository.
 Two fresh `gpt-6.1-sol` agents investigated why the Codex IDE missed-message
 investigation was deferred and whether a fix had been established. Both
 recovered the owner's decision and correctly reported that successful
-retries did not explain or fix the original miss. Neither needed human help.
+retries did not explain or fix the original miss. Neither needed mid-task human intervention. The repeat received researcher-provided strategy guidance before starting.
 
 | Trial | Retrieval calls | Observed friction |
 | --- | ---: | --- |
@@ -144,13 +144,29 @@ in #228 or qualify every supported client and device combination.
   It does not fix broad-grep startup latency.
 - [#291](https://github.com/flopwire/flopwire/issues/291) tracks first-candidate
   latency. Isolated measurements found repeated text rechecks across Unicode
-  fold alternatives. A literal-only candidate optimization is under review;
-  the production latency observation remains unresolved until validated.
+  fold alternatives. [#292](https://github.com/flopwire/flopwire/pull/292)
+  removes that amplification for eligible folded literals. On a synthetic
+  production `Store.Grep` fixture, first-page means for `cass search` fell
+  from 2283/2321 ms to 326/218 ms for ordinary/continuation requests. All
+  ordered first-page IDs matched. These warm three-call means do not establish
+  a universal startup bound or validate the original private-history timeout.
+  The PR retains the experiment report and sanitized reproduction evidence.
 
-Before declaring the workflow qualified, repeat the affected tasks on the
-final code. Include unavailable recipients, ambiguous evidence, partial
-results, and old MCP processes. Keep GUI-client delivery limitations and
-hosted concurrency claims separate from a passing local CLI trial.
+The remaining qualification gates are:
+
+- Repeat cited-line reading and repository-scope attribution on the final
+  integrated build. The focused regression tests qualify the individual fixes.
+- Repeat the original broad historical query against an updated shared server.
+  Record elapsed time, candidate checks, completeness, and timeout recovery.
+- Exercise ambiguous decisions and long-running MCP processes across credential
+  rotation. The successful decision-recovery cases do not cover these paths.
+- Keep GUI-client delivery and hosted concurrency qualification separate from
+  the passing local CLI request/reply and installed-hook trials.
+
+The historical recovery and attribution traces are summarized here rather than
+committed verbatim because they contain private history. Their installed MCP
+server revision was not pinned independently for each call. Their results are
+workflow observations, not reproducible final-build acceptance tests.
 
 ## Earlier CASS usage
 
