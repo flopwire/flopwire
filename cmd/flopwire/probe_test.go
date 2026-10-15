@@ -593,10 +593,14 @@ func TestCodexRefreshDue(t *testing.T) {
 		"fresh":                 {auth(fresh, fakeJWT(now.Add(5*24*time.Hour))), false, ""},
 		"access expires in 20m": {auth(fresh, fakeJWT(now.Add(20*time.Minute))), true, "access token expires"},
 		"access expires in 40m": {auth(fresh, fakeJWT(now.Add(40*time.Minute))), false, ""},
-		"8-day refresh in 10m":  {auth(now.Add(-8*24*time.Hour+10*time.Minute).Format(time.RFC3339Nano), fakeJWT(now.Add(5*24*time.Hour))), true, "8-day refresh"},
-		"8-day refresh past":    {auth(now.Add(-9*24*time.Hour).Format(time.RFC3339Nano), fakeJWT(now.Add(5*24*time.Hour))), true, "8-day refresh"},
-		"no last_refresh":       {auth("", fakeJWT(now.Add(5*24*time.Hour))), true, "last_refresh"},
+		"8-day refresh in 10m":  {auth(now.Add(-8*24*time.Hour+10*time.Minute).Format(time.RFC3339Nano), fakeJWT(now.Add(5*24*time.Hour))), false, ""},
+		"8-day refresh past":    {auth(now.Add(-9*24*time.Hour).Format(time.RFC3339Nano), fakeJWT(now.Add(5*24*time.Hour))), false, ""},
+		"no last_refresh":       {auth("", fakeJWT(now.Add(5*24*time.Hour))), false, ""},
 		"unreadable access":     {auth(fresh, "opaque"), true, "expiry is unreadable"},
+		"expiry at horizon":     {auth(fresh, fakeJWT(now.Add(35*time.Minute))), true, "access token expires"},
+		"expiry after horizon":  {auth(fresh, fakeJWT(now.Add(35*time.Minute+time.Second))), false, ""},
+		"fallback age due":      {auth(now.Add(-9*24*time.Hour).Format(time.RFC3339Nano), "opaque"), true, "8-day refresh"},
+		"fallback no age":       {auth("", "opaque"), true, "last_refresh"},
 		"api key, no tokens":    {[]byte(`{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x","tokens":null}`), false, ""},
 		"not json":              {[]byte("{"), true, "not JSON"},
 	} {
@@ -617,7 +621,7 @@ func TestRunProbeSkipsCodexWhenRefreshDue(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", home)
 	b, _ := json.Marshal(map[string]any{"last_refresh": time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano),
-		"tokens": map[string]any{"access_token": fakeJWT(time.Now().Add(time.Hour)), "refresh_token": "rt"}})
+		"tokens": map[string]any{"access_token": fakeJWT(time.Now().Add(20 * time.Minute)), "refresh_token": "rt"}})
 	os.WriteFile(filepath.Join(home, "auth.json"), b, 0o600)
 	var log strings.Builder
 	rep, err := runProbe(t.Context(), probeOpts{harnesses: []transcript.Agent{transcript.AgentCodex}, cases: probeCases, local: true, dir: t.TempDir()}, &log)
@@ -700,7 +704,7 @@ func TestRunProbeSkipLeavesNoCase(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", home)
 	b, _ := json.Marshal(map[string]any{"last_refresh": time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339Nano),
-		"tokens": map[string]any{"access_token": fakeJWT(time.Now().Add(time.Hour)), "refresh_token": "rt"}})
+		"tokens": map[string]any{"access_token": fakeJWT(time.Now().Add(20 * time.Minute)), "refresh_token": "rt"}})
 	os.WriteFile(filepath.Join(home, "auth.json"), b, 0o600)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()

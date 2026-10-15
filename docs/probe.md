@@ -159,7 +159,9 @@ in the hook log.
 Codex refresh tokens are single use. A refresh in the probe's copy would
 use up the token that `~/.codex/auth.json` still holds, and your next
 Codex refresh would then fail. Codex refreshes when its access token is
-within 5 minutes of expiry, or 8 days after `last_refresh`.
+within 5 minutes of expiry. In Codex 0.160.0 and 0.162.1, the
+8-day `last_refresh` rule applies only when the token expiry cannot be read.
+The probe follows that precedence and rejects unreadable expiry conservatively.
 
 - Before it copies the login, the probe reads both times. If a refresh
   could happen within the next 30 minutes, it skips Codex and prints
