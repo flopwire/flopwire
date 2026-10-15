@@ -881,7 +881,8 @@ func (l loginCopy) release() error {
 const codexRefreshWindow = 30 * time.Minute
 
 // Codex refreshes its ChatGPT login when the access token is within 5
-// minutes of expiry, or 8 days after last_refresh (codex-rs login, 0.160).
+// minutes of expiry. The 8-day last_refresh check is a fallback only when
+// expiry cannot be read (codex-rs login, 0.160.0 and 0.162.1).
 const (
 	codexRefreshBeforeExpiry = 5 * time.Minute
 	codexRefreshInterval     = 8 * 24 * time.Hour
@@ -907,6 +908,14 @@ func codexRefreshDue(auth []byte, now time.Time, window time.Duration) (bool, st
 		return false, ""
 	}
 	until := now.Add(window)
+	if exp, ok := jwtExpiry(a.Tokens.AccessToken); ok {
+		if due := exp.Add(-codexRefreshBeforeExpiry); !due.After(until) {
+			return true, fmt.Sprintf("the access token expires at %s", exp.UTC().Format(time.RFC3339))
+		}
+		return false, ""
+	}
+	// Codex falls back to last_refresh when expiry is unreadable. Keep
+	// unknown expiry conservative even when that fallback is not due.
 	last, err := time.Parse(time.RFC3339Nano, a.LastRefresh)
 	if err != nil {
 		return true, "last_refresh is missing or unreadable"
@@ -914,14 +923,7 @@ func codexRefreshDue(auth []byte, now time.Time, window time.Duration) (bool, st
 	if due := last.Add(codexRefreshInterval); !due.After(until) {
 		return true, fmt.Sprintf("the 8-day refresh is due at %s", due.UTC().Format(time.RFC3339))
 	}
-	exp, ok := jwtExpiry(a.Tokens.AccessToken)
-	if !ok {
-		return true, "the access token's expiry is unreadable"
-	}
-	if due := exp.Add(-codexRefreshBeforeExpiry); !due.After(until) {
-		return true, fmt.Sprintf("the access token expires at %s", exp.UTC().Format(time.RFC3339))
-	}
-	return false, ""
+	return true, "the access token's expiry is unreadable"
 }
 
 // jwtExpiry reads a JWT's exp claim without verifying it.
