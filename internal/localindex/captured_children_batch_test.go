@@ -204,3 +204,137 @@ func TestCapturedClaudeChildrenBatchValidParentWithoutRootsReportsSchemaError(t 
 		})
 	}
 }
+
+func TestCapturedClaudeChildrenPrefilterPreservesCleanedPaths(t *testing.T) {
+	s := openEvidenceTest(t)
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	for _, suffix := range []string{
+		"/subagents//agent-double.jsonl",
+		"/subagents/./agent-dot.jsonl",
+		"/discard/../subagents/deep/agent-parent.jsonl",
+		"/subagents/agent-trailing.jsonl/.",
+		"/subagents/agent-up.jsonl/other/..",
+	} {
+		path := root + "/project/" + strings.ToUpper(parent) + suffix
+		batchNativeEvidence(t, s, path, "", false)
+	}
+	got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {root + "/."}})
+	want := []string{"agent-dot", "agent-double", "agent-parent", "agent-trailing", "agent-up"}
+	if err != nil || !reflect.DeepEqual(got[parent], want) {
+		t.Fatalf("cleaned paths=%v error=%v want=%v", got, err, want)
+	}
+}
+
+func TestCapturedClaudeChildrenNonchildCost(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	for _, n := range []int{256, 2048, 16384} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "index.db")
+			counter := perfguard.CountSQLite(t, "file:"+path+"?")
+			s, err := Open(path, Options{DeviceID: "local-device", DeferCommit: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err := s.write(ctx, func(w *writeTx) error {
+				_, err := w.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
+ INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)
+ SELECT i,'local-device','claude','/synthetic/projects/project/session-'||i||'.jsonl','','jsonl_append','claude@1',0 FROM n`, n)
+				if err != nil {
+					return err
+				}
+				_, err = w.exec(`INSERT INTO companions(source_id,path,kind,size,seen_at) SELECT -id,'/synthetic/companion-'||id,'tool_result',9,0 FROM sources`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			cost := perfguard.MeasureSQLite(counter, func() {
+				got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {"/synthetic/projects"}})
+				if err != nil || len(got) != 0 {
+					t.Fatalf("relations=%v error=%v", got, err)
+				}
+			})
+			t.Logf("%d nonchildren and unrelated companions: %v, %s", n, time.Since(start), cost.String())
+			// A candidate filter must prevent a companion-table scan per parent.
+			if cost.SQLitePages > int64(n)*4+100 {
+				t.Fatalf("nonchild evidence cost: %s", cost.String())
+			}
+			if err := s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{
+					`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`,
+					`CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER)`,
+					`INSERT INTO devsync_sources SELECT id,path,json_object('Agent','claude','StorageKind','jsonl_append','Parser','claude@1','SessionKey',''),1 FROM sources`,
+					`INSERT INTO devsync_gens SELECT id,1,9 FROM sources`,
+				} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			counter.Reset()
+			start = time.Now()
+			schedulerCost := perfguard.MeasureSQLite(counter, func() {
+				got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {"/synthetic/projects"}})
+				if err != nil || len(got) != 0 {
+					t.Fatalf("relations=%v error=%v", got, err)
+				}
+			})
+			t.Logf("%d local + scheduler nonchildren: %v, %s", n, time.Since(start), schedulerCost.String())
+			if schedulerCost.SQLitePages > int64(n)*8+100 {
+				t.Fatalf("scheduler evidence cost: %s", schedulerCost.String())
+			}
+
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenSchedulerEscapedParentAndMalformedSpec(t *testing.T) {
+	s := openEvidenceTest(t)
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	if err := s.write(ctx, func(w *writeTx) error {
+		for _, stmt := range []string{
+			`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`,
+			`CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER)`,
+		} {
+			if _, err := w.exec(stmt); err != nil {
+				return err
+			}
+		}
+		spec, _ := json.Marshal(map[string]any{"Agent": "claude", "StorageKind": "companion", "Parser": "claude@1", "Parent": root + "/project/" + strings.ToUpper(parent) + "/subagents/./agent-escaped.jsonl", "SessionKey": ""})
+		escaped := strings.Replace(string(spec), "subagents", `sub\u0061gents`, 1)
+		if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,'/unrelated/companion.txt',?,1)`, escaped); err != nil {
+			return err
+		}
+		_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,1,9)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {root}})
+	if err != nil || !reflect.DeepEqual(got[parent], []string{"agent-escaped"}) {
+		t.Fatalf("escaped companion=%v error=%v", got, err)
+	}
+	if err := s.write(ctx, func(w *writeTx) error {
+		_, err := w.exec(`UPDATE devsync_sources SET spec='malformed'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, roots := range [][]string{{root}, nil} {
+		if _, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: roots}); err == nil {
+			t.Fatal("malformed retained spec must fail closed")
+		}
+	}
+}

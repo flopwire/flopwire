@@ -499,9 +499,13 @@ func (s *Store) CapturedClaudeChildrenForParents(ctx context.Context, parents ma
 			}
 			return rows.Err()
 		}
+		// Cleaning can remove path components but cannot invent a subagents
+		// component. Reject ordinary parent paths before correlated historical
+		// evidence checks, which can scan unindexed companion/conversation rows.
 		if err := read(`SELECT src.path,coalesce(src.session_key,'') FROM sources src
  WHERE src.device_id=? AND src.agent=? AND src.storage_kind=?
    AND substr(src.parser,1,7)='claude@' AND length(src.parser)>7
+   AND instr(src.path,'subagents')>0
    AND (src.wm_size>0 OR src.wm_offset>0
      OR EXISTS(SELECT 1 FROM generations g WHERE g.source_id=src.id AND g.size>0)
      OR EXISTS(SELECT 1 FROM messages m WHERE m.source_id=src.id)
