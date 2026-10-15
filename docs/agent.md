@@ -331,7 +331,10 @@ it answers.
 The agent reads the server credential at startup. When a login is saved
 while it runs without one, or the saved credential is removed, the agent
 restarts itself within 2 seconds. It then uploads and polls the server, or
-runs local.
+runs local. Automatic storage mode follows this transition: connected
+uses minimal storage; credential removal restores a full standalone index.
+An explicitly selected sync-only agent keeps its last credential because
+it requires a server. Stop it before changing to standalone mode.
 
 A login to a different server while the agent runs does not restart it.
 Restart the agent yourself after you switch servers (see

@@ -381,12 +381,13 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 	}
 	// A server credential saved or removed while the agent runs restarts
-	// it (watchCredential): the server is wired only here. Sync-only mode
+	// it (watchCredential): the server is wired only here. Automatic mode
+	// follows credentials back to a full standalone index. Explicit sync-only
 	// needs its server, so it keeps the last credential instead.
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
 	var restart atomic.Bool
-	if !*noSync && !*syncOnly {
+	if watchCredentialForMode(*noSync, *syncOnly, automaticStorageMode(fs, cc)) {
 		wired := ccErr == nil && cc.Server != "" && cc.Token != ""
 		go watchCredential(runCtx, credentialWatchEvery, wired, client.Load, func(why string) {
 			log.Info("agent: " + why)
@@ -412,6 +413,10 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		return nil, err
 	}
 	return nil, nil
+}
+
+func watchCredentialForMode(noSync, syncOnly, automatic bool) bool {
+	return !noSync && (!syncOnly || automatic)
 }
 
 // credentialWatchEvery is how often a running agent re-reads the client
