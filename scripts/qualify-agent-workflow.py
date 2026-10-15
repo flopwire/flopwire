@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import time
@@ -68,8 +69,28 @@ def checked_auth(raw, now=None):
 def source_read(command, result, owner):
     # Read addresses use a variable-length unique prefix; verify the full
     # identity returned with the source evidence rather than its spelling.
-    return (" read " in command and result.get("conversation", {}).get("session_id") == owner
-            and bool(result.get("messages")))
+    if " read " not in command:
+        return False
+    if isinstance(result, dict):
+        return (result.get("conversation", {}).get("session_id") == owner
+                and any(m.get("text", "").strip() for m in result.get("messages", [])))
+    if not isinstance(result, str):
+        return False
+    lines = result.splitlines()
+    # Native text has one unindented session header. Body/title mentions
+    # cannot substitute for that first header or its exact full identity.
+    header = next((i for i, line in enumerate(lines) if line.startswith("# ")), None)
+    if header is None or not re.match(r"^# " + re.escape(owner) + r" agent=\S+(?: |$)", lines[header]):
+        return False
+    for i in range(header + 1, len(lines)):
+        marker = re.match(r"^(?:>> |   )([^\s/]+)/\d+(?::\d+)?\s{2,}\S", lines[i])
+        if marker and owner.startswith(marker[1]):
+            # Evidence text is indented beneath its native message marker.
+            if i + 1 < len(lines) and re.match(r"^ {4,}\S", lines[i + 1]):
+                body = re.sub(r"^\d+(?:\s+|$)", "", lines[i + 1].lstrip())
+                if body.strip():
+                    return True
+    return False
 
 
 def main():
@@ -164,11 +185,15 @@ def main():
         refused_unknown = False
         inspected_source = False
         for item in commands:
+            output = item.get("aggregated_output", "")
             try:
-                value = json.loads(item.get("aggregated_output", ""))
+                value = json.loads(output)
             except json.JSONDecodeError:
+                if item.get("exit_code") == 0:
+                    inspected_source |= source_read(item.get("command", ""), output, owner)
                 continue
-            inspected_source |= source_read(item.get("command", ""), value, owner)
+            if item.get("exit_code") == 0:
+                inspected_source |= source_read(item.get("command", ""), value, owner)
             if value.get("kind") == "send_receipt":
                 receipts.append(value)
             refused_unknown |= value.get("error", {}).get("code") == "unknown_recipient"

@@ -31,6 +31,24 @@ class CredentialGuardTests(unittest.TestCase):
         self.assertTrue(qualification.source_read("flopwire read 01a13fd2/123", result, owner))
         self.assertFalse(qualification.source_read("flopwire read 01a13fd2/123", result, "different-owner"))
         self.assertFalse(qualification.source_read("flopwire read 01a13fd2/123", {"conversation": {"session_id": owner}}, owner))
+        self.assertFalse(qualification.source_read("flopwire read 01a13fd2/123", {"conversation": {"session_id": owner}, "messages": [{"text": ""}]}, owner))
+
+    def test_native_text_source_read_requires_header_and_evidence(self):
+        owner = "01a13fd2-e7ae-7303-93a0-5235f7d5a5d1"
+        command = "flopwire read 01a13fd2/123"
+        header = f"# {owner} agent=codex repo=/tmp/synthetic title=\"fixture\"\n"
+        message = ">> 01a13fd2/123  2026-10-15 12:00Z  user\n     1  Original synthetic evidence.\n"
+        self.assertTrue(qualification.source_read(command, "[scope: local device]\n" + header + message, owner))
+        self.assertTrue(qualification.source_read(command, header + message.replace(">> ", "   ").replace("     1  ", "    "), owner))
+        self.assertFalse(qualification.source_read(command, header + message, "different-owner"))
+        self.assertFalse(qualification.source_read(command, header, owner))
+        self.assertFalse(qualification.source_read(command, header + message.splitlines()[0] + "\n", owner))
+        self.assertFalse(qualification.source_read(command, header + message.splitlines()[0] + "\n     1  \n", owner))
+        self.assertFalse(qualification.source_read(command, header + message.replace("01a13fd2/123", "unrelated/123"), owner))
+        wrong_header = '# other-owner agent=codex title="' + owner + '"\n'
+        self.assertFalse(qualification.source_read(command, wrong_header + message + "    " + header, owner))
+        self.assertFalse(qualification.source_read(command, "    " + header + message, owner))
+        self.assertFalse(qualification.source_read(command, wrong_header + header + message, owner))
 
     def test_probe_metadata_cases(self):
         for name, raw, reason in [
