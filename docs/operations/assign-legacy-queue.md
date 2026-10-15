@@ -11,7 +11,10 @@ current enrollment does not prove the historical owner. Assign only when you
 know that the saved state belongs to that server and device.
 
 1. Stop the collector service and any foreground collector.
-2. Back up the index, its SQLite sidecars, and the client config directory.
+2. Create one backup while the collector remains stopped. Include the index,
+   all search shards, and every SQLite WAL and SHM sidecar. Include the complete
+   client config directory and spool. Include the installed collector binary
+   and its launchd plist. Keep these files together as one matching snapshot.
 3. Run the command with the existing index and the historical enrollment:
 
    ```sh
@@ -42,3 +45,16 @@ A retry verifies existing copied bytes and refuses conflicting files. A complete
 assignment is a no-op for the same owner, so a retry cannot restore captures that
 have since been acknowledged. Another owner is refused. Do not edit or delete an
 unfinished journal to change ownership.
+
+## Roll back an assignment or upgrade
+
+1. Stop the collector service and any foreground collector.
+2. Save the current index, search shards, SQLite sidecars, config, and spool in
+   a separate snapshot. Preserve this post-upgrade state for recovery.
+3. Restore the complete matching stopped snapshot from before assignment.
+4. Restore the binary and launchd plist from that same snapshot.
+5. Restart the restored collector with its saved retention mode and settings.
+
+Do not run an old binary against the newly scoped state. Restore the matching
+state and binary together. A rollback can repeat uploads acknowledged after the
+snapshot. Keep the post-upgrade snapshot until you have reconciled those changes.
