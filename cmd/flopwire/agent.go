@@ -277,6 +277,9 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 			contract.TokenFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(cc.Token)))
 		}
 	}
+	if contract.Connection == "upload" {
+		opts.BeforeMigrate = func(db *sql.DB) error { _, err := readSyncAuthority(ctx, db, cc); return err }
+	}
 	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log, contract)
 	if err != nil || store == nil {
 		return nil, err // store == nil: the running agent did the pass
@@ -883,12 +886,17 @@ func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spo
 		return nil, nil, nil, nil, err
 	}
 	db.SetMaxOpenConns(1)
+	spoolKey, err := bindSyncAuthority(ctx, db, cfg)
+	if err != nil {
+		db.Close()
+		return nil, nil, nil, nil, err
+	}
 	st, err := devicesync.NewStore(db)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	spool, err := devicesync.OpenSpool(filepath.Join(dir, "spool"), spoolCap)
+	spool, err := devicesync.OpenSpool(filepath.Join(dir, "spool", spoolKey), spoolCap)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err

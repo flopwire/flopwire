@@ -32,7 +32,8 @@ func agentPrepareLegacyTails(ctx context.Context, args []string, out io.Writer) 
 			return err
 		}
 	}
-	if *spoolPath == "" {
+	defaultSpool := *spoolPath == ""
+	if defaultSpool {
 		dir, err := configDir()
 		if err != nil {
 			return err
@@ -62,6 +63,15 @@ func agentPrepareLegacyTails(ctx context.Context, args []string, out io.Writer) 
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	if defaultSpool {
+		key, err := savedSyncSpoolKey(ctx, db)
+		if err != nil {
+			return err
+		}
+		if key != "" {
+			*spoolPath = filepath.Join(*spoolPath, key)
+		}
+	}
 	result, err := devicesync.PrepareLegacyTails(ctx, db, *spoolPath)
 	if err != nil {
 		return err

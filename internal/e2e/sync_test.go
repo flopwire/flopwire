@@ -33,6 +33,16 @@ func TestTwoDeviceSync(t *testing.T) {
 	defer h.writeReport()
 	h.setupIdentity("macbook-m1p", "macbook-m5p-sim")
 	d1, d2 := h.devs[0], h.devs[1]
+	// The proxy is the second device's stable endpoint from its first queue
+	// creation. Arming a crash boundary must not change sync authority.
+	gate, err := newCrashProxy(h.cfg.server, h.cfg.pin, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gate.close)
+	if err := setDeviceEndpoint(d2.cfg, gate.server.URL, gate.fingerprint()); err != nil {
+		t.Fatal(err)
+	}
 	var corpus string
 	for _, d := range h.devs {
 		d.seed()
@@ -274,23 +284,12 @@ func TestTwoDeviceSync(t *testing.T) {
 		d2.claudeSID = saved
 		size := int64(b.Len())
 		d2.stop(false)
-		gate, err := newCrashProxy(h.cfg.server, h.cfg.pin, p, size)
-		if err != nil {
-			t.Fatal(err)
-		}
+		gate.arm(p, size)
 		defer func() {
-			gate.unblock()
+			gate.disarm()
 			d2.stop(false)
-			gate.close()
-			if err := setDeviceEndpoint(d2.cfg, h.cfg.server, h.cfg.pin); err != nil {
-				t.Error(err)
-				return
-			}
 			d2.start()
 		}()
-		if err := setDeviceEndpoint(d2.cfg, gate.server.URL, gate.fingerprint()); err != nil {
-			t.Fatal(err)
-		}
 		writeFile(t, p, b.String())
 		start := time.Now()
 		d2.start()
