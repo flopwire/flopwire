@@ -267,21 +267,9 @@ func TestReadAndRaw(t *testing.T) {
 	if _, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) {
 		t.Fatalf("gone without a server: %v", err)
 	}
-	remote := &fakeRemote{data: []byte("unrelated archive record")}
-	b.Remote = remote
-	if data, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) || data != nil || remote.got != "" {
-		t.Fatalf("unverified server fallback: %q %v %+v", data, err, remote)
+	if data, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) || data != nil {
+		t.Fatalf("unverified server fallback: %q %v", data, err)
 	}
-}
-
-type fakeRemote struct {
-	data        []byte
-	got, fileID string
-}
-
-func (f *fakeRemote) RawByPath(_ context.Context, path, fileID string, gen, off, n int64) ([]byte, error) {
-	f.got, f.fileID = fmt.Sprintf("%s|%d|%d|%d", path, gen, off, n), fileID
-	return f.data, nil
 }
 
 // addRows indexes extra messages into one new Claude session.

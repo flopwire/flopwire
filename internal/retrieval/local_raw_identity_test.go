@@ -32,7 +32,7 @@ func TestLocalRawRefusesRewrittenArchive(t *testing.T) {
 	if err := localtest.IndexHome(ctx, idx, s.home); err != nil {
 		t.Fatal(err)
 	}
-	backend := &local.Backend{Store: idx, Remote: s.client}
+	backend := &local.Backend{Store: idx}
 	page, err := backend.Search(ctx, format.SearchQuery{Query: "exponential backoff"}, format.Filters{})
 	if err != nil || len(page.Hits) == 0 {
 		t.Fatalf("local search: %+v %v", page, err)
@@ -48,6 +48,22 @@ func TestLocalRawRefusesRewrittenArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := file0(t, path)
+	// The indexed record remains available while the writer appends and the
+	// local index lags, because its persisted covering digest still matches.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\n"); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := backend.RawAt(ctx, hit.Address); err != nil || !bytes.Equal(data, original) {
+		t.Fatalf("append hid verified indexed record: %q %v", data, err)
+	}
 	rewritten := bytes.ReplaceAll(source, []byte("backoff"), []byte("rewrite"))
 	if bytes.Equal(source, rewritten) {
 		t.Fatal("fixture lacks rewrite target")

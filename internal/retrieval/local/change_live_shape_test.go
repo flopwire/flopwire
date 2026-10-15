@@ -59,12 +59,11 @@ func TestChangeCodexLiteralExecLiveShape(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	backend.Remote = &fakeRemote{data: raw}
 	page, err := backend.Change(ctx, format.ChangeQuery{Commits: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, format.Filters{Repo: "/tmp/synthetic-live-writer"})
 	if err != nil || len(page.Matches) != 1 || page.Coverage.UnavailableSources != 1 {
-		t.Fatalf("connected missing-source coverage: %+v %v", page, err)
+		t.Fatalf("missing-source coverage: %+v %v", page, err)
 	}
 	if data, err := backend.RawAt(ctx, page.Matches[0].CommandAddress); !errors.Is(err, ErrNotLocal) || data != nil {
-		t.Fatalf("connected missing-source evidence: %q %v", data, err)
+		t.Fatalf("missing-source evidence: %q %v", data, err)
 	}
 }

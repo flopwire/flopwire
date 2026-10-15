@@ -56,16 +56,9 @@ func IndexPath() string {
 	return filepath.Join(dir, "flopwire", "index.db")
 }
 
-// Remote marks a configured team server. client.HTTP implements it.
-// Local raw reads cannot use its independently numbered archive generations.
-type Remote interface {
-	RawByPath(ctx context.Context, path, fileID string, generation, offset, length int64) ([]byte, error)
-}
-
 // Backend serves the tools from a local index.
 type Backend struct {
-	Store  *localindex.Store
-	Remote Remote // optional
+	Store *localindex.Store
 }
 
 func bad(format_ string, args ...any) error {

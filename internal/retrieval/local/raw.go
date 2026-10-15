@@ -19,7 +19,8 @@ import (
 var ErrNotLocal = errors.New("the transcript file no longer holds these bytes")
 
 // Raw returns bytes [offset, offset+length) of a local source generation.
-// The indexed file identity must still match before and after the read.
+// Reads verify a persisted content hash, or require an unchanged non-racy
+// indexed file tuple before and after the read.
 // Archive generations are independent of local generations, so a path lookup
 // cannot safely substitute archived bytes for a local byte range.
 func (b *Backend) Raw(ctx context.Context, sourceID string, generation, offset, length int64) ([]byte, error) {
@@ -79,8 +80,11 @@ func readLocal(path string, want transcript.FileID, wm *transcript.Watermark, cu
 		return nil, "file was replaced"
 	}
 	before := transcript.IdentityOf(fi)
-	if wm == nil || before.CTime == 0 || before != wm.Identity {
-		return nil, "file changed since it was indexed"
+	if wm == nil {
+		return nil, "source has no indexed watermark"
+	}
+	if before.ID.IsZero() || before.ID != wm.Identity.ID {
+		return nil, "indexed file identity is unavailable or changed"
 	}
 	if offset >= wm.Offset || length > wm.Offset-offset {
 		return nil, "range extends beyond indexed bytes"
@@ -88,27 +92,25 @@ func readLocal(path string, want transcript.FileID, wm *transcript.Watermark, cu
 	if offset >= fi.Size() {
 		return nil, "file was truncated"
 	}
-	var buf []byte
-	if wm.Racy() {
-		// A coarse ctime tick can hide a rewrite. Only return bytes from
-		// the same buffer whose persisted indexed digest we verify.
+	if before.CTime == 0 || before != wm.Identity || wm.Racy() {
+		// Changed or untrustworthy metadata cannot establish identity.
+		// Return bytes from the buffer whose indexed digest we verify.
 		base, size, sum := int64(0), wm.HeadLen, wm.HeadHash
 		if offset+length > size {
 			base, size, sum = wm.Offset-wm.AnchorLen, wm.AnchorLen, wm.AnchorSum
 		}
 		if offset < base || offset+length > base+size {
-			return nil, "indexed change time is too recent to verify this range"
+			return nil, "no indexed content hash covers this range; wait for a stable index sweep"
 		}
 		region := make([]byte, size)
 		if _, err := f.ReadAt(region, base); err != nil || sha256.Sum256(region) != sum {
 			return nil, "indexed bytes changed"
 		}
-		buf = region[offset-base : offset-base+length]
-	} else {
-		buf = make([]byte, length)
-		if _, err := f.ReadAt(buf, offset); err != nil {
-			return nil, err.Error()
-		}
+		return region[offset-base : offset-base+length], ""
+	}
+	buf := make([]byte, length)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return nil, err.Error()
 	}
 	after, err := f.Stat()
 	if err != nil || transcript.IdentityOf(after) != before {

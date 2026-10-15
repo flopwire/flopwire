@@ -10,7 +10,7 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
-func TestRawRequiresUnchangedIndexedFile(t *testing.T) {
+func TestRawRequiresIndexedIdentity(t *testing.T) {
 	for _, change := range []string{"unchanged", "rewrite", "append", "replace", "missing watermark", "unindexed range"} {
 		t.Run(change, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "source.jsonl")
@@ -53,9 +53,9 @@ func TestRawRequiresUnchangedIndexedFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			data, why := readLocal(path, identity.ID, watermark, true, 0, length)
-			if change == "unchanged" {
+			if change == "unchanged" || change == "append" {
 				if why != "" || !bytes.Equal(data, original) {
-					t.Fatalf("unchanged: %q %s", data, why)
+					t.Fatalf("%s: %q %s", change, data, why)
 				}
 			} else if why == "" || data != nil {
 				t.Fatalf("%s accepted: %q %s", change, data, why)
@@ -89,6 +89,11 @@ func TestRawRacyTupleRequiresCoveredDigest(t *testing.T) {
 	if data, why := readLocal(path, identity.ID, &wm, true, 32<<10, 10); data != nil || why == "" {
 		t.Fatalf("uncovered middle: %q %s", data, why)
 	}
+	wm.SampledAt = wm.Identity.CTime + int64(transcript.RacyWindow)
+	if data, why := readLocal(path, identity.ID, &wm, true, 32<<10, 10); why != "" || string(data) != "aaaaaaaaaa" {
+		t.Fatalf("stable unchanged middle: %q %s", data, why)
+	}
+	wm.SampledAt = wm.Identity.CTime
 	changed := bytes.Repeat([]byte("b"), len(original))
 	if err := os.WriteFile(path, changed, 0600); err != nil {
 		t.Fatal(err)
