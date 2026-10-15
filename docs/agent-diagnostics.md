@@ -44,6 +44,8 @@ elapsed time when it completes.
 
 | Operation | Measured work |
 | --- | --- |
+| `index_target` | Index one transcript or companion, including its lock waits |
+| `fast_lane` | Recheck likely active files and poll harness stores |
 | `sweep` | Full discovery pass, including policy refresh and reconciliation |
 | `discover_all` | Source discovery, including calls outside sweeps |
 | `authorize_capture` | Fresh permission acquisition before capture/upload |

@@ -873,6 +873,7 @@ func (a *Agent) WaitIdle() {
 }
 
 func (a *Agent) index(ctx context.Context, t *target) error {
+	defer a.work.index.Begin().End()
 	if t.kind == kindCompanion {
 		return a.indexCompanion(ctx, t)
 	}
@@ -886,6 +887,7 @@ func (a *Agent) index(ctx context.Context, t *target) error {
 // warmEvery ticks; the rest wait for the sweep. The change time comes from
 // the last stat, so a session that goes quiet cools down by itself.
 func (a *Agent) fastLane(ctx context.Context) {
+	defer a.work.fastLane.Begin().End()
 	now := time.Now()
 	a.ticks++
 	warm := a.ticks%warmEvery == 0
