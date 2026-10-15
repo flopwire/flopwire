@@ -113,7 +113,7 @@ func (b *Backend) Change(ctx context.Context, q format.ChangeQuery, f format.Fil
 			out.HasMore = true
 			break
 		}
-		if b.Remote == nil && r.SourcePath != "" {
+		if r.SourcePath != "" {
 			if _, err := os.Stat(r.SourcePath); os.IsNotExist(err) {
 				unavailable[r.SourcePath] = true
 			}

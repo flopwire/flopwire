@@ -184,8 +184,8 @@ func (e *noIndexError) Error() string {
 	return fmt.Sprintf("no local index at %s (run the device agent, set FLOPWIRE_INDEX, or pass --server)", e.path)
 }
 
-// openLocalBackend opens the local index read-only, with the server client
-// for raw reads of files that are gone when a server is configured.
+// openLocalBackend opens the local index read-only and records whether a
+// team server is configured. Local raw reads require the indexed file.
 func openLocalBackend(indexPath string) (*local.Backend, error) {
 	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
 	if err != nil {

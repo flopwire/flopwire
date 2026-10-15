@@ -125,8 +125,8 @@ not extend that deadline. Run `flopwire login` when reauthentication is needed
 and before administrative commands after the login session expires.
 
 Every connection from this laptop checks the server's certificate against
-the pinned fingerprint: admin commands, `--server` queries, the raw fallback
-and the agent's uploads. A different certificate is refused before any
+the pinned fingerprint: admin commands, `--server` queries and the agent's
+uploads. A different certificate is refused before any
 credential is sent.
 
 To keep the administrator apart from your own data, invite a member
