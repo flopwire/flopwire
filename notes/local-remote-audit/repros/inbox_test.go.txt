@@ -1,0 +1,44 @@
+package devicebus
+
+import (
+	"github.com/flopwire/flopwire/internal/busproto"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestAuditOldAuthorityScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bus.db")
+	old, err := Open(path, testConfig(newFakeServer(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = old.st.reconcile(ctx, []busproto.Envelope{env("old-authority", "same-session")}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	local, err := Open(path, testConfig(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := local.Take(ctx, "same-session", "claude", Limit{})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %v err %v", got, err)
+	}
+	t.Logf("standalone Local=%v delivered cached ID=%s body=%q", local.Local(), got[0].ID, got[0].Body)
+	if err = local.Confirm(ctx, "same-session", []string{got[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	local.Close()
+	newServer := newFakeServer()
+	fresh, err := Open(path, testConfig(newServer, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	n, _, err := fresh.sendAcks(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("acks n=%d err=%v", n, err)
+	}
+	t.Logf("new authority received old IDs=%v", newServer.acks)
+}
