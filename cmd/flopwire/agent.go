@@ -883,12 +883,17 @@ func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spo
 		return nil, nil, nil, nil, err
 	}
 	db.SetMaxOpenConns(1)
+	spoolKey, err := bindSyncAuthority(ctx, db, cfg)
+	if err != nil {
+		db.Close()
+		return nil, nil, nil, nil, err
+	}
 	st, err := devicesync.NewStore(db)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	spool, err := devicesync.OpenSpool(filepath.Join(dir, "spool"), spoolCap)
+	spool, err := devicesync.OpenSpool(filepath.Join(dir, "spool", spoolKey), spoolCap)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
