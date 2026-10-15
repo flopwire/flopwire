@@ -49,3 +49,16 @@ func TestBoundedChangeMatchKeepsEvidenceAddresses(t *testing.T) {
 		t.Fatalf("bound failed size=%d", size)
 	}
 }
+
+func TestChangeAcceptsExpandedRepositoryScope(t *testing.T) {
+	q := ChangeQuery{Commits: []string{strings.Repeat("a", 40)}}
+	for _, f := range []Filters{
+		{RepoRoots: []string{"/src/repo"}},
+		{RepoMains: []string{"/src/repo"}},
+		{RepoRemotes: []string{"github.com/example/repo"}},
+	} {
+		if _, err := NormalizeChange(q, f); err != nil {
+			t.Fatalf("scope %#v: %v", f, err)
+		}
+	}
+}

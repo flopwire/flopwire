@@ -37,7 +37,20 @@ func TestChangeRoute(t *testing.T) {
 	if b.q.Limit != 20 || b.f.Owner == "" || b.f.CallerDevice == "" || !b.budget {
 		t.Fatalf("query %#v filters %#v budget %v", b.q, b.f, b.budget)
 	}
-	for _, suffix := range []string{"?repo=r&commit=abc", "?commit=" + hash, "?repo=r&commit=" + hash + "&limit=101"} {
+
+	// Expanded scope arrives without repo after device-side resolution. It must
+	// retain authenticated owner/device restrictions and the exact scope values.
+	owner, callerDevice := b.f.Owner, b.f.CallerDevice
+	expanded := url.Values{"repo_root": {"/src/repo"}, "repo_checkout": {"/src/repo"}, "repo_remote": {"github.com/example/repo"}, "commit": {hash}}
+	res = request(t, "GET", srv.URL+"/v1/change?"+expanded.Encode(), nil, bearer(device))
+	if res.StatusCode != 200 {
+		t.Fatalf("expanded status %d: %s", res.StatusCode, read(res))
+	}
+	res.Body.Close()
+	if b.f.Repo != "" || len(b.f.RepoRoots) != 1 || b.f.RepoRoots[0] != "/src/repo" || len(b.f.RepoMains) != 1 || b.f.RepoMains[0] != "/src/repo" || len(b.f.RepoRemotes) != 1 || b.f.RepoRemotes[0] != "github.com/example/repo" || b.f.Owner != owner || b.f.CallerDevice != callerDevice {
+		t.Fatalf("expanded scope/auth changed: %#v", b.f)
+	}
+	for _, suffix := range []string{"?repo=r&commit=abc", "?repo_root=relative&commit=" + hash, "?repo_remote=/invalid&commit=" + hash, "?commit=" + hash, "?repo=r&commit=" + hash + "&limit=101"} {
 		res := request(t, "GET", srv.URL+"/v1/change"+suffix, nil, bearer(device))
 		if res.StatusCode != 400 {
 			t.Errorf("%s: %d", suffix, res.StatusCode)

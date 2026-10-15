@@ -54,7 +54,8 @@ type ChangeCoverage struct {
 }
 
 func NormalizeChange(q ChangeQuery, f Filters) (ChangeQuery, error) {
-	if strings.TrimSpace(f.Repo) == "" {
+	// Repository expansion replaces Repo with explicit checkout and remote scopes.
+	if strings.TrimSpace(f.Repo) == "" && len(f.RepoRoots) == 0 && len(f.RepoMains) == 0 && len(f.RepoRemotes) == 0 {
 		return q, fmt.Errorf("%w: repo is required", ErrBadRequest)
 	}
 	if len(q.Commits) == 0 || len(q.Commits) > 100 {
