@@ -11,6 +11,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -257,5 +259,49 @@ func TestCrashProxyStableEndpointGate(t *testing.T) {
 	}
 	if gate.server.URL != endpoint || gate.fingerprint() != pin {
 		t.Fatal("gate changed authority")
+	}
+}
+
+func TestSetDeviceEndpointPreservesCredentialAndPinsDestination(t *testing.T) {
+	destination := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("restored")) }))
+	defer destination.Close()
+	pin := client.Fingerprint(destination.Certificate().Raw)
+	path := filepath.Join(t.TempDir(), "restored-client.json")
+	original := `{"server":"https://old-proxy.test","tls_fingerprint":"sha256:` + strings.Repeat("0", 64) + `","token":"retained-device-token","device_id":"retained-device","pending_rotation":{"id":"retained-rotation"}}`
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setDeviceEndpoint(path, destination.URL, pin); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"server": destination.URL, "tls_fingerprint": pin, "token": "retained-device-token", "device_id": "retained-device"} {
+		var got string
+		if err := json.Unmarshal(cfg[key], &got); err != nil || got != want {
+			t.Fatalf("%s=%q want%q (%v)", key, got, want, err)
+		}
+	}
+	var pending map[string]string
+	if err := json.Unmarshal(cfg["pending_rotation"], &pending); err != nil || pending["id"] != "retained-rotation" {
+		t.Fatal("endpoint selection changed pending rotation")
+	}
+	var selected client.Config
+	if err := json.Unmarshal(raw, &selected); err != nil {
+		t.Fatal(err)
+	}
+	res, err := client.NewHTTPClient(selected.TLSFingerprint).Get(selected.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("pinned destination status=%d", res.StatusCode)
 	}
 }

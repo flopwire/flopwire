@@ -64,23 +64,22 @@ func (h *harness) backupRestore(t *testing.T, r *result, d *device, needle strin
 		"-e", "DATABASE_URL="+restoreDB, "-e", "S3_BUCKET=flopwire-restore", "flopwire", "serve"); err != nil {
 		t.Fatal(err)
 	}
-	// The restored server shares the TLS volume, so devices keep their pin.
+	// The restored server shares the original server TLS volume. Device 2
+	// reaches the primary through a separately pinned proxy, so its copied
+	// config must select both the restored URL and the actual server pin.
 	url := "https://127.0.0.1:" + port
 	eventually(t, 90*time.Second, 250*time.Millisecond, "restored server ready", func() (bool, error) { return h.ready(url), nil })
 
 	// Device d's credential works against the restored server.
-	var cfg map[string]any
 	raw, err = os.ReadFile(d.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
+	restoredCfg := filepath.Join(dir, "restored-client.json")
+	writeFile(t, restoredCfg, string(raw))
+	if err := setDeviceEndpoint(restoredCfg, url, h.cfg.pin); err != nil {
 		t.Fatal(err)
 	}
-	cfg["server"] = url
-	restoredCfg := filepath.Join(dir, "restored-client.json")
-	raw, _ = json.Marshal(cfg)
-	writeFile(t, restoredCfg, string(raw))
 	env := append(d.env(), "FLOPWIRE_CONFIG="+restoredCfg)
 	restored := func(args ...string) (string, error) { return h.run(env, "", args...) }
 

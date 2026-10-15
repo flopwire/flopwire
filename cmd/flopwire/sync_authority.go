@@ -54,7 +54,7 @@ func readSyncAuthority(ctx context.Context, db syncStateReader, cfg client.Confi
 		err := db.QueryRowContext(ctx, `SELECT owner,spool_key FROM devsync_authority WHERE id=1`).Scan(&saved, &key)
 		if err == nil {
 			if saved != owner {
-				return "", errors.New("sync state belongs to another server or device; its queued captures and acknowledgments are preserved. Restore that enrollment or use a separate --db path for this enrollment")
+				return "", errors.New("sync state belongs to another server or device; connected agent startup is refused and saved state is preserved. Restore that enrollment or use a separate --db path for this enrollment")
 			}
 			if err := validateSpoolKey(key); err != nil {
 				return "", err
@@ -79,7 +79,7 @@ func readSyncAuthority(ctx context.Context, db syncStateReader, cfg client.Confi
 			return "", err
 		}
 		if nonempty != 0 {
-			return "", errors.New("sync state has no recorded server/device owner; its queued captures and acknowledgments are preserved and uploads are paused. Use a separate --db path for a fresh queue; do not rebuild this index to assign its old uploads")
+			return "", errors.New("sync state has no recorded server/device owner; connected agent startup is refused and saved state is preserved. Use a separate --db path for a fresh queue; do not rebuild this index to assign its old uploads")
 		}
 	}
 	return "", nil

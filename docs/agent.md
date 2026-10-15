@@ -329,19 +329,25 @@ Restart the agent yourself after you switch servers (see
 [Stop the agent](#stop-the-agent)).
 
 Each sync index records its server and enrolled device. A restart under a
-different server or device refuses to resume that index's uploads. Restore
-the original enrollment to resume its queue. Use a separate `--db` path to
-start a fresh queue for another enrollment. Same-device token rotation keeps
+different server or device refuses connected agent startup, including
+indexing and messaging. Restore the original enrollment to resume its queue.
+Use a separate `--db` path to start a fresh queue for another enrollment. Same-device token rotation keeps
 the queue. Each new index gets a separate spool key, including indexes for
 the same enrollment. A copied index retains its queue identity; do not run
 copies concurrently against the same config directory.
 
 Older indexes with sync state have no recorded owner. The agent preserves
-that state and refuses uploads. It does not assign old captures or server
-acknowledgments to the current login. A fresh `--db` path leaves the old
+that state and refuses connected agent startup, including indexing and
+messaging. It does not assign old captures or server acknowledgments to the
+current login. A fresh `--db` path leaves the old
 queue and legacy spool untouched. Keep them until their ownership and
 migration have been resolved. This release has no command to assign an
 owner to a legacy queue.
+
+After an automatic standalone restart, the index can contain new local
+content. Returning to the original login can then require an explicit full
+or minimal storage choice before the agent starts. Retention selection and
+queue ownership are separate checks.
 
 An environment or unenrolled token has no proven device identity. Its token
 hash owns the queue. Changing that token requires a fresh queue, including
