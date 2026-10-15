@@ -2,6 +2,7 @@ package agent
 
 import (
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -63,11 +64,53 @@ type target struct {
 // stale reports whether the source was indexed by another parser version
 // and should be re-parsed from its bytes (D16). Called with Agent.mu held.
 func (t *target) stale() bool {
+	return t.staleWithContracts(nil)
+}
+
+// gateContracts lasts for one polling pass. Parser configuration can change
+// between passes, so these values must never be retained on Agent or target.
+// It caches extraction versions only; capture authorization is never cached.
+type gateContracts struct {
+	current map[transcript.Parser]string
+	stored  map[string]string
+}
+
+func (c *gateContracts) currentVersion(p transcript.Parser) string {
+	if c == nil || !reflect.ValueOf(p).Comparable() {
+		return indexingVersion(p)
+	}
+	if name, ok := c.current[p]; ok {
+		return name
+	}
+	name := indexingVersion(p)
+	if c.current == nil {
+		c.current = make(map[transcript.Parser]string)
+	}
+	c.current[p] = name
+	return name
+}
+
+func (c *gateContracts) storedVersion(version string) string {
+	if c == nil {
+		return transcript.ReparseKey(version)
+	}
+	if name, ok := c.stored[version]; ok {
+		return name
+	}
+	name := transcript.ReparseKey(version)
+	if c.stored == nil {
+		c.stored = make(map[string]string)
+	}
+	c.stored[version] = name
+	return name
+}
+
+func (t *target) staleWithContracts(contracts *gateContracts) bool {
 	if t.kind != kindTranscript || t.parser == nil || t.indexedWith == "" {
 		return false
 	}
-	name := indexingVersion(t.parser)
-	return transcript.ReparseKey(t.indexedWith) != name && t.reparseFailed != name
+	name := contracts.currentVersion(t.parser)
+	return contracts.storedVersion(t.indexedWith) != name && t.reparseFailed != name
 }
 
 // racy reports whether an unchanged tuple cannot be trusted yet (git's racy

@@ -694,15 +694,23 @@ func (a *Agent) waitDiscovered(ctx context.Context) error {
 // gate stats t and queues it when its tuple moved or is racy. urgent puts
 // it at the front of the queue.
 func (a *Agent) gate(t *target, now time.Time, urgent bool) bool {
+	return a.gateWithContracts(t, now, urgent, nil)
+}
+
+func (a *Agent) gateWithContracts(t *target, now time.Time, urgent bool, contracts *gateContracts) bool {
 	fi, err := fsprobe.Stat(t.path)
 	if err != nil {
 		return false // gone; the next full pass retires it
 	}
-	return a.gateID(t, transcript.IdentityOf(fi), now, urgent, fi.ModTime())
+	return a.gateIDWithContracts(t, transcript.IdentityOf(fi), now, urgent, fi.ModTime(), contracts)
 }
 
 // gateID is gate with the identity already sampled.
 func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent bool, activity time.Time) bool {
+	return a.gateIDWithContracts(t, id, now, urgent, activity, nil)
+}
+
+func (a *Agent) gateIDWithContracts(t *target, id transcript.Identity, now time.Time, urgent bool, activity time.Time, contracts *gateContracts) bool {
 	a.mu.Lock()
 	// Discovery establishes historical activity. Only later evidence of an
 	// actual write may promote it; directory urgency is not that evidence.
@@ -730,7 +738,7 @@ func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent 
 	if first {
 		a.notified[t.path] = true
 	}
-	queued := a.gateLocked(t, id, now, urgent)
+	queued := a.gateLocked(t, id, now, urgent, contracts)
 	a.mu.Unlock()
 	if first && !a.notify(t) {
 		// Not placed yet (a young transcript that names no directory):
@@ -742,7 +750,7 @@ func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent 
 	return queued
 }
 
-func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urgent bool) bool {
+func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urgent bool, contracts *gateContracts) bool {
 	if t.kind == kindCompanion && t.seen == (transcript.Identity{}) {
 		if n, ok := a.companion[t.path]; ok && n == id.Size {
 			// Recorded before this start; companions are written once.
@@ -751,7 +759,7 @@ func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urg
 		}
 	}
 	if id == t.seen && !t.racy() {
-		if t.stale() {
+		if t.staleWithContracts(contracts) {
 			a.enqueueBackgroundLocked(t)
 		}
 		return false
@@ -911,8 +919,9 @@ func (a *Agent) fastLane(ctx context.Context) {
 		sort.Slice(hot, func(i, j int) bool { return hot[i].seen.CTime > hot[j].seen.CTime })
 		hot = hot[:a.cfg.MaxHot]
 	}
+	var contracts gateContracts
 	for _, t := range hot {
-		a.gate(t, now, true)
+		a.gateWithContracts(t, now, true, &contracts)
 	}
 	a.pollStores(ctx, false, false)
 }
