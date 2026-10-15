@@ -116,7 +116,9 @@ does not implicitly adopt a queue. This contract does not identify a replacement
 server instance behind the same URL and device identity.
 
 The user chose to preserve ownerless legacy upload state and pause uploads
-until ownership is explicitly assigned. This change adds no assignment command
+until ownership is explicitly assigned. The conservative implementation refuses
+connected agent startup, including collection and messaging; it is not a running
+agent with only its uploader paused. This change adds no assignment command
 and performs no live migration. A fresh `--db` starts a separate queue; it does
 not resume the old queue. Inactive legacy spool files remain on disk outside
 the new queue's active spool accounting.
@@ -125,6 +127,8 @@ Automatic mode transitions refuse to discard retained local messages. Explicit
 full storage remains available. Automatic minimal mode watches credential
 removal and restarts into standalone mode; an explicitly selected minimal mode
 retains its existing documented connection behavior.
+If standalone collection adds message rows, reconnecting in automatic mode
+requires an explicit retention choice before those rows can be removed.
 
 Local raw evidence deliberately reports unavailable when neither a stable file
 tuple nor a persisted hash covering the requested range establishes identity.
@@ -145,6 +149,10 @@ available under server authorization.
 | Raw identity | `TestLocalRawRefusesRewrittenArchive` and `raw_identity_test.go` | Real PostgreSQL/object archive with two generations, same-inode rewrite, missing source, verified append, deterministic same-timestamp mutation |
 | Default and transition behavior | `synconly_test.go`, `credwatch_test.go`, `mode_test.go` | Explicit override, restart stability, retained-content refusal, empty MCP-created index, credential removal back to standalone |
 | Cross-process behavior | `make e2e-sync` | Connected-default storage SQL/FTS checks, shared read, offline full storage, crash recovery, rotation, backup/restore, and excerpts in both retention modes |
+
+One-shot completion does not newly promise that every discovered source parsed
+successfully. Per-source parser failures remain separately reported; an empty
+upload queue alone is not proof of complete extraction.
 
 The first combined run exposed two fixture assumptions: implicit full storage
 in local-search scenarios, and replacing the crash test's server URL after its
