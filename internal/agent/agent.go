@@ -926,6 +926,7 @@ const warmEvery = 10
 // an event already, and rescanning a project on every write of some other
 // file would cost a discovery per write.
 func (a *Agent) dirEvent(ctx context.Context, ev watchEvent, w *watcher) {
+	defer a.work.watcherEvent.Begin().End()
 	p := ev.path
 	a.mu.Lock()
 	t := a.targets[p]
@@ -1126,6 +1127,7 @@ func (a *Agent) shrinkIfIdle(ctx context.Context) {
 	if !idle {
 		return
 	}
+	defer a.work.idleTrim.Begin().End()
 	if err := a.store.ShrinkMemory(ctx); err != nil && ctx.Err() == nil {
 		a.log.Debug("agent: shrink memory", "err", err)
 	}

@@ -6,9 +6,50 @@ import (
 	"net"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
 )
+
+func TestDiagnosticsBackgroundCallsites(t *testing.T) {
+	f := newCoworkFixture(t)
+	a := f.a
+	// Disabled stores do not count. Enabled polls include a busy-store skip
+	// and a canceled lock wait, even when neither reaches a database read.
+	a.pollStore(ctx, &storeState{}, false, false)
+	d := &storeState{path: "/synthetic/missing"}
+	d.mu.Lock()
+	a.pollStore(ctx, d, false, false)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	a.pollStore(canceled, d, false, true)
+	d.mu.Unlock()
+	d.last = time.Now()
+	a.pollStore(ctx, d, false, false) // throttled poll
+
+	// An ignored write still counts as an event handled by the daemon.
+	a.dirEvent(ctx, watchEvent{path: "/synthetic/untracked", modify: true}, nil)
+	a.mu.Lock()
+	a.busy = 1
+	a.mu.Unlock()
+	a.shrinkIfIdle(ctx) // busy early return does not trim
+	a.mu.Lock()
+	a.busy = 0
+	a.mu.Unlock()
+	a.shrinkIfIdle(ctx)
+	want := map[string]uint64{"store_poll": 3, "watcher_event": 1, "idle_trim": 1}
+	for _, op := range a.Diagnostics().Operations {
+		if n, ok := want[op.Name]; ok {
+			if op.Calls != n || op.Completed != n || op.InFlight != 0 || op.TotalWallNS == 0 {
+				t.Errorf("%s: %+v, want %d completed calls", op.Name, op, n)
+			}
+			delete(want, op.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing operation counters: %v", want)
+	}
+}
 
 func TestDiagnosticsReadOnlyControl(t *testing.T) {
 	// A snapshot requires neither an open index nor an available agent lock.
@@ -48,6 +89,32 @@ func TestDiagnosticsCallsites(t *testing.T) {
 	for i, op := range after.Operations {
 		if n, ok := want[op.Name]; ok {
 			if op.Calls-before.Operations[i].Calls != n || op.Completed-before.Operations[i].Completed != n || op.InFlight != 0 {
+				t.Errorf("%s: before %+v, after %+v", op.Name, before.Operations[i], op)
+			}
+		}
+	}
+}
+
+func TestDiagnosticsIndexAndFastLane(t *testing.T) {
+	f := newCoworkFixture(t)
+	coworkMetadata(t, f, nil, nil, nil)
+	path := coworkTranscript(t, f)
+	f.once()
+	before := f.a.Diagnostics()
+	f.a.mu.Lock()
+	target := f.a.targets[path]
+	f.a.mu.Unlock()
+	if target == nil {
+		t.Fatal("synthetic transcript was not discovered")
+	}
+	if err := f.a.index(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	f.a.fastLane(ctx)
+	after := f.a.Diagnostics()
+	for i, op := range after.Operations {
+		if op.Name == "index_target" || op.Name == "fast_lane" {
+			if op.Calls-before.Operations[i].Calls != 1 || op.Completed-before.Operations[i].Completed != 1 || op.InFlight != 0 {
 				t.Errorf("%s: before %+v, after %+v", op.Name, before.Operations[i], op)
 			}
 		}

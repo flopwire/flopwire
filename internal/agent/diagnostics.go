@@ -10,6 +10,7 @@ import (
 )
 
 type agentWork struct {
+	watcherEvent, storePoll, idleTrim          workmetrics.Operation
 	index, fastLane                            workmetrics.Operation
 	sweep, discover, authorize                 workmetrics.Operation
 	refresh, refreshLockWait, capturedChildren workmetrics.Operation
@@ -44,6 +45,7 @@ func (a *Agent) Diagnostics() DiagnosticsSnapshot {
 		PID: os.Getpid(), StartedAt: a.initializedAt, ObservedAt: now, UptimeNS: now.Sub(a.initializedAt).Nanoseconds(), ProcessCPUNS: cpuTime().Nanoseconds(),
 		GCCyclesTotal: samples[0].Value.Uint64(), HeapAllocatedBytesTotal: samples[1].Value.Uint64(),
 		Operations: []workmetrics.Snapshot{
+			w.watcherEvent.Snapshot("watcher_event"), w.storePoll.Snapshot("store_poll"), w.idleTrim.Snapshot("idle_trim"),
 			w.index.Snapshot("index_target"), w.fastLane.Snapshot("fast_lane"), w.sweep.Snapshot("sweep"), w.discover.Snapshot("discover_all"), w.authorize.Snapshot("authorize_capture"),
 			w.refresh.Snapshot("refresh_cowork"), w.refreshLockWait.Snapshot("refresh_cowork_lock_wait"), w.capturedChildren.Snapshot("captured_claude_children"),
 			w.refreshFromSweep.Snapshot("refresh_from_sweep"), w.refreshFromAuthorization.Snapshot("refresh_from_authorization"),

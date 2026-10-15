@@ -46,6 +46,9 @@ elapsed time when it completes.
 | --- | --- |
 | `index_target` | Index one transcript or companion, including its lock waits |
 | `fast_lane` | Recheck likely active files and poll harness stores |
+| `watcher_event` | Handle a filesystem event, including any directory scan |
+| `store_poll` | Attempt a configured harness-store poll, including lock waits and skipped polls |
+| `idle_trim` | Release SQLite caches and force Go garbage collection after an idle check |
 | `sweep` | Full discovery pass, including policy refresh and reconciliation |
 | `discover_all` | Source discovery, including calls outside sweeps |
 | `authorize_capture` | Fresh permission acquisition before capture/upload |
@@ -72,6 +75,10 @@ initialization and other control paths can also refresh scope.
 
 Frequent authorization refreshes with substantial historical-lookup wall time
 suggest repeated evidence work. Long lock-wait time suggests serialization.
+Idle trimming calls `debug.FreeOSMemory`, which forces a Go GC cycle. GC totals
+can therefore rise even without allocation pressure. Compare `idle_trim` calls
+and wall time with GC and CPU deltas before attributing activity to allocations.
+
 High process CPU and allocation deltas with modest I/O waits suggest computation
 or garbage collection. These are hypotheses; confirm CPU attribution with a
 profile before changing behavior.
