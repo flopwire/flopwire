@@ -219,3 +219,46 @@ func TestAssignLegacyQueueRejectsCorruptChunkAndSymlink(t *testing.T) {
 		})
 	}
 }
+
+func TestAssignLegacyQueueOldSchemaRefusalPreservesState(t *testing.T) {
+	db := authorityDB(t)
+	for _, q := range []string{`CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,acked INTEGER)`, `INSERT INTO devsync_gens VALUES(7,2,1)`, `CREATE TABLE meta(key TEXT,value TEXT)`, `INSERT INTO meta VALUES('mode','full')`} {
+		if _, e := db.Exec(q); e != nil {
+			t.Fatal(e)
+		}
+	}
+	dir := t.TempDir()
+	spool := filepath.Join(dir, "spool")
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv(client.EnvToken, "")
+	if e := client.Save(client.Config{Server: "https://example.test", DeviceID: "a", Token: "token"}); e != nil {
+		t.Fatal(e)
+	}
+	var path string
+	if e := db.QueryRow(`SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&path); e != nil {
+		t.Fatal(e)
+	}
+	if e := agentAssignLegacyQueue(t.Context(), []string{"--db", path, "--server", "https://example.test", "--device-id", "a"}, &bytes.Buffer{}); e == nil || !strings.Contains(e.Error(), "lacks redactions") {
+		t.Fatal(e)
+	}
+	if _, e := assignLegacyQueue(t.Context(), db, spool, "/index", "owner"); e == nil || !strings.Contains(e.Error(), "lacks redactions") {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(spool); !os.IsNotExist(e) {
+		t.Fatal("created spool or journal before schema refusal")
+	}
+	var n int
+	if e := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name='devsync_authority'`).Scan(&n); e != nil || n != 0 {
+		t.Fatal("created authority", e)
+	}
+	if e := db.QueryRow(`SELECT acked FROM devsync_gens WHERE source_id=7 AND generation=2`).Scan(&n); e != nil || n != 1 {
+		t.Fatal("changed queue", e)
+	}
+	var mode string
+	if e := db.QueryRow(`SELECT value FROM meta WHERE key='mode'`).Scan(&mode); e != nil || mode != "full" {
+		t.Fatal("changed retention", e)
+	}
+	if e := db.QueryRow(`SELECT count(*) FROM pragma_table_info('devsync_gens')`).Scan(&n); e != nil || n != 3 {
+		t.Fatal("migrated schema", e)
+	}
+}

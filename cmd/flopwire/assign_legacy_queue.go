@@ -64,8 +64,26 @@ func agentAssignLegacyQueue(ctx context.Context, args []string, out io.Writer) e
 		if err != nil {
 			return err
 		}
+		abs, err = filepath.EvalSymlinks(abs)
+		if err != nil {
+			return err
+		}
 		u := url.URL{Scheme: "file", Path: abs}
 		q := u.Query()
+		q.Set("mode", "ro")
+		u.RawQuery = q.Encode()
+		preflight, err := sql.Open("sqlite", u.String())
+		if err != nil {
+			return err
+		}
+		err = legacyAssignmentCompatible(ctx, preflight)
+		closeErr := preflight.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
 		q.Set("mode", "rw")
 		q.Set("_pragma", "synchronous(FULL)")
 		u.RawQuery = q.Encode()
@@ -90,7 +108,27 @@ func agentAssignLegacyQueue(ctx context.Context, args []string, out io.Writer) e
 
 // Only authority metadata is written. Never open the local index or sync store:
 // those constructors can migrate retention, queues, or capture representations.
+func legacyAssignmentCompatible(ctx context.Context, db *sql.DB) error {
+	var exists int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='devsync_gens'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('devsync_gens') WHERE name='redactions'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return errors.New("legacy queue schema lacks redactions support; assignment is refused and saved state is preserved; retain this snapshot for a compatible recovery procedure")
+	}
+	return nil
+}
+
 func assignLegacyQueue(ctx context.Context, db *sql.DB, spool, dbPath, owner string) (string, error) {
+	if err := legacyAssignmentCompatible(ctx, db); err != nil {
+		return "", err
+	}
 	var exists int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='devsync_authority'`).Scan(&exists); err != nil {
 		return "", err
