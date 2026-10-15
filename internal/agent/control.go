@@ -507,6 +507,19 @@ func (a *Agent) Pass(ctx context.Context) error {
 	}
 	a.pollStores(ctx, true, true)
 	a.WaitIdle()
+	if err := a.store.Sync(ctx); err != nil {
+		return err
+	}
+	// Match Once: newly discovered deleted-worktree sessions are withheld
+	// until recovery settles their placements. An empty upload queue before
+	// this step does not mean the pass has offered all eligible transcripts.
+	a.recoverAndEnforce(ctx)
+	// A background recovery may have settled placements while this pass
+	// waited for it. Sweep even when our own recovery found nothing new.
+	if err := a.sweep(ctx); err != nil {
+		return err
+	}
+	a.WaitIdle()
 	return a.store.Sync(ctx)
 }
 
