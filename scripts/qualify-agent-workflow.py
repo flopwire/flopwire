@@ -36,14 +36,6 @@ def checked_auth(raw, now=None):
     if not tokens or not tokens.get("refresh_token"):
         return raw
     try:
-        last = datetime.datetime.fromisoformat(auth["last_refresh"].replace("Z", "+00:00"))
-        if last.tzinfo is None:
-            raise ValueError()
-    except (KeyError, ValueError, TypeError, AttributeError):
-        raise RuntimeError("Codex last_refresh is missing or unreadable; run codex normally to refresh before retrying") from None
-    if last + datetime.timedelta(days=8) <= until:
-        raise RuntimeError("Codex 8-day refresh is due; run codex normally to refresh before retrying")
-    try:
         parts = tokens["access_token"].split(".")
         if len(parts) != 3:
             raise ValueError()
@@ -53,10 +45,24 @@ def checked_auth(raw, now=None):
             raise ValueError()
         expiry = datetime.datetime.fromtimestamp(exp, datetime.timezone.utc)
     except (KeyError, ValueError, TypeError, OverflowError, AttributeError):
-        raise RuntimeError("Codex access token expiry is unreadable; run codex normally to refresh before retrying") from None
-    if expiry - datetime.timedelta(minutes=5) <= until:
-        raise RuntimeError("Codex access token refresh is due; run codex normally to refresh before retrying")
-    return raw
+        expiry = None
+    # Codex 0.160.0 and 0.162.1 should_refresh_proactively: readable JWT
+    # expiry takes precedence over last_refresh (age is fallback only).
+    # https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/login/src/auth/manager.rs#L3001
+    if expiry is not None:
+        if expiry - datetime.timedelta(minutes=5) <= until:
+            raise RuntimeError("Codex access token refresh is due; run codex normally to refresh before retrying")
+        return raw
+    try:
+        last = datetime.datetime.fromisoformat(auth["last_refresh"].replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            raise ValueError()
+    except (KeyError, ValueError, TypeError, AttributeError):
+        raise RuntimeError("Codex last_refresh is missing or unreadable; run codex normally to refresh before retrying") from None
+    if last + datetime.timedelta(days=8) <= until:
+        raise RuntimeError("Codex 8-day refresh is due; run codex normally to refresh before retrying")
+    # Fail closed even when the age fallback would currently allow a run.
+    raise RuntimeError("Codex access token expiry is unreadable; run codex normally to refresh before retrying")
 
 
 def main():

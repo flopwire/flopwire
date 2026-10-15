@@ -18,19 +18,22 @@ SPEC.loader.exec_module(qualification)
 NOW = datetime.datetime(2026, 10, 15, tzinfo=datetime.timezone.utc)
 
 
-def auth(last=NOW, expires=NOW + datetime.timedelta(days=1)):
+def auth(last=NOW, expires=NOW + datetime.timedelta(days=1), readable=True):
     claims = base64.urlsafe_b64encode(json.dumps({"exp": expires.timestamp()}).encode()).decode().rstrip("=")
     return json.dumps({"last_refresh": last.isoformat() if last else None,
-                       "tokens": {"refresh_token": "synthetic-refresh", "access_token": "x." + claims + ".x"}}).encode()
+                       "tokens": {"refresh_token": "synthetic-refresh", "access_token": "x." + claims + ".x" if readable else "opaque"}}).encode()
 
 
 class CredentialGuardTests(unittest.TestCase):
     def test_probe_metadata_cases(self):
         for name, raw, reason in [
             ("fresh", auth(), None),
-            ("stale", auth(NOW - datetime.timedelta(days=9)), "8-day"),
-            ("refresh soon", auth(NOW - datetime.timedelta(days=8) + datetime.timedelta(minutes=10)), "8-day"),
-            ("missing timestamp", auth(None), "last_refresh"),
+            ("old timestamp, readable expiry", auth(NOW - datetime.timedelta(days=9)), None),
+            ("stale fallback", auth(NOW - datetime.timedelta(days=9), readable=False), "8-day"),
+            ("refresh soon", auth(NOW - datetime.timedelta(days=8) + datetime.timedelta(minutes=10), readable=False), "8-day"),
+            ("missing timestamp, readable expiry", auth(None), None),
+            ("missing fallback timestamp", auth(None, readable=False), "last_refresh"),
+            ("refresh boundary", auth(expires=NOW + datetime.timedelta(minutes=35)), "refresh is due"),
             ("access expires soon", auth(expires=NOW + datetime.timedelta(minutes=20)), "refresh is due"),
             ("access outside margin", auth(expires=NOW + datetime.timedelta(minutes=40)), None),
             ("bad jwt", json.dumps({"last_refresh": NOW.isoformat(), "tokens": {"refresh_token": "synthetic", "access_token": "bad"}}).encode(), "expiry"),
@@ -45,7 +48,7 @@ class CredentialGuardTests(unittest.TestCase):
                     self.assertEqual(qualification.checked_auth(raw, NOW), raw)
 
     def test_rejected_metadata_never_copied(self):
-        for raw in (auth(NOW - datetime.timedelta(days=900)), auth(None)):
+        for raw in (auth(NOW - datetime.timedelta(days=900), readable=False), auth(None, readable=False)):
             with self.subTest(raw_length=len(raw)), tempfile.TemporaryDirectory() as tmp:
                 source = Path(tmp) / "source"
                 source.mkdir()
