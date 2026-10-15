@@ -131,3 +131,140 @@ func TestMCPOnSyncOnlyIndex(t *testing.T) {
 		t.Errorf("tool call on a sync-only device: %s", lines[1])
 	}
 }
+
+// Credential onboarding must never implicitly migrate an existing full index.
+func TestConnectedOnboardingStorageDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		existingConfig bool
+		mode           string
+		existingIndex  bool
+		want           string
+	}{
+		{name: "new connected"},
+		{name: "standalone index", existingIndex: true},
+		{name: "legacy config", existingConfig: true},
+		{name: "explicit full", existingConfig: true, mode: "full", want: "full"},
+		{name: "explicit minimal", existingConfig: true, mode: "sync-only", want: "sync-only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+			db := filepath.Join(t.TempDir(), "index.db")
+			t.Setenv("FLOPWIRE_INDEX", db)
+			if tc.existingIndex {
+				if err := os.WriteFile(db, []byte("existing index is never opened or migrated"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.existingConfig {
+				if err := client.Save(client.Config{Server: "https://old.example", Token: "old", Mode: tc.mode}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := saveAuthLocked("https://new.example", "", map[string]any{"token": "new", "user": "user"}); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := client.LoadFile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Mode != tc.want {
+				t.Fatalf("mode = %q, want %q", cfg.Mode, tc.want)
+			}
+			if tc.existingIndex {
+				data, err := os.ReadFile(db)
+				if err != nil || string(data) != "existing index is never opened or migrated" {
+					t.Fatalf("existing index changed: %q, %v", data, err)
+				}
+			}
+		})
+	}
+}
+
+func TestEnvConnectedStorageDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		existing bool
+		want     bool
+	}{
+		{name: "fresh daemon", want: true},
+		{name: "fresh once", args: []string{"--once"}, want: true},
+		{name: "existing index", existing: true, want: true},
+		{name: "minimal restart", existing: true, want: true},
+		{name: "standalone", args: []string{"--no-sync"}},
+		{name: "explicit full", args: []string{"--sync-only=false"}},
+		{name: "explicit minimal", args: []string{"--sync-only"}, existing: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := filepath.Join(t.TempDir(), "index.db")
+			t.Setenv("FLOPWIRE_INDEX", db)
+			if tc.existing {
+				index, err := localindex.Open(db, localindex.Options{SyncOnly: tc.name == "minimal restart"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := index.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fs := flag.NewFlagSet("t", flag.ContinueOnError)
+			value := fs.Bool("sync-only", false, "")
+			fs.Bool("no-sync", false, "")
+			fs.Bool("once", false, "")
+			fs.String("db", "", "")
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			cfg := client.Config{FromEnv: true, Server: "https://example.test", Token: "token"}
+			if err := resolveSyncOnly(fs, value, cfg, nil); err != nil {
+				t.Fatal(err)
+			}
+			if *value != tc.want {
+				t.Fatalf("sync-only = %v, want %v", *value, tc.want)
+			}
+			if tc.name == "fresh daemon" || tc.name == "fresh once" {
+				index, err := localindex.Open(db, localindex.Options{SyncOnly: *value})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := index.Close(); err != nil {
+					t.Fatal(err)
+				}
+				*value = false
+				if err := resolveSyncOnly(fs, value, cfg, nil); err != nil {
+					t.Fatal(err)
+				}
+				if !*value {
+					t.Fatal("restart changed the connected storage mode")
+				}
+			}
+		})
+	}
+}
+
+func TestAutomaticStandaloneRestoresFullIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	s, err := localindex.Open(path, localindex.Options{SyncOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	value := fs.Bool("sync-only", false, "")
+	fs.Bool("no-sync", false, "")
+	if err := resolveSyncOnly(fs, value, client.Config{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if *value {
+		t.Fatal("standalone selected minimal storage")
+	}
+	s, err = localindex.Open(path, localindex.Options{SyncOnly: *value, PreserveFullContent: automaticStorageMode(fs, client.Config{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.SyncOnly() {
+		t.Fatal("standalone did not restore full index")
+	}
+}
