@@ -62,6 +62,9 @@ func run(parent context.Context, args []string) error {
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	switch args[0] {
+	case "-h", "--help":
+		fmt.Fprintln(os.Stdout, usageText)
+		return nil
 	case "import":
 		return importCommand(ctx, args[1:], os.Stdout)
 	case "diagnostics":
