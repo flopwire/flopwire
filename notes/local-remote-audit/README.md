@@ -4,8 +4,8 @@ Audited revision: `883a467f427be88f05a58c2751a08f1cb30e6d86`, 2026-10-14.
 This report records the findings at the audited revision, not current product
 behavior. The excerpt correction landed in PR #267. Findings 1–5 were addressed
 in PRs #272–275. Follow-up qualification is recorded in [completion.md](completion.md).
-The archived replay deliberately reproduces old defects and must run against
-the audited revision; it is not a regression suite for current main.
+The archived replay deliberately reproduces old defects using a temporary
+export of the audited revision; it is not a regression suite for current main.
 
 ## Judgment
 
@@ -39,9 +39,10 @@ They are kept outside the normal test suite. Run from the repository:
 python3 notes/local-remote-audit/replay.py
 ```
 
-The script uses Go overlays; it does not edit package source files. Go and
-Python are required. The archived fixtures depend on test helpers at the
-audited revision. For each fix, convert its desired invariant into a normal
+The script exports the audited revision from Git into a temporary directory and
+uses Go overlays; it does not edit checkout source files. Git, tar, Go and Python
+are required. The audited Git object must be available locally. The archived
+fixtures depend on test helpers at that revision. For each fix, convert its desired invariant into a normal
 regression that fails before the fix and passes afterward.
 
 This was a source audit plus bounded reproductions, not a deployed-system
