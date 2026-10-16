@@ -146,7 +146,7 @@ func TestAcceptEndToEndAfterSessionEnded(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Code != busproto.CodeDuplicate {
 		t.Fatalf("identical resend within duplicate window: %+v %v", duplicate, err)
 	}
-	t.Logf("identical resend refused: %s", apiErr.Detail)
+	t.Logf("identical resend refused: status=%d code=%s duplicate_window=%s", apiErr.StatusCode, apiErr.Code, busproto.DuplicateWindow)
 	if got := hook(); strings.Contains(got, "<flopwire-message ") {
 		t.Fatalf("message delivered after refused duplicate: %s", got)
 	}
