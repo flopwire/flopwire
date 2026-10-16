@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,20 +59,7 @@ func newCrashProxy(upstream, pin, path string, size int64) (*crashProxy, error) 
 	hc := client.NewHTTPClient(pin)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = hc.Transport
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		if match, ok := r.Context().Value(crashHeaderKey{}).(*crashRequest); ok {
-			p.mu.Lock()
-			claim := !p.claimed
-			if claim {
-				p.claimed = true
-			}
-			p.mu.Unlock()
-			if claim {
-				p.reached <- crashBoundary{Header: *match.header, Err: err}
-			}
-		}
-		http.Error(w, "test proxy upstream failure", http.StatusBadGateway)
-	}
+	proxy.ErrorHandler = p.handleError
 	wait := func(requestCtx context.Context) error {
 		select {
 		case <-p.release:
@@ -139,6 +127,27 @@ func newCrashProxy(upstream, pin, path string, size int64) (*crashProxy, error) 
 		proxy.ServeHTTP(w, r)
 	}))
 	return p, nil
+}
+
+func (p *crashProxy) handleError(w http.ResponseWriter, r *http.Request, err error) {
+	if match, ok := r.Context().Value(crashHeaderKey{}).(*crashRequest); ok {
+		p.mu.Lock()
+		claim := !p.claimed
+		if claim {
+			p.claimed = true
+		}
+		p.mu.Unlock()
+		if claim {
+			p.reached <- crashBoundary{Header: *match.header, Err: err}
+		}
+	}
+	// Returning a synthetic 502 after downstream cancellation lets the
+	// transport race that response against cancellation. Abort the response
+	// instead; upstream and validation failures still produce a visible 502.
+	if r.Context().Err() == context.Canceled && errors.Is(err, context.Canceled) {
+		panic(http.ErrAbortHandler)
+	}
+	http.Error(w, "test proxy upstream failure", http.StatusBadGateway)
 }
 
 type replayBody struct {
