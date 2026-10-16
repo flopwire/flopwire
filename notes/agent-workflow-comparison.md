@@ -24,17 +24,47 @@ established in the reviewed interfaces, not that the product cannot do it.
 
 ### The connected workflow
 
-| What Flopwire brings together | Flopwire | AgentsView | MCP Agent Mail Rust | Entire | SpecStory | Langfuse |
+**Yes**: documented support. **Partial**: documented narrower support.
+**No**: documented absence. **Unverified**: support was not established in the
+reviewed interfaces. Yes does not imply equal coverage or measured quality.
+
+| Capability | Flopwire | AgentsView | MCP Agent Mail Rust | Entire | SpecStory | Langfuse |
 |---|---|---|---|---|---|---|
-| Share history across people and machines | Eligible device history in a team archive | Hosted raw sync | Shared coordination mail | Git-shared transcript checkpoints | Cloud session search | Shared project traces |
-| Capture history from normal coding work | Native transcript watcher | Native transcript watchers | Own coordination messages; coding transcripts not established | Agent/Git hooks | History sync and live watch | Agent hooks / native OTel |
-| Recover the reasoning with supporting evidence | Search sessions; reopen source records and context | Search sessions; revision-bound evidence reads | Search mail; reopen messages and threads | Search sessions; Git-linked checkpoints | Sessions and Markdown; Cloud search/API | Search and inspect traces/spans |
-| Search transcripts like code | Literal/regex grep + ranked keyword search | Substring/regex + full-text and semantic modes | Mail search; semantic opt-in | Session search | Session search and Markdown | Trace input/output search |
-| Trace a code change to its producing session | Commit lookup with captured execution evidence | Not established | Not established | Git-linked checkpoints | Not established | Not established |
-| Find an agent to ask | Observed native sessions; exact presence lookup | Archive activity; live contact not established | Registered agent directory | Local session status; peer directory not established | Not established | Not established |
-| Ask a follow-up across coding tools | Session/person messages and correlated replies | Not established | Threaded agent messages and contact policies | Not established | Not established | Not established |
-| Recover the coordination later | Retained repository threads; list and reopen | Messaging not established | Retained, searchable mail threads | Messaging not established | Messaging not established | Messaging not established |
-| Let agents use the workflow directly | CLI + MCP + workflow skill | CLI + MCP + memory guidance | CLI + MCP + coordination macros | CLI with structured output | CLI + Markdown + Cloud API | CLI + MCP + API |
+| Share recorded work across a team | Yes | Yes | Yes | Yes | Yes | Yes |
+| Capture native coding transcripts | Yes | Yes | Unverified | Yes | Yes | Partial |
+| Search and reopen recorded evidence | Yes | Yes | Yes | Yes | Yes | Yes |
+| Run regex searches over coding transcripts | Yes | Yes | Unverified | Unverified | Unverified | Unverified |
+| Link a code change to its producing session | Yes | Unverified | Unverified | Yes | Unverified | Unverified |
+| Discover an agent you can contact | Yes | Unverified | Yes | Unverified | Unverified | Unverified |
+| Message agents across coding tools | Yes | Unverified | Yes | Unverified | Unverified | Unverified |
+| Reopen retained coordination threads | Yes | Unverified | Yes | Unverified | Unverified | Unverified |
+| Use an agent-facing CLI or API | Yes | Yes | Yes | Yes | Yes | Yes |
+
+#### Scope behind the labels
+
+- **Shared work:** Flopwire and AgentsView share coding history; Agent Mail
+  shares coordination mail; Entire shares Git checkpoints; SpecStory exposes
+  cloud sessions; Langfuse shares project traces. Yes means sharing is
+  documented, not that these archives contain the same evidence.
+- **Transcript capture:** Langfuse is Partial because its agent hooks/OTel
+  capture instrumented traces rather than a general native-transcript archive.
+  Agent Mail's own mail archive does not establish native transcript capture.
+  Watchers, hooks and supported source formats differ among the Yes entries.
+- **Regex:** the row requires a documented regex operation over coding history.
+  Keyword or semantic search alone does not satisfy it. Unverified does not
+  mean regex is absent, and the row does not measure search quality.
+- **Change attribution:** Flopwire returns captured commit-execution evidence;
+  Entire links Git checkpoints. Flopwire callers resolve squash lineage and
+  inspect evidence before attributing authorship.
+- **Discovery and contact:** Flopwire observes native sessions; Agent Mail
+  uses registered identities. Archive activity and local session status alone
+  do not establish a contactable recipient. Idle agents may need resuming.
+- **Retained coordination:** Flopwire lists and reopens retained repository
+  threads; Agent Mail also offers mail search. Neither implies indefinite
+  retention or automatic continuation of an ended session.
+- **Agent interface:** this row requires a CLI or API an agent can call, not
+  complete parity with Flopwire's retrieval-to-contact workflow.
+
 
 Shared history is part of Flopwire's proposition, not a claim of exclusivity.
 Enrolled devices contribute eligible history to a team archive. AgentsView
