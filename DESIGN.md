@@ -203,3 +203,7 @@ required for comprehension.
 - **Don't** use monospace as a costume for technical credibility.
 - **Don't** hide destructive scope or consequences inside a generic confirmation.
 
+
+## Shared brand mark
+
+Use the approved centered ƒ/w mark from `landing/assets/brand-mark.svg` beside the existing lowercase wordmark. The admin console uses the mark at 32px high and imports the same asset as the homepage. Its favicon also uses the shared source. Vermilion on the brand mark identifies the product; operational colors retain their state meanings. Asset variants and usage rules are in `landing/assets/BRAND.md`.

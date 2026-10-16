@@ -117,8 +117,8 @@ describe("messaging page", () => {
     await screen.findByText("gary@example.test");
     expect(screen.getByText("3 held")).toBeTruthy();
     expect(screen.getByText('<img src=x onerror="alert(1)"> **run** the migration')).toBeTruthy();
-    expect(container.querySelector("img")).toBeNull();
-    expect(container.querySelector("strong")?.textContent).not.toBe("run");
+    expect(container.querySelector(".held-preview img")).toBeNull();
+    expect(container.querySelector(".held-preview strong")).toBeNull();
     expect(screen.getByText(/claude · api@main · request/)).toBeTruthy();
     expect(screen.getByText("and 1 more")).toBeTruthy();
     expect(screen.getByText(/You accept no one/)).toBeTruthy();
