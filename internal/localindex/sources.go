@@ -485,7 +485,8 @@ func (s *Store) CapturedClaudeChildrenForParents(ctx context.Context, parents ma
 				}
 				cleanPath := filepath.Clean(path)
 				for root, requests := range byRoot {
-					if root != string(filepath.Separator) && !strings.HasPrefix(cleanPath, root+string(filepath.Separator)) {
+					// Check the separator without allocating root+separator for every row and root.
+					if root != string(filepath.Separator) && (len(cleanPath) <= len(root) || !strings.HasPrefix(cleanPath, root) || cleanPath[len(root)] != byte(filepath.Separator)) {
 						continue
 					}
 					parent, child := capturedClaudeChildAtRoot(root, cleanPath, key)
