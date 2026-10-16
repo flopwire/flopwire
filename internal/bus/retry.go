@@ -43,6 +43,14 @@ func prepareRetry(ctx context.Context, tx pgx.Tx, c busproto.Caller, req busprot
 		var successorReason string
 		e, err = scanEnvelope(tx.QueryRow(ctx, `SELECT `+envCols+`,m.state,m.reason FROM `+envFrom+` WHERE m.id=$1`, successor), &successorState, &successorReason)
 		if err == nil {
+			// Match Inbox's public state before the retention sweep persists
+			// expiry. Replaying never changes the stored receipt or quota.
+			switch successorState {
+			case busproto.StateQueued, busproto.StateHeld, busproto.StateClaimed:
+				if !m.created.Before(e.ExpiresAt) {
+					successorState = busproto.StateExpired
+				}
+			}
 			out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = e.ID, e.ThreadID, successorState, e.Sender, e.Intent, e.Sent, e.ExpiresAt
 			out.RetryOf, out.Replayed, out.Reason, out.Admission = req.RetryOf, true, successorReason, e.Admission
 			return true, nil

@@ -236,3 +236,45 @@ func TestResumeRetryCapabilityGatesCloudClaims(t *testing.T) {
 		t.Fatal("old cloud claim exposed live retry")
 	}
 }
+
+func TestRetryReplayDerivesExpiryBeforeSweep(t *testing.T) {
+	f := newFixture(t)
+	c := f.device(f.user("expiryreplay"))
+	ctx := context.Background()
+	f.present(c, live("expiry-source", "claude", "/retry", false), live("expiry-target", "codex", "/retry", false))
+	f.uploaded(c, "claude", "expiry-source", "/retry")
+	f.uploaded(c, "codex", "expiry-target", "/retry")
+	req := busproto.SendRequest{FromSession: "expiry-source", To: "expiry-target", Body: "synthetic replay expiry"}
+	source, err := f.s.Send(ctx, c, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.exec(`UPDATE bus_messages SET state='undelivered',reason='session_ended' WHERE id=$1`, source.ID)
+	req.RetryOf = source.ID
+	successor, err := f.s.Send(ctx, c, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.advance(busproto.DefaultTTL)
+	before := f.count(`SELECT count(*) FROM bus_messages`)
+	for _, state := range []busproto.State{busproto.StateQueued, busproto.StateHeld, busproto.StateClaimed, busproto.StateDelivered, busproto.StateRead, busproto.StateUndelivered} {
+		f.exec(`UPDATE bus_messages SET state=$2 WHERE id=$1`, successor.ID, string(state))
+		replay, err := f.s.Send(ctx, c, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := state
+		if state == busproto.StateQueued || state == busproto.StateHeld || state == busproto.StateClaimed {
+			want = busproto.StateExpired
+		}
+		if !replay.Replayed || replay.ID != successor.ID || replay.State != want {
+			t.Fatalf("state %s replay: %+v", state, replay)
+		}
+		if f.count(`SELECT count(*) FROM bus_messages WHERE id=$1 AND state=$2`, successor.ID, string(state)) != 1 {
+			t.Fatal("replay mutated persisted state")
+		}
+	}
+	if f.count(`SELECT count(*) FROM bus_messages`) != before {
+		t.Fatal("replay created an attempt")
+	}
+}
