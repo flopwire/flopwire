@@ -333,7 +333,7 @@ type acceptJSON struct {
 	Hint string `json:"hint,omitempty"`
 }
 
-const acceptanceDeliveryHint = "Release queues messages for delivery. The sender can check its inbox for delivery status. If the addressed session ended before delivery and the request is still needed, the sender can explicitly send a new message to the intended session."
+const acceptanceDeliveryHint = "Release queues messages for delivery. The sender can check its inbox for delivery status. If a session-addressed message becomes undelivered/session_ended and is still needed, its original sending session can explicitly retry it to the same recipient with retry_of or --retry-of and unchanged message fields."
 
 func (s acceptSession) accept(ctx context.Context, sender string, io_ acceptIO, st busStyle) error {
 	// What is waiting from this sender, when anything is: the person sees
