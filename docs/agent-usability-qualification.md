@@ -40,8 +40,11 @@ cursor filters, and expired snapshots from completed empty searches.
 
 The owner has now reopened diagnosis of the unexplained Codex IDE delivery
 miss in [#228](https://github.com/flopwire/flopwire/issues/228). No fix is
-established. Diagnostic implementation and qualification are pending; later
-successful retries still do not explain the original failure.
+established. The observer correction in
+[#310](https://github.com/flopwire/flopwire/pull/310) and opt-in diagnostics in
+[#312](https://github.com/flopwire/flopwire/pull/312) are merged. Live IDE
+qualification has not been run and remains pending. The original cause is
+unresolved; later successful retries do not explain the original failure.
 
 Native MCP initialization emitted shared instructions once (6,459 characters);
 nine native tool descriptions totaled 8,481 characters. Exported discovery
