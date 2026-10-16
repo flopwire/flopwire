@@ -266,6 +266,38 @@ func TestSendCLI(t *testing.T) {
 	}
 }
 
+func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "mretry", RetryOf: "mfailed", Replayed: true,
+			ThreadID: "mthread", State: busproto.StateRead, Intent: busproto.IntentRequest, Sent: t0, ExpiresAt: t0.Add(time.Hour),
+			To: busproto.Recipient{Session: peerID, Agent: "codex", User: "gary@example.test", Live: true, Busy: true}}}
+	})
+	out, err := cli(t, fa, "", "send", peerID, "--retry-of", "mfailed", "--intent", "request", "--reply-to", "mparent", "--ref", "reference/1", "--", "same message")
+	if err != nil || out != "retry of mfailed already recorded as mretry: read; no new message created\n" {
+		t.Fatalf("text replay: %q %v", out, err)
+	}
+	request := fa.requests()[0].Send
+	if request.RetryOf != "mfailed" || request.FromSession != selfID || request.FromAgent != "claude" || request.To != peerID || request.Body != "same message" || request.Intent != "request" || request.ReplyTo != "mparent" || strings.Join(request.Refs, ",") != "reference/1" {
+		t.Fatalf("CLI retry request: %+v", request)
+	}
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	text, err := mcpCall(t.Context(), r, "flopwire_send", map[string]any{"to": peerID, "message": "same message", "retry_of": "mfailed", "intent": "request", "reply_to": "mparent", "refs": []any{"reference/1"}})
+	var receipt sendJSON
+	if err != nil || json.Unmarshal([]byte(text), &receipt) != nil || !receipt.Replayed || receipt.ID != "mretry" || receipt.State != busproto.StateRead || receipt.Arrives != arriveRecorded || receipt.Next != "" {
+		t.Fatalf("MCP replay: %q %v", text, err)
+	}
+	if request := fa.requests()[1].Send; request.RetryOf != "mfailed" || request.ReplyTo != "mparent" || request.Body != "same message" {
+		t.Fatalf("MCP retry request: %+v", request)
+	}
+	for _, state := range []busproto.State{busproto.StateQueued, busproto.StateHeld, busproto.StateClaimed, busproto.StateDelivered, busproto.StateRead, busproto.StateUndelivered, busproto.StateExpired} {
+		replay := busproto.SendResponse{ID: "mretry", RetryOf: "mfailed", Replayed: true, State: state, Reason: "session_ended", Intent: busproto.IntentRequest}
+		if out := sendOutcome(replay); !strings.Contains(out, string(state)) || !strings.Contains(out, "no new message created") || strings.Contains(out, "arrives") || arrival(replay) != arriveRecorded || sendNext(replay) != "" {
+			t.Fatalf("%s replay: %s", state, out)
+		}
+	}
+}
+
 // Every refusal prints its cause, the fix and a valid example; over MCP it
 // is an isError result.
 func TestSendRefusals(t *testing.T) {

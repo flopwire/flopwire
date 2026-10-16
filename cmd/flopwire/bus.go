@@ -305,8 +305,8 @@ type peersArgs struct {
 }
 
 type sendArgs struct {
-	To, Text, Intent, ReplyTo, Repo string
-	Refs                            []string
+	To, Text, Intent, ReplyTo, RetryOf, Repo string
+	Refs                                     []string
 }
 
 type inboxArgs struct {
@@ -542,12 +542,13 @@ func plural(n int, one, many string) string {
 
 // Arrival is when a sent message reaches its recipient.
 const (
-	arriveNextToolCall = "next_tool_call"  // a busy session: at its next tool call
-	arriveNextPrompt   = "next_prompt"     // an idle session: at its next prompt/resumption hook
-	arriveAccepted     = "when_accepted"   // held until the recipient's human accepts the sender
-	arriveNextSession  = "next_session"    // @user with no live session: their next session
-	arriveIfResumed    = "only_if_resumed" // a session that is not running
-	arriveWhenRunning  = "when_running"    // an idle cloud session: pushed when it next runs a turn
+	arriveNextToolCall = "next_tool_call"   // a busy session: at its next tool call
+	arriveNextPrompt   = "next_prompt"      // an idle session: at its next prompt/resumption hook
+	arriveAccepted     = "when_accepted"    // held until the recipient's human accepts the sender
+	arriveNextSession  = "next_session"     // @user with no live session: their next session
+	arriveIfResumed    = "only_if_resumed"  // a session that is not running
+	arriveWhenRunning  = "when_running"     // an idle cloud session: pushed when it next runs a turn
+	arriveRecorded     = "already_recorded" // an explicit retry returned its existing successor
 )
 
 // sendJSON is send's receipt: busproto.SendResponse (id, thread_id,
@@ -590,7 +591,7 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 		return errNoCaller("send", st)
 	}
 	req := busproto.SendRequest{FromSession: self.SessionID, FromAgent: string(self.Agent), To: strings.TrimSpace(a.To), Body: a.Text,
-		Intent: a.Intent, ReplyTo: strings.TrimSpace(a.ReplyTo), Refs: a.Refs, Repo: a.Repo}
+		Intent: a.Intent, ReplyTo: strings.TrimSpace(a.ReplyTo), RetryOf: strings.TrimSpace(a.RetryOf), Refs: a.Refs, Repo: a.Repo}
 	if req.Repo != "" && req.Repo != "*" {
 		req.Repo = local.ResolveRepo(req.Repo)
 	}
@@ -622,13 +623,15 @@ func sendUsage(st busStyle, why string) *busErr {
 		return badUsage(why+"; flopwire_send takes to (a session id prefix from flopwire_peers, or @user) and message", `flopwire_send to="0b7e2c1a" message="Heads-up: the list endpoint now returns a cursor."`)
 	}
 	e := badUsage(why, `flopwire send 0b7e2c1a -- "Heads-up: the list endpoint now returns a cursor."`)
-	e.Fix = "Usage: flopwire send <to> [--intent request|inform|done] [--reply-to ID] [--ref ADDRESS]... [--repo R] -- <text | ->"
+	e.Fix = "Usage: flopwire send <to> [--intent request|inform|done] [--reply-to ID] [--retry-of ID] [--ref ADDRESS]... [--repo R] -- <text | ->"
 	return e
 }
 
 // arrival says when the message arrives (the arrive* values).
 func arrival(r busproto.SendResponse) string {
 	switch {
+	case r.Replayed:
+		return arriveRecorded
 	case r.State == busproto.StateHeld:
 		return arriveAccepted
 	case r.To.Live && r.To.Busy:
@@ -661,7 +664,7 @@ const (
 // sendNext is the receipt's next: what to do until the reply comes. Only
 // a request expects a reply; inform and done get "".
 func sendNext(r busproto.SendResponse) string {
-	if r.Intent != busproto.IntentRequest {
+	if r.Intent != busproto.IntentRequest || r.Replayed {
 		return ""
 	}
 	if r.To.Cloud {
@@ -679,6 +682,13 @@ func expiry(t time.Time) string { return t.UTC().Format("2006-01-02T15:04Z") }
 // sendOutcome is the one line a send prints with --text (plan §3), so the
 // sender never polls: where the message went and when it arrives.
 func sendOutcome(r busproto.SendResponse) (out string) {
+	if r.Replayed {
+		state := string(r.State)
+		if r.Reason != "" {
+			state += " (" + r.Reason + ")"
+		}
+		return format.Clean(fmt.Sprintf("retry of %s already recorded as %s: %s; no new message created", r.RetryOf, r.ID, state))
+	}
 	defer func() {
 		if r.To.Live && !r.To.Busy && r.To.Session != "" {
 			out += idleDescription(r.To.IdleSince, r.To.IdleSeconds)
@@ -724,6 +734,9 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		default:
 			line = fmt.Sprintf("queued %s for %s: no live session%s; expires %s", r.ID, who, on, expiry(r.ExpiresAt))
 		}
+	}
+	if r.RetryOf != "" {
+		line += "; retry of " + r.RetryOf
 	}
 	if n, rules := redactionCount(r.Redactions); n > 0 {
 		line += fmt.Sprintf("; %d %s masked before it left this device (%s)", n, plural(n, "secret", "secrets"), rules)
@@ -1109,7 +1122,7 @@ func runBusVerb(ctx context.Context, verb string, o *opts, stdin io.Reader, stdo
 		if len(o.pos) == 0 {
 			return sendUsage(*st, "send needs a recipient and a text")
 		}
-		a := sendArgs{To: o.pos[0], Intent: o.vals["intent"], ReplyTo: o.vals["reply-to"], Refs: o.list["ref"], Repo: o.vals["repo"]}
+		a := sendArgs{To: o.pos[0], Intent: o.vals["intent"], ReplyTo: o.vals["reply-to"], RetryOf: o.vals["retry-of"], Refs: o.list["ref"], Repo: o.vals["repo"]}
 		text := o.pos[1:]
 		if len(text) == 1 && text[0] == "-" {
 			raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
@@ -1204,8 +1217,13 @@ reply)}. A refusal is {"kind":"error","error":{"code":
 --text: one line, e.g. sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at
 its next tool call
 
-Flags    --intent request|inform|done  --reply-to ID  --ref ADDRESS (repeat)
+Flags    --intent request|inform|done  --reply-to ID  --retry-of ID  --ref ADDRESS (repeat)
          --repo .|NAME|*  --text  (--json: the default)
+Retry    --retry-of ID explicitly retries your undelivered/session_ended message.
+         Keep the same recipient session, text, intent, refs and reply-to. @user
+         retries are refused. A repeated retry returns its existing message with
+         replayed=true, current state/reason and arrives=already_recorded.
+         A prior hook may have printed without confirming; retry can repeat context.
 Text     after --; "-" reads it from stdin
 Sender   the calling agent session (or FLOPWIRE_SESSION_ID); a send without one is refused
 Socket   --socket PATH (default <config dir>/agent.sock: the device agent sends it)

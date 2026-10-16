@@ -117,26 +117,51 @@ A message stays `delivered` in these cases:
 - A path rule denies the session's transcript, so the device does not
   index it.
 
-## Resend a message that was not delivered
+## Retry after a recipient session ends
 
-A message waits for the session it was sent to, or for the session that
-took an `@user` message. If that session ends before a hook delivers the
-message, no other session gets it. The sender's inbox shows it as not
-delivered.
+Accepting a sender releases held messages for delivery. Release does not
+confirm delivery. If the addressed session ends first, the message can
+become `undelivered` with reason `session_ended`. Resuming that session
+does not requeue the failed message.
 
-1. In the sending session, run `flopwire inbox --sent --text`, or call
-   `flopwire_inbox` with `sent: true`.
-2. Find the entries with the state `undelivered`. The reason is in
-   parentheses:
-   - `session_ended`: the recipient session ended first.
-   - `unconfirmed`: hooks took the message 3 times and none confirmed
-     that it printed it.
-3. Run `flopwire peers` to find a live session for the work.
-4. Send the message again, to that session or to `@user`.
+An explicit retry creates a new message for the same recipient session.
+Use it only if the work is still needed. A previous hook might have
+printed the original message without confirming. A retry can repeat text
+in the recipient's context. Delivery and read receipts do not confirm
+that the recipient acted on a request.
 
-A message sent to a session that `peers` no longer lists is not marked
-`undelivered`. Its receipt says `only_if_resumed`: it waits until that
-session resumes, or until it expires after 24 hours.
+1. In the original sending session, run `flopwire inbox --sent`.
+2. Find the failed message ID and its recipient session, text, intent,
+   refs and `reply_to`.
+3. Check the intended session with `flopwire peers --session SESSION`.
+4. Send the same fields with `--retry-of MESSAGE_ID`. For example:
+
+   ```sh
+   flopwire send RECIPIENT_SESSION --retry-of FAILED_MESSAGE_ID --intent request -- "Original message text"
+   ```
+
+With MCP, call `flopwire_send` with the original fields and
+`retry_of: "FAILED_MESSAGE_ID"`. The retry must come from the original
+sending session on its original device. It must keep the same recipient
+session, text, intent, refs and `reply_to`. The server preserves the
+original thread. The source must be a session-addressed message with
+state `undelivered` and reason `session_ended`. Retries of `@user`
+messages, or messages with another state or reason, are refused.
+
+The retry still passes current privacy rules, sender limits, recipient
+capacity limits and sender acceptance. An ordinary identical send remains
+subject to the ten-minute duplicate guard. Do not change text to bypass
+that guard.
+
+Repeated requests with the same `retry_of` return the same successor.
+The receipt has `replayed: true`, the successor's current `state` and
+`reason`, and `arrives: "already_recorded"`. It creates no additional
+message. If that successor also fails with `session_ended`, retry its ID
+to create the next attempt. Retry records are available only while the
+source and successor remain retained.
+
+A queued message whose receipt says `only_if_resumed` already waits for
+that session to resume. It is not eligible for an explicit retry.
 
 ## How long messages are kept
 
