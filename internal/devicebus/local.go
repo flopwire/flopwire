@@ -26,6 +26,9 @@ import (
 // server when one is configured, else into the local inbox. A refusal is a
 // *busproto.Error with the server's codes either way.
 func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	if len(req.RetryOf) > 64 || strings.TrimSpace(req.RetryOf) != req.RetryOf {
+		return busproto.SendResponse{}, badRequest("retry_of must be a message id of at most 64 bytes")
+	}
 	rawRefs := req.Refs
 	cleanSend(&req)
 	if b.Local() {
@@ -49,6 +52,25 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	}
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent, true); err != nil {
 		return busproto.SendResponse{}, err
+	}
+	if req.RetryOf != "" {
+		var raw string
+		err := b.st.db.QueryRowContext(ctx, `SELECT envelope FROM devbus_messages WHERE id=?`, req.RetryOf).Scan(&raw)
+		if err != nil && !isNoRows(err) {
+			return busproto.SendResponse{}, err
+		}
+		if err == nil {
+			var source busproto.Envelope
+			if err := json.Unmarshal([]byte(raw), &source); err != nil {
+				return busproto.SendResponse{}, err
+			}
+			if err := b.notWithheld(ctx, source.From, source.FromAgent, false); err != nil {
+				return busproto.SendResponse{}, err
+			}
+			if err := b.namesNoWithheld(ctx, busproto.SendRequest{To: source.ToSession, Refs: source.Refs}, nil); err != nil {
+				return busproto.SendResponse{}, err
+			}
+		}
 	}
 	if err := b.namesNoWithheld(ctx, req, rawRefs); err != nil {
 		return busproto.SendResponse{}, err
@@ -820,6 +842,17 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 	var refusal *busproto.Error
 	err = inTx(ctx, b.st.db, func(tx *sql.Tx) error {
 		e.ThreadID = e.ID
+		if req.RetryOf != "" {
+			source, replay, retryErr := b.localRetry(ctx, tx, req.RetryOf, e, in)
+			if retryErr != nil {
+				return retryErr
+			}
+			if replay != nil {
+				out = *replay
+				return nil
+			}
+			e.RetryOf, e.ThreadID = source.ID, source.ThreadID
+		}
 		if refusal, err = b.checkLocal(ctx, tx, &e, in, toKey, now); err != nil {
 			return err
 		}
@@ -843,15 +876,22 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		_, err = tx.ExecContext(ctx, `INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,to_key,body_sha,envelope,state,reason,created_at,expires_at)
 			VALUES(?,'local',?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID, seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, toKey, in.sha, string(raw), string(state), reason, ms(now), ms(e.ExpiresAt))
+		if err == nil && refusal == nil && req.RetryOf != "" {
+			_, err = tx.ExecContext(ctx, `INSERT INTO devbus_retries(source_id,successor_id) VALUES(?,?)`, req.RetryOf, e.ID)
+		}
 		return err
 	})
 	if err != nil {
 		return busproto.SendResponse{}, err
 	}
+	if out.Replayed {
+		return out, nil
+	}
 	if refusal != nil {
 		refusal.MessageID = e.ID
 		return busproto.SendResponse{}, refusal
 	}
+	out.RetryOf = e.RetryOf
 	out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = e.ID, e.ThreadID, busproto.StateQueued, e.Sender, e.Intent, e.Sent, e.ExpiresAt
 	if len(in.redactions) > 0 {
 		out.Redactions = in.redactions
@@ -888,7 +928,9 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 	}
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND from_session=? AND created_at>? AND state<>'refused'
-		AND body_sha=? AND to_key=?`, e.From, ms(now.Add(-busproto.DuplicateWindow)), in.sha, toKey).Scan(&n); err != nil {
+		AND body_sha=? AND to_key=? AND id NOT IN (
+            WITH RECURSIVE ancestry(id) AS (SELECT ? WHERE ?<>'' UNION SELECT r.source_id FROM devbus_retries r JOIN ancestry a ON r.successor_id=a.id) SELECT id FROM ancestry
+        )`, e.From, ms(now.Add(-busproto.DuplicateWindow)), in.sha, toKey, e.RetryOf, e.RetryOf).Scan(&n); err != nil {
 		return nil, err
 	}
 	if n > 0 {
@@ -911,7 +953,7 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 	if n >= busproto.DevicePerHour {
 		return fail(http.StatusTooManyRequests, busproto.CodeDeviceRate, "this device sent %d messages in the last hour; the limit is %d", n, busproto.DevicePerHour), nil
 	}
-	if e.ReplyTo != "" {
+	if e.ReplyTo != "" || e.RetryOf != "" {
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND thread_id=? AND created_at>? AND state<>'refused'`,
 			e.ThreadID, ms(now.Add(-time.Hour))).Scan(&n); err != nil {
 			return nil, err
