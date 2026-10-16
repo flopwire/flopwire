@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,7 +66,8 @@ func TestAcceptEndToEndAfterSessionEnded(t *testing.T) {
 		}
 		return false
 	})
-	first := s.send(t, e2eB, "held until after the recipient exits")
+	const firstBody = "held until after the recipient exits"
+	first := s.send(t, e2eB, firstBody)
 	if first.State != busproto.StateHeld || !first.To.Live {
 		t.Fatalf("send while live: %+v", first)
 	}
@@ -138,20 +140,14 @@ func TestAcceptEndToEndAfterSessionEnded(t *testing.T) {
 		}
 		return false
 	})
-	second := s.send(t, e2eB, "Resending after session exit: held until after the recipient exits")
-	if second.State != busproto.StateQueued || second.ID == first.ID {
-		t.Fatalf("explicit resend: %+v", second)
+	var duplicate busproto.SendResponse
+	err = api.JSON(ctx, "POST", busproto.PathSend, busproto.SendRequest{FromSession: "gary-1111", To: e2eB, Body: firstBody}, &duplicate)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != busproto.CodeDuplicate {
+		t.Fatalf("identical resend within duplicate window: %+v %v", duplicate, err)
 	}
-	var delivered string
-	e2eWait(t, "explicit resend delivered", func() bool {
-		delivered = hook()
-		return strings.Contains(delivered, second.ID)
-	})
-	if strings.Contains(delivered, first.ID) || strings.Count(delivered, "<flopwire-message ") != 1 {
-		t.Fatalf("unexpected resumed delivery: %s", delivered)
-	}
+	t.Logf("identical resend refused: %s", apiErr.Detail)
 	if got := hook(); strings.Contains(got, "<flopwire-message ") {
-		t.Fatalf("resend delivered twice: %s", got)
+		t.Fatalf("message delivered after refused duplicate: %s", got)
 	}
-	t.Log("explicit resend delivered once; original message stayed undelivered")
 }
