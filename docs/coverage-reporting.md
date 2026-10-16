@@ -84,13 +84,3 @@ and reject unavailable counters interpreted as zero.
 This checks interpretation of native rendered synthetic output. It does not
 qualify ingestion, transport, live discovery, or the model's choice of tools.
 Zero queues still leave discovery and other-device coverage unknown.
-
-The October 16, 2026 candidate smoke run used Codex 0.163.0,
-`gpt-6.1-sol`, and low reasoning effort. All four cases passed automatic
-checks and manual interpretation review. No tool calls occurred. Candidate
-instructions were confirmed in each session's developer message. This is one
-sample per case without a baseline comparison. It establishes no general
-quality improvement. An earlier run omitted the request's `include_self`
-argument; its self-exclusion expectations were ambiguous. That failed fixture
-run is retained separately from the corrected run. Private synthetic records
-are under `coverage-guidance-20261016-run-2` in the private operations directory.
