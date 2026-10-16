@@ -100,5 +100,59 @@ class CredentialGuardTests(unittest.TestCase):
             self.assertFalse(json.loads((root / "report.json").read_text())["completed"])
 
 
+class CoverageInterpretationVerifier(unittest.TestCase):
+    def test_owned_process_group_cleanup_on_success_and_timeout(self):
+        import subprocess
+        import time
+        for timeout in (False, True):
+            with tempfile.TemporaryDirectory() as tmp:
+                marker = Path(tmp) / "child.pid"
+                code = ("import pathlib,subprocess,sys,time; "
+                        "p=subprocess.Popen([sys.executable,'-c','import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)']); "
+                        "pathlib.Path(sys.argv[1]).write_text(str(p.pid)); "
+                        + ("time.sleep(60)" if timeout else "time.sleep(.1)"))
+                cmd = [sys.executable, "-c", code, str(marker)]
+                with open(os.devnull, "w") as out:
+                    if timeout:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            qualification.run_owned_coverage_process(cmd, os.environ.copy(), tmp, out, out, timeout=1)
+                    else:
+                        self.assertEqual(qualification.run_owned_coverage_process(cmd, os.environ.copy(), tmp, out, out), 0)
+                pid = int(marker.read_text())
+                deadline = time.monotonic() + 2
+                while True:
+                    state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True).stdout.strip()
+                    if not state or state.startswith("Z"):
+                        break
+                    if time.monotonic() > deadline:
+                        self.fail("owned descendant survived process-group cleanup")
+                    time.sleep(.02)
+
+    def test_fixture_set_must_be_complete_and_unique(self):
+        names = ["empty", "unavailable", "pending", "held"]
+        fixture = lambda ns: {"instructions": "native guidance", "cases": [{"name": n} for n in ns]}
+        qualification.validate_coverage_fixtures(fixture(names))
+        for invalid in ([], names[:2], names + ["held"], names[:-1] + ["empty"]):
+            with self.assertRaises(ValueError):
+                qualification.validate_coverage_fixtures(fixture(invalid))
+
+    def test_rejects_global_absence_even_with_correct_observations(self):
+        answer = dict(pending_upload_generations=0, pending_parses=0, policy_holds=0,
+                      self_excluded=False, global_absence_established=False,
+                      interpretation="No matches in this scope; discovery and other devices unknown.",
+                      next_step="Inspect intended source coverage.")
+        self.assertTrue(qualification.coverage_answer_valid("empty", answer))
+        answer["global_absence_established"] = True
+        self.assertFalse(qualification.coverage_answer_valid("empty", answer))
+
+    def test_unavailable_is_not_zero_and_backlog_is_not_caught_up(self):
+        answer = dict(pending_upload_generations=None, pending_parses=None, policy_holds=None,
+                      self_excluded=False, global_absence_established=False,
+                      interpretation="Diagnostics unavailable.", next_step="Inspect agent status.")
+        self.assertTrue(qualification.coverage_answer_valid("unavailable", answer))
+        self.assertFalse(qualification.coverage_answer_valid("empty", answer))
+        self.assertFalse(qualification.coverage_answer_valid("pending", answer))
+
+
 if __name__ == "__main__":
     unittest.main()
