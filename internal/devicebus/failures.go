@@ -29,7 +29,7 @@ func captureLocalFailures(ctx context.Context, x execer, now time.Time) error {
  CASE WHEN state='undelivered' THEN state ELSE 'expired' END,
  CASE WHEN state='undelivered' THEN reason ELSE 'expired' END,created_at
  FROM devbus_messages WHERE origin='local' AND
- (state='undelivered' OR (state IN ('queued','leased') AND expires_at<=? AND (state<>'leased' OR lease_until<=?)))`, ms(now), ms(now))
+ (state='undelivered' OR (state IN ('queued','waiting_resume','leased') AND expires_at<=? AND (state<>'leased' OR lease_until<=?)))`, ms(now), ms(now))
 	return err
 }
 

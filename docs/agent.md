@@ -1311,8 +1311,9 @@ plugin's `SessionEnd` hook installed, it ends at once.
 
 When a session ends, each message that waits for it (queued for it, or an
 `@user` message claimed for it) becomes `undelivered` with the reason
-`session_ended`. The sender's `inbox` shows it, so the sender can send it
-again. The message is never given to another session. A message that a
+`session_ended`. The sender can explicitly retry it with `--retry-of ID`
+if it was addressed to that exact session. See [retry after a recipient
+session ends](messaging.md#retry-after-a-recipient-session-ends). The message is never given to another session. A message that a
 hook took and has not confirmed keeps its lease: a late confirmation still
 counts. If the lease ends unconfirmed, the message becomes
 `undelivered` with `session_ended`.
@@ -1439,8 +1440,9 @@ JSON with named fields and full session ids. Add `--text` (MCP:
    has a `reason`. `undelivered` with `unconfirmed` means that hooks took
    the message 3 times and none confirmed that it printed it.
    `undelivered` with `session_ended` means that the recipient session
-   ended before a hook delivered the message. Send it again, to another
-   session if the work still needs one. The state
+   ended before delivery was confirmed. If the work is still needed, use
+   an [explicit retry](messaging.md#retry-after-a-recipient-session-ends)
+   to the same session. A previous hook might have printed without confirming. The state
    of a sent message is its delivery only. `read` (with `read_at`) means
    that the message's text entered the recipient's context, not that the
    recipient acted on it ([read receipts](messaging.md#read-receipts)).

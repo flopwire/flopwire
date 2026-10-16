@@ -276,6 +276,7 @@ var flagDefs = []flagDef{
 	{"help", 'h', fBool, "gslrpmi"},
 	{"intent", 0, fString, "m"},
 	{"reply-to", 0, fString, "m"},
+	{"retry-of", 0, fString, "m"},
 	{"ref", 0, fList, "m"},
 	{"sent", 0, fBool, "i"},
 	{"thread", 0, fString, "i"},

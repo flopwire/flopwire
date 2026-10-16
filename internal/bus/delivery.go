@@ -18,7 +18,7 @@ import (
 const (
 	envCols = `m.id,m.seq,m.thread_id,COALESCE(m.reply_to,''),m.from_session,m.from_agent,m.from_user::text,(SELECT email FROM users WHERE id=m.from_user),
 		m.from_repo,m.from_branch,m.sender,m.intent,m.body,m.refs,m.created_at,m.expires_at,COALESCE(m.to_session,''),COALESCE(m.to_agent,''),
-		m.to_user::text,(SELECT email FROM users WHERE id=m.to_user),m.to_repo,m.addressed`
+		m.to_user::text,(SELECT email FROM users WHERE id=m.to_user),m.to_repo,m.addressed,COALESCE(m.retry_of,''),m.admission`
 	envFrom = `bus_messages m`
 )
 
@@ -26,7 +26,7 @@ func scanEnvelope(r pgx.Row, extra ...any) (busproto.Envelope, error) {
 	var e busproto.Envelope
 	var intent string
 	err := r.Scan(append([]any{&e.ID, &e.Seq, &e.ThreadID, &e.ReplyTo, &e.From, &e.FromAgent, &e.UserID, &e.User, &e.Repo, &e.Branch,
-		&e.Sender, &intent, &e.Body, &e.Refs, &e.Sent, &e.ExpiresAt, &e.ToSession, &e.ToAgent, &e.ToUserID, &e.ToUser, &e.ToRepo, &e.Addressed}, extra...)...)
+		&e.Sender, &intent, &e.Body, &e.Refs, &e.Sent, &e.ExpiresAt, &e.ToSession, &e.ToAgent, &e.ToUserID, &e.ToUser, &e.ToRepo, &e.Addressed, &e.RetryOf, &e.Admission}, extra...)...)
 	e.Intent = busproto.Intent(intent)
 	if len(e.Refs) == 0 {
 		e.Refs = nil
@@ -165,7 +165,7 @@ func (s *Store) Poll(ctx context.Context, c busproto.Caller, req busproto.PollRe
 	timedOut := wait == 0
 	for {
 		woken, gen := s.hub.wait(c.UserID)
-		out, newest, err := s.deliverable(ctx, c, s.now())
+		out, newest, err := s.deliverable(ctx, c, s.now(), req.ResumeRetries)
 		if err != nil {
 			return busproto.PollResponse{}, err
 		}
@@ -202,8 +202,9 @@ const cloudLive = `(m.state='queued' AND m.addressed='session' AND EXISTS(SELECT
 // presence or uploaded from it), those it claimed, unclaimed @user
 // messages (the caller filters them by eligibility), and unclaimed ones to
 // the person's live cloud sessions (seen since $4; the last column).
+// $5 enables explicit retries and their admission metadata for supporting recipients.
 const DeliverableSQL = `SELECT ` + envCols + `,` + cloudLive + ` FROM ` + envFrom + `
-	WHERE m.to_user=$1 AND m.state IN ('queued','claimed') AND m.expires_at>$2 AND (
+	WHERE m.to_user=$1 AND ($5::boolean OR (m.admission='' AND m.retry_of IS NULL)) AND m.state IN ('queued','claimed') AND m.expires_at>$2 AND (
 		(m.state='claimed' AND m.claimed_device=$3)
 		OR (m.state='queued' AND m.to_session IS NULL)
 		OR ` + cloudLive + `
@@ -233,9 +234,9 @@ func held(ctx context.Context, q querier, userID string, now time.Time) ([]buspr
 }
 
 // deliverable reads the device's set and its highest seq.
-func (s *Store) deliverable(ctx context.Context, c busproto.Caller, now time.Time) (busproto.PollResponse, int64, error) {
+func (s *Store) deliverable(ctx context.Context, c busproto.Caller, now time.Time, resumeRetries bool) (busproto.PollResponse, int64, error) {
 	out := busproto.PollResponse{Messages: []busproto.Envelope{}, Claimable: []busproto.Claimable{}}
-	rows, err := s.Pool.Query(ctx, DeliverableSQL, c.UserID, now, c.DeviceID, now.Add(-busproto.PresenceTTL))
+	rows, err := s.Pool.Query(ctx, DeliverableSQL, c.UserID, now, c.DeviceID, now.Add(-busproto.PresenceTTL), resumeRetries)
 	if err != nil {
 		return out, 0, err
 	}
@@ -316,9 +317,14 @@ func (s *Store) Claim(ctx context.Context, c busproto.Caller, req busproto.Claim
 	}
 	now := s.now()
 	var cloud bool
-	err := s.Pool.QueryRow(ctx, `SELECT addressed='session' FROM bus_messages WHERE id=$1 AND to_user=$2`, req.MessageID, c.UserID).Scan(&cloud)
+	var admission busproto.Admission
+	var retryOf string
+	err := s.Pool.QueryRow(ctx, `SELECT addressed='session',admission,COALESCE(retry_of,'') FROM bus_messages WHERE id=$1 AND to_user=$2`, req.MessageID, c.UserID).Scan(&cloud, &admission, &retryOf)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
+	}
+	if (retryOf != "" || admission == busproto.AdmissionNextResume) && !req.ResumeRetries {
+		return out, fail(http.StatusConflict, busproto.CodeNotEligible, "message %s requires explicit retry support", req.MessageID)
 	}
 	if cloud {
 		return s.claimCloud(ctx, c, req, now)
@@ -1138,6 +1144,9 @@ func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 	if _, err := s.Pool.Exec(ctx, `DELETE FROM bus_delivery_failures WHERE message_id=ANY(ARRAY(
 		SELECT n.message_id FROM bus_delivery_failures n WHERE n.acked_at<$1
 		AND NOT EXISTS(SELECT 1 FROM bus_messages m WHERE m.id=n.message_id) LIMIT $2))`, cutoff, purgeBatch); err != nil {
+		return out, err
+	}
+	if _, err := s.Pool.Exec(ctx, `DELETE FROM bus_retries WHERE source_id IN (SELECT r.source_id FROM bus_retries r WHERE NOT EXISTS(SELECT 1 FROM bus_messages m WHERE m.id=r.source_id) LIMIT $1)`, purgeBatch); err != nil {
 		return out, err
 	}
 	for range purgeBatches {

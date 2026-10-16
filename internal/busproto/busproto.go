@@ -9,6 +9,7 @@
 // the credential, never from the request.
 //
 //	POST   /v1/bus/send             SendRequest  -> SendResponse
+//	POST   /v1/bus/retry            SendRequest  -> SendResponse (requires retry_of)
 //	POST   /v1/bus/poll             PollRequest  -> PollResponse (long poll)
 //	POST   /v1/bus/claim            ClaimRequest -> ClaimResponse
 //	POST   /v1/bus/ack              AckRequest   -> AckResponse
@@ -80,6 +81,7 @@ import (
 
 const (
 	PathSend     = "/v1/bus/send"
+	PathRetry    = "/v1/bus/retry"
 	PathPoll     = "/v1/bus/poll"
 	PathClaim    = "/v1/bus/claim"
 	PathAck      = "/v1/bus/ack"
@@ -162,6 +164,13 @@ func ParseIntent(s string) (Intent, error) {
 
 // State is a message's delivery state.
 type State string
+
+// Admission records the receiving boundary chosen by the bus at send time.
+// Empty uses ordinary session-end handling. NextResume waits for the first
+// receiving hook (or running cloud push), then uses ordinary lease handling.
+type Admission string
+
+const AdmissionNextResume Admission = "next_resume"
 
 const (
 	StateQueued    State = "queued"
@@ -266,7 +275,11 @@ type SendRequest struct {
 	Intent string `json:"intent,omitempty"`
 	// ReplyTo is a message id the sending session sent or received (or
 	// one its person sent or received); the reply joins its thread.
-	ReplyTo string   `json:"reply_to,omitempty"`
+	ReplyTo string `json:"reply_to,omitempty"`
+	// RetryOf explicitly retries a session-addressed message from this
+	// exact sender that ended with session_ended. All message fields must
+	// match the original. Repeating the request returns its one successor.
+	RetryOf string   `json:"retry_of,omitempty"`
 	Refs    []string `json:"refs,omitempty"`
 	// Repo routes an @user message: a normalized remote (host/owner/name,
 	// or owner/name), which the device resolves a path or a name it knows
@@ -312,6 +325,11 @@ type SendResponse struct {
 	Intent    Intent    `json:"intent"`
 	Sent      time.Time `json:"sent"`
 	ExpiresAt time.Time `json:"expires_at"`
+	RetryOf   string    `json:"retry_of,omitempty"`
+	Replayed  bool      `json:"replayed,omitempty"`
+	// A replay reports the existing successor's current state and reason.
+	Reason    string    `json:"reason,omitempty"`
+	Admission Admission `json:"admission,omitempty"`
 	// Redactions counts secrets the server masked in the body, per rule.
 	Redactions map[string]int `json:"redactions,omitempty"`
 }
@@ -319,9 +337,11 @@ type SendResponse struct {
 // Envelope is a message as a recipient (or its sender's inbox) sees it.
 // Every field but Body, Intent, ReplyTo and Refs is set by the server.
 type Envelope struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"thread_id"`
-	ReplyTo  string `json:"reply_to,omitempty"`
+	ID        string    `json:"id"`
+	ThreadID  string    `json:"thread_id"`
+	ReplyTo   string    `json:"reply_to,omitempty"`
+	RetryOf   string    `json:"retry_of,omitempty"`
+	Admission Admission `json:"admission,omitempty"`
 	// From is the sending session; User its person's email.
 	From      string    `json:"from"`
 	FromAgent string    `json:"agent"`
@@ -376,6 +396,9 @@ type PresenceSession struct {
 
 // PollRequest is POST /v1/bus/poll.
 type PollRequest struct {
+	// ResumeRetries opts into explicit retry attribution and next_resume
+	// admission. Older recipients cannot safely render or schedule retries.
+	ResumeRetries bool `json:"resume_retries,omitempty"`
 	// Sessions is the device's whole presence; it replaces the last one.
 	Sessions []PresenceSession `json:"sessions"`
 	// Cloud is the person's vendor cloud sessions the device listed
@@ -440,9 +463,10 @@ type PollResponse struct {
 // session on this device, or a message to a live cloud session of the
 // device's person (SessionID is that session) for this device to push.
 type ClaimRequest struct {
-	MessageID string `json:"message_id"`
-	SessionID string `json:"session_id"`
-	Agent     string `json:"agent,omitempty"`
+	ResumeRetries bool   `json:"resume_retries,omitempty"`
+	MessageID     string `json:"message_id"`
+	SessionID     string `json:"session_id"`
+	Agent         string `json:"agent,omitempty"`
 }
 
 // ClaimResponse is the claimed message, now addressed to the session.

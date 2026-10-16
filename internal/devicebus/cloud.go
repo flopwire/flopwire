@@ -388,7 +388,7 @@ func (s *store) endCloud(ctx context.Context, session, agent string) (int64, err
 // queuedFor counts the session's messages waiting for a push.
 func (s *store) queuedFor(ctx context.Context, session, agent string, now time.Time) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE to_session=? AND to_agent=? AND state IN ('queued','leased') AND expires_at>?`,
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE to_session=? AND to_agent=? AND state IN ('queued','waiting_resume','leased') AND expires_at>?`,
 		session, agent, ms(now)).Scan(&n)
 	return n, err
 }

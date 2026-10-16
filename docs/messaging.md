@@ -117,26 +117,78 @@ A message stays `delivered` in these cases:
 - A path rule denies the session's transcript, so the device does not
   index it.
 
-## Resend a message that was not delivered
+## Retry after a recipient session ends
 
-A message waits for the session it was sent to, or for the session that
-took an `@user` message. If that session ends before a hook delivers the
-message, no other session gets it. The sender's inbox shows it as not
-delivered.
+Accepting a sender releases held messages for delivery. Release does not
+confirm delivery. If the addressed session ends first, the message can
+become `undelivered` with reason `session_ended`. Resuming that session
+does not requeue the failed message.
 
-1. In the sending session, run `flopwire inbox --sent --text`, or call
-   `flopwire_inbox` with `sent: true`.
-2. Find the entries with the state `undelivered`. The reason is in
-   parentheses:
-   - `session_ended`: the recipient session ended first.
-   - `unconfirmed`: hooks took the message 3 times and none confirmed
-     that it printed it.
-3. Run `flopwire peers` to find a live session for the work.
-4. Send the message again, to that session or to `@user`.
+An explicit retry creates a new message for the same recipient session.
+Use it only if the work is still needed. A previous hook might have
+printed the original message without confirming. A retry can repeat text
+in the recipient's context. Delivery and read receipts do not confirm
+that the recipient acted on a request.
 
-A message sent to a session that `peers` no longer lists is not marked
-`undelivered`. Its receipt says `only_if_resumed`: it waits until that
-session resumes, or until it expires after 24 hours.
+1. In the original sending session, run `flopwire inbox --sent`.
+2. Find the failed message ID and its recipient session, text, intent,
+   refs and `reply_to`.
+3. Check the intended session with `flopwire peers --session SESSION`.
+4. Send the same fields with `--retry-of MESSAGE_ID`. For example:
+
+   ```sh
+   flopwire send RECIPIENT_SESSION --retry-of FAILED_MESSAGE_ID --intent request -- "Original message text"
+   ```
+
+With MCP, call `flopwire_send` with the original fields and
+`retry_of: "FAILED_MESSAGE_ID"`. The retry must come from the original
+sending session on its original device. It must keep the same recipient
+session, text, intent, refs and `reply_to`. The server preserves the
+original thread. The source must be a session-addressed message with
+state `undelivered` and reason `session_ended`. Retries of `@user`
+messages, or messages with another state or reason, are refused.
+
+If the recipient session is closed when the retry is admitted, the receipt
+has `admission: "next_resume"` and `arrives: "only_if_resumed"`. It waits
+for the same session's first receiving hook, or its first running cloud
+push, until that retry's expiry. Starting and stopping a process
+without that receiving boundary does not consume the wait. The retry
+never wakes the session or moves to another session. After the first
+receiving attempt, ordinary lease and session-end handling applies.
+A retry admitted while the recipient is live uses ordinary delivery
+handling from the start.
+
+The retry still passes current privacy rules, sender limits, recipient
+capacity limits and sender acceptance. An ordinary identical send remains
+subject to the ten-minute duplicate guard. Do not change text to bypass
+that guard.
+
+Repeated requests with the same `retry_of` return the same successor.
+The receipt has `replayed: true`, the successor's current `state` and
+`reason`, and `arrives: "already_recorded"`. It creates no additional
+message. If that successor also fails with `session_ended`, retry its ID
+to create the next attempt. Retry records are available only while the
+source and successor remain retained.
+
+API clients submit the original send fields plus `retry_of` to
+`POST /v1/bus/retry`, with the original device credential. The ordinary
+`/v1/bus/send` route rejects `retry_of`. Older servers reject the retry
+route before creating a message. Updated CLI and MCP clients also use a
+separate agent operation so older device agents reject an explicit retry
+before sending anything. Update the server and sending device agent to
+use retries. All explicit retries also require a recipient device agent
+that advertises retry support in its poll and claim requests. Older recipients do not
+receive explicit retries; the messages wait for a compatible recipient
+agent, or expire. Ordinary messages keep their existing behavior.
+
+Do not downgrade a device agent while explicit retries remain pending in
+its local inbox. Older binaries can lose retry attribution or waiting
+semantics. The local database format remains version 5 because some older
+versions reset the inbox when they encounter an unknown version. This
+change does not provide automatic rollback of pending retry state.
+
+A message still queued is not eligible for explicit retry. Use `retry_of`
+only after its state becomes `undelivered` with reason `session_ended`.
 
 ## How long messages are kept
 
