@@ -46,8 +46,9 @@ established. The observer correction in
 qualification has not been run and remains pending. The original cause is
 unresolved; later successful retries do not explain the original failure.
 
-Native MCP initialization emitted shared instructions once (6,459 characters);
-nine native tool descriptions totaled 8,481 characters. Exported discovery
+At the audit baseline, native MCP initialization emitted shared instructions once
+(6,459 characters); nine native tool descriptions totaled 8,481 characters.
+Exported discovery
 metadata totaled 79,311 characters, including a 6,374-character common prefix
 repeated for each tool. This confirms amplification after the native/export
 boundary; the totals measure different objects. The reported 21K-token
@@ -340,9 +341,10 @@ acceptance record. Private evidence is retained in
 `agent-usability-guidance-20261016/acceptance-v2-run-1/manual-review.json`.
 
 The separate observer correction merged in
-[#310](https://github.com/flopwire/flopwire/pull/310). Diagnostics in
-[#312](https://github.com/flopwire/flopwire/pull/312) remain pending. The scratch
-IDE check was not run because the UI controller selected the existing window
+[#310](https://github.com/flopwire/flopwire/pull/310). Opt-in diagnostics in
+[#312](https://github.com/flopwire/flopwire/pull/312) are also merged; live IDE
+qualification remains pending. The scratch IDE check was not run because the
+UI controller selected the existing window
 instead of the isolated process. No diagnostic configuration was activated and
 no markers were sent. None of these records resolves the unexplained
 original IDE failure in #228.
