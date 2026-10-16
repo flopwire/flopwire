@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,6 +127,9 @@ func TestCrashProxyRejectsMissedBoundary(t *testing.T) {
 				if event.Err == nil {
 					t.Fatal("missed boundary accepted")
 				}
+				if errors.Is(event.Err, context.Canceled) {
+					t.Fatalf("boundary rejection reported cancellation: %v", event.Err)
+				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("missing boundary failure")
 			}
@@ -151,6 +155,9 @@ func TestCrashProxyOtherSourceAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("other source HTTP status=%d", res.StatusCode)
+	}
 	select {
 	case <-p.reached:
 		t.Fatal("other source claimed gate")
@@ -159,24 +166,38 @@ func TestCrashProxyOtherSourceAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", p.server.URL+syncproto.PathFlush, bytes.NewReader(smallCrashFrame(t, "/target")))
-	done := make(chan error, 1)
+	type result struct {
+		status int
+		err    error
+	}
+	done := make(chan result, 1)
 	go func() {
 		res, err := hc.Do(req)
+		got := result{err: err}
 		if res != nil {
+			got.status = res.StatusCode
 			res.Body.Close()
 		}
-		done <- err
+		done <- got
 	}()
 	select {
-	case <-p.reached:
+	case event := <-p.reached:
+		if event.Err != nil {
+			t.Fatalf("cannot test cancellation without a committed boundary: %v (response=%+v)", event.Err, event.Response)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("boundary not reached")
 	}
+	select {
+	case got := <-done:
+		t.Fatalf("response escaped gate before cancellation: HTTP status=%d error=%v", got.status, got.err)
+	default:
+	}
 	cancel()
 	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "context canceled") {
-			t.Fatalf("cancel error=%v", err)
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("cancellation returned HTTP status=%d error=%v", got.status, got.err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancellation did not unblock")
