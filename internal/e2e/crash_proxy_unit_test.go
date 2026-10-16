@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -286,5 +287,45 @@ func TestCrashProxyPinsAndSingleGate(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("missing upstream TLS failure")
+	}
+}
+
+// Cancellation may race an available HTTP response in net/http. A canceled
+// downstream request must not get a synthetic response from the test proxy.
+func TestCrashProxyErrorHandlerCanceledDownstream(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		canceled bool
+		err      error
+		abort    bool
+	}{
+		{"downstream canceled", true, context.Canceled, true},
+		{"wrapped downstream canceled", true, fmt.Errorf("gate: %w", context.Canceled), true},
+		{"active downstream", false, context.Canceled, false},
+		{"unrelated upstream error", true, errors.New("upstream unavailable"), false},
+		{"validation error", false, errors.New("invalid committed boundary"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			req := httptest.NewRequest("POST", "https://proxy/flush", nil).WithContext(ctx)
+			rr := httptest.NewRecorder()
+			p := &crashProxy{}
+			var caught any
+			func() { defer func() { caught = recover() }(); p.handleError(rr, req, tc.err) }()
+			if tc.abort {
+				if caught != http.ErrAbortHandler {
+					t.Fatalf("panic=%v want ErrAbortHandler; HTTP=%d body=%q", caught, rr.Code, rr.Body.String())
+				}
+				if rr.Body.Len() != 0 || len(rr.Header()) != 0 {
+					t.Fatalf("canceled handler wrote response: headers=%v body=%q", rr.Header(), rr.Body.String())
+				}
+			} else if caught != nil || rr.Code != http.StatusBadGateway {
+				t.Fatalf("upstream/validation error panic=%v HTTP=%d", caught, rr.Code)
+			}
+		})
 	}
 }
