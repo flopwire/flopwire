@@ -32,16 +32,24 @@ func prepareRetry(ctx context.Context, tx pgx.Tx, c busproto.Caller, req busprot
 	if state != string(busproto.StateUndelivered) || reason != busproto.ReasonSessionEnded {
 		return false, badRequest("retry_of: source must be undelivered with reason session_ended")
 	}
-	var e busproto.Envelope
-	var successorState busproto.State
-	var successorReason string
-	e, err = scanEnvelope(tx.QueryRow(ctx, `SELECT `+envCols+`,m.state,m.reason FROM `+envFrom+` WHERE m.retry_of=$1`, req.RetryOf), &successorState, &successorReason)
-	if err == nil {
-		out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = e.ID, e.ThreadID, successorState, e.Sender, e.Intent, e.Sent, e.ExpiresAt
-		out.RetryOf, out.Replayed, out.Reason = req.RetryOf, true, successorReason
-		return true, nil
+	var successor string
+	err = tx.QueryRow(ctx, `SELECT successor_id FROM bus_retries WHERE source_id=$1`, req.RetryOf).Scan(&successor)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if successor != "" {
+		var e busproto.Envelope
+		var successorState busproto.State
+		var successorReason string
+		e, err = scanEnvelope(tx.QueryRow(ctx, `SELECT `+envCols+`,m.state,m.reason FROM `+envFrom+` WHERE m.id=$1`, successor), &successorState, &successorReason)
+		if err == nil {
+			out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = e.ID, e.ThreadID, successorState, e.Sender, e.Intent, e.Sent, e.ExpiresAt
+			out.RetryOf, out.Replayed, out.Reason, out.Admission = req.RetryOf, true, successorReason, e.Admission
+			return true, nil
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fail(http.StatusNotFound, busproto.CodeNotFound, "retry_of: successor no longer available")
+		}
 		return false, err
 	}
 	m.retryOf, m.thread = req.RetryOf, thread
