@@ -393,7 +393,7 @@ The report has these parts:
 
 | Field | Means |
 |---|---|
-| `ok` | `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
+| `ok` | Whether setup completed its checks or changes. This does not mean the current session can use the tools or receive messages. Read `todo` and `warnings` even when `ok` is `true`. `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
 | `flopwire.path` | The `flopwire` on `PATH`. Empty when `flopwire` is not on `PATH`. The plugins run the binary their shim finds (`hook_binary`). |
 | `flopwire.recorded` | The binary path recorded for the plugins' hooks. See [How the hooks find the binary](#how-the-hooks-find-the-binary). |
 | `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
@@ -403,8 +403,20 @@ The report has these parts:
 | `harnesses[].hook_binary` | The `flopwire` that the installed plugin's hooks run: `path` and `via` (`recorded path`, `PATH` or `known dir`), or `error` with the fix. `shell` says how setup ran the plugin's shim: as the harness runs a hook. |
 | `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
 | `todo` | What you must still do for the device. |
+| `check_note` | In `--check` mode, distinguishes configuration inspection from current-session tool access and hook delivery, which remain unverified. |
 
 Use `--check` to report and change nothing. Use `--remove` to uninstall.
+An installed and enabled plugin is configuration evidence. An observed MCP
+process is process evidence. Neither proves that your current session can
+discover or call a tool. Codex hook trust permits hook execution. It does
+not grant permission to call MCP tools. The session's tool approval policy
+still applies.
+
+A stopped device agent prevents capture and live messaging. Existing local
+history can still be searched. Shared search uses the configured server
+and does not require a local index. An empty local index means no local
+history has been indexed yet; an empty search result alone does not prove
+that setup or permissions failed.
 
 For Codex, `--check` runs only `codex plugin marketplace list` and
 `codex plugin list --marketplace flopwire-plugins`, which read local state. It
@@ -455,6 +467,31 @@ Follow these steps in order.
     `enabled: true`.
 13. Confirm that each installed harness has a `hook_binary.path`. If it
     has `hook_binary.error`, tell your user the error. It names the fix.
+
+### Verify tools in the current session
+
+Use these checks after you address the report's `todo` items. They test the
+session you run them in. They do not grant future send permission.
+
+1. Start a fresh harness session, or reload its Flopwire MCP connection.
+2. Ask the agent to list the available Flopwire tools. Confirm that
+   `flopwire_grep`, `flopwire_read`, `flopwire_peers` and `flopwire_send`
+   appear. Tool discovery alone does not verify tool access.
+3. Choose a known indexed transcript and a distinctive phrase in it. Ask
+   the agent to call `flopwire_grep` with that phrase and then
+   `flopwire_read` with a returned address. Confirm the expected text.
+   Check the reported search scope. If no history is indexed, capture a
+   synthetic transcript first. An absent phrase is not a useful probe.
+4. For live messaging, open a second test session. Identify its full
+   session ID. Explicitly authorize one test message to that session.
+5. Ask the first session to call `flopwire_peers` for that ID, then
+   `flopwire_send` with the authorized test text. Review any tool approval
+   prompt. A denial is not permission to change the approval policy.
+6. Run a turn in the receiving session. Confirm that its hook inserts the
+   test message. A send receipt alone does not verify delivery to context.
+7. To test replies, authorize a reply in the receiving session. Send it
+   with `reply_to` set to the test message ID. Run a turn in the first
+   session and confirm that its hook inserts the reply.
 
 Run `flopwire setup` again at any time. It updates the plugin when a
 new version exists. It changes nothing when the plugin is current.

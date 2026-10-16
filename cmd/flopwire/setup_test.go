@@ -584,6 +584,9 @@ func TestSetupCheckChangesNothing(t *testing.T) {
 				t.Fatal("--check changed the harness")
 			}
 			h := f.claude(rep)
+			if rep.CheckNote != setupCheckNote {
+				t.Fatalf("--check lacks verification limits: %q", rep.CheckNote)
+			}
 			if h.Installed != installed || len(h.Done) != 0 || rep.Mode != setupCheck {
 				t.Fatalf("--check: %+v", h)
 			}
