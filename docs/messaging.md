@@ -148,6 +148,16 @@ original thread. The source must be a session-addressed message with
 state `undelivered` and reason `session_ended`. Retries of `@user`
 messages, or messages with another state or reason, are refused.
 
+If the recipient session is closed when the retry is admitted, the receipt
+has `admission: "next_resume"` and `arrives: "only_if_resumed"`. It waits
+for the same session's first receiving hook, or its first running cloud
+push, until that retry's expiry. Starting and stopping a process
+without that receiving boundary does not consume the wait. The retry
+never wakes the session or moves to another session. After the first
+receiving attempt, ordinary lease and session-end handling applies.
+A retry admitted while the recipient is live uses ordinary delivery
+handling from the start.
+
 The retry still passes current privacy rules, sender limits, recipient
 capacity limits and sender acceptance. An ordinary identical send remains
 subject to the ten-minute duplicate guard. Do not change text to bypass
@@ -165,7 +175,17 @@ API clients submit the original send fields plus `retry_of` to
 `/v1/bus/send` route rejects `retry_of`. Older servers reject the retry
 route before creating a message. Updated CLI and MCP clients also use a
 separate agent operation so older device agents reject an explicit retry
-before sending anything. Update the server and device agent to use retries.
+before sending anything. Update the server and sending device agent to
+use retries. All explicit retries also require a recipient device agent that advertises
+retry support in its poll and claim requests. Older recipients do not
+receive explicit retries; the messages wait for a compatible recipient
+agent, or expire. Ordinary messages keep their existing behavior.
+
+Do not downgrade a device agent while explicit retries remain pending in
+its local inbox. Older binaries can lose retry attribution or waiting
+semantics. The local database format remains version 5 because some older
+versions reset the inbox when they encounter an unknown version. This
+change does not provide automatic rollback of pending retry state.
 
 A queued message whose receipt says `only_if_resumed` already waits for
 that session to resume. It is not eligible for an explicit retry.

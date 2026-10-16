@@ -299,6 +299,10 @@ func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
 			t.Fatalf("%s replay: %s", state, out)
 		}
 	}
+	waiting := busproto.SendResponse{ID: "mwaiting", RetryOf: "mfailed", Admission: busproto.AdmissionNextResume, State: busproto.StateQueued, Intent: busproto.IntentRequest, To: busproto.Recipient{Session: peerID}}
+	if out := sendOutcome(waiting); !strings.Contains(out, "first receiving hook after resume") || !strings.Contains(out, "requires retry support") || arrival(waiting) != arriveIfResumed || sendNext(waiting) != nextNoWait {
+		t.Fatalf("closed retry: %s", out)
+	}
 }
 
 func TestExplicitRetryOldAgentFailsBeforeOrdinarySend(t *testing.T) {

@@ -396,8 +396,8 @@ type PresenceSession struct {
 
 // PollRequest is POST /v1/bus/poll.
 type PollRequest struct {
-	// ResumeRetries opts into next_resume admission. Older recipients must
-	// not receive envelopes whose waiting state they cannot preserve.
+	// ResumeRetries opts into explicit retry attribution and next_resume
+	// admission. Older recipients cannot safely render or schedule retries.
 	ResumeRetries bool `json:"resume_retries,omitempty"`
 	// Sessions is the device's whole presence; it replaces the last one.
 	Sessions []PresenceSession `json:"sessions"`

@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/flopwire/flopwire/internal/agent"
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
@@ -116,10 +119,38 @@ func TestRetryEndToEndAfterAcceptanceAndSessionEnded(t *testing.T) {
 		}
 		return output.HookSpecificOutput.AdditionalContext
 	}
-	for range 2 {
-		if got := hook(); strings.Contains(got, first.ID) {
-			t.Fatalf("terminal message delivered after resume: %s", got)
-		}
+	var duplicate busproto.SendResponse
+	err = api.JSON(ctx, "POST", busproto.PathSend, busproto.SendRequest{FromSession: "gary-1111", To: e2eB, Body: firstBody}, &duplicate)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != busproto.CodeDuplicate {
+		t.Fatalf("identical resend within duplicate window: %+v %v", duplicate, err)
+	}
+	t.Logf("identical resend refused: status=%d code=%s duplicate_window=%s", apiErr.StatusCode, apiErr.Code, busproto.DuplicateWindow)
+	request := busproto.SendRequest{FromSession: "gary-1111", To: e2eB, Body: firstBody, RetryOf: first.ID}
+	var retry busproto.SendResponse
+	if err := api.JSON(ctx, "POST", busproto.PathRetry, request, &retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry.ID == first.ID || retry.RetryOf != first.ID || retry.ThreadID != first.ThreadID || retry.State != busproto.StateQueued || retry.Admission != busproto.AdmissionNextResume || retry.To.Live || retry.Replayed {
+		t.Fatalf("retry receipt: %+v", retry)
+	}
+	// This retry is admitted while B is still closed and inside EndGrace.
+	// Its first receiving hook, rather than a registry tick, consumes the wait.
+	e2eWait(t, "waiting retry on the recipient device", func() bool {
+		status, err := agent.Call(ctx, sock, agent.Request{Op: "status"})
+		return err == nil && status.Bus != nil && status.Bus.Pending == 1
+	})
+	time.Sleep(3 * time.Second) // At least one normal session-end settlement tick.
+	var waiting busproto.InboxResponse
+	if err := api.JSON(ctx, "GET", busproto.PathInbox+"?session=gary-1111&sent=true", nil, &waiting); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range waiting.Messages {
+		found = found || m.ID == retry.ID && m.State == busproto.StateQueued && m.Admission == busproto.AdmissionNextResume
+	}
+	if !found {
+		t.Fatalf("closed retry did not stay queued: %+v", waiting.Messages)
 	}
 	resumed := exec.Command("sleep", "120")
 	if err := resumed.Start(); err != nil {
@@ -132,38 +163,14 @@ func TestRetryEndToEndAfterAcceptanceAndSessionEnded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.json", resumed.Process.Pid)), fmt.Appendf(nil, `{"pid":%d,"sessionId":%q,"status":"idle","kind":"interactive","entrypoint":"sdk-cli"}`, resumed.Process.Pid, e2eB), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e2eWait(t, "resumed session in peers", func() bool {
-		for _, p := range peers().Peers {
-			if p.Session == e2eB {
-				return true
-			}
-		}
-		return false
-	})
-	var duplicate busproto.SendResponse
-	err = api.JSON(ctx, "POST", busproto.PathSend, busproto.SendRequest{FromSession: "gary-1111", To: e2eB, Body: firstBody}, &duplicate)
-	var apiErr *client.APIError
-	if !errors.As(err, &apiErr) || apiErr.Code != busproto.CodeDuplicate {
-		t.Fatalf("identical resend within duplicate window: %+v %v", duplicate, err)
-	}
-	t.Logf("identical resend refused: status=%d code=%s duplicate_window=%s", apiErr.StatusCode, apiErr.Code, busproto.DuplicateWindow)
-	if got := hook(); strings.Contains(got, "<flopwire-message ") {
-		t.Fatalf("message delivered after refused duplicate: %s", got)
-	}
-	request := busproto.SendRequest{FromSession: "gary-1111", To: e2eB, Body: firstBody, RetryOf: first.ID}
-	var retry busproto.SendResponse
-	if err := api.JSON(ctx, "POST", busproto.PathRetry, request, &retry); err != nil {
-		t.Fatal(err)
-	}
-	if retry.ID == first.ID || retry.RetryOf != first.ID || retry.ThreadID != first.ThreadID || retry.State != busproto.StateQueued || retry.Replayed {
-		t.Fatalf("retry receipt: %+v", retry)
-	}
+	// The receiving hook is the session's resume signal and the admission
+	// boundary. Process registry/presence refresh may lag behind it.
 	var delivered string
 	e2eWait(t, "explicit retry delivered", func() bool {
 		delivered = hook()
 		return strings.Contains(delivered, retry.ID)
 	})
-	if strings.Count(delivered, "<flopwire-message ") != 1 || !strings.Contains(delivered, firstBody) || !strings.Contains(delivered, `retry-of="`+first.ID+`"`) {
+	if strings.Count(delivered, "<flopwire-message ") != 1 || strings.Contains(delivered, `<flopwire-message id="`+first.ID+`"`) || !strings.Contains(delivered, firstBody) || !strings.Contains(delivered, `retry-of="`+first.ID+`"`) {
 		t.Fatalf("retry context: %s", delivered)
 	}
 	e2eWait(t, "retry delivery receipt", func() bool {

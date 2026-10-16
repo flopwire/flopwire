@@ -639,6 +639,8 @@ func arrival(r busproto.SendResponse) string {
 		return arriveRecorded
 	case r.State == busproto.StateHeld:
 		return arriveAccepted
+	case r.Admission == busproto.AdmissionNextResume:
+		return arriveIfResumed
 	case r.To.Live && r.To.Busy:
 		return arriveNextToolCall
 	case r.To.Live && r.To.Cloud:
@@ -712,6 +714,12 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 			who = fmt.Sprintf("%s (%s %s %s)", format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		}
 		line = fmt.Sprintf("held %s for %s: %s has not accepted messages from you; expires %s", r.ID, who, shortUser(to.User), expiry(r.ExpiresAt))
+	case r.Admission == busproto.AdmissionNextResume:
+		boundary := "receiving hook"
+		if to.Cloud {
+			boundary = "running cloud push"
+		}
+		line = fmt.Sprintf("queued %s for %s (%s %s): waits for its first %s after resume; requires retry support on the recipient device; expires %s", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, boundary, expiry(r.ExpiresAt))
 	case to.Session != "" && to.Cloud:
 		head := fmt.Sprintf("sent %s to %s (%s %s cloud %s)", r.ID, sessionLabel(to.Session, true, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		if to.Busy {
