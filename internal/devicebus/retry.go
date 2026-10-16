@@ -54,5 +54,5 @@ func (b *Bus) localRetry(ctx context.Context, tx *sql.Tx, id string, candidate b
 	if err = json.Unmarshal([]byte(raw), &e); err != nil {
 		return source, nil, err
 	}
-	return source, &busproto.SendResponse{ID: e.ID, ThreadID: e.ThreadID, State: busproto.State(state), Reason: reason, RetryOf: id, Replayed: true, Sender: e.Sender, Intent: e.Intent, Sent: e.Sent, ExpiresAt: e.ExpiresAt, To: busproto.Recipient{Session: e.ToSession, Agent: e.ToAgent, User: e.ToUser, UserID: e.ToUserID}}, nil
+	return source, &busproto.SendResponse{ID: e.ID, ThreadID: e.ThreadID, State: publicMessageState(state), Reason: reason, RetryOf: id, Admission: e.Admission, Replayed: true, Sender: e.Sender, Intent: e.Intent, Sent: e.Sent, ExpiresAt: e.ExpiresAt, To: busproto.Recipient{Session: e.ToSession, Agent: e.ToAgent, User: e.ToUser, UserID: e.ToUserID}}, nil
 }

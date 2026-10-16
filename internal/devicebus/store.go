@@ -39,6 +39,24 @@ type store struct {
 // Other unsupported versions fail closed without deleting durable data.
 const schemaVersion = 5
 
+// waitingResume is consumed by the first receiving Take, rather than by
+// presence or registry observations. Older agents ignore this queue state.
+const waitingResume = "waiting_resume"
+
+func initialMessageState(e busproto.Envelope) string {
+	if e.Admission == busproto.AdmissionNextResume {
+		return waitingResume
+	}
+	return string(busproto.StateQueued)
+}
+
+func publicMessageState(state string) busproto.State {
+	if state == waitingResume || state == "leased" {
+		return busproto.StateQueued
+	}
+	return busproto.State(state)
+}
+
 const retrySchema = `CREATE TABLE IF NOT EXISTS devbus_retries (
  source_id TEXT PRIMARY KEY,
  successor_id TEXT NOT NULL UNIQUE
@@ -57,6 +75,7 @@ CREATE TABLE IF NOT EXISTS devbus_messages (
   to_key        TEXT NOT NULL DEFAULT '',   -- local: the recipient, for the limits
   body_sha      BLOB,                       -- local: the duplicate check
   envelope      TEXT NOT NULL,              -- busproto.Envelope JSON
+  -- waiting_resume (explicit retry awaits its first receiving hook),
   -- queued, leased (a hook took it and has not confirmed printing it),
   -- delivered (confirmed), undelivered (MaxAttempts leases, none
   -- confirmed; or its session ended first), refused (local)
@@ -216,7 +235,7 @@ func (s *store) take(ctx context.Context, session, agent string, now time.Time, 
 			return nil
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT envelope,attempts FROM devbus_messages
-			WHERE to_session=? AND (?='' OR to_agent=?) AND state='queued' AND expires_at>?`, session, agent, agent, ms(now))
+			WHERE to_session=? AND (?='' OR to_agent=?) AND state IN ('queued','waiting_resume') AND expires_at>?`, session, agent, agent, ms(now))
 		if err != nil {
 			return err
 		}
@@ -233,7 +252,7 @@ func (s *store) take(ctx context.Context, session, agent string, now time.Time, 
 		out = fit(all, lim)
 		for _, e := range out {
 			if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET state='leased', attempts=attempts+1, lease_until=?
-				WHERE id=? AND state='queued'`, ms(now.Add(lease)), e.ID); err != nil {
+				WHERE id=? AND state IN ('queued','waiting_resume')`, ms(now.Add(lease)), e.ID); err != nil {
 				return err
 			}
 		}
@@ -352,13 +371,15 @@ func fit(msgs []busproto.Envelope, lim Limit) []busproto.Envelope {
 }
 
 // untake gives leased messages back unused (Requeue): their caller never
-// received them, so they are queued again and the lease does not count as
-// an attempt.
+// received them, so the lease does not count as an attempt. An unused first
+// receiving boundary restores next_resume admission; later takes queue again.
 func (s *store) untake(ctx context.Context, ids []string) error {
 	return inTx(ctx, s.db, func(tx *sql.Tx) error {
 		for _, id := range ids {
-			if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET state='queued', lease_until=NULL, attempts=max(attempts-1,0)
-				WHERE id=? AND state='leased'`, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE devbus_messages SET state=CASE
+                WHEN attempts=1 AND json_extract(envelope,'$.admission')='next_resume' THEN 'waiting_resume'
+                ELSE 'queued' END, lease_until=NULL, attempts=max(attempts-1,0)
+                WHERE id=? AND state='leased'`, id); err != nil {
 				return err
 			}
 		}
@@ -389,7 +410,7 @@ func (s *store) reconcile(ctx context.Context, set []busproto.Envelope, keep []s
 				return err
 			}
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM devbus_messages WHERE origin='server' AND listed=0 AND state='queued'`)
+		_, err := tx.ExecContext(ctx, `DELETE FROM devbus_messages WHERE origin='server' AND listed=0 AND state IN ('queued','waiting_resume')`)
 		return err
 	})
 }
@@ -411,7 +432,7 @@ type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// upsertServer adds a message from the server as queued, or marks one the
+// upsertServer adds a server message as queued or waiting_resume, or marks one the
 // inbox holds as listed. A delivered (or undelivered) message listed again
 // was never acknowledged (or reported) as far as the server knows: its ack
 // (or report) is owed again. Its expires_at is the server's expiry on the
@@ -423,12 +444,12 @@ func (s *store) upsertServer(ctx context.Context, x execer, e busproto.Envelope)
 		return err
 	}
 	_, err = x.ExecContext(ctx, `INSERT INTO devbus_messages(id,origin,seq,to_session,to_agent,from_session,from_agent,thread_id,envelope,state,created_at,expires_at)
-		VALUES(?,'server',?,?,?,?,?,?,?,'queued',?,?)
+		VALUES(?,'server',?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET listed=1, envelope=excluded.envelope, to_session=excluded.to_session, to_agent=excluded.to_agent,
 			expires_at=excluded.expires_at, ack=CASE WHEN state='delivered' THEN 'owed' WHEN state='undelivered' THEN 'report' ELSE ack END,
 			read_ack=CASE WHEN state='delivered' AND read_at IS NOT NULL THEN 'owed' ELSE read_ack END
 		WHERE origin='server'`,
-		e.ID, e.Seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, string(raw), ms(e.Sent), ms(e.ExpiresAt.Add(-time.Duration(s.skew.Load()))))
+		e.ID, e.Seq, e.ToSession, e.ToAgent, e.From, e.FromAgent, e.ThreadID, string(raw), initialMessageState(e), ms(e.Sent), ms(e.ExpiresAt.Add(-time.Duration(s.skew.Load()))))
 	return err
 }
 
@@ -614,7 +635,7 @@ type counts struct {
 func (s *store) counts(ctx context.Context, now time.Time) (counts, error) {
 	var c counts
 	err := s.db.QueryRowContext(ctx, `SELECT
-		(SELECT count(*) FROM devbus_messages WHERE state IN ('queued','leased') AND expires_at>?),
+		(SELECT count(*) FROM devbus_messages WHERE state IN ('queued','waiting_resume','leased') AND expires_at>?),
 		(SELECT count(*) FROM devbus_messages WHERE ack IN ('owed','report')) + (SELECT count(*) FROM devbus_messages WHERE read_ack='owed')`, ms(now)).Scan(&c.pending, &c.owed)
 	return c, err
 }

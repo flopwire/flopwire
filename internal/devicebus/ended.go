@@ -292,7 +292,9 @@ func (s *store) noteLive(ctx context.Context, all []Session, now time.Time) erro
 // messages of ended sessions that were sent no later than EndGrace after
 // the device last saw the session live (see the file comment), and queues
 // the reports of those from the server. A leased message is left to its
-// lease: the hook may be printing it, and a confirmation still counts. It
+// lease: the hook may be printing it, and a confirmation still counts. A
+// waiting_resume retry has not reached its first receiving hook, so an end
+// leaves that admission intact. It
 // returns how many it marked.
 func settleEnded(ctx context.Context, x execer, now time.Time) (int64, error) {
 	res, err := x.ExecContext(ctx, `UPDATE devbus_messages SET state='undelivered', reason=?, lease_until=NULL,

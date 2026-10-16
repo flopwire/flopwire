@@ -852,13 +852,16 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 				return nil
 			}
 			e.RetryOf, e.ThreadID = source.ID, source.ThreadID
+			if !out.To.Live {
+				e.Admission = busproto.AdmissionNextResume
+			}
 		}
 		if refusal, err = b.checkLocal(ctx, tx, &e, in, toKey, now); err != nil {
 			return err
 		}
-		state := busproto.StateQueued
+		state := initialMessageState(e)
 		if refusal != nil {
-			state = busproto.StateRefused
+			state = string(busproto.StateRefused)
 		}
 		var seq int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(seq),0)+1 FROM devbus_messages WHERE origin='local'`).Scan(&seq); err != nil {
@@ -891,7 +894,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		refusal.MessageID = e.ID
 		return busproto.SendResponse{}, refusal
 	}
-	out.RetryOf = e.RetryOf
+	out.RetryOf, out.Admission = e.RetryOf, e.Admission
 	out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = e.ID, e.ThreadID, busproto.StateQueued, e.Sender, e.Intent, e.Sent, e.ExpiresAt
 	if len(in.redactions) > 0 {
 		out.Redactions = in.redactions
@@ -971,10 +974,10 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 	// for @user, those no session has taken yet (UserPendingSQL).
 	var err error
 	if e.Addressed == "session" {
-		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_session=? AND to_agent=? AND state IN ('queued','leased') AND expires_at>?`,
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_session=? AND to_agent=? AND state IN ('queued','waiting_resume','leased') AND expires_at>?`,
 			e.ToSession, e.ToAgent, ms(now)).Scan(&n)
 	} else {
-		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_key='user' AND to_session='' AND state IN ('queued','leased') AND expires_at>?`,
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND to_key='user' AND to_session='' AND state IN ('queued','waiting_resume','leased') AND expires_at>?`,
 			ms(now)).Scan(&n)
 	}
 	if err != nil {
@@ -1136,7 +1139,7 @@ func (b *Bus) inboxLocal(ctx context.Context, q busproto.InboxQuery) (busproto.I
 		if err := json.Unmarshal([]byte(raw), &it.Envelope); err != nil {
 			return out, err
 		}
-		if state == "leased" {
+		if state == "leased" || state == waitingResume {
 			state = string(busproto.StateQueued) // a lease is not a delivery yet; the server shows it queued too
 		}
 		it.Direction, it.State, it.Reason = dir, busproto.State(state), reason

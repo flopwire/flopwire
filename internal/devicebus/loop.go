@@ -195,7 +195,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
 			inflight, started = true, now
-			req := busproto.PollRequest{Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
+			req := busproto.PollRequest{ResumeRetries: true, Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
 			b.mu.Lock()
 			b.reported = sent
@@ -443,7 +443,7 @@ func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked ti
 func (b *Bus) claimCloud(ctx context.Context, c busproto.Claimable, skip map[string]bool) error {
 	srv, _ := b.cfg.Connect()
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	resp, err := srv.Claim(cctx, busproto.ClaimRequest{MessageID: c.Message.ID, SessionID: c.Message.ToSession, Agent: c.Message.ToAgent})
+	resp, err := srv.Claim(cctx, busproto.ClaimRequest{ResumeRetries: true, MessageID: c.Message.ID, SessionID: c.Message.ToSession, Agent: c.Message.ToAgent})
 	cancel()
 	var be *busproto.Error
 	switch {
@@ -505,7 +505,7 @@ func (b *Bus) claim(ctx context.Context, c busproto.Claimable, all []Session, sk
 	}
 	for _, id := range claimOrder(c, all) {
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		resp, err := srv.Claim(cctx, busproto.ClaimRequest{MessageID: c.Message.ID, SessionID: id, Agent: agents[id]})
+		resp, err := srv.Claim(cctx, busproto.ClaimRequest{ResumeRetries: true, MessageID: c.Message.ID, SessionID: id, Agent: agents[id]})
 		cancel()
 		var be *busproto.Error
 		switch {
