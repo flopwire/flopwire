@@ -226,6 +226,36 @@ func TestCapturedClaudeChildrenPrefilterPreservesCleanedPaths(t *testing.T) {
 	}
 }
 
+func TestCapturedClaudeChildrenRootBoundaries(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/subagents/projects"
+	longRoot := root + "/" + strings.Repeat("long-root-", 20)
+	for _, tc := range []struct {
+		name string
+		root string
+		path string
+		want []string
+	}{
+		{"exact_root", root, root, nil},
+		{"shorter_path", root, "/synthetic/subagents", nil},
+		{"sibling_prefix", root, root + "-other/project/" + parent + "/subagents/agent-sibling.jsonl", nil},
+		{"child", root, root + "/project/" + parent + "/subagents/agent-child.jsonl", []string{"agent-child"}},
+		{"nested_root", root + "/nested", root + "/nested/project/" + parent + "/subagents/agent-nested.jsonl", []string{"agent-nested"}},
+		{"cleaned_path", root + "/.", root + "/discard/../project/" + parent + "/subagents/./agent-clean.jsonl", []string{"agent-clean"}},
+		{"long_root", longRoot, longRoot + "/project/" + parent + "/subagents/agent-long.jsonl", []string{"agent-long"}},
+		{"filesystem_root", string(filepath.Separator), "/project/" + parent + "/subagents/agent-root.jsonl", []string{"agent-root"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			batchNativeEvidence(t, s, tc.path, "", false)
+			got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {tc.root}})
+			if err != nil || !reflect.DeepEqual(got[parent], tc.want) {
+				t.Fatalf("relations=%v error=%v want=%v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCapturedClaudeChildrenNonchildCost(t *testing.T) {
 	const parent = "12345678-abcd-4321-9876-123456789abc"
 	for _, n := range []int{256, 2048, 16384} {
