@@ -311,3 +311,38 @@ text. An independently reopened historical invocation confirmed an output
 envelope parsing mistake. These are historical observations, not recomputed
 rates or a controlled comparison with Flopwire. They do not establish that
 the old installation used semantic retrieval.
+
+## Portable guidance experiment — October 16, 2026
+
+The guidance candidate at `8e7dfa5` preserves the tool API and moves procedural
+detail from shared instructions into relevant tool descriptions. Native
+initialize instructions shrink from 6,459 to 3,057 characters. Combined shared
+instructions and nine tool descriptions shrink from 14,940 to 12,309 characters
+(17.6%). These are native payload measurements; plugin-host exported metadata
+was not measured.
+
+Four held-out synthetic scenarios each ran once with baseline and candidate
+metadata in fresh Codex 0.163.0 `gpt-6.1-sol` sessions at low reasoning effort.
+Both arms passed all four core checks: owner reversal over a contrary assistant
+summary, a decisive line clipped from search, failed command evidence behind a
+commit, and delivery receipts without a correlated reply. The baseline commit
+answer added unsupported branch and retry-absence claims; the candidate kept
+those claims bounded in this sample. Calls totaled 18 for baseline and 19 for
+candidate. This trial establishes no speed or call-count improvement.
+
+The experiment replayed native metadata against deterministic fixtures with
+simplified search ranking and filtering. Read fixtures modeled selected native
+controls. It did not qualify plugin routing or live retrieval dispatch. Provider
+prompt caching occurred despite fresh sessions and native initialization.
+There was one sample per scenario and arm; the results establish no statistical
+quality improvement. The earlier v1 smoke trial is excluded from this stronger
+acceptance record. Private evidence is retained in
+`agent-usability-guidance-20261016/acceptance-v2-run-1/manual-review.json`.
+
+The separate observer correction merged in
+[#310](https://github.com/flopwire/flopwire/pull/310). Diagnostics in
+[#312](https://github.com/flopwire/flopwire/pull/312) remain pending. The scratch
+IDE check was not run because the UI controller selected the existing window
+instead of the isolated process. No diagnostic configuration was activated and
+no markers were sent. None of these records resolves the unexplained
+original IDE failure in #228.
