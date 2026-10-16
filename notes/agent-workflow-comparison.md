@@ -1,10 +1,69 @@
 # Agent workflow comparison
 
-Reviewed 2026-10-13. Flopwire source: `f83db684e912ea77c08ac02264996f55cf1f4993`.
+Flopwire refreshed 2026-10-16 against `2cd14559e0b0339ebbd6378078bb2693a5603aa1`.
+Competitor capability review: 2026-10-13; versions and sources below.
+The October 13 spot check is retained as historical evidence.
 
 Flopwire's candidate advantage is finding prior evidence, identifying the
-responsible live session and contacting it. The table compares documented
-capabilities; agent success remains unmeasured. Gas Town is excluded.
+producing session and contacting it when reachable. The tables compare
+documented capabilities. Later Flopwire-only task trials are linked below;
+comparative agent success remains unmeasured. Gas Town is excluded.
+
+## Public-facing matrix drafts
+
+Both versions use the same proposed positioning:
+
+> Find the reasoning behind a change. Ask the agent behind the work.
+>
+> Flopwire connects searchable coding history, commit evidence, and direct
+> messages between coding agents.
+
+These are copy drafts for comparison, not changes to the published homepage.
+“Not established” means the reviewed interfaces did not establish support;
+it does not mean the product cannot do it. Features are documentation-backed
+unless the evidence section records a trial.
+
+### Version A: closest alternatives
+
+| What an agent needs | Flopwire | AgentsView | MCP Agent Mail Rust | Entire |
+|---|---|---|---|---|
+| Recover earlier work | Search and read captured coding sessions | Search and read captured coding sessions | Search coordination messages | Search sessions; Git-linked checkpoints |
+| Search by meaning | Not supported | Opt-in semantic/hybrid index | Opt-in semantic mail search | Authenticated search service |
+| Connect a change to its source | Commit lookup with captured execution evidence | Not established | Not established | Git-linked checkpoints |
+| Ask another agent a follow-up | Session/person addressing and threaded replies | Not established | Registered agent identities and threaded replies | Not established |
+| Reserve files before editing | Not supported | Not established | Advisory file reservations | Not established |
+
+Flopwire's proposed reason to choose it is the connected path from archived
+reasoning to a reachable agent. AgentsView offers semantic session retrieval;
+Agent Mail adds file reservations and coordination macros; Entire organizes
+session evidence around Git checkpoints. The table does not establish which
+product completes a task more reliably.
+
+### Version B: broader shortlist
+
+| What an agent needs | Flopwire | AgentsView | MCP Agent Mail Rust | Entire | SpecStory | Langfuse |
+|---|---|---|---|---|---|---|
+| Recover earlier work | Coding sessions | Coding sessions | Coordination messages | Sessions/checkpoints | Sessions/Markdown | Traces/spans |
+| Search by meaning | Not supported | Opt-in | Opt-in, mail only | Authenticated service | Roadmap in reviewed docs | Not established |
+| Connect a change to its source | Captured commit evidence | Not established | Not established | Git checkpoints | Not established | Not established |
+| Ask another agent a follow-up | Session/person messages | Not established | Registered-agent messages | Not established | Not established | Not established |
+| Reserve files before editing | Not supported | Not established | Advisory reservations | Not established | Not established | Not established |
+| Resume in another coding tool | No built-in workflow | Not established | Not established | Cross-tool support not established | Supported target tools | Not established |
+| Evaluate model outputs | No evaluation suite | Not established | Not established | Not established | Not established | Evaluations |
+
+Version A keeps the decision focused on session retrieval, coordination, and
+Git provenance. Version B also shows why someone might choose SpecStory for
+cross-tool continuation or Langfuse for evaluation. It is wider and includes
+products serving different primary needs.
+
+For either version, explain the contact limit alongside the example: sending
+a message alone does not guarantee an idle agent resumes. Commit lookup returns evidence
+to inspect, not a guarantee of sole authorship; squash merges require the
+original PR commit IDs. See the source-backed detail below.
+
+No speed or token-saving claims belong in these drafts. The retained pilot
+compares a small synthetic corpus and different interface transports. Its
+numbers do not establish comparative task success or production-scale speed.
 
 ## Feature table
 
@@ -17,7 +76,7 @@ in the reviewed interfaces. **No** marks a confirmed Flopwire gap.
 | Agent can search and read history | CLI + MCP | CLI + MCP | CLI + MCP, mail history | CLI with JSON/compact output | Markdown + CLI + Cloud API | CLI + MCP + API, trace history |
 | Search by meaning | No | Opt-in semantic/hybrid | Opt-in, mail only | Authenticated search service | Roadmap | NE; full-text documented |
 | Reopen supporting evidence | Native byte addresses and context | Revision-bound ordinal citations and context | Message/thread IDs | Git checkpoints | Sessions and Markdown | Trace/span IDs |
-| Code change to producing session | Partial: observed commits/PRs; manual resolution | NE | NE | Checkpoint explanation; line-level explanation experimental | NE | NE |
+| Code change to producing session | Captured commit evidence; caller resolves squash lineage | NE | NE | Checkpoint explanation; line-level explanation experimental | NE | NE |
 | Discover a live recipient | Observed native sessions, exact ID lookup | NE; archive activity is available | Registered agent identities/activity; native session mapping NE | Local session status; peer directory NE | NE | NE |
 | Direct peer requests and replies | Session/person addressing, hooks, receipt guidance | NE | Threaded messages, contact policies, acknowledgments | NE | NE | NE |
 | Retained coordination threads | Yes; repo-scoped, enrolled server | NE | Yes; searchable mail threads | NE | NE | NE |
@@ -34,7 +93,7 @@ retrieval; Agent Mail adds reservations; Entire links changes to checkpoints;
 SpecStory supports cross-harness resume; Langfuse adds evaluations. A combined
 CASS and Agent Mail installation also merits a trial.
 
-## Agent UX spot check
+## Historical agent UX spot check (October 13)
 
 Two agents performed the same read-only task on the retained synthetic
 corpus from the [competitive pilot](https://github.com/flopwire/flopwire/pull/243):
@@ -105,39 +164,43 @@ known source labels and equivalent integrations. Record query changes,
 invalid calls, irrelevant context, wrong owners, human help and unsupported
 answers. Keep feature availability separate from successful agent use.
 
-## Flopwire priorities exposed by the comparison
+## What changed after the comparison
 
-1. **Teach retained-message retrieval.** `flopwire_messages` already
-   lists retained repo threads and opens full messages. It appears in the
-   MCP catalog, but the main messaging skill does not teach it and the
-   README still describes three messaging tools. Update the normal agent
-   workflow.
-2. **Simplify change-to-owner resolution.** Commit digests record what the
-   transcript proves. A squash-merged main SHA can require recovering the
-   PR and original branch. Teach the fallback and investigate a resolver
-   that returns evidence and ambiguity explicitly.
-3. **Simplify evidence reads.** Full-address output and
-   bounded reads already exist. Test simpler defaults and instructions.
-4. **Handoffs are deferred.** Test whether existing retrieval is enough to
-   resume work before proposing a separate feature.
+| Earlier finding | Current status |
+|---|---|
+| Retained-message recovery was poorly taught | [#251](https://github.com/flopwire/flopwire/pull/251) updated onboarding; the messaging skill teaches repo-thread listing and full-thread reads. |
+| Change-to-session resolution required transcript discovery | [#256](https://github.com/flopwire/flopwire/pull/256) added `flopwire_change`; [#286](https://github.com/flopwire/flopwire/pull/286) corrected expanded repository scopes; [#297](https://github.com/flopwire/flopwire/pull/297) added end-to-end coverage. Read captured execution evidence before attributing a change. |
+| Tight reads could omit the cited line | [#284](https://github.com/flopwire/flopwire/pull/284) fixed local/shared reads, superseding #254. Oversized lines still require a larger budget. |
+| Attribution and request/reply/resume outcomes were untested | [Agent usability qualification](../docs/agent-usability-qualification.md) now records bounded historical recovery, producing-session attribution, and explicit local CLI request/reply/resume trials. These are Flopwire-only observations. |
+
+The contact trial verified a correlated reply and final answer. It did not
+establish automatic wake, a completed code change, or final-server MCP parity.
+The October 13 spot check above preserves the behavior actually observed on
+that build; its cited-line friction is no longer a current product gap.
+
+Semantic search and a separate handoff feature remain deferred. Comparative
+agent outcomes would require fresh agents, equivalent integrations, and
+independent task labels. They are optional follow-up work for this matrix.
 
 <details>
 <summary>Sources, versions and untested capabilities</summary>
 
 ### Flopwire
 
-Reviewed source and documentation at main `f83db68`:
+Current Flopwire capability claims use main `2cd1455`:
 [search and digests](../docs/search.md),
 [retained threads and receipts](../docs/messaging.md),
 [messaging skill](../plugins/codex/flopwire/skills/messaging/SKILL.md), and
 [MCP messaging schemas](../cmd/flopwire/mcp_bus.go).
-The catalog has four retrieval and four messaging tools, including
-`flopwire_messages`. The older README tool count is not the catalog.
+The catalog has five retrieval and four messaging tools, including
+`flopwire_change` and `flopwire_messages`. Commit evidence and its limits are
+documented in [search](../docs/search.md#commit-evidence).
 
 The existing pilot exercised exact synthetic retrieval, message transport
 and graceful restart recovery. It did not exercise live-owner attribution,
 cross-device delivery, canonical server-thread history or an agent acting
-on a reply. This review adds the informal retrieval spot check above.
+on a reply. The informal retrieval spot check above was followed by the bounded
+[Flopwire task trials](../docs/agent-usability-qualification.md).
 
 ### AgentsView
 
@@ -163,7 +226,7 @@ macros were documentation-reviewed.
 
 ### Entire
 
-Reviewed latest stable [v0.11.4](https://github.com/entireio/cli/releases/tag/v0.11.4),
+Reviewed [v0.11.4](https://github.com/entireio/cli/releases/tag/v0.11.4), latest stable on October 13,
 published 2026-10-06, its
 [tagged README](https://github.com/entireio/cli/blob/v0.11.4/README.md) and
 [search implementation](https://github.com/entireio/cli/blob/v0.11.4/cmd/entire/cli/search_cmd.go).
