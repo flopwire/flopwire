@@ -719,7 +719,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		if to.Cloud {
 			boundary = "running cloud push"
 		}
-		line = fmt.Sprintf("queued %s for %s (%s %s): waits for its first %s after resume; requires retry support on the recipient device; expires %s", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, boundary, expiry(r.ExpiresAt))
+		line = fmt.Sprintf("queued %s for %s (%s %s): waits for its first %s after resume; expires %s", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, boundary, expiry(r.ExpiresAt))
 	case to.Session != "" && to.Cloud:
 		head := fmt.Sprintf("sent %s to %s (%s %s cloud %s)", r.ID, sessionLabel(to.Session, true, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		if to.Busy {
@@ -753,7 +753,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		}
 	}
 	if r.RetryOf != "" {
-		line += "; retry of " + r.RetryOf
+		line += "; retry of " + r.RetryOf + "; requires retry support on the recipient device"
 	}
 	if n, rules := redactionCount(r.Redactions); n > 0 {
 		line += fmt.Sprintf("; %d %s masked before it left this device (%s)", n, plural(n, "secret", "secrets"), rules)

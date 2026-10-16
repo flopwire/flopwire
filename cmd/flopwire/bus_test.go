@@ -303,6 +303,11 @@ func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
 	if out := sendOutcome(waiting); !strings.Contains(out, "first receiving hook after resume") || !strings.Contains(out, "requires retry support") || arrival(waiting) != arriveIfResumed || sendNext(waiting) != nextNoWait {
 		t.Fatalf("closed retry: %s", out)
 	}
+	liveRetry := waiting
+	liveRetry.Admission, liveRetry.To.Live, liveRetry.To.Busy = "", true, true
+	if out := sendOutcome(liveRetry); !strings.Contains(out, "requires retry support") || strings.Count(out, "requires retry support") != 1 || !strings.Contains(out, "busy, arrives at its next tool call") {
+		t.Fatalf("live retry conditional arrival: %s", out)
+	}
 }
 
 func TestExplicitRetryOldAgentFailsBeforeOrdinarySend(t *testing.T) {

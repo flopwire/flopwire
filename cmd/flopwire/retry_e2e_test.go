@@ -27,7 +27,7 @@ func TestRetryEndToEndAfterAcceptanceAndSessionEnded(t *testing.T) {
 	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
 	t.Setenv(client.EnvToken, "")
 	t.Setenv(client.EnvServer, "")
-	if err := client.Save(client.Config{Server: s.url, Token: enrolled["token"].(string), SessionToken: s.alex, DeviceID: enrolled["device"].(map[string]any)["id"].(string)}); err != nil {
+	if err := client.Save(client.Config{Server: s.url, Token: enrolled["token"].(string), SessionToken: s.alex, DeviceID: enrolled["device"].(map[string]any)["id"].(string), RotatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	// The API fixture does not ingest transcript uploads. Record the same

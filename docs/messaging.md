@@ -176,8 +176,8 @@ API clients submit the original send fields plus `retry_of` to
 route before creating a message. Updated CLI and MCP clients also use a
 separate agent operation so older device agents reject an explicit retry
 before sending anything. Update the server and sending device agent to
-use retries. All explicit retries also require a recipient device agent that advertises
-retry support in its poll and claim requests. Older recipients do not
+use retries. All explicit retries also require a recipient device agent
+that advertises retry support in its poll and claim requests. Older recipients do not
 receive explicit retries; the messages wait for a compatible recipient
 agent, or expire. Ordinary messages keep their existing behavior.
 
@@ -187,8 +187,8 @@ semantics. The local database format remains version 5 because some older
 versions reset the inbox when they encounter an unknown version. This
 change does not provide automatic rollback of pending retry state.
 
-A queued message whose receipt says `only_if_resumed` already waits for
-that session to resume. It is not eligible for an explicit retry.
+A message still queued is not eligible for explicit retry. Use `retry_of`
+only after its state becomes `undelivered` with reason `session_ended`.
 
 ## How long messages are kept
 
