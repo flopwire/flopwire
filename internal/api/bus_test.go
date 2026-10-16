@@ -151,6 +151,24 @@ func TestBusWithoutBackendAnswers501(t *testing.T) {
 	}
 }
 
+func TestExplicitRetryRequiresDedicatedRouteAndSource(t *testing.T) {
+	b := newBusServer(t)
+	for _, tc := range []struct {
+		path string
+		req  busproto.SendRequest
+	}{
+		{busproto.PathRetry, busproto.SendRequest{FromSession: "not-a-session", To: "unknown", Body: "text"}},
+		{busproto.PathSend, busproto.SendRequest{FromSession: "not-a-session", To: "unknown", Body: "text", RetryOf: "mfailed"}},
+	} {
+		if status, code := busCall(t, "POST", b.url+tc.path, b.gary.device, tc.req, nil); status != 400 || code != busproto.CodeBadRequest {
+			t.Fatalf("%s: status=%d code=%s", tc.path, status, code)
+		}
+	}
+	if status, code := busCall(t, "POST", b.url+busproto.PathRetry, b.gary.session, busproto.SendRequest{RetryOf: "mfailed"}, nil); status != 403 || code != busproto.CodeDeviceRequired {
+		t.Fatalf("retry with login credential: %d %s", status, code)
+	}
+}
+
 func testBusSendPollAck(t *testing.T, b busServer) {
 	busCall(t, "POST", b.url+busproto.PathPoll, b.gary.device, presence("gary-1111", "claude", true), nil)
 	alexPresence := presence("alex-2222", "codex", false)

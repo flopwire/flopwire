@@ -160,6 +160,13 @@ message. If that successor also fails with `session_ended`, retry its ID
 to create the next attempt. Retry records are available only while the
 source and successor remain retained.
 
+API clients submit the original send fields plus `retry_of` to
+`POST /v1/bus/retry`, with the original device credential. The ordinary
+`/v1/bus/send` route rejects `retry_of`. Older servers reject the retry
+route before creating a message. Updated CLI and MCP clients also use a
+separate agent operation so older device agents reject an explicit retry
+before sending anything. Update the server and device agent to use retries.
+
 A queued message whose receipt says `only_if_resumed` already waits for
 that session to resume. It is not eligible for an explicit retry.
 

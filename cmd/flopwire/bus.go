@@ -595,7 +595,12 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 	if req.Repo != "" && req.Repo != "*" {
 		req.Repo = local.ResolveRepo(req.Repo)
 	}
-	resp, err := c.callRetry(ctx, agent.Request{Op: "send", Send: &req})
+	op := "send"
+	if req.RetryOf != "" {
+		// Old agents reject this operation before they can ignore retry_of.
+		op = "retry-send-v1"
+	}
+	resp, err := c.callRetry(ctx, agent.Request{Op: op, Send: &req})
 	if err != nil {
 		var be *busproto.Error
 		if errors.As(err, &be) {
@@ -687,7 +692,11 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		if r.Reason != "" {
 			state += " (" + r.Reason + ")"
 		}
-		return format.Clean(fmt.Sprintf("retry of %s already recorded as %s: %s; no new message created", r.RetryOf, r.ID, state))
+		line := fmt.Sprintf("retry of %s already recorded as %s: %s; no new message created", r.RetryOf, r.ID, state)
+		if r.State == busproto.StateUndelivered && r.Reason == busproto.ReasonSessionEnded {
+			line += fmt.Sprintf(". If still needed, check the intended session and explicitly retry %s", r.ID)
+		}
+		return format.Clean(line)
 	}
 	defer func() {
 		if r.To.Live && !r.To.Busy && r.To.Session != "" {
@@ -1206,10 +1215,10 @@ at the next tool call, or with your next prompt or when your session resumes. Ne
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
-"queued"|"held","to":{"session","agent","user","repo","branch","live","busy","cloud"},
+"queued"|"held" (new sends; replay reports current delivery state),"to":{"session","agent","user","repo","branch","live","busy","cloud"},
 "sender","intent","sent","expires_at","redactions","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed"|"when_running","outcome":TEXT,"next":TEXT (request only: what to do until the
+"only_if_resumed"|"when_running"|"already_recorded","retry_of","replayed","reason","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
 "thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",

@@ -36,6 +36,7 @@ type Bus interface {
 
 func (a *API) busRoutes(r chi.Router) {
 	r.Post(busproto.PathSend, a.busDevice(a.busSend))
+	r.Post(busproto.PathRetry, a.busDevice(a.busSend))
 	r.Post(busproto.PathPoll, a.busDevice(a.busPoll))
 	r.Post(busproto.PathClaim, a.busDevice(a.busClaim))
 	r.Post(busproto.PathAck, a.busDevice(a.busAck))
@@ -126,6 +127,10 @@ func (a *API) busFailed(w http.ResponseWriter, r *http.Request, err error) {
 func (a *API) busSend(w http.ResponseWriter, r *http.Request) {
 	var in busproto.SendRequest
 	if !decode(w, r, &in) {
+		return
+	}
+	if (r.URL.Path == busproto.PathRetry) != (in.RetryOf != "") {
+		a.busFailed(w, r, &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: "explicit retries require /v1/bus/retry with retry_of"})
 		return
 	}
 	out, err := a.bus.Send(r.Context(), a.caller(r), in)

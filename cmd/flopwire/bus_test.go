@@ -278,6 +278,9 @@ func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
 		t.Fatalf("text replay: %q %v", out, err)
 	}
 	request := fa.requests()[0].Send
+	if op := fa.requests()[0].Op; op != "retry-send-v1" {
+		t.Fatalf("retry used unversioned operation: %s", op)
+	}
 	if request.RetryOf != "mfailed" || request.FromSession != selfID || request.FromAgent != "claude" || request.To != peerID || request.Body != "same message" || request.Intent != "request" || request.ReplyTo != "mparent" || strings.Join(request.Refs, ",") != "reference/1" {
 		t.Fatalf("CLI retry request: %+v", request)
 	}
@@ -295,6 +298,23 @@ func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
 		if out := sendOutcome(replay); !strings.Contains(out, string(state)) || !strings.Contains(out, "no new message created") || strings.Contains(out, "arrives") || arrival(replay) != arriveRecorded || sendNext(replay) != "" {
 			t.Fatalf("%s replay: %s", state, out)
 		}
+	}
+}
+
+func TestExplicitRetryOldAgentFailsBeforeOrdinarySend(t *testing.T) {
+	asCaller(t, claudeSelf)
+	ordinary := 0
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Op == "send" {
+			ordinary++
+			return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "unexpected"}}
+		}
+		return agent.Response{Error: "unknown op " + r.Op}
+	})
+	_, err := cli(t, fa, "", "send", peerID, "--retry-of", "mfailed", "--", "same message")
+	var reported *busErr
+	if !errors.As(err, &reported) || reported.Code != codeAgentOutdated || ordinary != 0 {
+		t.Fatalf("old agent retry: %v ordinary sends=%d", err, ordinary)
 	}
 }
 

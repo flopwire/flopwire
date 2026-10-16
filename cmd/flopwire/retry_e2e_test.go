@@ -152,7 +152,7 @@ func TestRetryEndToEndAfterAcceptanceAndSessionEnded(t *testing.T) {
 	}
 	request := busproto.SendRequest{FromSession: "gary-1111", To: e2eB, Body: firstBody, RetryOf: first.ID}
 	var retry busproto.SendResponse
-	if err := api.JSON(ctx, "POST", busproto.PathSend, request, &retry); err != nil {
+	if err := api.JSON(ctx, "POST", busproto.PathRetry, request, &retry); err != nil {
 		t.Fatal(err)
 	}
 	if retry.ID == first.ID || retry.RetryOf != first.ID || retry.ThreadID != first.ThreadID || retry.State != busproto.StateQueued || retry.Replayed {
@@ -163,7 +163,7 @@ func TestRetryEndToEndAfterAcceptanceAndSessionEnded(t *testing.T) {
 		delivered = hook()
 		return strings.Contains(delivered, retry.ID)
 	})
-	if strings.Contains(delivered, first.ID+`"`) || strings.Count(delivered, "<flopwire-message ") != 1 || !strings.Contains(delivered, firstBody) {
+	if strings.Count(delivered, "<flopwire-message ") != 1 || !strings.Contains(delivered, firstBody) || !strings.Contains(delivered, `retry-of="`+first.ID+`"`) {
 		t.Fatalf("retry context: %s", delivered)
 	}
 	e2eWait(t, "retry delivery receipt", func() bool {
@@ -179,7 +179,7 @@ func TestRetryEndToEndAfterAcceptanceAndSessionEnded(t *testing.T) {
 		return originalFailed && retryDelivered
 	})
 	var replay busproto.SendResponse
-	if err := api.JSON(ctx, "POST", busproto.PathSend, request, &replay); err != nil {
+	if err := api.JSON(ctx, "POST", busproto.PathRetry, request, &replay); err != nil {
 		t.Fatal(err)
 	}
 	if replay.ID != retry.ID || !replay.Replayed || replay.State != busproto.StateDelivered || arrival(replay) != arriveRecorded || sendNext(replay) != "" {

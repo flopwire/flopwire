@@ -204,6 +204,26 @@ func TestControlBusLocal(t *testing.T) {
 	}
 }
 
+func TestControlExplicitRetryRequiresVersionedOperation(t *testing.T) {
+	f := newFixture(t, "-")
+	b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	f.cfg.Bus = b
+	a := New(f.store, f.cfg)
+	for _, req := range []Request{
+		{Op: "send", Send: &busproto.SendRequest{RetryOf: "mfailed"}},
+		{Op: "retry-send-v1", Send: &busproto.SendRequest{}},
+	} {
+		resp := ask(t, a, req)
+		if resp.OK || resp.BusError == nil || resp.BusError.Code != busproto.CodeBadRequest {
+			t.Fatalf("%s: %+v", req.Op, resp)
+		}
+	}
+}
+
 // A hook that gave up (its 200 ms budget ran out) before the agent
 // answered pending never prints the messages. The agent finds the closed
 // connection when it answers and queues them again, so the session's next
