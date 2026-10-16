@@ -877,7 +877,8 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 // names it.
 type inboxEntry struct {
 	busproto.InboxItem
-	IsReply bool `json:"is_reply"`
+	IsReply      bool   `json:"is_reply"`
+	DeliveryHint string `json:"delivery_hint,omitempty"`
 }
 
 // inboxJSON is inbox's answer: one page, newest first. More is true when
@@ -926,7 +927,11 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 			}
 			// A reply whose parent the retention sweep deleted lost its
 			// reply_to; its thread is still another message's.
-			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != "" || (m.ThreadID != "" && m.ThreadID != m.ID)})
+			entry := inboxEntry{InboxItem: m, IsReply: m.ReplyTo != "" || (m.ThreadID != "" && m.ThreadID != m.ID)}
+			if m.Direction == "sent" && m.State == busproto.StateUndelivered && m.Reason == busproto.ReasonSessionEnded {
+				entry.DeliveryHint = sessionEndedDeliveryHint
+			}
+			out.Messages = append(out.Messages, entry)
 		}
 		out.Next = resp.Inbox.Next
 	}
@@ -1026,6 +1031,9 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 				threadHint = true
 			}
 			e.WriteString("    " + first + more + "\n")
+		}
+		if m.Direction == "sent" && m.State == busproto.StateUndelivered && m.Reason == busproto.ReasonSessionEnded {
+			e.WriteString("    delivery: " + sessionEndedDeliveryHint + "\n")
 		}
 		if st.Budget > 0 && shown > 0 && b.Len()+e.Len() > st.Budget-300 {
 			break

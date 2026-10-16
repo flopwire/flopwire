@@ -202,8 +202,14 @@ func TestAcceptVerbsAgainstTheServer(t *testing.T) {
 		t.Fatalf("accepted without the password: %d %v", n, err)
 	}
 	out, _, err = acceptRun(t, true, alex, nil, adminPassword+"\n", "accept", "--text", "gary")
-	if err != nil || !strings.HasPrefix(out, "accepted gary@example.test: 1 held message released to your sessions") {
+	if err != nil || !strings.HasPrefix(out, "accepted gary@example.test: 1 held message released for delivery") || !strings.Contains(out, acceptanceDeliveryHint) {
 		t.Fatalf("accept: %q %v", out, err)
+	}
+	// Already accepted, with nothing held: omit delivery recovery advice.
+	out, _, err = acceptRun(t, true, alex, nil, adminPassword+"\n", "accept", "gary")
+	var again acceptJSON
+	if err != nil || json.Unmarshal([]byte(out), &again) != nil || again.Released != 0 || again.Hint != "" {
+		t.Fatalf("accept with no held messages: %q %v", out, err)
 	}
 	out, _, err = acceptRun(t, true, alex, nil, "", "accepts", "--text")
 	if err != nil || !strings.Contains(out, "held: nothing") || !strings.Contains(out, "accepted: 1\n  gary@example.test  since ") {

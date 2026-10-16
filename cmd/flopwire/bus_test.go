@@ -627,6 +627,44 @@ m1  sent  2026-10-01 14:02Z  to @alex → 4c19e0d2  request  read 2026-10-01 14:
 	}
 }
 
+func TestInboxEndedSessionRecoveryOnlyForSentTerminalFailure(t *testing.T) {
+	asCaller(t, claudeSelf)
+	var item busproto.InboxItem
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{item}}}
+	})
+	c := &busClient{socket: fa.sock, caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }}
+	for _, tc := range []struct {
+		name, direction, reason string
+		state                   busproto.State
+		want                    bool
+	}{
+		{"sent ended", "sent", busproto.ReasonSessionEnded, busproto.StateUndelivered, true},
+		{"received ended", "received", busproto.ReasonSessionEnded, busproto.StateUndelivered, false},
+		{"queued for resume", "sent", "", busproto.StateQueued, false},
+		{"unconfirmed", "sent", "unconfirmed", busproto.StateUndelivered, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item = busproto.InboxItem{Envelope: busproto.Envelope{ID: "mstatus", From: peerID, Sent: t0, Intent: busproto.IntentInform, Body: "context"}, Direction: tc.direction, State: tc.state, Reason: tc.reason}
+			var out strings.Builder
+			if err := runInbox(t.Context(), c, inboxArgs{}, &out, busStyle{JSON: true}); err != nil {
+				t.Fatal(err)
+			}
+			var got inboxJSON
+			if err := json.Unmarshal([]byte(out.String()), &got); err != nil || len(got.Messages) != 1 {
+				t.Fatalf("JSON: %s %v", out.String(), err)
+			}
+			if (got.Messages[0].DeliveryHint == sessionEndedDeliveryHint) != tc.want {
+				t.Fatal(out.String())
+			}
+			text, err := cli(t, fa, "", "inbox")
+			if err != nil || strings.Contains(text, sessionEndedDeliveryHint) != tc.want {
+				t.Fatalf("text: %s %v", text, err)
+			}
+		})
+	}
+}
+
 // mcpRoundTrip sends one request line to a fresh MCP server and returns
 // the response line.
 func mcpRoundTrip(t *testing.T, r *retriever, line string) string {
