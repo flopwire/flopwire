@@ -1,6 +1,6 @@
 # Flopwire identity
 
-The approved mark is concept D: one italic ƒ with the middle peak of a w-shaped crossbar aligned to its stem. Preserve the two open troughs, rounded terminals, and forward lean.
+The approved mark is concept F: one italic ƒ with the middle peak of a w-shaped crossbar aligned to its stem. F uses a deeper, heavier wave than the earlier D study. Preserve the two open troughs, rounded terminals, and forward lean.
 
 ## Assets
 
@@ -25,6 +25,6 @@ Keep warm paper, black ink, and vermilion accents. Keep Plex Mono for the wordma
 
 ## Origin
 
-Vector contour traced from the approved image-tool concept D in [logo exploration PR #88](https://github.com/flopwire/flopwire/pull/88). Potrace 1.16 used a 50% monochrome threshold, a 12-pixel speck threshold, and 0.4 curve optimization tolerance. The contour is preserved; the viewBox removes excess image margins. The favicon adds a paper field and square padding.
+Vector contour traced from the approved image-tool concept F in [logo exploration PR #88](https://github.com/flopwire/flopwire/pull/88). Potrace 1.16 used a 50% monochrome threshold, a 12-pixel speck threshold, and 0.4 curve optimization tolerance. The contour is preserved; the viewBox removes excess image margins. The favicon adds a paper field and square padding.
 
 The exact generation prompts and source raster remain in the exploration PR. Treat these SVGs as the production assets. Inspect the master, color variants, and favicon together after any future geometry change.

@@ -63,6 +63,6 @@ Read-only Claude consultation (`20260930-172149-claude-bda5771a`, default model/
 
 ## Approved identity: centered ƒ/w
 
-Concept D replaces the loose wave in the header, footer, and favicon. The vermilion ƒ has a w-shaped crossbar centered on its slanted stem. The black lowercase Plex Mono wordmark stays at weight 500. Header mark height is 40px on desktop and 34px on mobile; the footer uses 32px. Assets and usage rules live in `assets/BRAND.md`.
+Concept F replaces the loose wave in the header, footer, and favicon. The vermilion ƒ has a w-shaped crossbar centered on its slanted stem. The black lowercase Plex Mono wordmark stays at weight 500. Header mark height is 40px on desktop and 34px on mobile; the footer uses 32px. Assets and usage rules live in `assets/BRAND.md`.
 
 The rest of the homepage keeps its existing warm paper, thin borders, squared controls, and Plex type pairing. The curved mark supplies the brand gesture. Connection diagrams retain their thin vermilion paths.
