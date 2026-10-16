@@ -54,10 +54,32 @@ a recipient. Every message goes through the device agent's bus, as a real
 |---|---|
 | `idle` | A message sent to an idle session does not start a turn within the wait, and stays `queued`. Flopwire never wakes a session. |
 | `prompt-submit` | A message queued before the user's prompt is printed by the `UserPromptSubmit` hook, once, and reaches the model. |
+| `prompt-submit-observed` (opt-in, `--local`) | One recipient inbox read establishes that the exact message is visible locally as `queued` before the generic prompt. The session's `UserPromptSubmit` prints it once and its native transcript records the hook context. |
 | `framing` | The `<flopwire-message>` wrapper arrives intact. The transcript holds it closed, with the sent message's id, sender session (`from`), harness (`agent`), `sender="own"`, intent and marker. |
 | `mid-turn` | A message queued while a tool runs is printed by the next `PostToolUse` hook, before the turn ends, and reaches the model. |
 | `subagent` | A message queued while a subagent runs is never printed by a hook inside the subagent and is not in the subagent's transcript. The session's own next hook prints it once, after the subagent returns. |
 | `guardian` (Codex) | A message queued while Codex's auto-review subagent reviews an escalated command is not taken by a hook during the review. The session's next hook prints it. |
+
+To compare the immediate prompt boundary with an observed local row, run:
+
+```sh
+flopwire probe --local --as-installed --harness codex --case prompt-submit,prompt-submit-observed --json
+```
+
+`prompt-submit` sends and submits the prompt immediately. Its timing is
+unchanged. `prompt-submit-observed` adds one inbox read, with a one-second
+request budget. It does not poll, wait for import, or retry a missing row.
+The JSON result includes the read's UTC start, finish, and state under
+`local_inbox`. A missing or unavailable observation fails the case even
+if the later hook delivers the message. This keeps local visibility and
+context entry as separate checks.
+
+The observation requires `--local`: an inbox request through a connected
+agent reads server state. Local inbox state proves row visibility for the
+exact recipient. It does not establish the import time, and `queued` can
+include an active lease. The read itself adds latency. Keep both cases when
+investigating a timing failure. Neither case qualifies the VS Code extension;
+Codex runs through `app-server`, and its native rollout is the context oracle.
 
 opencode has no command hooks. Its plugin runs `flopwire hook` itself; in
 the probe it runs the tap instead, so its log has the same entries. A
