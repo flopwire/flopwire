@@ -29,7 +29,13 @@ type Bus struct {
 
 func (b Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
 	var out busproto.SendResponse
-	return out, b.do(ctx, "POST", busproto.PathSend, req, &out)
+	path := busproto.PathSend
+	if req.RetryOf != "" {
+		// A server predating explicit retries ignores unknown JSON fields.
+		// A dedicated route makes that server refuse before storing a send.
+		path = busproto.PathRetry
+	}
+	return out, b.do(ctx, "POST", path, req, &out)
 }
 
 // Poll is the long poll: it holds up to req.WaitSeconds.

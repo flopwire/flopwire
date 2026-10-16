@@ -9,6 +9,7 @@
 // the credential, never from the request.
 //
 //	POST   /v1/bus/send             SendRequest  -> SendResponse
+//	POST   /v1/bus/retry            SendRequest  -> SendResponse (requires retry_of)
 //	POST   /v1/bus/poll             PollRequest  -> PollResponse (long poll)
 //	POST   /v1/bus/claim            ClaimRequest -> ClaimResponse
 //	POST   /v1/bus/ack              AckRequest   -> AckResponse
@@ -80,6 +81,7 @@ import (
 
 const (
 	PathSend     = "/v1/bus/send"
+	PathRetry    = "/v1/bus/retry"
 	PathPoll     = "/v1/bus/poll"
 	PathClaim    = "/v1/bus/claim"
 	PathAck      = "/v1/bus/ack"
