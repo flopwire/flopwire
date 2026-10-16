@@ -80,7 +80,7 @@ func TestHookOpencodeHello(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &h); err != nil {
 		t.Fatalf("output %q: %v", out, err)
 	}
-	if h.Instruction != busrender.StandingInstruction || h.Registry != "/cfg/flopwire/opencode" || len(h.Tools) != len(mcpTools()) || !strings.Contains(h.MCP, "flopwire_send") {
+	if h.Instruction != busrender.StandingInstruction || h.Registry != "/cfg/flopwire/opencode" || len(h.Tools) != len(mcpTools()) || h.MCP != mcpInstructions+"\n\n"+mcpBusInstructions {
 		t.Fatalf("hello: %+v", h)
 	}
 	if len(fa.requests("")) != 0 || len(fa.reqs) != 0 {
