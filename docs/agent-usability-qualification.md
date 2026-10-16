@@ -1,10 +1,65 @@
 # Agent usability qualification
 
-Reviewed October 15, 2026, against `54712c7` and the separately identified
-fixes below. This is a bounded task review, not a comparative benchmark or
-a claim that every supported client is qualified.
+## Current status: October 16, 2026
 
-## Acceptance criteria
+Four bounded fresh-agent tasks recovered the requested evidence:
+
+| Task | Retrieval calls | Observed result and limits |
+| --- | ---: | --- |
+| Recover comparison decisions and latest next step | 6 | Recovered the owner's preference and final proposal; distinguished proposal from approval. Publishing and the current preview were outside scope. |
+| Attribute an original PR commit to its producing session | 8 | Read captured command/result and benchmark evidence, coordination, and exact-session presence. The full original commit was supplied; GitHub discovery calls were excluded. An absent peer result did not explain the session's absence. |
+| Recover the historical #228 decision | 6 | Recovered the original deferral and lack of an established fix under a historical cutoff. Evidence was sufficient after three calls; the rest added background. This historical answer does not describe the owner's current diagnosis scope. |
+| Distinguish receipts from acknowledgment | 1 | Read a thread with two sender-authored messages and no recipient reply. Later read timestamps did not establish acknowledgment or completion. |
+
+These observations support informed evidence recovery. They do not establish a
+success rate, a general call-count improvement, or qualification of every
+client. Live message delivery and fresh installation were not repeated.
+The installed native MCP producer identified revision `f9124cd`; the persistent
+exported MCP process and shared-server build were not independently pinned
+for this audit. Host/server load was uncontrolled.
+
+The original broad historical grep completed in 2.311 seconds with an exact
+total of 231 hits. The response returned 10 of 35 requested hits because of
+the response byte budget, with next offset 10. This was response pagination,
+not scan truncation. It is one warm/live observation, not a cold-start bound.
+[#291](https://github.com/flopwire/flopwire/issues/291) records the earlier
+hosted replay after [#298](https://github.com/flopwire/flopwire/pull/298).
+The original timeout case has passed replay; general grep qualification
+remains open for cold starts, broader patterns, concurrency, startup tails,
+and write/index impact.
+
+The expanded repository-scope defect described below was fixed by
+[#286](https://github.com/flopwire/flopwire/pull/286) and qualified across
+CLI, MCP, authenticated HTTP, and PostgreSQL paths in
+[#297](https://github.com/flopwire/flopwire/pull/297). Valid empty live results
+establish scope acceptance; they do not establish captured commit evidence.
+Current live probes also retained a cited focus line under a clipped read
+budget, returned a complete exact empty result for a known absent literal,
+and distinguished invalid regex, incompatible continuation options, changed
+cursor filters, and expired snapshots from completed empty searches.
+
+The owner has now reopened diagnosis of the unexplained Codex IDE delivery
+miss in [#228](https://github.com/flopwire/flopwire/issues/228). No fix is
+established. Diagnostic implementation and qualification are pending; later
+successful retries still do not explain the original failure.
+
+Native MCP initialization emitted shared instructions once (6,459 characters);
+nine native tool descriptions totaled 8,481 characters. Exported discovery
+metadata totaled 79,311 characters, including a 6,374-character common prefix
+repeated for each tool. This confirms amplification after the native/export
+boundary; the totals measure different objects. The reported 21K-token
+bulk-discovery truncation was not independently reconstructed from the
+retained raw retrieval results. Exported continuation guidance lagged native
+guidance; an old process, host caching, or both could explain it. Existing
+runtime receipt and version diagnostics can identify producer state but do
+not prove which metadata the host cached or refresh it.
+
+## Historical qualification record
+
+The October 15 review used `54712c7` and the separately identified fixes below.
+Its trial versions, failures, skips, and limitations remain historical evidence.
+
+### Acceptance criteria
 
 An agent must recover supporting evidence, distinguish an owner's decision
 from a suggestion, identify a producing session from captured execution,
@@ -17,7 +72,7 @@ errors, corrections, evidence read, and human intervention. Count retrieval
 calls separately from tool discovery and GitHub calls. Keep raw private
 history and authentication files out of the repository.
 
-## Historical decision recovery
+### Historical decision recovery
 
 Two fresh `gpt-6.1-sol` agents investigated why the Codex IDE missed-message
 investigation was deferred and whether a fix had been established. Both
@@ -46,7 +101,7 @@ Both agents printed excessive tool metadata during discovery. This belongs
 to the orchestration setup; the trials do not establish that changing
 Flopwire's native tool descriptions would remove it.
 
-## Conflicting evidence and a result boundary
+### Conflicting evidence and a result boundary
 
 A fresh `gpt-6.1-sol` turn on Codex 0.162.1 used the combined `d253746`
 binary against three synthetic sessions: an investigation with successful
@@ -64,7 +119,7 @@ prompt, returned evidence, and final answer. This single synthetic trial adds
 confidence; it does not establish general relevance or exhaustive discovery.
 The guarded authentication copy and daemon were removed afterward.
 
-## Producing-session attribution
+### Producing-session attribution
 
 A separate fresh Sol agent investigated merged PR #256. It obtained original
 PR commits through GitHub, used `flopwire_change`, read raw captured commands
@@ -74,11 +129,11 @@ calls. It correctly retained the limits of abbreviated hashes and incomplete
 history, and reported that no live peer was returned.
 
 The first lookup used `repo="flopwire/flopwire"` and failed with
-`repo is required`. An absolute checkout path succeeded. This is a product
-scope-normalization defect, not a failed attribution task. The fix is tracked
-separately from this qualification record.
+`repo is required`. An absolute checkout path succeeded. This exposed the
+repository-scope defect subsequently fixed and qualified by #286 and #297,
+as recorded in the current status above.
 
-## Broad historical retrieval
+### Broad historical retrieval
 
 An exact-text grep for historical CASS invocations timed out before checking
 candidates. A repository-scoped retry with a 60-second timeout eventually
@@ -92,12 +147,12 @@ returned results. A bounded follow-up compared recovery strategies:
 | Literal continuation without the cap, five-second budget | No candidates checked; snapshot restart required after 5.17 seconds |
 
 The exact-text grep was a reasonable documented choice. Its startup latency
-is a product limitation. Continuation does not guarantee progress before
-candidate retrieval starts. Ranked search helped discover examples; it did
+was the observed limitation in this historical trial. Continuation does not
+guarantee progress before candidate retrieval starts. Ranked search helped discover examples; it did
 not establish complete chronological results. Session-scoped retrieval was
 fast once the relevant sessions were known.
 
-## Request, reply, and explicit resume
+### Request, reply, and explicit resume
 
 The isolated CLI trial in [#287](https://github.com/flopwire/flopwire/pull/287)
 uses two real Sol sessions and synthetic history. The requester discovers and
@@ -165,7 +220,7 @@ is preserved separately from the continuation report. Authentication was removed
 and the daemon stopped. This qualifies explicit local CLI resume and reply;
 it does not demonstrate automatic wake or final-server MCP behavior.
 
-## Installed-plugin hook delivery
+### Installed-plugin hook delivery
 
 The local installed-plugin probe passed `prompt-submit`, `framing`, and
 `hook-binary` on Codex 0.162.1 with `gpt-6.1-sol`, using candidate `18c126e`.
@@ -182,7 +237,7 @@ safety horizon and conservative refusal when expiry is unreadable.
 This local CLI probe does not close the unexplained Codex IDE missed prompt
 in #228 or qualify every supported client and device combination.
 
-## Changes and remaining qualification
+### Changes and remaining qualification
 
 - [#284](https://github.com/flopwire/flopwire/pull/284) ports the cited-line
   read fix onto current main. Local and shared reads reserve the cited line
@@ -202,7 +257,8 @@ in #228 or qualify every supported client and device combination.
   production `Store.Grep` fixture, first-page means for `cass search` fell
   from 2283/2321 ms to 326/218 ms for ordinary/continuation requests. All
   ordered first-page IDs matched. These warm three-call means do not establish
-  a universal startup bound or validate the original private-history timeout.
+  a universal startup bound. Later hosted replay of the original case is
+  recorded in the current status above.
   The PR retains the experiment report and sanitized reproduction evidence.
 
 Focused race regressions also passed against exact final product source
@@ -216,8 +272,9 @@ updated installed-MCP or shared-server replay.
 
 The remaining qualification gates are:
 
-- Repeat the original broad historical query against an updated shared server.
-  Record elapsed time, candidate checks, completeness, and timeout recovery.
+- Extend general grep qualification beyond the completed original hosted
+  replay: cold starts, broader patterns, concurrency, startup tails, and
+  write/index impact remain separate measurements.
 - Keep GUI-client delivery and hosted concurrency qualification separate from
   the passing local CLI request/reply and installed-hook trials.
 
@@ -237,7 +294,7 @@ committed verbatim because they contain private history. Their installed MCP
 server revision was not pinned independently for each call. Their results are
 workflow observations, not reproducible final-build acceptance tests.
 
-## Earlier CASS usage
+### Earlier CASS usage
 
 A retained September 29 audit counted 1,532 CASS command segments across
 165 sessions, including 889 searches, 114 expansions, 80 exports, and 18
