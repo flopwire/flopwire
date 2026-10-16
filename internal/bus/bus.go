@@ -805,6 +805,11 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 			return fail(http.StatusConflict, busproto.CodeReplyToDone, "%s closed its thread (intent done); it must not be answered", replyTo), nil
 		}
 	}
+	if replyTo == "" && m.retryOf != "" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "bus:thread:"+m.thread); err != nil {
+			return nil, err
+		}
+	}
 	var dup bool
 	dupSQL := DuplicateSQL
 	args := []any{m.from.id, m.sha, m.toUser, m.addressed, m.toSession, now.Add(-busproto.DuplicateWindow)}
@@ -839,7 +844,7 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 	if n >= busproto.UserPerHour {
 		return fail(http.StatusTooManyRequests, busproto.CodeUserRate, "you sent %d messages in the last hour; the limit is %d", n, busproto.UserPerHour), nil
 	}
-	if m.replyTo != "" {
+	if m.replyTo != "" || m.retryOf != "" {
 		if err := tx.QueryRow(ctx, ThreadSendsSQL, m.thread, now.Add(-time.Hour)).Scan(&n); err != nil {
 			return nil, err
 		}

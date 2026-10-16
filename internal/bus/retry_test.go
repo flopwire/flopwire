@@ -2,6 +2,7 @@ package bus_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -218,5 +219,24 @@ func TestExplicitRetryPreservesReplyAndAcceptance(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("successor missing from inbox")
+	}
+}
+
+func TestExplicitRetryRootHonorsThreadCeiling(t *testing.T) {
+	f := newFixture(t)
+	c := f.device(f.user("threadretry"))
+	f.present(c, live("thread-source", "claude", "/retry", false), live("thread-target", "codex", "/retry", false))
+	req := busproto.SendRequest{FromSession: "thread-source", To: "thread-target", Body: "synthetic thread retry"}
+	source, err := f.s.Send(context.Background(), c, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.exec(`UPDATE bus_messages SET state='undelivered',reason='session_ended' WHERE id=$1`, source.ID)
+	f.exec(`INSERT INTO bus_messages SELECT (jsonb_populate_record(NULL::bus_messages,to_jsonb(m)||jsonb_build_object('id','mthreadretry'||n,'seq',nextval('bus_messages_seq'),'body_sha',decode(repeat('00',32),'hex'),'state','delivered','reason',''))).* FROM bus_messages m CROSS JOIN generate_series(1,$2::integer) n WHERE m.id=$1`, source.ID, busproto.ThreadPerHour-1)
+	req.RetryOf = source.ID
+	_, err = f.s.Send(context.Background(), c, req)
+	var failure *busproto.Error
+	if !errors.As(err, &failure) || failure.Code != busproto.CodeThreadRate {
+		t.Fatalf("thread ceiling: %v", err)
 	}
 }
