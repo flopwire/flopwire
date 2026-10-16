@@ -31,7 +31,8 @@ type hookAgent struct {
 	delay time.Duration
 	fail  string // pending answers this error
 	// confirmFail: confirm answers this error.
-	confirmFail string
+	confirmFail  string
+	confirmDelay time.Duration
 }
 
 func newHookAgent(t *testing.T) *hookAgent {
@@ -75,6 +76,9 @@ func (f *hookAgent) serve(c net.Conn) {
 		resp = agent.Response{Error: f.confirmFail}
 	}
 	delay := f.delay
+	if req.Op == "confirm" {
+		delay += f.confirmDelay
+	}
 	f.mu.Unlock()
 	time.Sleep(delay)
 	b, _ := json.Marshal(resp)
