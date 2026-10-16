@@ -33,8 +33,8 @@ func coworkUpgradeSnapshot(t *testing.T, pool *pgxpool.Pool, tables []string) ma
 			expr = "to_jsonb(r)-'hidden_scope'"
 		}
 		if table == "bus_messages" {
-			// Later additive sender-placement columns do not alter pre-014 data.
-			expr = "to_jsonb(r)-'from_remote'-'from_main'"
+			// Later additive columns have separate default assertions below.
+			expr = "to_jsonb(r)-'from_remote'-'from_main'-'retry_of'-'admission'"
 		}
 		if table == "flopwire_schema_migrations" {
 			where = " WHERE name<'014'"
@@ -186,6 +186,7 @@ func TestCowork014DumpRestoreUpgrade(t *testing.T) {
 	if got := coworkUpgradeSnapshot(t, restored, tables); !reflect.DeepEqual(got, before) {
 		t.Fatal("014 changed existing rows,checksums,or applied_at")
 	}
+	assertLegacyRetryDefaults(t, restored)
 	var storedRules []byte
 	var ruleLines []string
 	if err = restored.QueryRow(ctx, `SELECT path_rules FROM collection_policy WHERE singleton`).Scan(&storedRules); err != nil {
