@@ -578,6 +578,13 @@ func (s *store) purge(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	// A missing source can no longer be retried. Keep mappings while the
+	// source remains, even if its successor expired, to prevent a second child.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM devbus_retries WHERE NOT EXISTS (
+        SELECT 1 FROM devbus_messages m WHERE m.id=devbus_retries.source_id AND m.origin='local'
+    )`); err != nil {
+		return err
+	}
 	// Keep unprinted/unacknowledged status indefinitely. Completed metadata
 	// can go only after its source envelope is gone, so capture cannot
 	// recreate a notice on the next hook.

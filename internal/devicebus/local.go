@@ -929,7 +929,11 @@ func (b *Bus) checkLocal(ctx context.Context, tx *sql.Tx, e *busproto.Envelope, 
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devbus_messages WHERE origin='local' AND from_session=? AND created_at>? AND state<>'refused'
 		AND body_sha=? AND to_key=? AND id NOT IN (
-            WITH RECURSIVE ancestry(id) AS (SELECT ? WHERE ?<>'' UNION SELECT r.source_id FROM devbus_retries r JOIN ancestry a ON r.successor_id=a.id) SELECT id FROM ancestry
+            WITH RECURSIVE ancestry(id) AS (
+                SELECT id FROM devbus_messages WHERE id=? AND ?<>'' AND origin='local' AND state='undelivered' AND reason='session_ended'
+                UNION SELECT r.source_id FROM devbus_retries r JOIN ancestry a ON r.successor_id=a.id
+                JOIN devbus_messages m ON m.id=r.source_id AND m.origin='local' AND m.state='undelivered' AND m.reason='session_ended'
+            ) SELECT id FROM ancestry
         )`, e.From, ms(now.Add(-busproto.DuplicateWindow)), in.sha, toKey, e.RetryOf, e.RetryOf).Scan(&n); err != nil {
 		return nil, err
 	}
