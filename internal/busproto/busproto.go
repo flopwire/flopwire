@@ -266,7 +266,11 @@ type SendRequest struct {
 	Intent string `json:"intent,omitempty"`
 	// ReplyTo is a message id the sending session sent or received (or
 	// one its person sent or received); the reply joins its thread.
-	ReplyTo string   `json:"reply_to,omitempty"`
+	ReplyTo string `json:"reply_to,omitempty"`
+	// RetryOf explicitly retries a session-addressed message from this
+	// exact sender that ended with session_ended. All message fields must
+	// match the original. Repeating the request returns its one successor.
+	RetryOf string   `json:"retry_of,omitempty"`
 	Refs    []string `json:"refs,omitempty"`
 	// Repo routes an @user message: a normalized remote (host/owner/name,
 	// or owner/name), which the device resolves a path or a name it knows
@@ -312,6 +316,10 @@ type SendResponse struct {
 	Intent    Intent    `json:"intent"`
 	Sent      time.Time `json:"sent"`
 	ExpiresAt time.Time `json:"expires_at"`
+	RetryOf   string    `json:"retry_of,omitempty"`
+	Replayed  bool      `json:"replayed,omitempty"`
+	// A replay reports the existing successor's current state and reason.
+	Reason string `json:"reason,omitempty"`
 	// Redactions counts secrets the server masked in the body, per rule.
 	Redactions map[string]int `json:"redactions,omitempty"`
 }
@@ -322,6 +330,7 @@ type Envelope struct {
 	ID       string `json:"id"`
 	ThreadID string `json:"thread_id"`
 	ReplyTo  string `json:"reply_to,omitempty"`
+	RetryOf  string `json:"retry_of,omitempty"`
 	// From is the sending session; User its person's email.
 	From      string    `json:"from"`
 	FromAgent string    `json:"agent"`
