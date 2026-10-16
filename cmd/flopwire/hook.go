@@ -149,13 +149,19 @@ func hookMain(ctx context.Context, args []string) error {
 			return nil
 		}
 	}
-	return hookCmd(ctx, args, os.Stdin, os.Stdout, os.Stderr, os.Getenv)
+	started := hookStart()
+	d := openHookDiagnostic(os.Getenv(envHookDiagnostic), time.Now())
+	return hookCmdObserved(ctx, args, os.Stdin, os.Stdout, os.Stderr, os.Getenv, started, d)
 }
 
 // hookCmd runs `flopwire hook`. It always returns nil.
 func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) (err error) {
+	return hookCmdObserved(ctx, args, stdin, stdout, stderr, getenv, hookStart(), nil)
+}
+
+func hookCmdObserved(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, started time.Time, d *hookDiagnostic) (err error) {
+	defer d.finish(started)
 	warn := func(format string, a ...any) { fmt.Fprintf(stderr, "flopwire hook: "+format+"\n", a...) }
-	started := hookStart()
 	defer func() {
 		if r := recover(); r != nil {
 			warn("internal error; nothing delivered")
@@ -166,22 +172,27 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fs.SetOutput(io.Discard)
 	socket := fs.String("socket", "", "control socket (default <config dir>/agent.sock)")
 	if fs.Parse(args) != nil || fs.NArg() != 0 {
+		d.reason("invalid_arguments")
 		warn("usage: flopwire hook [--socket PATH] < hook JSON")
 		return nil
 	}
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		d.reason("invalid_input")
 		warn("expects hook JSON on stdin (it is run by a harness hook)")
 		return nil
 	}
 	raw, rerr := io.ReadAll(io.LimitReader(stdin, hookInputMax+1))
 	var in hookInput
 	if rerr != nil || len(raw) > hookInputMax || json.Unmarshal(raw, &in) != nil {
+		d.reason("invalid_input")
 		warn("the input is not hook JSON; nothing delivered")
 		return nil
 	}
+	d.input(in)
 	if *socket == "" {
 		p, err := defaultSocket()
 		if err != nil {
+			d.reason("config_error")
 			warn("no config directory: %v", err)
 			return nil
 		}
@@ -190,6 +201,7 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 
 	harness := hookHarness(in, getenv)
 	if harness == transcript.AgentOpencode && (in.Event == evHello || in.Event == evConfirm) {
+		d.reason("unsupported_harness")
 		opencodeHook(ctx, in, *socket, stdout, warn)
 		return nil
 	}
@@ -241,36 +253,53 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	case evUserPromptSubmit, evPostToolUse:
 	default:
+		d.reason("non_delivery_event")
 		return nil // Stop, SessionEnd, PreToolUse (Devin does not show its context), …: flush only
 	}
 	if in.SessionID == "" {
+		d.reason("no_session")
 		warn("the input names no session_id; nothing delivered")
 		return nil
 	}
 	if sub.inside {
+		d.reason("subagent")
 		if sub.fault != "" {
 			warn("%s", sub.fault)
 		}
 		return nil // messages go to the session itself, at its own next hook
 	}
 	if elsewhere {
+		d.reason("held_elsewhere")
 		warn("another devin process holds this session; nothing delivered")
 		return nil
 	}
 	if late {
+		d.reason("late")
 		warn("started %s ago, too late to deliver; nothing delivered", age.Round(time.Millisecond))
 		return nil
 	}
 	if harness == transcript.AgentOpencode {
+		d.reason("unsupported_harness")
 		opencodeDeliver(ctx, in, *socket, started, stdout, warn)
 		return nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, hookPendingBudget)
 	defer cancel()
 	notice := in.Event == evUserPromptSubmit && noticeChannel(harness)
+	pendingStarted := time.Now()
 	resp, err := agent.Call(pctx, *socket, agent.Request{Op: "pending", Session: in.SessionID, Agent: string(harness),
 		Limit: busrender.HookMessages, MaxBytes: busrender.HookBytes, Start: start, Notice: notice, HookStart: started.UnixMilli()})
+	if d != nil {
+		d.entry.PendingUS = time.Since(pendingStarted).Microseconds()
+		for _, m := range resp.Messages {
+			d.entry.Messages = append(d.entry.Messages, d.alias("message", m.ID))
+		}
+	}
 	if err != nil {
+		d.reason("pending_error")
+		if isTimeout(err) {
+			d.reason("pending_timeout")
+		}
 		warn("%s; nothing delivered", hookReason(err))
 		return nil
 	}
@@ -286,26 +315,48 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		out.HookSpecificOutput = hookSpecific{HookEventName: in.Event, AdditionalContext: text}
 	}
 	if out == (hookOutput{}) {
+		d.reason("empty")
 		return nil
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if enc.Encode(out) != nil {
+		d.reason("encode_error")
 		warn("could not encode the output")
 		return nil
 	}
-	if n, err := stdout.Write(buf.Bytes()); err != nil || n != buf.Len() {
+	n, writeErr := stdout.Write(buf.Bytes())
+	if d != nil {
+		d.entry.OutputBytes = n
+		d.entry.OutputResult = "written"
+		if writeErr != nil {
+			d.entry.OutputResult = "error"
+		} else if n != buf.Len() {
+			d.entry.OutputResult = "short_write"
+		}
+	}
+	if writeErr != nil || n != buf.Len() {
+		d.reason("output_error")
 		warn("could not write the output; %d messages wait for the next hook", len(resp.Messages))
 		return nil
 	}
+	d.reason("printed")
 	instructed := resp.Instruct && out.HookSpecificOutput.AdditionalContext != ""
 	confirmed := append([]busproto.Envelope{}, resp.Messages...)
 	for _, n := range resp.Failures {
 		confirmed = append(confirmed, busproto.Envelope{ID: n.LeaseID})
 	}
 	if len(confirmed) > 0 || instructed {
-		hookConfirm(ctx, *socket, in.SessionID, confirmed, instructed, started, warn)
+		confirmStarted := time.Now()
+		result := hookConfirmResult(ctx, *socket, in.SessionID, confirmed, instructed, started, warn)
+		if d != nil {
+			d.entry.ConfirmUS = time.Since(confirmStarted).Microseconds()
+			d.entry.ConfirmResult = result
+			if result != "confirmed" {
+				d.reason("confirm_" + result)
+			}
+		}
 	}
 	return nil
 }
@@ -316,13 +367,17 @@ func hookCmd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 // does not confirm, and a confirmation that fails is not retried: either
 // way the lease ends and they come again (messages marked).
 func hookConfirm(ctx context.Context, socket, session string, msgs []busproto.Envelope, instructed bool, started time.Time, warn func(string, ...any)) {
+	hookConfirmResult(ctx, socket, session, msgs, instructed, started, warn)
+}
+
+func hookConfirmResult(ctx context.Context, socket, session string, msgs []busproto.Envelope, instructed bool, started time.Time, warn func(string, ...any)) string {
 	what := fmt.Sprintf("%d messages", len(msgs))
 	if instructed {
 		what += " and the standing instruction"
 	}
 	if age := time.Since(started); age >= hookLate {
 		warn("printed %s after the start, too late to confirm; %s will be offered again", age.Round(time.Millisecond), what)
-		return
+		return "late"
 	}
 	ids := make([]string, len(msgs))
 	for i, m := range msgs {
@@ -336,7 +391,12 @@ func hookConfirm(ctx context.Context, socket, session string, msgs []busproto.En
 			reason = fmt.Sprintf("no answer within %s", hookConfirmBudget)
 		}
 		warn("could not confirm the delivery (%s); %s will be offered again", reason, what)
+		if isTimeout(err) {
+			return "timeout"
+		}
+		return "error"
 	}
+	return "confirmed"
 }
 
 // noticeChannel reports whether the harness shows a hook's systemMessage
