@@ -56,3 +56,31 @@ The server endpoint is additive and requires a device-bound credential with
 read permission. It returns metadata for that device only. Old servers and
 unavailable agents produce unknown diagnostics. Search results keep their
 original backend scope, query semantics, and error behavior.
+
+## Model interpretation checks
+
+Generate synthetic native search output and status envelopes:
+
+```sh
+FLOPWIRE_COVERAGE_QUALIFICATION=/tmp/coverage.json go test ./cmd/flopwire \
+  -run '^TestEmitCoverageQualification$' -count=1
+```
+
+Run four paid model turns in fresh guarded Codex homes:
+
+```sh
+python3 scripts/qualify-agent-workflow.py --root /tmp/fwcoverage-new \
+  --coverage-fixtures /tmp/coverage.json
+```
+
+The cases cover an empty result with zero observed queues, unavailable
+diagnostics, pending upload generations and parses, and policy holds with
+self-exclusion. Each turn receives the candidate native instructions as a
+developer message. The verifier checks observed counters and rejects a claim
+of global absence. Review each interpretation and next step in `report.json`.
+The negative verifier tests reject global absence despite correct counters
+and reject unavailable counters interpreted as zero.
+
+This checks interpretation of native rendered synthetic output. It does not
+qualify ingestion, transport, live discovery, or the model's choice of tools.
+Zero queues still leave discovery and other-device coverage unknown.

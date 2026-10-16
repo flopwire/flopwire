@@ -9,6 +9,13 @@ Run: python3 scripts/qualify-agent-workflow.py --root /tmp/fwqual-new \
     --flopwire /tmp/flopwire-under-test
 Uses four paid model turns. A pass proves local inbox recovery after an
 explicit resume; it does not imply hook delivery or automatic session wake.
+
+For four separate native-output interpretation checks (not process E2E):
+  FLOPWIRE_COVERAGE_QUALIFICATION=/tmp/coverage.json go test ./cmd/flopwire \
+      -run '^TestEmitCoverageQualification$' -count=1
+  python3 scripts/qualify-agent-workflow.py --root /tmp/fwcoverage-new \
+      --coverage-fixtures /tmp/coverage.json
+Review report.json manually; automatic checks cover counters and absence only.
 Refuses auth copying when refresh could occur within 30 minutes, matching
 the installed probe. Run Codex normally to refresh its source login first.
 """
@@ -21,6 +28,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import subprocess
 import time
 
@@ -93,12 +101,127 @@ def source_read(command, result, owner):
     return False
 
 
+
+def coverage_answer_valid(case, answer):
+    """Check observed counters and reject the dangerous global-absence claim."""
+    expected = {"empty": (0, 0, 0, False), "unavailable": (None, None, None, False),
+                "pending": (2, 3, 0, False), "held": (0, 0, 1, True)}
+    values = tuple(answer.get(k) for k in ("pending_upload_generations", "pending_parses", "policy_holds", "self_excluded"))
+    return (case in expected and values == expected[case]
+            and answer.get("global_absence_established") is False
+            and bool(answer.get("interpretation", "").strip())
+            and bool(answer.get("next_step", "").strip()))
+
+
+def validate_coverage_fixtures(data):
+    names = [case.get("name") for case in data.get("cases", [])]
+    if sorted(names) != ["empty", "held", "pending", "unavailable"]:
+        raise ValueError("coverage fixtures must contain each of empty/unavailable/pending/held exactly once")
+    if not data.get("instructions", "").strip():
+        raise ValueError("candidate native instructions required")
+
+
+
+def run_owned_coverage_process(cmd, env, cwd, out, err, timeout=150):
+    process = subprocess.Popen(cmd, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
+                               stdout=out, stderr=err, start_new_session=True)
+    try:
+        return process.wait(timeout=timeout)
+    finally:
+        # This invocation owns the new process group. No shared daemon starts.
+        # Stop descendants and reap the CLI before removing copied credentials.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        # The parent can exit while a descendant ignores TERM.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def qualify_coverage(args):
+    """Interpret native synthetic output; no ingestion/transport/model-selection claim."""
+    data = json.loads(args.coverage_fixtures.read_text())
+    validate_coverage_fixtures(data)
+    root = args.root.resolve()
+    root.mkdir(mode=0o700)
+    (root / "fixtures.json").write_text(json.dumps(data, indent=2) + "\n")
+    authpath = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
+    checked_auth(authpath.read_bytes())
+    report = {"scope": "native synthetic output interpretation only; no process/transport E2E",
+              "model": args.model, "reasoning": "low", "results": [],
+              "fixture_sha256": hashlib.sha256(args.coverage_fixtures.read_bytes()).hexdigest(),
+              "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    schema = {"type": "object", "additionalProperties": False,
+              "properties": {k: {"type": ["integer", "null"]} for k in
+                             ("pending_upload_generations", "pending_parses", "policy_holds")}}
+    schema["properties"].update({k: {"type": "boolean"} for k in ("self_excluded", "global_absence_established")})
+    schema["properties"].update({k: {"type": "string"} for k in ("interpretation", "next_step")})
+    schema["required"] = list(schema["properties"])
+    schema_path = root / "answer-schema.json"
+    schema_path.write_text(json.dumps(schema))
+    report["codex_version"] = subprocess.check_output(["codex", "--version"], text=True).strip()
+    for case in data["cases"]:
+        trial = root / case["name"]
+        ch = trial / "home/.codex"
+        ch.mkdir(parents=True)
+        env = {k: os.environ[k] for k in ("PATH", "TMPDIR", "LANG", "TERM") if k in os.environ}
+        env.update(HOME=str(ch.parent), CODEX_HOME=str(ch), XDG_CONFIG_HOME=str(ch.parent / ".config"),
+                   XDG_CACHE_HOME=str(ch.parent / ".cache"), XDG_DATA_HOME=str(ch.parent / ".local/share"))
+        prompt = ("A colleague searched shared history for a decision and received the following output. "
+                  "The attached status is a separate observed diagnostic snapshot. What does this establish, "
+                  "what uncertainty remains, and what bounded next step would help? Use only these observations; "
+                  "do not call tools. Report the requested counters as null when unobserved.\n"
+                  + "Search arguments: " + json.dumps(case["arguments"]) + "\n"
+                  + case["output"] + "\nStatus JSON:\n" + case["status"])
+        cmd = ["codex", "--no-daemon", "exec", "--model", args.model, "--skip-git-repo-check", "--ignore-user-config",
+               "--ignore-rules", "--json", "--sandbox", "read-only", "-c", 'approval_policy="never"',
+               "-c", 'model_reasoning_effort="low"', "-c", "developer_instructions=" + json.dumps(data["instructions"]),
+               "--output-schema", str(schema_path), "--output-last-message", str(trial / "answer.json"), prompt]
+        (trial / "invocation.json").write_text(json.dumps({"argv": cmd, "prompt": prompt}, indent=2) + "\n")
+        started = time.monotonic()
+        try:
+            (ch / "auth.json").write_bytes(checked_auth(authpath.read_bytes()))
+            (ch / "auth.json").chmod(0o600)
+            with (trial / "events.jsonl").open("w") as out, (trial / "stderr").open("w") as err:
+                returncode = run_owned_coverage_process(cmd, env, trial, out, err)
+            answer = json.loads((trial / "answer.json").read_text())
+            events = [json.loads(line) for line in (trial / "events.jsonl").read_text().splitlines() if line.strip()]
+            tools = [e["item"]["type"] for e in events if e.get("type") in ("item.started", "item.completed")
+                     and e.get("item", {}).get("type") in ("command_execution", "mcp_tool_call", "web_search", "file_change")]
+            report["results"].append({"case": case["name"], "answer": answer, "tools": tools,
+                                      "seconds": round(time.monotonic() - started, 2),
+                                      "pass": returncode == 0 and not tools and any(e.get("type") == "turn.completed" for e in events)
+                                      and coverage_answer_valid(case["name"], answer)})
+        except Exception as err:
+            report["results"].append({"case": case["name"], "pass": False, "error": type(err).__name__})
+            raise
+        finally:
+            (ch / "auth.json").unlink(missing_ok=True)
+            (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        print("completed coverage interpretation: " + case["name"], flush=True)
+    if not all(item["pass"] for item in report["results"]):
+        raise RuntimeError("coverage interpretation assertion failed; review report.json")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--flopwire", type=Path, required=True)
+    parser.add_argument("--flopwire", type=Path)
+    parser.add_argument("--coverage-fixtures", type=Path, help="native fixture emitter output; interpretation-only trial")
     parser.add_argument("--model", default="gpt-6.1-sol")
     args = parser.parse_args()
+    if args.coverage_fixtures:
+        return qualify_coverage(args)
+    if args.flopwire is None:
+        parser.error("--flopwire is required unless --coverage-fixtures is used")
     root = args.root.resolve()
     root.mkdir(mode=0o700)  # Never reuse a previous trial's state.
     home = root / "home"

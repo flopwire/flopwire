@@ -6,6 +6,7 @@ test:
 	scripts/validate-release-tag_test.sh
 	scripts/perf-baseline_test.sh
 	sh scripts/e2e-search_test.sh
+	python3 scripts/qualify-agent-workflow_test.py
 
 web:
 	pnpm --dir web build
