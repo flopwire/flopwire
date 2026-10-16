@@ -330,7 +330,10 @@ func acceptsText(a acceptsJSON) string {
 type acceptJSON struct {
 	Kind string `json:"kind"` // "accept" or "revoke"
 	busproto.AcceptResponse
+	Hint string `json:"hint,omitempty"`
 }
+
+const acceptanceDeliveryHint = "Release queues messages for delivery. The sender can check its inbox for delivery status. If the addressed session ended before delivery and the request is still needed, the sender can explicitly send a new message to the intended session."
 
 func (s acceptSession) accept(ctx context.Context, sender string, io_ acceptIO, st busStyle) error {
 	// What is waiting from this sender, when anything is: the person sees
@@ -373,9 +376,16 @@ func (s acceptSession) accept(ctx context.Context, sender string, io_ acceptIO, 
 		return err
 	}
 	r := acceptJSON{Kind: "accept", AcceptResponse: out}
+	if out.Released > 0 {
+		r.Hint = acceptanceDeliveryHint
+	}
 	return st.emit(io_.out, r, func() error {
-		_, err := fmt.Fprintf(io_.out, "accepted %s: %d held %s released to your sessions; their agents' messages now reach yours. Revoke: flopwire revoke %s\n",
-			out.User, out.Released, plural(out.Released, "message", "messages"), out.User)
+		hint := ""
+		if r.Hint != "" {
+			hint = r.Hint + " "
+		}
+		_, err := fmt.Fprintf(io_.out, "accepted %s: %d held %s released for delivery. %sRevoke: flopwire revoke %s\n",
+			out.User, out.Released, plural(out.Released, "message", "messages"), hint, out.User)
 		return err
 	})
 }

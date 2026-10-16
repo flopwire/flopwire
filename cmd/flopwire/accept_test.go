@@ -202,7 +202,7 @@ func TestAcceptVerbsAgainstTheServer(t *testing.T) {
 		t.Fatalf("accepted without the password: %d %v", n, err)
 	}
 	out, _, err = acceptRun(t, true, alex, nil, adminPassword+"\n", "accept", "--text", "gary")
-	if err != nil || !strings.HasPrefix(out, "accepted gary@example.test: 1 held message released to your sessions") {
+	if err != nil || !strings.HasPrefix(out, "accepted gary@example.test: 1 held message released for delivery") || !strings.Contains(out, acceptanceDeliveryHint) {
 		t.Fatalf("accept: %q %v", out, err)
 	}
 	out, _, err = acceptRun(t, true, alex, nil, "", "accepts", "--text")
