@@ -1,7 +1,8 @@
 # Agent workflow comparison
 
 Flopwire refreshed 2026-10-16 against `2cd14559e0b0339ebbd6378078bb2693a5603aa1`.
-Competitor capability review: 2026-10-13; versions and sources below.
+Competitor capability review: 2026-10-13; search interfaces and evidence
+representations rechecked 2026-10-16. Versions and sources below.
 The October 13 spot check is retained as historical evidence.
 
 Flopwire's candidate advantage is finding prior evidence, identifying the
@@ -9,61 +10,77 @@ producing session and contacting it when reachable. The tables compare
 documented capabilities. Later Flopwire-only task trials are linked below;
 comparative agent success remains unmeasured. Gas Town is excluded.
 
-## Public-facing matrix drafts
-
-Both versions use the same proposed positioning:
+## Public-facing comparison
 
 > Find the reasoning behind a change. Ask the agent behind the work.
 >
-> Flopwire connects searchable coding history, commit evidence, and direct
-> messages between coding agents.
+> Flopwire connects coding history, commit evidence, and agent-to-agent
+> conversation across tools, people, and machines.
 
-These are copy drafts for comparison, not changes to the published homepage.
-“Not established” means the reviewed interfaces did not establish support;
-it does not mean the product cannot do it. Features are documentation-backed
-unless the evidence section records a trial.
+The rows lead with that connected workflow. Individual capabilities overlap
+with other products; this comparison does not establish an exclusive feature
+combination or a measured winner. “Not established” means support was not
+established in the reviewed interfaces, not that the product cannot do it.
 
-### Version A: closest alternatives
+### The connected workflow
 
-| What an agent needs | Flopwire | AgentsView | MCP Agent Mail Rust | Entire |
-|---|---|---|---|---|
-| Recover earlier work | Search and read captured coding sessions | Search and read captured coding sessions | Search coordination messages | Search sessions; Git-linked checkpoints |
-| Search by meaning | Not supported | Opt-in semantic/hybrid index | Opt-in semantic mail search | Authenticated search service |
-| Connect a change to its source | Commit lookup with captured execution evidence | Not established | Not established | Git-linked checkpoints |
-| Ask another agent a follow-up | Session/person addressing and threaded replies | Not established | Registered agent identities and threaded replies | Not established |
-| Reserve files before editing | Not supported | Not established | Advisory file reservations | Not established |
-
-Flopwire's proposed reason to choose it is the connected path from archived
-reasoning to a reachable agent. AgentsView offers semantic session retrieval;
-Agent Mail adds file reservations and coordination macros; Entire organizes
-session evidence around Git checkpoints. The table does not establish which
-product completes a task more reliably.
-
-### Version B: broader shortlist
-
-| What an agent needs | Flopwire | AgentsView | MCP Agent Mail Rust | Entire | SpecStory | Langfuse |
+| What Flopwire brings together | Flopwire | AgentsView | MCP Agent Mail Rust | Entire | SpecStory | Langfuse |
 |---|---|---|---|---|---|---|
-| Recover earlier work | Coding sessions | Coding sessions | Coordination messages | Sessions/checkpoints | Sessions/Markdown | Traces/spans |
-| Search by meaning | Not supported | Opt-in | Opt-in, mail only | Authenticated service | Roadmap in reviewed docs | Not established |
-| Connect a change to its source | Captured commit evidence | Not established | Not established | Git checkpoints | Not established | Not established |
-| Ask another agent a follow-up | Session/person messages | Not established | Registered-agent messages | Not established | Not established | Not established |
-| Reserve files before editing | Not supported | Not established | Advisory reservations | Not established | Not established | Not established |
-| Resume in another coding tool | No built-in workflow | Not established | Not established | Cross-tool support not established | Supported target tools | Not established |
-| Evaluate model outputs | No evaluation suite | Not established | Not established | Not established | Not established | Evaluations |
+| Share history across people and machines | Eligible device history in a team archive | Hosted raw sync | Shared coordination mail | Git-shared transcript checkpoints | Cloud session search | Shared project traces |
+| Capture history from normal coding work | Native transcript watcher | Native transcript watchers | Own coordination messages; coding transcripts not established | Agent/Git hooks | History sync and live watch | Agent hooks / native OTel |
+| Recover the reasoning with supporting evidence | Search sessions; reopen source records and context | Search sessions; revision-bound evidence reads | Search mail; reopen messages and threads | Search sessions; Git-linked checkpoints | Sessions and Markdown; Cloud search/API | Search and inspect traces/spans |
+| Search transcripts like code | Literal/regex grep + ranked keyword search | Substring/regex + full-text and semantic modes | Mail search; semantic opt-in | Session search | Session search and Markdown | Trace input/output search |
+| Trace a code change to its producing session | Commit lookup with captured execution evidence | Not established | Not established | Git-linked checkpoints | Not established | Not established |
+| Find an agent to ask | Observed native sessions; exact presence lookup | Archive activity; live contact not established | Registered agent directory | Local session status; peer directory not established | Not established | Not established |
+| Ask a follow-up across coding tools | Session/person messages and correlated replies | Not established | Threaded agent messages and contact policies | Not established | Not established | Not established |
+| Recover the coordination later | Retained repository threads; list and reopen | Messaging not established | Retained, searchable mail threads | Messaging not established | Messaging not established | Messaging not established |
+| Let agents use the workflow directly | CLI + MCP + workflow skill | CLI + MCP + memory guidance | CLI + MCP + coordination macros | CLI with structured output | CLI + Markdown + Cloud API | CLI + MCP + API |
 
-Version A keeps the decision focused on session retrieval, coordination, and
-Git provenance. Version B also shows why someone might choose SpecStory for
-cross-tool continuation or Langfuse for evaluation. It is wider and includes
-products serving different primary needs.
+Shared history is part of Flopwire's proposition, not a claim of exclusivity.
+Enrolled devices contribute eligible history to a team archive. AgentsView
+also documents hosted raw sync, SpecStory has Cloud search, Entire uses an
+authenticated search service, and Langfuse offers shared trace infrastructure.
+Their setup, sharing policies, and searchable coverage require separate
+qualification before claiming parity or superiority.
 
-For either version, explain the contact limit alongside the example: sending
-a message alone does not guarantee an idle agent resumes. Commit lookup returns evidence
-to inspect, not a guarantee of sole authorship; squash merges require the
-original PR commit IDs. See the source-backed detail below.
+### Search and evidence an agent can work with
 
-No speed or token-saving claims belong in these drafts. The retained pilot
-compares a small synthetic corpus and different interface transports. Its
-numbers do not establish comparative task success or production-scale speed.
+| Detail | Flopwire | What to compare fairly |
+|---|---|---|
+| Choose the right retrieval tool | Ranked keyword `search` for discovery; literal/regex `grep` for exact evidence; session listing for navigation | AgentsView also exposes exact, regex and ranked/semantic modes. Flopwire's distinct tool names are an interface choice, not proof of better task success. |
+| Move from a hit to its source | Stable session/ordinal/line addresses, bounded context reads, outlines, and raw-record reads | AgentsView provides revision-bound citations and long-message continuation. Compare whether an agent recovers the needed evidence, not just response size. |
+| Know what the result covers | Explicit local/shared scope, partial-result warnings, coverage limits, and no silent local fallback on server failure | AgentsView also reports readiness, coverage and exclusions. These are useful shared capabilities; clarity needs task-based comparison. |
+| Retain evidence beyond a summary | Captured source records retain available prompts, responses, commands and tool results; raw reads can expose native structure | AgentsView also documents raw transcript retention. Entire stores transcript checkpoints; SpecStory exposes session Markdown; Langfuse stores instrumented traces. No comparative fidelity ranking has been measured. |
+
+October 16 interface checks: [AgentsView commands](https://github.com/kenn-io/agentsview/blob/main/docs/commands.md),
+[AgentsView MCP](https://www.agentsview.io/docs/mcp/),
+[SpecStory session retrieval](https://docs.specstory.com/api-reference/sessions/get-session),
+[Entire v0.11.4](https://github.com/entireio/cli/blob/v0.11.4/README.md), and
+[Langfuse full-text search](https://langfuse.com/docs/observability/features/full-text-search).
+
+Capture policy, redaction, supported formats, missing captures, and read/index
+budgets limit available evidence. “Raw” does not mean every source is captured
+or that shared records are unredacted. The source-level boundary is documented
+in [search](../docs/search.md) and [architecture](../docs/architecture.md).
+
+### Where other tools go further
+
+| Need | Other tools' documented strengths | Flopwire today |
+|---|---|---|
+| Search by meaning | AgentsView's opt-in semantic/hybrid index; Agent Mail's opt-in semantic mail search | Lexical and regex retrieval; semantic search deferred |
+| Reserve files and bundle coordination steps | Agent Mail's advisory reservations and coordination macros | Direct messaging; no file reservation tool |
+| Work from Git checkpoints | Entire's checkpoint-centered session workflow | Captured commit evidence; caller resolves squash lineage |
+| Continue a session in another coding tool | SpecStory's supported cross-tool resume targets | No built-in cross-tool resume |
+| Evaluate outputs and analyze model traces | Langfuse's evaluations, costs and trace analysis | Session digests and failure counts; no evaluation suite |
+
+For the public example, connect the steps: a changed API leads to its recorded
+reasoning, the producing session, an unanswered question, and a retained reply.
+Label the example synthetic. Sending alone does not guarantee an idle agent
+resumes. Commit lookup provides evidence to inspect, not proof of sole authorship.
+
+The October 13 pilot remains supporting material. Its small synthetic corpus
+and differing interface transports do not justify headline speed, token-saving,
+or task-success claims.
 
 ## Feature table
 
