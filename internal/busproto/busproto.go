@@ -165,6 +165,13 @@ func ParseIntent(s string) (Intent, error) {
 // State is a message's delivery state.
 type State string
 
+// Admission records the receiving boundary chosen by the bus at send time.
+// Empty uses ordinary session-end handling. NextResume waits for the first
+// receiving hook (or running cloud push), then uses ordinary lease handling.
+type Admission string
+
+const AdmissionNextResume Admission = "next_resume"
+
 const (
 	StateQueued    State = "queued"
 	StateHeld      State = "held"
@@ -321,7 +328,8 @@ type SendResponse struct {
 	RetryOf   string    `json:"retry_of,omitempty"`
 	Replayed  bool      `json:"replayed,omitempty"`
 	// A replay reports the existing successor's current state and reason.
-	Reason string `json:"reason,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	Admission Admission `json:"admission,omitempty"`
 	// Redactions counts secrets the server masked in the body, per rule.
 	Redactions map[string]int `json:"redactions,omitempty"`
 }
@@ -329,10 +337,11 @@ type SendResponse struct {
 // Envelope is a message as a recipient (or its sender's inbox) sees it.
 // Every field but Body, Intent, ReplyTo and Refs is set by the server.
 type Envelope struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"thread_id"`
-	ReplyTo  string `json:"reply_to,omitempty"`
-	RetryOf  string `json:"retry_of,omitempty"`
+	ID        string    `json:"id"`
+	ThreadID  string    `json:"thread_id"`
+	ReplyTo   string    `json:"reply_to,omitempty"`
+	RetryOf   string    `json:"retry_of,omitempty"`
+	Admission Admission `json:"admission,omitempty"`
 	// From is the sending session; User its person's email.
 	From      string    `json:"from"`
 	FromAgent string    `json:"agent"`
@@ -387,6 +396,9 @@ type PresenceSession struct {
 
 // PollRequest is POST /v1/bus/poll.
 type PollRequest struct {
+	// ResumeRetries opts into next_resume admission. Older recipients must
+	// not receive envelopes whose waiting state they cannot preserve.
+	ResumeRetries bool `json:"resume_retries,omitempty"`
 	// Sessions is the device's whole presence; it replaces the last one.
 	Sessions []PresenceSession `json:"sessions"`
 	// Cloud is the person's vendor cloud sessions the device listed
@@ -451,9 +463,10 @@ type PollResponse struct {
 // session on this device, or a message to a live cloud session of the
 // device's person (SessionID is that session) for this device to push.
 type ClaimRequest struct {
-	MessageID string `json:"message_id"`
-	SessionID string `json:"session_id"`
-	Agent     string `json:"agent,omitempty"`
+	ResumeRetries bool   `json:"resume_retries,omitempty"`
+	MessageID     string `json:"message_id"`
+	SessionID     string `json:"session_id"`
+	Agent         string `json:"agent,omitempty"`
 }
 
 // ClaimResponse is the claimed message, now addressed to the session.
