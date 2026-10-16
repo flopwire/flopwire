@@ -301,12 +301,8 @@ func readMetadata(root, path, id string) (metadata, Mapping) {
 	if err != nil || st.Size() > maxMetadataBytes {
 		return md, unknown
 	}
-	d := json.NewDecoder(io.LimitReader(f, maxMetadataBytes+1))
-	if err = d.Decode(&md); err != nil {
-		return metadata{}, unknown
-	}
-	var extra any
-	if err = d.Decode(&extra); !errors.Is(err, io.EOF) {
+	data, err := readMetadataBytes(f, st.Size())
+	if err != nil || json.Unmarshal(data, &md) != nil {
 		return metadata{}, unknown
 	}
 	m := Mapping{}
@@ -339,6 +335,30 @@ func readMetadata(root, path, id string) (metadata, Mapping) {
 	}
 	sort.Strings(m.hostPaths)
 	return md, m
+}
+
+// The stat size is an allocation hint, not a read boundary: metadata may grow
+// or shrink after Stat. One spare byte detects growth without reallocating the
+// common unchanged file, and the reader always enforces the actual byte limit.
+func readMetadataBytes(r io.Reader, size int64) ([]byte, error) {
+	if size < 0 || size > maxMetadataBytes {
+		return nil, errors.New("metadata exceeds size limit")
+	}
+	r = io.LimitReader(r, maxMetadataBytes+1)
+	data := make([]byte, int(size)+1)
+	n, err := io.ReadFull(r, data)
+	data = data[:n]
+	if err == nil {
+		var rest []byte
+		rest, err = io.ReadAll(r)
+		data = append(data, rest...)
+	} else if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		err = nil
+	}
+	if len(data) > maxMetadataBytes {
+		return nil, errors.New("metadata exceeds size limit")
+	}
+	return data, err
 }
 
 // safe checks lexical containment and every component inside the configured
