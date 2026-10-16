@@ -202,9 +202,9 @@ const cloudLive = `(m.state='queued' AND m.addressed='session' AND EXISTS(SELECT
 // presence or uploaded from it), those it claimed, unclaimed @user
 // messages (the caller filters them by eligibility), and unclaimed ones to
 // the person's live cloud sessions (seen since $4; the last column).
-// $5 enables immutable next_resume admissions for supporting recipients.
+// $5 enables explicit retries and their admission metadata for supporting recipients.
 const DeliverableSQL = `SELECT ` + envCols + `,` + cloudLive + ` FROM ` + envFrom + `
-	WHERE m.to_user=$1 AND ($5::boolean OR m.admission='') AND m.state IN ('queued','claimed') AND m.expires_at>$2 AND (
+	WHERE m.to_user=$1 AND ($5::boolean OR (m.admission='' AND m.retry_of IS NULL)) AND m.state IN ('queued','claimed') AND m.expires_at>$2 AND (
 		(m.state='claimed' AND m.claimed_device=$3)
 		OR (m.state='queued' AND m.to_session IS NULL)
 		OR ` + cloudLive + `
@@ -318,12 +318,13 @@ func (s *Store) Claim(ctx context.Context, c busproto.Caller, req busproto.Claim
 	now := s.now()
 	var cloud bool
 	var admission busproto.Admission
-	err := s.Pool.QueryRow(ctx, `SELECT addressed='session',admission FROM bus_messages WHERE id=$1 AND to_user=$2`, req.MessageID, c.UserID).Scan(&cloud, &admission)
+	var retryOf string
+	err := s.Pool.QueryRow(ctx, `SELECT addressed='session',admission,COALESCE(retry_of,'') FROM bus_messages WHERE id=$1 AND to_user=$2`, req.MessageID, c.UserID).Scan(&cloud, &admission, &retryOf)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
 	}
-	if admission == busproto.AdmissionNextResume && !req.ResumeRetries {
-		return out, fail(http.StatusConflict, busproto.CodeNotEligible, "message %s requires resume retry support", req.MessageID)
+	if (retryOf != "" || admission == busproto.AdmissionNextResume) && !req.ResumeRetries {
+		return out, fail(http.StatusConflict, busproto.CodeNotEligible, "message %s requires explicit retry support", req.MessageID)
 	}
 	if cloud {
 		return s.claimCloud(ctx, c, req, now)

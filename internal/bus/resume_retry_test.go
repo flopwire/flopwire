@@ -72,6 +72,13 @@ func TestInactiveRetryAdmissionAndRecipientCapability(t *testing.T) {
 	if err != nil || liveRetry.Admission != "" {
 		t.Fatalf("live retry: %+v %v", liveRetry, err)
 	}
+	oldLive, err := f.s.Poll(ctx, c, busproto.PollRequest{Sessions: []busproto.PresenceSession{sourceSession, targetSession}})
+	if err != nil || len(oldLive.Messages) != 0 || len(oldLive.Claimable) != 0 {
+		t.Fatalf("old recipient saw live retry: %+v %v", oldLive, err)
+	}
+	if _, err := f.s.Claim(ctx, c, busproto.ClaimRequest{MessageID: liveRetry.ID, SessionID: targetSession.SessionID, Agent: "codex"}); err == nil {
+		t.Fatal("old direct claim exposed live retry")
+	}
 }
 
 func TestRetrySuccessorTombstoneAndSourceCleanup(t *testing.T) {
@@ -206,5 +213,26 @@ func TestResumeRetryCapabilityGatesCloudClaims(t *testing.T) {
 	claim.ResumeRetries = false
 	if _, err := f.s.Claim(ctx, c, claim); err == nil {
 		t.Fatal("old claim replay bypassed gate")
+	}
+	req.RetryOf = ""
+	req.Body = "synthetic live cloud retry"
+	liveSource, err := f.s.Send(ctx, c, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.exec(`UPDATE bus_messages SET state='undelivered',reason='session_ended' WHERE id=$1`, liveSource.ID)
+	req.RetryOf = liveSource.ID
+	liveRetry, err := f.s.Send(ctx, c, req)
+	if err != nil || liveRetry.Admission != "" {
+		t.Fatalf("live cloud retry: %+v %v", liveRetry, err)
+	}
+	pollReq.ResumeRetries = false
+	oldLive, err := f.s.Poll(ctx, c, pollReq)
+	if err != nil || len(oldLive.Messages) != 0 || len(oldLive.Claimable) != 0 {
+		t.Fatalf("old cloud recipient saw live retry: %+v %v", oldLive, err)
+	}
+	claim.MessageID = liveRetry.ID
+	if _, err := f.s.Claim(ctx, c, claim); err == nil {
+		t.Fatal("old cloud claim exposed live retry")
 	}
 }
