@@ -112,6 +112,9 @@ func TestDeliveryReliabilityUpgradePreservesProductionState(t *testing.T) {
 	if f.count(`SELECT count(*) FROM bus_delivery_failures WHERE message_id='mlegacyfailed' AND reason='unconfirmed'`) != 1 {
 		t.Fatal("existing failure not backfilled")
 	}
+	if f.count(`SELECT count(*) FROM bus_messages WHERE retry_of IS NOT NULL`) != 0 {
+		t.Fatal("upgrade populated retry links on legacy messages")
+	}
 	f.s = &bus.Store{Pool: pool, Now: func() time.Time { return f.now }}
 	got := f.present(device, live("source-1111", "claude", "/synthetic", false))
 	if len(got.Failures) != 1 || got.Failures[0].ID != "mlegacyfailed" {

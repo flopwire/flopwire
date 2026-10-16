@@ -18,7 +18,7 @@ import (
 const (
 	envCols = `m.id,m.seq,m.thread_id,COALESCE(m.reply_to,''),m.from_session,m.from_agent,m.from_user::text,(SELECT email FROM users WHERE id=m.from_user),
 		m.from_repo,m.from_branch,m.sender,m.intent,m.body,m.refs,m.created_at,m.expires_at,COALESCE(m.to_session,''),COALESCE(m.to_agent,''),
-		m.to_user::text,(SELECT email FROM users WHERE id=m.to_user),m.to_repo,m.addressed`
+		m.to_user::text,(SELECT email FROM users WHERE id=m.to_user),m.to_repo,m.addressed,COALESCE(m.retry_of,'')`
 	envFrom = `bus_messages m`
 )
 
@@ -26,7 +26,7 @@ func scanEnvelope(r pgx.Row, extra ...any) (busproto.Envelope, error) {
 	var e busproto.Envelope
 	var intent string
 	err := r.Scan(append([]any{&e.ID, &e.Seq, &e.ThreadID, &e.ReplyTo, &e.From, &e.FromAgent, &e.UserID, &e.User, &e.Repo, &e.Branch,
-		&e.Sender, &intent, &e.Body, &e.Refs, &e.Sent, &e.ExpiresAt, &e.ToSession, &e.ToAgent, &e.ToUserID, &e.ToUser, &e.ToRepo, &e.Addressed}, extra...)...)
+		&e.Sender, &intent, &e.Body, &e.Refs, &e.Sent, &e.ExpiresAt, &e.ToSession, &e.ToAgent, &e.ToUserID, &e.ToUser, &e.ToRepo, &e.Addressed, &e.RetryOf}, extra...)...)
 	e.Intent = busproto.Intent(intent)
 	if len(e.Refs) == 0 {
 		e.Refs = nil

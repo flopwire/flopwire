@@ -481,6 +481,10 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 		return out, badRequest("body must be UTF-8")
 	case len(req.Refs) > busproto.MaxRefs:
 		return out, badRequest("at most %d refs", busproto.MaxRefs)
+	case len(req.RetryOf) > 64:
+		return out, badRequest("retry_of is too long")
+	case req.RetryOf != "" && strings.HasPrefix(to, "@"):
+		return out, badRequest("retry_of requires a session recipient")
 	case len(req.ReplyTo) > 64 || len(req.Repo) > 4096:
 		return out, badRequest("reply_to or repo is too long")
 	}
@@ -543,6 +547,15 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 			return err
 		}
 		m.thread = m.id
+		if req.RetryOf != "" {
+			replayed, err := prepareRetry(ctx, tx, c, req, &m, &out)
+			if err != nil {
+				return err
+			}
+			if replayed {
+				return nil
+			}
+		}
 		if refusal, err = s.check(ctx, tx, c, &m, strings.TrimSpace(req.ReplyTo), now); err != nil {
 			return err
 		}
@@ -552,6 +565,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 		}
 		m.state = busproto.StateQueued
 		if refusal != nil {
+			m.retryOf = "" // Refusals never consume the source retry identity.
 			m.state, m.refused = busproto.StateRefused, refusal.Code
 		} else if m.sender == busproto.SenderTeammate {
 			// Held until commit: an accept or revoke of this sender waits
@@ -591,6 +605,9 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 		if m.toRepo != "" {
 			meta["to_repo"] = m.toRepo
 		}
+		if req.RetryOf != "" {
+			meta["retry_of"] = req.RetryOf
+		}
 		if m.replyTo != "" {
 			meta["reply_to"] = m.replyTo
 		}
@@ -620,6 +637,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 				}
 			}
 		}
+		out.RetryOf = m.retryOf
 		out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = m.id, m.thread, m.state, m.sender, intent, now, m.expires
 		if len(redactions) > 0 {
 			out.Redactions = redactions
@@ -640,26 +658,27 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 
 // message is a message being stored.
 type message struct {
-	id, thread, replyTo        string
-	from                       session
-	addressed                  string
-	toUser, toEmail, toRepo    string
-	toSession, toAgent, sender string
-	intent                     busproto.Intent
-	body                       string
-	sha                        []byte
-	refs                       []string
-	state                      busproto.State
-	refused                    string
-	created, expires           time.Time
+	id, thread, replyTo, retryOf string
+	retryAncestors               []string
+	from                         session
+	addressed                    string
+	toUser, toEmail, toRepo      string
+	toSession, toAgent, sender   string
+	intent                       busproto.Intent
+	body                         string
+	sha                          []byte
+	refs                         []string
+	state                        busproto.State
+	refused                      string
+	created, expires             time.Time
 }
 
 func (m *message) insert(ctx context.Context, tx pgx.Tx, c busproto.Caller) error {
 	_, err := tx.Exec(ctx, `INSERT INTO bus_messages(id,thread_id,reply_to,from_user,from_device,from_agent,from_session,from_repo,from_branch,
-		to_user,to_agent,to_session,to_repo,addressed,sender,intent,body,body_sha,refs,state,reason,created_at,expires_at,from_remote,from_main)
-		VALUES($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::uuid,$6,$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+		to_user,to_agent,to_session,to_repo,addressed,sender,intent,body,body_sha,refs,state,reason,created_at,expires_at,from_remote,from_main,retry_of)
+		VALUES($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::uuid,$6,$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NULLIF($26,''))`,
 		m.id, m.thread, m.replyTo, c.UserID, c.DeviceID, m.from.agent, m.from.id, m.from.repo, m.from.branch,
-		m.toUser, m.toAgent, m.toSession, m.toRepo, m.addressed, m.sender, string(m.intent), m.body, m.sha, m.refs, string(m.state), m.refused, m.created, m.expires, m.from.remote, m.from.main)
+		m.toUser, m.toAgent, m.toSession, m.toRepo, m.addressed, m.sender, string(m.intent), m.body, m.sha, m.refs, string(m.state), m.refused, m.created, m.expires, m.from.remote, m.from.main, m.retryOf)
 	return err
 }
 
@@ -787,7 +806,13 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 		}
 	}
 	var dup bool
-	if err := tx.QueryRow(ctx, DuplicateSQL, m.from.id, m.sha, m.toUser, m.addressed, m.toSession, now.Add(-busproto.DuplicateWindow)).Scan(&dup); err != nil {
+	dupSQL := DuplicateSQL
+	args := []any{m.from.id, m.sha, m.toUser, m.addressed, m.toSession, now.Add(-busproto.DuplicateWindow)}
+	if m.retryOf != "" {
+		dupSQL = strings.Replace(DuplicateSQL, "AND body_sha=$2", "AND NOT (id=ANY($7::text[])) AND body_sha=$2", 1)
+		args = append(args, m.retryAncestors)
+	}
+	if err := tx.QueryRow(ctx, dupSQL, args...).Scan(&dup); err != nil {
 		return nil, err
 	}
 	if dup {
