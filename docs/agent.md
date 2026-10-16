@@ -482,15 +482,16 @@ session you run them in. They do not grant future send permission.
    `flopwire_read` with a returned address. Confirm the expected text.
    Check the reported search scope. If no history is indexed, capture a
    synthetic transcript first. An absent phrase is not a useful probe.
-4. For live messaging, open a second test session. Identify its full
-   session ID. Explicitly authorize one test message to that session.
+4. For live messaging, open a second test session. Keep both test sessions
+   open throughout the messaging check. Identify the receiving session's
+   full session ID. Explicitly authorize one test request/reply roundtrip.
 5. Ask the first session to call `flopwire_peers` for that ID, then
    `flopwire_send` with the authorized test text. Review any tool approval
-   prompt. A denial is not permission to change the approval policy.
+   prompt. If denied, report the denied tool and stop this check.
 6. Run a turn in the receiving session. Confirm that its hook inserts the
    test message. A send receipt alone does not verify delivery to context.
-7. To test replies, authorize a reply in the receiving session. Send it
-   with `reply_to` set to the test message ID. Run a turn in the first
+7. Send the authorized reply from the receiving session with `reply_to`
+   set to the test message ID. Run a turn in the first
    session and confirm that its hook inserts the reply.
 
 Run `flopwire setup` again at any time. It updates the plugin when a

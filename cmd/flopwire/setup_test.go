@@ -587,6 +587,11 @@ func TestSetupCheckChangesNothing(t *testing.T) {
 			if rep.CheckNote != setupCheckNote {
 				t.Fatalf("--check lacks verification limits: %q", rep.CheckNote)
 			}
+			var text bytes.Buffer
+			writeSetupText(&text, rep)
+			if !strings.HasPrefix(text.String(), "check: "+rep.CheckNote+"\n") {
+				t.Fatalf("--text must lead with the JSON check limit: %s", &text)
+			}
 			if h.Installed != installed || len(h.Done) != 0 || rep.Mode != setupCheck {
 				t.Fatalf("--check: %+v", h)
 			}
