@@ -96,3 +96,8 @@ button.copy-box{display:block;width:100%;text-align:left;color:var(--ink);cursor
 .stage-tools>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin-top:8px}
 .stage-tools dd{margin:0}.stage-tools code{font:12px/1.7 var(--font)}
 @media(max-width:760px){.command-tabs{margin-top:22px}.command-tabs button{font-size:13px;gap:10px}.command-tabs button code{font-size:11px}.architecture-feature .network{grid-template-columns:1fr;gap:32px}}
+
+/* The prompt occupies its own gutter; commands, labels, and output share an edge. */
+.command-example .command-output,.command-example .output-label{margin-left:20px}
+.command-example .command-output{white-space:normal}
+.terminal-line{display:block;white-space:pre-wrap;padding-left:calc(var(--line-indent,0px) - var(--output-indent,0px));text-indent:calc(-1 * var(--line-indent,0px))}
