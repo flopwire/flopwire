@@ -383,7 +383,7 @@ func TestJSONAnswerBudget(t *testing.T) {
 	// how to use it.
 	small := &format.Sessions{HasMore: true, Next: "fetched-page-end", Sessions: ss.Sessions[:2]}
 	if s = call(&bigBackend{sessions: small}, "flopwire_sessions", `{}`); s["next_cursor"] != "fetched-page-end" || s["has_more"] != true ||
-		s["hint"] != "pass next_cursor as cursor=C for the next page" {
+		s["hint"] != "If more evidence is needed, pass next_cursor as cursor with unchanged filters." {
 		t.Fatalf("small sessions page: %v", s)
 	}
 

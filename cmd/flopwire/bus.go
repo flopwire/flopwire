@@ -410,6 +410,9 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		return 1
 	})
 	out := peersJSON{Kind: "peers", Peers: peers, Total: len(peers), Limit: a.Limit}
+	if st.MCP {
+		out.Hint = "Continue work; use a relevant returned identity only when coordination is needed."
+	}
 	if len(peers) > a.Limit {
 		out.Peers, out.More = peers[:a.Limit], true
 		out.Hint = fmt.Sprintf("%d of %d shown; narrow with %s, or raise %s (at most %d)", a.Limit, len(peers), st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session"), st.cmd("--limit", "limit"), peersMaxLimit)
@@ -613,6 +616,9 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 	}
 	resp.Sent.Sent, resp.Sent.ExpiresAt = resp.Sent.Sent.UTC(), resp.Sent.ExpiresAt.UTC()
 	r := sendJSON{Kind: "send_receipt", SendResponse: *resp.Sent, From: callerJSON{Session: self.SessionID, Agent: string(self.Agent)}, Arrives: arrival(*resp.Sent), Outcome: sendOutcome(*resp.Sent), Next: sendNext(*resp.Sent)}
+	if st.MCP {
+		r.Next = sendMCPNext(*resp.Sent)
+	}
 	return st.emit(w, r, func() error {
 		line := r.Outcome
 		if r.Next != "" {
@@ -946,8 +952,14 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 	// after the last one shown. The size counts more and hint.
 	paging := func() {
 		out.More = out.Next != ""
+		if st.MCP {
+			out.Hint = "Continue work using received evidence; a sent delivery receipt is not a reply."
+		}
 		if out.More {
 			out.Hint = "pass next as " + st.cmd("--cursor", "cursor") + " for the next page"
+			if st.MCP {
+				out.Hint = "If more evidence is needed, pass next as cursor with unchanged filters."
+			}
 			if out.budgetCut {
 				out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s", st.Budget, out.Hint)
 			}
@@ -1079,6 +1091,9 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 	}
 	if threadHint && !full {
 		fmt.Fprintf(&b, "[bodies show their first line; %s shows a thread's whole text]\n", st.cmd("flopwire inbox --text --thread THREAD", `flopwire_inbox thread="THREAD"`))
+	}
+	if st.MCP && next == "" && (!threadHint || full) {
+		fmt.Fprintf(&b, "[%s]\n", in.Hint)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -1273,7 +1288,7 @@ JSON: {"kind":"inbox","session":FULL ID,"messages":[{"id","thread_id","reply_to"
 direction says who wrote it. A sent message's state is its delivery (queued, held,
 claimed, delivered, read, expired, refused, undelivered): delivered is not answered;
 read (read_at) means its text entered the recipient's context, not that the recipient
-acted on it. An answer is a received message whose reply_to names yours. more=true:
+acted on it. A received message whose reply_to names yours is a reply; inspect its content to determine whether it answers. more=true:
 pass next as --cursor.
 --text: ID  received|sent  TIME  from|to WHO  intent  state (read: with its time), then
 the text indented (a list shows first lines; --thread shows whole texts).
@@ -1292,4 +1307,39 @@ func idleDescription(since time.Time, age *int64) string {
 		return " (idle duration unknown)"
 	}
 	return fmt.Sprintf(" (idle for %s; idle_since %s)", (time.Duration(*age) * time.Second).String(), since.UTC().Format(time.RFC3339))
+}
+
+// MCP actions also cover one-way messages and idempotent replays.
+func sendMCPNext(r busproto.SendResponse) string {
+	if r.State == busproto.StateUndelivered {
+		if r.Reason == busproto.ReasonSessionEnded {
+			return "If the message is still needed, check the intended session and the receipt's explicit retry guidance; no reply is established."
+		}
+		return "Review the undelivered reason before deciding whether further coordination is needed; no reply is established."
+	}
+	if r.State == busproto.StateExpired {
+		return "Continue work with the expiry qualification; this receipt establishes no reply."
+	}
+	if r.State == busproto.StateHeld {
+		return "Continue work and report that recipient acceptance is required; do not resend the held message."
+	}
+	if r.Replayed {
+		return "Continue work using the existing receipt; do not resend this message. Delivery is not a reply."
+	}
+	if r.Intent == busproto.IntentDone {
+		return "Continue work; this done message does not request a reply or verify task completion."
+	}
+	if r.Intent != busproto.IntentRequest {
+		return "Continue work; this information message does not request a reply."
+	}
+	if r.To.Cloud {
+		return "Continue work; this cloud session cannot send a reply. Its human sees the response there."
+	}
+	if r.Admission == busproto.AdmissionNextResume {
+		return "Continue work; this request waits for recipient resume. This receipt is not a reply."
+	}
+	if arrival(r) == arriveNextToolCall {
+		return "Continue independent work; inspect any received reply for an answer. This receipt is not a reply."
+	}
+	return "Continue work and report the request's arrival condition; a reply depends on the recipient resuming."
 }
