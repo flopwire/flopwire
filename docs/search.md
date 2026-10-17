@@ -12,7 +12,7 @@ by default (`--text` for readable rows). See [Output](#output).
 | search | `flopwire search` | `flopwire_search` | Ranked keyword matches, including plain-language queries |
 | sessions | `flopwire sessions` | `flopwire_sessions` | Listing or globbing sessions |
 | read | `flopwire read` | `flopwire_read` | Reading what an address points to |
-| change | `flopwire change` | `flopwire_change` | Finding sessions with evidence of a commit |
+| trace | `flopwire trace` | `flopwire_change` | Finding sessions with evidence of a commit |
 
 These tools search the shared server after enrollment and the local index
 before enrollment. Use `--local` for this device, or `--server` to select
@@ -77,10 +77,12 @@ Use `change` to find the sessions that recorded a commit. Supply a repository
 and one or more full commit IDs:
 
 ```sh
-flopwire change --repo . 0123456789abcdef0123456789abcdef01234567
+flopwire trace --repo . 0123456789abcdef0123456789abcdef01234567
 ```
 
-The MCP call uses `flopwire_change` with `repo` and a `commits` array.
+`flopwire change` remains a compatibility alias for `flopwire trace`. The MCP
+call keeps its existing name, `flopwire_change`, with `repo` and a `commits` array.
+Both CLI names use the same flags and return the same JSON.
 Both interfaces return JSON. Each match identifies a session, the observed
 hash, matching input IDs, the operation, and command/result addresses for
 `read`. A quiet commit or delayed result can include additional reveal

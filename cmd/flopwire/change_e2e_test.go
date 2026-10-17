@@ -111,11 +111,13 @@ func TestChangeExpandedRepoEndToEndServer(t *testing.T) {
 		}
 	}
 	// No --server override: an enrolled device must select the shared backend.
-	t.Run("CLI", func(t *testing.T) {
-		check(t, captureStdout(t, func() error {
-			return run(t.Context(), []string{"change", "--repo", "example/app", "--commits", hash, "--limit", "1"})
-		}))
-	})
+	for _, verb := range []string{"trace", "change"} {
+		t.Run("CLI/"+verb, func(t *testing.T) {
+			check(t, captureStdout(t, func() error {
+				return run(t.Context(), []string{verb, "--repo", "example/app", "--commits", hash, "--limit", "1"})
+			}))
+		})
+	}
 	r, err := openRetriever(true, index)
 	if err != nil {
 		t.Fatal(err)
