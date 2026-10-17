@@ -97,7 +97,9 @@ Agents get the same tools through the plugin: `flopwire_grep`,
 `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_change`,
 `flopwire_messages`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`.
 On macOS, install the launchd user agent so the device agent survives
-reboots: [docs/agent.md](docs/agent.md#run-the-agent).
+reboots: [docs/agent.md](docs/agent.md#run-the-agent). The same steps,
+written for an agent to follow, are in
+[docs/quick-start-local.md](docs/quick-start-local.md).
 
 ## Add a team server
 
@@ -164,6 +166,7 @@ you deploy a team server.
 | Search: grep, search, sessions, read, trace | [docs/search.md](docs/search.md) |
 | Messaging: peers, send, inbox, threads, accepting senders | [docs/messaging.md](docs/messaging.md) |
 | Harnesses: Claude Code, Codex, Devin, opencode, cloud | [docs/harnesses](docs/harnesses/README.md) |
+| One machine, step by step | [docs/quick-start-local.md](docs/quick-start-local.md) |
 | Device agent: run, check, recover | [docs/agent.md](docs/agent.md) |
 | Path rules | [docs/path-rules.md](docs/path-rules.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
