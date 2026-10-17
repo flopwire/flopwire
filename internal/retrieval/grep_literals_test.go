@@ -30,7 +30,6 @@ func TestLiteralRegexpCondition(t *testing.T) {
 		sensitive bool
 		want      []string
 	}{
-		{"1f877ad98|repo/additive-migrations-2049", false, []string{"%1f877ad98%", "%repo/additive-migrations-2049%", "%repo/additive-migrationſ-2049%"}},
 		{"1f877ad98|repo/additive-migrations-2049", true, []string{"%1f877ad98%", "%repo/additive-migrations-2049%"}},
 		{"(foobar)|(foobaz)|quux", true, []string{"%foobar%", "%foobaz%", "%quux%"}},
 		{"foo|foobar", true, []string{"%foo%", "%foobar%"}},
@@ -62,7 +61,7 @@ func TestLiteralRegexpFallback(t *testing.T) {
 	for _, pattern := range []string{
 		"abc.*bcd", "abc.+bcd", "abc(def)?", "abc{2}", "^foobar$", `\bfoobar\b`,
 		"foo|", "foo|x", ".*", "a.b", "", "abc\\x00def", "café", `caf\x{e9}`,
-		strings.Repeat("z", maxRegexpLiteralSourceBytes+1), "ssssss", "kkkkkk", "foo[0-9][0-9]", "[a-z][a-z]foobar",
+		strings.Repeat("z", maxRegexpLiteralSourceBytes+1), "ssssss", "sssss|mdutil", "kkkkkk", "foo[0-9][0-9]", "[a-z][a-z]foobar",
 	} {
 		t.Run(pattern, func(t *testing.T) {
 			plan, err := grep.Compile(format.GrepQuery{Pattern: pattern})
@@ -107,10 +106,13 @@ func TestLiteralRegexpFoldBound(t *testing.T) {
 }
 
 var literalEquivalenceQueries = []format.GrepQuery{
+	{Pattern: "spotlight|mdutil|mds_stores"},
+	{Pattern: "spotlight|mdutil|mds_stores", CaseSensitive: true},
 	{Pattern: "1f877ad98|repo/additive-migrations-2049"},
 	{Pattern: "1f877ad98|repo/additive-migrations-2049", CaseSensitive: true},
 	{Pattern: "(foobar)|(foobaz)|quux"},
 	{Pattern: "(foo|bar)baz"},
+	{Pattern: "(foo|bar)(baz|quux)"},
 	{Pattern: "foo(|bar)"},
 	{Pattern: `\Qfoo.bar\E`},
 	{Pattern: `a(?i:\x{17f})k`},
@@ -130,6 +132,10 @@ var literalEquivalenceQueries = []format.GrepQuery{
 }
 
 var literalEquivalenceTexts = []string{
+	"spotlight", "ſpotlight", "SPOTLIGHT", "mdutil", "MDUTIL",
+	"mds_stores", "mdſ_stores", "mds_ſtores", "mds_storeſ", "mdſ_ſtores", "mdſ_storeſ", "mds_ſtoreſ", "mdſ_ſtoreſ", "MDS_STORES",
+	"spo pot otl tli lig igh ght mdu dut uti til mds sto tor ore res",
+	"fooquux", "barquux", "quuxfoo", "foobarquux", "FOOQUUX", "BARBAZ",
 	"prefix 1f877ad98 suffix", "1F877AD98", "repo/additive-migrations-2049", "REPO/ADDITIVE-MIGRATIONS-2049",
 	"repo/additive-migrationſ-2049", "repo additive migrations 2049", "1f8---877---ad9---98",
 	"foobaz", "barbaz", "foo", "foo.bar", "aSb", "ASB", "asb", "AſB", "foobar\nfoobaz", "FOOBAZ", "quux", "ASK", "aſk", "asK", "aſK", "ſKy", "SKY", "sky", "sKy",
