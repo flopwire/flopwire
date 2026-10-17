@@ -1,0 +1,62 @@
+# GoReleaser runs on the vX.Y.Z tag that release-please creates and uploads
+# to that release. Release notes stay release-please's (mode: keep-existing).
+# Asset names carry no version so the install script and `flopwire upgrade`
+# can fetch releases/latest/download/<name> without an API call.
+version: 2
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: flopwire
+    main: ./cmd/flopwire
+    binary: flopwire
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      # `flopwire version` prints the tag, as the release gate expects.
+      - -s -w -X main.version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: flopwire
+    formats: [tar.gz]
+    name_template: "flopwire_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+release:
+  mode: keep-existing
+  # release-please created the release; a leftover draft is never ours.
+  draft: false
+
+dockers_v2:
+  - id: flopwire
+    images:
+      - ghcr.io/flopwire/flopwire
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms: [linux/amd64, linux/arm64]
+    dockerfile: Dockerfile.release
+    labels:
+      org.opencontainers.image.title: flopwire
+      org.opencontainers.image.source: https://github.com/flopwire/flopwire
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: Apache-2.0
+
+snapshot:
+  version_template: "{{ .Tag }}-next"

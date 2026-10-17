@@ -35,7 +35,9 @@ export FLOPWIRE_PORT="$server_port" POSTGRES_DEV_PORT="$pg_port" MINIO_DEV_PORT=
 
 files="-f compose.yaml -f compose.dev.yaml"
 if [ -n "${FLOPWIRE_E2E_IMAGE:-}" ]; then
-  printf 'services:\n  flopwire:\n    image: %s\n' "$FLOPWIRE_E2E_IMAGE" >"$root/compose.image.yaml"
+  # pull_policy: never overrides compose.dev.yaml's build policy, so the
+  # prebuilt image is used as is.
+  printf 'services:\n  flopwire:\n    image: %s\n    pull_policy: never\n' "$FLOPWIRE_E2E_IMAGE" >"$root/compose.image.yaml"
   files="$files -f $root/compose.image.yaml"
 fi
 compose() { docker compose -p "$project" $files "$@"; }

@@ -63,17 +63,18 @@ Not included: semantic search, and corpus search in the web console.
 
 Requirements: Docker with Compose, and the `flopwire` binary on the machine
 where you run admin commands.
-For a release source archive, use the explicit version commands in
-[Build from a source archive](docs/releases.md#build-from-a-source-archive).
+The stack pulls the published server image, `ghcr.io/flopwire/flopwire`.
+Pin a release with `FLOPWIRE_IMAGE` in `.env`. To build from this checkout
+instead, add `-f compose.dev.yaml` to every command, as the development
+steps below do.
 
 1. Copy `.env.example` to `.env`.
 2. Replace every example secret in `.env`.
 3. Start the stack:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml build \
-     --build-arg VERSION="$(git rev-parse --short=12 HEAD)"
-   docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
+   FLOPWIRE_BUILD_VERSION="$(git rev-parse --short=12 HEAD)" \
+     docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
    ```
 
    The server speaks TLS with a self-signed certificate. To get an ACME
@@ -113,7 +114,7 @@ For a release source archive, use the explicit version commands in
 
 ## Quick start: a device
 
-1. Build from a checkout with Go 1.26.6. Releases provide source archives:
+1. Build from a checkout with Go 1.26.6:
 
    ```sh
    mkdir -p ~/.local/bin
@@ -122,8 +123,8 @@ For a release source archive, use the explicit version commands in
    ```
 
    Add `~/.local/bin` to your shell's `PATH` before the next step.
-   For a release source archive, follow
-   [Build from a source archive](docs/releases.md#build-from-a-source-archive).
+   Releases also carry prebuilt binaries; see
+   [Release assets](docs/releases.md#release-assets).
 
 2. Claim the invite. The command prompts for a new password and pins the
    server's fingerprint:
@@ -441,8 +442,9 @@ Tests with `FLOPWIRE_CORPUS=1` read this machine's real transcripts. See
 [docs/release-checklist.md](docs/release-checklist.md).
 
 Release-please maintains a release PR from conventional commits on `main`.
-Merging that PR creates the version tag and GitHub source release. See
-[Releases](docs/releases.md) for bot setup and the verification workflow.
+Merging that PR creates the version tag and GitHub release, and the Release
+workflow attaches binaries and publishes the server image. See
+[Releases](docs/releases.md) for bot setup and the workflow.
 
 ## Repository layout
 
