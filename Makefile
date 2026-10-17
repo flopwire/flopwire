@@ -1,4 +1,4 @@
-.PHONY: test build web e2e e2e-sync
+.PHONY: test build web check-web e2e e2e-sync
 
 test:
 	go test -race ./...
@@ -14,9 +14,12 @@ web:
 	cp web/dist/index.html internal/webapp/dist/index.html
 	cp -R web/dist/assets internal/webapp/dist/assets
 
+check-web:
+	scripts/check-webapp-dist.sh
+
 VERSION ?= dev
 
-build: web
+build:
 	go build -trimpath -ldflags="-X main.version=$(VERSION)" -o bin/flopwire ./cmd/flopwire
 
 e2e:

@@ -11,6 +11,10 @@ make test
 
 ## Change discipline
 
+The admin console under `web/` is embedded from the committed build in
+`internal/webapp/dist`. After any change under `web/`, run `make web` and
+commit the result. CI fails when the committed build is stale.
+
 Keep raw user traces out of commits and test logs. Add sanitized synthetic
 fixtures under `testdata`. Preserve authenticated provenance in every new
 ingestion path. Keep raw objects and Postgres as the only durable backup
