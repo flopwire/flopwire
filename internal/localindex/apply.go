@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -458,7 +459,7 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 
 const msgCols = `conversation_id, source_id, native_id, part, parent_native_id, ordinal, kind, role, tool_name, tool_call_id,
 	is_error, ts, text, text_len, full_len, content_sha, version, superseded, superseded_in_generation, on_active_path,
-	enrichment, source_generation, line_no, byte_offset, byte_len, locator, parser`
+	enrichment, source_generation, line_no, byte_offset, byte_len, locator, parser, change_result_eligible`
 
 func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, version int64) (int64, error) {
 	enr, err := enrichmentJSON(m)
@@ -470,12 +471,12 @@ func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p
 		supGen = b.Generation
 	}
 	row, err := w.queryRow(`INSERT INTO messages (`+msgCols+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		convID, b.SourceID, nullStr(m.NativeID), m.Part, nullStr(m.ParentNativeID), m.Ordinal, m.Kind.String(),
 		nullStr(m.Role), nullStr(m.ToolName), nullStr(m.ToolCallID), boolInt(m.IsError), nullTime(m.TS),
 		p.z, len(m.Text), m.FullLen, m.ContentSHA[:], version, boolInt(m.Superseded), supGen,
 		nullBool(m.OnActivePath), enr, b.Generation, nullInt(m.LineNo), jsonlInt(m, m.ByteOffset), jsonlInt(m, m.ByteLen),
-		nullStr(m.Locator), m.Parser)
+		nullStr(m.Locator), m.Parser, boolInt(digest.MayContainCommitEvidence(p.text)))
 	if err != nil {
 		return 0, err
 	}
@@ -498,22 +499,24 @@ func (w *writeTx) refresh(b *Batch, id int64, m *transcript.Message, enr any, ne
 	}
 	var text []byte
 	var textLen any
+	var eligible any
 	if newText != nil {
 		text, textLen = newText.z, len(m.Text)
+		eligible = boolInt(digest.MayContainCommitEvidence(newText.text))
 	}
 	_, err := w.exec(`UPDATE messages SET source_id = ?, parent_native_id = ?, kind = ?, role = ?, tool_name = ?, tool_call_id = ?,
 		  is_error = ?, ts = coalesce(?, ts), full_len = ?, content_sha = ?,
 		  superseded = ?, superseded_in_generation = CASE WHEN ? THEN coalesce(superseded_in_generation, ?) ELSE NULL END,
 		  on_active_path = coalesce(?, on_active_path), enrichment = coalesce(?, enrichment), source_generation = ?,
 		  line_no = ?, byte_offset = ?, byte_len = ?, locator = ?, parser = ?,
-		  text = coalesce(?, text), text_len = coalesce(?, text_len)
+		  text = coalesce(?, text), text_len = coalesce(?, text_len), change_result_eligible = coalesce(?, change_result_eligible)
 		WHERE id = ?`,
 		b.SourceID, nullStr(m.ParentNativeID), m.Kind.String(), nullStr(m.Role), nullStr(m.ToolName), nullStr(m.ToolCallID),
 		boolInt(m.IsError), nullTime(m.TS), m.FullLen, m.ContentSHA[:],
 		boolInt(m.Superseded), boolInt(m.Superseded), supGen,
 		nullBool(m.OnActivePath), enr, b.Generation,
 		nullInt(m.LineNo), jsonlInt(m, m.ByteOffset), jsonlInt(m, m.ByteLen), nullStr(m.Locator), m.Parser,
-		text, textLen, id)
+		text, textLen, eligible, id)
 	return err
 }
 

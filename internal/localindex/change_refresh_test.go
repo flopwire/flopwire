@@ -44,7 +44,7 @@ func assertChangeReplay(t *testing.T, s *Store, want int) {
 	if err := s.DB().QueryRow(`SELECT id FROM conversations WHERE session_id='refresh'`).Scan(&conv); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.write(ctx, func(w *writeTx) error { return w.refreshChangeEvents(conv) }); err != nil {
+	if err := s.write(ctx, func(w *writeTx) error { return w.replayChangeEvents(conv) }); err != nil {
 		t.Fatal(err)
 	}
 	after, next := snapshot()
