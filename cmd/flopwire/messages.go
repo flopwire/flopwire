@@ -153,7 +153,16 @@ func writeMessagesOutput(w io.Writer, out busproto.MessagesResponse, st busStyle
 	if out.Thread != "" {
 		rows = out.Messages
 	}
+	originalHint := out.Hint
 	for {
+		if st.MCP {
+			if out.More {
+				out.Hint = "If more evidence is needed, pass next as cursor with unchanged repo and thread filters."
+			} else {
+				out.Hint = "Continue work using received evidence; delivery receipts are not replies or task completion."
+			}
+			out.Hint = strings.TrimSpace(originalHint + " " + out.Hint)
+		}
 		var b bytes.Buffer
 		if st.JSON {
 			if err := writeOut(&b, out); err != nil {

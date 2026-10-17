@@ -125,7 +125,7 @@ func changeMCPCall(ctx context.Context, r *retriever, args map[string]any) (stri
 	if err != nil {
 		return "", err
 	}
-	b, err := json.Marshal(page)
+	b, err := json.Marshal(changeMCPOutput(page))
 	return string(b), err
 }
 
@@ -142,4 +142,23 @@ func (b *lazyIndexBackend) Change(ctx context.Context, q format.ChangeQuery, f f
 		return nil, errors.New("commit evidence lookup unavailable")
 	}
 	return cb.Change(ctx, q, f)
+}
+
+type changeJSON struct {
+	*format.Changes
+	Hint string `json:"hint"`
+}
+
+func changeMCPOutput(p *format.Changes) changeJSON {
+	hint := "Read relevant command/result addresses, compare the evidence with the requested claim, and state remaining gaps."
+	if len(p.Matches) == 0 {
+		hint = "No matching evidence in this query scope; adjust commits or repository scope if more evidence is needed."
+	}
+	if p.NextCursor != "" {
+		hint = "If more evidence is needed, pass next_cursor as cursor with unchanged repo and commits."
+	}
+	if p.RestartRequired {
+		hint = "Restart this lookup without cursor, keeping repo and commits unchanged."
+	}
+	return changeJSON{p, hint}
 }
