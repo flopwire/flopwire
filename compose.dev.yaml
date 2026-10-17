@@ -1,4 +1,10 @@
+# Development overrides: build the server image from this checkout and
+# publish Postgres and MinIO on loopback for the bootstrap step and tests.
 services:
+  flopwire:
+    build:
+      context: .
+    pull_policy: build
   postgres:
     ports:
       - "127.0.0.1:${POSTGRES_DEV_PORT:-55432}:5432"

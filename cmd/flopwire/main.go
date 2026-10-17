@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -41,6 +42,19 @@ import (
 )
 
 var version = "dev"
+
+// resolveVersion prefers the -X main.version ldflag (release builds and the
+// Dockerfile) and falls back to the module version Go records for
+// `go install ...@vX.Y.Z`, so that build does not report "dev".
+func resolveVersion(ldflag string, info *debug.BuildInfo) string {
+	if ldflag != "dev" || info == nil {
+		return ldflag
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return ldflag
+}
 
 func main() {
 	recordSelf(os.Args[1:])
@@ -70,7 +84,8 @@ func run(parent context.Context, args []string) error {
 	case "diagnostics":
 		return diagnosticsCommand(ctx, args[1:], os.Stdout)
 	case "version":
-		fmt.Println(version)
+		info, _ := debug.ReadBuildInfo()
+		fmt.Println(resolveVersion(version, info))
 		return nil
 	case "serve":
 		return serve(ctx, args[1:])

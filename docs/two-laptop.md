@@ -60,8 +60,7 @@ Do these steps on both laptops.
 4. Start the stack:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml build \
-     --build-arg VERSION="$(git rev-parse --short=12 HEAD)"
+   docker compose -f compose.yaml -f compose.dev.yaml pull postgres minio
    docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
    ```
 

@@ -63,16 +63,17 @@ Not included: semantic search, and corpus search in the web console.
 
 Requirements: Docker with Compose, and the `flopwire` binary on the machine
 where you run admin commands.
-For a release source archive, use the explicit version commands in
-[Build from a source archive](docs/releases.md#build-from-a-source-archive).
+The stack pulls the published server image, `ghcr.io/flopwire/flopwire`.
+Pin a release with `FLOPWIRE_IMAGE` in `.env`. To build from this checkout
+instead, add `-f compose.dev.yaml` to every command, as the development
+steps below do.
 
 1. Copy `.env.example` to `.env`.
 2. Replace every example secret in `.env`.
 3. Start the stack:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml build \
-     --build-arg VERSION="$(git rev-parse --short=12 HEAD)"
+   docker compose -f compose.yaml -f compose.dev.yaml pull postgres minio
    docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
    ```
 

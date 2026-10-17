@@ -385,8 +385,8 @@ recipient. A late receipt for it is rejected.
 
 1. Create a coordinated backup with `--encrypted-destination`.
 2. Verify the backup.
-3. Pull the new source tag or container image.
-4. Run `docker compose up -d --build`.
+3. Set `FLOPWIRE_IMAGE` in `.env` to the new release, or keep `latest`.
+4. Run `docker compose pull && docker compose up -d --wait`.
 5. Check `/healthz`.
 6. Run one known provenance search.
 
