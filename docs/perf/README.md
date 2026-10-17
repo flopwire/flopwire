@@ -181,10 +181,6 @@ compatibility smoke gate, even if the A/B verdict is `CLEAN`.
 Measured launches are never retried to remove flags. The summary shows A's
 error, and the run opens an issue labelled `perf-baseline-broken`.
 
-The historical pin remains `9e4193da7c346ff14a377128920f3943ff14f523`.
-Use the [compatibility smoke commands](issue-136-smoke.md) to compare that
-actual baseline with the current source before drawing performance conclusions.
-
 ## Local acceptance records
 
 Local acceptance is optional. The release gate covers drift on the

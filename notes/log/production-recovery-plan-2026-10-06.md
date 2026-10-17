@@ -9,7 +9,7 @@ production backup completed and verification passed for 66,213 objects. An
 isolated database restore and startup migration rehearsal also completed.
 The full production database and raw-object restore, independent key escrow,
 and off-host backup retrieval remain unverified. See the
-[recorded qualification status](../perf/shared-stack-2026-10-03.md#production-backup-and-migration-rehearsal-2026-10-06).
+[recorded qualification status](perf/shared-stack-2026-10-03.md#production-backup-and-migration-rehearsal-2026-10-06).
 The owner chose to keep the existing local secret files while preparing this
 plan. On October 6, the owner chose to defer off-host backup work and finish
 collection and staging work first. Off-host retrieval and independent key
@@ -28,7 +28,7 @@ until the replacement recovery path passes verification.
 6. Give staging separate database and object-storage targets.
 
 Use the capacity report for the measured allocation:
-[shared stack trial](../perf/shared-stack-2026-10-03.md).
+[shared stack trial](perf/shared-stack-2026-10-03.md).
 
 ## Record the recovery dependencies
 
@@ -84,7 +84,7 @@ backup. Physical purges wait for its shared purge lock.
 5. Keep failed or incomplete attempts outside the verified-backup inventory.
 
 Do not use `--allow-pending-redaction-repair` for this qualification backup.
-Follow the redaction-repair procedure in the [main runbook](../runbook.md#recover)
+Follow the redaction-repair procedure in the [main runbook](../../docs/runbook.md#recover)
 if the backup reports `redaction_repair_pending`.
 
 ## Establish independent recovery copies
@@ -170,7 +170,7 @@ The restore command's inventory verification remains mandatory in either case.
 Restored device credentials can differ from credentials rotated after the
 backup. Endpoint changes can also require a new trusted certificate pin.
 Do not bypass certificate verification or silently reuse production profiles
-for the drill. Follow the [login and credential procedures](../runbook.md).
+for the drill. Follow the [login and credential procedures](../../docs/runbook.md).
 
 ## Recover from a real outage
 

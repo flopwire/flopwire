@@ -1,8 +1,10 @@
 # Device agent
 
-The device agent keeps the local index current. It reads Claude Code, Codex,
-Devin, opencode, local Cowork and Claude Desktop Local Code transcripts. It never writes to the harness directories. When the
+The device agent keeps the local index of this device current. It reads
+Claude Code, Codex, Devin, opencode, local Cowork and Claude Desktop Local
+Code transcripts. It never writes to the harness directories. When the
 device has a server configuration, the agent also uploads the transcripts.
+To install Flopwire into the harnesses, see [harnesses](harnesses/README.md).
 
 ## Run the agent
 
@@ -41,38 +43,59 @@ pin rotation preserve an enrolled device's inbox. Credentials without a
 device ID use a token fingerprint to distinguish principals. Standalone
 messaging uses a separate inbox.
 
-On upgrade, the old `bus.db` stays untouched. Its messages and receipts do
-not resume automatically because the file does not record its server or
-device owner. The agent logs this decision and opens a separate authority
-inbox. Do not rename or copy the old database into an authority inbox:
-that would assign unverified message bodies and receipts to that authority.
+The agent does not read a `bus.db` file in the config dir. That file does
+not record its server or device owner. Do not rename or copy it into an
+authority inbox: that would assign unverified message bodies and receipts
+to that authority.
 
 On macOS the user cache dir is `~/Library/Caches` and the config dir is
 `~/Library/Application Support`.
 
+### Storage mode
+
+After `flopwire enroll`, the agent defaults to minimal storage (sync-only).
+It uploads transcripts and keeps no local message index. Local search then
+fails: `flopwire grep`, `search`, `sessions` and `read` with `--local`
+report `this device is sync-only; use --server`. Search the server
+instead.
+
+To keep a local index on an enrolled device, do one of these:
+
+- Set `"mode": "full"` in `config.json` in the config directory.
+- Start the agent with `flopwire agent run --sync-only=false`.
+
+The index mode comes from these sources, in order:
+
+1. The `--sync-only` flag. `--sync-only=false` forces a full index.
+2. The `mode` field of the client config: `"full"` or `"sync-only"`.
+3. When `mode` is empty: sync-only when the config has a server and a
+   token, else a full index. `--no-sync` selects a full index.
+
+The same rule applies to `FLOPWIRE_TOKEN` / `FLOPWIRE_SERVER` launches.
+Login preserves an explicit mode across server changes.
+
+A sync-only index keeps only sources, watermarks, conversations,
+placements and the sync spool. It has no message rows and no search shard
+files. Sync-only mode needs a configured server. Use
+`--sync-only=false --no-sync` to run standalone with a full index when the
+config selects sync-only.
+
+An existing full index with message content needs an explicit choice
+before it switches to sync-only. Use `--sync-only=false` to keep it, or
+`--sync-only` to remove its message rows and search shards. An empty index
+that `flopwire mcp` created can switch without a choice. A change of mode
+rebuilds the index at the next start: a switch to full parses every
+transcript again, and a switch to sync-only drops the message rows and the
+shard files.
+
+### Upload workers
+
 Upload concurrency defaults to one. Start the collector with
 `flopwire agent run --sync-workers=2` to request two upload workers.
 Start the server with `flopwire serve --flush-per-device=2` to permit them.
-The server must reserve at least two global upload slots in its PostgreSQL pool.
-Its default remains one upload per device.
+See [parallel sync](parallel-sync.md).
 
-The collector checks support with its pinned, authenticated connection.
-A server reporting one worker, or a missing capability endpoint, keeps uploads
-serial. A failed check keeps serial uploads available, reports the error, and
-retries the check. A current authentication or TLS-pin failure stops uploads.
-`flopwire agent status` reports the effective worker count and capability errors.
-The JSON fields are `upload_workers` and `concurrency_error`.
-
-Two workers overlap network waits for separate sources. Capture, exports and
-local state changes remain serialized. A source path has one operation at a time.
-Scoped Code and Cowork keep their exclusive authorization leases, which can
-serialize uploads. Worker count does not establish a memory limit or exhaustive
-history coverage. See [parallel sync](parallel-sync.md) for qualification status.
-
-Offline tail-format preparation uses `flopwire agent prepare-legacy-tails`.
-It requires a stopped collector and exclusive ownership of existing state.
-See [spool tail preparation](operations/spool-tail-preparation.md) for its
-validation, resumable conversion, and format-only limits.
+### Cowork and Desktop Local Code
 
 Cowork collection reads native Claude evidence under
 `<container>/<account>/<workspace>/<app-session>/.claude/projects`.
@@ -81,7 +104,7 @@ metadata to apply path rules across verified selected and approved Mac folders.
 The strictest rule anywhere within each selected folder wins, including
 nested directory and glob rules. Logical and physical folder paths both apply.
 An unresolved nested repository scope holds sharing at local mode; an actual
-matching deny rule excludes indexing. Previously observed folders keep
+matching deny rule excludes indexing. Folders that the agent observed earlier keep
 protecting the session after app permissions change or metadata disappears.
 
 Cowork uploads remain held when the server does not support stored host-folder
@@ -115,40 +138,10 @@ identity evidence only. It does not establish Cowork Mac-folder mapping.
 Historical unknown imports follow the configured unplaceable policy, including
 `exclude`, even when current Mac-folder mapping is complete.
 
-Collection and scoped authorization are implemented. Earlier server copies
-require the separate Cowork policy reconciliation path. The scoped path has
-passed synthetic capture and restart tests through the unified dispatcher.
-The updated collectors are deployed to both Macs. The October 7 reporting
-release passed live status and CLI/MCP retrieval checks. Fresh-session app
-lifecycle checks on both Macs remain incomplete; see
-[history qualification](operations/history-qualification.md).
-
-The installed Claude 2.19675.1 Local flow was qualified with an approved
-synthetic session in the default Claude projects root. Scoped
-fallback storage is covered by synthetic fixtures; it was not observed in
-that live session.
+### Other options
 
 Use `--once` to index what changed and exit. Use `--no-sync` to index
 without upload. `flopwire agent run -h` lists every flag.
-
-When the client config's `mode` is empty, connected agents default to
-sync-only and standalone agents default to a full local index. This also
-applies to `FLOPWIRE_TOKEN` / `FLOPWIRE_SERVER` launches. An existing full
-index with message content requires an explicit choice before switching:
-use `--sync-only=false` to retain it, or `--sync-only` to remove its message
-rows and search shards. Empty indexes created by MCP can switch safely.
-Login preserves explicit mode settings across server changes.
-
-Use `--sync-only` (or `"mode": "sync-only"` in the client config) to upload
-without a local message index. The index file then keeps only sources,
-watermarks, conversations, placements and the sync spool. It has no
-message rows and no FTS shard files. Local `grep`, `search`, `read` and
-`sessions` fail with `this device is sync-only; use --server`. The flag
-overrides the config; `--sync-only=false` forces a full index. The mode
-needs a configured server. Use `--sync-only=false --no-sync` to run standalone
-with a full index when the config selects sync-only. A change of mode rebuilds the index at the next
-start: a switch to full parses every transcript again, and a switch to
-sync-only drops the message rows and the shard files.
 
 The agent sets a soft limit of 192MiB on Go memory (`--mem-limit`, or
 `GOMEMLIMIT`).
@@ -165,8 +158,7 @@ match the requested retention mode and local or upload connection. Upload
 requests must also match its server and device. A token without a device ID
 must match the running agent's credential. A mismatch fails without
 changing the running agent or rebuilding the index. Stop the agent before
-changing these settings. Older agents that lack this execution contract must
-be restarted with the current binary. If the index is locked and no agent
+changing these settings. If the index is locked and no agent
 answers yet, `--once` waits.
 The search commands open the index read-only and never take the lock.
 
@@ -239,55 +231,8 @@ Stop the agent before each procedure below.
 To start the launchd agent again, run
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flopwire.agent.plist`.
 
-### The agent stops: "index.db.redactions.jsonl is corrupt"
-
-The agent does not open an index while a redaction is unreadable.
-
-1. Stop the agent.
-2. Copy the damaged file to a safe place:
-   `cp index.db.redactions.jsonl ~/flopwire-redactions-damaged.jsonl`.
-3. If `index.db.redactions.jsonl.prev` exists, copy it over the damaged
-   file: `cp index.db.redactions.jsonl.prev index.db.redactions.jsonl`.
-4. If no `.prev` file exists, open the file in a text editor. Remove only
-   the line that the error names. Save the file.
-5. Start the agent.
-6. Run again each `flopwire redact` command that you ran after the copy
-   that you restored. The file cannot show which message a removed line
-   hid. If you are not sure, run all of them again. A repeated redaction
-   of hidden text reports `nothing to redact`.
-
-### The agent stops: "its key ... is missing", "the key does not match", or "redactions.key is corrupt"
-
-The agent cannot read the redactions without the key.
-
-1. Stop the agent.
-2. Restore `index.db.redactions.key` from the backup that you made with
-   this redaction file, if you have one. A key from another device or
-   another backup does not match. Then start the agent. Stop here.
-3. Without a backup, move both redaction files to a safe place:
-   `mv index.db.redactions.jsonl index.db.redactions.jsonl.prev ~/`.
-4. Run `flopwire agent run --rebuild-index --once`.
-5. Start the agent.
-6. Run again every `flopwire redact` command that you ran on this device.
-   Until you do, search shows the text that you redacted.
-
-### The agent stops: "apply redactions"
-
-The agent could not apply a redaction to the stored rows.
-
-1. Stop the agent.
-2. Run `flopwire agent run --rebuild-index --once`. It indexes every
-   transcript again, then exits.
-3. Start the agent.
-
-The rebuild removes the message rows, the conversations and the search
-files. It keeps the sync state, the placements, the redaction files and
-the key. Then it indexes every transcript again and masks each redacted
-row as it writes it. Search is incomplete until the first pass ends. Use
-the same procedure if the index is damaged in another way.
-
-Do not add `--rebuild-index` to a login item or the launchd agent. The
-agent would rebuild the index at each restart.
+To recover from an agent that stops with a redaction or key error, see
+[troubleshooting](troubleshooting.md).
 
 ## Check the agent
 
@@ -302,8 +247,8 @@ socket and prints these parts:
 | `scoped shared authorization: each capture requires fresh contained indexed proof` | The sync authorization hook is available. Each capture must pass its current linkage, folder rules, indexed byte bound and contained source checks. Cowork origins keep their folder-policy holds. |
 | `Cowork: STATE` | Current local discovery state, native sessions, metadata-only sessions and excluded paths. JSON status also includes mapping reasons, historical unknown scopes and watch candidates. |
 | `shared uploads held: server host-folder policy support pending` | Cowork evidence remains local. Empty sync queues do not establish shared Cowork coverage. |
-| `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](#keep-sessions-out-with-path-rules). |
-| `sessions placed by (for path rules):` | How many sessions each placement method placed. See [Where a session ran](#where-a-session-ran). |
+| `path rules removed N sessions from the local index` | A new `deny` rule purged local rows. The first 20 sessions follow. Their server copies stay unless an admin rule covers them; see [path rules](path-rules.md). |
+| `sessions placed by (for path rules):` | How many sessions each placement method placed. See [Where a session ran](path-rules.md#where-a-session-ran). |
 | `sync: off (no server configured)` | The device is not enrolled, or the agent runs with `--no-sync`. |
 | `sync: ok` | No current scheduler transport failure is reported. It does not prove discovery, upload or parse completeness. |
 | `sync: server unreachable, retry at T: ERR` | The server did not answer. The agent retries with exponential backoff. Server `Retry-After` can extend the configured backoff ceiling. |
@@ -313,7 +258,7 @@ socket and prints these parts:
 | `queued: N sources; spool: N bytes` | Scheduled source checks and active turns, plus spool storage usage. A check may find no new bytes. These are not totals of undiscovered or unuploaded history. `(full: …)` means the spool reached `--spool-cap` and captures of rewritten sources pause. |
 | `failing sources (N)` | Each source that fails, its error and its attempts. A failing source retries on its own and does not delay the others. |
 | `server refused N sources by admin path rule` | The server did not store these sources. Each shows its path and the rule. The device learns of a refusal on its next upload of that source. |
-| `messaging: connected` | The agent holds its poll to the server. See [Messaging](#messaging). |
+| `messaging: connected` | The agent holds its poll to the server. See [Messaging](messaging.md). |
 | `messaging: local` | No server is configured. Messages go between the sessions on this device. |
 | `messaging: server unreachable, retry at T: ERR` | The poll failed. The agent retries with exponential backoff. Server `Retry-After` can extend the configured backoff ceiling. |
 | `messaging: stopped: ERR` | The server refused the credential or the certificate. Run `flopwire login`. Messaging resumes when the agent sees the new credential. |
@@ -348,14 +293,6 @@ the queue. Each new index gets a separate spool key, including indexes for
 the same enrollment. A copied index retains its queue identity; do not run
 copies concurrently against the same config directory.
 
-Older indexes with sync state have no recorded owner. The agent preserves
-that state and refuses connected agent startup, including indexing and
-messaging. It does not assign old captures or server acknowledgments to the
-current login. A fresh `--db` path leaves the old
-queue and legacy spool untouched. Keep them until their ownership and
-migration have been resolved. This release has no command to assign an
-owner to a legacy queue.
-
 After an automatic standalone restart, the index can contain new local
 content. Returning to the original login can then require an explicit full
 or minimal storage choice before the agent starts. Retention selection and
@@ -370,840 +307,11 @@ The authority key identifies a normalized server URL and enrolled device.
 It does not identify a server installation. A replacement server at the same
 URL with the same device identity cannot be distinguished by this key.
 
-The spool cap applies to the active queue. Preserved legacy and inactive
-queue spools still use disk space outside that cap. A fresh `--db` path
-leaves old captures pending. `--rebuild-index` preserves sync ownership and
+The spool cap applies to the active queue. Inactive queue spools still use
+disk space outside that cap. A fresh `--db` path leaves old captures pending. `--rebuild-index` preserves sync ownership and
 queue tables; it cannot assign or recover a refused queue.
-
-See [extraction diagnostics](extraction.md) for parser issue counts, source
-inspection, and JSON output.
-
-## Install into the harnesses
-
-`flopwire setup` installs Flopwire into the coding-agent harnesses on this
-device. It installs the Flopwire plugin into Claude Code, Codex and Devin
-CLI: the MCP tools, the hooks and a messaging skill. It runs each harness's
-own plugin commands. It never edits the harness's settings files, and it
-writes no Devin config file. For opencode, which loads every file in its
-plugin directory, it writes the one plugin file there
-([opencode.md](opencode.md)).
-
-`flopwire setup` prints a JSON report. Add `--text` for a readable form.
-The report has these parts:
-
-| Field | Means |
-|---|---|
-| `ok` | Whether setup completed its checks or changes. This does not mean the current session can use the tools or receive messages. Read `todo` and `warnings` even when `ok` is `true`. `false` when a harness command failed. The exit status is then 1. A harness that you are not logged in to (Devin) is skipped: its entry has `skipped`, and `ok` does not change. |
-| `flopwire.path` | The `flopwire` on `PATH`. Empty when `flopwire` is not on `PATH`. The plugins run the binary their shim finds (`hook_binary`). |
-| `flopwire.recorded` | The binary path recorded for the plugins' hooks. See [How the hooks find the binary](#how-the-hooks-find-the-binary). |
-| `agent.running` | The device agent answered. Messages and capture need it. setup never starts it. |
-| `server.configured` | A server is configured. Without one, messages go only between the sessions on this device. |
-| `harnesses[]` | One entry per harness: `detected`, `installed`, `enabled`, `version`, `scope`, `done` (what setup changed), `warnings`, `todo` (what you must still do), `error` and `skipped` (why setup left the harness alone). |
-| `harnesses[].note` | How setup learned what it reports, when that limits the report. |
-| `harnesses[].hook_binary` | The `flopwire` that the installed plugin's hooks run: `path` and `via` (`recorded path`, `PATH` or `known dir`), or `error` with the fix. `shell` says how setup ran the plugin's shim: as the harness runs a hook. |
-| `harnesses[].hook_trust` | Codex only. `hooks`: the plugin hooks Codex found. `trusted`: how many you approved. `need_review`: the events whose hooks still need your approval. `disabled`: the events whose hooks you turned off. |
-| `todo` | What you must still do for the device. |
-| `check_note` | In `--check` mode, distinguishes configuration inspection from current-session tool access and hook delivery, which remain unverified. |
-
-Use `--check` to report and change nothing. Use `--remove` to uninstall.
-An installed and enabled plugin is configuration evidence. An observed MCP
-process is process evidence. Neither proves that your current session can
-discover or call a tool. Codex hook trust permits hook execution. It does
-not grant permission to call MCP tools. The session's tool approval policy
-still applies.
-
-A stopped device agent prevents capture and live messaging. Existing local
-history can still be searched. Shared search uses the configured server
-and does not require a local index. An empty local index means no local
-history has been indexed yet; an empty search result alone does not prove
-that setup or permissions failed.
-
-For Codex, `--check` runs only `codex plugin marketplace list` and
-`codex plugin list --marketplace flopwire-plugins`, which read local state. It
-does not start `codex app-server`: the app server upgrades the
-configured plugin marketplaces and fetches the plugin catalog in the
-background when it starts. Instead, `--check` reads Codex's files in
-`$CODEX_HOME` (default `~/.codex`): `config.toml`, `hooks.json` and the
-plugin's cached hooks file. It computes each plugin hook's hash as Codex
-0.160.0 does and compares it with the `trusted_hash` that Codex stored
-when you approved the hook. When Codex is newer than 0.160.0 and a hook
-looks unapproved, `--check` warns that Codex may have changed its hash and
-says to run `flopwire setup`, which asks Codex. It looks for older manual Flopwire entries in
-the user config only, not in a project's `.codex` folder. The Codex entry
-says this in `note`. `flopwire setup` without `--check` asks the app
-server.
-Run `flopwire setup --help` for every flag.
-
-### Set up a device (for an agent)
-
-Follow these steps in order.
-
-1. Run `command -v flopwire`.
-2. If the command prints nothing, stop. Tell your user to put the
-   `flopwire` binary on `PATH`.
-3. Run `flopwire setup --check`.
-4. If `agent.running` is `false`, tell your user to start the device agent
-   with `flopwire agent run` and keep it running. Do not start it
-   yourself.
-5. Run `flopwire setup`.
-6. Read `error` and `skipped` in each entry of `harnesses`. Report each
-   one to your user. If `ok` is `false`, stop.
-7. Read `warnings` in each entry of `harnesses`. Show each warning to
-   your user. A warning can name an older manual entry that now runs
-   twice, or a hook that a plugin update enabled. Do not edit the settings
-   file unless your user tells you to.
-8. Read `todo` in each entry of `harnesses`, and the top-level `todo`.
-   Tell your user each item.
-9. If the Codex entry has a `hook_trust.need_review` list that is not
-   empty, tell your user to approve the Flopwire hooks in Codex. See
-   [Approve the Codex hooks](#approve-the-codex-hooks). Do not approve
-   them yourself, and do not edit `~/.codex/config.toml`.
-10. Tell your user to restart their Claude Code, Codex, Devin and opencode
-    sessions. A running Claude Code session loads the plugin after a
-    restart or after `/reload-plugins`. A running Codex or Devin session
-    loads it after a restart.
-11. Run `flopwire setup --check`.
-12. Confirm that each detected harness has `installed: true` and
-    `enabled: true`.
-13. Confirm that each installed harness has a `hook_binary.path`. If it
-    has `hook_binary.error`, tell your user the error. It names the fix.
-
-### Verify tools in the current session
-
-Use these checks after you address the report's `todo` items. They test the
-session you run them in. They do not grant future send permission.
-
-1. Start a fresh harness session, or reload its Flopwire MCP connection.
-2. Ask the agent to list the available Flopwire tools. Confirm that
-   `flopwire_grep`, `flopwire_read`, `flopwire_peers` and `flopwire_send`
-   appear. Tool discovery alone does not verify tool access.
-3. Choose a known indexed transcript and a distinctive phrase in it. Ask
-   the agent to call `flopwire_grep` with that phrase and then
-   `flopwire_read` with a returned address. Confirm the expected text.
-   Check the reported search scope. If no history is indexed, capture a
-   synthetic transcript first. An absent phrase is not a useful probe.
-4. For live messaging, open a second test session. Keep both test sessions
-   open throughout the messaging check. Identify the receiving session's
-   full session ID. Explicitly authorize one test request/reply roundtrip.
-5. Ask the first session to call `flopwire_peers` for that ID, then
-   `flopwire_send` with the authorized test text. Review any tool approval
-   prompt. If denied, report the denied tool and stop this check.
-6. Run a turn in the receiving session. Confirm that its hook inserts the
-   test message. A send receipt alone does not verify delivery to context.
-7. Send the authorized reply from the receiving session with `reply_to`
-   set to the test message ID. Run a turn in the first
-   session and confirm that its hook inserts the reply.
-
-Run `flopwire setup` again at any time. It updates the plugin when a
-new version exists. It changes nothing when the plugin is current.
-
-### Approve the Codex hooks
-
-Codex runs a plugin's hooks only after you approve them. `flopwire setup`
-installs the plugin but never approves its hooks for you. Until you
-approve them, Codex skips them: no message arrives in a Codex session and
-the session gets no standing instruction. The MCP tools work without the
-approval.
-
-1. Start `codex` in a terminal.
-2. Codex shows "Hooks need review".
-3. Select "Review hooks".
-4. Trust the five Flopwire hooks. They are on `SessionStart`,
-   `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, and each
-   runs `/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook`.
-5. Run `flopwire setup --check`.
-6. Confirm that the Codex entry shows `hook_trust.trusted: 5`.
-
-You can also type `/hooks` in a running Codex session to review the hooks.
-"Trust all and continue" also trusts every other hook that waits for
-review.
-
-What you approve: each hook runs the plugin's shim,
-`/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook`, outside the Codex
-sandbox. The shim finds the `flopwire` binary and runs `flopwire hook`
-(see [How the hooks find the binary](#how-the-hooks-find-the-binary)).
-The timeout is 5 seconds, and 3 seconds for `SessionEnd`, the most that
-Codex allows for that event. The `Stop` hook is `async`: Codex does not
-wait for it. `flopwire hook` reads the hook input, asks the device agent
-for this session's messages, prints them into the session, and asks the
-agent to index the transcript. When the shim finds no binary, or the
-binary fails, the hook exits 1 with one line on stderr, and Codex reports
-a failed hook. It never exits 2, which would block the turn.
-
-Codex asks again for a hook when any of these change: its event, its
-matcher, its command, its timeout, its `async` flag, its `statusMessage`,
-its `additionalContextLimit`, or its position in the list of hooks for its
-event. Codex stores the approval under a key that holds the event and the
-position, and a hash of the other fields. A plugin update that adds,
-removes or reorders hooks therefore asks again for each hook that moved.
-Flopwire changes these only when it must. A plugin update that changes a
-hook asks once more, for that hook. The update that added the shim
-changed the command of all five hooks from `flopwire hook || true`, so
-Codex asks once more for all five. Codex hashes the command as written,
-with `${PLUGIN_ROOT}` unexpanded, so a reinstall to another path does not
-ask again. Until you trust a new `SessionEnd`
-hook, a Codex session that exits leaves presence when its writer lock is
-released, which the agent notices within seconds. Codex records the
-approval in `~/.codex/config.toml` under `hooks.state`, keyed by the
-plugin and the hook, not by the install path. After
-`flopwire setup --remove` the approval stays there, so a later install
-does not ask again.
-
-Codex also asks before each `flopwire_send` call, because a message leaves
-the session. `codex exec` cannot ask, so the call fails there. To allow
-`flopwire_send` without a question, add this to `~/.codex/config.toml`
-yourself:
-
-```toml
-[plugins."flopwire@flopwire-plugins".mcp_servers.flopwire.tools.flopwire_send]
-approval_mode = "approve"
-```
-
-A shell command in Codex's sandbox reaches the device agent only when
-the sandbox has network access. By default (`workspace-write` without
-`network_access`, and `read-only`) the sandbox refuses the connect to the
-agent's socket, and `flopwire send` fails with `sandbox_blocked`. Use the
-`flopwire_send` tool in Codex: the MCP server runs outside the sandbox.
-With `sandbox_workspace_write.network_access = true` in
-`~/.codex/config.toml`, `flopwire send` in a shell command works.
-
-What was verified, with Codex 0.160.0 on 2026-10-03:
-
-| OS | Sandbox | Network off | `network_access = true` |
-|---|---|---|---|
-| macOS 26 (arm64) | Seatbelt | `connect` fails with `EPERM`; `sandbox_blocked` | `connect` works |
-| Linux (Debian 12 in Docker, arm64) | bubblewrap and seccomp | `connect` fails with `EPERM` (seccomp denies `connect`); `sandbox_blocked` | `flopwire send` reaches the agent |
-
-On macOS the check used `codex sandbox` with a test socket. On Linux it
-used `codex sandbox` and two `codex exec` runs that called `flopwire send`
-against a running `flopwire agent run`. Inside the container, bubblewrap
-needed `--security-opt seccomp=unconfined --security-opt
-apparmor=unconfined --cap-add SYS_ADMIN` to create its namespaces.
-
-`flopwire send` reports `sandbox_blocked` when the connect fails with
-`EPERM`, or with `EACCES` in a shell that Codex marks as sandboxed
-(`CODEX_SANDBOX_NETWORK_DISABLED` or `CODEX_SANDBOX` is set). A plain
-`EACCES` outside a sandbox is `permission_denied`: the socket belongs to
-another user, or its mode changed.
-
-Codex's sandbox also keeps `.git` read-only, so `git commit` fails in
-a sandboxed shell command. See [Codex and git commits](#codex-and-git-commits).
-
-### How the hooks find the binary
-
-Every harness runs a hook command through a shell, and that shell's
-`PATH` is often not your terminal's:
-
-| Harness | Runs a hook command with | `PATH` |
-|---|---|---|
-| Claude Code | `/bin/sh -c` | The `PATH` Claude Code started with. A Claude Code started from the desktop has the desktop's. |
-| Codex | Your login shell, `zsh -lc` (Codex 0.160) | What your login files (`~/.zprofile`, `/etc/zprofile`) set, not the `PATH` Codex started with. |
-| Devin CLI | `bash -c` | What Devin read from your login shell. |
-| opencode | No shell: the plugin starts `flopwire` itself | The `PATH` opencode started with. |
-
-So a bare `flopwire` in a hook can find another binary than your
-terminal does, or none. Each failure stops delivery. The hooks therefore
-run a shim, `bin/flopwire-hook` in the Claude Code and Codex plugins
-(Devin loads the Claude Code plugin). The shim takes the first of these:
-
-1. The path in `<config dir>/binary-path`, if that file names an
-   executable file. `flopwire setup` writes this binary's absolute path
-   there, with symlinks resolved. Another `flopwire` command that you
-   run writes it only when no binary is recorded or the recorded one is
-   gone. So an upgrade that moves the binary corrects it at your next
-   command, and a scratch or CI build never replaces your install.
-   `flopwire hook`, `flopwire mcp`,
-   `flopwire version`, `flopwire probe`, `flopwire agent flush`, the
-   server commands and `flopwire setup --check` do not write it. The
-   config directory is the directory of `FLOPWIRE_CONFIG`, else
-   `~/Library/Application Support/flopwire` on macOS and
-   `~/.config/flopwire` (or `$XDG_CONFIG_HOME/flopwire`) on Linux.
-   When `flopwire` on the hook shell's `PATH` is a newer file than the
-   recorded one (an old `go install` or a kept Homebrew keg still exists),
-   the shim takes the one on `PATH`.
-2. `flopwire` on the hook shell's `PATH`.
-3. `flopwire` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin` or
-   `~/.local/bin`.
-
-The shim runs that binary with its own arguments and sets
-`FLOPWIRE_HOOK_VIA` to `recorded`, `path` or `known`. When it finds no
-binary, it writes one line to stderr that names the recorded path, the
-`PATH` it searched and the fix (`flopwire setup`), and exits 1. When the
-binary fails, for example a binary older than the plugin, it writes one
-line that says to run `flopwire setup --check`, and exits 1. It never
-exits 2, which blocks a prompt or a stop. The harness shows the failed
-hook. The opencode plugin searches in the same order and writes the
-same line.
-
-The hook commands start the shim by the harness's plugin root:
-`/bin/sh "${CLAUDE_PLUGIN_ROOT}/bin/flopwire-hook" hook` in Claude Code
-and Devin, `/bin/sh "${PLUGIN_ROOT}/bin/flopwire-hook" hook` in Codex.
-`/bin/sh` runs the file, so its mode does not matter.
-
-The MCP server runs through the same shim, `flopwire-hook mcp`, so it
-finds the same binary. Claude Code and Devin expand `${CLAUDE_PLUGIN_ROOT}`
-in the plugin's `.mcp.json`. Codex 0.160 does not expand `${PLUGIN_ROOT}`
-there, so its `.mcp.json` sets `cwd` to `.` (Codex resolves it to the
-plugin directory) and runs `./bin/flopwire-hook mcp`. The shim `exec`s
-the binary for the MCP server. A missing binary shows as a failed MCP
-server in the harness.
-
-`flopwire setup --check` runs each installed plugin's shim the way its
-harness runs a hook: `/bin/sh -c` for Claude Code, `$SHELL -lc` for Codex
-and Devin, and the shim's search in setup itself for opencode. It reports
-the result as `hook_binary`, in the text form
-`hook binary: <path> (via recorded path)`, or the shim's error. setup
-compares the plugin with that binary, not with the one on `PATH`, and
-warns when the binary lacks a command the plugin runs. A plugin from
-before the shim gets a todo to update it.
-
-`flopwire probe --as-installed` runs the plugins' own hook commands in
-each harness and checks which binary they ran. See
-[probe.md](probe.md).
-
-### Remove
-
-1. Run `flopwire setup --remove`.
-2. Run `flopwire setup --check`.
-3. Confirm that each detected harness has `installed: false`.
-4. Restart your Claude Code, Codex, Devin and opencode sessions.
-
-`--remove` removes only what setup installed. It does not remove a Devin
-plugin that you installed without `--local`, or a plugin from another
-source. It reports each one in `warnings`.
-
-### Where the plugin comes from
-
-The repository is a plugin marketplace for both harnesses. Claude Code
-reads `.claude-plugin/marketplace.json`; its plugin is in
-`plugins/claude-code/flopwire`. Codex reads
-`.agents/plugins/marketplace.json`; its plugin is in
-`plugins/codex/flopwire`. Both marketplaces are named `flopwire-plugins`
-(publisher-collection over product, like `openai-bundled/browser`), both
-plugins are `flopwire@flopwire-plugins`, and each harness caches the
-plugin at `plugins/cache/flopwire-plugins/flopwire/<version>`. The Go
-constants `marketplaceName` and `pluginName` in `cmd/flopwire/setup.go`
-must match the manifests; `TestClaudeMarketplaceManifest` and
-`TestCodexMarketplaceManifest` check that. `flopwire setup` adds the marketplace
-from `flopwire/flopwire` on GitHub. Claude Code installs the plugin at user
-scope; Codex has only user installs. Use `--source` or
-`FLOPWIRE_PLUGIN_SOURCE` to install from a local checkout. See the
-[Claude Code plugin README](../plugins/claude-code/flopwire/README.md) and
-the [Codex plugin README](../plugins/codex/flopwire/README.md).
-
-The source's Claude Code marketplace must be named `flopwire-plugins`. When it
-has another name, Claude Code adds the marketplace under that name.
-setup names it in `done`, sets `error`, and installs nothing from it.
-When setup added that marketplace, setup removes it again. When a
-marketplace with that name was already configured, setup keeps it. Run
-`claude plugin marketplace remove NAME` to remove it.
-
-The marketplace was named `flopwire` before issue #162, so the plugin was
-`flopwire@flopwire` and the cache path read `flopwire/flopwire`. There is
-no upgrade path (pre-release). When a marketplace named `flopwire` from
-setup's source is still configured, `flopwire setup --check` names the
-removal commands in `todo`; setup itself never removes it (see the plugin
-READMEs, "Upgrading an existing install").
-
-Devin CLI has no marketplace of its own: `devin plugins install` takes
-one plugin source. Given the root of a Claude Code marketplace
-repository, Devin 3000.10.21 and later recognizes the marketplace and
-offers to install one of its plugins. Devin loads a Claude Code plugin as
-it is, so setup names the plugin's directory in the repository and
-installs `plugins/claude-code/flopwire` into Devin directly:
-
-```sh
-devin plugins install --local flopwire/flopwire#plugins/claude-code/flopwire -y
-```
-
-With a local checkout as the source, setup installs the directory
-`<checkout>/plugins/claude-code/flopwire` instead. Devin then links the
-directory, so edits apply in the next session.
-
-- `--local` installs on this device only. Without it, Devin also adds the
-  plugin to your personal plugins in Devin Cloud. They then load on every
-  device you sign in to and in cloud sessions, where `flopwire` is not
-  installed.
-- `-y` answers Devin's install prompt, which lists the skill, the five
-  hooks and the MCP server.
-- Devin keeps the plugin in `~/.local/share/devin/cli/plugins`. setup
-  updates it with `devin plugins update flopwire` and removes it with
-  `devin plugins remove flopwire --local -y`.
-- Devin cannot install a branch or tag: it reads `#` as a path in the
-  repository. setup refuses a `--source owner/repo#ref` for Devin. Use a
-  local checkout of that ref.
-- Devin shows the plugin's skill as `/flopwire:messaging`.
-- Every `devin plugins` command needs a Devin login. When you are not
-  logged in, setup skips Devin: the Devin entry has `skipped: not logged
-  in to Devin`, and `ok` and the exit status do not change. Run
-  `devin auth login`, then run setup again.
-- `devin plugins update` enables the hooks of a new plugin version without
-  a prompt. setup compares the plugin's hooks before and after the update.
-  It reports each hook that the update enabled in `warnings`, and each hook
-  that the update removed in `done`.
-
-Devin reads hooks from Claude Code's settings files, but not from Claude
-Code's plugins. The Claude Code plugin and the Devin plugin therefore never
-run in the same Devin session.
-
-Installing the Codex plugin from GitHub was checked with Codex 0.160.0 on
-2026-10-04, in an empty `CODEX_HOME`, with `flopwire` and `codex` the only
-harness commands on `PATH`:
-
-```sh
-flopwire setup --text
-```
-
-The result:
-
-- setup ran `codex plugin marketplace add flopwire/flopwire --json
-  --sparse .agents/plugins --sparse plugins/codex`, then
-  `codex plugin add flopwire@flopwire-plugins --json`.
-- `config.toml` got `[marketplaces.flopwire-plugins]` with
-  `source_type = "git"`, `source = "https://github.com/flopwire/flopwire.git"`
-  and both sparse paths, and `[plugins."flopwire@flopwire-plugins"]` with
-  `enabled = true`.
-- Codex copied the plugin to
-  `plugins/cache/flopwire-plugins/flopwire/local`, and listed five plugin hooks,
-  all waiting for review.
-- A second `flopwire setup` ran `codex plugin marketplace upgrade
-  flopwire-plugins` and reinstalled the plugin. It reported nothing to change.
-- `flopwire setup --check` reported the plugin installed and enabled, and
-  the five hooks waiting for approval.
-- The run used the marketplace `flopwire` and the plugin
-  `flopwire@flopwire`; the names above were updated for #162.
-
-The Codex desktop app, the IDE extension and Devin Desktop were not tested
-with the plugin. To check them by hand, see
-[manual-checks.md](manual-checks.md).
-
-### Test a Claude Code install in a scratch configuration
-
-Use this procedure to test `flopwire setup` at user scope without a
-change to your own Claude Code configuration. It works on macOS, where
-Claude Code keeps its login in the keychain.
-
-A scratch `CLAUDE_CONFIG_DIR` alone does not log in. Claude Code then
-looks for a keychain item with another name, and prints
-`Not logged in · Please run /login`. `CLAUDE_CODE_OAUTH_TOKEN` supplies
-the login. Do not copy any files from `~/.claude`.
-
-The access token is a secret. It must not show on the screen, in a
-file, in a log or in the shell history:
-
-- Never type or paste the token. Read it from the keychain inside a
-  command substitution, as in step 3. The history then holds the
-  `security` command, not the token.
-- Never run `security find-generic-password -w` alone. It prints the
-  whole keychain item, the refresh token too.
-- Do not run `echo`, `env`, `printenv`, `set` or `set -x` while the
-  token is set.
-
-1. Start a new shell (`zsh`) for the test. The token goes away when you
-   exit it.
-2. Make an empty directory for the scratch configuration. Set
-   `CLAUDE_CONFIG_DIR` to it.
-3. Read the access token from the keychain item
-   `Claude Code-credentials` straight into the environment:
-
-   ```sh
-   export CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s 'Claude Code-credentials' -w | /usr/bin/jq -r .claudeAiOauth.accessToken)"
-   ```
-
-4. Set `FLOPWIRE_CONFIG` and `FLOPWIRE_INDEX` to paths in scratch.
-5. Set `PATH` to a directory that holds only `claude`, `flopwire` and
-   `git`, then `/usr/bin:/bin`. setup then finds no other harness.
-6. Run `flopwire setup --source <checkout>`, then
-   `flopwire setup --check`.
-7. Run `claude -p --setting-sources user`. Ask the model to quote the
-   hook output and to list the `flopwire` tools.
-8. Run `flopwire setup --remove`, then `flopwire setup --check`.
-9. Exit the shell from step 1. Delete the scratch directory.
-
-To prove that the hooks reach the model, put a `flopwire` script first
-on `PATH` for step 7. For `flopwire hook`, the script prints
-`{"hookSpecificOutput":{"hookEventName":EV,"additionalContext":MARKER}}`
-on `SessionStart` and `PostToolUse`. For every other command it runs
-the real `flopwire`.
-
-What was verified, with Claude Code 2.1.289 on macOS 26 on 2026-10-04:
-
-- `flopwire setup` with a local checkout as the source added the
-  marketplace and installed `flopwire@flopwire-plugins` at user scope. Claude
-  Code wrote `extraKnownMarketplaces` and `enabledPlugins` to the
-  scratch `settings.json`. `--check` reported the plugin installed and
-  enabled.
-- `claude -p --model haiku --setting-sources user` with a marker
-  script quoted the `SessionStart` and `PostToolUse` markers. It listed
-  the seven `mcp__plugin_flopwire_flopwire__*` tools (Claude Code names a
-  plugin's MCP server `plugin:<plugin>:<server>`; the marketplace is not
-  part of it) and the
-  `flopwire:messaging` skill. The same prompt with
-  `--setting-sources project` saw no marker and no tool, so the user
-  settings loaded the plugin.
-- The run used the marketplace `flopwire` and the plugin
-  `flopwire@flopwire`; the names above were updated for #162.
-- `--remove` uninstalled the plugin and removed the marketplace, and
-  `--check` then reported it not installed.
-- A source whose `marketplace.json` names another marketplace: setup
-  reported the name that Claude Code added in `done`, set `error`, and
-  installed nothing.
-- `shasum` of `~/.claude/settings.json` and of
-  `installed_plugins.json` and `known_marketplaces.json` in
-  `~/.claude/plugins` was the same before and after.
-
-## Connect the harness hooks
-
-The harness hooks run `flopwire hook`. The command does two jobs:
-
-- It prints the messages for this session into the session. See
-  [Messaging](#messaging).
-- It tells the running agent to index this transcript and upload it at
-  once. Without hooks, a new line is still findable in about one second.
-  The hooks make the upload immediate and cover a session that was idle
-  for more than two days.
-
-`flopwire hook` reads the hook input on stdin. It acts on the
-`hook_event_name` field:
-
-| Event | Prints into the session |
-|---|---|
-| `SessionStart` | The standing instruction if the session is owed it, then any pending messages |
-| `UserPromptSubmit` | The same |
-| `PostToolUse` | The same |
-| `SessionEnd` | Nothing. It tells the agent that the session ended. |
-| Any other event | Nothing. It only asks for the upload. |
-
-A message arrives inside a running turn, at the next tool call, or with the
-session's next prompt or resumption hook, including a background task
-notification. Child tool calls do not deliver messages to a stopped parent.
-A message never wakes an idle session and never starts a turn.
-
-A hook never fails a turn. `flopwire hook` exits 0 and prints nothing in
-these cases:
-
-- No message waits for the session.
-- The agent is not running.
-- The agent does not answer within 200 milliseconds. The agent keeps the
-  messages for the next hook.
-- The hook process started so long ago that it cannot finish asking for
-  messages within 3 seconds of its start. Its harness may have stopped
-  waiting for it. Such a hook also does not report its event to the
-  agent, because a later event may have arrived first. A late
-  `SessionEnd` hook still reports its event.
-- The input is not hook JSON.
-
-It writes the reason on stderr. It never writes the environment or a
-message body there.
-
-Delivery has two steps, so a hook that is killed cannot lose a message:
-
-1. The hook asks the agent for the session's messages. The agent leases
-   them to that hook for 10 seconds. While the lease runs, no other hook
-   of the session gets messages, so the messages keep their order.
-2. The hook prints the messages. Then it confirms them to the agent. The
-   agent marks them delivered and sends the receipt to the server.
-
-If no confirmation arrives before the lease ends, the agent offers the
-messages again at the session's next hook. A harness timeout, a killed
-hook, a closed output pipe or a lost confirmation all end this way. A
-message that is offered again carries `redelivery="true"`, because the
-model may have seen it already. The hook does not confirm a print that
-ends more than 3 seconds after its start: a harness that timed the hook
-out may not have read it.
-
-After 3 leases without a confirmation, the message is `undelivered` with
-the reason `unconfirmed`. The sender's `inbox` shows this state, and the
-sender can send the message again.
-
-The standing instruction is delivered the same way. A session is owed it
-until a hook confirms that it printed it. The hook prints it before any
-message. While one hook holds the instruction's lease, no other hook of
-the session gets messages, so no message arrives before the instruction.
-If the `SessionStart` hook is killed or starts too late, the session's
-next `UserPromptSubmit` or `PostToolUse` hook prints it. Two hook
-configurations that both run `SessionStart` print it once. The agent keeps
-the confirmation in its authority inbox database, so a restart does not print it again. After
-3 unconfirmed leases the agent stops offering it.
-
-A `SessionStart` with the source `resume`, `compact` or `clear` that
-starts after the confirmation makes the session owed the instruction
-again. A compaction summarizes the earlier context, so the instruction is
-likely gone from it. Flopwire cannot see whether a resumed session kept
-it. A second copy costs some context; a missing copy leaves the model
-without the trust rules.
-
-When a session ends before a hook delivers its message, the message is
-`undelivered` with the reason `session_ended`. It is never given to
-another session. See [Ended sessions](#ended-sessions).
-
-One call prints at most 5 messages and at most 9,000 bytes. The oldest
-messages go first. The rest wait for the next hook. A single message that
-is longer than the cap is cut, with a note that names the
-`flopwire inbox --thread` command that shows all of it.
-
-### Claude Code
-
-Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
-The plugin it installs runs `flopwire hook` through its shim on
-`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and
-`SessionEnd`, and serves the MCP tools. See
-[How the hooks find the binary](#how-the-hooks-find-the-binary).
-
-Use the manual configuration below only when you cannot install the
-plugin. Do not use both: each hook would then run twice.
-`flopwire setup` warns when it finds both. The manual hooks run
-`flopwire` from the hook shell's `PATH`.
-
-1. Open `~/.claude/settings.json`.
-2. Add these entries under `hooks`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ]
-  }
-}
-```
-
-3. Run `claude mcp add --scope user flopwire -- flopwire mcp`.
-
-### Codex
-
-Run `flopwire setup`, then approve the hooks. See
-[Install into the harnesses](#install-into-the-harnesses) and
-[Approve the Codex hooks](#approve-the-codex-hooks). The plugin runs
-`flopwire hook` through its shim on `SessionStart`, `UserPromptSubmit`,
-`PostToolUse`, `Stop` and `SessionEnd`, and serves the MCP tools.
-
-The plugin's `Stop` hook replaces the older
-`notify = ["flopwire", "agent", "flush"]` line: it asks the agent to index
-each finished turn. It prints nothing and never blocks or extends a turn.
-`notify` holds one command only, so the hook also leaves `notify` free for
-other tools.
-
-The `Stop` hook is `async`. Codex runs each hook command through your
-shell: `zsh -c` reads `~/.zshenv`, `bash -c` reads the file that
-`BASH_ENV` names, and when Codex knows no shell it runs `$SHELL -lc`,
-which reads your login files. Text that these files print goes into the
-hook's output before `flopwire hook` runs. Codex fails a synchronous
-`Stop` hook whose output is not JSON, on every turn. It ignores the
-output of an async `Stop` hook unless that output starts with `{` or `[`.
-At exit, Codex drops the async `Stop` hook of the last turn; the
-`SessionEnd` hook indexes the transcript and ends the session then.
-Keep your shell startup files silent when they are not interactive:
-on the other events the printed text goes into the session as context.
-
-Codex 0.160 runs hook commands with `zsh -lc`, so a bare `flopwire`
-resolves through the `PATH` your login profile sets, not the `PATH` Codex
-started with. The plugin's shim tries the recorded binary path first (see
-[How the hooks find the binary](#how-the-hooks-find-the-binary)). An
-isolated test must set `FLOPWIRE_CONFIG` to a directory whose
-`binary-path` names the binary under test, or the shim runs the binary
-your own setup recorded.
-
-#### Codex and git commits
-
-Codex's `workspace-write` sandbox keeps `.git` read-only, so a sandboxed
-`git commit` fails in every checkout. In a linked git worktree, the
-worktree's `.git` file points to `<main>/.git/worktrees/<name>/`, where
-git writes `index.lock`, and the commit also writes objects and refs in
-`<main>/.git`. Adding `<main>/.git/worktrees/<name>` as a writable root
-does not help: the commit still fails. Verified with Codex 0.160.0 on
-macOS (Seatbelt) and Linux (bubblewrap).
-
-This limits which harness can be the one that commits in a setup with
-worktrees. To commit:
-
-- Commit from the main checkout, outside the Codex sandbox: in your own
-  terminal, or from a Claude Code or Devin session.
-- Or approve Codex's request to run `git commit` outside the sandbox.
-  Interactive Codex asks for it; `codex exec` cannot ask, so the commit
-  fails there.
-- Or run Codex with the sandbox off: `codex --sandbox danger-full-access`.
-  The model's commands then run without any sandbox.
-
-Use the manual configuration below only when you cannot install the
-plugin. Do not use both: each hook would then run twice.
-`flopwire setup` warns when it finds both.
-
-1. Open `~/.codex/hooks.json`. Create the file if it does not exist.
-2. Add these entries:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-    ],
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5, "async": true }] }
-    ],
-    "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 3 }] }
-    ]
-  }
-}
-```
-
-3. Run `codex mcp add flopwire -- flopwire mcp`.
-4. Start Codex in a terminal.
-5. Codex shows "Hooks need review". Approve the five hooks.
-
-Codex runs a hook only after you approve it. It asks again when the
-event, the matcher, the command, the timeout, `async`, `statusMessage`,
-`additionalContextLimit` or the hook's position in the list changes.
-
-### Devin CLI
-
-Run `flopwire setup`. See [Install into the harnesses](#install-into-the-harnesses).
-The plugin it installs runs `flopwire hook` through its shim on
-`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and
-`SessionEnd`, and serves the MCP tools. Devin sets `CLAUDE_PLUGIN_ROOT`
-for the plugin's hooks. When the shim finds no `flopwire`, or
-`flopwire hook` fails (a binary older than the plugin), the hook exits 1
-with one line on stderr that names the fix. Devin does not show that
-line, in the TUI or in print mode. It writes only `Command exited with code 1` to its
-own log, and the session continues without messages. After you update the
-plugin or the binary, run `flopwire setup --check`: it reports a binary on
-`PATH` that lacks a command the plugin runs. Devin has no hook approval
-step.
-
-The shared Claude Code/Codex hook shim also keeps one private, atomic
-`hook-last-failure` receipt in the resolved Flopwire config directory.
-It records only a UTC timestamp, a fixed reason (`missing-binary` or
-`hook-exit`) and an exit status. It does not record stdin, arguments,
-environment, message bodies or stderr. `flopwire setup --check` shows a
-valid receipt once as a historical warning (`hook_failure_warning` in JSON). It may come from Claude Code,
-Codex or Devin; it does not establish current hook health. A successful
-hook or setup run keeps the receipt. Checks and MCP execution do not
-write it. Unsafe or unwritable config directories can prevent recording;
-this does not change the hook's original exit behavior.
-
-Existing Devin cached plugins need the updated shim. Run `flopwire setup`
-to install or update the plugin through Devin, then start a new Devin session.
-Updating
-only the Flopwire binary does not replace Devin's cached plugin shim.
-
-On `Stop`, `flopwire hook` prints nothing. Devin continues a turn when a
-`Stop` hook prints `"decision": "block"`, so a `Stop` hook that printed
-output could extend a turn. `flopwire hook` never does.
-
-`devin -r ID` on a session that another Devin process runs fires the
-`SessionStart` hooks, then Devin refuses the session. `flopwire hook`
-delivers nothing to such a process: the session's lock names a running
-`devin` that is not its parent. The messages wait for the running session.
-
-Devin also runs Flopwire hooks that it finds in these files:
-`~/.config/devin/config.json` and `.devin/` files in the repository, and
-Claude Code's `~/.claude/settings.json`, `~/.claude/settings.local.json`,
-`~/.claude.json` and the repository's `.claude/settings.json`. Each such
-hook then runs twice in a Devin session. Each message and the standing
-instruction still arrive once. `flopwire setup` reports each such entry in
-`warnings` and does not edit the file. Keep an entry in a Claude Code
-settings file when Claude Code has no Flopwire plugin and needs it.
-
-Use the manual configuration below only when you cannot install the
-plugin.
-
-1. Open `~/.config/devin/config.json`. To connect one repository only,
-   open `.devin/hooks.v1.json` in the repository instead.
-2. Add these entries. In `~/.config/devin/config.json`, put the events
-   under a `hooks` key and keep the other keys. In `.devin/hooks.v1.json`,
-   the event names are top-level keys: Devin rejects that file with a
-   `hooks` key.
-
-```json
-{
-  "SessionStart": [
-    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-  ],
-  "UserPromptSubmit": [
-    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-  ],
-  "PostToolUse": [
-    { "matcher": "*", "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-  ],
-  "Stop": [
-    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-  ],
-  "SessionEnd": [
-    { "hooks": [{ "type": "command", "command": "flopwire hook", "timeout": 5 }] }
-  ]
-}
-```
-
-3. Run `devin mcp add flopwire --scope user -- flopwire mcp`.
-
-Do not add `flopwire hook` to `PreToolUse`. Devin does not show that
-event's output to the model, and the messages would be lost.
-
-How Devin CLI 3000.11.1 holds sessions (live checks, 2026-10-04):
-
-- The TUI runs each session in a child `devin acp` process. That process
-  writes the session's lock and keeps the lock file open, with an
-  exclusive `flock`. `/clear` and `/resume` start a new child for the next
-  session. The old child exits, and the old session's `SessionEnd` hook
-  runs (reason `clear` or `resume`).
-- One `devin acp` process holds several sessions when an ACP client calls
-  `session/new` more than once. Each session has its own lock that names
-  the same pid. ACP has no `session/close` in this version.
-  `session/delete` closes the session's lock file and removes the session
-  from `sessions.db`. The lock file stays, and no `SessionEnd` hook runs.
-  The agent reads both signals: `peers` drops the deleted session within
-  about 1 second and keeps the other session live.
-- An interrupted turn runs no `Stop` hook. `peers` shows it idle at the
-  next presence check from the store's marker. Measured: idle 0.7 seconds
-  after Esc twice during a tool, 1.3 seconds after Ctrl-C during the
-  answer, and 1.2 seconds after an ACP `session/cancel`. Before this
-  check, the session read busy for 15 minutes.
-- Esc during a foreground `run_subagent` call cancels the call (its
-  result is `Canceled due to user interrupt`). The subagent continues in
-  the background, and the TUI stays in its working state: it queues new
-  prompts until the subagent ends. `peers` shows the session idle for
-  that time: the call's result is an interrupt marker, and the hooks of
-  the background subagent are not the session's own, so they do not mark
-  it busy.
-- When the `devin acp` process dies while a subagent runs, the
-  `run_subagent` call keeps no result. `devin -r` continues the session
-  from the call's parent, so the next node is the call's sibling. The
-  hook then treats the call as abandoned, and the session's `Stop` makes
-  it idle.
-
-To repeat the checks: run the agent with `--no-sync` and
-`FLOPWIRE_CLOUD=off`, with `HOME` set to a scratch directory that holds a
-copy of `~/.local/share/devin/credentials.toml`. Install the plugin there
-with `devin plugins install --local <checkout>/plugins/claude-code/flopwire -y`.
-Drive the TUI in `tmux` (`send-keys Escape`, `send-keys C-c`) and poll
-`flopwire peers`. For one process with several sessions, run `devin acp`
-and send `initialize`, two `session/new`, a `session/prompt` for each,
-then `session/delete` for one, as JSON-RPC lines on its stdin.
-
-### opencode
-
-Run `flopwire setup`. It installs one plugin file into opencode's global
-plugin directory. The plugin delivers messages, serves the tools and keeps
-presence. See [opencode.md](opencode.md).
+See [troubleshooting](troubleshooting.md#inspect-extraction-diagnostics)
+for parser issue counts, source inspection, and JSON output.
 
 ### Manual flush
 
@@ -1212,334 +320,6 @@ Run `flopwire agent flush --path <transcript>` or
 never prints messages. When it reads hook input, it exits 0 if the agent is
 not running, is still busy after the timeout, stops during the call, or
 does not track the file yet.
-
-## Messaging
-
-The agent carries messages between agent sessions
-([design](../notes/message-bus/plan.md)). The `peers`, `send` and `inbox`
-commands and MCP tools use it. The `flopwire hook` command prints each
-message into the recipient's session. See
-[Connect the harness hooks](#connect-the-harness-hooks). A session without
-the hooks reads its messages with `flopwire inbox`. After a harness
-release, check that the hooks still deliver with `flopwire probe`
-([probe.md](probe.md)).
-
-With a server configuration, the agent does these things:
-
-- It holds one long poll to the server. The poll reports the live sessions
-  on this device: session id, harness, repo, branch, and busy or idle.
-- It checks the sessions every 2 seconds. When one starts, ends, or turns
-  busy or idle, it sends a new poll at once.
-- It leaves out each session that a path rule keeps off the server. Such a
-  session cannot send or receive messages.
-- It keeps the messages for this device in the local inbox. A message that
-  the server no longer lists is removed, unless a hook already took it.
-- It claims each message to `@you` for one live session on this device.
-  It prefers a session on the message's repo, then a busy session.
-- It confirms each delivery to the server, in batches, after the hook
-  confirms that it printed the message. It reports each message that
-  became `undelivered` (`unconfirmed` or `session_ended`) in the same
-  batches.
-
-Without a server configuration, or with `--no-sync`, the agent routes
-messages between the sessions on this device. To address yourself, use
-`@` and your account name. The server's limits apply: duplicates within 10 minutes,
-8 messages per thread per hour, 30 sends per session per hour, and 50
-undelivered messages per recipient.
-
-A session is live when `flopwire sessions` shows it as live and it has
-not ended. The agent also reads these harness files. It never writes
-them:
-
-| Harness | File | Gives |
-|---|---|---|
-| Claude Code | `~/.claude/sessions/<pid>.json` | Open while the process runs and started when `procStart` says. Busy when `status` is `busy`. |
-| Codex | `~/.codex/thread-writer-locks/<thread>.lock` | Open while a Codex process holds the file's lock. The file stays after the process exits. Busy from the last task event in the rollout. |
-| Devin | `session_locks/<session>.lock` beside `sessions.db`, and `sessions.db` | Open while the named process runs, is `devin`, and started before the lock was written. The session must still be in `sessions.db`. When one process is named by several locks, it must also hold this lock file open. A Devin session without such a lock is not live, even when it wrote a moment ago. |
-
-To see whether a Codex process holds a thread's lock, the agent does what
-Codex's own cleanup does. It takes `.coordination.lock` in the same
-directory without waiting, tries a shared lock on the thread's file
-without waiting, and releases both at once. A Codex that starts in that
-moment waits microseconds for the coordination lock; it is never refused
-its thread. When the coordination lock is busy, or the directory has no
-`.coordination.lock` (an older Codex), the agent counts the file's
-existence, as before.
-
-Devin's store does not show whether a turn runs. The agent uses the hook
-events instead: each `flopwire hook` call tells the agent its event. After
-`UserPromptSubmit` or `PostToolUse` the Devin session is busy. After `Stop`
-it is idle. A session with no hook event for 15 minutes is idle. A session
-is idle until its first hook event after the agent starts.
-
-Devin runs no `Stop` hook for a turn that you interrupt (Esc twice or
-Ctrl-C in the TUI, `session/cancel` over ACP). Devin then writes a marker
-as the turn's last node in `sessions.db`: the system node
-`[Response interrupted by user]`, or the tool result
-`Canceled due to user interrupt`. While a session is busy, each presence
-check reads the session's 16 newest nodes. A marker written after the
-hook that made the session busy makes it idle.
-
-A message waits for 24 hours. Then it expires.
-
-To see the messaging state, run `flopwire agent status`.
-
-### Ended sessions
-
-A session ends when its harness shows it, never because it is idle. The
-agent takes these signals:
-
-| Harness | The session ended when |
-|---|---|
-| Claude Code | Its `SessionEnd` hook runs. Or its `sessions/<pid>.json` names a process that is not running or that started at another time (a killed process leaves the file). Or the file that named it is gone at two reads 1 second apart (a clean exit removes it). |
-| Codex | Its `SessionEnd` hook runs. Or no process holds its writer lock (the kernel releases the lock when the process exits, also when it is killed). Or the lock file is gone at two reads 1 second apart. |
-| Devin | Its `SessionEnd` hook runs. Or its `session_locks/<session>.lock` names a process that is not running, is not `devin`, or started after the lock was written. Or, about 1 second after it happens, the session is gone from `sessions.db`, or a process named by several locks closes this one. |
-
-The agent reads the harness files on each 2-second presence check and on
-each `peers` call (presence is cached for 1 second). An ended session
-leaves presence at that read, and its messages are marked then. On this
-device, `peers` stops listing it within about 1 second of a `SessionEnd`
-hook or a killed process, and within about 3 seconds of a clean exit
-without the hook (the second read). The server learns it from the next
-poll, which the next 2-second presence check starts.
-
-One window remains. A session that ran and exited between two presence
-checks (a `claude -p` of under 2 seconds) and whose harness ran no
-`SessionEnd` hook never showed in its harness file. It stays live for 10
-minutes after its last write, as `flopwire sessions` shows it. With the
-plugin's `SessionEnd` hook installed, it ends at once.
-
-When a session ends, each message that waits for it (queued for it, or an
-`@user` message claimed for it) becomes `undelivered` with the reason
-`session_ended`. The sender can explicitly retry it with `--retry-of ID`
-if it was addressed to that exact session. See [retry after a recipient
-session ends](messaging.md#retry-after-a-recipient-session-ends). The message is never given to another session. A message that a
-hook took and has not confirmed keeps its lease: a late confirmation still
-counts. If the lease ends unconfirmed, the message becomes
-`undelivered` with `session_ended`.
-
-A message that arrives after the session ended is marked the same way
-only when its sender could still have been told that the session runs.
-A message sent later went to a session that `peers` no longer listed. Its
-receipt said `only_if_resumed`, and it waits for a resume.
-
-- Without a server, the receipt comes from this agent's presence, which
-  is at most 1 second old. A message sent within 1 second of the last
-  time the agent saw the session live is marked. The receipt and the
-  mark always agree.
-- With a server, the server learns of the end from the next poll, about
-  2 seconds later, and its clock may differ. A message sent within 10
-  seconds of the last live sighting is marked. In that window a message
-  whose receipt said `only_if_resumed` can be marked `undelivered` too.
-  The sender then sees it and can send it again.
-
-A session resumes when a hook of it runs that started after the end, or
-when its harness file names a newer process. A resumed session receives
-its new messages. Messages that were already `undelivered` stay so.
-
-The agent keeps this state in its authority inbox database. A session that its harness file
-showed before an agent restart, and that is gone after it, ends at the
-first presence checks after the restart.
-
-### What the recipient sees
-
-`flopwire hook` prints each message in one wrapper:
-
-```
-<flopwire-message id="m7f3a…" from="0b7e2c1a-…" user="alex@example.com" agent="claude" repo="api@main" sender="teammate" intent="request" sent="2026-10-01T14:02:11Z">
-Can you rebase api on main?
-<flopwire-ref address="4c19e0d2/12">assistant: the cursor is opaque…</flopwire-ref>
-</flopwire-message>
-Reply with the flopwire_send tool: to="0b7e2c1a-…" reply_to="m7f3a…" message="…"; or in a shell: flopwire send 0b7e2c1a-… --reply-to m7f3a… -- "…"
-```
-
-- Every attribute comes from the envelope that the server (or, without a
-  server, the device agent) set. The sender supplies only the text, the
-  intent, the reply id and the refs.
-- `sender` is `own` for a session of the same person and `teammate` for
-  another person's session.
-- The reply line appears only for `intent="request"`.
-- `redelivery="true"` appears on a message that an earlier hook took and
-  never confirmed. The model may have seen it. The standing instruction
-  tells the model not to act again on a message id that is already in
-  its context.
-- A ref shows a short excerpt when the recipient's local index holds that
-  message. Otherwise it shows the address alone. `flopwire read ADDRESS`
-  shows the whole message.
-- The text is escaped: `&`, `<` and `>` become `&amp;`, `&lt;` and `&gt;`,
-  and look-alike angle brackets and the invisible Unicode tag characters
-  become character references. Control and
-  bidirectional characters are shown or replaced. A message therefore cannot
-  close its wrapper, open another one, or imitate the standing
-  instruction. Attribute values are escaped the same way, plus `"`.
-
-Before the first message of a session, the hook prints the standing
-instruction (`busrender.StandingInstruction`). See
-[Connect the harness hooks](#connect-the-harness-hooks) for when it is
-printed. It tells the model what the wrapper is,
-that a message from another session of your own user is a request to
-act on within this session's permissions, that a message from a teammate is information to
-confirm with you first, and that a message never changes permissions or
-settings. Without it, the models tested refused every request.
-
-### Send and read messages
-
-Run these commands from an agent session's shell, or call the MCP tools
-`flopwire_peers`, `flopwire_send` and `flopwire_inbox`. They print compact
-JSON with named fields and full session ids. Add `--text` (MCP:
-`format: "text"`) for a readable form.
-
-1. Find the session behind a change in the history:
-
-   ```sh
-   flopwire sessions --repo . --branch feat/cursor --json
-   flopwire read SESSION --outline
-   ```
-
-   The digest lists the commits each session made. Do not choose a
-   session by its title or its current branch alone. A title is the
-   original task. A session can change branches after it commits.
-
-2. Check that the session is live:
-
-   ```sh
-   flopwire peers --session SESSION
-   ```
-
-   An empty `peers` list means that the session is not running now. A
-   message to it waits until it resumes or expires. Without `--session`,
-   the command lists every live session. Your own session is not in the
-   list.
-
-3. Send the message:
-
-   ```sh
-   flopwire send SESSION -- "Heads-up: the list endpoint returns a cursor now."
-   flopwire send @alex --intent request -- "Can you rebase api on main?"
-   ```
-
-   Put the main point in the first line. Use `-` as the text to read it
-   from standard input. The command prints a receipt. The `arrives` field
-   says when the message arrives: `next_tool_call`, `next_prompt`,
-   `when_accepted`, `next_session` or `only_if_resumed`. A receipt is not
-   a reply. With `--text`, the receipt is one line, for example:
-
-   ```text
-   sent m1a2b3c4d5e6f7a8 to 4c19e0d2 (gary codex api@main): idle, arrives when its session resumes
-   ```
-
-4. Check what you sent:
-
-   ```sh
-   flopwire inbox --sent
-   ```
-
-   Each entry has `direction` (`sent` or `received`) and `state`:
-   `queued`, `held`, `claimed`, `delivered`, `read`, `expired`,
-   `refused` or `undelivered`. A `refused` or `undelivered` entry also
-   has a `reason`. `undelivered` with `unconfirmed` means that hooks took
-   the message 3 times and none confirmed that it printed it.
-   `undelivered` with `session_ended` means that the recipient session
-   ended before delivery was confirmed. If the work is still needed, use
-   an [explicit retry](messaging.md#retry-after-a-recipient-session-ends)
-   to the same session. A previous hook might have printed without confirming. The state
-   of a sent message is its delivery only. `read` (with `read_at`) means
-   that the message's text entered the recipient's context, not that the
-   recipient acted on it ([read receipts](messaging.md#read-receipts)).
-   A reply is a received
-   entry whose `reply_to` names your message. To read one thread, use
-   `flopwire inbox --thread ID`. When `more` is true, pass `next` as
-   `--cursor`.
-
-A failure prints one JSON object on standard error, and the command exits
-with status 1. The object has a stable `code` (for example `thread_rate`,
-`duplicate` or `agent_not_running`), a `detail`, a `fix` and an `example`.
-
-The commands talk only to the device agent. If the agent does not run,
-they stop with an error that says how to start it.
-
-The sender is always the calling session. The commands find it as
-[search](search.md#your-own-session) does. If no session is found, `send`
-and `inbox` stop with an error. `peers` still lists the sessions. To name
-the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
-`codex` or `devin`).
-
-A subagent is not a session, so it gets no messages. A hook that runs in
-a subagent prints nothing and takes nothing. The session's own next hook
-delivers the messages. A message that a subagent sends goes out as its
-parent session, and the reply goes to the parent session. The parent's
-human does not see the call. This is the same on Claude Code, Codex,
-Devin CLI and opencode (decided 2026-10-04).
-
-In Codex, a subagent's `flopwire_send` call names the subagent's own
-thread in `_meta.threadId`. The agent follows the index's parent links
-from that thread to the top-level session and sends as that session.
-Checked live with Codex 0.160.0 on 2026-10-04: a `codex exec` session
-spawned one subagent, and the subagent called `flopwire_send`. The receipt
-and the recipient's inbox showed the parent session as the sender. A
-message for the parent, queued while the subagent ran, printed in none of
-the subagent's seven hooks (one `UserPromptSubmit` and six
-`PostToolUse`). It printed once, at the parent's next `PostToolUse`.
-
-A session that a path rule keeps off the server cannot send. The agent
-refuses the request before anything leaves the device. The agent also
-refuses a send whose recipient or ref names such a session
-(`withheld_session`). The agent does not check the message text: a
-withheld session id written in the text reaches the server. Do not write
-one there.
-
-A new session can send before the agent has indexed it, or before its
-transcript names its directory. The agent then indexes the session and
-waits up to 2 seconds. If the session is still not ready, the agent
-refuses the send with `session_not_on_device` and "not indexed yet". Send
-again after a few seconds. `flopwire send` retries once by itself.
-
-### Known limits
-
-- Only Claude Code, Codex, Devin CLI and opencode sessions send and
-  receive. Claude Code cloud sessions and Devin cloud sessions only
-  receive, while they run a turn. See [docs/cloud.md](cloud.md). For
-  opencode, see [opencode.md](opencode.md#known-limits).
-- A Devin hook finds a subagent's tool call in Devin's session store. A
-  background subagent (`run_subagent` in the background, or a foreground
-  one that Esc moved there) writes its nodes to the store as it runs, on
-  a root of its own. Its tool call is then in the store, but not on the
-  session's main chain (`sessions.main_chain_id`), so its hook delivers
-  nothing. If the hook cannot read the store, it delivers messages only
-  at a prompt. It writes the cause to stderr.
-- Without a server, the agent applies the server's per-session,
-  per-device, per-thread, duplicate and recipient limits. It does not
-  apply the per-person ceiling: it is higher than the per-device ceiling,
-  and without a server the person has one device.
-- `@user` messages are routed by repo name. With `--server`, `--repo`
-  does not match another machine's checkout at another path (#102).
-- Devin CLI shows no held-message notice. `codex exec` does not show it
-  either.
-- A Devin session held by a `devin acp` process with several sessions
-  costs one `lsof` call (about 30 ms) for that process at each presence
-  check. A process with one session needs none. The calls of one check
-  stop after 500 ms. When `lsof` is missing, fails or is stopped, the
-  check keeps every lock of that process.
-- A background Devin subagent fires a `Stop` hook when it ends. That
-  `Stop` reads as the session's own and makes the session idle, also
-  while the session's own turn still runs. A message waits for the
-  session's next own hook.
-- The live mark of retrieval (`flopwire sessions`, the live sessions
-  each sync reports to the server, and `--exclude-live`) still takes a
-  Devin lock of a running `devin` as live without the per-session checks
-  that `peers` makes. A session that a `devin acp` process deleted, or a
-  lock whose pid a later `devin` reuses, reads live there until that
-  process exits. Messages are not affected: they follow `peers`.
-- On Linux, the agent computes a process's start from the boot time in
-  `/proc/stat`, and the boot time moves when the wall clock steps. A
-  forward step of more than 2 seconds (for example, a VM or WSL resume
-  that resyncs the clock) makes a running Claude Code, Devin or opencode
-  process look as if it started after the file that names it. A backward
-  step of more than 2 seconds also affects Claude Code: its session file
-  records the process's start, and the two must agree within 2 seconds.
-  The sessions then end, and they read as ended until that process exits.
-  Restart the harness to resume them. Codex sessions are not affected:
-  their writer lock does not use the start time.
 
 ## How the agent finds changes
 
@@ -1553,201 +333,16 @@ again after a few seconds. `flopwire send` retries once by itself.
 - Directory events (kqueue on macOS, inotify on Linux) report new files in
   active directories. The agent never watches single files.
 
-## Keep sessions out with path rules
 
-A path rule matches where a session ran. It has one of three modes:
+## See also
 
-| Mode | Local index | Upload |
-|---|---|---|
-| `allow` (default) | yes | yes |
-| `local` | yes | no |
-| `deny` | no | no |
-
-To add your own rules:
-
-1. Open `path-rules` in the config directory (beside `config.json`).
-2. Write one rule per line, as `MODE PATTERN`. A line with only a pattern
-   is a `deny` rule. Lines that start with `#` are comments.
-3. Save the file. The agent reads it again at the next sweep.
-
-```
-# never index or upload
-deny ~/personal
-# index here, never upload
-local ~/clients/acme/**
-# any directory named secret-client, at any depth
-deny secret-client
-# every repository of the acme organization on GitHub
-deny repo:github.com/acme/*
-```
-
-- A path pattern covers the directory it names and everything below it.
-- `*` and `?` match within one path segment. `**` matches across
-  segments. `~` is your home directory.
-- A `repo:` pattern matches the repository's `origin` remote, written as
-  host/owner/name. `https://github.com/acme/web.git` and
-  `git@github.com:acme/web.git` are both `github.com/acme/web`.
-- Matching ignores case. A path is also matched with its symlinks
-  resolved. For example, on macOS `deny /tmp/x` also covers a session that
-  recorded `/private/tmp/x`.
-- When rules disagree, the most restrictive rule wins (`deny`, then
-  `local`, then `allow`).
-- `config.json` can also hold rules, as a `"denylist"` array of strings
-  in the same syntax. The agent adds them to the `path-rules` file.
-- An admin sets rules for everyone on the server (`path_rules` in
-  `PUT /v1/admin/policy` or the console's Collection policy page, written
-  `local:PATTERN`, `local:repo:PATTERN` or a bare deny pattern). The
-  agent fetches them at start and every 10 minutes, and keeps the last
-  copy in `admin-path-rules.json.<authority hash>`. The hash identifies
-  the normalized server and enrolled device. A credential without a device
-  ID uses a token fingerprint. An offline start uses valid saved rules for
-  that same authority, including an empty rule set. Saved rules do not expire.
-  Your rules can make an admin rule stricter but not looser.
-- If connected rules are missing, unreadable, or belong to another authority,
-  collection and uploads pause until the server supplies valid rules. Existing
-  indexed data stays in place. Queued uploads retry after rules become known.
-  Cache write errors appear in the log; fetched rules remain active for the
-  current process, but an offline restart may pause if those rules were not
-  saved. Each authority's saved rules remain separate. Legacy unowned cache
-  files remain untouched and require a fresh fetch. Standalone and `--no-sync`
-  collection use local rules without a cached administrator floor.
-- The server also applies the admin rules when it parses an upload. It
-  does not store a session that an admin `deny` or `local` rule covers.
-  The server sees only the directory and remote that the transcript
-  recorded, so a rule on a main checkout does not cover a worktree there.
-  The agent is still the primary check. `flopwire agent status` lists the
-  sources that the server refused.
-- The agent reports your home directory to the server with each upload.
-  The server uses it for `~` in admin rules.
-- When an admin changes the rules, the server hides the stored sessions
-  that the new rules cover. Search and read no longer show them. If the
-  rules change again within seven days and no longer cover a hidden
-  session, the server restores it. After seven days, or when an admin
-  confirms the purge (`flopwire admin policy purge --yes`), the server
-  deletes them permanently.
-- A new `deny` rule removes the matching sessions from the local index.
-  Your own rules never reach the server, so copies already uploaded stay
-  there unless an admin rule covers them. `flopwire agent status` and
-  the agent log name the sessions; ask the owner or an admin to delete
-  them there.
-- A session can move into another directory after it starts. The agent
-  applies the most restrictive rule across every directory the session
-  names. When a later directory moves an uploaded session to `local` or
-  `deny`, the agent stops the upload and asks the server to delete the
-  session and its subagents. The server keeps a tombstone, so the session
-  does not come back, and audits the request as `conversation.withheld`
-  with the rule. The server records it even before an upload commits. A
-  member's enrolled credential with read and upload scopes withholds all
-  of that member's device copies. Minted tokens, service credentials, and
-  upload-only device credentials withhold only their bound device's copy
-  and its subagents. A failed request, including an older server's `404`,
-  stays owed and retries at each policy refresh and at start.
-- If you remove a `deny` rule, the agent indexes those sessions again.
-
-### Where a session ran
-
-The agent finds these facts when it first sees a session:
-
-- the working directory the transcript names;
-- the git worktree root that holds it;
-- the main checkout root. For a linked worktree (`git worktree add`), this
-  is the checkout the worktree belongs to. For a worktree of a bare
-  repository, it is the bare repository's directory;
-- the `origin` remote, normalized.
-
-A path pattern is checked against the working directory, the worktree root
-and the main checkout root. A `repo:` pattern is checked against the
-remote. A rule on `~/Code/app` therefore also covers the worktree
-`~/Code/app-fix-login`.
-
-The agent reads the git files (`.git`, `commondir`, `config`) directly and
-does not run git. It stores the result in the local index, and keeps it
-when the index is rebuilt. Rules still match a session after its worktree
-is deleted, and a rule change is checked against the stored facts. When
-the rules change, the agent resolves the facts again for each directory
-that still exists, so it sees a remote that was added. It only fills in a
-main checkout or remote that was unknown. It never replaces a stored one,
-because the directory can be deleted and made again as another
-repository.
-
-A relative working directory (for example `.`) does not count as a
-directory.
-
-The same facts decide which repo a session is on for `--repo` in
-`sessions`, `grep`, `search` and `peers`. A session's repository is its
-main checkout (for a worktree of a bare repository, the bare repository)
-and its remote. All worktrees of one repository are then one repo, with
-or without a remote. Two repositories with the same name stay two repos.
-A session in a deleted worktree stays on its repo through the stored main
-checkout, or through the one that the recovery pass below records. A
-session with only candidates is on no repo by its candidates. It still
-matches by its directory. See [search.md](search.md#which-repo).
-
-### Sessions in deleted worktrees
-
-The agent can first see a session after its worktree was deleted. Then git
-cannot give its main checkout. The agent does not use a repository above
-the deleted directory that still exists. For example, a home directory
-kept in git (dotfiles) is not the repository of a deleted worktree under
-it. A background pass looks for the checkout
-among the repositories the agent already knows (the main checkouts of
-other sessions). It records a main checkout only when exactly one
-repository fits these signals:
-
-- `remote`: the session recorded a git remote, and exactly one local
-  checkout has that `origin`. A rule on `~/Code/app` then covers an old
-  Codex session from a deleted `app` worktree.
-- `branch`: a branch the session recorded (not `main`, `master` or
-  `HEAD`) is a branch, a remote branch or a reflog checkout of the
-  repository.
-- `worktree-add`: a session in a live checkout ran `git worktree add` for
-  the directory. With `git -C DIR`, DIR's repository counts only when the
-  agent already knows it.
-- `commit`: a commit the session printed, such as `[fix abc1234]`, is in
-  the repository.
-
-When more than one repository fits, the agent records no main checkout.
-It keeps every repository that fits as a candidate and applies the rules
-once with each candidate as the main checkout. The most restrictive result
-wins. A transcript can claim anything, so a false claim can only make the
-result stricter. Candidates stay across later checks.
-
-The agent does not upload such a session until the pass has checked it.
-If a `deny` rule could match, the agent does not index it until then
-either. A session in a temporary directory with none of these signals
-keeps its working directory only. The agent checks a session that it did
-not place again after a day.
-
-`flopwire agent status` shows how many sessions each method placed: `cwd`,
-`worktree`, `folder`, `remote`, `branch`, `worktree-add`, `commit` or
-`unplaceable`. `ambiguous` counts the sessions that have candidates. Each
-of them is also counted under its method.
-
-When the transcript does not name its directory:
-
-- For Claude Code, the project folder name stands for it. For example,
-  `~/.claude/projects/-Users-me-Code-app` is `/Users/me/Code/app`. The
-  name is lossy, so the agent looks for the longest path that exists.
-- For old Codex rollouts, the git remote they recorded places the session.
-- The agent waits 2 minutes for a new transcript to name its directory
-  before it uses these fallbacks. It does not upload the session while it
-  waits. If a `deny` rule could match, it does not index the session
-  either.
-
-### Sessions with no place
-
-A session is unplaceable when the agent finds no directory and no remote
-for it. The `unplaceable` setting decides what happens to it:
-
-| Value | Local index | Upload |
-|---|---|---|
-| `local` (default) | yes | no |
-| `upload` | yes | yes |
-| `exclude` | no | no |
-
-To set it on a device, add `"unplaceable": "upload"` (or another value) to
-`config.json`. Restart the agent.
-
-An admin sets a floor in the server policy (`unplaceable` in
-`PUT /v1/admin/policy`, or the admin console). The more restrictive of
-the two settings applies.
+- [Harnesses](harnesses/README.md): support matrix, `flopwire setup`, and
+  the hooks of each harness.
+- [Messaging](messaging.md): send, receive, accept and revoke messages.
+- [Path rules](path-rules.md): keep sessions out of the index or off the
+  server.
+- [Troubleshooting](troubleshooting.md): an agent that stops, and
+  extraction diagnostics.
+- [Parallel sync](parallel-sync.md): two upload workers.
+- [Coverage reporting](coverage-reporting.md): read the coverage reports.
+- [Daemon diagnostics](agent-diagnostics.md): measure the agent's work.

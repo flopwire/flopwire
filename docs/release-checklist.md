@@ -6,7 +6,7 @@ transcripts, real agent CLIs or two machines, so CI cannot run them. Run
 every check on a release candidate before you tag it, except the ones
 marked optional. Record the measured numbers in the release PR. See [Releases](releases.md)
 for the release-please workflow and bot setup. The [v0.1.0 qualification
-record](releases/v0.1.0-readiness.md) separates observed evidence from pending
+record](../notes/log/release-readiness-v0.1.0-2026-10-10.md) separates observed evidence from pending
 gates and owner-deferred scope.
 
 All corpus checks read the harness directories (`~/.claude`, `~/.codex`,

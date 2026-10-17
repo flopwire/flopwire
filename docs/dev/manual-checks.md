@@ -1,9 +1,8 @@
 # Check message delivery by hand in the GUI surfaces
 
-`flopwire probe` drives each harness headless ([probe.md](probe.md)). It
+`flopwire probe` drives each harness headless ([probe.md](../probe.md)). It
 does not cover the desktop apps, the IDE extensions or an interactive TUI.
-This page tells you how to check them by hand. Issues: #58 (Claude Code),
-#59 (Codex), #60 (Devin), #69 (manual pass).
+This page tells you how to check them by hand.
 
 ## Surfaces
 
@@ -291,7 +290,7 @@ information from another person. It asks A before it creates
 ## Record the result
 
 Add one section to
-[`notes/message-bus/probe-runs.md`](../notes/message-bus/probe-runs.md)
+[`notes/message-bus/probe-runs.md`](../../notes/message-bus/probe-runs.md)
 for each run. Put the sections in date order with the probe runs.
 
 1. Name the section `## YYYY-MM-DD manual: SURFACE`.

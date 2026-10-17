@@ -199,7 +199,7 @@ They survive a local reindex.
 
 ## Path rules and placement
 
-Decision D18. Details and syntax: [agent.md](agent.md#keep-sessions-out-with-path-rules).
+Decision D18. Details and syntax: [path-rules.md](path-rules.md).
 
 - **Agent (primary).** The agent places each session (cwd, git worktree
   root, main checkout, origin remote, with fallbacks for deleted worktrees)
@@ -320,7 +320,7 @@ Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
 server, the device agent, the `peers`, `send` and `inbox` commands and MCP
 tools, `flopwire hook` and the plugins for Claude Code, Codex and Devin CLI
 are built, with read receipts, and push delivery into vendor cloud sessions
-(`internal/vendorcloud`, [cloud.md](cloud.md)). opencode is not. The
+(`internal/vendorcloud`, [cloud.md](harnesses/cloud.md)). opencode is not. The
 commands reach the server only through the device agent's control socket.
 Routes and wire types are in `internal/busproto`.
 
@@ -430,11 +430,5 @@ Routes and wire types are in `internal/busproto`.
 in one transaction under an advisory lock and records each file's checksum
 in `flopwire_schema_migrations`. It refuses a database whose ledger has
 edited, missing or unknown entries, and a database with application tables
-but no ledger. Applied historical files and ledger checksums are immutable;
-schema changes use additive migrations that preserve durable data. The
-supported upgrade from `661a48b` recognizes its exact historical
-`009_bus.sql` checksum only with the exact embedded current 009 and
-`013_bus_retention_upgrade.sql` checksums. It preserves the historical
-ledger row and applies the pending migrations. Migrations 011, 012, and 013
-ship together. See [the bus migration upgrade procedure](operations-migration-upgrade.md)
-for the recognition contract, validation, and rollback steps.
+but no ledger. Applied files and ledger checksums are immutable;
+schema changes use additive migrations that preserve durable data.

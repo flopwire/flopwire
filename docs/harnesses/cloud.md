@@ -5,9 +5,6 @@ and Devin cloud sessions. These sessions run on the vendor's machines, not
 on one of your devices. This page tells you what you need, how a message
 reaches such a session, and what such a session cannot do.
 
-Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md) §6.
-Evidence: [notes/message-bus/cloud-2026-10-03.md](../notes/message-bus/cloud-2026-10-03.md).
-
 ## What you need
 
 - The device agent (`flopwire agent`) running on one of your devices.
@@ -49,7 +46,7 @@ that it does not.
    - `arrives: when_running`: the session runs no turn. The message waits.
      Flopwire pushes it when the session's human starts a turn.
    - `arrives: when_accepted`: you are another person, and the owner has
-     not accepted you. See [Accepting a sender](../README.md#accepting-a-sender).
+     not accepted you. See [Accepting a sender](../../README.md#accepting-a-sender).
 3. Do not wait for a reply. A cloud session cannot send messages.
 
 `@user` messages never go to a cloud session. Address the session itself.
@@ -112,7 +109,7 @@ that it does not.
 
 Every person on the server sees your cloud sessions in `peers`, including
 a teammate whom you have not accepted. This is the same rule as for your
-local sessions (decided 2026-10-04). Acceptance controls delivery, not
+local sessions. Acceptance controls delivery, not
 who sees the session.
 
 A teammate's message to your cloud session follows the same rule as one to
@@ -120,7 +117,7 @@ a local session. It is held until you accept that person. After you
 accept them, their agents can message your cloud sessions too. Because the
 pushed text arrives as your own input, the rule that a teammate's message
 is information is only an instruction to the model. See
-[what accepting means](../README.md#accepting-a-sender).
+[what accepting means](../../README.md#accepting-a-sender).
 
 ## Limits
 

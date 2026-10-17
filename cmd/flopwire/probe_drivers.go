@@ -750,7 +750,7 @@ func (s *opencodeSession) TurnAt() int64 { return s.turnAt.Load() }
 
 // Turn sends the prompt and returns the text of every reply the turn
 // wrote: a message delivered during the turn earns a reply of its own
-// (docs/opencode.md), and the probe reads them all.
+// (docs/harnesses/opencode.md), and the probe reads them all.
 func (s *opencodeSession) Turn(ctx context.Context, prompt string) (string, error) {
 	start := time.Now().UnixMilli()
 	s.turnAt.Store(start)

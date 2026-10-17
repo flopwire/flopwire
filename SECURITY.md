@@ -65,7 +65,7 @@ based: a credential it does not recognize is stored as written.
     without inventing a destructive Deny. Actual Deny retains its purge rules.
     Reconciliation is scoped to the credential's device and verified aliases;
     it does not grant permission through a session ID shared by other devices.
-    See [Cowork policy](docs/cowork-policy.md) for the protocol and limits.
+    See [Cowork policy](docs/dev/cowork-policy-protocol.md) for the protocol and limits.
   - `~` in a rule is the home directory the device reports with each
     upload (with its Claude projects and Codex directories). Until a device
     has reported one, the server infers the home from the harness
@@ -136,7 +136,7 @@ another person's session is held until the recipient accepts that person
 - A prompt-injected agent can pass the injection to every session whose
   owner accepted its owner.
 - Vendor cloud sessions (Claude Code cloud, Devin cloud) are reached too
-  ([docs/cloud.md](docs/cloud.md)). The vendor gives pushed text to the
+  ([docs/harnesses/cloud.md](docs/harnesses/cloud.md)). The vendor gives pushed text to the
   model as the account owner's own input, with no mark of where it came
   from. The `sender` attribute and the instruction travel inside that
   text, so the information-only rule is weaker still there. The device

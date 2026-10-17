@@ -283,7 +283,7 @@ The remaining qualification gates are:
   the passing local CLI request/reply and installed-hook trials.
 
 Long-running MCP credential rotation already has recorded subprocess E2E
-qualification in [the v0.1.0 readiness record](releases/v0.1.0-readiness.md),
+qualification in [the v0.1.0 readiness record](release-readiness-v0.1.0-2026-10-10.md),
 with maintained coverage in `internal/e2e/mcp_rotation_test.go`. Targeted client
 race tests passed again at `237b144`. Incomplete-result behavior has CLI and MCP
 regression coverage: complete empty results succeed, zero-hit timeouts return

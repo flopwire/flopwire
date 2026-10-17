@@ -244,7 +244,7 @@ The plugins provide messaging, tools and capture notifications. Hook-triggered
 checks receive scheduling priority. They still respect path rules, capture
 bounds and server cooldowns. Polling and watches also discover changes without
 hooks. Setup reports older manual hooks and Codex `notify` entries; remove those
-entries yourself to avoid duplicate invocation. See [agent setup](agent.md#install-into-the-harnesses).
+entries yourself to avoid duplicate invocation. See [agent setup](harnesses/README.md#install-into-the-harnesses).
 
 ## Verify
 

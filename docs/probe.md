@@ -132,7 +132,7 @@ that answers the message instead of quoting it does not fail a case.
 By default the scratch project's hooks call this binary by absolute path
 (`<flopwire> probe tap`). That hides how a real install finds the binary:
 every harness runs the plugin's hook command through a shell, whose
-`PATH` can differ from yours ([agent.md](agent.md#how-the-hooks-find-the-binary)).
+`PATH` can differ from yours ([agent.md](harnesses/README.md#how-the-hooks-find-the-binary)).
 
 With `--as-installed`, the probe installs this binary's own plugins the
 way `flopwire setup` does, and the delivery hooks are the plugins' own
@@ -205,10 +205,10 @@ The probe follows that precedence and rejects unreadable expiry conservatively.
 
 - The Claude desktop app, the Codex desktop app, Devin Desktop and the
   IDE extensions. Check them by hand after their releases. See
-  [manual-checks.md](manual-checks.md).
+  [manual-checks.md](dev/manual-checks.md).
 - Interactive TUI sessions. The Codex hook review screen and the Devin TUI
   with a teammate sender have their own checks in
-  [manual-checks.md](manual-checks.md). The probe drives each harness headless:
+  [manual-checks.md](dev/manual-checks.md). The probe drives each harness headless:
   `claude -p` with stream-json input, `codex app-server`, `devin acp` and
   `opencode serve`.
   Each keeps one process open, so the session stays live and idle between
