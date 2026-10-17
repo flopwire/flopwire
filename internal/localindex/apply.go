@@ -74,14 +74,18 @@ type BatchResult struct {
 // from both the batch and the index gets a stub row under the source's agent.
 func (s *Store) ApplyBatch(ctx context.Context, b Batch) (BatchResult, error) {
 	var res BatchResult
-	err := s.write(ctx, func(w *writeTx) error {
+	err := s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionAppend, fn: func(w *writeTx) error {
 		res = BatchResult{}
 		return w.applyBatch(&b, &res)
-	})
+	}})
 	return res, err
 }
 
 func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
+	if b.NewGeneration != nil || b.SupersedeAbsent || len(b.RetireSources) > 0 {
+		w.changeCache = nil
+		w.changeAppend = false
+	}
 	if b.NewGeneration != nil {
 		if err := w.startGeneration(b.SourceID, b.NewGeneration, b.NewGenerationReason); err != nil {
 			return err
@@ -402,7 +406,7 @@ func locatorKey(m *transcript.Message) any {
 	return m.ByteOffset
 }
 
-func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, res *BatchResult) (rowChange, error) {
+func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, res *BatchResult) (changeOut rowChange, errOut error) {
 	h, err := w.findHead(b, convID, m)
 	if err != nil {
 		return 0, err
@@ -411,6 +415,30 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 		_, err := w.insertMessage(b, convID, m, p, 1)
 		res.Inserted++
 		return rowAdded, err
+	}
+	if w.changeCache[convID] != nil {
+		before, err := w.changeInput(h.id)
+		if err != nil {
+			return 0, err
+		}
+		defer func() {
+			if errOut != nil {
+				delete(w.changeCache, convID)
+				return
+			}
+			if w.changeCache[convID] == nil {
+				return
+			}
+			after, err := w.changeInput(h.id)
+			if err != nil {
+				errOut = err
+				delete(w.changeCache, convID)
+				return
+			}
+			if before != after {
+				delete(w.changeCache, convID)
+			}
+		}()
 	}
 	enr, err := enrichmentJSON(m)
 	if err != nil {
@@ -433,6 +461,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 			res.Touched++
 			return change, w.refresh(b, h.id, m, enr, nil)
 		}
+		// A non-nil refresh writes text. The metadata comparison alone cannot
+		// prove the old extractor input unchanged across this branch.
+		delete(w.changeCache, convID)
 		res.Grown++
 		if err := w.ftsDelete(h.id); err != nil {
 			return 0, err
@@ -443,6 +474,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 		w.ftsInsert(h.id, p)
 		return change, nil
 	}
+	// Replacing an old physical row invalidates its retained prefix before
+	// either the supersede write or the new-version insertion.
+	delete(w.changeCache, convID)
 	res.Versioned++
 	// Clear the head slot before inserting the new version.
 	if _, err := w.exec(`UPDATE messages SET superseded = 1, superseded_by = -1,
@@ -485,6 +519,14 @@ func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p
 		return 0, err
 	}
 	w.ftsInsertNew(id, p)
+	// nullStr and jsonlInt produce canonical identities for fresh rows: a
+	// missing locator always stores a non-NULL byte offset, including zero.
+	if w.changeCache[convID] != nil && (m.Kind == transcript.KindToolCall || m.Kind == transcript.KindToolResult) {
+		if w.changeAdded == nil {
+			w.changeAdded = map[int64][]int64{}
+		}
+		w.changeAdded[convID] = append(w.changeAdded[convID], id)
+	}
 	return id, nil
 }
 

@@ -324,7 +324,7 @@ func serve(ctx context.Context, args []string) error {
 	root.Handle("/readyz", apiHandler)
 	root.Handle("/metrics", apiHandler)
 	root.Handle("/", webapp.Handler())
-	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 90 * time.Second}
+	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: serverReadTimeout, WriteTimeout: serverWriteTimeout, IdleTimeout: 90 * time.Second}
 	transport.announce(os.Stderr, *addr)
 	slog.Info("flopwire server listening", "addr", *addr, "tls", transport.mode, "version", version)
 	return serveUntilDone(ctx, server, shutdownGrace, func() error {
@@ -335,8 +335,15 @@ func serve(ctx context.Context, args []string) error {
 	})
 }
 
-// shutdownGrace is how long a shutdown waits for requests in flight.
-const shutdownGrace = 10 * time.Second
+const (
+	serverReadTimeout = 30 * time.Second
+	// HTTP/1 starts the write deadline before reading the request body.
+	// Leave time for that read, the maximum retrieval budget, and encoding
+	// and sending the incomplete response after the query deadline expires.
+	serverWriteTimeout = serverReadTimeout + api.MaxBudget + 10*time.Second
+	// shutdownGrace is how long a shutdown waits for requests in flight.
+	shutdownGrace = 10 * time.Second
+)
 
 // serveUntilDone runs listen until ctx is done, then shuts server down:
 // it stops accepting connections and waits up to grace for requests in
