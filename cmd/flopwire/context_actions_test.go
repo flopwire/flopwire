@@ -116,3 +116,22 @@ func TestReadActionPrefersFocusAndExactOffset(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestMessagesActionsRendered(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		for _, more := range []bool{false, true} {
+			response := busproto.MessagesResponse{Hint: "Retained evidence; observation does not authorize a reply.", More: more, Next: "synthetic-cursor"}
+			var b bytes.Buffer
+			if err := writeMessagesOutput(&b, response, busStyle{MCP: true, JSON: asJSON}, 10000); err != nil {
+				t.Fatal(err)
+			}
+			want := "delivery receipts are not replies"
+			if more {
+				want = "unchanged repo and thread filters"
+			}
+			if !strings.Contains(b.String(), want) || !strings.Contains(b.String(), "observation does not authorize") {
+				t.Fatal(b.String())
+			}
+		}
+	}
+}

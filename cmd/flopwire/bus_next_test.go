@@ -122,15 +122,23 @@ func TestSendReceiptNext(t *testing.T) {
 			t.Errorf("%s --text:\n got %q\nwant %q", c.name, text, wantText)
 		}
 
-		// MCP: the CLI's JSON, and its text form the CLI's line.
+		// MCP reuses the receipt shape and supplies a contextual next action.
+		expected := rc
+		expected.Next = sendMCPNext(rc.SendResponse)
+		expectedJSON, marshalErr := json.Marshal(expected)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
 		got, err := mcpCall(t.Context(), r, "flopwire_send", mcpArgs)
-		if err != nil || got != strings.TrimRight(out, "\n") {
-			t.Errorf("%s over MCP:\n got %s\nwant %s %v", c.name, got, out, err)
+		if err != nil || got != string(expectedJSON) {
+			t.Errorf("%s over MCP: got %s want %s %v", c.name, got, expectedJSON, err)
 		}
 		mcpArgs["format"] = "text"
-		if got, err := mcpCall(t.Context(), r, "flopwire_send", mcpArgs); err != nil || got != strings.TrimRight(wantText, "\n") {
+		expectedText := expected.Outcome + ". " + expected.Next
+		if got, err := mcpCall(t.Context(), r, "flopwire_send", mcpArgs); err != nil || got != expectedText {
 			t.Errorf("%s over MCP as text: %q %v", c.name, got, err)
 		}
+
 	}
 }
 

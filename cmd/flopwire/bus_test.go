@@ -287,7 +287,7 @@ func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
 	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
 	text, err := mcpCall(t.Context(), r, "flopwire_send", map[string]any{"to": peerID, "message": "same message", "retry_of": "mfailed", "intent": "request", "reply_to": "mparent", "refs": []any{"reference/1"}})
 	var receipt sendJSON
-	if err != nil || json.Unmarshal([]byte(text), &receipt) != nil || !receipt.Replayed || receipt.ID != "mretry" || receipt.State != busproto.StateRead || receipt.Arrives != arriveRecorded || receipt.Next != "" {
+	if err != nil || json.Unmarshal([]byte(text), &receipt) != nil || !receipt.Replayed || receipt.ID != "mretry" || receipt.State != busproto.StateRead || receipt.Arrives != arriveRecorded || receipt.Next != sendMCPNext(receipt.SendResponse) {
 		t.Fatalf("MCP replay: %q %v", text, err)
 	}
 	if request := fa.requests()[1].Send; request.RetryOf != "mfailed" || request.ReplyTo != "mparent" || request.Body != "same message" {
@@ -772,7 +772,7 @@ func TestMCPPeersAndInbox(t *testing.T) {
 		t.Fatalf("peers json: %q %v", text, err)
 	}
 	text, err = mcpCall(t.Context(), r, "flopwire_inbox", map[string]any{"sent": true})
-	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false}` {
+	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false,"hint":"Continue work using received evidence; a sent delivery receipt is not a reply."}` {
 		t.Fatalf("inbox json: %q %v", text, err)
 	}
 	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_messages, flopwire_peers, flopwire_read") {
