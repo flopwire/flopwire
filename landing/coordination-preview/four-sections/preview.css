@@ -75,3 +75,24 @@ button.copy-box{display:block;width:100%;text-align:left;color:var(--ink);cursor
 .supported-mark img{width:24px;height:24px}
 .supported-mark img[src*="claude-code"]{width:38.4px;height:38.4px}
 .supported-mark img[src*="devin"]{width:31.1px;height:31.1px}
+
+/* Commands select one example. Reserve its space so switching never moves the section. */
+.command-tabs{display:flex;flex-direction:column;gap:4px;margin-top:28px}
+.command-tabs button{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;min-height:48px;width:100%;padding:12px;text-align:left;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--ink);font:14px/1.5 var(--prose);cursor:pointer}
+.command-tabs button code{font:12px/1.8 var(--font)}
+.command-tabs button:hover{background:var(--soft)}
+.command-tabs button[aria-selected="true"]{border-color:var(--signal);background:#f4e8e1}
+.command-tabs button[aria-selected="true"] code{color:var(--signal)}
+.command-tabs button:focus-visible,.example-panel:focus-visible{outline:2px solid var(--signal);outline-offset:4px}
+.example-panels{display:grid;grid-template-columns:minmax(0,1fr)}
+.example-panel{grid-area:1/1;min-width:0;align-self:start}
+.example-panel[hidden]{display:block!important;visibility:hidden;pointer-events:none}
+.architecture-feature{grid-template-columns:1fr;gap:32px}
+.architecture-feature .feature-copy{max-width:900px}
+.architecture-feature .network{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px}
+.architecture-feature .network-stage+.network-stage{margin-top:0}
+.architecture-feature .example-note{margin:0}
+.stage-tools{margin-top:20px;font:13px/1.6 var(--prose);color:var(--muted)}
+.stage-tools>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin-top:8px}
+.stage-tools dd{margin:0}.stage-tools code{font:12px/1.7 var(--font)}
+@media(max-width:760px){.command-tabs{margin-top:22px}.command-tabs button{font-size:13px;gap:10px}.command-tabs button code{font-size:11px}.architecture-feature .network{grid-template-columns:1fr;gap:32px}}

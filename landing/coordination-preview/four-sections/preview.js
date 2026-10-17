@@ -66,3 +66,32 @@ document.querySelectorAll('a[href="#get-started"]').forEach(link => {
     }
   });
 });
+
+// Local examples switch immediately; hover never changes the selected command.
+document.querySelectorAll('.command-tabs').forEach(list => {
+  const tabs = [...list.querySelectorAll('[role="tab"]')];
+  const select = tab => {
+    tabs.forEach(item => {
+      const active = item === tab;
+      item.setAttribute('aria-selected', String(active));
+      item.tabIndex = active ? 0 : -1;
+      document.getElementById(item.getAttribute('aria-controls')).hidden = !active;
+    });
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => select(tab));
+    tab.addEventListener('keydown', event => {
+      let next;
+      switch (event.key) {
+        case 'ArrowDown': next = (index + 1) % tabs.length; break;
+        case 'ArrowUp': next = (index + tabs.length - 1) % tabs.length; break;
+        case 'Home': next = 0; break;
+        case 'End': next = tabs.length - 1; break;
+        default: return;
+      }
+      event.preventDefault();
+      select(tabs[next]);
+      tabs[next].focus({ preventScroll: true });
+    });
+  });
+});
