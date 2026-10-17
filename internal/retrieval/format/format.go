@@ -549,8 +549,9 @@ type GrepScan struct {
 }
 
 // Page is a grep or search answer. A page cut short by the query budget
-// is still an answer, never an error: Truncated is set and Reason says
-// what was checked. Resumable grep reports progress separately in Scan.
+// retains its results: Truncated is set and Reason says what was checked.
+// The CLI reports incompleteness with exit 2; MCP marks an empty incomplete
+// answer as an error. Resumable grep reports progress separately in Scan.
 type Page struct {
 	Scan  *GrepScan `json:"scan,omitempty"`
 	Scope *Scope    `json:"scope,omitempty"`

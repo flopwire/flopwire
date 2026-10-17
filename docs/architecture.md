@@ -278,7 +278,7 @@ Decision D8.
 | Limit | Local | Server |
 |---|---|---|
 | Time budget | 10s default, `--timeout` up to 60s | Same; each call runs in a read-only transaction with a matching `statement_timeout` |
-| Out of budget | grep and search return partial hits plus one line saying what was checked; never an error | Same for grep and search; `sessions`, `read` and raw reads fail with `504` |
+| Out of budget | grep and search retain partial hits and explain the incomplete query. CLI exits 2; MCP marks empty incomplete answers as errors and preserves useful partial answers. Resumable grep reports progress in `scan`. | Same for grep and search (HTTP `200` with `truncated` and `reason`); `sessions`, `read` and raw reads fail with `504` |
 | Byte budget | 1GiB of text verified per grep | 200,000 candidate rows per grep |
 | Ranked search | Ranks the newest 20,000 matches of a very common term, with the note `ranked newest 20k of N matches — add terms or filters` (D2) | Ranks in Postgres (`ts_rank_cd`); no 20k cap |
 | Unindexable regex | Scans the newest 20,000 rows that pass the filters | Refused with `400`: add a literal of 3 or more letters or digits |

@@ -613,7 +613,7 @@ func pageInfos(p *format.Page) []*format.ConversationInfo {
 }
 
 // incompleteRetrieval follows a rendered partial answer. CLI scans return it;
-// MCP grep returns it only when no matching candidate was verified.
+// MCP grep and search return it only when no matching candidate was verified.
 type incompleteRetrieval struct{ reason string }
 
 func (e *incompleteRetrieval) Error() string {
@@ -706,7 +706,10 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := emit(page, bounded, text); err != nil {
 			return err
 		}
-		if page.Scan == nil && page.Truncated && (!st.MCP || o.verb == "grep" && page.Total == 0) {
+		// Total is a grep count; ranked search can return useful hits without it.
+		// A resumable scan reports progress separately, even on an empty page.
+		empty := page.Total == 0 && len(page.Hits) == 0 && len(page.Sessions) == 0
+		if page.Scan == nil && page.Truncated && (!st.MCP || empty) {
 			return &incompleteRetrieval{reason: page.Reason}
 		}
 		return nil
