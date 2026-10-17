@@ -129,10 +129,11 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 			rows.Close()
 			return err
 		}
-		g.msgs = append(g.msgs, m)
 		if w.changeAppend {
 			g.events = append(g.events, g.stream.state.Step(m)...)
 			g.stream.ordinal, g.stream.id = m.Ordinal, id
+		} else {
+			g.msgs = append(g.msgs, m)
 		}
 		ref := digest.EvidenceRef{NativeID: m.NativeID, Part: m.Part, ByteOffset: m.ByteOffset, Locator: m.Locator}
 		g.ids[changeIdentity(ref)] = id
