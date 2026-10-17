@@ -45,8 +45,8 @@ func lookupChange(ctx context.Context, r *retriever, v url.Values) (*format.Chan
 	return b.Change(ctx, q, f)
 }
 
-func changeCmd(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("change", flag.ContinueOnError)
+func changeCmd(ctx context.Context, name string, args []string) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	repo := fs.String("repo", "", "repository scope (required)")
 	commits := fs.String("commits", "", "comma-separated full commit IDs (or supply positional IDs)")
 	limit := fs.Int("limit", 20, "evidence events per page (maximum 100)")

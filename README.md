@@ -197,7 +197,7 @@ flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, li
 flopwire search 'how did we handle income verification?'              # ranked keywords
 flopwire sessions 'api*' --since 7d                                   # newest first, JSON
 flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an address a result printed
-flopwire change --repo . 0123456789abcdef0123456789abcdef01234567     # captured commit evidence
+flopwire trace --repo . 0123456789abcdef0123456789abcdef01234567     # captured commit evidence
 ```
 
 - `grep`, `search` and `read` print text (`--json` for JSON). Hits group
@@ -247,6 +247,9 @@ The search tools are `flopwire_grep`, `flopwire_search`,
 `flopwire_sessions`, `flopwire_read`, and `flopwire_change`. They only read, and answer as
 the CLI does, as one text block. The plugin searches the shared server
 after enrollment. Add `"--local"` to `args` to search only this device.
+
+The CLI calls this lookup `flopwire trace`; `flopwire change` remains an alias.
+The MCP tool keeps its existing name, `flopwire_change`.
 
 Use `flopwire_change` with a repository and full commit IDs to find captured
 command/result evidence linking commits to sessions. See

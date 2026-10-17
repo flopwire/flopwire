@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -78,5 +79,32 @@ func TestChangeMCPExpandedRepositoryScope(t *testing.T) {
 	r.teamRepo = func(context.Context, string) (local.Repo, error) { return local.Repo{}, nil }
 	if _, err := mcpCall(t.Context(), r, "flopwire_change", args); err == nil {
 		t.Fatal("accepted empty resolved scope")
+	}
+}
+
+// Exercise public command dispatch, not just the shared handler: old scripts and
+// new instructions must reach the same lookup without requiring a server.
+func TestTraceCLIAndChangeAlias(t *testing.T) {
+	oracleIndex(t)
+	hash := strings.Repeat("a", 40)
+	var baseline string
+	for _, verb := range []string{"trace", "change"} {
+		t.Run(verb, func(t *testing.T) {
+			output := captureStdout(t, func() error {
+				return run(t.Context(), []string{verb, "--local", "--repo", "/tmp/oracle-alpha", hash})
+			})
+			var page format.Changes
+			if err := json.Unmarshal([]byte(output), &page); err != nil || page.Kind != "change" {
+				t.Fatalf("invalid lookup response: %s (%v)", output, err)
+			}
+			if baseline == "" {
+				baseline = output
+			} else if output != baseline {
+				t.Fatalf("alias changed response: got %s want %s", output, baseline)
+			}
+			if err := run(t.Context(), []string{verb, "--local", "--repo", "/tmp/oracle-alpha", "abc"}); err == nil {
+				t.Fatal("accepted abbreviated input commit")
+			}
+		})
 	}
 }
