@@ -73,8 +73,8 @@ steps below do.
 3. Start the stack:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml pull postgres minio
-   docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
+   FLOPWIRE_BUILD_VERSION="$(git rev-parse --short=12 HEAD)" \
+     docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
    ```
 
    The server speaks TLS with a self-signed certificate. To get an ACME
@@ -114,7 +114,7 @@ steps below do.
 
 ## Quick start: a device
 
-1. Build from a checkout with Go 1.26.6. Releases provide source archives:
+1. Build from a checkout with Go 1.26.6:
 
    ```sh
    mkdir -p ~/.local/bin
@@ -123,8 +123,8 @@ steps below do.
    ```
 
    Add `~/.local/bin` to your shell's `PATH` before the next step.
-   For a release source archive, follow
-   [Build from a source archive](docs/releases.md#build-from-a-source-archive).
+   Releases also carry prebuilt binaries; see
+   [Release assets](docs/releases.md#release-assets).
 
 2. Claim the invite. The command prompts for a new password and pins the
    server's fingerprint:
@@ -442,8 +442,9 @@ Tests with `FLOPWIRE_CORPUS=1` read this machine's real transcripts. See
 [docs/release-checklist.md](docs/release-checklist.md).
 
 Release-please maintains a release PR from conventional commits on `main`.
-Merging that PR creates the version tag and GitHub source release. See
-[Releases](docs/releases.md) for bot setup and the verification workflow.
+Merging that PR creates the version tag and GitHub release, and the Release
+workflow attaches binaries and publishes the server image. See
+[Releases](docs/releases.md) for bot setup and the workflow.
 
 ## Repository layout
 

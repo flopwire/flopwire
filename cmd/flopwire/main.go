@@ -57,6 +57,8 @@ func resolveVersion(ldflag string, info *debug.BuildInfo) string {
 }
 
 func main() {
+	info, _ := debug.ReadBuildInfo()
+	version = resolveVersion(version, info)
 	recordSelf(os.Args[1:])
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		var incomplete *incompleteRetrieval
@@ -84,8 +86,7 @@ func run(parent context.Context, args []string) error {
 	case "diagnostics":
 		return diagnosticsCommand(ctx, args[1:], os.Stdout)
 	case "version":
-		info, _ := debug.ReadBuildInfo()
-		fmt.Println(resolveVersion(version, info))
+		fmt.Println(version)
 		return nil
 	case "serve":
 		return serve(ctx, args[1:])

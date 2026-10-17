@@ -72,6 +72,10 @@ and approve pull requests" in Settings > Actions > General.
 4. Review the proposed version and changelog.
 5. Merge the release PR.
 6. Check the Release workflow for the new tag, then the assets on the release.
+7. After the first release only: GitHub creates the `flopwire` package
+   private. In the organization's Packages settings, make
+   `ghcr.io/flopwire/flopwire` public, or every `docker compose pull`
+   without a login fails.
 
 The workflow's `verify` job checks out the tag, validates its semantic
 version and ancestry on `main`, runs Go tests, and builds a CLI that
@@ -80,7 +84,8 @@ The workflow runs on tag pushes from the App, PAT, or a human. The
 release-please workflow calls it directly for tags created with
 `GITHUB_TOKEN`. Manual dispatch accepts a tag for retries. GoReleaser
 re-uploads nothing that already exists: delete a partial asset from the
-release before retrying.
+release before retrying. Retry only the newest tag: a retry also moves the
+image's `latest` tag to the tag it builds.
 
 A failed workflow does not remove an already created release. It does
 not deploy a server.

@@ -60,8 +60,8 @@ Do these steps on both laptops.
 4. Start the stack:
 
    ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml pull postgres minio
-   docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
+   FLOPWIRE_BUILD_VERSION="$(git rev-parse --short=12 HEAD)" \
+     docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
    ```
 
    `compose.dev.yaml` publishes Postgres on `127.0.0.1:55432` and MinIO
