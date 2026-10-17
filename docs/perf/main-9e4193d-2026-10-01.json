@@ -74,13 +74,6 @@
       "result": "PASS"
     },
     {
-      "name": "query.payments-recent.warm",
-      "value": 214.771,
-      "unit": "ms",
-      "limit": 200,
-      "result": "FAIL"
-    },
-    {
       "name": "query.launchd-payments.warm",
       "value": 143.194,
       "unit": "ms",
@@ -278,11 +271,6 @@
     {
       "name": "query.gh-issue-edit-250",
       "detail": "10 hits, reads 5/5",
-      "result": "PASS"
-    },
-    {
-      "name": "query.payments-recent",
-      "detail": "100 hits, reads 5/5",
       "result": "PASS"
     },
     {

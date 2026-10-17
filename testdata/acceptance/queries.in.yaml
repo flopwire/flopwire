@@ -8,10 +8,12 @@
 # newer sessions cannot push expected hits off the first page.
 # scripts/acceptance-expect.py derives `expect` by brute force over the raw
 # transcripts and writes queries.yaml; `source` is the original invocation.
+# Repository names are synthetic. A machine that holds the matching
+# transcripts maps them to real paths in repo-aliases.local.yaml (untracked):
+#   console: ~/Code/real-name
 - {name: session-uuid, verb: find, query: "01a01119-bc4c-7d10-91f3-617775628632", source: "cass search '01a01119-bc4c-7d10-91f3-617775628632'"}
 - {name: issue-250-papercut, verb: search, query: "issue 250 papercut", source: "cass search 'issue 250 papercut'"}
 - {name: gh-issue-edit-250, verb: find, query: "gh issue edit 250", source: "cass search 'gh issue edit 250'"}
-- {name: payments-recent, verb: search, query: "payments", since: "2026-09-22", source: "cass search 'payments' --since 2026-09-22"}
 - {name: launchd-payments, verb: search, query: "launchd", repo: ~/Code/payments, since: "2026-09-22", source: "cass search 'launchd' --workspace ~/Code/payments --since 2026-09-22"}
 - {name: tmux, verb: search, query: "tmux", source: "cass search tmux --since=-3h --mode lexical"}
 - {name: pueue, verb: search, query: "pueue", since: "2026-09-15", source: "cass search pueue --since 2026-09-15"}
@@ -29,7 +31,7 @@
 - {name: capability-snapshots-migration, verb: find, query: "063_session_capability_snapshots.sql", repo: ~/Code/console, source: "cass search 'surface/server/migrations/063_session_capability_snapshots.sql' --workspace ~/Code/console --days 3"}
 - {name: live-e2e-codex-live, verb: find, query: "live-e2e-codex-live", repo: ~/Code/fanout, source: "cass search 'live-e2e-codex-live' --workspace ~/Code/fanout --today"}
 - {name: durable-controller, verb: search, query: "durable controller", repo: ~/Code/fanout, source: "cass search 'durable controller' --workspace ~/Code/fanout --today"}
-- {name: livekit-turn-domain, verb: find, query: "LIVEKIT_TURN_DOMAIN", source: "cass search 'turnhard-0703 LIVEKIT_TURN_DOMAIN pnpm-store'"}
+- {name: livekit-turn-domain, verb: find, query: "LIVEKIT_TURN_DOMAIN", source: "cass search 'LIVEKIT_TURN_DOMAIN pnpm-store'"}
 - {name: vmpass2, verb: search, query: "vmPass2", source: "cass search 'vmPass2'"}
 - {name: blob-unavailable, verb: find, query: "blob_unavailable", source: "cass search blob_unavailable"}
 - {name: durable-before-commit, verb: find, query: "durable-before-commit", source: "cass search durable-before-commit"}

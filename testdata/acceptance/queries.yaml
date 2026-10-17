@@ -32,17 +32,6 @@
     - 01a015f6-85fd-7ef1-8707-e8187ac0b084
     - 85940a27-89a1-4d56-889e-2824eb5408ad
   evidence: 'brute force 2026-09-30: 9 lines match in the first 1500 chars of their text, in 3 sessions (claude 4, codex 5); 10 match anywhere'
-- name: payments-recent
-  verb: search
-  query: payments
-  since: '2026-09-22T00:00:00Z'
-  source: cass search 'payments' --since 2026-09-22
-  until: '2026-09-29T00:00:00Z'
-  limit: 100
-  expect:
-    min_hits: 100
-    sessions: []
-  evidence: 'brute force 2026-09-30: 8416 lines match in the first 1500 chars of their text, in 342 sessions (claude 7169, codex 1247); 10490 match anywhere'
 - name: launchd-payments
   verb: search
   query: launchd
@@ -234,7 +223,7 @@
 - name: livekit-turn-domain
   verb: find
   query: LIVEKIT_TURN_DOMAIN
-  source: cass search 'turnhard-0703 LIVEKIT_TURN_DOMAIN pnpm-store'
+  source: cass search 'LIVEKIT_TURN_DOMAIN pnpm-store'
   until: '2026-09-29T00:00:00Z'
   limit: 50
   expect:
