@@ -13,7 +13,7 @@ make test
 
 ```sh
 make build      # builds the console into internal/webapp/dist, then the binary
-make test       # go test -race ./..., web tests, release-tag script test
+make test       # go test -race ./..., web tests, script tests
 make e2e
 make e2e-sync   # two devices against a Compose server; see docs/two-laptop.md
 ```

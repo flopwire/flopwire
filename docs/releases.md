@@ -27,7 +27,7 @@ releases. Add `~/.local/bin` to your shell's `PATH` before running setup.
 A source archive has no Git metadata; the version above is explicit.
 
 To build the server container, first complete the README's
-[server configuration steps](../README.md#quick-start-the-server), including
+[server configuration steps](../README.md#add-a-team-server), including
 the `.env` file and database and object-storage passwords. Compose requires
 these values when it reads the configuration, including during a build.
 Use this explicit archive version in place of the README's Git-derived

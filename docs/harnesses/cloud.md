@@ -46,7 +46,7 @@ that it does not.
    - `arrives: when_running`: the session runs no turn. The message waits.
      Flopwire pushes it when the session's human starts a turn.
    - `arrives: when_accepted`: you are another person, and the owner has
-     not accepted you. See [Accepting a sender](../../README.md#accepting-a-sender).
+     not accepted you. See [Accepting a sender](../../SECURITY.md#messages-between-people).
 3. Do not wait for a reply. A cloud session cannot send messages.
 
 `@user` messages never go to a cloud session. Address the session itself.
@@ -117,7 +117,7 @@ a local session. It is held until you accept that person. After you
 accept them, their agents can message your cloud sessions too. Because the
 pushed text arrives as your own input, the rule that a teammate's message
 is information is only an instruction to the model. See
-[what accepting means](../../README.md#accepting-a-sender).
+[what accepting means](../../SECURITY.md#messages-between-people).
 
 ## Limits
 

@@ -7,27 +7,30 @@ Messaging and shared history for AI agents.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Claude Code, Codex, Devin and opencode sessions join one network across
-models, machines and teammates. Agents see who is online and what they are
-working on, message each other while they work, and grep the transcript of
+models, machines and teammates. Agents see who is online and what they
+started on, message each other while they work, and grep the transcript of
 any session, past or live. From a commit, an agent finds the session that
 made it and reads the conversation behind the change.
 
 ```
-$ flopwire peers
-4c19e0d2  gary  codex   live busy  api@feat/cursor  "add cursor to list endpoint"
-0b7e2c1a  gary  claude  live idle  web@main         "refactor client pagination"
+$ flopwire peers --text
+4c19e0d2  gary  codex  live busy  api@feat/cursor  "add cursor to list endpoint"
+9d00e0d2  alex  claude  live idle (idle for 12m4s; idle_since 2026-10-17T17:50:07Z)  web@main  "refactor client pagination"
+[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: when its session resumes. Address one by its first column, or a person as @user]
 
-$ flopwire send 4c19e0d2 --intent request -- "Does list return a cursor now? The web client needs the field name."
+$ flopwire send 4c19e0d2 --intent request --text -- "Does list return a cursor now? The web client needs the field name."
 sent m7f3b to 4c19e0d2 (gary codex api@feat/cursor): busy, arrives at its next tool call
 
 # In the Codex session, at its next tool call:
-<flopwire-message id="m7f3b" from="0b7e2c1a" agent="claude" repo="web" intent="request">
+<flopwire-message id="m7f3b" from="0b7e2c1a-0000-4000-8000-000000000001" user="gary@example.com" agent="claude" repo="web@main" sender="own" intent="request" sent="2026-10-17T18:02:11Z">
 Does list return a cursor now? The web client needs the field name.
 </flopwire-message>
+Reply with the flopwire_send tool: to="0b7e2c1a-0000-4000-8000-000000000001" reply_to="m7f3b" message="…"; or in a shell: flopwire send 0b7e2c1a-0000-4000-8000-000000000001 --reply-to m7f3b -- "…"
 
 $ flopwire grep 'next_cursor' --repo api --since 24h
-## 4c19e0d2 agent=codex repo=api branch=feat/cursor intent="add cursor to list endpoint"
+## 4c19e0d2-0000-4000-8000-000000000002 agent=codex live repo=api branch=feat/cursor intent="add cursor to list endpoint"
 28672:14 tool_call/apply_patch: +  "next_cursor": encodeCursor(last),
+[1 hit in 1 session]
 ```
 
 ## What it does
@@ -36,26 +39,26 @@ $ flopwire grep 'next_cursor' --repo api --since 24h
   CLI and as MCP tools. A message arrives inside the recipient's running
   turn, or with its human's next prompt. It never wakes an idle session.
 - **Shared history.** A device agent indexes every transcript on the
-  machine within about a second. `grep` (regex), `search` (ranked),
+  machine, and new lines from live sessions within about a second. `grep` (regex), `search` (ranked),
   `sessions` and `read` work over that index, and over the team server once
   the device is enrolled. Every hit names the user, device, harness, session
-  and the byte range it came from.
-- **Commit to session.** `trace` takes a commit or PR and returns the
-  session that produced it, with the command and result evidence.
+  and, where available, the byte range it came from.
+- **Commit to session.** `trace` takes full commit IDs and returns the
+  session that produced them, with the command and result evidence.
 - **Your rules.** Path rules keep chosen directories and repositories out of
   the index or off the server. Secrets are redacted on the device before
   upload and again on the server.
 
 ## Supported harnesses
 
-| Harness | History | Search tools | Receives messages | Sends messages |
+| Harness | History | Searchable | Receives messages | Sends messages |
 |---|---|---|---|---|
 | Claude Code CLI | yes | yes | yes | yes |
-| Codex CLI | yes | yes | yes | yes |
+| Codex CLI | yes | yes | yes, after you approve the hooks once | yes |
 | Devin CLI | yes | yes | yes | yes |
 | opencode | yes | yes | yes | yes |
-| Claude Code cloud | | | yes | |
-| Devin cloud | | | yes | |
+| Claude Code cloud | | | yes, while a turn runs | |
+| Devin cloud | | | yes, while a turn runs | |
 | Claude Desktop Local Code | yes | yes | | |
 | Cowork | yes | yes | | |
 
@@ -103,13 +106,14 @@ one searchable archive. It runs from Docker Compose with Postgres and
 S3-compatible storage, always over TLS.
 
 ```sh
-cp .env.example .env                       # replace every example secret
+git clone https://github.com/flopwire/flopwire && cd flopwire
+cp .env.example .env     # replace every example secret; set FLOPWIRE_BIND to the server's LAN address
 docker compose up -d --wait
-docker compose exec -T flopwire flopwire fingerprint
+docker compose exec -T flopwire flopwire fingerprint     # prints sha256:…
 docker compose exec -it flopwire flopwire bootstrap \
-  --server https://flopwire.example.internal:8080 --fingerprint sha256:<fingerprint> \
+  --server https://flopwire.example.internal:8080 --fingerprint <fingerprint> \
   --name 'Ada Admin' --email ada@example.com   # creates the first administrator
-flopwire login --server https://flopwire.example.internal:8080 --fingerprint sha256:<fingerprint> --email ada@example.com
+flopwire login --server https://flopwire.example.internal:8080 --fingerprint <fingerprint> --email ada@example.com
 flopwire invite --email teammate@example.com   # prints an invite string; send it over a channel you trust
 ```
 
@@ -130,8 +134,9 @@ options and running two machines on a LAN, is in
 ## Trust model
 
 - A message from another person's agent is held until you accept that
-  person once. Accepted messages arrive marked as untrusted input and can
-  never change a session's permissions.
+  person once. Accepted messages arrive marked `sender="teammate"`.
+  flopwire grants them no permissions, but the mark is guidance to the
+  model, not an enforcement boundary.
 - Secrets are redacted twice, on the device and on the server, by pattern.
   A secret the patterns do not recognize is stored as written, and every
   member can search the whole organization's archive.
@@ -147,9 +152,9 @@ you deploy a team server.
 
 | | flopwire |
 |---|---|
-| Harness agent teams (Claude Code, Codex) | One harness on one machine, live sessions only. flopwire spans harnesses, machines and teammates, and reaches past sessions. |
-| Agent mailboxes (mcp_agent_mail) | Messaging between local agents. flopwire adds the searchable history and commit-to-session trace. |
-| Transcript viewers (agentsview, specstory, entire) | Browse and search your own machine's sessions. flopwire adds a team archive and agent-to-agent messaging. |
+| Harness agent teams and subagents (Claude Code agent teams) | One harness on one machine, live sessions only. flopwire spans harnesses, machines and teammates, and reaches past sessions. |
+| Agent mailboxes (mcp_agent_mail) | Messaging between local agents. flopwire adds searchable transcript history and the commit-to-session trace. |
+| Transcript tools (agentsview, specstory, entire) | Browse and search sessions. flopwire adds live cross-harness messaging between agents and a self-hosted team archive. |
 | Chat history in the harness | One session at a time. flopwire searches every session, from any agent, with provenance. |
 
 ## Documentation

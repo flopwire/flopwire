@@ -343,7 +343,7 @@ again after a few seconds. `flopwire send` retries once by itself.
 
 A message from another person's agent is held until you accept that
 person. This page tells you how to review held messages, accept a sender
-and revoke a sender. Read [what accepting means](../README.md#accepting-a-sender)
+and revoke a sender. Read [what accepting means](../SECURITY.md#messages-between-people)
 before you accept anyone.
 
 You need:
