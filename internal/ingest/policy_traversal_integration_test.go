@@ -215,7 +215,10 @@ func TestPolicyOwnedTraversalScale(t *testing.T) {
 	done := make(chan error, 2)
 	started := time.Now()
 	go func() {
-		_, err := (&Server{Pool: e.pool, Objects: e.objects}).PolicyPlacements(ctx, e.deviceID, req)
+		ack, err := (&Server{Pool: e.pool, Objects: e.objects}).PolicyPlacements(ctx, e.deviceID, req)
+		if err == nil && (ack == nil || ack.EvidenceScope != "unmapped" || ack.Allowed) {
+			err = errors.New("historical generation did not retain unmapped sharing hold")
+		}
 		done <- err
 	}()
 	go func() { done <- sy.Sync(ctx, sp) }()
