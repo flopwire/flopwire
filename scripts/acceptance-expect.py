@@ -32,6 +32,26 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+
+def resolve_repo(repo):
+    """Map a fixture repo (~/Code/NAME) through the untracked
+    testdata/acceptance/repo-aliases.local.yaml, when present."""
+    name = repo[len("~/Code/"):] if repo.startswith("~/Code/") else None
+    if name is None:
+        return repo
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "testdata", "acceptance", "repo-aliases.local.yaml")
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    if k.strip() == name:
+                        return v.strip().strip("'\"")
+    except FileNotFoundError:
+        pass
+    return repo
+
 import yaml
 
 HOME = os.path.expanduser("~")
@@ -130,7 +150,7 @@ def in_scope(q, agent, cwd, ts):
     if q.get("agent") and q["agent"] != agent:
         return False
     if q.get("repo"):
-        r = os.path.expanduser(q["repo"]).rstrip("/")
+        r = os.path.expanduser(resolve_repo(q["repo"])).rstrip("/")
         if not (cwd == r or cwd.startswith(r + "/")):
             return False
     try:
