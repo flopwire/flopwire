@@ -80,8 +80,11 @@ func TestHookOpencodeHello(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &h); err != nil {
 		t.Fatalf("output %q: %v", out, err)
 	}
-	if h.Instruction != busrender.StandingInstruction || h.Registry != "/cfg/flopwire/opencode" || len(h.Tools) != len(mcpTools()) || h.MCP != mcpInstructions+"\n\n"+mcpBusInstructions {
+	if h.Instruction != busrender.StandingInstruction || h.Registry != "/cfg/flopwire/opencode" || len(h.Tools) != len(mcpTools()) || h.MCP != mcpInstructions {
 		t.Fatalf("hello: %+v", h)
+	}
+	if got := strings.Count(h.MCP, mcpBusInstructions); got != 1 {
+		t.Fatalf("messaging instructions appear %d times, want once", got)
 	}
 	if len(fa.requests("")) != 0 || len(fa.reqs) != 0 {
 		t.Fatalf("Hello asked the agent: %+v", fa.reqs)

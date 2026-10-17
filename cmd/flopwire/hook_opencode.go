@@ -98,7 +98,7 @@ func opencodeHook(ctx context.Context, in hookInput, socket string, stdout io.Wr
 			warn("no config directory: %v", err)
 		}
 		writeJSONLine(stdout, opencodeHello{Version: version, Instruction: busrender.StandingInstruction, Tools: mcpTools(),
-			MCP: mcpInstructions + "\n\n" + mcpBusInstructions, Registry: reg})
+			MCP: mcpInstructions, Registry: reg})
 	case evConfirm:
 		if in.SessionID == "" || len(in.IDs) == 0 && !in.Instruction {
 			return
