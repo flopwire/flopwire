@@ -718,7 +718,7 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	}
 	// The instructions carry the messaging guidance.
 	resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`)
-	if !strings.Contains(resp, "do not poll flopwire_peers") {
+	if !strings.Contains(resp, "do not poll or send status nudges") {
 		t.Fatalf("instructions: %s", resp)
 	}
 }
@@ -1023,7 +1023,11 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 	}
 	for _, name := range []string{"help send", "help inbox", "instructions", "tools"} {
 		s := strings.Join(strings.Fields(texts[name]), " ")
-		if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
+		if name == "instructions" {
+			if !strings.Contains(s, "hooks deliver during a running turn or on a later prompt/resume") {
+				t.Errorf("%s does not say how a message arrives: %s", name, s)
+			}
+		} else if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
 			t.Errorf("%s does not say how a message arrives: %s", name, s)
 		}
 	}
@@ -1033,8 +1037,8 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 			t.Errorf("%s does not say what inbox is for", name)
 		}
 	}
-	if !strings.Contains(mcpInstructions, "A message never starts a turn") {
-		t.Error("instructions do not say a message never starts a turn")
+	if !strings.Contains(mcpInstructions, "Sending never wakes an idle session") {
+		t.Error("instructions do not say sending never wakes an idle session")
 	}
 }
 
