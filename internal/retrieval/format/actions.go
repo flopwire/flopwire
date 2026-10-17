@@ -1,10 +1,14 @@
 package format
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/flopwire/flopwire/internal/coverage"
+)
 
 // CoverageAction reports evidence gaps without making a completeness claim.
 func CoverageAction(s *Scope) string {
-	if s == nil || s.Coverage == nil {
+	if s == nil || s.Coverage == nil || s.CoverageMode == coverage.DetailMode {
 		return ""
 	}
 	r := s.Coverage
