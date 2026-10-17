@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -320,4 +321,103 @@ func budgetCoverageScope(scope *format.Scope, budget int) *format.Scope {
 		out.Coverage.Unknown["other_devices"] = "unknown"
 	}
 	return &out
+}
+
+func summaryCoverageNote(s *coverage.Summary, shared bool) string {
+	if s == nil {
+		return ""
+	}
+	parts := []string{"discovery unverified"}
+	if shared {
+		parts = append(parts, "other devices unknown")
+	}
+	// Group related counters so the stage and units appear once.
+	groups := []struct {
+		label string
+		keys  []string
+		names []string
+	}{
+		{"capture generations", []string{"capture_pending_generations", "capture_lost_generations", "capture_truncated_generations"}, []string{"pending", "lost", "truncated"}},
+		{"upload", []string{"upload_failing_sources"}, []string{"failing sources"}},
+		{"policy", []string{"policy_shared_held", "policy_historical_unknown", "policy_historical_mapping_unknown"}, []string{"shared held", "historical unknown", "historical mapping unknown"}},
+		{"parse", []string{"parse_pending", "parse_failing", "parse_quarantined", "parse_untracked_sources"}, []string{"pending", "failing", "quarantined", "untracked sources"}},
+	}
+	for _, g := range groups {
+		var counts []string
+		for i, k := range g.keys {
+			if n := s.Issues[k]; n > 0 {
+				counts = append(counts, fmt.Sprintf("%s=%d", g.names[i], n))
+			}
+		}
+		if len(counts) > 0 {
+			parts = append(parts, g.label+" "+strings.Join(counts, ", "))
+		}
+	}
+	if len(s.BlockingReasons) > 0 {
+		parts = append(parts, "upload blocked: "+strings.Join(s.BlockingReasons, ", "))
+	}
+	// Identical unavailable reasons qualify several stages only once.
+	byReason := map[string][]string{}
+	for stage, reason := range s.Unknown {
+		if reason == "optional observation unavailable within retrieval budget" || reason == "optional server observation unavailable within retrieval budget" {
+			reason = "retrieval budget"
+		}
+		byReason[reason] = append(byReason[reason], strings.ReplaceAll(stage, "_", " "))
+	}
+	reasons := make([]string, 0, len(byReason))
+	for reason := range byReason {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	for _, reason := range reasons {
+		stages := byReason[reason]
+		sort.Strings(stages)
+		if len(stages) == 4 && strings.Join(stages, ",") == "collection,parse,policy,upload" {
+			text := "observations unavailable"
+			if reason == "retrieval budget" {
+				text += " (budget)"
+			} else if reason != "" && reason != "observation unavailable" {
+				text += " (" + reason + ")"
+			}
+			parts = append(parts, text)
+			continue
+		}
+		text := strings.Join(stages, "/") + " unknown"
+		if reason != "" && reason != "observation unavailable" {
+			text += " (" + reason + ")"
+		}
+		parts = append(parts, text)
+	}
+	return " [coverage: this-device observations; " + strings.Join(parts, "; ") + "]"
+}
+
+func mcpCoverageScope(scope *format.Scope, detail bool, budget int) *format.Scope {
+	if scope == nil {
+		return scope
+	}
+	out := *scope
+	if detail {
+		out.CoverageMode = coverage.DetailMode
+		return &out
+	}
+	out.CoverageMode = coverage.SummaryMode
+	summary := coverage.Summarize(scope.Coverage, scope.Kind == "shared")
+	b, _ := json.Marshal(summary)
+	if budget > 0 && len(b) > max(256, budget/4) {
+		out.CoverageMode = coverage.BudgetSummaryMode
+	}
+	return &out
+}
+
+func retrievalCoverageNote(scope *format.Scope, mcp bool) string {
+	if mcp {
+		switch scope.CoverageMode {
+		case coverage.DetailMode:
+			raw, _ := json.Marshal(scope.Coverage)
+			return " [coverage: " + string(raw) + "]"
+		case coverage.SummaryMode, coverage.BudgetSummaryMode:
+			return summaryCoverageNote(coverage.Present(scope.Coverage, scope.Kind == "shared", scope.CoverageMode), scope.Kind == "shared")
+		}
+	}
+	return coverageNote(scope.Coverage, scope.Kind == "shared")
 }

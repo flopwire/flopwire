@@ -650,7 +650,18 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 	// search and read on the CLI: indented, as before), or compact JSON
 	// within the budget (sessions, and every tool over MCP).
 	emit := func(full any, bounded func() any, text func() error) error {
-		scope := budgetCoverageScope(finishCoverage.snapshot(r.scope), st.Budget)
+		scope := finishCoverage.snapshot(r.scope)
+		if st.MCP {
+			scope = mcpCoverageScope(scope, o.vals["coverage"] == "detail", st.Budget)
+			if o.vals["coverage"] == "detail" && scope != nil && st.Budget > 0 {
+				raw, _ := json.Marshal(scope.Coverage)
+				if len(raw)+hintRoom > st.Budget {
+					return badArg(fmt.Errorf("coverage=detail requires at least %d output bytes for metadata; MCP output budget is %d; use coverage=summary", len(raw)+hintRoom, st.Budget))
+				}
+			}
+		} else {
+			scope = budgetCoverageScope(scope, st.Budget)
+		}
 		switch out := full.(type) {
 		case *format.Page:
 			out.Scope = scope
@@ -663,14 +674,17 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		case !asJSON:
 			if scope != nil {
 				note := scopeNote(scope)
-				optional := coverageNote(scope.Coverage, scope.Kind == "shared")
-				if st.Budget > 0 && len(note)+len(optional)+1 > st.Budget {
+				optional := retrievalCoverageNote(scope, st.MCP)
+				if !st.MCP && st.Budget > 0 && len(note)+len(optional)+1 > st.Budget {
 					optional = " [coverage: unknown]"
 					if len(note)+len(optional)+1 > st.Budget {
 						optional = ""
 					}
 				}
 				note += optional
+				if st.MCP && st.Budget > 0 && len(note)+1 > st.Budget {
+					return badArg(fmt.Errorf("coverage qualification requires at least %d output bytes; budget is %d", len(note)+1, st.Budget))
+				}
 				if _, err := fmt.Fprintln(w, note); err != nil {
 					return err
 				}
@@ -680,7 +694,11 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			}
 			return text()
 		case st.MCP || o.verb == "sessions":
-			return writeOut(w, bounded())
+			answer := bounded()
+			if st.MCP && !fitsBudget(answer, st.Budget) {
+				return badArg(fmt.Errorf("response requires %d output bytes; MCP output budget is %d; use coverage=summary or narrow the request", jsonSize(answer), st.Budget))
+			}
+			return writeOut(w, answer)
 		}
 		return writeJSON(w, full)
 	}
