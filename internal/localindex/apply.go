@@ -512,7 +512,7 @@ func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p
 	w.ftsInsertNew(id, p)
 	// nullStr and jsonlInt produce canonical identities for fresh rows: a
 	// missing locator always stores a non-NULL byte offset, including zero.
-	if w.changeCache[convID] != nil {
+	if w.changeCache[convID] != nil && (m.Kind == transcript.KindToolCall || m.Kind == transcript.KindToolResult) {
 		if w.changeAdded == nil {
 			w.changeAdded = map[int64][]int64{}
 		}

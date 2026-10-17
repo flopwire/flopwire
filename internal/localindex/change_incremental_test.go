@@ -423,3 +423,93 @@ func TestFreshMessageIdentityAddressIsCanonical(t *testing.T) {
 		t.Fatalf("locator-only row expected NULL byte address: %v", got)
 	}
 }
+
+func TestChangeFreshRowsBatchUsesPrimaryKeys(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	rows, err := s.DB().Query(`EXPLAIN QUERY PLAN `+changeFreshRowsSQL, int64JSON([]int64{3, 1, 9}), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var a, b, c int
+		var detail string
+		if err = rows.Scan(&a, &b, &c, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "SEARCH messages USING INTEGER PRIMARY KEY (rowid=?)") || strings.Contains(joined, "SCAN messages") {
+		t.Fatalf("fresh-ID batch scans retained history: %s", joined)
+	}
+	t.Log(joined)
+}
+
+func TestChangeFreshTrackingIncludesOnlyToolRows(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	src := source(t, s, transcript.AgentClaude, "/p/fresh-tools.jsonl")
+	if err := s.write(ctx, func(w *writeTx) error {
+		w.changeAppend = true
+		var res BatchResult
+		if err := w.applyBatch(&Batch{SourceID: src.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "refresh"}}, Messages: changePair("refresh", 0, "abcdef0")}, &res); err != nil {
+			return err
+		}
+		if w.changeCache[1] == nil {
+			return errors.New("no checkpoint")
+		}
+		batch := Batch{SourceID: src.ID, Generation: 1}
+		ordinary := msg("refresh", "ordinary", 99, transcript.KindAssistant, "ordinary text")
+		pair := changePair("refresh", 1, "1234567")
+		for _, m := range []*transcript.Message{ordinary, pair[0], pair[1]} {
+			prepared := prepareAll([]*transcript.Message{m})
+			if _, err := w.insertMessage(&batch, 1, m, &prepared[0], 1); err != nil {
+				return err
+			}
+		}
+		if len(w.changeAdded[1]) != 2 {
+			return fmt.Errorf("tracked %d IDs, want only two tool rows", len(w.changeAdded[1]))
+		}
+		rows, err := w.readFreshChangeRows(1, w.changeAdded[1])
+		if err != nil {
+			return err
+		}
+		if len(rows) != 2 {
+			return fmt.Errorf("batch read %d rows, want two", len(rows))
+		}
+		for _, r := range rows {
+			if r.m.Kind != transcript.KindToolCall && r.m.Kind != transcript.KindToolResult {
+				return errors.New("ordinary row entered suffix")
+			}
+		}
+		checkpoint := w.changeCache[1]
+		if err := w.refreshChangeEvents(1); err != nil {
+			return err
+		}
+		if w.changeCache[1] != checkpoint {
+			return errors.New("tool suffix unexpectedly replayed")
+		}
+		before, err := projectionSnapshot(w)
+		if err != nil {
+			return err
+		}
+		w.changeAppend = false
+		if err := w.replayChangeEvents(1); err != nil {
+			return err
+		}
+		after, err := projectionSnapshot(w)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(before, after) {
+			return errors.New("batched suffix differs from full replay")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

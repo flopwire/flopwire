@@ -163,40 +163,66 @@ type changeNewRow struct {
 	m     transcript.Message
 }
 
-// Only new physical rows are read here. Existing-row checks occur at the
-// mutation, so validating a hit never scans the retained prefix.
-func (w *writeTx) extendChangeEvents(conv int64, c *changeCheckpoint) (bool, error) {
-	if len(w.changeAdded[conv]) > 4096 || !w.changeCacheWithinBudget() {
-		w.changeCache = nil
-		return false, nil
+// The JSON input contains at most 4096 fresh tool-row IDs. SQLite drives this
+// fixed statement through primary-key lookups. NOT INDEXED excludes secondary
+// conversation scans while permitting rowid seeks.
+const changeFreshRowsSQL = `SELECT id,source_id,source_generation,ifnull(native_id,''),ordinal,part,kind,ifnull(tool_name,''),ifnull(tool_call_id,''),ifnull(is_error,0),text,ifnull(line_no,0),ifnull(byte_offset,0),ifnull(byte_len,0),ifnull(locator,''),ifnull(enrichment,'{}') FROM messages NOT INDEXED WHERE id IN (SELECT value FROM json_each(?)) AND conversation_id=? AND superseded=0 AND on_active_path IS NOT 0 AND kind IN ('tool_call','tool_result') AND EXISTS(SELECT 1 FROM conversations c WHERE c.id=messages.conversation_id AND c.deleted_in_generation IS NULL)`
+
+func (w *writeTx) readFreshChangeRows(conv int64, ids []int64) ([]changeNewRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
 	}
+	st, err := w.stmt(changeFreshRowsSQL)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := st.QueryContext(w.ctx, int64JSON(ids), conv)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	var fresh []changeNewRow
-	for _, id := range w.changeAdded[conv] {
+	for rows.Next() {
 		var r changeNewRow
 		var kind, enrichment string
 		var text []byte
 		var isError int
-		row, err := w.queryRow(`SELECT id,source_id,source_generation,ifnull(native_id,''),ordinal,part,kind,ifnull(tool_name,''),ifnull(tool_call_id,''),ifnull(is_error,0),text,ifnull(line_no,0),ifnull(byte_offset,0),ifnull(byte_len,0),ifnull(locator,''),ifnull(enrichment,'{}') FROM messages WHERE id=? AND superseded=0 AND on_active_path IS NOT 0 AND kind IN ('tool_call','tool_result') AND EXISTS(SELECT 1 FROM conversations c WHERE c.id=messages.conversation_id AND c.deleted_in_generation IS NULL)`, id)
-		if err != nil {
-			return false, err
-		}
-		err = row.Scan(&r.id, &r.scope.source, &r.scope.gen, &r.m.NativeID, &r.m.Ordinal, &r.m.Part, &kind, &r.m.ToolName, &r.m.ToolCallID, &isError, &text, &r.m.LineNo, &r.m.ByteOffset, &r.m.ByteLen, &r.m.Locator, &enrichment)
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
-			return false, err
+		if err := rows.Scan(&r.id, &r.scope.source, &r.scope.gen, &r.m.NativeID, &r.m.Ordinal, &r.m.Part, &kind, &r.m.ToolName, &r.m.ToolCallID, &isError, &text, &r.m.LineNo, &r.m.ByteOffset, &r.m.ByteLen, &r.m.Locator, &enrichment); err != nil {
+			return nil, err
 		}
 		r.m.Kind, _ = transcript.ParseKind(kind)
 		r.m.IsError = isError != 0
 		if r.m.Text, err = decompress(text); err != nil {
-			return false, err
+			return nil, err
 		}
 		if err = json.Unmarshal([]byte(enrichment), &r.m.Enrichment); err != nil {
-			return false, err
+			return nil, err
 		}
 		fresh = append(fresh, r)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return fresh, nil
+}
+
+// Only new physical rows are read here. Existing-row checks occur at the
+// mutation, so validating a hit never scans the retained prefix.
+func (w *writeTx) extendChangeEvents(conv int64, c *changeCheckpoint) (bool, error) {
+	// Bound the transient list of fresh tool-row IDs; ordinary transcript rows
+	// never enter this list. Over-budget requests use the existing full replay.
+	if len(w.changeAdded[conv]) > 4096 || !w.changeCacheWithinBudget() {
+		w.changeCache = nil
+		return false, nil
+	}
+	fresh, err := w.readFreshChangeRows(conv, w.changeAdded[conv])
+	if err != nil {
+		return false, err
+	}
+
 	slices.SortFunc(fresh, func(a, b changeNewRow) int {
 		if a.scope.source != b.scope.source {
 			if a.scope.source < b.scope.source {
