@@ -146,7 +146,7 @@ func TestChangeSchema13UpgradeBackfillsRetainedMissingSources(t *testing.T) {
 	path := s.path
 	// Reconstruct a version-13 file without deleting any retained transcript rows.
 	err = s.write(ctx, func(w *writeTx) error {
-		for _, stmt := range []string{`DROP TRIGGER change_conversation_visibility`, `DROP TRIGGER change_message_generation`, `DROP TRIGGER change_placement_update`, `DROP TRIGGER change_placement_delete`, `DROP TRIGGER change_placement_insert`, `DROP TABLE change_events`, `DELETE FROM meta WHERE key IN ('change_cursor_secret','change_revision')`, `PRAGMA user_version=13`} {
+		for _, stmt := range []string{`DROP TRIGGER change_conversation_visibility`, `DROP TRIGGER change_message_generation`, `DROP TRIGGER change_placement_update`, `DROP TRIGGER change_placement_delete`, `DROP TRIGGER change_placement_insert`, `DROP TABLE change_events`, `DROP INDEX messages_change_results`, `ALTER TABLE messages DROP COLUMN change_result_eligible`, `DELETE FROM meta WHERE key IN ('change_cursor_secret','change_revision')`, `PRAGMA user_version=13`} {
 			if _, err := w.exec(stmt); err != nil {
 				return err
 			}

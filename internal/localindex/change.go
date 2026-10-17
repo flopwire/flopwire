@@ -7,9 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
-	"strings"
 
 	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -50,7 +48,31 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 	if w.s.opts.SyncOnly {
 		return nil
 	}
-	rows, err := w.tx.QueryContext(w.ctx, `SELECT m.id,ifnull(m.native_id,''),m.ordinal,m.part,m.kind,ifnull(m.tool_name,''),ifnull(m.tool_call_id,''),ifnull(m.is_error,0),m.text,ifnull(m.line_no,0),ifnull(m.byte_offset,0),ifnull(m.byte_len,0),ifnull(m.locator,''),m.source_id,m.source_generation,ifnull(m.enrichment,'{}') FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND m.superseded=0 AND m.on_active_path IS NOT 0 AND c.deleted_in_generation IS NULL AND (m.kind='tool_call' OR m.kind='tool_result') ORDER BY m.source_id,m.ordinal,m.id`, conv)
+	// An existing event must always be reconciled, including its removal. A
+	// retained unknown result (from an older schema) also forces replay. Only
+	// the absence of both events and possible hash-bearing live results proves
+	// that replay cannot produce an observation, regardless of call lifecycle.
+	var needed bool
+	row, err := w.queryRow(`SELECT EXISTS(SELECT 1 FROM change_events WHERE conversation_id=?) OR EXISTS(SELECT 1 FROM messages WHERE conversation_id=? AND kind='tool_result' AND superseded=0 AND on_active_path IS NOT 0 AND change_result_eligible IS NOT 0)`, conv, conv)
+	if err != nil {
+		return err
+	}
+	if err := row.Scan(&needed); err != nil {
+		return err
+	}
+	if !needed {
+		return nil
+	}
+	return w.replayChangeEvents(conv)
+}
+
+// replayChangeEvents is the complete retained-row projection, also used by
+// migration and differential tests independently of the eligibility shortcut.
+func (w *writeTx) replayChangeEvents(conv int64) error {
+	if w.s.opts.SyncOnly {
+		return nil
+	}
+	rows, err := w.tx.QueryContext(w.ctx, `SELECT m.id,ifnull(m.native_id,''),m.ordinal,m.part,m.kind,ifnull(m.tool_name,''),ifnull(m.tool_call_id,''),ifnull(m.is_error,0),m.text,ifnull(m.line_no,0),ifnull(m.byte_offset,0),ifnull(m.byte_len,0),ifnull(m.locator,''),m.source_id,m.source_generation,ifnull(m.enrichment,'{}'),m.change_result_eligible FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND m.superseded=0 AND m.on_active_path IS NOT 0 AND c.deleted_in_generation IS NULL AND (m.kind='tool_call' OR m.kind='tool_result') ORDER BY m.source_id,m.ordinal,m.id`, conv)
 	if err != nil {
 		return err
 	}
@@ -61,13 +83,19 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 	}
 	type sourceGeneration struct{ source, gen int64 }
 	groups := map[sourceGeneration]*group{}
+	type classification struct {
+		id       int64
+		eligible bool
+	}
+	var unknown []classification
 	for rows.Next() {
 		var source, gen, id int64
 		var isError int
+		var eligible sql.NullBool
 		var enrichment, kind string
 		var text []byte
 		var m transcript.Message
-		if err := rows.Scan(&id, &m.NativeID, &m.Ordinal, &m.Part, &kind, &m.ToolName, &m.ToolCallID, &isError, &text, &m.LineNo, &m.ByteOffset, &m.ByteLen, &m.Locator, &source, &gen, &enrichment); err != nil {
+		if err := rows.Scan(&id, &m.NativeID, &m.Ordinal, &m.Part, &kind, &m.ToolName, &m.ToolCallID, &isError, &text, &m.LineNo, &m.ByteOffset, &m.ByteLen, &m.Locator, &source, &gen, &enrichment, &eligible); err != nil {
 			rows.Close()
 			return err
 		}
@@ -76,6 +104,9 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 		if m.Text, err = decompress(text); err != nil {
 			rows.Close()
 			return fmt.Errorf("row %d: %w", id, err)
+		}
+		if !eligible.Valid {
+			unknown = append(unknown, classification{id, digest.MayContainCommitEvidence(m.Text)})
 		}
 		key := sourceGeneration{source, gen}
 		g := groups[key]
@@ -94,6 +125,13 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 	rows.Close()
 	if err = rows.Err(); err != nil {
 		return err
+	}
+	// Classify old stored text during the replay that already decoded it.
+	// Buffer updates until the reader closes, and keep them in this transaction.
+	for _, c := range unknown {
+		if _, err := w.exec(`UPDATE messages SET change_result_eligible=? WHERE id=?`, boolInt(c.eligible), c.id); err != nil {
+			return err
+		}
 	}
 	type stored struct {
 		id                    int64
@@ -296,21 +334,14 @@ func (s *Store) ChangeCursorSecret(ctx context.Context) ([]byte, error) {
 	return hex.DecodeString(secret)
 }
 
-var changeHash = regexp.MustCompile(`(?i)\b[0-9a-f]{7,64}\b`)
-
-// Replay is needed only when a new output can introduce an observation.
-// All prior shell records remain in storage for that replay, so an intervening
-// command still breaks quiet-commit/HEAD association even if it triggered no
-// projection refresh itself. Replacements and retirements always force replay.
+// changeRelevant follows the projection's input kinds, independently of digest
+// counts. Even an unchanged tool call can move its evidence address or source
+// generation, complete a previously retained result, or introduce a poll or
+// HEAD-move barrier. Results can affect that lifecycle without printing a hash,
+// and output decoding can reveal hashes absent from the raw text.
 func changeRelevant(msgs []*transcript.Message) bool {
 	for _, m := range msgs {
-		if m.Kind != transcript.KindToolResult {
-			continue
-		}
-		if changeHash.MatchString(m.Text) {
-			return true
-		}
-		if m.Enrichment["command_completion"] == true && strings.Contains(m.Text, "git") {
+		if m.Kind == transcript.KindToolCall || m.Kind == transcript.KindToolResult {
 			return true
 		}
 	}

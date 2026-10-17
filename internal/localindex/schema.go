@@ -27,7 +27,8 @@ import (
 // 13: placements_main and placements_remote, for --repo.
 // Placements are carried across a rebuild (carryPlacements): a session
 // whose worktree is gone cannot be placed again from its transcript.
-const schemaVersion = 14
+// 14: retained commit evidence. 15: conservative result eligibility.
+const schemaVersion = 15
 
 // Column types follow spec §4 with SQLite equivalents: integer row ids
 // (FTS5 keys on the integer rowid), times as unix milliseconds, booleans as
@@ -130,6 +131,7 @@ CREATE TABLE messages (
   byte_len                 INTEGER,
   locator                  TEXT,
   parser                   TEXT NOT NULL,
+  change_result_eligible   INTEGER,              -- NULL: old stored text not classified
   -- Last, so reading the filter columns never walks the blob's overflow pages.
   text                     BLOB NOT NULL         -- zstd of the capped extracted text
 );
@@ -144,6 +146,8 @@ CREATE INDEX messages_conv_ordinal ON messages (conversation_id, ordinal);
 CREATE INDEX messages_default ON messages (conversation_id, ordinal)
   WHERE superseded = 0 AND on_active_path IS NOT 0;
 CREATE INDEX messages_source_gen ON messages (source_id, source_generation);
+CREATE INDEX messages_change_results ON messages (conversation_id)
+ WHERE kind='tool_result' AND superseded=0 AND on_active_path IS NOT 0 AND change_result_eligible IS NOT 0;
 -- Failed tool calls, for the digest's count on append.
 CREATE INDEX messages_failed ON messages (conversation_id, tool_call_id) WHERE is_error = 1;
 -- A subagent's spawning tool call in its parent (resolveLinks).
@@ -246,7 +250,7 @@ func migrate(db *sql.DB, want Details, mode string, force bool) (got Details, re
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return Details{}, false, err
 	}
-	if v == 13 && !force {
+	if (v == 13 || v == 14) && !force {
 		var have string
 		if err := db.QueryRow(`SELECT (SELECT value FROM meta WHERE key='tok_detail'),(SELECT value FROM meta WHERE key='tri_detail'),(SELECT CAST(value AS INTEGER) FROM meta WHERE key='tri_parts'),(SELECT value FROM meta WHERE key='mode')`).Scan(&got.Tok, &got.Tri, &got.TriParts, &have); err != nil {
 			return Details{}, false, err
@@ -257,9 +261,20 @@ func migrate(db *sql.DB, want Details, mode string, force bool) (got Details, re
 				return Details{}, false, err
 			}
 			defer tx.Rollback()
-			if err = createChangeSchema(tx); err != nil {
+			if _, err = tx.Exec(`ALTER TABLE messages ADD COLUMN change_result_eligible INTEGER`); err != nil {
 				return Details{}, false, err
 			}
+			if _, err = tx.Exec(`CREATE INDEX messages_change_results ON messages (conversation_id) WHERE kind='tool_result' AND superseded=0 AND on_active_path IS NOT 0 AND change_result_eligible IS NOT 0`); err != nil {
+				return Details{}, false, err
+			}
+			if v == 13 {
+				if err = createChangeSchema(tx); err != nil {
+					return Details{}, false, err
+				}
+			}
+			// Replay retained rows once on upgrade to repair stale projections
+			// produced by the former hash-only invalidation. Replay classifies
+			// NULL eligibility from the stored text it already decodes.
 			if mode == ModeFull {
 				rows, err := tx.Query(`SELECT id FROM conversations ORDER BY id`)
 				if err != nil {
