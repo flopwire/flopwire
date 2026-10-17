@@ -58,16 +58,22 @@ type Placement struct {
 
 // SavePlacement records (or replaces) a session's placement.
 func (s *Store) SavePlacement(ctx context.Context, p Placement) error {
-	return s.write(ctx, func(w *writeTx) error {
-		_, err := w.exec(`INSERT INTO placements (agent, session_id, cwd, worktree_root, main_root, remote, how, resolved_at, checked_at, candidates, other_cwds)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (agent, session_id) DO UPDATE SET cwd = excluded.cwd, worktree_root = excluded.worktree_root,
-			  main_root = excluded.main_root, remote = excluded.remote, how = excluded.how, resolved_at = excluded.resolved_at,
-			  checked_at = excluded.checked_at, candidates = excluded.candidates, other_cwds = excluded.other_cwds`,
-			string(p.Agent), p.SessionID, nullStr(p.Cwd), nullStr(p.Worktree), nullStr(p.Main), nullStr(p.Remote), p.How, time.Now().UnixMilli(),
-			sql.NullInt64{Int64: p.CheckedAt, Valid: p.CheckedAt != 0}, nullStr(p.Candidates), nullStr(p.OtherCwds))
-		return err
-	})
+	return s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreservePlacement, fn: func(w *writeTx) error {
+		return w.savePlacement(p)
+	}})
+}
+
+// savePlacement changes placement metadata and its trigger-managed revision,
+// but never retained extractor inputs. Keep those SQL triggers active.
+func (w *writeTx) savePlacement(p Placement) error {
+	_, err := w.exec(`INSERT INTO placements (agent, session_id, cwd, worktree_root, main_root, remote, how, resolved_at, checked_at, candidates, other_cwds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (agent, session_id) DO UPDATE SET cwd = excluded.cwd, worktree_root = excluded.worktree_root,
+		  main_root = excluded.main_root, remote = excluded.remote, how = excluded.how, resolved_at = excluded.resolved_at,
+		  checked_at = excluded.checked_at, candidates = excluded.candidates, other_cwds = excluded.other_cwds`,
+		string(p.Agent), p.SessionID, nullStr(p.Cwd), nullStr(p.Worktree), nullStr(p.Main), nullStr(p.Remote), p.How, time.Now().UnixMilli(),
+		sql.NullInt64{Int64: p.CheckedAt, Valid: p.CheckedAt != 0}, nullStr(p.Candidates), nullStr(p.OtherCwds))
+	return err
 }
 
 // Placements returns every recorded placement.
