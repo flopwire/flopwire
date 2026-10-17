@@ -7,9 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
-	"strings"
 
 	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/transcript"
@@ -296,21 +294,14 @@ func (s *Store) ChangeCursorSecret(ctx context.Context) ([]byte, error) {
 	return hex.DecodeString(secret)
 }
 
-var changeHash = regexp.MustCompile(`(?i)\b[0-9a-f]{7,64}\b`)
-
-// Replay is needed only when a new output can introduce an observation.
-// All prior shell records remain in storage for that replay, so an intervening
-// command still breaks quiet-commit/HEAD association even if it triggered no
-// projection refresh itself. Replacements and retirements always force replay.
+// changeRelevant follows the projection's input kinds, independently of digest
+// counts. Even an unchanged tool call can move its evidence address or source
+// generation, complete a previously retained result, or introduce a poll or
+// HEAD-move barrier. Results can affect that lifecycle without printing a hash,
+// and output decoding can reveal hashes absent from the raw text.
 func changeRelevant(msgs []*transcript.Message) bool {
 	for _, m := range msgs {
-		if m.Kind != transcript.KindToolResult {
-			continue
-		}
-		if changeHash.MatchString(m.Text) {
-			return true
-		}
-		if m.Enrichment["command_completion"] == true && strings.Contains(m.Text, "git") {
+		if m.Kind == transcript.KindToolCall || m.Kind == transcript.KindToolResult {
 			return true
 		}
 	}
