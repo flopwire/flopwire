@@ -16,6 +16,10 @@ func TestRetryRefusalRecoveryRendered(t *testing.T) {
 	asCaller(t, claudeSelf)
 	for _, tc := range []struct{ code, detail, want string }{
 		{busproto.CodeNotFound, "retry_of: source not found", "verify retry_of in your sent inbox"},
+		{busproto.CodeNotFound, "retry source not found", "verify retry_of in your sent inbox"},
+		{busproto.CodeNotFound, "retry successor is no longer retained", "verify retry_of in your sent inbox"},
+		{busproto.CodeBadRequest, "retry must preserve the source sender, session recipient, body, intent, refs and reply_to", "preserving its exact recipient, message, intent, refs and reply_to"},
+		{busproto.CodeBadRequest, "retry source must be undelivered with reason session_ended", "retry only an undelivered/session_ended message"},
 		{busproto.CodeNotFound, "retry_of: successor no longer available", "verify retry_of in your sent inbox"},
 		{busproto.CodeBadRequest, "retry_of: sender, recipient and message content must match the source", "preserving its exact recipient, message, intent, refs and reply_to"},
 		{busproto.CodeBadRequest, "retry_of: source must be undelivered with reason session_ended", "retry only an undelivered/session_ended message"},
@@ -28,7 +32,7 @@ func TestRetryRefusalRecoveryRendered(t *testing.T) {
 			}
 			check := func(text, example string) {
 				t.Helper()
-				if !strings.Contains(text, tc.want) || !strings.Contains(text, example) || strings.Contains(text, "reply_to takes") || strings.Contains(text, "Heads-up") {
+				if !strings.Contains(text, tc.detail) || !strings.Contains(text, tc.want) || !strings.Contains(text, example) || strings.Contains(text, "reply_to takes") || strings.Contains(text, "Heads-up") {
 					t.Fatalf("misleading recovery: %s", text)
 				}
 			}
@@ -65,5 +69,12 @@ func TestDiscoveryAndDuplicateRecoveryRendered(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "no visible live session starts with abcd") || !strings.Contains(text, "new send receipt") || strings.Contains(text, "waits until") || strings.Contains(text, "it ended") {
 		t.Fatalf("presence absence overclaims: %s", text)
+	}
+}
+
+func TestRetryRequestPreservesUnrelatedReplyFailure(t *testing.T) {
+	text := refusal(&busproto.Error{Code: busproto.CodeNotFound, Detail: "reply_to m5: no such message sent or received by you"}, busproto.SendRequest{RetryOf: "m1"}, busStyle{MCP: true}).Error()
+	if !strings.Contains(text, "reply_to takes a message id") || strings.Contains(text, "retry source") {
+		t.Fatalf("unrelated reply failure misclassified: %s", text)
 	}
 }

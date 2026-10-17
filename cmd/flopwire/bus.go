@@ -862,7 +862,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 		u := sendUsage(st, "")
 		e.Fix, e.Example = "check the arguments", u.Example
 	}
-	if req.RetryOf != "" && strings.HasPrefix(be.Detail, "retry_of:") && (be.Code == busproto.CodeNotFound || be.Code == busproto.CodeBadRequest) {
+	if req.RetryOf != "" && (strings.HasPrefix(be.Detail, "retry_of:") || strings.HasPrefix(be.Detail, "retry ")) && (be.Code == busproto.CodeNotFound || be.Code == busproto.CodeBadRequest) {
 		e.Fix = "inspect retry_of in your sent inbox; retry only an undelivered/session_ended message from this session, preserving its exact recipient, message, intent, refs and reply_to"
 		if be.Code == busproto.CodeNotFound {
 			e.Fix = "the retry source or its recorded successor is unavailable; verify retry_of in your sent inbox before taking further action"
