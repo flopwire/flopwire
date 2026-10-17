@@ -2,15 +2,20 @@ package ingest
 
 import (
 	"context"
+	"crypto/md5"
 	_ "embed"
+	"errors"
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Keep the previous traversal as an independent result-set oracle. In
@@ -31,23 +36,20 @@ func policyOwnedIDs(t *testing.T, e *env, query string, args ...any) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(e.ctx, 20*time.Second)
 	defer cancel()
-	rows, err := e.pool.Query(ctx, query+` SELECT id::text FROM owned ORDER BY id`, args...)
+	ids, err := queryPolicyOwnedIDs(ctx, e, query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
 	return ids
+}
+
+func queryPolicyOwnedIDs(ctx context.Context, e *env, query string, args ...any) ([]string, error) {
+	rows, err := e.pool.Query(ctx, query+` SELECT id::text FROM owned ORDER BY id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+
 }
 
 func TestPolicyOwnedTraversalPreservesEdgesAndCycles(t *testing.T) {
@@ -102,7 +104,7 @@ func TestPolicyTraversalPreservesPerGenerationHistoryProof(t *testing.T) {
 	// Messages also carry history proof when a generation has no captured bytes.
 	conv := policyStoredConversation(e, e.deviceID, req.SessionID, "")
 	e.exec(`UPDATE generations SET size=0 WHERE source_id=$1 AND generation=2`, child)
-	e.exec(`INSERT INTO messages(id,conversation_id,source_id,ordinal,kind,text,text_len,content_sha,source_generation,parser) VALUES($1,$2,$3,1,'text','synthetic',9,decode(repeat('00',32),'hex'),2,'claude@1')`, uuid.NewString(), conv, child)
+	e.exec(`INSERT INTO messages(id,conversation_id,source_id,ordinal,kind,text,text_len,content_sha,source_generation,parser) VALUES($1,$2,$3,1,'user','synthetic',9,decode(repeat('00',32),'hex'),2,'claude@1')`, uuid.NewString(), conv, child)
 	for _, want := range []bool{true, false} {
 		for _, query := range []string{previousPolicyHistoricalSQL, policyHistoricalUnmappedSQL} {
 			var got bool
@@ -134,25 +136,52 @@ func TestPolicyOwnedTraversalScale(t *testing.T) {
 		t.Skip("set FLOPWIRE_POLICY_PERF=1 for 40k-source plan comparison")
 	}
 	e := newEnv(t)
+	req := policyRequest()
 	e.exec(`INSERT INTO devices(id,user_id,name,platform,created_at) SELECT md5('policy-scale-device-'||n)::uuid,$1,'synthetic','darwin',now() FROM generate_series(1,9) n`, e.userID)
 	e.exec(`INSERT INTO sources(id,device_id,agent,path,file_id,session_key,storage_kind,parser,first_seen_at,parent_path,parent_file_id)
- SELECT md5('policy-scale-'||n)::uuid,CASE WHEN n<=4000 THEN $1::uuid ELSE md5('policy-scale-device-'||((n-1)/4000))::uuid END,CASE WHEN n%10=0 THEN 'codex' ELSE 'claude' END,
- '/scale/'||n,'f'||n,CASE WHEN n=1 THEN 'target' ELSE 'unrelated-'||n END,'jsonl_append','claude@1',now(),
+ SELECT md5('policy-scale-'||n)::uuid,CASE WHEN $2::bool OR n<=4000 THEN $1::uuid ELSE md5('policy-scale-device-'||((n-1)/4000))::uuid END,CASE WHEN n%10=0 THEN 'codex' ELSE 'claude' END,
+ '/scale/'||n,'f'||n,CASE WHEN n=1 THEN $3::text ELSE 'unrelated-'||n END,'jsonl_append','claude@1',now(),
  CASE WHEN n BETWEEN 2 AND 8 THEN '/scale/1' ELSE '/scale/'||(10000+n%1000) END,NULL
- FROM generate_series(1,40000) n`, e.deviceID)
+ FROM generate_series(1,40000) n`, e.deviceID, os.Getenv("FLOPWIRE_POLICY_SINGLE_DEVICE") == "1", req.SessionID)
+	e.exec(`INSERT INTO generations(source_id,generation,size,captured_at,complete) VALUES(md5('policy-scale-2')::uuid,1,1,now(),true)`)
 	e.exec(`ANALYZE sources`)
-	for _, session := range []string{"target", "absent"} {
+	var expected []string
+	for n := 1; n <= 8; n++ {
+		expected = append(expected, uuid.UUID(md5.Sum([]byte("policy-scale-"+strconv.Itoa(n)))).String())
+	}
+	sort.Strings(expected)
+	for _, session := range []string{req.SessionID, "absent"} {
 		t.Run(session, func(t *testing.T) {
 			args := []any{e.deviceID, "claude", session, []string{}, `[]`}
-			baseline := policyOwnedIDs(t, e, previousPolicyOwnedSQL(), args...)
-			if got := policyOwnedIDs(t, e, policyOwnedSQL(), args...); !reflect.DeepEqual(got, baseline) {
+			got := policyOwnedIDs(t, e, policyOwnedSQL(), args...)
+			want := expected
+			if session == "absent" {
+				want = nil
+			}
+			if len(got) != len(want) || len(got) > 0 && !reflect.DeepEqual(got, want) {
+				t.Fatalf("fixture ownership got%v want%v", got, want)
+			}
+			ctx, cancel := context.WithTimeout(e.ctx, 20*time.Second)
+			baseline, err := queryPolicyOwnedIDs(ctx, e, previousPolicyOwnedSQL(), args...)
+			cancel()
+			if err != nil {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatal(err)
+				}
+				t.Logf("baseline reached-ID comparison exceeded20s; candidate reached%d IDs", len(got))
+			} else if !reflect.DeepEqual(got, baseline) {
 				t.Fatal("scale ownership differs")
 			}
-			for _, tc := range []struct{ name, query string }{{"baseline", previousPolicyHistoricalSQL}, {"anchored", policyHistoricalUnmappedSQL}} {
+
+			for _, tc := range []struct{ name, query string }{{"anchored", policyHistoricalUnmappedSQL}, {"baseline", previousPolicyHistoricalSQL}} {
 				ctx, cancel := context.WithTimeout(e.ctx, 20*time.Second)
 				rows, err := e.pool.Query(ctx, `EXPLAIN (ANALYZE,BUFFERS,FORMAT TEXT) `+tc.query, args...)
 				if err != nil {
 					cancel()
+					if tc.name == "baseline" && errors.Is(err, context.DeadlineExceeded) {
+						t.Log("baseline full query exceeded20s")
+						continue
+					}
 					t.Fatal(err)
 				}
 				var plan strings.Builder
@@ -167,10 +196,37 @@ func TestPolicyOwnedTraversalScale(t *testing.T) {
 				rows.Close()
 				cancel()
 				if err != nil {
+					if tc.name == "baseline" && errors.Is(err, context.DeadlineExceeded) {
+						t.Log("baseline full query exceeded20s")
+						continue
+					}
 					t.Fatal(err)
 				}
 				t.Logf("%s plan:\n%s", tc.name, plan.String())
 			}
 		})
 	}
+	// Full policy reconciliation and an ordinary same-device Claude flush must
+	// both progress within the existing request budget on the scale fixture.
+	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+	defer cancel()
+	sp := claudeAt(t, t.TempDir(), "-ordinary", uuid.NewString(), "/Users/test/ordinary")
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	done := make(chan error, 2)
+	started := time.Now()
+	go func() {
+		_, err := (&Server{Pool: e.pool, Objects: e.objects}).PolicyPlacements(ctx, e.deviceID, req)
+		done <- err
+	}()
+	go func() { done <- sy.Sync(ctx, sp) }()
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Logf("full policy and same-device flush completed in %s", time.Since(started))
+	if e.count(`SELECT count(*) FROM generations g JOIN sources s ON s.id=g.source_id WHERE s.session_key=$1`, sp.SessionKey) != 1 {
+		t.Fatal("ordinary flush did not commit")
+	}
+
 }
