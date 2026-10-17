@@ -115,6 +115,9 @@ func actionFooter(e *errWriter, st Style, action string) {
 // Reserve guidance before selecting rows; any clipping retains its exact action.
 func reserveAction(st Style, action string) Style {
 	if st.MCP && st.Budget > 0 {
+		if st.reportedBudget == 0 {
+			st.reportedBudget = st.Budget
+		}
 		st.Budget = max(1, st.Budget-len(action)-10)
 	}
 	return st

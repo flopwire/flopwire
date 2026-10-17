@@ -24,6 +24,8 @@ type Style struct {
 	// characters of a command's output and 25000 tokens of an MCP
 	// result), which would lose the footer. 0 means no budget.
 	Budget int
+	// reportedBudget preserves the caller budget while guidance reserves content room.
+	reportedBudget int
 	// Flat prints grep and search hits one per line with their
 	// attribution (--no-heading) instead of grouped under a header per
 	// session.
@@ -258,7 +260,11 @@ func units(st Style, n int, render func(e *errWriter, i int)) ([]string, error) 
 
 // budgetNote is the footer's clause when the budget cut the page.
 func budgetNote(st Style) string {
-	return fmt.Sprintf("output budget of %d bytes reached; ", st.Budget)
+	budget := st.Budget
+	if st.reportedBudget > 0 {
+		budget = st.reportedBudget
+	}
+	return fmt.Sprintf("output budget of %d bytes reached; ", budget)
 }
 
 // WriteGrep renders a grep page. What qualifies the hits (truncation,
