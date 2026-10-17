@@ -11,7 +11,7 @@ import (
 func TestSharedRecordedRepositoryLabels(t *testing.T) {
 	s, _ := perfCorpus(t, 2, 2)
 	ctx := context.Background()
-	if _, err := s.Pool.Exec(ctx, `UPDATE conversations SET repo_root='/tmp/ike-ux-audit' WHERE id=md5('c1')::uuid`); err != nil {
+	if _, err := s.Pool.Exec(ctx, `UPDATE conversations SET repo_root='/tmp/app-ux-audit' WHERE id=md5('c1')::uuid`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Pool.Exec(ctx, `UPDATE sources SET remote='github.com/other/unrelated' WHERE id=md5('f2')::uuid`); err != nil {
@@ -26,21 +26,21 @@ func TestSharedRecordedRepositoryLabels(t *testing.T) {
 	}
 	f := format.Filters{Session: session}
 	for _, tc := range []struct{ remote, main, identity string }{
-		{"github.com/acme/eichler", "/src/.eichler.git", "github.com/acme/eichler"},
-		{"github.com/other/eichler", "/src/.eichler.git", "github.com/other/eichler"},
-		{"", "/src/.eichler.git", "/src/.eichler.git"},
+		{"github.com/acme/app", "/src/.app.git", "github.com/acme/app"},
+		{"github.com/other/app", "/src/.app.git", "github.com/other/app"},
+		{"", "/src/.app.git", "/src/.app.git"},
 		{"", "", ""},
 	} {
 		if _, err := s.Pool.Exec(ctx, `UPDATE sources SET remote=$1,checkout=$2 WHERE id=md5('f1')::uuid`, tc.remote, tc.main); err != nil {
 			t.Fatal(err)
 		}
-		worktree := "/tmp/ike-ux-audit"
+		worktree := "/tmp/app-ux-audit"
 		if tc.identity == "" {
 			worktree = ""
 		}
 		check := func(c format.ConversationInfo) {
 			t.Helper()
-			if c.RepoIdentity != tc.identity || c.Worktree != worktree || c.Repo != "/tmp/ike-ux-audit" || c.SessionID != session {
+			if c.RepoIdentity != tc.identity || c.Worktree != worktree || c.Repo != "/tmp/app-ux-audit" || c.SessionID != session {
 				t.Fatalf("conversation labels: %+v", c)
 			}
 		}
@@ -67,7 +67,7 @@ func TestSharedRecordedRepositoryLabels(t *testing.T) {
 				t.Fatalf("hits: %+v", page)
 			}
 			for _, h := range page.Hits {
-				if h.RepoIdentity != tc.identity || h.Worktree != worktree || h.Repo != "/tmp/ike-ux-audit" || !strings.HasPrefix(h.Address, session[:8]) {
+				if h.RepoIdentity != tc.identity || h.Worktree != worktree || h.Repo != "/tmp/app-ux-audit" || !strings.HasPrefix(h.Address, session[:8]) {
 					t.Fatalf("hit labels or address: %+v", h)
 				}
 				if h.Provenance.SourceID != derivedSource {

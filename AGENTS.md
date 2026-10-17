@@ -8,7 +8,8 @@ Read that policy before changing files or opening a PR. Start each bounded
 change in a fresh worktree on a new branch. Never edit or commit from the
 main checkout. Preserve unrelated work.
 
-Every markdown file states current truth only. Overwrite or delete outdated
-text; never annotate it as superseded, historical or legacy, and never refer
-to earlier plans. Git is the history. The one exception is a dated log
-(`<subject>-YYYY-MM-DD.md`), which records one event and is never edited.
+Every markdown file is gold or a log. Gold states current truth only:
+overwrite or delete outdated text, never annotate it as superseded, and never
+refer to earlier plans. A log (`<subject>-YYYY-MM-DD.md`) records events as of
+its date and is edited only to remove private data. Git is the history. See
+[Documents](CONTRIBUTING.md#documents).

@@ -42,7 +42,7 @@ What ships:
 
 The first user is the maintainer, on two laptops, as a personal CASS replacement.
 The first server runs on one of those laptops (Compose plus MinIO); the
-other syncs to it over the tailnet. The same code is the team product;
+other syncs to it over the private network. The same code is the team product;
 redaction (section 6.6) ships before the first team user joins.
 
 ## 2. Evidence
@@ -1017,7 +1017,7 @@ After M1, two tracks run in parallel. Both depend only on M1.
 | B1 | One fresh migrations schema (section 4, Postgres), and the hand-ported salvage from the old PR stack (11.3): identity, audit, backup and deletion, security, UI, release scripts, migration ledger | M1 |
 | B2 | Device side: FastCDC chunker, BLAKE3 hashes, manifests, provisional tails, upload protocol, watermark queue and spool; server down treated as normal | B1 |
 | B3 | Server ingest: S3 chunks, Postgres manifests and `provisional_tails`, delta parse into message rows, `tsvector` and `pg_trgm` indexes, retrieval API (7.3) | B1, B2 |
-| B4 | Two-laptop end-to-end: server on one laptop (Compose plus MinIO), the other syncing over the tailnet; offline and reconnect; rewrite and deletion cases | B3, A2 |
+| B4 | Two-laptop end-to-end: server on one laptop (Compose plus MinIO), the other syncing over the private network; offline and reconnect; rewrite and deletion cases | B3, A2 |
 
 **Then:** redaction (section 6.6) before the first team user, including a
 decision on the unredacted two-laptop archive (section 12); wave 2 parsers

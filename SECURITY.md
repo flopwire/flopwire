@@ -4,8 +4,8 @@
 
 Do not open a public issue for a suspected vulnerability. Report it through
 [GitHub private vulnerability reporting](https://github.com/flopwire/flopwire/security/advisories/new).
-You get an acknowledgement within 3 business days. Fixes ship in the next
-release and the advisory is published after it.
+You get an acknowledgement within 3 business days. Fixes ship in a release as soon as practical and the advisory is published
+after it.
 
 ## Security boundary
 

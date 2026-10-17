@@ -247,6 +247,9 @@ The helper is a migration artifact, not continuous discovery of these extra
 roots. Future history written outside the normal roots needs a capture path
 before claiming ongoing coverage there.
 
+The host scheduler reserves the VM's memory in addition to its normal host
+floor. Recalculate that reservation if the host or VM allocation changes.
+
 ## Bulk synchronization verification, 2026-10-05
 
 By 07:47 EDT, both laptops' upload queues and the server indexing backlog were
@@ -283,10 +286,12 @@ pin verification authenticates the Flopwire TLS identity. Keep pin verification
 enabled. Document certificate rotation and client recovery. A public certificate
 is an operational option, not a prerequisite for this private pinned endpoint.
 
-The administrator password and backup decryption key are kept on an operator workstation with file permissions and full-disk encryption; that does not protect them from a process running as the operator.
+The administrator password and backup decryption key are kept on an operator
+workstation with file permissions and full-disk encryption; that does not
+protect them from a process running as the operator.
 
 The owner chose to retain the current secret files while preparing the recovery
-plan. Establish an independent off-Mac recovery-key escrow before considering
+plan. Establish an independent off-workstation recovery-key escrow before considering
 removal of the working key file. Keep encrypted production backups off the
 server host, and keep key escrow separate from those backups. Verify recovery
 using the escrowed key. The existing local secret files and lab restore do not
@@ -327,7 +332,7 @@ independent key recovery, and full production recovery qualification pending.
 Retain the existing working key, CASS snapshots, and migration archives.
 
 Full production recovery still requires an encrypted off-host backup copy,
-retrieval without the original host, independent off-Mac key escrow and
+retrieval without the original host, independent off-workstation key escrow and
 recovery, and a complete database and raw-object restore into isolated staging
 targets. Complete the acceptance checks in the
 [production recovery runbook](../operations/recovery.md). The owner must select
