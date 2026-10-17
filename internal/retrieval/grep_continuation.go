@@ -301,6 +301,7 @@ func (s *Store) startGrepWalk(ctx context.Context, w *grepWalk) error {
 	if err = setTimeout(ctx, tx, min(budget(ctx), time.Until(w.expires))); err != nil {
 		return err
 	}
+	var narrowedConversations []string
 	// As in ordinary grep, resolve a bounded scoped conversation set first.
 	// Without this indexed entry point a broad text bitmap can read the whole
 	// corpus before applying a session or repository filter.
@@ -310,6 +311,7 @@ func (s *Store) startGrepWalk(ctx context.Context, w *grepWalk) error {
 			return err
 		}
 		if complete {
+			narrowedConversations = ids
 			q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
 		} else if cond == "" {
 			return fmt.Errorf("%w: the selected session tree exceeds %d conversations; narrow the session or use an indexable pattern", ErrBadRequest, grepConvCap)
@@ -323,7 +325,30 @@ func (s *Store) startGrepWalk(ctx context.Context, w *grepWalk) error {
 	if w.query.Sort == format.SortOldest {
 		order = " ORDER BY m.ts NULLS LAST,m.id"
 	}
-	_, err = tx.Exec(ctx, `DECLARE resumable_grep NO SCROLL CURSOR FOR SELECT m.id FROM `+from+` WHERE `+q.sql()+order, q.args...)
+	candidateSQL, candidateArgs := `SELECT m.id FROM `+from+` WHERE `+q.sql()+order, q.args
+	if !w.query.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(w.filters) && grepMetadataStreamEligible(w.re) {
+		deadline := time.Now().Add(min(budget(ctx), time.Until(w.expires)))
+		broad, planErr := grepPlanNeedsMetadata(ctx, tx, q, w.query.Sort == format.SortOldest, deadline)
+		if planErr != nil {
+			return planErr
+		}
+		if broad {
+			_, complete, metadataErr := grepMetadataCandidates(ctx, tx, w.filters, narrowedConversations)
+			if metadataErr != nil {
+				return metadataErr
+			}
+			if !complete {
+				candidateSQL, candidateArgs, err = grepMetadataStreamQuery(w.filters, narrowedConversations, w.query.Sort == format.SortOldest, 0)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err = setTimeout(ctx, tx, min(budget(ctx), time.Until(w.expires))); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DECLARE resumable_grep NO SCROLL CURSOR FOR `+candidateSQL, candidateArgs...)
 	return err
 }
 func (s *Store) advanceGrepWalk(ctx context.Context, w *grepWalk) (grepFrozenPage, error) {
