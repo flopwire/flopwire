@@ -12,6 +12,31 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
+// MayContainCommitEvidence reports whether stored result text could supply a
+// hash to ExtractCommitEvidence. False proves that this text cannot supply one;
+// true includes ordinary output and undecoded JSON chunks conservatively.
+// Keep the JSON marker aligned with shellOut's decoding entry condition.
+// This classification is persisted by the local index. Widening the extractor's
+// hash or decoding grammar requires reclassifying stored false values through
+// a schema migration. False positives are safe; false negatives lose evidence.
+func MayContainCommitEvidence(text string) bool {
+	if strings.Contains(text, `"exit_code":`) {
+		return true
+	}
+	run := 0
+	for _, c := range text {
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' {
+			run++
+			if run >= 7 {
+				return true
+			}
+		} else {
+			run = 0
+		}
+	}
+	return false
+}
+
 // EvidenceRef identifies a retained message. Ordinal orders records; it is not an identity.
 // The caller supplies the source generation and session scope.
 type EvidenceRef struct {

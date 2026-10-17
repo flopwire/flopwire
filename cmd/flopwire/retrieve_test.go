@@ -103,7 +103,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 		t.Fatalf("raw query %v", q)
 	}
 	if text, err = mcpCall(t.Context(), c, "flopwire_sessions", map[string]any{"glob": "team*", "agent": "codex"}); err != nil ||
-		text != `{"kind":"sessions","sessions":[{"session_id":"","address":"019a0000","agent":"codex","live":false,"messages":3,"title":"t"}],"has_more":false}` {
+		text != `{"kind":"sessions","sessions":[{"session_id":"","address":"019a0000","agent":"codex","live":false,"messages":3,"title":"t"}],"has_more":false,"hint":"Read a relevant returned session address to inspect its evidence."}` {
 		t.Fatalf("mcp sessions: %q %v", text, err)
 	}
 	if q = queries[len(queries)-1]; q.Get("glob") != "team*" || q.Get("agent") != "codex" {

@@ -45,8 +45,8 @@ func lookupChange(ctx context.Context, r *retriever, v url.Values) (*format.Chan
 	return b.Change(ctx, q, f)
 }
 
-func changeCmd(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("change", flag.ContinueOnError)
+func changeCmd(ctx context.Context, name string, args []string) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	repo := fs.String("repo", "", "repository scope (required)")
 	commits := fs.String("commits", "", "comma-separated full commit IDs (or supply positional IDs)")
 	limit := fs.Int("limit", 20, "evidence events per page (maximum 100)")
@@ -125,7 +125,7 @@ func changeMCPCall(ctx context.Context, r *retriever, args map[string]any) (stri
 	if err != nil {
 		return "", err
 	}
-	b, err := json.Marshal(page)
+	b, err := json.Marshal(changeMCPOutput(page))
 	return string(b), err
 }
 
@@ -142,4 +142,23 @@ func (b *lazyIndexBackend) Change(ctx context.Context, q format.ChangeQuery, f f
 		return nil, errors.New("commit evidence lookup unavailable")
 	}
 	return cb.Change(ctx, q, f)
+}
+
+type changeJSON struct {
+	*format.Changes
+	Hint string `json:"hint"`
+}
+
+func changeMCPOutput(p *format.Changes) changeJSON {
+	hint := "Read relevant command/result addresses, compare the evidence with the requested claim, and state remaining gaps."
+	if len(p.Matches) == 0 {
+		hint = "No matching evidence in this query scope; adjust commits or repository scope if more evidence is needed."
+	}
+	if p.NextCursor != "" {
+		hint = "If more evidence is needed, pass next_cursor as cursor with unchanged repo and commits."
+	}
+	if p.RestartRequired {
+		hint = "Restart this lookup without cursor, keeping repo and commits unchanged."
+	}
+	return changeJSON{p, hint}
 }

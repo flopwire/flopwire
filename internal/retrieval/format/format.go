@@ -15,6 +15,7 @@
 package format
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -548,8 +549,9 @@ type GrepScan struct {
 }
 
 // Page is a grep or search answer. A page cut short by the query budget
-// is still an answer, never an error: Truncated is set and Reason says
-// what was checked. Resumable grep reports progress separately in Scan.
+// retains its results: Truncated is set and Reason says what was checked.
+// The CLI reports incompleteness with exit 2; MCP marks an empty incomplete
+// answer as an error. Resumable grep reports progress separately in Scan.
 type Page struct {
 	Scan  *GrepScan `json:"scan,omitempty"`
 	Scope *Scope    `json:"scope,omitempty"`
@@ -593,9 +595,24 @@ type Sessions struct {
 // Scope identifies the backend that answered a retrieval request.
 // It is attached by the CLI or MCP adapter, not inferred from result rows.
 type Scope struct {
-	Kind     string           `json:"kind"` // "local" or "shared"
-	Server   string           `json:"server,omitempty"`
-	Coverage *coverage.Report `json:"coverage,omitempty"`
+	Kind         string                `json:"kind"` // "local" or "shared"
+	Server       string                `json:"server,omitempty"`
+	Coverage     *coverage.Report      `json:"coverage,omitempty"`
+	CoverageMode coverage.Presentation `json:"-"`
+}
+
+// MarshalJSON selects the MCP-only projection without changing the report used
+// by CLI diagnostics or retrieval logic.
+func (s Scope) MarshalJSON() ([]byte, error) {
+	type legacy Scope
+	if s.CoverageMode == "" || s.CoverageMode == coverage.DetailMode {
+		return json.Marshal(legacy(s))
+	}
+	return json.Marshal(struct {
+		Kind     string            `json:"kind"`
+		Server   string            `json:"server,omitempty"`
+		Coverage *coverage.Summary `json:"coverage"`
+	}{s.Kind, s.Server, coverage.Present(s.Coverage, s.Kind == "shared", s.CoverageMode)})
 }
 
 // Attribution names whose evidence a raw read returns: the user and

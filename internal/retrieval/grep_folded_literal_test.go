@@ -91,14 +91,14 @@ func TestFoldedLiteralPostgresAdapter(t *testing.T) {
 }
 
 func TestFoldedLiteralEligibility(t *testing.T) {
-	for _, pattern := range []string{"cass search", "(ask)", "sssss"} {
+	for _, pattern := range []string{"cass search", "(ask)", "sssss", "ask|sky", "spotlight|mdutil|mds_stores", "1f877ad98|repo/additive-migrations-2049", "(foo|bar)baz"} {
 		p, _ := grep.Compile(format.GrepQuery{Pattern: pattern})
 		q := &query{}
 		if got := literalRegexpCond(q, p.Re); !strings.HasPrefix(got, "m.text ~ ") {
 			t.Fatalf("%s: %s", pattern, got)
 		}
 	}
-	for _, gq := range []format.GrepQuery{{Pattern: "ordinary"}, {Pattern: "ask", CaseSensitive: true}, {Pattern: "ask|sky"}, {Pattern: "(?i:ask)(?-i:SKY)", CaseSensitive: true}, {Pattern: "ssssss"}} {
+	for _, gq := range []format.GrepQuery{{Pattern: "ordinary"}, {Pattern: "ask", CaseSensitive: true}, {Pattern: "ask|sky", CaseSensitive: true}, {Pattern: "(?i:ask)|(?-i:SKY)", CaseSensitive: true}, {Pattern: "(?i:ask)(?-i:SKY)", CaseSensitive: true}, {Pattern: "ssssss"}} {
 		p, _ := grep.Compile(gq)
 		q := &query{}
 		if got := literalRegexpCond(q, p.Re); strings.HasPrefix(got, "m.text ~ ") {

@@ -24,6 +24,8 @@ type Style struct {
 	// characters of a command's output and 25000 tokens of an MCP
 	// result), which would lose the footer. 0 means no budget.
 	Budget int
+	// reportedBudget preserves the caller budget while guidance reserves content room.
+	reportedBudget int
 	// Flat prints grep and search hits one per line with their
 	// attribution (--no-heading) instead of grouped under a header per
 	// session.
@@ -258,7 +260,11 @@ func units(st Style, n int, render func(e *errWriter, i int)) ([]string, error) 
 
 // budgetNote is the footer's clause when the budget cut the page.
 func budgetNote(st Style) string {
-	return fmt.Sprintf("output budget of %d bytes reached; ", st.Budget)
+	budget := st.Budget
+	if st.reportedBudget > 0 {
+		budget = st.reportedBudget
+	}
+	return fmt.Sprintf("output budget of %d bytes reached; ", budget)
 }
 
 // WriteGrep renders a grep page. What qualifies the hits (truncation,
@@ -269,6 +275,7 @@ func budgetNote(st Style) string {
 // SESSION:COUNT. A footer gives the totals and the next offset; the
 // budget (Style.Budget) ends the page early and the footer says so.
 func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
+	st = reserveAction(st, PageAction(p))
 	if p.Scan != nil {
 		p = BoundGrepScan(p, st.Budget)
 		st.Budget = 0
@@ -315,6 +322,9 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 				count(p.Total, p.Exact), plural(p.Total, "hit", "hits"))
 		}
 		excluded(e, p.Excluded)
+		if next == 0 && (p.Scan == nil || p.Scan.NextCursor == "") {
+			actionFooter(e, st, PageAction(p))
+		}
 		return e.err
 	}
 	g := newGrouper(p, st)
@@ -368,6 +378,9 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 	if p.Scan != nil {
 		e.printf("[%d matching messages in this scan page]\n", shown)
 		excluded(e, p.Excluded)
+		if next == 0 && (p.Scan == nil || p.Scan.NextCursor == "") {
+			actionFooter(e, st, PageAction(p))
+		}
 		return e.err
 	}
 	if shown < len(p.Hits) {
@@ -392,6 +405,9 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 			count(p.TotalSessions, p.Exact), plural(p.TotalSessions, "session", "sessions"))
 	}
 	excluded(e, p.Excluded)
+	if next == 0 && (p.Scan == nil || p.Scan.NextCursor == "") {
+		actionFooter(e, st, PageAction(p))
+	}
 	return e.err
 }
 
@@ -399,6 +415,7 @@ func WriteGrep(w io.Writer, p *Page, mode string, st Style) error {
 // one line per hit, ADDRESS:LINE, the attribution, and the snippet with
 // its newlines shown as ⏎, then the footer.
 func WriteSearch(w io.Writer, p *Page, st Style) error {
+	st = reserveAction(st, PageAction(p))
 	e := &errWriter{w: w}
 	notes(e, p)
 	g := newGrouper(p, st)
@@ -438,6 +455,9 @@ func WriteSearch(w io.Writer, p *Page, st Style) error {
 		e.printf("[%d %s]\n", p.Offset+shown, plural(p.Offset+shown, "hit", "hits"))
 	}
 	excluded(e, p.Excluded)
+	if next == 0 && (p.Scan == nil || p.Scan.NextCursor == "") {
+		actionFooter(e, st, PageAction(p))
+	}
 	return e.err
 }
 
@@ -484,6 +504,7 @@ func isoStamp(t *time.Time) string {
 // WriteSessions renders a sessions page: one line per session with its
 // address, agent, last activity, repo, message count and title.
 func WriteSessions(w io.Writer, s *Sessions, st Style) error {
+	st = reserveAction(st, SessionsAction(s))
 	e := &errWriter{w: w}
 	for _, n := range s.Notes {
 		e.printf("[%s]\n", Clean(n))
@@ -521,6 +542,9 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 		e.printf("[%d %s, end of list]\n", shown, plural(shown, "session", "sessions"))
 	}
 	excluded(e, s.Excluded)
+	if next == "" {
+		actionFooter(e, st, SessionsAction(s))
+	}
 	return e.err
 }
 
@@ -531,6 +555,7 @@ func WriteSessions(w io.Writer, s *Sessions, st Style) error {
 // how to read on. The budget keeps the focus and the nearest neighbours;
 // the hints name the address to go on from.
 func WriteRead(w io.Writer, cx *Context, st Style) error {
+	st = reserveAction(st, ReadAction(cx))
 	e := &errWriter{w: w}
 	header := "# " + readHeader(&cx.Conversation) + "\n"
 	e.printf("%s", header)
@@ -549,6 +574,7 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 		room = max(st.Budget-len(header)-2*hint, 1)
 	}
 	blocks := make([]string, len(cx.Messages))
+	clipped := false
 	at := 0
 	for i := range cx.Messages {
 		m := &cx.Messages[i]
@@ -556,7 +582,7 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 			at = i
 		}
 		var b strings.Builder
-		readMessage(&errWriter{w: &b}, cx, m, st, room)
+		clipped = readMessage(&errWriter{w: &b}, cx, m, st, room) || clipped
 		blocks[i] = b.String()
 	}
 	// The focus, then neighbours nearest first, alternating sides, while
@@ -588,6 +614,9 @@ func WriteRead(w io.Writer, cx *Context, st Style) error {
 	}
 	if len(blocks) > 0 && (cx.MoreAfter || hi < len(blocks)-1) {
 		e.printf("%s", st.moreLine(cx.Messages[hi].Address, "after", hi-at, len(blocks)-1-at))
+	}
+	if !clipped && !cx.MoreBefore && !cx.MoreAfter && lo == 0 && hi >= len(blocks)-1 {
+		actionFooter(e, st, ReadAction(cx))
 	}
 	return e.err
 }
@@ -637,7 +666,7 @@ func readHeader(c *ConversationInfo) string {
 // readMessage renders one message of read's answer. room > 0 bounds the
 // focus message's rendered bytes, its line-number prefixes and clip hint
 // included: lines that would pass it are left for line_offset.
-func readMessage(e *errWriter, cx *Context, m *Message, st Style, room int) {
+func readMessage(e *errWriter, cx *Context, m *Message, st Style, room int) bool {
 	focus := m.ID == cx.Focus
 	mark := "  "
 	if focus {
@@ -697,6 +726,7 @@ func readMessage(e *errWriter, cx *Context, m *Message, st Style, room int) {
 	if clipped {
 		e.printf("%s", clipHint(m, st, lineTo, max(m.Lines, lineTo)))
 	}
+	return clipped
 }
 
 // clipHint is the line under clipped text: which lines it shows and how
@@ -859,6 +889,9 @@ func writeOutline(e *errWriter, cx *Context, st Style, used int) error {
 		e.printf("[outline: %d %s shown, more follow; %snext: %s]\n", shown, plural(shown, "entry", "entries"), cut, st.outlineAt(session, next))
 	default:
 		e.printf("[outline: %d %s, end of outline]\n", shown, plural(shown, "entry", "entries"))
+	}
+	if next == "" {
+		actionFooter(e, st, ReadAction(cx))
 	}
 	return e.err
 }

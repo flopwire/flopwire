@@ -12,7 +12,7 @@ by default (`--text` for readable rows). See [Output](#output).
 | search | `flopwire search` | `flopwire_search` | Ranked keyword matches, including plain-language queries |
 | sessions | `flopwire sessions` | `flopwire_sessions` | Listing or globbing sessions |
 | read | `flopwire read` | `flopwire_read` | Reading what an address points to |
-| change | `flopwire change` | `flopwire_change` | Finding sessions with evidence of a commit |
+| trace | `flopwire trace` | `flopwire_change` | Finding sessions with evidence of a commit |
 
 These tools search the shared server after enrollment and the local index
 before enrollment. Use `--local` for this device, or `--server` to select
@@ -73,14 +73,16 @@ this mode with representative ingestion and search load before enabling it broad
 
 ## Commit evidence
 
-Use `change` to find the sessions that recorded a commit. Supply a repository
+Use `trace` to find the sessions that recorded a commit. Supply a repository
 and one or more full commit IDs:
 
 ```sh
-flopwire change --repo . 0123456789abcdef0123456789abcdef01234567
+flopwire trace --repo . 0123456789abcdef0123456789abcdef01234567
 ```
 
-The MCP call uses `flopwire_change` with `repo` and a `commits` array.
+`flopwire change` remains a compatibility alias for `flopwire trace`. The MCP
+call keeps its existing name, `flopwire_change`, with `repo` and a `commits` array.
+Both CLI names use the same flags and return the same JSON.
 Both interfaces return JSON. Each match identifies a session, the observed
 hash, matching input IDs, the operation, and command/result addresses for
 `read`. A quiet commit or delayed result can include additional reveal
@@ -131,6 +133,19 @@ remain available through `grep`.
 `flopwire agent status` separates collection, uploads, policy holds, and server
 parsing. Retrieval JSON includes optional observations in `scope.coverage`.
 Text results include a short coverage note.
+
+MCP `grep`, `search`, `sessions`, and `read` use `coverage="summary"` by default
+in text and JSON. The summary reports nonzero evidence gaps, unavailable
+observations, and the limits of discovery. Its absent counters do not mean zero.
+Shared history can include other devices; coverage observations describe only
+the current device.
+
+Pass `coverage="detail"` to the same MCP tool for the complete coverage report.
+Clients that parse the previous default report must request this option.
+For `sessions`, `detail=true` still selects the full session digest independently.
+A detail response that cannot fit the MCP output budget returns an explicit
+error; use summary coverage or narrow the retrieval request. CLI formats and
+schemas remain unchanged. Raw reads return exact bytes without coverage metadata.
 
 These observations describe the current device. They do not establish that
 all intended folders were discovered or that other devices have caught up.

@@ -131,23 +131,55 @@ func (b *incompleteBackend) Search(context.Context, format.SearchQuery, format.F
 }
 
 func TestRetrievalIncompleteMCP(t *testing.T) {
+	partial := incompletePage()
+	partial.Total = 0 // Ranked search does not populate grep's match count.
+	empty := format.Page{Hits: []format.Hit{}, Truncated: true, Reason: "timed out after 1s before lexical matching probes or ranking finished"}
+	cases := []struct {
+		name    string
+		page    format.Page
+		isError bool
+	}{
+		{"empty-timeout", empty, true},
+		{"useful-partial-without-total", partial, false},
+		{"complete-empty", format.Page{Hits: []format.Hit{}, Exact: true}, false},
+		{"empty-offset-window", format.Page{Hits: []format.Hit{}, Total: 3, Offset: 3, Truncated: true, Reason: empty.Reason}, false},
+		{"empty-progress-page", format.Page{Hits: []format.Hit{}, Scan: &format.GrepScan{Status: "more", NextCursor: "synthetic-cursor"}}, false},
+		{"sessions-only", format.Page{Hits: []format.Hit{}, Sessions: []format.ConversationInfo{{SessionID: "synthetic-session", Address: "synthetic-session", Hits: 1}}, Truncated: true, Reason: empty.Reason}, false},
+	}
 	for _, verb := range []string{"grep", "search"} {
 		for _, mode := range []string{"text", "json"} {
-			t.Run(verb+"/"+mode, func(t *testing.T) {
-				page := incompletePage()
-				r := &retriever{backend: &incompleteBackend{page: page}}
-				key := map[string]string{"grep": "pattern", "search": "query"}[verb]
-				request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_` + verb + `","arguments":{"` + key + `":"needle","format":"` + mode + `"}}}`
-				answer, isErr, _ := mcpContent(t, mcpRoundTrip(t, r, request))
-				if isErr {
-					t.Fatalf("partial page became an MCP error: %s", answer)
+			for _, tc := range cases {
+				if verb == "search" && (tc.name == "empty-progress-page" || tc.name == "sessions-only") {
+					continue // These result forms belong to grep only.
 				}
-				if mode == "json" {
-					assertIncompleteJSON(t, []byte(answer), page)
-				} else if !strings.Contains(answer, "retained partial hit") || !strings.Contains(answer, page.Reason) {
-					t.Fatalf("partial text lost: %s", answer)
-				}
-			})
+				t.Run(verb+"/"+mode+"/"+tc.name, func(t *testing.T) {
+					page := tc.page
+					r := &retriever{backend: &incompleteBackend{page: page}}
+					key := map[string]string{"grep": "pattern", "search": "query"}[verb]
+					request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"flopwire_` + verb + `","arguments":{"` + key + `":"needle","format":"` + mode + `"}}}`
+					answer, isErr, _ := mcpContent(t, mcpRoundTrip(t, r, request))
+					if isErr != tc.isError {
+						t.Fatalf("isError=%v want %v: %s", isErr, tc.isError, answer)
+					}
+					if mode == "json" {
+						var got format.Page
+						if err := json.Unmarshal([]byte(answer), &got); err != nil || got.Truncated != page.Truncated || got.Reason != page.Reason || len(got.Hits) != len(page.Hits) || len(got.Sessions) != len(page.Sessions) {
+							t.Fatalf("page lost: %s (%v)", answer, err)
+						}
+					} else if !strings.Contains(answer, page.Reason) {
+						t.Fatalf("diagnostic lost: %s", answer)
+					}
+					if len(page.Hits) > 0 && !strings.Contains(answer, "retained partial hit") {
+						t.Fatalf("useful hit lost: %s", answer)
+					}
+					if tc.isError && !strings.Contains(answer, "cannot establish absence") {
+						t.Fatalf("recovery guidance lost: %s", answer)
+					}
+					if page.Scan != nil && !strings.Contains(answer, page.Scan.NextCursor) {
+						t.Fatalf("continuation cursor lost: %s", answer)
+					}
+				})
+			}
 		}
 	}
 }

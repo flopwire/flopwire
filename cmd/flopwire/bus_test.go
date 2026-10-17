@@ -287,7 +287,7 @@ func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
 	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
 	text, err := mcpCall(t.Context(), r, "flopwire_send", map[string]any{"to": peerID, "message": "same message", "retry_of": "mfailed", "intent": "request", "reply_to": "mparent", "refs": []any{"reference/1"}})
 	var receipt sendJSON
-	if err != nil || json.Unmarshal([]byte(text), &receipt) != nil || !receipt.Replayed || receipt.ID != "mretry" || receipt.State != busproto.StateRead || receipt.Arrives != arriveRecorded || receipt.Next != "" {
+	if err != nil || json.Unmarshal([]byte(text), &receipt) != nil || !receipt.Replayed || receipt.ID != "mretry" || receipt.State != busproto.StateRead || receipt.Arrives != arriveRecorded || receipt.Next != sendMCPNext(receipt.SendResponse) {
 		t.Fatalf("MCP replay: %q %v", text, err)
 	}
 	if request := fa.requests()[1].Send; request.RetryOf != "mfailed" || request.ReplyTo != "mparent" || request.Body != "same message" {
@@ -718,7 +718,7 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	}
 	// The instructions carry the messaging guidance.
 	resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`)
-	if !strings.Contains(resp, "do not poll flopwire_peers") {
+	if !strings.Contains(resp, "do not poll or send status nudges") {
 		t.Fatalf("instructions: %s", resp)
 	}
 }
@@ -772,7 +772,7 @@ func TestMCPPeersAndInbox(t *testing.T) {
 		t.Fatalf("peers json: %q %v", text, err)
 	}
 	text, err = mcpCall(t.Context(), r, "flopwire_inbox", map[string]any{"sent": true})
-	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false}` {
+	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false,"hint":"Continue work using received evidence; a sent delivery receipt is not a reply."}` {
 		t.Fatalf("inbox json: %q %v", text, err)
 	}
 	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_messages, flopwire_peers, flopwire_read") {
@@ -1023,7 +1023,11 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 	}
 	for _, name := range []string{"help send", "help inbox", "instructions", "tools"} {
 		s := strings.Join(strings.Fields(texts[name]), " ")
-		if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
+		if name == "instructions" {
+			if !strings.Contains(s, "hooks deliver during a running turn or on a later prompt/resume") {
+				t.Errorf("%s does not say how a message arrives: %s", name, s)
+			}
+		} else if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
 			t.Errorf("%s does not say how a message arrives: %s", name, s)
 		}
 	}
@@ -1033,8 +1037,8 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 			t.Errorf("%s does not say what inbox is for", name)
 		}
 	}
-	if !strings.Contains(mcpInstructions, "A message never starts a turn") {
-		t.Error("instructions do not say a message never starts a turn")
+	if !strings.Contains(mcpInstructions, "Sending never wakes an idle session") {
+		t.Error("instructions do not say sending never wakes an idle session")
 	}
 }
 
