@@ -32,23 +32,23 @@
     - 01a015f6-85fd-7ef1-8707-e8187ac0b084
     - 85940a27-89a1-4d56-889e-2824eb5408ad
   evidence: 'brute force 2026-09-30: 9 lines match in the first 1500 chars of their text, in 3 sessions (claude 4, codex 5); 10 match anywhere'
-- name: pandora-recent
+- name: payments-recent
   verb: search
-  query: pandora
+  query: payments
   since: '2026-09-22T00:00:00Z'
-  source: cass search 'pandora' --since 2026-09-22
+  source: cass search 'payments' --since 2026-09-22
   until: '2026-09-29T00:00:00Z'
   limit: 100
   expect:
     min_hits: 100
     sessions: []
   evidence: 'brute force 2026-09-30: 8416 lines match in the first 1500 chars of their text, in 342 sessions (claude 7169, codex 1247); 10490 match anywhere'
-- name: launchd-pandora
+- name: launchd-payments
   verb: search
   query: launchd
-  repo: ~/Code/pandora
+  repo: ~/Code/payments
   since: '2026-09-22T00:00:00Z'
-  source: cass search 'launchd' --workspace ~/Code/pandora --since 2026-09-22
+  source: cass search 'launchd' --workspace ~/Code/payments --since 2026-09-22
   until: '2026-09-29T00:00:00Z'
   limit: 100
   expect:
@@ -141,8 +141,8 @@
 - name: merge-head-sessionpane
   verb: search
   query: MERGE_HEAD SessionPane
-  repo: ~/Code/atrium
-  source: cass search 'MERGE_HEAD SessionPane' --workspace ~/Code/atrium --today
+  repo: ~/Code/console
+  source: cass search 'MERGE_HEAD SessionPane' --workspace ~/Code/console --today
   until: '2026-09-29T00:00:00Z'
   limit: 100
   expect:
@@ -153,8 +153,8 @@
 - name: sessionpane-path
   verb: find
   query: surface/web/src/sessions/SessionPane.tsx
-  repo: ~/Code/atrium
-  source: cass search 'surface/web/src/sessions/SessionPane.tsx' --workspace ~/Code/atrium --today
+  repo: ~/Code/console
+  source: cass search 'surface/web/src/sessions/SessionPane.tsx' --workspace ~/Code/console --today
   until: '2026-09-29T00:00:00Z'
   limit: 50
   expect:
@@ -164,8 +164,8 @@
 - name: skiphtml-urltransform
   verb: search
   query: skipHtml urlTransform
-  repo: ~/Code/atrium
-  source: cass search 'skipHtml urlTransform safeUrlTransform MENTION_URL_PREFIX' --workspace ~/Code/atrium
+  repo: ~/Code/console
+  source: cass search 'skipHtml urlTransform safeUrlTransform MENTION_URL_PREFIX' --workspace ~/Code/console
   until: '2026-09-29T00:00:00Z'
   limit: 100
   expect:
@@ -177,8 +177,8 @@
 - name: collapse-threshold
   verb: find
   query: COLLAPSE_CHAR_THRESHOLD
-  repo: ~/Code/atrium
-  source: cass search 'COLLAPSE_CHAR_THRESHOLD' --workspace ~/Code/atrium
+  repo: ~/Code/console
+  source: cass search 'COLLAPSE_CHAR_THRESHOLD' --workspace ~/Code/console
   until: '2026-09-29T00:00:00Z'
   limit: 50
   expect:
@@ -188,8 +188,8 @@
 - name: compact-markdown-text
   verb: find
   query: CompactMarkdownText
-  repo: ~/Code/atrium
-  source: cass search 'CompactMarkdownText' --workspace ~/Code/atrium
+  repo: ~/Code/console
+  source: cass search 'CompactMarkdownText' --workspace ~/Code/console
   until: '2026-09-29T00:00:00Z'
   limit: 50
   expect:
@@ -199,8 +199,8 @@
 - name: capability-snapshots-migration
   verb: find
   query: 063_session_capability_snapshots.sql
-  repo: ~/Code/atrium
-  source: cass search 'surface/server/migrations/063_session_capability_snapshots.sql' --workspace ~/Code/atrium --days 3
+  repo: ~/Code/console
+  source: cass search 'surface/server/migrations/063_session_capability_snapshots.sql' --workspace ~/Code/console --days 3
   until: '2026-09-29T00:00:00Z'
   limit: 50
   expect:
@@ -210,8 +210,8 @@
 - name: live-e2e-codex-live
   verb: find
   query: live-e2e-codex-live
-  repo: ~/Code/agent-fanout
-  source: cass search 'live-e2e-codex-live' --workspace ~/Code/agent-fanout --today
+  repo: ~/Code/fanout
+  source: cass search 'live-e2e-codex-live' --workspace ~/Code/fanout --today
   until: '2026-09-29T00:00:00Z'
   limit: 50
   expect:
@@ -222,8 +222,8 @@
 - name: durable-controller
   verb: search
   query: durable controller
-  repo: ~/Code/agent-fanout
-  source: cass search 'durable controller' --workspace ~/Code/agent-fanout --today
+  repo: ~/Code/fanout
+  source: cass search 'durable controller' --workspace ~/Code/fanout --today
   until: '2026-09-29T00:00:00Z'
   limit: 100
   expect:
