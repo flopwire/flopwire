@@ -162,6 +162,34 @@ func TestCommitEvidencePendingBudget(t *testing.T) {
 	t.Logf("pending state estimate: %d calls=%d bytes; drained=%d bytes; long-string delta=%d bytes", count, pending, drained, state.RetainedSize()-before)
 }
 
+func TestCommitEvidencePendingHandlesBudget(t *testing.T) {
+	var state CommitEvidenceState
+	const count = 256
+	for i := 0; i < count; i++ {
+		id := fmt.Sprint(i)
+		state.Step(evidenceCall(id, "git commit -qm x", int64(i*2)))
+		state.Step(evidenceResult(id, fmt.Sprintf("Chunk ID: abc\nProcess running with session ID %d\nOutput:\n", i), int64(i*2+1)))
+	}
+	if len(state.calls) != 0 || len(state.handles) != count {
+		t.Fatalf("unexpected pending calls=%d handles=%d", len(state.calls), len(state.handles))
+	}
+	pending := state.RetainedSize()
+	for i := 0; i < count; i++ {
+		poll := evidenceCall("poll"+fmt.Sprint(i), "", int64(1000+i*2))
+		poll.ToolName = "write_stdin"
+		poll.Text = fmt.Sprintf(`{"session_id":%d}`, i)
+		state.Step(poll)
+		state.Step(evidenceResult(poll.ToolCallID, "", int64(1001+i*2)))
+	}
+	if len(state.calls)+len(state.handles) != 0 {
+		t.Fatal("completed handles retained")
+	}
+	if state.RetainedSize() > pending {
+		t.Fatal("drained handle accounting grew")
+	}
+	t.Logf("pending handles: %d estimated bytes; drained: %d bytes", pending, state.RetainedSize())
+}
+
 func TestCommitEvidenceCloneConcurrentBranches(t *testing.T) {
 	var state CommitEvidenceState
 	state.Step(evidenceCall("a", "git commit -m x", 0))
@@ -191,4 +219,31 @@ func cloneCommitEvidenceState(s *CommitEvidenceState) *CommitEvidenceState {
 	out.calls = maps.Clone(s.calls)
 	out.handles = maps.Clone(s.handles)
 	return &out
+}
+
+func BenchmarkCommitEvidenceReplay(b *testing.B) {
+	for _, workload := range []struct{ name, cmd, output string }{
+		{"ordinary", "go test ./internal/digest", "ok"},
+		{"git-status", "git status --short", ""},
+		{"git-commit", "git commit -m x", "[main abcdef0] x"},
+	} {
+		rows := make([]transcript.Message, 0, 1000)
+		for i := 0; i < 500; i++ {
+			id := fmt.Sprint(i)
+			rows = append(rows, evidenceCall(id, workload.cmd, int64(i*2)), evidenceResult(id, workload.output, int64(i*2+1)))
+		}
+		for _, implementation := range []struct {
+			name    string
+			extract func([]transcript.Message) []CommitEvidence
+		}{
+			{"frozen", frozenExtractCommitEvidence}, {"stream", ExtractCommitEvidence},
+		} {
+			b.Run(workload.name+"/"+implementation.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					implementation.extract(rows)
+				}
+			})
+		}
+	}
 }

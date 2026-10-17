@@ -172,7 +172,7 @@ func (s *CommitEvidenceState) Step(message transcript.Message) []CommitEvidence 
 				open = nil
 				lastMover = m.Ordinal
 			}
-			p := pendingCommitEvidence{ref: compactEvidenceRef(m), printedSafe: printedOutputSafe(m), g: compactEvidenceGit(g), operation: strings.Clone(op), cwd: strings.Clone(cwd), known: known}
+			p := pendingCommitEvidence{ref: compactEvidenceRef(m), printedSafe: g.printed && printedCommandsSafe(cmds), g: compactEvidenceGit(g), operation: strings.Clone(op), cwd: strings.Clone(cwd), known: known}
 			if !g.self && g.reveal != "" && open != nil && g.revWhere == openWhere {
 				copy := *open
 				p.reveal = &copy
