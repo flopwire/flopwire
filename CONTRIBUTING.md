@@ -128,6 +128,14 @@ server, or validation process still uses it. Then remove it with
 and report why. Remove abandoned worktrees only when the owner explicitly
 abandons the work. Never force removal without explicit authorization.
 
+## Documents
+
+Every markdown file is gold or a log. A gold document states current truth
+only. Overwrite or delete outdated text. Never annotate text as superseded,
+historical or legacy, and never refer to earlier plans; git is the history.
+A log is named `<subject>-YYYY-MM-DD.md`, records events as of its date, and is
+edited only to remove private data. Dated records live under `notes/log/`.
+
 ## Releases
 
 Use conventional commit subjects: `fix:` and `perf:` for patches, `feat:`

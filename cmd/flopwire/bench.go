@@ -852,7 +852,7 @@ func errText(err error) string {
 
 // --- report ---
 
-// Memory targets. Spec §11.2 set 300MB peak and 50MB idle; Gary relaxed
+// Memory targets. Spec §11.2 set 300MB peak and 50MB idle; the maintainer relaxed
 // them to 600MB and 120MB (A4), since the device agent's bulk load runs
 // once per device and the idle numbers were already acceptable.
 const (
