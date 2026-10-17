@@ -107,3 +107,54 @@ func TestMCPCoverageTinyBudgetFailsExplicitly(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPCoverageTextDetailMatchesFullReport(t *testing.T) {
+	report := coverage.UnknownReport("fixture observation unavailable")
+	report.Upload = &coverage.UploadSnapshot{Captured: &coverage.CapturedSnapshot{PendingManifestBytes: 1234, PendingTailBytes: 5678}}
+	scope := mcpCoverageScope(&format.Scope{Kind: "shared", Coverage: report}, true, 24000)
+	want, _ := json.Marshal(report)
+	note := retrievalCoverageNote(scope, true)
+	if note != " [coverage: "+string(want)+"]" {
+		t.Fatalf("text detail differs from JSON report: %s", note)
+	}
+	if cli := retrievalCoverageNote(scope, false); cli != coverageNote(report, true) {
+		t.Fatal("CLI note changed")
+	}
+}
+
+func TestMCPCoverageSchema(t *testing.T) {
+	raw, err := json.Marshal(mcpTools())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []struct {
+		Name   string `json:"name"`
+		Schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"inputSchema"`
+	}
+	if err = json.Unmarshal(raw, &tools); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, tool := range tools {
+		switch tool.Name {
+		case "flopwire_grep", "flopwire_search", "flopwire_sessions", "flopwire_read":
+			count++
+			var prop struct {
+				Enum    []string `json:"enum"`
+				Default string   `json:"default"`
+			}
+			if err = json.Unmarshal(tool.Schema.Properties["coverage"], &prop); err != nil || strings.Join(prop.Enum, ",") != "summary,detail" || prop.Default != "summary" {
+				t.Fatalf("%s schema: %+v %v", tool.Name, prop, err)
+			}
+		default:
+			if tool.Schema.Properties["coverage"] != nil {
+				t.Fatalf("coverage leaked to %s", tool.Name)
+			}
+		}
+	}
+	if count != 4 {
+		t.Fatalf("checked %d retrieval tools", count)
+	}
+}

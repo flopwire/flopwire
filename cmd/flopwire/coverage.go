@@ -347,3 +347,16 @@ func mcpCoverageScope(scope *format.Scope, detail bool, budget int) *format.Scop
 	}
 	return &out
 }
+
+func retrievalCoverageNote(scope *format.Scope, mcp bool) string {
+	if mcp {
+		switch scope.CoverageMode {
+		case coverage.DetailMode:
+			raw, _ := json.Marshal(scope.Coverage)
+			return " [coverage: " + string(raw) + "]"
+		case coverage.SummaryMode, coverage.BudgetSummaryMode:
+			return summaryCoverageNote(coverage.Present(scope.Coverage, scope.Kind == "shared", scope.CoverageMode))
+		}
+	}
+	return coverageNote(scope.Coverage, scope.Kind == "shared")
+}

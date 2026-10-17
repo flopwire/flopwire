@@ -674,14 +674,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		case !asJSON:
 			if scope != nil {
 				note := scopeNote(scope)
-				optional := coverageNote(scope.Coverage, scope.Kind == "shared")
-				if st.MCP && scope.CoverageMode == coverage.DetailMode {
-					raw, _ := json.Marshal(scope.Coverage)
-					optional = " [coverage: " + string(raw) + "]"
-				}
-				if st.MCP && (scope.CoverageMode == coverage.SummaryMode || scope.CoverageMode == coverage.BudgetSummaryMode) {
-					optional = summaryCoverageNote(coverage.Present(scope.Coverage, scope.Kind == "shared", scope.CoverageMode))
-				}
+				optional := retrievalCoverageNote(scope, st.MCP)
 				if !st.MCP && st.Budget > 0 && len(note)+len(optional)+1 > st.Budget {
 					optional = " [coverage: unknown]"
 					if len(note)+len(optional)+1 > st.Budget {
