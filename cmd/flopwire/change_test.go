@@ -91,7 +91,7 @@ func TestTraceCLIAndChangeAlias(t *testing.T) {
 	for _, verb := range []string{"trace", "change"} {
 		t.Run(verb, func(t *testing.T) {
 			output := captureStdout(t, func() error {
-				return run(t.Context(), []string{verb, "--local", "--repo", "example/repo", hash})
+				return run(t.Context(), []string{verb, "--local", "--repo", "/tmp/oracle-alpha", hash})
 			})
 			var page format.Changes
 			if err := json.Unmarshal([]byte(output), &page); err != nil || page.Kind != "changes" {
@@ -102,7 +102,7 @@ func TestTraceCLIAndChangeAlias(t *testing.T) {
 			} else if output != baseline {
 				t.Fatalf("alias changed response: got %s want %s", output, baseline)
 			}
-			if err := run(t.Context(), []string{verb, "--local", "--repo", "example/repo", "abc"}); err == nil {
+			if err := run(t.Context(), []string{verb, "--local", "--repo", "/tmp/oracle-alpha", "abc"}); err == nil {
 				t.Fatal("accepted abbreviated input commit")
 			}
 		})
