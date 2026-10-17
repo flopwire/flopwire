@@ -321,3 +321,29 @@ func budgetCoverageScope(scope *format.Scope, budget int) *format.Scope {
 	}
 	return &out
 }
+
+func summaryCoverageNote(s *coverage.Summary) string {
+	if s == nil {
+		return ""
+	}
+	b, _ := json.Marshal(s)
+	return " [coverage: " + string(b) + "]"
+}
+
+func mcpCoverageScope(scope *format.Scope, detail bool, budget int) *format.Scope {
+	if scope == nil {
+		return scope
+	}
+	out := *scope
+	if detail {
+		out.CoverageMode = coverage.DetailMode
+		return &out
+	}
+	out.CoverageMode = coverage.SummaryMode
+	summary := coverage.Summarize(scope.Coverage, scope.Kind == "shared")
+	b, _ := json.Marshal(summary)
+	if budget > 0 && len(b) > max(256, budget/4) {
+		out.CoverageMode = coverage.BudgetSummaryMode
+	}
+	return &out
+}

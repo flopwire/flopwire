@@ -15,6 +15,7 @@
 package format
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -593,9 +594,24 @@ type Sessions struct {
 // Scope identifies the backend that answered a retrieval request.
 // It is attached by the CLI or MCP adapter, not inferred from result rows.
 type Scope struct {
-	Kind     string           `json:"kind"` // "local" or "shared"
-	Server   string           `json:"server,omitempty"`
-	Coverage *coverage.Report `json:"coverage,omitempty"`
+	Kind         string                `json:"kind"` // "local" or "shared"
+	Server       string                `json:"server,omitempty"`
+	Coverage     *coverage.Report      `json:"coverage,omitempty"`
+	CoverageMode coverage.Presentation `json:"-"`
+}
+
+// MarshalJSON selects the MCP-only projection without changing the report used
+// by CLI diagnostics or retrieval logic.
+func (s Scope) MarshalJSON() ([]byte, error) {
+	type legacy Scope
+	if s.CoverageMode == "" || s.CoverageMode == coverage.DetailMode {
+		return json.Marshal(legacy(s))
+	}
+	return json.Marshal(struct {
+		Kind     string            `json:"kind"`
+		Server   string            `json:"server,omitempty"`
+		Coverage *coverage.Summary `json:"coverage"`
+	}{s.Kind, s.Server, coverage.Present(s.Coverage, s.Kind == "shared", s.CoverageMode)})
 }
 
 // Attribution names whose evidence a raw read returns: the user and

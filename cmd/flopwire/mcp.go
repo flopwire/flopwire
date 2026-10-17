@@ -385,6 +385,7 @@ func mcpTool(name, title, desc, verb string, own map[string]any, required ...str
 	for k, v := range own {
 		props[k] = v
 	}
+	props["coverage"] = map[string]any{"type": "string", "enum": []string{"summary", "detail"}, "default": "summary", "description": "Coverage observations: summary (default) or the complete report (detail); independent of session digest detail."}
 	schema := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 	if len(required) > 0 {
 		schema["required"] = required
@@ -463,6 +464,13 @@ func mcpOpts(name string, args map[string]any) (*opts, bool, error) {
 	for _, k := range keys {
 		v := args[k]
 		switch {
+		case k == "coverage":
+			s, ok := v.(string)
+			if !ok || (s != "summary" && s != "detail") {
+				return nil, false, fmt.Errorf("coverage: want summary or detail")
+			}
+			o.vals["coverage"] = s
+			continue
 		case k == "format":
 			s, _ := v.(string)
 			if s != "" && s != "text" && s != "json" {

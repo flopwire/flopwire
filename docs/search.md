@@ -132,6 +132,19 @@ remain available through `grep`.
 parsing. Retrieval JSON includes optional observations in `scope.coverage`.
 Text results include a short coverage note.
 
+MCP `grep`, `search`, `sessions`, and `read` use `coverage="summary"` by default
+in text and JSON. The summary reports nonzero evidence gaps, unavailable
+observations, and the limits of discovery. Its absent counters do not mean zero.
+Shared history can include other devices; coverage observations describe only
+the current device.
+
+Pass `coverage="detail"` to the same MCP tool for the complete coverage report.
+Clients that parse the previous default report must request this option.
+For `sessions`, `detail=true` still selects the full session digest independently.
+A detail response that cannot fit the MCP output budget returns an explicit
+error; use summary coverage or narrow the retrieval request. CLI formats and
+schemas remain unchanged. Raw reads return exact bytes without coverage metadata.
+
 These observations describe the current device. They do not establish that
 all intended folders were discovered or that other devices have caught up.
 Missing diagnostics are unknown. An empty upload queue does not prove that
