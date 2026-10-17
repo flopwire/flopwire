@@ -296,7 +296,7 @@ removal of the working key file. Keep encrypted production backups off the
 server host, and keep key escrow separate from those backups. Verify recovery
 using the escrowed key. The existing local secret files and lab restore do not
 establish those operational recovery safeguards. Follow the
-[production recovery runbook](../operations/recovery.md) before changing the
+[production recovery runbook](../production-recovery-plan-2026-10-06.md) before changing the
 secret storage or retiring the migration archives.
 
 ## Production backup and migration rehearsal, 2026-10-06
@@ -335,7 +335,7 @@ Full production recovery still requires an encrypted off-host backup copy,
 retrieval without the original host, independent off-workstation key escrow and
 recovery, and a complete database and raw-object restore into isolated staging
 targets. Complete the acceptance checks in the
-[production recovery runbook](../operations/recovery.md). The owner must select
+[production recovery runbook](../production-recovery-plan-2026-10-06.md). The owner must select
 the off-host destination and escrow mechanism and set recovery targets,
 backup frequency, retention, and cutover policy before executing that procedure.
 Keep the working key, CASS snapshots, and migration archives until the

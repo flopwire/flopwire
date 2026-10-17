@@ -16,7 +16,7 @@ commit changed only CLI test expectations; unchanged runtime qualification
 retains its earlier source attribution.
 
 Fresh Code/Cowork app-session and lifecycle acceptance remains incomplete.
-See [history qualification](operations/history-qualification.md).
+See [history qualification](history-qualification-2026-10-08.md).
 
 ## Historical rollout proposal
 

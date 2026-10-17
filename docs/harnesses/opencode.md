@@ -5,11 +5,11 @@ that the hooks and the MCP server do for the other harnesses:
 
 | Part | What it does |
 |---|---|
-| Tools | `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`, served as plugin tools. Each call runs `flopwire mcp --call` as the calling session. |
+| Tools | `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_change`, `flopwire_messages`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`, served as plugin tools. Each call runs `flopwire mcp --call` as the calling session. |
 | Delivery | Puts pending messages into the session after each tool call and when the user sends a prompt. |
 | Standing instruction | Adds Flopwire's instruction and tool guidance to the system prompt of every model call. |
 | Presence | Names the process's sessions in `<flopwire config dir>/opencode/<pid>.json`, so peers sees them as live. |
-| Capture | Tells the device agent when a turn starts and ends. The agent reads `opencode.db` itself ([agent.md](agent.md)). |
+| Capture | Tells the device agent when a turn starts and ends. The agent reads `opencode.db` itself ([agent.md](../agent.md)). |
 | Shell | Sets `FLOPWIRE_SESSION_ID` and `FLOPWIRE_AGENT` for shell commands, so `flopwire send` in a shell knows the session. |
 
 ## Requirements
@@ -18,7 +18,7 @@ that the hooks and the MCP server do for the other harnesses:
   `flopwire setup` recorded, then `flopwire` on `PATH`, then
   `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin` and `~/.local/bin`,
   as the other plugins' hook shim does
-  ([agent.md](agent.md#how-the-hooks-find-the-binary)).
+  ([How the hooks find the binary](README.md#how-the-hooks-find-the-binary)).
 - The device agent runs (`flopwire agent run`).
 - opencode 1.18 or later.
 
@@ -28,6 +28,10 @@ and adds no tools. If the agent is not running, no message arrives and the messa
 tools return `agent_not_running`.
 
 ## Install
+
+`flopwire setup` installs one plugin file into opencode's global plugin
+directory. The plugin delivers messages, serves the tools and keeps
+presence.
 
 1. Run `flopwire setup`.
 2. Read the report. Do each `todo` item.
@@ -69,7 +73,7 @@ A message never starts a turn.
   opencode answers it with one more reply before the session goes idle.
   The model does not see the message in the step that is already running:
   opencode reads the stored message only after the current model stream
-  ends. This extra reply is accepted (decided 2026-10-04). The other
+  ends. Flopwire accepts this extra reply. The other
   harnesses add the message to the running turn and need no extra reply.
 - **The session is idle.** The message waits. When the user sends the next
   prompt, the plugin adds the message to that prompt as one more text
@@ -93,7 +97,7 @@ the plugin never calls it that way.
 The device agent reads `opencode.db`. A text part counts as a delivery
 when its metadata names a message id and its text starts with the wrapper
 of that same id. The message then becomes `read` (see
-[messaging.md](messaging.md#read-receipts)). The same wrapper in a prompt
+[messaging.md](../messaging.md#read-receipts)). The same wrapper in a prompt
 that you typed, or in a reply, does not count.
 
 ## Subagents
@@ -104,7 +108,7 @@ next tool call. A child session is not a peer. A tool call from a
 subagent runs as its parent session: a `flopwire_send` from a subagent
 goes out as the parent session, and the reply goes to the parent session.
 The parent's human does not see the call. This is the same on every
-harness (decided 2026-10-04); see [agent.md](agent.md#send-and-read-messages).
+harness; see [Messaging](../messaging.md#send-and-read-messages).
 
 ## Presence
 

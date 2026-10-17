@@ -269,7 +269,7 @@ shared deployment on Docker Desktop, put a reverse proxy in front and set
 ## Change admin path rules
 
 Admin path rules and the `unplaceable` floor apply to every device and
-also on the server. Syntax: [agent.md](agent.md#keep-sessions-out-with-path-rules).
+also on the server. Syntax: [path-rules.md](path-rules.md).
 
 1. Edit the rules on the console's Collection policy page, or send
    `PUT /v1/admin/policy` with `path_rules` and `unplaceable`.
@@ -403,13 +403,9 @@ process sees the message only at its next poll. Before you run more than one
 process, replace the in-process wake-up with Postgres `LISTEN/NOTIFY`.
 
 Database migrations are forward-only and run in one transaction at startup.
-Applied files and ledger checksums are immutable. The supported upgrade from
-`661a48b` preserves its historical `009_bus.sql` checksum and applies the
-additive `013_bus_retention_upgrade.sql`. Migrations 011, 012, and 013 ship
-together. See
-[the bus migration upgrade procedure](operations-migration-upgrade.md) for
-the exact checksum contract and PostgreSQL checks. Unknown checksums and
-incomplete ledger prefixes are refused. Investigate a refusal before changing
+Applied files and ledger checksums are immutable. Unknown checksums and
+incomplete ledger prefixes are refused. Before 1.0, a release may require a
+fresh server database and re-enrollment; the release notes say so. Investigate a refusal before changing
 the deployment. Preserve its database and verified backup.
 
 If migration is refused or its transaction fails, no pending changes commit.

@@ -389,7 +389,7 @@ const grepCandidateSizes = `SELECT octet_length(m.text)::bigint
 // and reads only those conversations' messages, so a repo that holds a
 // small share of a large corpus costs its share and not the whole
 // trigram bitmap (a broad pattern over 2.2M messages took 35 s before
-// its first row: docs/perf/shared-stack-2026-10-03.md). Over it, the
+// its first row: notes/log/perf/shared-stack-2026-10-03.md). Over it, the
 // filter is broad, the list itself is work, and the trigram bitmap alone
 // is the better plan, so the query keeps its shape.
 const grepConvCap = 5000

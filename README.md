@@ -162,7 +162,7 @@ For a release source archive, use the explicit version commands in
    It installs the plugin with each harness's own commands and reports
    what you must still do. In Codex, approve the plugin's hooks once when
    Codex shows "Hooks need review"; see
-   [docs/agent.md](docs/agent.md#approve-the-codex-hooks). Devin loads
+   [docs/agent.md](docs/harnesses/codex.md#approve-the-codex-hooks). Devin loads
    the Claude Code plugin; setup installs it on this device only
    (`devin plugins install --local`).
 7. Check the agent:
@@ -180,8 +180,7 @@ Collection follows configured roots and path rules. Desktop Local Code uses
 verified native session links; ordinary Claude chat and remote SSH/WSL evidence
 are excluded. Local Cowork sharing requires verified Mac-folder mapping and
 server policy support. Historical unknown mapping can keep uploads held.
-See [collection roots and policy](docs/agent.md#run-the-agent) and
-[history qualification](docs/operations/history-qualification.md) for scope and
+See [collection roots and policy](docs/agent.md#run-the-agent) for scope and
 observed limits. An empty queue does not prove complete history coverage.
 
 ## Search
@@ -260,7 +259,7 @@ The messaging tools are `flopwire_messages`, `flopwire_peers`, `flopwire_send`
 and `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
 message. The approval line above approves it too. Remove the line to be
 asked before each call. With the Codex plugin, Codex asks before each
-`flopwire_send`; [docs/agent.md](docs/agent.md#approve-the-codex-hooks)
+`flopwire_send`; [docs/agent.md](docs/harnesses/codex.md#approve-the-codex-hooks)
 shows the line that approves it.
 
 ## Messaging
@@ -297,14 +296,14 @@ and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
 you approve them once. opencode uses its plugin for delivery and tools.
 Vendor cloud sessions (Claude Code cloud, Devin cloud) get messages
 pushed while they run a turn, through the vendor's CLI on one of your
-devices, and cannot reply. See [docs/cloud.md](docs/cloud.md).
+devices, and cannot reply. See [docs/harnesses/cloud.md](docs/harnesses/cloud.md).
 
 Delivery has two steps: the hook prints the message, then confirms it.
 A message that a hook took but did not confirm comes again, marked
 `redelivery="true"`. After 3 unconfirmed tries, or when the recipient
 session ends first, the sender's `inbox` shows it as `undelivered`.
 Subagents get no messages; a subagent sends as its session. See
-[docs/agent.md](docs/agent.md#messaging).
+[docs/agent.md](docs/messaging.md).
 
 ### Accepting a sender
 
@@ -383,7 +382,7 @@ changes the rules, the server hides stored sessions the new rules cover.
 An admin reviews them with `flopwire admin policy preview` and confirms with
 `flopwire admin policy purge --yes`; otherwise the server purges them after
 7 days. A rule change that no longer covers a hidden session restores it.
-See [docs/runbook.md](docs/runbook.md#change-admin-path-rules). [docs/agent.md](docs/agent.md#keep-sessions-out-with-path-rules)
+See [docs/runbook.md](docs/runbook.md#change-admin-path-rules). [docs/agent.md](docs/path-rules.md)
 has the full rules.
 
 ## Deletion
@@ -407,7 +406,9 @@ See [docs/runbook.md](docs/runbook.md#delete-a-conversation).
 | Health, quotas, admin sessions, transport, path rules, deletion, upgrade, recovery | [docs/runbook.md](docs/runbook.md) |
 | Backup and restore | [docs/runbook.md](docs/runbook.md#recover), `flopwire backup`, `flopwire backup-verify`, `flopwire restore` |
 | Two machines on a LAN | [docs/two-laptop.md](docs/two-laptop.md) |
-| Device agent, hooks, path rules | [docs/agent.md](docs/agent.md) |
+| Device agent | [docs/agent.md](docs/agent.md) |
+| Harnesses: Claude Code, Codex, Devin CLI, opencode, cloud | [docs/harnesses](docs/harnesses/README.md) |
+| Path rules | [docs/path-rules.md](docs/path-rules.md) |
 | Check message delivery after a harness release | [docs/probe.md](docs/probe.md), `flopwire probe` |
 | Pre-release manual checks | [docs/release-checklist.md](docs/release-checklist.md) |
 

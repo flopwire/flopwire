@@ -18,7 +18,7 @@ Cowork inherits the strictest rule anywhere within its selected Mac folders. Unk
 remains restrictive even when current folders become known.
 
 Collection, captured uploads, server parsing, and policy holds have separate
-[coverage observations](../coverage-reporting.md). Unknown diagnostics are not
+[coverage observations](../../docs/coverage-reporting.md). Unknown diagnostics are not
 zero counts. An empty upload or parse queue does not prove discovery or exact
 message equality.
 
@@ -121,10 +121,10 @@ on that device. Preserve the existing migration archives throughout the audit.
 Off-host backup, independent key recovery, and complete production disaster
 recovery remain deferred. The staging VM shares production's physical host.
 Local deployment checkpoints do not protect against loss of that host. Follow
-the [recovery plan](recovery.md) before claiming recovery is qualified or retiring
+the [recovery plan](production-recovery-plan-2026-10-06.md) before claiming recovery is qualified or retiring
 working keys and migration archives.
 
-Parallel uploads remain a separate [qualification project](../parallel-sync.md).
+Parallel uploads remain a separate [qualification project](../../docs/parallel-sync.md).
 Their throughput and shared-state safety gates cannot be inferred from the
 successful serial rollout. Remote SSH/WSL collectors remain deferred.
 

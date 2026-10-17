@@ -359,7 +359,7 @@ Cloud sessions are owned by a user, not a device. Any of that user's
 devices may deliver; the claim call picks one.
 
 2026-10-03 (#63), as built ([`cloud-2026-10-03.md`](cloud-2026-10-03.md),
-[`docs/cloud.md`](../../docs/cloud.md)):
+[`docs/cloud.md`](../../docs/harnesses/cloud.md)):
 
 - Each vendor is behind `vendorcloud.Adapter`. Claude discovery reads
   `GET /v1/code/sessions?statuses=active`, the list the CLI's `--teleport`
@@ -512,14 +512,14 @@ Decided 2026-10-04:
 - **Cloud sessions in `peers`:** a teammate whom the user has not
   accepted still sees the user's cloud sessions in `peers`, the same rule
   as for local sessions. Acceptance gates delivery, not presence
-  ([docs/cloud.md](../../docs/cloud.md#messages-from-other-people)).
+  ([docs/cloud.md](../../docs/harnesses/cloud.md#messages-from-other-people)).
 - **opencode mid-turn:** a message delivered during an opencode turn
   earns one extra model reply before the session goes idle. opencode sees
   the stored message only after the current stream ends. Accepted
-  ([docs/opencode.md](../../docs/opencode.md#how-a-message-arrives)).
+  ([docs/opencode.md](../../docs/harnesses/opencode.md#how-a-message-arrives)).
 - **Subagent sends:** on every harness, a subagent's send goes out as its
   parent session, and the parent's human does not see the call. Accepted
-  ([docs/agent.md](../../docs/agent.md#send-and-read-messages)).
+  ([docs/agent.md](../../docs/messaging.md#send-and-read-messages)).
 - **Poll before revoke (#70):** won't fix. A poll that read a message just
   before a revoke still delivers it once; the ack is rejected afterwards.
 - **Bus-row retention (#70):** the server keeps delivered, expired and
