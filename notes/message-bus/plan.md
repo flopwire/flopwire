@@ -9,7 +9,7 @@ sections 3 to 8.
 
 ## 1. Decisions
 
-Made by Gary on 2026-10-01 unless marked "carried".
+Made by the maintainer on 2026-10-01 unless marked "carried".
 
 | # | Decision |
 |---|---|

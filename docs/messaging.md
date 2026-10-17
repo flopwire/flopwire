@@ -226,7 +226,7 @@ session.
 
 ```sh
 flopwire messages --text
-flopwire messages --repo eichler --user alex@example.com --text
+flopwire messages --repo payments --user alex@example.com --text
 flopwire messages --session SESSION_PREFIX --since 2026-10-01T00:00:00Z
 flopwire messages --thread THREAD_ID --text
 flopwire messages --cursor NEXT_CURSOR

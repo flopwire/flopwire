@@ -1,0 +1,19 @@
+name: Feature request
+description: Propose a change in behavior.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and what gets in the way today.
+    validations: {required: true}
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The behavior you want. Name the harness or surface it touches.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

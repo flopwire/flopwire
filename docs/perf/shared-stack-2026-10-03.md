@@ -11,7 +11,7 @@ results. CASS retirement requires the remaining cutover checks below.
 
 ## Workload and environment
 
-- Ubuntu 24.04 Incus VM, four virtual CPUs, 200 GiB disk, no swap.
+- Ubuntu 24.04 VM, four virtual CPUs, 200 GiB disk, no swap.
 - Flopwire API, PostgreSQL 17.6, and MinIO in the same guest.
 - Two collectors and the CLI load generator also ran inside the guest.
   A deployed setup would normally run collectors and agent clients on laptops.
@@ -212,8 +212,8 @@ The next section records their subsequent verification.
 
 ## Private rollout verification, 2026-10-04
 
-The VM joined the laptops' Tailscale network. A persistent raw TCP Serve
-forwarder exposes only the loopback Flopwire TLS endpoint to that tailnet.
+The VM joined the laptops' private overlay network. A persistent raw TCP Serve
+forwarder exposes only the loopback Flopwire TLS endpoint to that network.
 The clients retain the Flopwire certificate pin. Both laptops reached the
 endpoint and passed authenticated retrieval checks.
 
@@ -247,13 +247,8 @@ The helper is a migration artifact, not continuous discovery of these extra
 roots. Future history written outside the normal roots needs a capture path
 before claiming ongoing coverage there.
 
-Pandora's existing `PANDORA_BUDGET_MIB` override reserves 5,120 MiB for the
-4 GiB VM and host overhead, in addition to the scheduler's normal 1,536 MiB
-host floor. With host MemTotal 128,412 MiB, the worker budget is 121,756 MiB.
-The override persists through the SSH PAM environment and the worker engine
-user-service drop-in. A fresh SSH session and the unit configuration both
-reported the override. Recalculate it if the host or VM allocation changes.
-No Pandora daemon upgrade or live laptop Pandora state change was performed.
+The host scheduler reserves the VM's memory in addition to its normal host
+floor. Recalculate that reservation if the host or VM allocation changes.
 
 ## Bulk synchronization verification, 2026-10-05
 
@@ -278,7 +273,7 @@ retrieved backup before treating production recovery as proven.
 ## Operational follow-up
 
 Production currently occupies the VM originally provisioned for capacity
-testing on the shared Pandora host. Its name does not weaken the isolation,
+testing on the shared host. Its name does not weaken the isolation,
 but future destructive trials and restore tests must use a separate staging
 VM. The persistent `flopwire-staging-20261006` VM in the `flopwire` project
 now provides 4 GiB RAM, four virtual CPUs, and 100 GiB disk for separate staging
@@ -286,21 +281,19 @@ work. Record the production role, reserved memory, service configuration, and
 recovery procedure before further capacity experiments.
 
 The private endpoint uses self-signed TLS with certificate pins retained by
-the enrolled clients. Tailscale provides private network reachability; client
+the enrolled clients. The overlay network provides private reachability; client
 pin verification authenticates the Flopwire TLS identity. Keep pin verification
 enabled. Document certificate rotation and client recovery. A public certificate
 is an operational option, not a prerequisite for this private pinned endpoint.
 
-The migration's administrator password and backup decryption key are stored
-as plaintext files on the owner's Mac. The files have mode `0600`, their
-directory has mode `0700`, and FileVault is enabled. These controls restrict
-file access and protect the volume while locked. They do not protect the
-secrets from a process with access as the owner while the Mac is unlocked.
+The administrator password and backup decryption key are kept on an operator
+workstation with file permissions and full-disk encryption; that does not
+protect them from a process running as the operator.
 
 The owner chose to retain the current secret files while preparing the recovery
-plan. Establish an independent off-Mac recovery-key escrow before considering
+plan. Establish an independent off-workstation recovery-key escrow before considering
 removal of the working key file. Keep encrypted production backups off the
-Pandora host, and keep key escrow separate from those backups. Verify recovery
+server host, and keep key escrow separate from those backups. Verify recovery
 using the escrowed key. The existing local secret files and lab restore do not
 establish those operational recovery safeguards. Follow the
 [production recovery runbook](../operations/recovery.md) before changing the
@@ -339,7 +332,7 @@ independent key recovery, and full production recovery qualification pending.
 Retain the existing working key, CASS snapshots, and migration archives.
 
 Full production recovery still requires an encrypted off-host backup copy,
-retrieval without the original host, independent off-Mac key escrow and
+retrieval without the original host, independent off-workstation key escrow and
 recovery, and a complete database and raw-object restore into isolated staging
 targets. Complete the acceptance checks in the
 [production recovery runbook](../operations/recovery.md). The owner must select
