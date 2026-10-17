@@ -7,7 +7,7 @@ require (
 	github.com/PlakarKorp/go-cdc-chunkers v1.1.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/klauspost/compress v1.19.2
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/prometheus/client_golang v1.23.2
