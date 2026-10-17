@@ -73,7 +73,7 @@ this mode with representative ingestion and search load before enabling it broad
 
 ## Commit evidence
 
-Use `change` to find the sessions that recorded a commit. Supply a repository
+Use `trace` to find the sessions that recorded a commit. Supply a repository
 and one or more full commit IDs:
 
 ```sh
