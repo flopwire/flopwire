@@ -14,8 +14,8 @@ require (
 	github.com/zeebo/blake3 v0.2.4
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.55.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.45.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	modernc.org/libc v1.77.1
 	modernc.org/memory v1.12.1
 	modernc.org/sqlite v1.60.0
