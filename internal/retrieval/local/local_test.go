@@ -563,9 +563,9 @@ func TestRecordedRepositoryAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, identity := range []string{"github.com/acme/eichler", "github.com/other/eichler", "/src/eichler.git", ""} {
+	for _, identity := range []string{"github.com/acme/app", "github.com/other/app", "/src/app.git", ""} {
 		p := localindex.Placement{Agent: transcript.Agent(h.Agent), SessionID: h.SessionID, How: localindex.PlacedByWorktree}
-		p.Worktree = "/tmp/ike-ux-audit"
+		p.Worktree = "/tmp/app-ux-audit"
 		if strings.HasPrefix(identity, "/") {
 			p.Main = identity
 		} else {
