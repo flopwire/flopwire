@@ -211,8 +211,8 @@ Output, newest message first, grouped under one header line per session
   gets the session id, `who`, `agent`, the time, `repo` and `branch` only.
   JSON keeps the original `repo` path. Optional `repo_identity` records the
   normalized remote, or the main checkout for a repository without a remote.
-  Optional `worktree` records the checkout root. For example, an Eichler
-  checkout named `ike-ux-audit` prints `repo=eichler worktree=ike-ux-audit`.
+  Optional `worktree` records the checkout root. For example, an acme/app
+  checkout named `app-ux-audit` prints `repo=app worktree=app-ux-audit`.
 - Under the header, a matching line is `ORDINAL:LINE kind/tool: text` on
   a message's first matching line and `ORDINAL:LINE: text` on the others.
   A context line is `ORDINAL-LINE- text`. The address for `read` is
@@ -296,7 +296,7 @@ lists the least recent activity first.
 The answer is compact JSON, one line, one brief row per session:
 
 ```
-{"kind":"sessions","sessions":[{"session_id":"01a0d550-…","address":"01a0d550","agent":"codex","user":"gary@example.test","repo":"/src/pandora","branches":["main"],"live":false,"last_activity_at":"2026-09-24T18:02:11Z","messages":151,"title":"…","intent":"scope a proper fix for…","commits":["3d446be"],"files":9,"failed":3},…],"has_more":true,"next_cursor":"1788220800000000.ID"}
+{"kind":"sessions","sessions":[{"session_id":"01a0d550-…","address":"01a0d550","agent":"codex","user":"gary@example.test","repo":"/src/payments","branches":["main"],"live":false,"last_activity_at":"2026-09-24T18:02:11Z","messages":151,"title":"…","intent":"scope a proper fix for…","commits":["3d446be"],"files":9,"failed":3},…],"has_more":true,"next_cursor":"1788220800000000.ID"}
 ```
 
 - `session_id` is the full harness session id. `flopwire peers
@@ -332,7 +332,7 @@ line grep's header uses with `msgs` and `parent`, then its last reply. Its foote
 next: --cursor 1788220800000000.ID]`, or `end of list`.
 
 ```
-01a0d550-6c1e-7a52-9d0e-3f4b2a1c9e77 agent=codex ended=2026-09-24 repo=pandora branch=main msgs=151 files=9 pr=#110 commits=1 failed=3 intent="scope a proper fix for…"
+01a0d550-6c1e-7a52-9d0e-3f4b2a1c9e77 agent=codex ended=2026-09-24 repo=payments branch=main msgs=151 files=9 pr=#110 commits=1 failed=3 intent="scope a proper fix for…"
     last: "One loose end: local rollout. The daemon still uses 3d446be…"
 ```
 

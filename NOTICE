@@ -1,6 +1,15 @@
 Flopwire includes or adapts material from the following projects. Their
 license texts and notices are under third_party/<name>/.
 
+- agentboard (MIT, Copyright (c) 2025 Gary Basin): third_party/agentboard/
+- agentsview (MIT, Copyright (c) 2026 Kenn Software LLC): third_party/agentsview/
+- codecast (MIT, Copyright (c) 2025 Codecast): third_party/codecast/
+- google/codesearch (BSD 3-Clause, Copyright (c) 2011 The Go Authors):
+  third_party/codesearch/
+- Entire CLI (MIT, Copyright (c) 2026 Entire Inc.): third_party/entire/
 - franken_agent_detection 0.3.1 (MIT, Copyright (c) 2026 Jeff Emanuel):
   third_party/fad/
-- agentboard (MIT, Copyright (c) 2025 Gary Basin): third_party/agentboard/
+- gitleaks (MIT, Copyright (c) 2019 Zachary Rice): third_party/gitleaks/
+
+The landing page bundles IBM Plex fonts under the SIL Open Font License 1.1:
+landing/assets/FONT-LICENSE.txt.

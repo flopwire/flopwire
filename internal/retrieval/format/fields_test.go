@@ -186,18 +186,18 @@ func TestLabeledHeadersSplitUnambiguously(t *testing.T) {
 
 func TestRecordedRepositoryLabels(t *testing.T) {
 	for _, tc := range []struct{ name, identity, worktree, repo, wantWorktree string }{
-		{"remote", "github.com/acme/eichler", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
-		{"same name remote", "github.com/other/eichler", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
-		{"dot bare main", "/src/.eichler.git", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
-		{"bare main", "/src/eichler.git", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
-		{"main", "/src/eichler", "/tmp/ike-ux-audit", "eichler", "ike-ux-audit"},
-		{"clone", "github.com/acme/eichler", "/tmp/eichler-clone", "eichler", "eichler-clone"},
-		{"main checkout", "github.com/acme/eichler", "/src/eichler", "eichler", ""},
-		{"unknown", "", "/src/eichler/ike-ux-audit", "ike-ux-audit", ""},
-		{"escaping", "github.com/acme/eichler", "/tmp/ike \"x\"=audit\n", "eichler", oneLine(Clean("ike \"x\"=audit\n"))},
+		{"remote", "github.com/acme/app", "/tmp/app-ux-audit", "app", "app-ux-audit"},
+		{"same name remote", "github.com/other/app", "/tmp/app-ux-audit", "app", "app-ux-audit"},
+		{"dot bare main", "/src/.app.git", "/tmp/app-ux-audit", "app", "app-ux-audit"},
+		{"bare main", "/src/app.git", "/tmp/app-ux-audit", "app", "app-ux-audit"},
+		{"main", "/src/app", "/tmp/app-ux-audit", "app", "app-ux-audit"},
+		{"clone", "github.com/acme/app", "/tmp/app-clone", "app", "app-clone"},
+		{"main checkout", "github.com/acme/app", "/src/app", "app", ""},
+		{"unknown", "", "/src/app/app-ux-audit", "app-ux-audit", ""},
+		{"escaping", "github.com/acme/app", "/tmp/ike \"x\"=audit\n", "app", oneLine(Clean("ike \"x\"=audit\n"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := ConversationInfo{Address: "session", SessionID: "session", Agent: "codex", Repo: "/tmp/ike-ux-audit", RepoIdentity: tc.identity, Worktree: tc.worktree}
+			c := ConversationInfo{Address: "session", SessionID: "session", Agent: "codex", Repo: "/tmp/app-ux-audit", RepoIdentity: tc.identity, Worktree: tc.worktree}
 			for _, line := range []string{summary(&c, time.Now()), readHeader(&c), sessionLine(&c)} {
 				_, fields := parseFields(t, line)
 				wantRepo := tc.repo
