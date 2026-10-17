@@ -50,7 +50,7 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 	if w.s.opts.SyncOnly {
 		return nil
 	}
-	rows, err := w.tx.QueryContext(w.ctx, `SELECT `+rowCols+`,m.source_id,m.source_generation,ifnull(m.enrichment,'{}')`+rowFrom+` WHERE m.conversation_id=? AND m.superseded=0 AND m.on_active_path IS NOT 0 AND c.deleted_in_generation IS NULL AND (m.kind='tool_call' OR m.kind='tool_result') ORDER BY m.source_id,m.ordinal,m.id`, conv)
+	rows, err := w.tx.QueryContext(w.ctx, `SELECT m.id,ifnull(m.native_id,''),m.ordinal,m.part,m.kind,ifnull(m.tool_name,''),ifnull(m.tool_call_id,''),ifnull(m.is_error,0),m.text,ifnull(m.line_no,0),ifnull(m.byte_offset,0),ifnull(m.byte_len,0),ifnull(m.locator,''),m.source_id,m.source_generation,ifnull(m.enrichment,'{}') FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND m.superseded=0 AND m.on_active_path IS NOT 0 AND c.deleted_in_generation IS NULL AND (m.kind='tool_call' OR m.kind='tool_result') ORDER BY m.source_id,m.ordinal,m.id`, conv)
 	if err != nil {
 		return err
 	}
@@ -62,12 +62,20 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 	type sourceGeneration struct{ source, gen int64 }
 	groups := map[sourceGeneration]*group{}
 	for rows.Next() {
-		var source, gen int64
-		var enrichment string
-		r, e := scanRow(rows, &source, &gen, &enrichment)
-		if e != nil {
+		var source, gen, id int64
+		var isError int
+		var enrichment, kind string
+		var text []byte
+		var m transcript.Message
+		if err := rows.Scan(&id, &m.NativeID, &m.Ordinal, &m.Part, &kind, &m.ToolName, &m.ToolCallID, &isError, &text, &m.LineNo, &m.ByteOffset, &m.ByteLen, &m.Locator, &source, &gen, &enrichment); err != nil {
 			rows.Close()
-			return e
+			return err
+		}
+		m.Kind, _ = transcript.ParseKind(kind)
+		m.IsError = isError != 0
+		if m.Text, err = decompress(text); err != nil {
+			rows.Close()
+			return fmt.Errorf("row %d: %w", id, err)
 		}
 		key := sourceGeneration{source, gen}
 		g := groups[key]
@@ -75,15 +83,13 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 			g = &group{gen: gen, ids: map[string]int64{}}
 			groups[key] = g
 		}
-
-		m := transcript.Message{NativeID: r.NativeID, Ordinal: r.Ordinal, Part: r.Part, Kind: r.Kind, ToolName: r.ToolName, ToolCallID: r.ToolCallID, IsError: r.IsError, Text: r.Text, LineNo: r.LineNo, ByteOffset: r.ByteOffset, ByteLen: r.ByteLen, Locator: r.Locator}
 		if err := json.Unmarshal([]byte(enrichment), &m.Enrichment); err != nil {
 			rows.Close()
 			return err
 		}
 		g.msgs = append(g.msgs, m)
 		ref := digest.EvidenceRef{NativeID: m.NativeID, Part: m.Part, ByteOffset: m.ByteOffset, Locator: m.Locator}
-		g.ids[changeIdentity(ref)] = r.ID
+		g.ids[changeIdentity(ref)] = id
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
