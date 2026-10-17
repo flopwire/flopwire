@@ -74,7 +74,7 @@ type BatchResult struct {
 // from both the batch and the index gets a stub row under the source's agent.
 func (s *Store) ApplyBatch(ctx context.Context, b Batch) (BatchResult, error) {
 	var res BatchResult
-	err := s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projectionAppend: true, fn: func(w *writeTx) error {
+	err := s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionAppend, fn: func(w *writeTx) error {
 		res = BatchResult{}
 		return w.applyBatch(&b, &res)
 	}})

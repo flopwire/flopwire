@@ -49,11 +49,15 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 	err := fast.write(ctx, func(fw *writeTx) error {
 		return full.write(ctx, func(bw *writeTx) error {
 			ft, bt := txRun{w: fw}, txRun{w: bw}
-			run := func(fn func(*writeTx) error, appendOnly bool) error {
+			run := func(fn func(*writeTx) error, policy projectionPolicy) error {
 				for i, tt := range []*txRun{&ft, &bt} {
 					done := make(chan error, 1)
 					before := len(tt.waiting)
-					tt.runOne(writeReq{ctx: ctx, fn: fn, done: done, projectionAppend: appendOnly && i == 0})
+					requestPolicy := projectionInvalidate
+					if i == 0 {
+						requestPolicy = policy
+					}
+					tt.runOne(writeReq{ctx: ctx, fn: fn, done: done, projection: requestPolicy})
 					if len(tt.waiting) == before {
 						if got := <-done; got != nil && !errors.Is(got, errIncrementalInjected) {
 							return got
@@ -74,7 +78,7 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 				return nil
 			}
 			applyOne := func(batch Batch) error {
-				return run(func(w *writeTx) error { var r BatchResult; return w.applyBatch(&batch, &r) }, true)
+				return run(func(w *writeTx) error { var r BatchResult; return w.applyBatch(&batch, &r) }, projectionAppend)
 			}
 			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "refresh", Cwd: "/repo"}}, Messages: changePair("refresh", 0, "abcdef0")}); e != nil {
 				return e
@@ -89,6 +93,19 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 				return e
 			}
 			// Pending old commands resolve to exact old physical IDs on a later suffix.
+			readSource := func(w *writeTx) error {
+				if w.changeAppend {
+					return errors.New("source read enabled append or seeding")
+				}
+				_, err := loadSource(w.ctx, w.tx, `WHERE id = ?`, a.ID)
+				return err
+			}
+			if e := run(readSource, projectionRead); e != nil {
+				return e
+			}
+			if fw.changeCache[1] != c {
+				return errors.New("successful source read discarded checkpoint")
+			}
 			pending := changePair("refresh", 1, "1234567")
 			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[:1]}); e != nil {
 				return e
@@ -102,6 +119,41 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 			if fw.changeCache[1] != c {
 				return errors.New("completion unexpectedly replayed")
 			}
+			// Failed reads discard tentative state. A subsequent successful read
+			// cannot seed checkpoints, and an unclassified write still invalidates.
+			if e := run(func(w *writeTx) error {
+				if e := readSource(w); e != nil {
+					return e
+				}
+				return errIncrementalInjected
+			}, projectionRead); e != nil {
+				return e
+			}
+			if fw.changeCache != nil {
+				return errors.New("failed source read retained checkpoint")
+			}
+			if e := run(readSource, projectionRead); e != nil {
+				return e
+			}
+			if fw.changeCache != nil {
+				return errors.New("source read seeded checkpoint")
+			}
+			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[:1]}); e != nil {
+				return e
+			}
+			if fw.changeCache[1] == nil {
+				return errors.New("append failed to reseed after read failure")
+			}
+			if e := run(func(w *writeTx) error { _, e := w.exec(`UPDATE sources SET path=path WHERE id=?`, a.ID); return e }, projectionInvalidate); e != nil {
+				return e
+			}
+			if fw.changeCache != nil {
+				return errors.New("generic write retained checkpoint")
+			}
+			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[:1]}); e != nil {
+				return e
+			}
+			c = fw.changeCache[1]
 			// Call enrichment alone and incoming text with unchanged SHA do not alter
 			// the stored extractor input. Both must preserve a real checkpoint hit.
 			pending[0].Enrichment = map[string]any{"commands": []string{"git reset --hard"}}
@@ -156,7 +208,7 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 			if e := run(func(w *writeTx) error {
 				_, e := w.exec(`CREATE TEMP TRIGGER fail_incremental BEFORE INSERT ON change_events WHEN NEW.observed_hash='badcafe' BEGIN SELECT RAISE(ABORT,'injected'); END`)
 				return e
-			}, false); e != nil {
+			}, projectionInvalidate); e != nil {
 				return e
 			}
 			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: changePair("refresh", 0, "abcdef0")[:1]}); e != nil {
@@ -173,13 +225,13 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 					return errors.New("injection did not fail")
 				}
 				return errIncrementalInjected
-			}, true); e != nil {
+			}, projectionAppend); e != nil {
 				return e
 			}
 			if fw.changeCache != nil {
 				return errors.New("failed request retained cache")
 			}
-			if e := run(func(w *writeTx) error { _, e := w.exec(`DROP TRIGGER fail_incremental`); return e }, false); e != nil {
+			if e := run(func(w *writeTx) error { _, e := w.exec(`DROP TRIGGER fail_incremental`); return e }, projectionInvalidate); e != nil {
 				return e
 			}
 			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: changePair("refresh", 3, "7654321")}); e != nil {
@@ -189,7 +241,11 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 			// cache even when the callback itself succeeded and SQLite retained rows.
 			for i, tt := range []*txRun{&ft, &bt} {
 				done := make(chan error, 1)
-				tt.runOne(writeReq{ctx: ctx, projectionAppend: i == 0, done: done, fn: func(w *writeTx) error {
+				policy := projectionInvalidate
+				if i == 0 {
+					policy = projectionAppend
+				}
+				tt.runOne(writeReq{ctx: ctx, projection: policy, done: done, fn: func(w *writeTx) error {
 					var r BatchResult
 					if e := w.applyBatch(&Batch{SourceID: a.ID, Generation: 1, Messages: changePair("refresh", 30, "c0ffee0")}, &r); e != nil {
 						return e
@@ -244,7 +300,7 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 					return e
 				}
 				return w.refreshChangeEvents(1)
-			}, false); e != nil {
+			}, projectionInvalidate); e != nil {
 				return e
 			}
 			if fw.changeCache != nil {
@@ -278,7 +334,7 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 					return e
 				}
 				return w.refreshChangeEvents(1)
-			}, false); e != nil {
+			}, projectionInvalidate); e != nil {
 				return e
 			}
 			revive := changePair("refresh", 15, "ddeeff0")

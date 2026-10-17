@@ -10,8 +10,9 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
-// A checkpoint lives only in this writer transaction. Every mutation outside
-// ApplyBatch, and every failed request, discards all checkpoints.
+// A checkpoint lives only in this writer transaction. Only ApplyBatch and
+// audited source reads preserve it. Every other request and every failed
+// request discards all checkpoints.
 const changeCacheBudget int64 = 8 << 20
 const changeCacheGroups = 256
 

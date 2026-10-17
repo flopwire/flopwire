@@ -141,12 +141,22 @@ type Store struct {
 	keepLock         bool        // LockFile handed the lock to the caller
 }
 
+// Projection policies are explicit at audited request boundaries. Unclassified
+// requests invalidate; source reads preserve without enabling state mutation.
+type projectionPolicy uint8
+
+const (
+	projectionInvalidate projectionPolicy = iota
+	projectionRead
+	projectionAppend
+)
+
 type writeReq struct {
-	ctx              context.Context
-	fn               func(*writeTx) error
-	done             chan error
-	projectionAppend bool // only ApplyBatch proves unchanged projection prefixes
-	wait             bool // answer at commit, with its error, even with DeferCommit
+	ctx        context.Context
+	fn         func(*writeTx) error
+	done       chan error
+	projection projectionPolicy
+	wait       bool // answer at commit, with its error, even with DeferCommit
 }
 
 // ErrClosed is returned by writes after Close.
@@ -550,10 +560,10 @@ func (t *txRun) runOne(r writeReq) {
 		return
 	}
 	w := t.w
-	if !r.projectionAppend {
+	if r.projection != projectionRead && r.projection != projectionAppend {
 		w.changeCache = nil
 	}
-	w.changeAppend = r.projectionAppend
+	w.changeAppend = r.projection == projectionAppend
 	w.changeAdded = nil
 	t.n++
 	sp := "r" + itoa(int64(t.n))
