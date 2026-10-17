@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,5 +212,43 @@ func TestGrepCandidateCapOrder(t *testing.T) {
 		if len(ids) != maxCandidates || !reflect.DeepEqual(ids, want) {
 			t.Fatalf("oldest=%v cap/order changed: %d rows", oldest, len(ids))
 		}
+		tx, err := s.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversations, complete, err := grepConversations(ctx, tx, format.Filters{Agent: "claude"})
+		if err != nil || !complete {
+			tx.Rollback(ctx)
+			t.Fatalf("conversations: %v", err)
+		}
+		sql, args, err := grepMetadataStreamQuery(format.Filters{}, conversations, oldest, maxCandidates)
+		if err != nil {
+			tx.Rollback(ctx)
+			t.Fatal(err)
+		}
+		metadataIDs := filteredCandidateIDs(t, tx, sql, args...)
+		tx.Rollback(ctx)
+		if !reflect.DeepEqual(metadataIDs, want) {
+			t.Fatalf("metadata cap/order changed oldest=%v count=%d", oldest, len(metadataIDs))
+		}
+	}
+
+	// A large matchless metadata cohort still reaches the verification cap.
+	// Global matches outside its kind filter keep the text plan broad.
+	for _, sql := range []string{
+		`ALTER TABLE messages ALTER COLUMN text SET STATISTICS 1000`,
+		`UPDATE messages SET kind=CASE WHEN conversation_id=md5('c2200')::uuid THEN 'tool_result' ELSE 'assistant' END,
+         text=CASE WHEN conversation_id=md5('c2200')::uuid THEN 'spotlight '||id::text ELSE 'ordinary small body' END`,
+		`VACUUM ANALYZE`,
+	} {
+		if _, err := s.Pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bounded, cancel := context.WithTimeout(ctx, MaxBudget)
+	defer cancel()
+	page, err := s.Grep(bounded, format.GrepQuery{Pattern: "spotlight|mdutil|mds_stores", Mode: format.ModeCount}, format.Filters{Agent: "claude", Kinds: []string{"assistant"}})
+	if err != nil || !page.Truncated || page.Exact || page.Total != 0 || !strings.Contains(page.Reason, "verifying 200000 candidates") {
+		t.Fatalf("metadata cap claimed absence or failed: %+v err=%v", page, err)
 	}
 }
