@@ -8,4 +8,4 @@ Examples are synthetic, not live agents. CLI syntax and data boundaries were che
 
 Agent marks are bundled from Lobe Icons with their MIT license. Inline code uses a tinted background. All examples and notes are visible; there are no disclosure controls.
 
-The hero introduces cross-harness reach; section 01 shows the only conversation as chat bubbles joined by a static Flopwire connector. Setup uses an embedded copy control with visible success feedback and a manual-copy fallback. CLI rename planning is tracked in #331; examples retain the existing `change` command.
+The hero introduces cross-harness reach; section 01 shows the only conversation as chat bubbles joined by a static Flopwire connector. Setup uses an embedded copy control with visible success feedback and a manual-copy fallback. Section 03 uses `trace` from PR #333 (candidate 5838acd). Its JSON fields were captured from the real CLI against an isolated synthetic Claude session and a real demo Git commit; the displayed `jq` projection is the command used. The read excerpt is copied from actual CLI output, with scope/session headers and surrounding messages omitted. No personal transcript data is used.

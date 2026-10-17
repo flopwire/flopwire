@@ -18,3 +18,20 @@
 .copy-box.setup-highlight{animation:setup-pulse 900ms ease-out}
 @keyframes setup-pulse{0%,100%{border-color:var(--line)}35%{border-color:var(--signal);background:#f4e8e1}}
 @media(prefers-reduced-motion:reduce){.copy-box.setup-highlight{animation:none;border-color:var(--signal)}}
+
+/* Section boundaries provide structure; inner groups use spacing. */
+.commands th,.commands td,.policy-table th,.policy-table td,.matrix th,.matrix td{border:0}
+.commands th,.commands td{padding-block:10px}
+.matrix tbody tr+tr th,.matrix tbody tr+tr td{padding-top:22px}
+.example-detail,.compatibility-note{border:0}
+.network-server{border:0;padding-block:24px}
+.feature-demo .terminal{border:0;background:var(--soft)}
+.feature-demo .query-bar{border:0;justify-content:flex-start}
+footer{border:0}
+.trace-example{background:var(--soft);padding:22px}
+.trace-example pre{font:12px/1.8 var(--font);white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.trace-example .trace-command{color:var(--ink);margin-bottom:16px}
+.trace-example .trace-output{color:var(--muted)}
+.trace-example .trace-step+.trace-step{margin-top:28px}
+.trace-example .trace-caption{font:13px/1.6 var(--prose);color:var(--muted);margin-top:16px}
+@media(max-width:760px){.trace-example{padding:18px}.trace-example pre{font-size:11px}}
