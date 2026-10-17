@@ -43,7 +43,7 @@ func TestMCPCoverageFormatsAndCLIParity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(out, `"mode":"summary"`) || !strings.Contains(out, "other-device completeness") {
+			if mode == "json" && (!strings.Contains(out, `"mode":"summary"`) || !strings.Contains(out, "other-device completeness")) || mode == "text" && (!strings.Contains(out, "coverage: this-device observations") || !strings.Contains(out, "other devices unknown")) {
 				t.Fatalf("%s/%s: %s", verb, mode, out)
 			}
 			args["coverage"] = "detail"
@@ -156,5 +156,48 @@ func TestMCPCoverageSchema(t *testing.T) {
 	}
 	if count != 4 {
 		t.Fatalf("checked %d retrieval tools", count)
+	}
+}
+
+func TestMCPCoverageTextCompactAndGroupedUnknown(t *testing.T) {
+	ready := func() *coverage.Report {
+		return &coverage.Report{Collection: &coverage.CollectionSnapshot{}, Upload: &coverage.UploadSnapshot{Captured: &coverage.CapturedSnapshot{}}, Policy: &coverage.PolicySnapshot{Cowork: &coverage.CoworkPolicySnapshot{}}, Parse: &coverage.ParseSnapshot{}}
+	}
+	pending, held := ready(), ready()
+	pending.Upload.Captured.PendingGenerations = 2
+	pending.Parse.Pending = 3
+	held.Policy.Cowork.SharedHeld = 1
+	for _, c := range []struct {
+		name string
+		r    *coverage.Report
+	}{{"normal", ready()}, {"pending", pending}, {"held", held}, {"unavailable", coverage.UnknownReport("optional observation unavailable within retrieval budget")}} {
+		old := coverageNote(c.r, true)
+		compact := summaryCoverageNote(coverage.Summarize(c.r, true))
+		t.Logf("%s coverage text bytes: %d -> %d", c.name, len(old), len(compact))
+		if len(compact) >= len(old) {
+			t.Errorf("%s failed to compact: %q vs %q", c.name, old, compact)
+		}
+		for _, qualification := range []string{"this-device observations", "discovery unverified", "other devices unknown"} {
+			if !strings.Contains(compact, qualification) {
+				t.Errorf("missing %s: %s", qualification, compact)
+			}
+		}
+		if strings.Contains(compact, "observed_at") || strings.Contains(compact, "mode") || strings.Contains(compact, "=0") {
+			t.Errorf("routine structure/counters leaked: %s", compact)
+		}
+	}
+	unavailable := summaryCoverageNote(coverage.Summarize(coverage.UnknownReport("optional observation unavailable within retrieval budget"), true))
+	if strings.Count(unavailable, "budget") != 1 || !strings.Contains(unavailable, "observations unavailable (budget)") {
+		t.Fatalf("unknown reasons not grouped: %s", unavailable)
+	}
+	local := summaryCoverageNote(coverage.Summarize(ready(), false))
+	if strings.Contains(local, "other-device") {
+		t.Fatalf("local qualifier: %s", local)
+	}
+	mixed := summaryCoverageNote(&coverage.Summary{Issues: map[string]int64{"capture_lost_generations": 2, "capture_truncated_generations": 1, "parse_quarantined": 3}, Unknown: map[string]string{"upload": "offline", "parse": "unsupported"}, BlockingReasons: []string{"capacity"}})
+	for _, fact := range []string{"capture generations lost=2, truncated=1", "parse quarantined=3", "upload blocked: capacity", "upload unknown (offline)", "parse unknown (unsupported)"} {
+		if !strings.Contains(mixed, fact) {
+			t.Errorf("missing %q: %s", fact, mixed)
+		}
 	}
 }
