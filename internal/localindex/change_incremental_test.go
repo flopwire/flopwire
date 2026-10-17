@@ -1,6 +1,7 @@
 package localindex
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"reflect"
@@ -111,6 +112,37 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 			if fw.changeCache[1] != c {
 				return errors.New("irrelevant effective call touch replayed")
 			}
+			// A changed full-content SHA with identical extracted text still takes
+			// refresh(nil), preserving the exact stored text and checkpoint.
+			pending[0].Text = changePair("refresh", 1, "1234567")[0].Text
+			pending[0].ContentSHA = sha256.Sum256([]byte("different full content, identical extracted text"))
+			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[:1]}); e != nil {
+				return e
+			}
+			if fw.changeCache[1] != c {
+				return errors.New("identical stored text unexpectedly replayed")
+			}
+			// Prefix growth writes text in place and must discard the old prefix.
+			pending[1].Text += "\nadditional output"
+			pending[1].ContentSHA = sha256.Sum256([]byte(pending[1].Text))
+			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[1:]}); e != nil {
+				return e
+			}
+			if fw.changeCache[1] == c {
+				return errors.New("stored text growth retained checkpoint")
+			}
+			c = fw.changeCache[1]
+			// Replacement versions retire an old physical reference before inserting
+			// a new row, even if all metadata fields would otherwise compare equal.
+			pending[1].Text = "[main 1234567] rewritten output"
+			pending[1].ContentSHA = sha256.Sum256([]byte(pending[1].Text))
+			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[1:]}); e != nil {
+				return e
+			}
+			if fw.changeCache[1] == c {
+				return errors.New("replacement retained checkpoint")
+			}
+			c = fw.changeCache[1]
 			// Relevant result enrichment invalidates rather than reusing the prefix.
 			pending[1].Enrichment = map[string]any{"exit_code": 1}
 			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[1:]}); e != nil {

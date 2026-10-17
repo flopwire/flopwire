@@ -22,11 +22,11 @@ type changeStream struct {
 }
 type changeCheckpoint struct{ groups map[changeScope]*changeStream }
 
-// Compare effective stored extractor inputs, including coalesced path and text.
-// SQL blobs compare byte-for-byte; this may conservatively reject an equivalent
-// encoding. Tool-call enrichment is erased by the extractor before use.
+// Compare effective stored metadata, including coalesced paths and references.
+// Text-writing upsert branches invalidate before mutation; refresh(nil) keeps
+// the exact stored text. Tool-call enrichment is erased before extractor use.
 func (w *writeTx) changeInput(id int64) (string, error) {
-	row, err := w.queryRow(`SELECT json_array(source_id,source_generation,ifnull(native_id,''),ordinal,part,kind,ifnull(tool_name,''),ifnull(tool_call_id,''),ifnull(is_error,0),hex(text),ifnull(line_no,0),ifnull(byte_offset,0),ifnull(byte_len,0),ifnull(locator,''),superseded,on_active_path,CASE WHEN kind='tool_call' THEN '' ELSE ifnull(enrichment,'{}') END) FROM messages WHERE id=?`, id)
+	row, err := w.queryRow(`SELECT json_array(source_id,source_generation,ifnull(native_id,''),ordinal,part,kind,ifnull(tool_name,''),ifnull(tool_call_id,''),ifnull(is_error,0),ifnull(line_no,0),ifnull(byte_offset,0),ifnull(byte_len,0),ifnull(locator,''),superseded,on_active_path,CASE WHEN kind='tool_call' THEN '' ELSE ifnull(enrichment,'{}') END) FROM messages WHERE id=?`, id)
 	if err != nil {
 		return "", err
 	}

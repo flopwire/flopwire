@@ -426,6 +426,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 				delete(w.changeCache, convID)
 				return
 			}
+			if w.changeCache[convID] == nil {
+				return
+			}
 			after, err := w.changeInput(h.id)
 			if err != nil {
 				errOut = err
@@ -458,6 +461,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 			res.Touched++
 			return change, w.refresh(b, h.id, m, enr, nil)
 		}
+		// A non-nil refresh writes text. The metadata comparison alone cannot
+		// prove the old extractor input unchanged across this branch.
+		delete(w.changeCache, convID)
 		res.Grown++
 		if err := w.ftsDelete(h.id); err != nil {
 			return 0, err
@@ -468,6 +474,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 		w.ftsInsert(h.id, p)
 		return change, nil
 	}
+	// Replacing an old physical row invalidates its retained prefix before
+	// either the supersede write or the new-version insertion.
+	delete(w.changeCache, convID)
 	res.Versioned++
 	// Clear the head slot before inserting the new version.
 	if _, err := w.exec(`UPDATE messages SET superseded = 1, superseded_by = -1,
