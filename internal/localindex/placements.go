@@ -58,7 +58,13 @@ type Placement struct {
 
 // SavePlacement records (or replaces) a session's placement.
 func (s *Store) SavePlacement(ctx context.Context, p Placement) error {
-	return s.write(ctx, func(w *writeTx) error {
+	return s.send(ctx, savePlacementRequest(ctx, p))
+}
+
+// savePlacementRequest shares the actual API policy and SQL callback with
+// request-level qualification. Placement revision triggers remain active.
+func savePlacementRequest(ctx context.Context, p Placement) writeReq {
+	return writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreservePlacement, fn: func(w *writeTx) error {
 		_, err := w.exec(`INSERT INTO placements (agent, session_id, cwd, worktree_root, main_root, remote, how, resolved_at, checked_at, candidates, other_cwds)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (agent, session_id) DO UPDATE SET cwd = excluded.cwd, worktree_root = excluded.worktree_root,
@@ -67,7 +73,7 @@ func (s *Store) SavePlacement(ctx context.Context, p Placement) error {
 			string(p.Agent), p.SessionID, nullStr(p.Cwd), nullStr(p.Worktree), nullStr(p.Main), nullStr(p.Remote), p.How, time.Now().UnixMilli(),
 			sql.NullInt64{Int64: p.CheckedAt, Valid: p.CheckedAt != 0}, nullStr(p.Candidates), nullStr(p.OtherCwds))
 		return err
-	})
+	}}
 }
 
 // Placements returns every recorded placement.

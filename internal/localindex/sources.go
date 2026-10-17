@@ -29,7 +29,14 @@ type SourceState struct {
 // it on first sight. A new file identity at the same path is a new source.
 func (s *Store) EnsureSource(ctx context.Context, src transcript.Source) (SourceState, error) {
 	var st SourceState
-	err := s.write(ctx, func(w *writeTx) error {
+	err := s.send(ctx, s.ensureSourceRequest(ctx, src, &st))
+	return st, err
+}
+
+// ensureSourceRequest shares the actual API policy and SQL callback with
+// transaction-level qualification. Source metadata is not an extractor input.
+func (s *Store) ensureSourceRequest(ctx context.Context, src transcript.Source, st *SourceState) writeReq {
+	return writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreserveSource, fn: func(w *writeTx) error {
 		_, err := w.exec(`INSERT INTO sources (device_id, agent, path, file_id, session_key, storage_kind, parser, first_seen_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (device_id, path, file_id) DO UPDATE SET
@@ -39,10 +46,9 @@ func (s *Store) EnsureSource(ctx context.Context, src transcript.Source) (Source
 		if err != nil {
 			return err
 		}
-		st, err = loadSource(w.ctx, w.tx, `WHERE device_id = ? AND path = ? AND file_id = ?`, s.opts.DeviceID, src.Path, src.FileID.String())
+		*st, err = loadSource(w.ctx, w.tx, `WHERE device_id = ? AND path = ? AND file_id = ?`, s.opts.DeviceID, src.Path, src.FileID.String())
 		return err
-	})
-	return st, err
+	}}
 }
 
 // SourcesByPath returns every source row recorded at path (one per file
