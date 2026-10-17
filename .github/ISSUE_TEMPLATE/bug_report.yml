@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: flopwire version
+      description: Output of `flopwire version`.
+    validations: {required: true}
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Harness
+      multiple: true
+      options: [Claude Code, Codex CLI, Devin CLI, opencode, Claude Desktop Local Code, Cowork, Server only, Other]
+    validations: {required: true}
+  - type: input
+    id: platform
+    attributes:
+      label: OS and harness version
+      placeholder: macOS 26.1, Claude Code 2.2.0
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or action, the output, and what you expected. Redact anything private.
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: status
+    attributes:
+      label: Agent status
+      description: Output of `flopwire agent status`, if the device agent is involved.
+      render: text

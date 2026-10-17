@@ -42,7 +42,7 @@ Use the capacity report for the measured allocation:
 8. Record how an operator can obtain those secrets during host loss.
 
 The database backup does not include server environment files, TLS private
-keys, Tailscale enrollment, or laptop configuration. Recover those separately.
+keys, private network enrollment, or laptop configuration. Recover those separately.
 Do not include secret values or transcript samples in public incident records.
 
 Pre-release migrations can change in place. Restore with the production build
@@ -89,7 +89,7 @@ if the backup reports `redaction_repair_pending`.
 
 ## Establish independent recovery copies
 
-1. Select an encrypted backup destination outside the Pandora host.
+1. Select an encrypted backup destination outside the server host.
 2. Copy the completed backup through an authenticated encrypted channel.
 3. Keep the destination encrypted while stored.
 4. Retrieve the copy without using the original host.
