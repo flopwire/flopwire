@@ -8,7 +8,8 @@ console. `plugins/` holds the Claude Code, Codex and opencode plugins.
 
 ```sh
 pnpm --dir web install --frozen-lockfile   # once
-make build      # builds the console, then the binary
+make build      # builds bin/flopwire from the committed console files
+make web        # rebuilds the console after changes under web/, then commit internal/webapp/dist
 make test       # go test -race ./..., web tests, script tests
 make e2e        # end-to-end; required for auth, ingest, storage, search, deletion changes
 ```
@@ -23,7 +24,7 @@ make e2e        # end-to-end; required for auth, ingest, storage, search, deleti
   historical notes. See [Documents](CONTRIBUTING.md#documents).
 - Conventional commit subjects (`fix:`, `feat:`, `perf:`); release-please
   owns versions and the changelog.
-- After `make web`, commit `internal/webapp/dist`; CI checks it matches.
+- After changing `web/`, run `make web` and commit `internal/webapp/dist`; CI checks it.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has setup, tests and the pull request
 policy. [docs/architecture.md](docs/architecture.md) maps the packages.

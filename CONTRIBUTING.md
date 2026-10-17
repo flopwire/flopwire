@@ -12,16 +12,18 @@ make test
 ## Build and test
 
 ```sh
-make build      # builds the console into internal/webapp/dist, then the binary
+make build      # builds bin/flopwire from the committed console files
+make web        # rebuilds the console into internal/webapp/dist after changes under web/
+make check-web  # verifies the committed console matches web/ (CI runs this)
 make test       # go test -race ./..., web tests, script tests
 make e2e
 make e2e-sync   # two devices against a Compose server; see docs/two-laptop.md
 ```
 
-A plain `go build ./cmd/flopwire` also works. It embeds the committed console
+A plain `go build ./cmd/flopwire` also works. Both embed the committed console
 files under `internal/webapp/dist`. After changing `web/`, run `make web` and
-commit the result; CI fails when the committed files differ from a fresh
-build.
+commit the result; `make check-web` fails in CI when the committed files are
+stale.
 
 Postgres and S3 integration tests run when these variables are set. Each test
 creates and drops its own database:
