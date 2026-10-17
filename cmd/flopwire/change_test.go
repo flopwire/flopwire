@@ -94,7 +94,7 @@ func TestTraceCLIAndChangeAlias(t *testing.T) {
 				return run(t.Context(), []string{verb, "--local", "--repo", "/tmp/oracle-alpha", hash})
 			})
 			var page format.Changes
-			if err := json.Unmarshal([]byte(output), &page); err != nil || page.Kind != "changes" {
+			if err := json.Unmarshal([]byte(output), &page); err != nil || page.Kind != "change" {
 				t.Fatalf("invalid lookup response: %s (%v)", output, err)
 			}
 			if baseline == "" {
