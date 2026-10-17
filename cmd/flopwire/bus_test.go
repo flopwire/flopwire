@@ -352,7 +352,7 @@ func TestSendRefusals(t *testing.T) {
 		{busproto.Error{Status: 409, Code: busproto.CodeReplyToDone, Detail: "m5 closed its thread (intent done); it must not be answered"},
 			[]string{"refused (reply_to_done)", "Fix: do not answer it", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 404, Code: busproto.CodeUnknownRecipient, Detail: "no session id starts with 0b7e2c1a; flopwire peers lists live sessions"},
-			[]string{"refused (unknown_recipient)", "Fix: find the session from history (flopwire sessions --repo R --branch B --json), check it is live with flopwire peers --session ID", "Example: flopwire send @alex"}},
+			[]string{"refused (unknown_recipient)", "Fix: find the session from history (flopwire sessions --repo R --json), verify its command/result evidence, then check exact-session presence with flopwire peers --session ID", "Example: flopwire send @alex"}},
 		{busproto.Error{Status: 409, Code: busproto.CodeAmbiguousRecipient, Detail: "0b7e2c1a matches 2 sessions; use a longer prefix", Candidates: []busproto.Candidate{
 			{Session: selfID, Agent: "claude", User: "gary@example.test", Repo: "/src/api", Branch: "main", Title: "refactor client pagination", Live: true},
 			{Session: alexID, Agent: "codex", User: "alex@example.test", Repo: "/src/web", Title: "old"}}},

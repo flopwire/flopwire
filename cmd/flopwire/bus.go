@@ -510,7 +510,7 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 	narrow := st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session")
 	switch {
 	case out.Total == 0 && a.Session != "":
-		fmt.Fprintf(&b, "[no live session starts with %s: it ended or is not running now; a message to it waits until it resumes or expires]\n", format.Clean(a.Session))
+		fmt.Fprintf(&b, "[no visible live session starts with %s; check an existing message in your sent inbox; a new send receipt reports whether and when delivery is possible]\n", format.Clean(a.Session))
 	case out.Total == 0 && (a.Repo != "" || a.User != "" || a.Agent != ""):
 		fmt.Fprintf(&b, "[no other live session matches; %s lists every live session]\n", st.cmd("flopwire peers --text without filters", "flopwire_peers without arguments"))
 	case out.Total == 0:
@@ -785,7 +785,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	sentList := st.cmd("flopwire inbox --sent", "flopwire_inbox sent=true")
 	switch be.Code {
 	case busproto.CodeUnknownRecipient:
-		e.Fix = "find the session from history (" + st.cmd("flopwire sessions --repo R --branch B --json", "flopwire_sessions repo=R branch=B") + "), check it is live with " + st.cmd("flopwire peers --session ID", "flopwire_peers session=ID") + ", or address a person as @user (their email or its local part)"
+		e.Fix = "find the session from history (" + st.cmd("flopwire sessions --repo R --json", "flopwire_sessions repo=R") + "), verify its command/result evidence, then check exact-session presence with " + st.cmd("flopwire peers --session ID", "flopwire_peers session=ID") + ", or address a person as @user (their email or its local part)"
 		e.Example = st.cmd(`flopwire send @alex -- "TEXT"`, `flopwire_send to="@alex" message="…"`)
 	case busproto.CodeAmbiguousRecipient:
 		var lines []string
@@ -831,7 +831,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 		e.Fix = "send less: put what you have to say into one message, and wait before sending again"
 		e.Example = sentList + " shows what is still undelivered"
 	case busproto.CodeDuplicate:
-		e.Fix = "do not resend: the first copy is on its way"
+		e.Fix = "do not resend blindly: a matching message already exists; check its state in your sent inbox"
 		e.Example = sentList + " shows its state"
 	case busproto.CodeRecipientFull:
 		e.Fix = "wait until the recipient reads what it has; do not resend"
@@ -861,6 +861,13 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	default:
 		u := sendUsage(st, "")
 		e.Fix, e.Example = "check the arguments", u.Example
+	}
+	if req.RetryOf != "" && strings.HasPrefix(be.Detail, "retry_of:") && (be.Code == busproto.CodeNotFound || be.Code == busproto.CodeBadRequest) {
+		e.Fix = "inspect retry_of in your sent inbox; retry only an undelivered/session_ended message from this session, preserving its exact recipient, message, intent, refs and reply_to"
+		if be.Code == busproto.CodeNotFound {
+			e.Fix = "the retry source or its recorded successor is unavailable; verify retry_of in your sent inbox before taking further action"
+		}
+		e.Example = sentList + " lists your messages and their states"
 	}
 	if be.MessageID != "" {
 		e.text += fmt.Sprintf("\nThe refused message %s is listed in %s.", be.MessageID, sentList)
