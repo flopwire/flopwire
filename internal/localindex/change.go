@@ -63,23 +63,31 @@ func (w *writeTx) refreshChangeEvents(conv int64) error {
 	if !needed {
 		return nil
 	}
+	if c := w.changeCache[conv]; c != nil {
+		if hit, err := w.extendChangeEvents(conv, c); err != nil || hit {
+			return err
+		}
+	}
 	return w.replayChangeEvents(conv)
 }
 
 // replayChangeEvents is the complete retained-row projection, also used by
 // migration and differential tests independently of the eligibility shortcut.
 func (w *writeTx) replayChangeEvents(conv int64) error {
+	delete(w.changeCache, conv)
 	if w.s.opts.SyncOnly {
 		return nil
 	}
-	rows, err := w.tx.QueryContext(w.ctx, `SELECT m.id,ifnull(m.native_id,''),m.ordinal,m.part,m.kind,ifnull(m.tool_name,''),ifnull(m.tool_call_id,''),ifnull(m.is_error,0),m.text,ifnull(m.line_no,0),ifnull(m.byte_offset,0),ifnull(m.byte_len,0),ifnull(m.locator,''),m.source_id,m.source_generation,ifnull(m.enrichment,'{}'),m.change_result_eligible FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND m.superseded=0 AND m.on_active_path IS NOT 0 AND c.deleted_in_generation IS NULL AND (m.kind='tool_call' OR m.kind='tool_result') ORDER BY m.source_id,m.ordinal,m.id`, conv)
+	rows, err := w.tx.QueryContext(w.ctx, `SELECT m.id,ifnull(m.native_id,''),m.ordinal,m.part,m.kind,ifnull(m.tool_name,''),ifnull(m.tool_call_id,''),ifnull(m.is_error,0),m.text,ifnull(m.line_no,0),ifnull(m.byte_offset,0),ifnull(m.byte_len,0),ifnull(m.locator,''),m.source_id,m.source_generation,ifnull(m.enrichment,'{}'),m.change_result_eligible,(m.superseded_by IS NULL AND (m.native_id IS NULL OR m.native_id<>'') AND (m.locator IS NULL OR m.locator<>'') AND (m.native_id IS NOT NULL OR m.locator IS NOT NULL OR m.byte_offset IS NOT NULL)) FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND m.superseded=0 AND m.on_active_path IS NOT 0 AND c.deleted_in_generation IS NULL AND (m.kind='tool_call' OR m.kind='tool_result') ORDER BY m.source_id,m.ordinal,m.id`, conv)
 	if err != nil {
 		return err
 	}
 	type group struct {
-		gen  int64
-		msgs []transcript.Message
-		ids  map[string]int64
+		gen    int64
+		msgs   []transcript.Message
+		ids    map[string]int64
+		stream changeStream
+		events []digest.CommitEvidence
 	}
 	type sourceGeneration struct{ source, gen int64 }
 	groups := map[sourceGeneration]*group{}
@@ -88,6 +96,7 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 		eligible bool
 	}
 	var unknown []classification
+	cacheCanonical := true
 	for rows.Next() {
 		var source, gen, id int64
 		var isError int
@@ -95,10 +104,12 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 		var enrichment, kind string
 		var text []byte
 		var m transcript.Message
-		if err := rows.Scan(&id, &m.NativeID, &m.Ordinal, &m.Part, &kind, &m.ToolName, &m.ToolCallID, &isError, &text, &m.LineNo, &m.ByteOffset, &m.ByteLen, &m.Locator, &source, &gen, &enrichment, &eligible); err != nil {
+		var canonical bool
+		if err := rows.Scan(&id, &m.NativeID, &m.Ordinal, &m.Part, &kind, &m.ToolName, &m.ToolCallID, &isError, &text, &m.LineNo, &m.ByteOffset, &m.ByteLen, &m.Locator, &source, &gen, &enrichment, &eligible, &canonical); err != nil {
 			rows.Close()
 			return err
 		}
+		cacheCanonical = cacheCanonical && canonical
 		m.Kind, _ = transcript.ParseKind(kind)
 		m.IsError = isError != 0
 		if m.Text, err = decompress(text); err != nil {
@@ -119,6 +130,10 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 			return err
 		}
 		g.msgs = append(g.msgs, m)
+		if w.changeAppend {
+			g.events = append(g.events, g.stream.state.Step(m)...)
+			g.stream.ordinal, g.stream.id = m.Ordinal, id
+		}
 		ref := digest.EvidenceRef{NativeID: m.NativeID, Part: m.Part, ByteOffset: m.ByteOffset, Locator: m.Locator}
 		g.ids[changeIdentity(ref)] = id
 	}
@@ -172,7 +187,11 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 	for _, scope := range sources {
 		source := scope.source
 		g := groups[scope]
-		for _, ev := range digest.ExtractCommitEvidence(g.msgs) {
+		events := g.events
+		if !w.changeAppend {
+			events = digest.ExtractCommitEvidence(g.msgs)
+		}
+		for _, ev := range events {
 			cmd, res := g.ids[changeIdentity(ev.Command)], g.ids[changeIdentity(ev.Result)]
 			if cmd == 0 || res == 0 {
 				continue
@@ -238,8 +257,34 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 		}
 	}
 	if invalid {
-		return w.invalidateChanges()
+		if err := w.invalidateChanges(); err != nil {
+			return err
+		}
 	}
+	if w.changeAppend && cacheCanonical {
+		var visible bool
+		row, err := w.queryRow(`SELECT deleted_in_generation IS NULL FROM conversations WHERE id=?`, conv)
+		if err != nil {
+			return err
+		}
+		if err := row.Scan(&visible); err != nil {
+			return err
+		}
+		if !visible {
+			delete(w.changeCache, conv)
+			delete(w.changeAdded, conv)
+			return nil
+		}
+		c := &changeCheckpoint{groups: map[changeScope]*changeStream{}}
+		for scope, g := range groups {
+			// Copy out of the replay group: an interior pointer would keep its
+			// historical message slice and ID map reachable for the transaction.
+			stream := g.stream
+			c.groups[changeScope{scope.source, scope.gen}] = &stream
+		}
+		w.keepChangeCheckpoint(conv, c)
+	}
+	delete(w.changeAdded, conv)
 	return nil
 }
 

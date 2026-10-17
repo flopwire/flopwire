@@ -87,12 +87,13 @@ type dbtx interface {
 }
 
 // readSources runs fn on the writer, or on the read pool of a read-only
-// store.
+// store. Callbacks and their callees must issue SELECTs only: this audited
+// boundary preserves existing projection checkpoints, but cannot seed them.
 func (s *Store) readSources(ctx context.Context, fn func(context.Context, dbtx) error) error {
 	if s.readOnly {
 		return fn(ctx, s.rdb)
 	}
-	return s.write(ctx, func(w *writeTx) error { return fn(w.ctx, w.tx) })
+	return s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionRead, fn: func(w *writeTx) error { return fn(w.ctx, w.tx) }})
 }
 
 func sourcesWith(ctx context.Context, q dbtx, cols, where string, args ...any) ([]SourceState, error) {
