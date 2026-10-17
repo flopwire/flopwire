@@ -285,7 +285,7 @@ func (w *writeTx) extendChangeEvents(conv int64, c *changeCheckpoint) (bool, err
 			return false, nil
 		}
 		keys[key] = true
-		row, err := w.queryRow(`SELECT EXISTS(SELECT 1 FROM change_events WHERE event_key=?)`, key)
+		row, err := w.queryRow(`SELECT EXISTS(SELECT 1 FROM change_events WHERE conversation_id=? AND event_key=?)`, conv, key)
 		if err != nil {
 			return false, err
 		}

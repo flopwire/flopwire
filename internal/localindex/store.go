@@ -589,6 +589,7 @@ func (t *txRun) runOne(r writeReq) {
 		r.done <- err
 		return
 	}
+	w.changeAdded = nil
 	if t.w.s.opts.DeferCommit && !r.wait {
 		r.done <- nil
 	} else {

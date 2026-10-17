@@ -82,6 +82,11 @@ func TestChangeIncrementalRequestDifferential(t *testing.T) {
 				return errors.New("initial replay did not seed")
 			}
 			c := fw.changeCache[1]
+			// Event keys are unique within a conversation. An identical key in an
+			// unrelated conversation must neither scan history nor force fallback.
+			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Conversations: []*transcript.Conversation{{Agent: transcript.AgentClaude, SessionID: "other"}}, Messages: changePair("other", 1, "1234567")}); e != nil {
+				return e
+			}
 			// Pending old commands resolve to exact old physical IDs on a later suffix.
 			pending := changePair("refresh", 1, "1234567")
 			if e := applyOne(Batch{SourceID: a.ID, Generation: 1, Messages: pending[:1]}); e != nil {
@@ -378,5 +383,43 @@ func TestChangeIncrementalLegacyRowsUseReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestChangeEventKeyLookupUsesConversationIndex(t *testing.T) {
+	s := openTest(t, DetailColumn)
+	rows, err := s.DB().Query(`EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM change_events WHERE conversation_id=? AND event_key=?)`, 1, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var a, b, c int
+		var detail string
+		if err = rows.Scan(&a, &b, &c, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "SEARCH change_events USING COVERING INDEX") || !strings.Contains(joined, "conversation_id=? AND event_key=?") || strings.Contains(joined, "SCAN change_events") {
+		t.Fatalf("unbounded event identity lookup: %s", joined)
+	}
+	t.Log(joined)
+}
+
+func TestFreshMessageIdentityAddressIsCanonical(t *testing.T) {
+	for _, m := range []transcript.Message{{}, {ByteOffset: 17}, {Parser: "sqlite"}, {Parser: "jsonl", ByteOffset: 0}} {
+		if got := jsonlInt(&m, m.ByteOffset); got == nil {
+			t.Fatalf("missing locator stored NULL byte identity: %+v", m)
+		}
+	}
+	m := transcript.Message{Locator: "rowid:1"}
+	if got := jsonlInt(&m, 0); got != nil {
+		t.Fatalf("locator-only row expected NULL byte address: %v", got)
 	}
 }

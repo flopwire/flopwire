@@ -277,7 +277,10 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 		}
 		c := &changeCheckpoint{groups: map[changeScope]*changeStream{}}
 		for scope, g := range groups {
-			c.groups[changeScope{scope.source, scope.gen}] = &g.stream
+			// Copy out of the replay group: an interior pointer would keep its
+			// historical message slice and ID map reachable for the transaction.
+			stream := g.stream
+			c.groups[changeScope{scope.source, scope.gen}] = &stream
 		}
 		w.keepChangeCheckpoint(conv, c)
 	}
