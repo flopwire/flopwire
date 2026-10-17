@@ -141,11 +141,22 @@ type Store struct {
 	keepLock         bool        // LockFile handed the lock to the caller
 }
 
+// Projection policies are explicit at audited request boundaries. Unclassified
+// requests invalidate; source reads preserve without enabling state mutation.
+type projectionPolicy uint8
+
+const (
+	projectionInvalidate projectionPolicy = iota
+	projectionRead
+	projectionAppend
+)
+
 type writeReq struct {
-	ctx  context.Context
-	fn   func(*writeTx) error
-	done chan error
-	wait bool // answer at commit, with its error, even with DeferCommit
+	ctx        context.Context
+	fn         func(*writeTx) error
+	done       chan error
+	projection projectionPolicy
+	wait       bool // answer at commit, with its error, even with DeferCommit
 }
 
 // ErrClosed is returned by writes after Close.
@@ -543,13 +554,22 @@ func (t *txRun) runOne(r writeReq) {
 		return
 	}
 	if err := r.ctx.Err(); err != nil {
+		t.w.changeCache = nil
+		t.w.changeAdded = nil
 		r.done <- err
 		return
 	}
 	w := t.w
+	if r.projection != projectionRead && r.projection != projectionAppend {
+		w.changeCache = nil
+	}
+	w.changeAppend = r.projection == projectionAppend
+	w.changeAdded = nil
 	t.n++
 	sp := "r" + itoa(int64(t.n))
 	if _, err := w.tx.ExecContext(context.Background(), "SAVEPOINT "+sp); err != nil {
+		w.changeCache = nil
+		w.changeAdded = nil
 		r.done <- err
 		return
 	}
@@ -560,6 +580,8 @@ func (t *txRun) runOne(r writeReq) {
 	// r.ctx is checked only before the request starts.
 	err := r.fn(w)
 	if err != nil {
+		w.changeCache = nil
+		w.changeAdded = nil
 		w.fts.undo(mark)
 		_, rerr := w.tx.ExecContext(context.Background(), "ROLLBACK TO "+sp)
 		if rerr == nil {
@@ -572,9 +594,12 @@ func (t *txRun) runOne(r writeReq) {
 		return
 	}
 	if _, err := w.tx.ExecContext(context.Background(), "RELEASE "+sp); err != nil {
+		w.changeCache = nil
+		w.changeAdded = nil
 		r.done <- err
 		return
 	}
+	w.changeAdded = nil
 	if t.w.s.opts.DeferCommit && !r.wait {
 		r.done <- nil
 	} else {
@@ -585,6 +610,8 @@ func (t *txRun) runOne(r writeReq) {
 
 func (t *txRun) commit() {
 	w, s := t.w, t.w.s
+	w.changeCache = nil
+	w.changeAdded = nil
 	defer w.closeStmts()
 	w.ctx = context.Background()
 	works, err := w.queueFTS()
@@ -730,12 +757,16 @@ func (s *Store) send(ctx context.Context, r writeReq) error {
 
 // writeTx is the writer's transaction plus a per-transaction statement cache.
 type writeTx struct {
-	s     *Store
-	tx    *sql.Tx
-	ctx   context.Context
-	stmts map[string]*sql.Stmt
-	fts   ftsPending
-	scrub bool // a redaction masked rows: compact the FTS shards after commit
+	s             *Store
+	tx            *sql.Tx
+	ctx           context.Context
+	stmts         map[string]*sql.Stmt
+	fts           ftsPending
+	changeCache   map[int64]*changeCheckpoint
+	changeMapPeak int
+	changeAdded   map[int64][]int64
+	changeAppend  bool
+	scrub         bool // a redaction masked rows: compact the FTS shards after commit
 }
 
 func (w *writeTx) stmt(q string) (*sql.Stmt, error) {
