@@ -101,3 +101,7 @@ button.copy-box{display:block;width:100%;text-align:left;color:var(--ink);cursor
 .command-example .command-output,.command-example .output-label{margin-left:20px}
 .command-example .command-output{white-space:normal}
 .terminal-line{display:block;white-space:pre-wrap;padding-left:calc(var(--line-indent,0px) - var(--output-indent,0px));text-indent:calc(-1 * var(--line-indent,0px))}
+
+/* Small accent text needs stronger contrast on tinted code surfaces. */
+:root{--signal-text:#bd2815}
+.connector-label code,.command-tabs button[aria-selected="true"] code,.command-example .shell-prompt{color:var(--signal-text)}

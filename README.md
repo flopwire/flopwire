@@ -59,6 +59,11 @@ Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
 
 Not included: semantic search, and corpus search in the web console.
 
+## Quick start: one machine
+
+[Install and start locally](docs/quick-start-local.md) to search session
+history and connect agents without an account or server.
+
 ## Quick start: the server
 
 Requirements: Docker with Compose, and the `flopwire` binary on the machine
