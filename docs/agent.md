@@ -20,6 +20,7 @@ across the restart.
 
 The agent uses these paths:
 
+| Item | Default | Override |
 |---|---|---|
 | Local index | `<user cache dir>/flopwire/index.db`, plus `index.db-tok`, `index.db-tri0`, `index.db-tri1` and the lock file `index.db.lock` | `--db` or `FLOPWIRE_INDEX` |
 | Local redactions | `index.db.redactions.jsonl` beside the index, `index.db.redactions.jsonl.prev` (its copy before the last redaction) and the key `index.db.redactions.key`; see [recover the local index](#recover-the-local-index) | follows the index |
@@ -34,9 +35,6 @@ The agent uses these paths:
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
 | opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
-
-Message inboxes belong to one normalized server URL and enrolled device ID.
-Switching servers or devices opens a separate inbox. Returning to the same
 
 Message inboxes belong to one normalized server URL and enrolled device ID.
 Switching servers or devices opens a separate inbox. Returning to the same

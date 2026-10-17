@@ -527,7 +527,7 @@ func (s *abSummary) markdown() string {
 	fmt.Fprintf(&b, "## Perf A/B: %s\n\n", s.Verdict)
 	if s.Verdict == verdictBaselineFailed {
 		fmt.Fprintf(&b, "The baseline (A) `%s` failed under the harness of the candidate (B) `%s`, so nothing was compared. This is not a regression of B. "+
-			"Most often the baseline lacks a command or flag the harness now passes; move the pinned baseline (docs/perf/README.md#nightly-a-b) to a commit that has it.\n\n",
+			"Most often the baseline lacks a command or flag the harness now passes; move the pinned baseline (docs/perf/README.md#nightly-ab) to a commit that has it.\n\n",
 			short(s.A.Commit), short(s.B.Commit))
 		fence := "```"
 		for strings.Contains(s.Error, fence) {

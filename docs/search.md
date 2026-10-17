@@ -153,7 +153,7 @@ Missing diagnostics are unknown. An empty upload queue does not prove that
 uploaded history has been parsed for search.
 
 Coverage probes run beside retrieval and do not delay its results. A busy
-agent, older server, or small output budget can omit detailed observations.
+agent, a server without the endpoint, or small output budget can omit detailed observations.
 Collection rules and exclusions still apply. See
 [coverage reporting](coverage-reporting.md) for scope and limitations.
 

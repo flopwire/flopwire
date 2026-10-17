@@ -2,8 +2,7 @@
 
 `flopwire probe` drives each harness headless ([probe.md](../probe.md)). It
 does not cover the desktop apps, the IDE extensions or an interactive TUI.
-This page tells you how to check them by hand. Issues: #58 (Claude Code),
-#59 (Codex), #60 (Devin), #69 (manual pass).
+This page tells you how to check them by hand.
 
 ## Surfaces
 

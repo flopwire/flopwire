@@ -409,6 +409,7 @@ See [docs/runbook.md](docs/runbook.md#delete-a-conversation).
 | Device agent | [docs/agent.md](docs/agent.md) |
 | Harnesses: Claude Code, Codex, Devin CLI, opencode, cloud | [docs/harnesses](docs/harnesses/README.md) |
 | Path rules | [docs/path-rules.md](docs/path-rules.md) |
+| Coming from CASS | [docs/migrate-from-cass.md](docs/migrate-from-cass.md) |
 | Check message delivery after a harness release | [docs/probe.md](docs/probe.md), `flopwire probe` |
 | Pre-release manual checks | [docs/release-checklist.md](docs/release-checklist.md) |
 

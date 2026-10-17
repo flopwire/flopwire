@@ -468,13 +468,10 @@ restored target; do not point traffic at it. Restore writes
 `--state-output` when the backup is mounted read-only. Treat `incomplete` and
 `failed` targets as invalid and non-resumable.
 
-### Upgrade for device-scoped withholding
+### Device-scoped withholding
 
-Migration `006_device_withholds.sql` preserves existing tombstones as
-user-wide and adds device-scoped tombstones for delegated upload credentials.
-Stop all older server instances before starting the upgraded server. Older
-ingesters interpret every tombstone as user-wide and cannot safely share this
-migrated database while the new server accepts device-scoped requests.
+Tombstones are user-wide, or device-scoped for delegated upload credentials.
+Run one server version against a database at a time.
 
 `POST /v1/conversations/withhold` requires a bound device with upload scope.
 A `202` records permanent intent, including before the first upload commits.

@@ -90,7 +90,7 @@ deny repo:github.com/acme/*
   member's enrolled credential with read and upload scopes withholds all
   of that member's device copies. Minted tokens, service credentials, and
   upload-only device credentials withhold only their bound device's copy
-  and its subagents. A failed request, including an older server's `404`,
+  and its subagents. A failed request, including a `404` from a server without the endpoint,
   stays owed and retries at each policy refresh and at start.
 - If you remove a `deny` rule, the agent indexes those sessions again.
 
