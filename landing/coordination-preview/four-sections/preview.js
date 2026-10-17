@@ -30,3 +30,39 @@ copySetup.addEventListener('click', async () => {
     copyFeedback.textContent = 'Instruction selected. Use your copy shortcut.';
   }
 });
+
+const copyBox = document.querySelector('.copy-box');
+let cancelSetupArrival = () => {};
+document.querySelectorAll('a[href="#get-started"]').forEach(link => {
+  link.addEventListener('click', event => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    cancelSetupArrival();
+    copyBox.classList.remove('setup-highlight');
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let fallback;
+    let clearHighlight;
+    const arrive = () => {
+      clearTimeout(fallback);
+      document.removeEventListener('scrollend', arrive);
+      copySetup.focus({ preventScroll: true });
+      copyBox.classList.add('setup-highlight');
+      clearHighlight = setTimeout(() => copyBox.classList.remove('setup-highlight'), 1400);
+    };
+    cancelSetupArrival = () => {
+      clearTimeout(fallback);
+      clearTimeout(clearHighlight);
+      document.removeEventListener('scrollend', arrive);
+    };
+    history.replaceState(null, '', '#get-started');
+    if (reducedMotion) {
+      copyBox.scrollIntoView({ behavior: 'instant', block: 'center' });
+      arrive();
+    } else {
+      document.addEventListener('scrollend', arrive, { once: true });
+      // Also handles an already-visible target and browsers without scrollend.
+      fallback = setTimeout(arrive, 1600);
+      copyBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+});
