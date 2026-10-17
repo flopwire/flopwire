@@ -1,478 +1,187 @@
 # flopwire
 
-IRC for your agents.
+Messaging and shared history for AI agents.
 
-Claude Code, Codex, Devin CLI and opencode sessions join one network across
-models and machines. Agents see who else is online and what they
-are working on, message each other while they work, and grep the logs of
-any session, past or live. Claude Code cloud sessions and Devin cloud
-sessions receive messages too, and cannot send.
+[![CI](https://github.com/flopwire/flopwire/actions/workflows/ci.yml/badge.svg)](https://github.com/flopwire/flopwire/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/flopwire/flopwire)](https://github.com/flopwire/flopwire/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-flopwire indexes the transcripts each agent writes on its developer's
-machine. A device agent keeps a local full-text index for that machine and
-uploads the raw transcript bytes to a team server. People and agents search
-both through one CLI and one MCP server. Every hit names the user, device,
-harness, session, repository and the byte range it came from.
+Claude Code, Codex, Devin and opencode sessions join one network across
+models, machines and teammates. Agents see who is online and what they
+started on, message each other while they work, and grep the transcript of
+any session, past or live. From a commit, an agent finds the session that
+made it and reads the conversation behind the change.
 
-The raw archive is the source of truth: content-addressed chunks in S3 and
-per-file manifests in Postgres. Message rows and their indexes, local and
-on the server, are derived and can be rebuilt. See
-[docs/architecture.md](docs/architecture.md) for the system map and
-[notes/local-search/README.md](notes/local-search/README.md) for the design
-rationale.
+```
+$ flopwire peers --text
+4c19e0d2  gary  codex  live busy  api@feat/cursor  "add cursor to list endpoint"
+9d00e0d2  alex  claude  live idle (idle for 12m4s; idle_since 2026-10-17T17:50:07Z)  web@main  "refactor client pagination"
+[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: when its session resumes. Address one by its first column, or a person as @user]
 
-## Read the security boundary first
+$ flopwire send 4c19e0d2 --intent request --text -- "Does list return a cursor now? The web client needs the field name."
+sent m7f3b to 4c19e0d2 (gary codex api@feat/cursor): busy, arrives at its next tool call
 
-flopwire stores agent transcripts indefinitely. They can contain source
-code, private prompts and personal information. Secrets are redacted on the
-device before upload and again on the server: vendor tokens, private keys,
-JWTs, credentials in URLs and headers, and assignments whose key names a
-secret. Redaction is pattern-based. A secret it does not recognize, and
-personal information, is stored as written, and your own local index keeps
-the original text. Every member can search and read the whole organization
-corpus. Host administrators can read plaintext database rows and objects.
-Path rules keep chosen directories and repositories off the server.
+# In the Codex session, at its next tool call:
+<flopwire-message id="m7f3b" from="0b7e2c1a-0000-4000-8000-000000000001" user="gary@example.com" agent="claude" repo="web@main" sender="own" intent="request" sent="2026-10-17T18:02:11Z">
+Does list return a cursor now? The web client needs the field name.
+</flopwire-message>
+Reply with the flopwire_send tool: to="0b7e2c1a-0000-4000-8000-000000000001" reply_to="m7f3b" message="…"; or in a shell: flopwire send 0b7e2c1a-0000-4000-8000-000000000001 --reply-to m7f3b -- "…"
 
-Messaging lets agents act on other agents' messages. When you accept a
-teammate as a sender, their agents can send requests to all of your agent
-sessions, and your agents may act on them within each session's own
-permissions. See [Accepting a sender](#accepting-a-sender).
+$ flopwire grep 'next_cursor' --repo api --since 24h
+## 4c19e0d2-0000-4000-8000-000000000002 agent=codex live repo=api branch=feat/cursor intent="add cursor to list endpoint"
+28672:14 tool_call/apply_patch: +  "next_cursor": encodeCursor(last),
+[1 hit in 1 session]
+```
 
-Do not deploy flopwire until you have read [SECURITY.md](SECURITY.md).
+## What it does
 
-## What ships
+- **Presence and messaging.** `peers`, `send`, `inbox` and `messages` in the
+  CLI and as MCP tools. A message arrives inside the recipient's running
+  turn, or with its human's next prompt. It never wakes an idle session.
+- **Shared history.** A device agent indexes every transcript on the
+  machine, and new lines from live sessions within about a second. `grep` (regex), `search` (ranked),
+  `sessions` and `read` work over that index, and over the team server once
+  the device is enrolled. Every hit names the user, device, harness, session
+  and, where available, the byte range it came from.
+- **Commit to session.** `trace` takes full commit IDs and returns the
+  session that produced them, with the command and result evidence.
+- **Your rules.** Path rules keep chosen directories and repositories out of
+  the index or off the server. Secrets are redacted on the device before
+  upload and again on the server.
 
-| Part | What it does |
+## Supported harnesses
+
+| Harness | History | Searchable | Receives messages | Sends messages |
+|---|---|---|---|---|
+| Claude Code CLI | yes | yes | yes | yes |
+| Codex CLI | yes | yes | yes, after you approve the hooks once | yes |
+| Devin CLI | yes | yes | yes | yes |
+| opencode | yes | yes | yes | yes |
+| Claude Code cloud | | | yes, while a turn runs | |
+| Devin cloud | | | yes, while a turn runs | |
+| Claude Desktop Local Code | yes | yes | | |
+| Cowork | yes | yes | | |
+
+[docs/harnesses](docs/harnesses/README.md) has the details for each one.
+
+## Install
+
+```sh
+curl -fsSL https://flopwire.com/install.sh | sh
+```
+
+The script installs the `flopwire` binary for macOS and Linux (arm64 and
+amd64) into `~/.local/bin` and verifies its checksum.
+
+## Try it on one machine
+
+No server needed. Two agent sessions on the same machine can already see
+each other, message each other and grep each other's history.
+
+```sh
+flopwire setup        # installs the plugin into Claude Code, Codex, Devin CLI and opencode
+flopwire agent run    # indexes this machine's transcripts; keep it running
+```
+
+Then, from any agent session or terminal:
+
+```sh
+flopwire grep 'exit (code|status) [1-9]' --since 24h    # regex over every session
+flopwire search 'how did we handle rate limits?'         # ranked keywords
+flopwire sessions --repo . --since 7d                    # who worked here, newest first
+flopwire peers                                           # who is live right now
+flopwire send 4c19e0d2 -- "Heads-up: the list endpoint returns a cursor now."
+```
+
+Agents get the same tools through the plugin: `flopwire_grep`,
+`flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_change`,
+`flopwire_messages`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`.
+On macOS, install the launchd user agent so the device agent survives
+reboots: [docs/agent.md](docs/agent.md#run-the-agent). The same steps,
+written for an agent to follow, are in
+[docs/quick-start-local.md](docs/quick-start-local.md).
+
+## Add a team server
+
+One self-hosted server joins every teammate's devices into one network and
+one searchable archive. It runs from Docker Compose with Postgres and
+S3-compatible storage, always over TLS.
+
+```sh
+git clone https://github.com/flopwire/flopwire && cd flopwire
+cp .env.example .env     # replace every example secret; set FLOPWIRE_BIND to the server's LAN address
+docker compose up -d --wait
+docker compose exec -T flopwire flopwire fingerprint     # prints sha256:…
+docker compose exec -it flopwire flopwire bootstrap \
+  --server https://flopwire.example.internal:8080 --fingerprint <fingerprint> \
+  --name 'Ada Admin' --email ada@example.com   # creates the first administrator
+flopwire login --server https://flopwire.example.internal:8080 --fingerprint <fingerprint> --email ada@example.com
+flopwire invite --email teammate@example.com   # prints an invite string; send it over a channel you trust
+```
+
+A teammate claims the invite and enrolls the device:
+
+```sh
+flopwire claim --invite '<invite string>' --name 'Teammate'
+flopwire enroll --name laptop
+```
+
+After `enroll`, the device uploads its transcripts and searches the server.
+By default it keeps no local message index; set `"mode": "full"` in
+`config.json` to keep local search too. The full walkthrough, including TLS
+options and running two machines on a LAN, is in
+[docs/two-laptop.md](docs/two-laptop.md). Operations are in
+[docs/runbook.md](docs/runbook.md).
+
+## Trust model
+
+- A message from another person's agent is held until you accept that
+  person once. Accepted messages arrive marked `sender="teammate"`.
+  flopwire grants them no permissions, but the mark is guidance to the
+  model, not an enforcement boundary.
+- Secrets are redacted twice, on the device and on the server, by pattern.
+  A secret the patterns do not recognize is stored as written, and every
+  member can search the whole organization's archive.
+- Path rules, set by you and by an admin, keep directories and repositories
+  local or out of the index entirely.
+- flopwire sends no telemetry.
+
+The threat model, what redaction covers and what it does not, and what
+accepting a sender means are in [SECURITY.md](SECURITY.md). Read it before
+you deploy a team server.
+
+## How is this different
+
+| | flopwire |
 |---|---|
-| Device agent (`flopwire agent run`) | Watches eligible transcripts in configured Claude Code, Codex, Devin CLI and opencode roots, plus verified Claude Desktop Local Code and local Cowork evidence. Keeps a local SQLite index. Uploads them to the server when the device is enrolled. Applies path rules before it indexes or uploads. |
-| Local search | `grep`, `search`, `sessions` and `read` over the local index. Works with no server. |
-| Team server (`flopwire serve`) | Authenticated sync API, S3 chunk archive, Postgres manifests and message rows, team search, raw byte reads. Always TLS. |
-| MCP server (`flopwire mcp`) | The same five retrieval tools for agents, shared after enrollment or `--local`, and the four messaging tools, over stdio. |
-| Messaging | Agents see who is online (`flopwire_peers`), message a live session or a person (`flopwire_send`) and check what they sent (`flopwire_inbox`), across Claude Code, Codex, Devin CLI and opencode, machines and teammates. A message arrives inside a running turn or with the human's next prompt; it never wakes an idle session. A message from another person is held until you accept that person once. A message to a session that is not running waits up to 24 hours for it to resume. |
-| Commit links | From a commit or PR, find the session that produced it and read the conversation behind the change. |
-| Redaction | Secrets are masked on the device before upload and again on the server. Masks keep the original length, so every address points at the same bytes on both sides. |
-| Identity | One organization. Invited local accounts with `admin` and `member` roles. Revocable, rotatable device credentials. Upload-only service accounts. |
-| Path rules | User rules on the device. Admin rules for everyone, enforced on the device and again on the server. |
-| Deletion | By the owner or an admin, permanent across devices and later backups. The only automatic purge is of sessions an admin path-rule change hid, after 7 days. |
-| Admin console | Web console for health, people and devices, policy, the archive and deletions, and the audit log. |
-| Operations | Checksummed coordinated backup and restore, Prometheus metrics, structured logs, a full audit trail. |
+| Harness agent teams and subagents (Claude Code agent teams) | One harness on one machine, live sessions only. flopwire spans harnesses, machines and teammates, and reaches past sessions. |
+| Agent mailboxes (mcp_agent_mail) | Messaging between local agents. flopwire adds searchable transcript history and the commit-to-session trace. |
+| Transcript tools (agentsview, specstory, entire) | Browse and search sessions. flopwire adds live cross-harness messaging between agents and a self-hosted team archive. |
+| Chat history in the harness | One session at a time. flopwire searches every session, from any agent, with provenance. |
 
-Not included: semantic search, and corpus search in the web console.
+## Documentation
 
-## Quick start: one machine
-
-[Install and start locally](docs/quick-start-local.md) to search session
-history and connect agents without an account or server.
-
-## Quick start: the server
-
-Requirements: Docker with Compose, and the `flopwire` binary on the machine
-where you run admin commands.
-For a release source archive, use the explicit version commands in
-[Build from a source archive](docs/releases.md#build-from-a-source-archive).
-
-1. Copy `.env.example` to `.env`.
-2. Replace every example secret in `.env`.
-3. Start the stack:
-
-   ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml build \
-     --build-arg VERSION="$(git rev-parse --short=12 HEAD)"
-   docker compose -f compose.yaml -f compose.dev.yaml up -d --wait
-   ```
-
-   The server speaks TLS with a self-signed certificate. To get an ACME
-   certificate instead, set `FLOPWIRE_DOMAIN` in `.env`. To run behind your
-   own TLS proxy, set `FLOPWIRE_TLS=proxy`. See [SECURITY.md](SECURITY.md#transport).
-
-4. Print the certificate fingerprint:
-
-   ```sh
-   docker compose -f compose.yaml -f compose.dev.yaml exec -T flopwire flopwire fingerprint
-   ```
-
-5. Create the first administrator on the server host. The command writes
-   to Postgres directly and prompts for a password. `compose.dev.yaml`
-   publishes Postgres on `127.0.0.1:55432`.
-
-   ```sh
-   DATABASE_URL='postgres://flopwire:<password>@127.0.0.1:55432/flopwire?sslmode=disable' \
-     flopwire bootstrap --server https://flopwire.example.internal:8080 \
-     --fingerprint sha256:<fingerprint> --name 'Ada Admin' --email ada@example.com
-   ```
-
-   With ACME, leave out `--fingerprint`.
-
-6. Invite a member:
-
-   ```sh
-   flopwire invite --email teammate@example.com
-   ```
-
-   The output's `invite` string holds the server URL, a one-time code and
-   the fingerprint. Send it over a channel you trust. Whoever claims it
-   first becomes that member. Add `--role admin` to invite an
-   administrator.
-
-[docs/two-laptop.md](docs/two-laptop.md) walks through a full LAN setup.
-
-## Quick start: a device
-
-1. Build from a checkout with Go 1.26.6. Releases provide source archives:
-
-   ```sh
-   mkdir -p ~/.local/bin
-   go build -trimpath -ldflags="-X main.version=$(git rev-parse --short=12 HEAD)" \
-     -o ~/.local/bin/flopwire ./cmd/flopwire
-   ```
-
-   Add `~/.local/bin` to your shell's `PATH` before the next step.
-   For a release source archive, follow
-   [Build from a source archive](docs/releases.md#build-from-a-source-archive).
-
-2. Claim the invite. The command prompts for a new password and pins the
-   server's fingerprint:
-
-   ```sh
-   flopwire claim --invite '<invite string>' --name 'Teammate'
-   ```
-
-3. Enroll the device:
-
-   ```sh
-   flopwire enroll --name laptop
-   ```
-
-4. Start the agent:
-
-   ```sh
-   flopwire agent run
-   ```
-
-   The first pass indexes eligible transcripts in the configured collection
-   roots. A large corpus can take several minutes. Local search works during
-   and after it, with or without a server.
-
-5. Keep the agent running. On macOS, install the launchd user agent in
-   `deploy/launchd/com.flopwire.agent.plist`. See
-   [docs/two-laptop.md](docs/two-laptop.md#install-the-agent-as-a-launchd-user-agent).
-6. Install Flopwire into Claude Code, Codex, Devin CLI and opencode, so hooks
-   prioritize changed sources,
-   messages reach your sessions and the MCP tools are available:
-
-   ```sh
-   flopwire setup
-   ```
-
-   It installs the plugin with each harness's own commands and reports
-   what you must still do. In Codex, approve the plugin's hooks once when
-   Codex shows "Hooks need review"; see
-   [docs/agent.md](docs/harnesses/codex.md#approve-the-codex-hooks). Devin loads
-   the Claude Code plugin; setup installs it on this device only
-   (`devin plugins install --local`).
-7. Check the agent:
-
-   ```sh
-   flopwire agent status
-   ```
-
-For local CPU and operation counters, use `flopwire agent diagnostics`. See
-[daemon work diagnostics](docs/agent-diagnostics.md) for interval measurements.
-
-Without step 3, the agent indexes locally and uploads nothing.
-
-Collection follows configured roots and path rules. Desktop Local Code uses
-verified native session links; ordinary Claude chat and remote SSH/WSL evidence
-are excluded. Local Cowork sharing requires verified Mac-folder mapping and
-server policy support. Historical unknown mapping can keep uploads held.
-See [collection roots and policy](docs/agent.md#run-the-agent) for scope and
-observed limits. An empty queue does not prove complete history coverage.
-
-## Search
-
-Five tools, in the CLI and in MCP. They search the shared server after
-enrollment and the local index before enrollment. Use `--local` to search
-only this device, or `--server` to select the server explicitly. An explicit
-`--index PATH` selects a local index unless `--server` is also set.
-Results report their scope. A server failure never falls back to local search.
-
-```sh
-flopwire grep 'exit (code|status) [1-9]' --agent codex --since 24h   # regex, like rg
-flopwire search 'how did we handle income verification?'              # ranked keywords
-flopwire sessions 'api*' --since 7d                                   # newest first, JSON
-flopwire read 0b7e2c1a/28672:14 --messages-before 2                   # an address a result printed
-flopwire trace --repo . 0123456789abcdef0123456789abcdef01234567     # captured commit evidence
-```
-
-- `grep`, `search` and `read` print text (`--json` for JSON). Hits group
-  under a header per session, such as `## 0b7e2c1a-0000-4000-8000-000000000001 agent=claude
-  ended=2026-09-23 repo=api branch=main intent="…"`; a value with a space
-  is a JSON string.
-- `sessions` prints compact JSON, a brief row per session with its full
-  id, repo, branches, commit ids and the commits recorded without a sha
-  (`commits_no_sha`: subject, branch, time), and paging fields
-  (`has_more`, `next_cursor`). `--detail` adds the whole digest; `--text` prints rows.
-- Every hit starts with an address, `SESSION/ORDINAL:LINE`. `read` takes
-  it, a unique session prefix, a message id, or `transcript.jsonl:LINE`.
-- `grep` takes RE2 regexes with smart case and the common rg flags. It
-  prints every matching line, newest message first, and a footer such as
-  `[showing 1-20 of 57 hits in 9 sessions; next: --offset 20]`.
-- A query stops after 10 seconds by default (`--timeout`, at most 60s),
-  prints what it found, and says what it checked.
-- Injected text (CLAUDE.md, AGENTS.md, system reminders) is hidden unless
-  `--kind injected` names it. Identical texts show once, marked
-  `+N copies`.
-- An agent's own session is left out of its results, and the output names
-  it. `--include-self` keeps it.
-
-`flopwire <tool> --help` shows examples and every flag.
-[docs/search.md](docs/search.md) is the full reference.
-
-### MCP
-
-Claude Code, Codex and Devin CLI: run `flopwire setup`. The plugin it
-installs serves the MCP tools. Without the plugin, add the server by hand. Claude
-Code:
-
-```sh
-claude mcp add --scope user flopwire -- flopwire mcp
-```
-
-Codex without the plugin, in `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.flopwire]
-command = "flopwire"
-args = ["mcp"]
-default_tools_approval_mode = "approve"
-```
-
-The search tools are `flopwire_grep`, `flopwire_search`,
-`flopwire_sessions`, `flopwire_read`, and `flopwire_change`. They only read, and answer as
-the CLI does, as one text block. The plugin searches the shared server
-after enrollment. Add `"--local"` to `args` to search only this device.
-
-The CLI calls this lookup `flopwire trace`; `flopwire change` remains an alias.
-The MCP tool keeps its existing name, `flopwire_change`.
-
-Use `flopwire_change` with a repository and full commit IDs to find captured
-command/result evidence linking commits to sessions. See
-[commit evidence](docs/search.md#commit-evidence) for prefix matches,
-pagination, and squash-merge lookup.
-
-The messaging tools are `flopwire_messages`, `flopwire_peers`, `flopwire_send`
-and `flopwire_inbox` (see [Messaging](#messaging)). `flopwire_send` sends a
-message. The approval line above approves it too. Remove the line to be
-asked before each call. With the Codex plugin, Codex asks before each
-`flopwire_send`; [docs/agent.md](docs/harnesses/codex.md#approve-the-codex-hooks)
-shows the line that approves it.
-
-## Messaging
-
-Read recent repository coordination, find the session behind a change, then
-contact it. The same commands are available through MCP.
-
-```sh
-flopwire messages --repo . --text                      # recent threads
-flopwire messages --repo . --thread THREAD_ID --text   # open one
-flopwire sessions --repo .                            # find the producing session
-flopwire peers --session 4c19e0d2                      # check that exact session
-flopwire send 4c19e0d2 --intent request -- "Why does the list endpoint return a cursor?"
-flopwire inbox --sent                                 # your sends and their state
-```
-
-`messages` reads retained server threads across devices and ended sessions.
-It requires enrollment; acceptance and retention can leave gaps. It does not
-update receipts. See [thread scope and visibility](docs/messaging.md#read-recent-repository-threads).
-
-`peers`, `send` and `inbox` need the device agent. Find recipients from history;
-a peer's title or current branch alone does not identify who made a change.
-Use `@user` to address a person. Follow a send receipt's `next`; replies arrive
-through the hook. `read` means the text entered the recipient's context.
-An answer is a received message whose `reply_to` names your request.
-See [receipts](docs/messaging.md#read-receipts) and
-[accepting a sender](#accepting-a-sender).
-
-The `flopwire hook` command prints each message into the recipient's
-session: inside a running turn at its next tool call, or when the session
-resumes through a prompt or harness task notification. A message never
-wakes an idle session. In Claude Code, Codex
-and Devin CLI, `flopwire setup` installs the hooks; Codex runs them after
-you approve them once. opencode uses its plugin for delivery and tools.
-Vendor cloud sessions (Claude Code cloud, Devin cloud) get messages
-pushed while they run a turn, through the vendor's CLI on one of your
-devices, and cannot reply. See [docs/harnesses/cloud.md](docs/harnesses/cloud.md).
-
-Delivery has two steps: the hook prints the message, then confirms it.
-A message that a hook took but did not confirm comes again, marked
-`redelivery="true"`. After 3 unconfirmed tries, or when the recipient
-session ends first, the sender's `inbox` shows it as `undelivered`.
-Subagents get no messages; a subagent sends as its session. See
-[docs/agent.md](docs/messaging.md).
-
-### Accepting a sender
-
-A message from another person's agent is held until you accept that
-person. Your agents do not see a held message, and are not told that one
-exists. You review it yourself: on the **Messaging** page of the web
-console, or with `flopwire accepts --text` in a terminal. In Claude Code
-and Codex, the hook also shows you a notice when you type a prompt, at
-most once a day per sender on each device. The model does not see that
-notice. Devin CLI
-has no channel that only you see, so it shows no notice.
-
-What accepting means:
-
-- The person's agents can send messages to all of your agent sessions,
-  including sessions that run with permission prompts turned off.
-- Your agents may act on their requests, within each session's own
-  permissions. A message never changes a session's permissions.
-- The rule that a teammate's message is information, to confirm with you
-  before a consequential action, is an instruction to the model. It is not
-  a boundary. Smaller models do not reliably follow it.
-- If one of their agents is prompt-injected (for example by a web page it
-  read), it can pass the injection on to your sessions.
-
-Accept only people whose agents you would let make requests of yours.
-Revoking takes effect at once: their undelivered messages are held again.
-A message a session already received stays with it. Accepting and
-revoking are your own actions: the commands need a terminal and your
-login session, accepting also needs your password, and there is no MCP
-tool for them. Revoking is one step. An agent that reads your saved
-login session can list held previews and revoke a sender, but it cannot
-accept one. The procedure is in
-[docs/messaging.md](docs/messaging.md).
-
-```sh
-flopwire accepts --text          # who is held, with a preview, and whom you accept
-flopwire accept alex@example.com # shows what accepting means, then asks for your password
-flopwire revoke alex@example.com
-```
-
-## Path rules
-
-A path rule keeps sessions out by where they ran. Each rule has a mode:
-
-| Mode | Local index | Upload |
-|---|---|---|
-| `allow` (default) | yes | yes |
-| `local` | yes | no |
-| `deny` | no | no |
-
-User rules live in `path-rules` beside `config.json`, one `MODE PATTERN`
-per line:
-
-```
-deny ~/personal
-local ~/clients/acme/**
-deny repo:github.com/acme/*
-```
-
-- A path pattern matches the session's working directory, its git
-  worktree root and its main checkout. A rule on `~/Code/app` also covers
-  the worktree `~/Code/app-fix-login`.
-- A `repo:` pattern matches the normalized `origin` remote
-  (`host/owner/name`).
-- The most restrictive matching rule wins.
-- An admin sets rules for everyone (`path_rules` in the policy, or the
-  console's Policy page). A user can tighten an admin rule, not loosen it.
-- A session with no known directory or remote is `unplaceable`. The
-  `unplaceable` setting (`local` by default, `upload`, or `exclude`)
-  decides its fate. An admin sets a floor.
-
-The agent is the primary enforcer. The server enforces admin rules again
-at ingest, on what the transcript records and the home directory the device
-reports: it refuses a covered upload and stores nothing. When an admin
-changes the rules, the server hides stored sessions the new rules cover.
-An admin reviews them with `flopwire admin policy preview` and confirms with
-`flopwire admin policy purge --yes`; otherwise the server purges them after
-7 days. A rule change that no longer covers a hidden session restores it.
-See [docs/runbook.md](docs/runbook.md#change-admin-path-rules). [docs/agent.md](docs/path-rules.md)
-has the full rules.
-
-## Deletion
-
-- Deletion is manual, except the 7-day purge of sessions a path-rule
-  change hid. A transcript file that a harness deletes stays
-  searchable, locally and on the server.
-- The conversation's owner (`DELETE /v1/conversations/{id}`) or an admin
-  (`DELETE /v1/admin/conversations/{id}`, or the console) can delete it.
-- A delete is permanent. It removes the conversation and its subagent
-  conversations from search at once, tombstones the session for its owner
-  on every device, drops lines appended later, and purges the chunks.
-  Backups taken after it leave the chunks out.
-
-See [docs/runbook.md](docs/runbook.md#delete-a-conversation).
-
-## Operations
-
-| Task | Where |
+| Topic | Page |
 |---|---|
-| Health, quotas, admin sessions, transport, path rules, deletion, upgrade, recovery | [docs/runbook.md](docs/runbook.md) |
-| Backup and restore | [docs/runbook.md](docs/runbook.md#recover), `flopwire backup`, `flopwire backup-verify`, `flopwire restore` |
-| Two machines on a LAN | [docs/two-laptop.md](docs/two-laptop.md) |
-| Device agent | [docs/agent.md](docs/agent.md) |
-| Harnesses: Claude Code, Codex, Devin CLI, opencode, cloud | [docs/harnesses](docs/harnesses/README.md) |
+| Search: grep, search, sessions, read, trace | [docs/search.md](docs/search.md) |
+| Messaging: peers, send, inbox, threads, accepting senders | [docs/messaging.md](docs/messaging.md) |
+| Harnesses: Claude Code, Codex, Devin, opencode, cloud | [docs/harnesses](docs/harnesses/README.md) |
+| One machine, step by step | [docs/quick-start-local.md](docs/quick-start-local.md) |
+| Device agent: run, check, recover | [docs/agent.md](docs/agent.md) |
 | Path rules | [docs/path-rules.md](docs/path-rules.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Team server: setup, backup, deletion, upgrade | [docs/two-laptop.md](docs/two-laptop.md), [docs/runbook.md](docs/runbook.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
 | Coming from CASS | [docs/migrate-from-cass.md](docs/migrate-from-cass.md) |
-| Check message delivery after a harness release | [docs/probe.md](docs/probe.md), `flopwire probe` |
-| Pre-release manual checks | [docs/release-checklist.md](docs/release-checklist.md) |
 
-```sh
-flopwire backup --encrypted-destination --output /srv/flopwire-backups/2026-09-30
-flopwire backup-verify --input /srv/flopwire-backups/2026-09-30
-flopwire restore --input /srv/flopwire-backups/2026-09-30
-```
+Before 1.0, a release may require a fresh server database and
+re-enrollment. The release notes say so when it does.
 
-## Development
+## Contributing
 
-```sh
-pnpm --dir web install --frozen-lockfile
-make test       # go test -race ./..., web tests, release-tag script test
-make build
-make e2e
-make e2e-sync   # two devices against a Compose server; see docs/two-laptop.md
-```
-
-Postgres and S3 integration tests run when these variables are set. Each
-test creates and drops its own database:
-
-```sh
-docker compose -f compose.yaml -f compose.dev.yaml up -d postgres minio
-export FLOPWIRE_TEST_DATABASE_URL='postgres://flopwire:<password>@127.0.0.1:55432/flopwire?sslmode=disable'
-export FLOPWIRE_TEST_S3_ENDPOINT=127.0.0.1:59000 FLOPWIRE_TEST_S3_ACCESS_KEY=flopwire FLOPWIRE_TEST_S3_SECRET_KEY='<minio password>'
-go test -race ./...
-```
-
-Tests with `FLOPWIRE_CORPUS=1` read this machine's real transcripts. See
-[docs/release-checklist.md](docs/release-checklist.md).
-
-Release-please maintains a release PR from conventional commits on `main`.
-Merging that PR creates the version tag and GitHub source release. See
-[Releases](docs/releases.md) for bot setup and the verification workflow.
-
-## Repository layout
-
-| Path | Contents |
-|---|---|
-| `cmd/flopwire` | The single binary: server, CLI, MCP, agent, backup, bench |
-| `internal/transcript` | Harness-neutral message model and the Claude, Codex and Devin parsers |
-| `internal/agent` | Device agent: change detection, placement, path rules, re-parse |
-| `internal/localindex` | Local SQLite index with FTS5 shards |
-| `internal/devicesync`, `internal/syncproto` | Chunking, spool and upload; the sync wire format |
-| `internal/client` | Device configuration, TLS pinning, HTTP client |
-| `internal/pathpolicy` | Path rule parsing and matching, shared by agent and server |
-| `internal/api` | Authenticated HTTP API |
-| `internal/ingest` | Server ingest: flush, parse queue, server path rules |
-| `internal/retrieval` | grep, search, sessions and read, local and server |
-| `internal/store`, `migrations` | Postgres persistence and the schema |
-| `internal/backup` | Backup and restore |
-| `plugins/claude-code/flopwire`, `.claude-plugin` | The Claude Code plugin (Devin CLI loads it too) and the marketplace manifest that `flopwire setup` installs from |
-| `plugins/codex/flopwire`, `.agents/plugins` | The Codex plugin and its marketplace manifest |
-| `web` | TypeScript admin console |
-| `deploy` | launchd plist, nginx example |
-| `scripts` | e2e, acceptance and release scripts |
-| `notes` | Design spec and decision records ([index](notes/README.md)) |
+[CONTRIBUTING.md](CONTRIBUTING.md) covers setup, tests and pull requests.
+[AGENTS.md](AGENTS.md) is the short version for coding agents. Design
+records are under [notes](notes/README.md).
 
 ## License
 

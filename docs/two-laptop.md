@@ -107,7 +107,7 @@ The first administrator is also the owner of both devices.
 
    ```sh
    DATABASE_URL="postgres://flopwire:$POSTGRES_PASSWORD@127.0.0.1:55432/flopwire?sslmode=disable" \
-     flopwire bootstrap --server https://192.168.1.20:8080 --fingerprint sha256:<fingerprint> \
+     flopwire bootstrap --server https://192.168.1.20:8080 --fingerprint <fingerprint> \
      --name "Your Name" --email you@example.com
    ```
 
@@ -167,7 +167,7 @@ Option 2: log in as the administrator.
    administrator password:
 
    ```sh
-   flopwire login --server https://192.168.1.20:8080 --fingerprint sha256:<fingerprint> \
+   flopwire login --server https://192.168.1.20:8080 --fingerprint <fingerprint> \
      --email you@example.com
    ```
 

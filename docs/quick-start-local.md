@@ -57,8 +57,7 @@ run `flopwire peers --text` to find other live agents. Use
 
 ## Add a server later
 
-[Run your server](../README.md#quick-start-the-server), or
-[join an existing server](../README.md#quick-start-a-device).
+[Run your server, or join one](../README.md#add-a-team-server).
 Enrollment makes eligible history visible to your organization. Review
 [data access and path rules](../SECURITY.md) before enrolling.
 

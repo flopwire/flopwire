@@ -230,5 +230,5 @@ Acceptance evidence:
 ## Launch rule
 
 Do not label a release production-ready while a P0 is open. If a P1 feature is
-deferred, update `notes/mvp_scope.md`, `PRODUCT.md`, README claims, and tests in
+deferred, update `notes/mvp_scope.md`, README claims, and tests in
 the same review so the shipped contract remains truthful.
