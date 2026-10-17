@@ -323,12 +323,12 @@ func budgetCoverageScope(scope *format.Scope, budget int) *format.Scope {
 	return &out
 }
 
-func summaryCoverageNote(s *coverage.Summary) string {
+func summaryCoverageNote(s *coverage.Summary, shared bool) string {
 	if s == nil {
 		return ""
 	}
 	parts := []string{"discovery unverified"}
-	if strings.Contains(s.Qualification, "other-device") {
+	if shared {
 		parts = append(parts, "other devices unknown")
 	}
 	// Group related counters so the stage and units appear once.
@@ -416,7 +416,7 @@ func retrievalCoverageNote(scope *format.Scope, mcp bool) string {
 			raw, _ := json.Marshal(scope.Coverage)
 			return " [coverage: " + string(raw) + "]"
 		case coverage.SummaryMode, coverage.BudgetSummaryMode:
-			return summaryCoverageNote(coverage.Present(scope.Coverage, scope.Kind == "shared", scope.CoverageMode))
+			return summaryCoverageNote(coverage.Present(scope.Coverage, scope.Kind == "shared", scope.CoverageMode), scope.Kind == "shared")
 		}
 	}
 	return coverageNote(scope.Coverage, scope.Kind == "shared")

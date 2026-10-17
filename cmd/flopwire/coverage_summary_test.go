@@ -172,7 +172,7 @@ func TestMCPCoverageTextCompactAndGroupedUnknown(t *testing.T) {
 		r    *coverage.Report
 	}{{"normal", ready()}, {"pending", pending}, {"held", held}, {"unavailable", coverage.UnknownReport("optional observation unavailable within retrieval budget")}} {
 		old := coverageNote(c.r, true)
-		compact := summaryCoverageNote(coverage.Summarize(c.r, true))
+		compact := summaryCoverageNote(coverage.Summarize(c.r, true), true)
 		t.Logf("%s coverage text bytes: %d -> %d", c.name, len(old), len(compact))
 		if len(compact) >= len(old) {
 			t.Errorf("%s failed to compact: %q vs %q", c.name, old, compact)
@@ -186,18 +186,30 @@ func TestMCPCoverageTextCompactAndGroupedUnknown(t *testing.T) {
 			t.Errorf("routine structure/counters leaked: %s", compact)
 		}
 	}
-	unavailable := summaryCoverageNote(coverage.Summarize(coverage.UnknownReport("optional observation unavailable within retrieval budget"), true))
+	unavailable := summaryCoverageNote(coverage.Summarize(coverage.UnknownReport("optional observation unavailable within retrieval budget"), true), true)
 	if strings.Count(unavailable, "budget") != 1 || !strings.Contains(unavailable, "observations unavailable (budget)") {
 		t.Fatalf("unknown reasons not grouped: %s", unavailable)
 	}
-	local := summaryCoverageNote(coverage.Summarize(ready(), false))
+	local := summaryCoverageNote(coverage.Summarize(ready(), false), false)
 	if strings.Contains(local, "other-device") {
 		t.Fatalf("local qualifier: %s", local)
 	}
-	mixed := summaryCoverageNote(&coverage.Summary{Issues: map[string]int64{"capture_lost_generations": 2, "capture_truncated_generations": 1, "parse_quarantined": 3}, Unknown: map[string]string{"upload": "offline", "parse": "unsupported"}, BlockingReasons: []string{"capacity"}})
+	mixed := summaryCoverageNote(&coverage.Summary{Issues: map[string]int64{"capture_lost_generations": 2, "capture_truncated_generations": 1, "parse_quarantined": 3}, Unknown: map[string]string{"upload": "offline", "parse": "unsupported"}, BlockingReasons: []string{"capacity"}}, false)
 	for _, fact := range []string{"capture generations lost=2, truncated=1", "parse quarantined=3", "upload blocked: capacity", "upload unknown (offline)", "parse unknown (unsupported)"} {
 		if !strings.Contains(mixed, fact) {
 			t.Errorf("missing %q: %s", fact, mixed)
+		}
+	}
+}
+
+func TestMCPCoverageTextQualificationUsesScope(t *testing.T) {
+	// Copy changes cannot remove shared-scope limits or add them to local scope.
+	for _, qualification := range []string{"", "changed wording", "other-device"} {
+		summary := &coverage.Summary{Qualification: qualification}
+		shared := summaryCoverageNote(summary, true)
+		local := summaryCoverageNote(summary, false)
+		if !strings.Contains(shared, "other devices unknown") || strings.Contains(local, "other devices unknown") {
+			t.Fatalf("qualification %q affected scope: shared=%q local=%q", qualification, shared, local)
 		}
 	}
 }
