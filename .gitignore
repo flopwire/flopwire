@@ -19,7 +19,6 @@ web/tsconfig.tsbuildinfo
 *.pem
 *.key
 /flopwire
-.impeccable/questions/
 /tools/fad-dump/target/
 __pycache__/
 testdata/acceptance/repo-aliases.local.yaml

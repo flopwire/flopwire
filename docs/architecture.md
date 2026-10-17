@@ -432,3 +432,33 @@ in `flopwire_schema_migrations`. It refuses a database whose ledger has
 edited, missing or unknown entries, and a database with application tables
 but no ledger. Applied files and ledger checksums are immutable;
 schema changes use additive migrations that preserve durable data.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `cmd/flopwire` | The single binary: server, CLI, MCP, device agent, hooks, backup, bench |
+| `internal/transcript` | Harness-neutral message model and the Claude Code, Codex, Devin, opencode, Claude Desktop Local Code and Cowork readers |
+| `internal/agent` | Device agent: change detection, placement, path rules, re-parse, Cowork and Local Code authorization |
+| `internal/localindex` | Local SQLite index with FTS5 shards |
+| `internal/devicesync`, `internal/syncproto` | Chunking, spool and upload; the sync wire format |
+| `internal/client` | Device configuration, TLS pinning, HTTP client |
+| `internal/pathpolicy` | Path rule parsing and matching, shared by agent and server |
+| `internal/api` | Authenticated HTTP API |
+| `internal/ingest` | Server ingest: flush, parse queue, server path rules |
+| `internal/retrieval` | grep, search, sessions, read and change, local and server |
+| `internal/bus`, `internal/busproto`, `internal/devicebus`, `internal/busrender` | The message bus: server store, wire format, device-side delivery, rendering |
+| `internal/vendorcloud` | Push delivery into Claude Code cloud and Devin cloud sessions |
+| `internal/redact` | Secret redaction, on the device and on the server |
+| `internal/store`, `migrations` | Postgres persistence and the schema |
+| `internal/backup` | Backup and restore |
+| `internal/webapp`, `web` | The embedded admin console and its TypeScript source |
+| `plugins/claude-code`, `.claude-plugin` | The Claude Code plugin (Devin CLI loads it too) and its marketplace manifest |
+| `plugins/codex`, `.agents/plugins` | The Codex plugin and its marketplace manifest |
+| `plugins/opencode` | The opencode plugin, one file |
+| `landing` | flopwire.com |
+| `deploy` | launchd plist, nginx example |
+| `scripts` | e2e, acceptance and release scripts |
+| `testdata`, `tools` | Synthetic fixtures, parity oracles and the fixture tools |
+| `third_party` | Licenses and notices of ported code |
+| `notes` | Design records and dated logs ([index](../notes/README.md)) |
