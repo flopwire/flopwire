@@ -105,27 +105,22 @@ func TestProbeStreamCloneDivergentBranches(t *testing.T) {
 
 func TestCommitEvidenceOutputOwnership(t *testing.T) {
 	state := &CommitEvidenceState{}
-	rows := []transcript.Message{
-		evidenceCall("a", "git commit -qm x", 0),
-		evidenceResult("a", "Chunk ID: abc\nProcess running with session ID 73\nOutput:\n", 1),
-	}
+	state.Step(evidenceCall("a", "git commit -m x", 0))
+	state.Step(evidenceResult("a", "Chunk ID: abc\nProcess running with session ID 73\nOutput:\n", 1))
 	poll := evidenceCall("poll", "", 2)
 	poll.ToolName = "write_stdin"
 	poll.Text = `{"session_id":73}`
-	rows = append(rows, poll, evidenceResult("poll", "", 3))
-	for _, m := range rows {
-		state.Step(m)
-	}
-	state.Step(evidenceCall("reveal", "git rev-parse HEAD", 4))
-	events := state.Step(evidenceResult("reveal", "abcdef01234567890123456789012345678901234", 5))
+	state.Step(poll)
+	checkpoint := cloneCommitEvidenceState(state)
+	before := probeStateSnapshot(checkpoint)
+	events := state.Step(evidenceResult("poll", "[main abcdef0] x", 3))
 	if len(events) != 1 || events[0].RevealCommand == nil || events[0].RevealResult == nil {
-		t.Fatalf("missing reveal: %+v", events)
+		t.Fatalf("missing async refs: %+v", events)
 	}
-	before := probeStateSnapshot(state)
 	events[0].RevealCommand.NativeID = "mutated"
 	events[0].RevealResult.Ordinal = 999
-	if after := probeStateSnapshot(state); after != before {
-		t.Fatal("returned evidence aliases state")
+	if after := probeStateSnapshot(checkpoint); after != before {
+		t.Fatal("returned evidence aliases pending state")
 	}
 }
 
