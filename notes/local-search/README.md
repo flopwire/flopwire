@@ -40,7 +40,7 @@ What ships:
   filters, and ripgrep over raw files.
 - A **message bus** across harnesses, designed here and built last.
 
-The first user is Gary, on two laptops, as a personal CASS replacement.
+The first user is the maintainer, on two laptops, as a personal CASS replacement.
 The first server runs on one of those laptops (Compose plus MinIO); the
 other syncs to it over the tailnet. The same code is the team product;
 redaction (section 6.6) ships before the first team user joins.
@@ -973,10 +973,10 @@ archive cannot read them.
   chunks are purged when their reference count reaches zero; an audit
   event records who deleted what and when. Tombstones stay so re-upload
   of the same source does not resurrect it silently.
-- CASS on Gary's machine is left alone. It is not running now, but its
+- CASS on the maintainer's machine is left alone. It is not running now, but its
   launchd plist has `RunAtLoad` and `KeepAlive`, so it restarts at the next
   login. Deleting its stale index generations (1.8GB) and backup directory
-  (6.4GB), or unloading the plist, is Gary's call and not part of this
+  (6.4GB), or unloading the plist, is the maintainer's call and not part of this
   work.
 
 ## 11. Sequencing
@@ -986,7 +986,7 @@ archive cannot read them.
 Main is the trunk (`build/v1` is promoted to it by #16). Every PR below
 targets main, is small enough to review in one sitting, and is built by an
 Opus subagent in its own worktree; the orchestrating session fans them out
-and Gary reviews and merges.
+and the maintainer reviews and merges.
 
 **M1: parser library.** A dependency of everything else.
 
@@ -1090,4 +1090,4 @@ code, and every existing migration. Migrations reset to one fresh schema.
 Research was carried out with Opus subagents on 2026-09-24 through
 2026-09-28, starting from the agentboard stall investigation. The CASS
 build from `main` and its scheduled-run logs live under `~/.local/cass-main/`
-on Gary's machine.
+on the maintainer's machine.

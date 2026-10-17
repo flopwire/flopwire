@@ -83,7 +83,7 @@ Tasks:
 - t1: a past `--since` parse error;
 - t2: where `FLOPWIRE_SWEEP`'s default lives;
 - t3: reconstruct the 09-29 Codex disk cleanup;
-- t4: pandora sessions last week;
+- t4: payments sessions last week;
 - t5: Redis/Helm decision (not in the corpus).
 
 | Task | Claude before | Claude after | Codex after |

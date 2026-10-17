@@ -1,7 +1,7 @@
 # Field observation: a Codex session using Flopwire (2026-10-04/05)
 
 Review of `~/.codex/sessions/2026/10/04/rollout-2026-10-04T16-59-08-01a108b6-9f7d-7703-aec7-5bcc575f0920.jsonl`
-(53 MB, Codex CLI 0.160.0, `gpt-6`, `~/Code/eichler`, 2026-10-04 21:00 →
+(53 MB, Codex CLI 0.160.0, `gpt-6`, `~/Code/app`, 2026-10-04 21:00 →
 2026-10-06 02:20 UTC) and its two counterparts: Codex session
 `01a10785-0bf2-7db3-9461-1d6c3147e111` (same device) and Claude Code
 session `37dec565-9b37-4f48-acdc-8f224065aacf`. Real usage, not staged;
@@ -90,10 +90,10 @@ what each finding turned out to be and where the fix went.
    product (`openai-bundled/browser`); the rename to `flopwire-plugins`
    is #162.
 3. **`grep` with a repo filter timed out having checked 0 candidates.**
-   `flopwire_grep(repo="geteichler/eichler", pattern="…|…",
+   `flopwire_grep(repo="acme/app", pattern="…|…",
    include_self=true)` returned `timed out after 10s: checked 0
    candidates`, even though `flopwire_sessions` with the same repo value
-   had just matched. The retry with `repo="eichler" agent="claude"
+   had just matched. The retry with `repo="app" agent="claude"
    since="24h"` found the hits in 9.4 s, itself just under the budget.
    *Verified:* the repo filter is resolved the same way in both tools
    (`resolveFilterRepo`), so there is no mismatch. The cost is in the

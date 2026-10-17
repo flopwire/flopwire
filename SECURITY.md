@@ -1,5 +1,12 @@
 # Security policy
 
+## Reporting a vulnerability
+
+Do not open a public issue for a suspected vulnerability. Report it through
+[GitHub private vulnerability reporting](https://github.com/flopwire/flopwire/security/advisories/new).
+You get an acknowledgement within 3 business days. Fixes ship in the next
+release and the advisory is published after it.
+
 ## Security boundary
 
 flopwire archives agent traces. Those traces can contain source code,
@@ -320,12 +327,6 @@ system's own OIDC token (GitHub Actions, for one) could likewise be
 exchanged for a minted token by a trust policy on issuer, repository and
 branch, in place of a minted token stored as a CI secret. Neither is
 implemented.
-
-## Reporting vulnerabilities
-
-Do not open a public issue for a suspected vulnerability. Until a dedicated
-security contact is published, use GitHub's private vulnerability reporting on
-the repository.
 
 ## Supported versions
 
