@@ -137,15 +137,19 @@ func TestLocalRedactionMasksTitle(t *testing.T) {
 	check(s2, "rebuilt")
 }
 
-// ftsHits counts the rows each FTS table returns for a phrase, read from
-// the shards directly (find and search verify against stored text).
+// ftsHits counts direct shard candidates, including entries whose stored
+// text no longer matches. Column-detail trigrams have no phrase positions.
 func ftsHits(t *testing.T, s *Store, phrase string) int {
 	t.Helper()
 	var n int
 	for _, sh := range s.shards {
 		var c int
 		q := `SELECT count(*) FROM ` + sh.schema + `.` + sh.table + ` WHERE ` + sh.table + ` MATCH ?`
-		if err := s.DB().QueryRow(q, `"`+phrase+`"`).Scan(&c); err != nil {
+		expr := ftsString(phrase)
+		if sh.table == "fts_tri" {
+			expr = s.substringExpr(phrase)
+		}
+		if err := s.DB().QueryRow(q, expr).Scan(&c); err != nil {
 			t.Fatal(err)
 		}
 		n += c

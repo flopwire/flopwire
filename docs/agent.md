@@ -88,6 +88,22 @@ rebuilds the index at the next start: a switch to full parses every
 transcript again, and a switch to sync-only drops the message rows and the
 shard files.
 
+### Local search files
+
+New and rebuilt local indexes keep token search at `full` detail and use
+`column` detail for trigram search. This includes explicit
+`--rebuild-index` requests and rebuilds already required by a schema or
+storage-mode change. Healthy indexes keep their recorded formats on reopen
+and when the agent repairs a missing search file. The defaults do not add
+a rebuild trigger.
+
+Stop the agent before a rebuild. Keep its `--db` path and storage options.
+See the [recovery procedure](troubleshooting.md#the-agent-stops-apply-redactions).
+The rebuild discards indexed message rows and reparses the available
+harness transcripts. It cannot restore content from unavailable transcripts.
+It preserves sync state and ownership, placements, and local redaction
+files and keys. Search is incomplete until the pass finishes.
+
 ### Upload workers
 
 Upload concurrency defaults to one. Start the collector with

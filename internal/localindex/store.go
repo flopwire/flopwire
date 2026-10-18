@@ -383,13 +383,14 @@ func (s *Store) Path() string { return s.path }
 // Details reports the FTS tables' detail levels.
 func (s *Store) Details() Details { return s.details }
 
-// Defaults for new databases; see the PR notes for the measurements. The
-// token table keeps positions: FTS5's bm25 over a contentless table at
-// detail=column scores every row 0 (no instance counts), which left
-// ranked search ordered by row id alone.
+// Defaults apply when an index is created or rebuilt. Healthy indexes and
+// missing-shard repairs retain their recorded levels. Token positions preserve
+// bm25 ranking.
+// Trigram candidates are verified against stored text, so their index
+// can omit positions.
 const (
 	DefaultTokDetail = DetailFull
-	DefaultTriDetail = DetailFull
+	DefaultTriDetail = DetailColumn
 )
 
 // Close stops the writer, closes both pools and releases the index lock.
