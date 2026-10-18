@@ -22,7 +22,7 @@ disagree, the code and `punch-list.md` win.
 | [`launch-readiness/punch-list.md`](launch-readiness/punch-list.md) | The P0/P1/P2 launch gate carried over from the CASS era. The spec and `punch-list.md` override it. |
 | [`launch-readiness/state-machine-walks.md`](launch-readiness/state-machine-walks.md) | Concrete-state walks for deletion, backup and restore, quotas and collection. |
 | [`agent-ux.md`](agent-ux.md) | The agent UX review of the retrieval tools and MCP server (2026-09-30), with later dated evaluations such as read's `messages_before`/`messages_after`. |
-| [`agent-workflow-comparison.md`](agent-workflow-comparison.md) | Feature comparison across Flopwire and five alternatives, agent context-recovery spot checks, and workflow evaluation criteria. |
+| [`agent-workflow-comparison.md`](agent-workflow-comparison.md) | Comparison of Flopwire with AgentsView, MCP Agent Mail Rust, Entire, SpecStory and Langfuse: the connected-workflow table, the feature table, workflow pass criteria, and Flopwire's behaviour for those workflows. |
 | [`redaction.md`](redaction.md) | What is redacted, where, and how masks keep byte addresses stable. |
 | [`reparse.md`](reparse.md) | Versioned reparse on the server: parser versions, staleness and the background worker. |
 | [`parallel-sync-design.md`](parallel-sync-design.md) | Why two upload workers overlap only network waits: per-path ownership, server admission, capability negotiation and pressure epochs. |
