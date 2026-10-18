@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "oid": "69a371968864cf0d5415ff461c089469ef45f388"
+    },
+    {
+      "oid": "f2b5dcc204b8d1c3fd169cb7e6e8b210dab4eb5c"
+    },
+    {
+      "oid": "ccd50644e412d70dae7bdae68f6ede0b816a91f7"
+    }
+  ],
+  "headRefName": "fix/mcp-caller-repo-20261013",
+  "mergeCommit": {
+    "oid": "33501273c320600cbcb2549387a4319ee7855c41"
+  },
+  "number": 247,
+  "state": "MERGED",
+  "url": "https://github.com/flopwire/flopwire/pull/247"
+}
