@@ -52,8 +52,13 @@ read their history, and report who owns each task.
 
 ## Install
 
-Install Git and Go 1.26.6 or later, then
-[build and install Flopwire](docs/quick-start-local.md#install).
+```sh
+curl -fsSL https://flopwire.com/install.sh | sh
+```
+
+The script installs the `flopwire` binary for macOS and Linux (arm64 and
+amd64) into `~/.local/bin` and verifies it against the release checksums.
+Run it again to upgrade.
 
 ## Try it on one machine
 
