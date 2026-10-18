@@ -188,7 +188,8 @@ jobs:
         run: |
           test "$SCOPE" = success
           if [ "$FULL" = false ]; then
-            test "$GO_TEST" = skipped && test "$CHECKS" = skipped
+            test "$GO_TEST" = skipped
+            test "$CHECKS" = skipped
             echo "Docs-only PR; full suite runs in the merge queue."
             exit 0
           fi
