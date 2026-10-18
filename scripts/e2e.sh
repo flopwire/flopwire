@@ -6,7 +6,6 @@ e2e_project="flopwire-e2e-$$"
 e2e_postgres_password="flopwire-development-only"
 e2e_minio_password="flopwire-development-secret"
 e2e_postgres_image="postgres:16"
-e2e_minio_image="minio/minio:latest"
 e2e_postgres_port="${FLOPWIRE_E2E_POSTGRES_PORT:-55440}"
 e2e_minio_port="${FLOPWIRE_E2E_MINIO_PORT:-59081}"
 e2e_database="postgres://flopwire:$e2e_postgres_password@127.0.0.1:$e2e_postgres_port/flopwire?sslmode=disable"
@@ -15,7 +14,7 @@ e2e_server_pid=""
 
 compose() {
   POSTGRES_PASSWORD="$e2e_postgres_password" MINIO_ROOT_PASSWORD="$e2e_minio_password" \
-    POSTGRES_IMAGE="$e2e_postgres_image" MINIO_IMAGE="$e2e_minio_image" \
+    POSTGRES_IMAGE="$e2e_postgres_image" \
     POSTGRES_DEV_PORT="$e2e_postgres_port" MINIO_DEV_PORT="$e2e_minio_port" \
     COMPOSE_PROJECT_NAME="$e2e_project" \
     docker compose -f compose.yaml -f compose.dev.yaml "$@"
