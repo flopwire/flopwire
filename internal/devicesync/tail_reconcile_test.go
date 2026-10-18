@@ -17,6 +17,11 @@ func reconcileVersionPath(spool *Spool, sid, gen int64, hash syncproto.Hash) str
 	return filepath.Join(spool.dir, "tails", fmt.Sprintf("%d-%d-%s", sid, gen, hash.String()))
 }
 
+func fileAbsent(path string) bool {
+	_, err := os.Lstat(path)
+	return errors.Is(err, os.ErrNotExist)
+}
+
 func assertReconcileFile(t *testing.T, path string, want []byte) {
 	t.Helper()
 	got, err := os.ReadFile(path)
@@ -26,7 +31,7 @@ func assertReconcileFile(t *testing.T, path string, want []byte) {
 }
 
 func TestRequiredTailExactCommittedReference(t *testing.T) {
-	f := newTailPreparationFixture(t)
+	f := newTailFixture(t)
 	body := []byte("committed tail identity\n")
 	sid, hash := f.add(t, transcript.StorageJSONDoc, false, body, nil, false)
 	got, needed, err := f.store.requiredTail(t.Context(), sid, 0)
@@ -68,7 +73,7 @@ func TestRequiredTailUncertainMetadata(t *testing.T) {
 		{"tail exceeds capture", `UPDATE devsync_gens SET size=1`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newTailPreparationFixture(t)
+			f := newTailFixture(t)
 			sid, _ := f.add(t, transcript.StorageJSONDoc, false, []byte("durable body\n"), nil, false)
 			if _, err := f.store.db.Exec(tc.change); err != nil {
 				t.Fatal(err)
@@ -84,7 +89,7 @@ func TestTailReconcileAndSweepHoldAllOnDecisionFailure(t *testing.T) {
 	for _, sweep := range []bool{false, true} {
 		for _, failure := range []string{"lookup error", "canceled lookup", "missing source"} {
 			t.Run(fmt.Sprintf("sweep=%v/%s", sweep, failure), func(t *testing.T) {
-				f := newTailPreparationFixture(t)
+				f := newTailFixture(t)
 				old, stale := []byte("old unreferenced\n"), []byte("other unreferenced\n")
 				sid, _ := f.add(t, transcript.StorageJSONDoc, false, []byte("required not obsolete\n"), nil, false)
 				oldHash, staleHash := syncproto.Sum(old), syncproto.Sum(stale)
@@ -137,11 +142,8 @@ func TestTailReconcileAndSweepHoldAllOnDecisionFailure(t *testing.T) {
 
 func TestTailReconcileSourceIsolationAndExactVersion(t *testing.T) {
 	spool := publicationSpool(t, 4096)
-	needed, obsolete, unrelated, chunk := []byte("needed immutable\n"), []byte("obsolete canonical\n"), []byte("another source\n"), []byte("shared chunk\n")
+	needed, obsolete, unrelated, chunk := []byte("needed immutable\n"), []byte("obsolete version\n"), []byte("another source\n"), []byte("shared chunk\n")
 	hash, oldHash := syncproto.Sum(needed), syncproto.Sum(obsolete)
-	if err := spool.PutTail(7, 0, obsolete); err != nil {
-		t.Fatal(err)
-	}
 	if err := spool.PutTailVersion(7, 0, hash, needed); err != nil {
 		t.Fatal(err)
 	}
@@ -177,47 +179,17 @@ func TestTailReconcileSourceIsolationAndExactVersion(t *testing.T) {
 	assertReconcileFile(t, reconcileVersionPath(spool, 8, 0, syncproto.Sum(unrelated)), unrelated)
 	assertReconcileFile(t, malformed, []byte("unclassified"))
 	assertReconcileFile(t, spool.chunkPath(syncproto.Sum(chunk)), chunk)
-	for _, path := range []string{spool.tailPath(7, 0), reconcileVersionPath(spool, 7, 0, oldHash)} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("obsolete file retained: %s: %v", path, err)
-		}
+	if path := reconcileVersionPath(spool, 7, 0, oldHash); !fileAbsent(path) {
+		t.Fatalf("obsolete version retained: %s", path)
 	}
 	if want := int64(len(needed) + len(unrelated) + len(chunk) + len("unclassified")); spool.Used() != want {
 		t.Fatalf("accounting: got=%d want=%d", spool.Used(), want)
 	}
 }
 
-func TestTailSweepLegacyBodyCannotBorrowSiblingIdentity(t *testing.T) {
-	spool := publicationSpool(t, 4096)
-	body, stale := []byte("required immutable body\n"), []byte("stale canonical bytes\n")
-	hash := syncproto.Sum(body)
-	if err := spool.PutTail(7, 0, stale); err != nil {
-		t.Fatal(err)
-	}
-	if err := spool.PutTailVersion(7, 0, hash, body); err != nil {
-		t.Fatal(err)
-	}
-	if err := spool.PutTail(8, 0, body); err != nil {
-		t.Fatal(err)
-	}
-	if err := spool.sweepTails(t.Context(), func(sid, gen int64) (syncproto.Tail, bool, error) {
-		return syncproto.Tail{Hash: hash, Size: int64(len(body))}, true, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(spool.tailPath(7, 0)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale canonical survived matching sibling: %v", err)
-	}
-	assertReconcileFile(t, reconcileVersionPath(spool, 7, 0, hash), body)
-	assertReconcileFile(t, spool.tailPath(8, 0), body)
-	if spool.Used() != int64(2*len(body)) {
-		t.Fatalf("sweep accounting: %d", spool.Used())
-	}
-}
-
 func TestTailReconcileAndSweepInvalidCandidateHoldsCleanup(t *testing.T) {
 	for _, sweep := range []bool{false, true} {
-		for _, invalid := range []string{"corrupt version", "nonregular canonical", "required size mismatch"} {
+		for _, invalid := range []string{"corrupt version", "nonregular version", "required size mismatch"} {
 			t.Run(fmt.Sprintf("sweep=%v/%s", sweep, invalid), func(t *testing.T) {
 				spool := publicationSpool(t, 4096)
 				obsolete, body := []byte("obsolete planned removal\n"), []byte("expected committed body\n")
@@ -225,8 +197,8 @@ func TestTailReconcileAndSweepInvalidCandidateHoldsCleanup(t *testing.T) {
 				if err := spool.PutTailVersion(7, 0, oldHash, obsolete); err != nil {
 					t.Fatal(err)
 				}
-				if invalid == "nonregular canonical" {
-					if err := os.Mkdir(spool.tailPath(7, 1), 0700); err != nil {
+				if invalid == "nonregular version" {
+					if err := os.Mkdir(reconcileVersionPath(spool, 7, 1, hash), 0700); err != nil {
 						t.Fatal(err)
 					}
 				} else {

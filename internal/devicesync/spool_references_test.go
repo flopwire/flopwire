@@ -55,7 +55,7 @@ func TestSpoolReferencesPublicationThroughCommitOrAbort(t *testing.T) {
 	for _, mode := range []string{"guard-reject", "commit", "commit-then-error"} {
 		t.Run(mode, func(t *testing.T) {
 			commit := mode != "guard-reject"
-			f := newTailPreparationFixture(t)
+			f := newTailFixture(t)
 			src := referenceSource(t, f.store)
 			body := []byte("literal publication H\n")
 			hash := syncproto.Sum(body)
@@ -134,7 +134,7 @@ func TestSpoolReferencesPublicationThroughCommitOrAbort(t *testing.T) {
 }
 
 func TestSpoolReferencesTailCancellationAfterWaitingForFileOwner(t *testing.T) {
-	f := newTailPreparationFixture(t)
+	f := newTailFixture(t)
 	body := []byte("literal released tail awaiting file owner\n")
 	sid, hash := f.add(t, transcript.StorageJSONDoc, false, body, nil, true)
 	if err := f.spool.withReferences(f.store, func(scope *spoolReferenceScope) error {
@@ -172,7 +172,7 @@ func TestSpoolReferencesTailCancellationAfterWaitingForFileOwner(t *testing.T) {
 }
 
 func TestSpoolReferencesCleanupBeforeRepublish(t *testing.T) {
-	f := newTailPreparationFixture(t)
+	f := newTailFixture(t)
 	src := referenceSource(t, f.store)
 	body := []byte("literal reclaimed and republished H\n")
 	hash := syncproto.Sum(body)
@@ -233,7 +233,7 @@ func TestSpoolReferencesCleanupBeforeRepublish(t *testing.T) {
 }
 
 func TestSpoolReferencesBindingRejectsBeforeCallback(t *testing.T) {
-	f, other := newTailPreparationFixture(t), newTailPreparationFixture(t)
+	f, other := newTailFixture(t), newTailFixture(t)
 	called := false
 	fn := func(*spoolReferenceScope) error { called = true; return nil }
 	if err := f.spool.withReferences(nil, fn); err == nil || called {
@@ -266,7 +266,7 @@ func TestSpoolReferencesUncertainLedgerRetainsChunks(t *testing.T) {
 		"canceled",
 	} {
 		t.Run(change, func(t *testing.T) {
-			f := newTailPreparationFixture(t)
+			f := newTailFixture(t)
 			src := referenceSource(t, f.store)
 			body := []byte("literal uncertain reference H\n")
 			hash := syncproto.Sum(body)
@@ -299,7 +299,7 @@ func TestSpoolReferencesUncertainLedgerRetainsChunks(t *testing.T) {
 }
 
 func TestSpoolReferencesCutAuditRowsAreNotPending(t *testing.T) {
-	f := newTailPreparationFixture(t)
+	f := newTailFixture(t)
 	src := referenceSource(t, f.store)
 	body := []byte("literal cut audit H\n")
 	hash := syncproto.Sum(body)
@@ -327,7 +327,7 @@ func TestSpoolReferencesCutAuditRowsAreNotPending(t *testing.T) {
 }
 
 func TestSpoolReferencesSameHashTailAndCopiedChunk(t *testing.T) {
-	f := newTailPreparationFixture(t)
+	f := newTailFixture(t)
 	body := []byte("literal committed tail\n")
 	sid, hash := f.add(t, transcript.StorageJSONDoc, false, body, nil, false)
 	tail := syncproto.Tail{Size: int64(len(body)), Hash: hash}
@@ -370,7 +370,7 @@ func TestSpoolReferencesSameHashTailAndCopiedChunk(t *testing.T) {
 func TestSpoolReferencesInvalidFilesRetainCharge(t *testing.T) {
 	for _, kind := range []string{"corrupt", "symlink", "directory", "chunk-directory-symlink", "missing"} {
 		t.Run(kind, func(t *testing.T) {
-			f := newTailPreparationFixture(t)
+			f := newTailFixture(t)
 			body := []byte("literal verified removable H\n")
 			hash := syncproto.Sum(body)
 			if err := f.spool.withReferences(f.store, func(scope *spoolReferenceScope) error { return scope.putChunk(hash, body) }); err != nil {

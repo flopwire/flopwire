@@ -72,29 +72,6 @@ func requireTailCaptureLedger(t *testing.T, db *sql.DB, spec SourceSpec, body []
 	}
 }
 
-func TestTailCaptureCapPreservesCommittedLegacy(t *testing.T) {
-	e := newEnv(t, Config{SealAfter: -1}, int64(len(tailCaptureH)+len(tailCaptureJ)-1))
-	sp := tailCaptureSpec(e.dir)
-	src := tailCaptureSource(t, e.store, sp)
-	g := &growingExport{log: bytes.Clone(tailCaptureH)}
-	if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); err != nil {
-		t.Fatal(err)
-	}
-	// Under this fixture's exclusive owner, emulate a legacy-only installation.
-	if _, err := PrepareLegacyTails(t.Context(), e.store.db, e.spool.dir); err != nil {
-		t.Fatal(err)
-	}
-	g.log = bytes.Clone(tailCaptureJ)
-	if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); !errors.Is(err, ErrSpoolFull) {
-		t.Fatalf("want cap refusal, got %v", err)
-	}
-	requireTailCaptureLedger(t, e.store.db, sp, tailCaptureH, false)
-	assertReconcileFile(t, filepath.Join(e.spool.dir, "tails", fmt.Sprintf("%d-0", src.ID)), tailCaptureH)
-	if e.spool.Used() != int64(len(tailCaptureH)) {
-		t.Fatalf("charged bytes changed on refusal: %d", e.spool.Used())
-	}
-}
-
 func TestTailCaptureRetryReclaimsOnlyUncommittedVersion(t *testing.T) {
 	for _, committed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("commit=%v", committed), func(t *testing.T) {
@@ -206,7 +183,7 @@ func TestTailCaptureProcessDeathSelectsCommittedVersion(t *testing.T) {
 				want = tailCaptureJ
 			}
 			killNamedCaptureHelperAtBarrier(t, dir, phase, "TestTailCaptureCrashHelper", func() {
-				db := tailPreparationReadOnly(t, filepath.Join(dir, "sync.db"))
+				db := readOnlyIndexDB(t, filepath.Join(dir, "sync.db"))
 				requireTailCaptureLedger(t, db, sp, want, false)
 				for _, body := range [][]byte{tailCaptureH, tailCaptureJ} {
 					assertReconcileFile(t, filepath.Join(dir, "spool", "tails", "1-0-"+syncproto.Sum(body).String()), body)

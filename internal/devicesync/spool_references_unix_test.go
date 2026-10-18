@@ -11,7 +11,7 @@ import (
 )
 
 func TestSpoolReferencesFIFORejectedBeforeOpen(t *testing.T) {
-	f := newTailPreparationFixture(t)
+	f := newTailFixture(t)
 	body := []byte("literal charged bytes before FIFO substitution\n")
 	hash := syncproto.Sum(body)
 	if err := f.spool.withReferences(f.store, func(scope *spoolReferenceScope) error { return scope.putChunk(hash, body) }); err != nil {

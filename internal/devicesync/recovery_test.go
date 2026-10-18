@@ -128,7 +128,8 @@ func TestSpoolSweptAtStart(t *testing.T) {
 	}
 	orphan := []byte("orphan chunk from a crashed capture")
 	e.spool.PutChunk(syncproto.Sum(orphan), orphan)
-	e.spool.PutTail(99, 3, []byte("orphan tail"))
+	orphanTail := []byte("orphan tail from a crashed capture")
+	e.spool.PutTailVersion(99, 3, syncproto.Sum(orphanTail), orphanTail)
 	os.WriteFile(filepath.Join(e.dir, "spool", "chunks", "deadbeef.tmp"), []byte("partial"), 0o600)
 	e.sy.Close()
 
