@@ -123,6 +123,11 @@ flopwire enroll --name laptop
 ```
 
 After `enroll`, the device uploads its transcripts and searches the server.
+
+The stack runs the published image, `ghcr.io/flopwire/flopwire`. Pin a
+release with `FLOPWIRE_IMAGE` in `.env`. To build the server from the
+checkout instead, add `-f compose.yaml -f compose.dev.yaml` to each
+command, as [docs/two-laptop.md](docs/two-laptop.md) does.
 By default it keeps no local message index; set `"mode": "full"` in
 `config.json` to keep local search too. The full walkthrough, including TLS
 options and running two machines on a LAN, is in

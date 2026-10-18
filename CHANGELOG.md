@@ -8,7 +8,7 @@
 This release provides the CLI, collector, server, MCP tools, harness plugins,
 admin console, and deployment files as source. GitHub provides source archives;
 no built binaries or container images are published, and no deployment is upgraded.
-See the [archive build instructions](https://github.com/flopwire/flopwire/blob/main/docs/releases.md#build-from-a-source-archive)
+See the [archive build instructions](https://github.com/flopwire/flopwire/blob/main/docs/releases.md#release-assets)
 and [measured qualification record](https://github.com/flopwire/flopwire/blob/main/notes/log/release-readiness-v0.1.0-2026-10-10.md).
 
 This source release includes the completed owner-selected collection, folder-policy, coverage,
