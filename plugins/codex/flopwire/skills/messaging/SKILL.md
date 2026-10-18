@@ -1,11 +1,21 @@
 ---
 name: messaging
-description: Coordinate with another live coding-agent session through Flopwire. Use when your work depends on a change another session made (a commit, branch, PR or decision), when a session needs to know something you found, or when you must answer a <flopwire-message>.
+description: Search past and ongoing agent conversations and coordinate with live sessions, locally or across connected machines and team members when configured. Use when the user references earlier work or conversations; when you need prior research, plans, decisions, attempts or results; when another session's work affects yours; or when you must answer a <flopwire-message>.
 ---
 
-# Coordinate through Flopwire
+# Recover context and coordinate through Flopwire
 
-Messaging and retrieval work together: find the session in history first, then check that it is live, then write to it. Delivery and how to treat incoming messages are in the `<flopwire-instructions>` you received at session start; the `flopwire_*` tool descriptions give every argument.
+Flopwire searches conversations from connected agent tools, including research, planning, writing, troubleshooting and coding. Search works after a session has ended and while it is ongoing. By default, before enrollment, search covers this device; after enrollment, it uses the shared server's history across connected machines and team members. Results name their scope. Messaging can also reach sessions across connected machines and team members when configured.
+
+## Recover prior context
+
+1. Use `flopwire_search` for a question about earlier research, plans, decisions or attempts. Use `flopwire_grep` for exact text, names, errors, commands or paths. Use `flopwire_sessions` to find conversations by repository, agent or time.
+2. Read relevant hits with `flopwire_read` before relying on them. For an overview of a session, use `flopwire_read address=SESSION outline=true`.
+3. Use what the transcript establishes. No live session or message is needed to recover history. If a focused search finds nothing useful, continue with other available evidence and state any unresolved gap.
+
+## Coordinate when needed
+
+Contact another session when its unfinished work or an unexplained decision blocks your next step, or when it needs a finding from you. Identify it from history, then check whether it is live. Delivery and how to treat incoming messages are in the `<flopwire-instructions>` you received at session start; the `flopwire_*` tool descriptions give every argument.
 
 ## Find the session
 
