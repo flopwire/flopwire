@@ -55,7 +55,8 @@ the [release gate](#release-gate) also calls.
 The workflow is `.github/workflows/perf-release.yml`. It runs on every
 pull request, but it benches only the release-please PR: a PR from the
 branch `release-please--branches--main` of this repository. On every
-other PR its `perf-gate` job passes at once.
+other PR, and in the merge queue, its `perf-gate` job passes at once; the
+release PR is gated while it is a pull request.
 
 On the release PR:
 

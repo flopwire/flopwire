@@ -131,6 +131,9 @@ type setupBinary struct {
 	Path    string `json:"path,omitempty"`
 	Version string `json:"version,omitempty"`
 	Note    string `json:"note,omitempty"`
+	// Latest is the newer release the server reported, when the running
+	// agent says one exists; the todo list then carries the upgrade line.
+	Latest string `json:"latest,omitempty"`
 	// Recorded is the binary path recorded for the plugins' hook shim
 	// (<config dir>/binary-path): install mode writes this binary's path
 	// there; --check and --remove only read it.
@@ -460,6 +463,10 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			resp, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
 			cancel()
 			agentCred = resp.Credential
+			if resp.Upgrade != "" {
+				rep.Flopwire.Latest = resp.Latest
+				rep.Todo = append(rep.Todo, resp.Upgrade)
+			}
 			if agentCred == nil {
 				why := "did not answer status"
 				if err != nil {

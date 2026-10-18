@@ -17,12 +17,15 @@ name: Perf release gate
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # In the merge queue bench and comment skip and perf-gate passes: the
+  # release PR was gated when it was a pull request.
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: perf-release-${{ github.event.pull_request.number }}
+  group: perf-release-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:

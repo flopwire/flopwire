@@ -198,6 +198,7 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	// Headers are in: the body gets a fresh allowance for its size.
+	recordServerVersion(res.Header.Get(serverVersionHeader))
 	timer.Reset(g.allowance(res.ContentLength))
 	res.Body = &guardedBody{ReadCloser: res.Body, ctx: ctx, url: req.URL.String(), stop: func() { timer.Stop(); cancel(nil) }}
 	return res, nil

@@ -1434,3 +1434,32 @@ func TestSetupReportsOldMarketplace(t *testing.T) {
 		t.Fatalf("old marketplace alone: todo %q", h.Todo)
 	}
 }
+
+// --check carries the running agent's upgrade notice as a todo and names
+// the newer release.
+func TestSetupCheckReportsUpgrade(t *testing.T) {
+	fx := newSetupFixture(t, false)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(shortSockDir(t), "config.json"))
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Op == "status" {
+			return agent.Response{OK: true, Version: "v0.1.0", ServerVersion: "v0.1.0", Latest: "v0.2.0",
+				Upgrade: "flopwire v0.2.0 is available; this device runs v0.1.0. Upgrade with: flopwire upgrade"}
+		}
+		return agent.Response{OK: true}
+	})
+	t.Setenv("FLOPWIRE_SOCKET", fa.sock)
+	rep, _, err := fx.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Flopwire.Latest != "v0.2.0" {
+		t.Fatalf("latest: %+v", rep.Flopwire)
+	}
+	found := false
+	for _, todo := range rep.Todo {
+		found = found || strings.Contains(todo, "v0.2.0 is available")
+	}
+	if !found {
+		t.Fatalf("todo lacks the upgrade line: %v", rep.Todo)
+	}
+}

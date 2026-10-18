@@ -14,7 +14,9 @@ model. The command exits non-zero when a case fails.
   plugin or the standing instruction.
 - Before a Flopwire release.
 
-Nothing runs it on a schedule. Run it by hand.
+The [nightly validation workflow](dev/nightly-validation.md) runs the Codex
+installed-plugin probe on macOS when its API key is configured. Run the other
+CLI and GUI checks by hand.
 
 ## Run it
 
