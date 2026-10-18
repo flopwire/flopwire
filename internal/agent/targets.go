@@ -2,6 +2,7 @@ package agent
 
 import (
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ type target struct {
 
 	mu sync.Mutex // held while indexing
 
+	notice   devicesync.Notice   // pending handoff provenance; activity survives consumption
 	seen     transcript.Identity // identity at the last index or verified check
 	seenAt   int64               // unix ns when seen was sampled
 	sourceID int64
@@ -62,11 +64,53 @@ type target struct {
 // stale reports whether the source was indexed by another parser version
 // and should be re-parsed from its bytes (D16). Called with Agent.mu held.
 func (t *target) stale() bool {
+	return t.staleWithContracts(nil)
+}
+
+// gateContracts lasts for one polling pass. Parser configuration can change
+// between passes, so these values must never be retained on Agent or target.
+// It caches extraction versions only; capture authorization is never cached.
+type gateContracts struct {
+	current map[transcript.Parser]string
+	stored  map[string]string
+}
+
+func (c *gateContracts) currentVersion(p transcript.Parser) string {
+	if c == nil || !reflect.ValueOf(p).Comparable() {
+		return indexingVersion(p)
+	}
+	if name, ok := c.current[p]; ok {
+		return name
+	}
+	name := indexingVersion(p)
+	if c.current == nil {
+		c.current = make(map[transcript.Parser]string)
+	}
+	c.current[p] = name
+	return name
+}
+
+func (c *gateContracts) storedVersion(version string) string {
+	if c == nil {
+		return transcript.ReparseKey(version)
+	}
+	if name, ok := c.stored[version]; ok {
+		return name
+	}
+	name := transcript.ReparseKey(version)
+	if c.stored == nil {
+		c.stored = make(map[string]string)
+	}
+	c.stored[version] = name
+	return name
+}
+
+func (t *target) staleWithContracts(contracts *gateContracts) bool {
 	if t.kind != kindTranscript || t.parser == nil || t.indexedWith == "" {
 		return false
 	}
-	name := indexingVersion(t.parser)
-	return transcript.ReparseKey(t.indexedWith) != name && t.reparseFailed != name
+	name := contracts.currentVersion(t.parser)
+	return contracts.storedVersion(t.indexedWith) != name && t.reparseFailed != name
 }
 
 // racy reports whether an unchanged tuple cannot be trusted yet (git's racy
@@ -159,12 +203,35 @@ func (f *found) codexSources(srcs []transcript.Source, p transcript.Parser) {
 
 // discoverAll lists every Claude and Codex file.
 func (a *Agent) discoverAll() (*found, error) {
+	defer a.work.discover.Begin().End()
 	f := &found{}
 	sessions, err := claude.Discover(a.cfg.ClaudeProjects)
 	if err != nil {
 		return nil, err
 	}
 	f.claudeSessions(sessions, a.claude)
+	a.mu.Lock()
+	cw := a.coworkResult
+	dc := a.desktopCodeResult
+	a.mu.Unlock()
+	for _, entry := range cw.Sessions {
+		f.claudeSessions([]*claude.Session{entry.Session}, a.coworkParser)
+	}
+	for _, entry := range dc.Sessions {
+		f.claudeSessions([]*claude.Session{entry.Session}, a.desktopCodeParser)
+	}
+	for _, t := range f.targets {
+		if t.kind == kindTranscript && a.cfg.DesktopCodeRoot != "" {
+			if _, ok := under(a.cfg.DesktopCodeRoot, t.path); ok {
+				t.parser = a.desktopCodeParser
+			}
+		}
+		if t.kind == kindTranscript && a.cfg.CoworkRoot != "" {
+			if _, ok := under(a.cfg.CoworkRoot, t.path); ok {
+				t.parser = a.coworkParser
+			}
+		}
+	}
 	srcs, err := codex.Discover(a.cfg.CodexHome)
 	if err != nil {
 		return nil, err
@@ -178,6 +245,12 @@ func (a *Agent) discoverAll() (*found, error) {
 // in it. It reports whether dir is under a known root.
 func (a *Agent) discoverDir(dir string) (*found, bool) {
 	f := &found{}
+	if parent := a.nativeClaudeParent(dir); parent != "" && a.desktopCodeCoworkAlias([]placeKey{{transcript.AgentClaude, parent}}) {
+		return nil, true
+	}
+	if a.coworkDirectory(dir) || a.desktopCodeDirectory(dir) {
+		return nil, true // ancestor or nested session changed: refresh the bounded container
+	}
 	if rel, ok := under(a.cfg.ClaudeProjects, dir); ok {
 		if rel == "." {
 			return nil, true // the project list changed: the caller runs a full pass

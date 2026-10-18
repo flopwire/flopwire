@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/klauspost/compress/zstd"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	_ "modernc.org/sqlite"
@@ -174,9 +175,14 @@ func (h *harness) writeReport() {
 
 // run executes the flopwire binary with env and returns stdout.
 func (h *harness) run(env []string, stdin string, args ...string) (string, error) {
+	return h.runAt("", env, stdin, args...)
+}
+
+func (h *harness) runAt(dir string, env []string, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.cfg.bin, args...)
+	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errb bytes.Buffer
@@ -449,6 +455,26 @@ func (d *device) codexMsg(role, text string) string {
 
 func jsonStr(s string) string { b, _ := json.Marshal(s); return string(b) }
 
+// setMode selects retention explicitly for fixtures that promise local search.
+func (d *device) setMode(mode string) {
+	raw, err := os.ReadFile(d.cfg)
+	if err != nil {
+		d.h.t.Fatal(err)
+	}
+	var cfg client.Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		d.h.t.Fatal(err)
+	}
+	cfg.Mode = mode
+	raw, err = json.Marshal(cfg)
+	if err != nil {
+		d.h.t.Fatal(err)
+	}
+	if err := os.WriteFile(d.cfg, raw, 0600); err != nil {
+		d.h.t.Fatal(err)
+	}
+}
+
 // start launches `flopwire agent run` for the device.
 func (d *device) start() {
 	d.mu.Lock()
@@ -542,8 +568,22 @@ type localRow struct {
 
 // localFind returns the local index rows whose text contains needle, read
 // through the trigram shards on a read-only connection (the agent owns the
-// writers).
+// writers). Needles must contain at least three runes. Trigram conjunctions
+// find candidates at both detail levels; retained text verifies the substring.
 func (d *device) localFind(needle string) ([]localRow, error) {
+	runes := []rune(strings.ToLower(needle))
+	if len(runes) < 3 {
+		return nil, errors.New("localFind requires a needle of at least three runes")
+	}
+	var terms []string
+	seen := map[string]bool{}
+	for i := 0; i+3 <= len(runes); i++ {
+		tri := string(runes[i : i+3])
+		if !seen[tri] {
+			seen[tri] = true
+			terms = append(terms, `"`+strings.ReplaceAll(tri, `"`, `""`)+`"`)
+		}
+	}
 	db, err := sql.Open("sqlite", "file:"+d.index+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
@@ -570,20 +610,32 @@ func (d *device) localFind(needle string) ([]localRow, error) {
 	if len(parts) == 0 {
 		return nil, errors.New("no trigram shards yet")
 	}
-	q := `SELECT m.id, m.superseded, c.session_id, c.agent, m.on_active_path FROM messages m JOIN conversations c ON c.id = m.conversation_id
+	q := `SELECT m.id, m.superseded, c.session_id, c.agent, m.on_active_path, m.text FROM messages m JOIN conversations c ON c.id = m.conversation_id
 		WHERE m.id IN (` + strings.Join(parts, " UNION ") + `)`
-	rows, err := conn.QueryContext(d.h.ctx, q, `"`+strings.ReplaceAll(needle, `"`, `""`)+`"`)
+	rows, err := conn.QueryContext(d.h.ctx, q, strings.Join(terms, " AND "))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true))
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
 	var out []localRow
 	for rows.Next() {
 		var r localRow
-		if err := rows.Scan(&r.ID, &r.Superseded, &r.Session, &r.Agent, &r.OnPath); err != nil {
+		var compressed []byte
+		if err := rows.Scan(&r.ID, &r.Superseded, &r.Session, &r.Agent, &r.OnPath, &compressed); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
+		text, err := decoder.DecodeAll(compressed, nil)
+		if err != nil {
+			return nil, fmt.Errorf("localFind row %d: %w", r.ID, err)
+		}
+		if strings.Contains(string(text), needle) {
+			out = append(out, r)
+		}
 	}
 	return out, rows.Err()
 }

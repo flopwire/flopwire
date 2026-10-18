@@ -426,6 +426,9 @@ func (q *Queue) complete(ctx context.Context, j *job, gen int64, full bool) erro
 		if err := checkpointDigests(ctx, tx, j, gen, full); err != nil {
 			return err
 		}
+		// Message mutations mark commit projections dirty in their write
+		// transaction. Bounded scoped lookup backfill publishes them without
+		// making an append scan its conversation's retained history.
 		_, err := tx.Exec(ctx, `UPDATE source_parse_state SET generation=$2,cursor_offset=$3,cursor_line=$4,cursor_state=$5,
 			parsed_seq=$6,reparse=reparse AND requested_seq<>$6,attempts=0,next_attempt_at=NULL,last_error='',parsed_at=now(),extraction_report=$7,
 			applied_parser=COALESCE(NULLIF($8,''),applied_parser),

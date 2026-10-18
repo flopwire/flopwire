@@ -1,12 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
@@ -21,12 +25,20 @@ import (
 // cursor state are saved in the transaction of the last batch. It reports
 // whether rows were written.
 func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
+	a.captureScopeMu.RLock()
+	defer a.captureScopeMu.RUnlock()
+	if a.policy().readiness == policyUnknown {
+		return false, nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !a.coworkSafe(t) {
+		return false, nil
+	}
 	if t.parser == nil {
 		return false, nil // a loaded placeholder not listed by discovery yet
 	}
-	f, err := fsprobe.Open(t.path)
+	f, err := a.openNativeEvidence(t.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil // the next full pass retires it
 	} else if err != nil {
@@ -69,7 +81,11 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	failed := t.reparseFailed == version
 	a.mu.Unlock()
 	var change transcript.Change
-	if st.Watermark != nil && (applied != version || (st.Extraction != nil && st.Extraction.Generation != st.Generation)) && !failed {
+	reparse := st.Watermark != nil && (applied != version || (st.Extraction != nil && st.Extraction.Generation != st.Generation)) && !failed
+	a.mu.Lock()
+	indexedThisRun := t.seenAt >= a.initializedAt.UnixNano()
+	a.mu.Unlock()
+	if reparse {
 		// D16: the source was indexed by another parser version. Re-parse
 		// it whole from its bytes as a new generation, but only after a dry
 		// run shows the new parser gets through it: a parser that fails on
@@ -89,6 +105,19 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	}
 	if change.Decision == transcript.Append && st.Generation == 0 {
 		change = transcript.Change{Decision: transcript.Rewrite, Reason: "no generation"}
+	}
+	if id.Size > 0 && change.Decision != transcript.Unchanged {
+		if err := a.taintCoworkEvidence(ctx, t); err != nil {
+			return false, err
+		}
+		// Historical provenance can tighten an initially local capture to deny.
+		// Recheck after its durable write, before parsing any of these bytes.
+		if mode, known := a.modeOf(t); known && mode == pathpolicy.Deny {
+			if err := a.purgeDenied(ctx); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 	}
 	gen, cur := st.Generation, transcript.Cursor{}
 	switch change.Decision {
@@ -204,6 +233,17 @@ func (a *Agent) indexTranscript(ctx context.Context, t *target) (bool, error) {
 	if !denied {
 		// A transcript the rules now deny gives nothing, a read neither (D18).
 		a.markRead(ctx, &sink.reads)
+	}
+	// Decide verifies content even when a rewrite preserves size and mtime.
+	// Initial catch-up and extraction migrations do not create live activity.
+	// A ctime-only rewrite can also be chmod: compare persisted byte evidence
+	// rather than treating every conservative Rewrite verdict as activity.
+	prior := st.Watermark
+	byteEvidenceChanged := prior != nil && (wm.Offset != prior.Offset || wm.HeadHash != prior.HeadHash || wm.AnchorSum != prior.AnchorSum || id.Size != prior.Identity.Size || id.ID != prior.Identity.ID)
+	if indexedThisRun && !reparse && byteEvidenceChanged && change.Decision != transcript.Unchanged {
+		a.mu.Lock()
+		t.notice.Kind = devicesync.NoticeChanged
+		a.mu.Unlock()
 	}
 	a.markSeen(t, id, sampled, st.ID, indexedWith)
 	a.mu.Lock()
@@ -346,7 +386,12 @@ func (a *Agent) notify(t *target) bool {
 	}
 	m, known := a.modeOf(t)
 	if known && m == pathpolicy.Allow {
-		a.cfg.Sync.Notify(a.specOf(t))
+		sp := a.specOf(t)
+		a.mu.Lock()
+		notice := t.notice
+		t.notice.Kind = devicesync.NoticeHistorical
+		a.mu.Unlock()
+		a.cfg.Sync.NotifyWithNotice(sp, notice)
 	}
 	return known
 }
@@ -357,6 +402,14 @@ func (a *Agent) notify(t *target) bool {
 // index through the parser, which reads them when a transcript line
 // references them.
 func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
+	a.captureScopeMu.RLock()
+	defer a.captureScopeMu.RUnlock()
+	if a.policy().readiness == policyUnknown {
+		return nil
+	}
+	if !a.coworkSafe(t) {
+		return nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	id, err := transcript.StatIdentity(t.path)
@@ -369,6 +422,18 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 	if mode, known := a.modeOf(t); !known && worstMode(a.policy().pol) == pathpolicy.Deny {
 		return nil // its session is not placed yet; asked again at the next change or sweep
 	} else if known && mode == pathpolicy.Deny {
+		// Discovery establishes the scope of this exact file. Older indexes
+		// can retain its metadata without an owner link, outside the normal
+		// conversation purge. Preserve the history barrier before removing it.
+		a.mu.Lock()
+		owner := t.owner
+		a.mu.Unlock()
+		if err := a.coworkHistoryPurgeError([]placeKey{{transcript.AgentClaude, owner}}); err != nil {
+			return err
+		}
+		if err := a.store.PurgeUnlinkedCompanion(ctx, t.path); err != nil {
+			return err
+		}
 		a.markSeen(t, id, sampled, 0, "")
 		return nil
 	}
@@ -378,9 +443,46 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 		parentID = p.sourceID
 	}
 	owner, role := t.owner, t.role // a discovery pass may update them (merge)
+	newEvidence := id != t.seen
 	a.mu.Unlock()
+	var digest []byte
+	if _, scoped := a.coworkMode(a.policy(), t); scoped || a.desktopCodeScoped(t.path) {
+		file, openErr := a.openNativeEvidence(t.path)
+		err = openErr
+		if err != nil {
+			return err
+		}
+		h := sha256.New()
+		fi, statErr := file.Stat()
+		if statErr == nil {
+			_, err = io.Copy(h, io.LimitReader(file, fi.Size()))
+		} else {
+			err = statErr
+		}
+		file.Close()
+		if err != nil {
+			return err
+		}
+		id = transcript.IdentityOf(fi)
+		digest = h.Sum(nil)
+		prior, err := a.store.CompanionDigest(ctx, t.path)
+		if err != nil {
+			return err
+		}
+		// Gate invalidation clears the in-memory sample, but does not erase
+		// mapping proof for exactly the bytes already captured.
+		newEvidence = !bytes.Equal(prior, digest)
+	}
+	if id.Size > 0 && newEvidence {
+		if err := a.taintCoworkEvidence(ctx, t); err != nil {
+			return err
+		}
+		if mode, known := a.modeOf(t); known && mode == pathpolicy.Deny {
+			return a.purgeDenied(ctx)
+		}
+	}
 	if err := a.store.UpsertCompanion(ctx, localindex.Companion{SessionID: owner, Agent: transcript.AgentClaude,
-		SourceID: parentID, Path: t.path, Kind: string(role), Size: id.Size}); err != nil {
+		SourceID: parentID, Path: t.path, Kind: string(role), Size: id.Size, ContentSHA: digest}); err != nil {
 		return err
 	}
 	a.stats.Companions.Add(1)
@@ -392,6 +494,9 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 // applyStubs records a conversation for each orphaned Claude session (its
 // transcript was cleaned up, its tool-results/ remain), once per process.
 func (a *Agent) applyStubs(ctx context.Context, f *found) {
+	if a.policy().readiness == policyUnknown {
+		return
+	}
 	pv := a.policy()
 	var todo []*transcript.Conversation
 	for _, c := range f.stubs {
@@ -399,6 +504,9 @@ func (a *Agent) applyStubs(ctx context.Context, f *found) {
 		done := a.stubbed[c.SessionID]
 		a.mu.Unlock()
 		if done {
+			continue
+		}
+		if d, ok := a.coworkMode(pv, &target{path: f.stubAt[c.SessionID], src: transcript.Source{Agent: transcript.AgentClaude, SessionKey: c.SessionID}}); ok && d.Mode == pathpolicy.Deny {
 			continue
 		}
 		if !pv.pol.Empty() {

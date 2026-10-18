@@ -1,11 +1,15 @@
-.PHONY: test build web e2e e2e-sync
+.PHONY: test build web check-web e2e e2e-sync
 
 test:
 	go test -race ./...
 	pnpm --dir web test
 	scripts/validate-release-tag_test.sh
+	sh scripts/install_test.sh
 	scripts/perf-baseline_test.sh
 	sh scripts/e2e-search_test.sh
+	python3 scripts/qualify-agent-workflow_test.py
+	python3 scripts/nightly-codex_test.py
+	node --test scripts/nightly-validation-issue_test.cjs
 
 web:
 	pnpm --dir web build
@@ -13,9 +17,12 @@ web:
 	cp web/dist/index.html internal/webapp/dist/index.html
 	cp -R web/dist/assets internal/webapp/dist/assets
 
+check-web:
+	scripts/check-webapp-dist.sh
+
 VERSION ?= dev
 
-build: web
+build:
 	go build -trimpath -ldflags="-X main.version=$(VERSION)" -o bin/flopwire ./cmd/flopwire
 
 e2e:

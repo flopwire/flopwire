@@ -237,6 +237,9 @@ func frame(e busproto.Envelope, refs []Ref, cloud bool) (head, tail string) {
 	if e.ReplyTo != "" {
 		attr("reply-to", e.ReplyTo)
 	}
+	if e.RetryOf != "" {
+		attr("retry-of", e.RetryOf)
+	}
 	attr("sent", e.Sent.UTC().Format("2006-01-02T15:04:05Z"))
 	h.WriteString(">\n")
 
@@ -260,6 +263,9 @@ func frame(e busproto.Envelope, refs []Ref, cloud bool) (head, tail string) {
 		t.WriteByte('\n')
 	}
 	t.WriteString("</flopwire-message>")
+	if e.RetryOf != "" {
+		fmt.Fprintf(&t, "\nExplicit retry of %s: the earlier message may already have been seen or acted on. Check before repeating its work.", safeID(e.RetryOf))
+	}
 	if cloud {
 		return h.String(), t.String()
 	}

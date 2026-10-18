@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -15,41 +16,85 @@ import (
 // errRestart: the server wants the current generation re-sent as a new one.
 var errRestart = errors.New("devicesync: restart as a new generation")
 
-// upload sends every pending generation of src, oldest first.
-func (s *Syncer) upload(ctx context.Context, src *sourceRow) error {
+// syncOutcome distinguishes a completed job from upload continuation and an
+// uncaptured version blocked by older pending bytes.
+type syncOutcome uint8
+
+const (
+	syncDone syncOutcome = iota
+	uploadPending
+	capturePending
+)
+
+type syncAction uint8
+
+const (
+	captureSource syncAction = iota
+	resumeUpload
+)
+
+// uploadTurn bounds only actual manifest requests. A nil turn drains fully.
+type uploadTurn struct {
+	remaining int
+	accepted  bool
+}
+
+func (t *uploadTurn) spent() bool { return t != nil && t.remaining == 0 }
+func (t *uploadTurn) dispatch() {
+	if t != nil {
+		t.remaining--
+	}
+}
+
+// uploadTurn sends pending generations oldest first, within the request budget.
+func (op *syncOperation) uploadTurn(ctx context.Context, src *sourceRow, turn *uploadTurn) (syncOutcome, error) {
+	s := op.syncer
 	gens, err := s.store.pendingGens(ctx, src.ID)
 	if err != nil {
-		return err
+		return syncDone, err
 	}
 	for _, g := range gens {
-		if err := s.uploadGen(ctx, src, g); err != nil {
-			return err
+		if err := op.validateGeneration(src, g); err != nil {
+			return syncDone, err
+		}
+		if turn.spent() {
+			return uploadPending, nil
+		}
+		if err := op.uploadGenTurn(ctx, src, g, turn); err != nil {
+			return syncDone, err
+		}
+		if !g.done() {
+			return uploadPending, nil
 		}
 	}
-	if f := s.held[src.ID]; f != nil {
-		f.Close()
-		delete(s.held, src.ID)
-	}
+	s.descriptors.retire(src.ID)
 	if src.RepoSent == src.Spec.repoKey() || src.Gen < 0 {
-		return nil
+		return syncDone, nil
 	}
-	if len(gens) == 0 {
-		// Every byte is acknowledged, and the server has not heard the
-		// session's repository (placed or recovered since): tell it, header
-		// only.
-		if err := s.sendRepo(ctx, src); err != nil {
-			return err
+	if len(gens) == 0 || turn != nil && !turn.accepted {
+		if turn.spent() {
+			return uploadPending, nil
+		}
+		if err := op.sendRepo(ctx, src, turn); err != nil {
+			return syncDone, err
 		}
 	}
-	return s.store.repoSent(ctx, src)
+	return syncDone, s.store.repoSent(ctx, src)
 }
 
 // sendRepo reports src's repository with a flush of its current
 // generation that carries no entries and no tail: the server updates the
 // source's row and leaves its bytes as they are.
-func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow) error {
+func (op *syncOperation) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn) error {
+	s := op.syncer
 	g, err := s.store.gen(ctx, src.ID, src.Gen)
 	if err != nil || g == nil {
+		return err
+	}
+	if err := op.validateGeneration(src, g); err != nil {
+		return err
+	}
+	if err := op.checkAuthorization(ctx); err != nil {
 		return err
 	}
 	h := syncproto.FlushHeader{
@@ -62,22 +107,41 @@ func (s *Syncer) sendRepo(ctx context.Context, src *sourceRow) error {
 	if g.ChangeTime != 0 {
 		h.ChangeTime = time.Unix(0, g.ChangeTime).UTC()
 	}
-	resp, err := s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h})
+	if err := op.checkAuthorization(ctx); err != nil {
+		return err
+	}
+	turn.dispatch()
+	resp, err := op.transportFlush(ctx, &syncproto.FlushRequest{Header: h})
+	if err == nil && turn != nil {
+		turn.accepted = true
+	}
 	if err == nil && resp.Refused != "" {
 		s.noteRefused(src.Spec.Path, resp.Refused)
 	}
 	return err
 }
 
-func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error {
-	for stalls := 0; !g.done(); {
-		batch, bodies, err := s.nextBatch(ctx, g)
+func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, turn *uploadTurn) error {
+	s := op.syncer
+	if err := op.validateGeneration(src, g); err != nil {
+		return err
+	}
+	key := stallKey{src.ID, g.Gen}
+	stalls := 0 // public full-drain calls count locally from zero
+	for !g.done() {
+		if turn.spent() {
+			return nil
+		}
+		if err := op.checkAuthorization(ctx); err != nil {
+			return err
+		}
+		batch, bodies, err := op.nextBatch(ctx, src, g)
 		if err != nil {
 			return err
 		}
 		// Compress the bodies, cutting the batch where the compressed bytes
 		// would pass MaxRequestBytes; then read the tail if it fits.
-		pl := &payload{s: s, src: src, g: g, failed: -1}
+		pl := &payload{ctx: ctx, op: op, src: src, g: g, failed: -1}
 		batch = pl.pack(batch, bodies)
 		var tail *syncproto.Tail
 		last := pl.err == nil && g.Acked+int64(len(batch)) == g.Entries
@@ -117,13 +181,33 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 			if g.ChangeTime != 0 {
 				h.ChangeTime = time.Unix(0, g.ChangeTime).UTC()
 			}
-			for _, p := range pl.parts {
+			for _, p := range pl.buffers.parts {
 				h.Bodies = append(h.Bodies, syncproto.Body{Hash: p.e.Hash, Size: p.e.Size, ZSize: int64(len(p.z))})
 			}
-			resp, err = s.tr.Flush(ctx, &syncproto.FlushRequest{Header: h, Payload: pl})
+			if pl.err == nil {
+				pl.err = op.checkAuthorization(ctx)
+			}
+			if pl.err == nil && op.authorization != nil && pl.f != nil {
+				pl.err = validateProofFile(pl.f, g.Proof)
+			}
+			if pl.err == nil {
+				if s.cfg.Logger.Enabled(ctx, slog.LevelDebug) {
+					compressed, tail := pl.buffers.capacities()
+					s.cfg.Logger.DebugContext(ctx, "devicesync: selected retained upload buffer capacities",
+						"compressed_capacity_bytes", compressed,
+						"full_tail_capacity_bytes", tail,
+						"shared_scan_capacity_bytes", int64(cap(op.scratch.buf)),
+						"deferred_frame_capacity_bytes", int64(cap(op.scratch.deferred.z)))
+				}
+				turn.dispatch()
+				resp, err = op.transportFlush(ctx, &syncproto.FlushRequest{Header: h, Payload: pl})
+			}
 		}
 		pl.close()
 		if pl.err != nil {
+			if op.authorization != nil {
+				return pl.err
+			}
 			if pl.failed >= 0 && (g.Gen != src.Gen || s.vanished(src)) {
 				// An older generation, or the current one of a file that
 				// is gone: no capture will re-read these bytes, and the
@@ -138,7 +222,7 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 				continue
 			}
 			// The bytes under the watermark moved: force a new generation.
-			if werr := s.store.setWatermark(ctx, src, nil); werr != nil {
+			if werr := s.setWatermark(ctx, src, nil); werr != nil {
 				return werr
 			}
 			return pl.err
@@ -151,27 +235,33 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 		case syncproto.StatusStaleGeneration, syncproto.StatusNewGeneration:
 			s.cfg.Logger.Warn("devicesync: server rejected generation", "path", src.Spec.Path,
 				"generation", g.Gen, "status", resp.Status, "server_generation", resp.Generation)
+			s.stalls.forget(key)
 			g.Lost = true
-			if err := s.store.updateGen(ctx, g, nil); err != nil {
-				return err
-			}
-			if lost, err := s.store.entries(ctx, src.ID, g.Gen, g.Acked, int(g.Entries-g.Acked)); err == nil {
-				hs := make([]syncproto.Hash, len(lost))
-				for i, e := range lost {
-					hs[i] = e.Hash
+			return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+				if err := scope.updateGen(ctx, g, nil); err != nil {
+					return err
 				}
-				s.release(ctx, src, g, hs)
-			}
-			s.spool.DropTail(src.ID, g.Gen)
-			if g.Gen != src.Gen {
-				return nil // an older generation: the current one carries on
-			}
-			src.Gen = max(src.Gen, resp.Generation)
-			if err := s.store.setWatermark(ctx, src, nil); err != nil {
-				return err
-			}
-			return errRestart
+				if lost, err := s.store.entries(ctx, src.ID, g.Gen, g.Acked, int(g.Entries-g.Acked)); err == nil {
+					hs := make([]syncproto.Hash, len(lost))
+					for i, e := range lost {
+						hs[i] = e.Hash
+					}
+					s.releaseOwned(ctx, scope, src, g, hs)
+				}
+				s.releaseTailOwned(ctx, scope, src.ID, g.Gen, g.Tail)
+				if g.Gen != src.Gen {
+					return nil
+				}
+				src.Gen = max(src.Gen, resp.Generation)
+				if err := scope.setWatermark(ctx, src, nil); err != nil {
+					return err
+				}
+				return errRestart
+			})
 		case syncproto.StatusOK, syncproto.StatusPartial:
+			if turn != nil {
+				turn.accepted = true
+			}
 			if resp.Refused != "" {
 				s.noteRefused(src.Spec.Path, resp.Refused)
 			}
@@ -191,20 +281,34 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 				acked = append(acked, e.Hash)
 			}
 		}
-		if err := s.store.forget(ctx, resp.Missing); err != nil {
+		if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+			if err := s.store.forget(ctx, resp.Missing); err != nil {
+				return err
+			}
+			if err := scope.updateGen(ctx, g, acked); err != nil {
+				return err
+			}
+			s.releaseOwned(ctx, scope, src, g, acked)
+			return nil
+		}); err != nil {
 			return err
 		}
-		if err := s.store.updateGen(ctx, g, acked); err != nil {
-			return err
-		}
-		s.release(ctx, src, g, acked)
 		if g.Acked == prev && !(last && g.TailAcked) {
-			if stalls++; stalls > 2 {
+			if turn != nil {
+				stalls = s.stalls.record(key)
+			} else {
+				stalls++
+			}
+			if stalls > 2 {
+				if turn == nil {
+					s.stalls.forget(key)
+				}
 				return fmt.Errorf("devicesync: %s generation %d: server made no progress (status %s, acked %d of %d)",
 					src.Spec.Path, g.Gen, resp.Status, g.Acked, g.Entries)
 			}
 		}
 	}
+	s.stalls.forget(key)
 	return nil
 }
 
@@ -213,7 +317,8 @@ func (s *Syncer) uploadGen(ctx context.Context, src *sourceRow, g *genRow) error
 // entry), and the bodies the server is not known to hold, asking /has when
 // those exceed HasThreshold. payload.pack then cuts the batch where the
 // compressed bodies reach MaxRequestBytes.
-func (s *Syncer) nextBatch(ctx context.Context, g *genRow) ([]syncproto.Entry, []syncproto.Entry, error) {
+func (op *syncOperation) nextBatch(ctx context.Context, src *sourceRow, g *genRow) ([]syncproto.Entry, []syncproto.Entry, error) {
+	s := op.syncer
 	// Bounded by Entries: a gap cut leaves manifest rows past the cut.
 	ents, err := s.store.entries(ctx, g.SourceID, g.Gen, g.Acked, int(min(g.Entries-g.Acked, 4096)))
 	if err != nil {
@@ -227,6 +332,9 @@ func (s *Syncer) nextBatch(ctx context.Context, g *genRow) ([]syncproto.Entry, [
 		return nil, nil, err
 	}
 	for _, e := range ents {
+		if op.authorization != nil && (e.Offset < 0 || e.Size < 0 || e.Offset > g.Size-e.Size || e.Offset > g.Proof.Offset-e.Size) {
+			return nil, nil, s.unproven(src, g, "manifest exceeds captured proof")
+		}
 		need := !known[e.Hash] && !seen[e.Hash]
 		if len(batch) > 0 && need && size+e.Size > batchRatio*s.cfg.MaxRequestBytes {
 			break
@@ -245,7 +353,10 @@ func (s *Syncer) nextBatch(ctx context.Context, g *genRow) ([]syncproto.Entry, [
 	for i, b := range bodies {
 		hs[i] = b.Hash
 	}
-	missing, err := s.tr.Has(ctx, hs)
+	if err := op.checkAuthorization(ctx); err != nil {
+		return nil, nil, err
+	}
+	missing, err := op.transportHas(ctx, hs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -267,22 +378,19 @@ func (s *Syncer) nextBatch(ctx context.Context, g *genRow) ([]syncproto.Entry, [
 
 // release drops spooled bytes nothing pending needs any more.
 func (s *Syncer) release(ctx context.Context, src *sourceRow, g *genRow, acked []syncproto.Hash) {
-	var spooled []syncproto.Hash
-	for _, h := range acked {
-		if _, ok, _ := s.spool.Chunk(h); ok {
-			spooled = append(spooled, h)
-		}
+	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		s.releaseOwned(ctx, scope, src, g, acked)
+		return nil
+	}); err != nil {
+		s.cfg.Logger.Warn("devicesync: released bytes cleanup deferred", "err", err)
 	}
-	if ref, err := s.store.referenced(ctx, spooled); err == nil {
-		for _, h := range spooled {
-			if !ref[h] {
-				s.spool.DropChunk(h)
-			}
-		}
+}
+
+func (s *Syncer) releaseOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, acked []syncproto.Hash) {
+	if err := scope.releaseChunks(ctx, acked); err != nil {
+		s.cfg.Logger.Warn("devicesync: released chunks cleanup deferred", "err", err)
 	}
-	if g.TailAcked && !(src.ExportState != nil && g.Gen == src.Gen && g.Tail.Size > 0) {
-		s.spool.DropTail(src.ID, g.Gen) // an appending export's current tail is kept (keepTail)
-	}
+	s.releaseTailOwned(ctx, scope, src.ID, g.Gen, g.Tail)
 }
 
 // vanished reports whether src's file disappeared (vanish forgot its
@@ -322,21 +430,22 @@ const batchRatio = 8
 
 // payload holds a request's compressed chunk bodies and tail, read from
 // the spool or else the source and verified against their hashes, and
-// streams them. Compressed bodies stay under MaxRequestBytes (pack), and
-// one uncompressed chunk is in memory at a time.
+// streams them. pack bounds compressed bodies except the first body, which is
+// always admitted. One uncompressed chunk is read at a time.
 type payload struct {
-	s     *Syncer
-	src   *sourceRow
-	g     *genRow
-	parts []part
-	wire  int64 // compressed body bytes
-	tail  []byte
-	cur   []byte
-	next  int
-	f     *os.File
-	rr    *redact.ReaderAt
-	open  bool
-	err   error
+	ctx      context.Context
+	op       *syncOperation
+	src      *sourceRow
+	g        *genRow
+	buffers  uploadBuffers
+	wire     int64 // compressed body bytes
+	cur      []byte
+	next     int
+	f        *os.File
+	borrowed *descriptorBorrow
+	rr       *redact.ReaderAt
+	open     bool
+	err      error
 	// failed is where the unreadable part starts: the ordinal of the first
 	// entry that needs it, or g.Entries for the tail; -1 while none.
 	failed int64
@@ -352,8 +461,8 @@ type part struct {
 // returns batch cut before the first entry whose body was left out. On a
 // read failure it sets err and failed.
 func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
-	keep := p.s.zkeep
-	p.s.zkeep = part{}
+	keep := p.op.scratch.deferred
+	p.op.scratch.deferred = part{}
 	for i, e := range bodies {
 		var z []byte
 		var err error
@@ -366,8 +475,8 @@ func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
 			p.err, p.failed = err, e.Ordinal
 			return batch
 		}
-		if i > 0 && p.wire+int64(len(z)) > p.s.cfg.MaxRequestBytes {
-			p.s.zkeep = part{e, z} // the next request starts with it
+		if i > 0 && p.wire+int64(len(z)) > p.op.syncer.cfg.MaxRequestBytes {
+			p.op.scratch.deferred = part{e, z} // the next request starts with it
 			for j, b := range batch {
 				if b.Ordinal >= e.Ordinal {
 					return batch[:j]
@@ -375,7 +484,7 @@ func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
 			}
 			return batch
 		}
-		p.parts = append(p.parts, part{e, z})
+		p.buffers.parts = append(p.buffers.parts, part{e, z})
 		p.wire += int64(len(z))
 	}
 	return batch
@@ -383,7 +492,7 @@ func (p *payload) pack(batch, bodies []syncproto.Entry) []syncproto.Entry {
 
 // compressed returns the zstd frame of chunk e.
 func (p *payload) compressed(e syncproto.Entry) ([]byte, error) {
-	data, err := p.read(p.s.buf, e.Offset, e.Size, e.Hash, func() ([]byte, bool, error) { return p.s.spool.Chunk(e.Hash) })
+	data, err := p.read(p.op.scratch.buf, e.Offset, e.Size, e.Hash, func() ([]byte, bool, error) { return p.op.syncer.spool.Chunk(e.Hash) })
 	if err != nil {
 		return nil, err
 	}
@@ -392,17 +501,20 @@ func (p *payload) compressed(e syncproto.Entry) ([]byte, error) {
 
 // loadTail reads and verifies the tail and keeps the bytes from t.From.
 func (p *payload) loadTail(t *syncproto.Tail) {
-	data, err := p.read(nil, t.Offset, t.Size, t.Hash, func() ([]byte, bool, error) { return p.s.spool.Tail(p.src.ID, p.g.Gen) })
+	data, err := p.read(nil, t.Offset, t.Size, t.Hash, func() ([]byte, bool, error) { return p.op.syncer.spool.TailVersion(p.src.ID, p.g.Gen, t.Hash) })
 	if err != nil {
 		p.err, p.failed = err, p.g.Entries
 		return
 	}
-	p.tail = data[t.From:]
+	p.buffers.tail, p.buffers.tailFrom = data, t.From
 }
 
 // read returns size bytes at off of the source, from the spool when it
 // holds them (else read into buf, grown as needed), verified against want.
 func (p *payload) read(buf []byte, off, size int64, want syncproto.Hash, spooled func() ([]byte, bool, error)) ([]byte, error) {
+	if p.op.authorization != nil && (off < 0 || size < 0 || off > p.g.Proof.Offset-size) {
+		return nil, p.op.syncer.unproven(p.src, p.g, "payload exceeds captured proof")
+	}
 	data, ok, _ := spooled()
 	if !ok {
 		data = buf[:0]
@@ -411,7 +523,10 @@ func (p *payload) read(buf []byte, off, size int64, want syncproto.Hash, spooled
 		}
 		data = data[:size]
 		if err := p.readSource(data, off); err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", ErrSourceChanged, p.src.Spec.Path, err)
+			if p.op.authorization != nil {
+				return nil, fmt.Errorf("devicesync: read authorized source %s: %w", p.src.Spec.Path, err)
+			}
+			return nil, fmt.Errorf("%w: %s: %w", ErrSourceChanged, p.src.Spec.Path, err)
 		}
 	}
 	if int64(len(data)) != size || syncproto.Sum(data) != want {
@@ -423,10 +538,10 @@ func (p *payload) read(buf []byte, off, size int64, want syncproto.Hash, spooled
 func (p *payload) Read(b []byte) (int, error) {
 	for len(p.cur) == 0 {
 		switch {
-		case p.next < len(p.parts):
-			p.cur = p.parts[p.next].z
-		case p.next == len(p.parts) && p.tail != nil:
-			p.cur = p.tail
+		case p.next < len(p.buffers.parts):
+			p.cur = p.buffers.parts[p.next].z
+		case p.next == len(p.buffers.parts) && p.buffers.tail != nil:
+			p.cur = p.buffers.tail[p.buffers.tailFrom:]
 		default:
 			return 0, io.EOF
 		}
@@ -440,8 +555,20 @@ func (p *payload) Read(b []byte) (int, error) {
 func (p *payload) readSource(data []byte, off int64) error {
 	if !p.open {
 		p.open = true
-		if f := p.s.held[p.src.ID]; f != nil {
+		if p.op.authorization != nil {
+			if err := p.op.checkAuthorization(p.ctx); err != nil {
+				return err
+			}
+			f, err := p.op.authorization.Open(p.ctx, p.src.Spec)
+			if err != nil {
+				return err
+			}
 			p.f = f
+			if err := validateProofFile(f, p.g.Proof); err != nil {
+				return err
+			}
+		} else if borrow := p.op.syncer.descriptors.borrow(p.src.ID); borrow != nil {
+			p.borrowed, p.f = borrow, borrow.file()
 		} else if f, err := os.Open(p.src.Spec.Path); err == nil {
 			p.f = f
 		}
@@ -460,7 +587,37 @@ func (p *payload) readSource(data []byte, off int64) error {
 }
 
 func (p *payload) close() {
-	if p.f != nil && p.f != p.s.held[p.src.ID] {
+	if p.borrowed != nil {
+		p.borrowed.release()
+		p.borrowed = nil
+	} else if p.f != nil {
 		p.f.Close()
 	}
+	p.f = nil
+	// Flush has returned ownership after joining its encoder. Drop only the
+	// request roots and aliases; err/failed still drive repair below.
+	p.buffers.clear()
+	p.cur, p.rr = nil, nil
+}
+
+// Transport is the only global-mutex handoff. Callers hold Syncer.mu, keep their
+// path/workspace and permission lease, and resume all state work after relock.
+func (op *syncOperation) transportFlush(ctx context.Context, req *syncproto.FlushRequest) (*syncproto.FlushResponse, error) {
+	s := op.syncer
+	if s.cfg.UploadWorkers == 1 {
+		return s.tr.Flush(ctx, req)
+	}
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	return s.tr.Flush(ctx, req)
+}
+
+func (op *syncOperation) transportHas(ctx context.Context, hashes []syncproto.Hash) ([]syncproto.Hash, error) {
+	s := op.syncer
+	if s.cfg.UploadWorkers == 1 {
+		return s.tr.Has(ctx, hashes)
+	}
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	return s.tr.Has(ctx, hashes)
 }

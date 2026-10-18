@@ -99,7 +99,13 @@ func TestAppendingExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.spool.DropTail(src.ID, src.Gen)
+	tailGen, err := e.store.gen(ctx, src.ID, src.Gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.spool.DropTailVersion(src.ID, src.Gen, tailGen.Tail.Hash); err != nil {
+		t.Fatal(err)
+	}
 	n := add(jsonlLines(44, 1, 150))
 	sync("lost tail", n+len(g.log)) // the append it could not use, then the whole export
 	e.requireServerHas(sp.Path, "", 1, redacted())

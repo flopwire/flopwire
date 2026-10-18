@@ -31,6 +31,17 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	if e.StatusCode == http.StatusUnauthorized {
+		// Print only recognized codes, never arbitrary server response text.
+		switch e.Code {
+		case "credential_rotated", "credential_revoked", "reauth_required", "credential_invalid":
+			return fmt.Sprintf("flopwire API 401 Unauthorized (%s); run flopwire login or renew FLOPWIRE_TOKEN if set", e.Code)
+		case "credential_expired":
+			return "flopwire API 401 Unauthorized (credential_expired); run flopwire login or mint a new FLOPWIRE_TOKEN"
+		default:
+			return "flopwire API 401 Unauthorized; run flopwire login or renew FLOPWIRE_TOKEN if set"
+		}
+	}
 	if e.Detail != "" {
 		return fmt.Sprintf("flopwire API %d: %s", e.StatusCode, e.Detail)
 	}
@@ -57,6 +68,7 @@ func (c HTTP) do(ctx context.Context, method, path string, body io.Reader, heade
 		return err
 	}
 	defer res.Body.Close()
+	recordServerVersion(res.Header.Get(serverVersionHeader)) // also for a caller-supplied Client
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		// The body is not echoed: a proxy or server error page can carry
 		// request values, and callers print this error.
@@ -69,10 +81,15 @@ func (c HTTP) do(ctx context.Context, method, path string, body io.Reader, heade
 		}
 		_ = json.Unmarshal(raw, &problem)
 		e := &APIError{StatusCode: res.StatusCode, Code: problem.Code}
+		usedToken := c.Token
+		if res.Request != nil {
+			usedToken = strings.TrimPrefix(res.Request.Header.Get("Authorization"), "Bearer ")
+		}
 		// Only a Flopwire problem document's own detail is shown, never a
 		// body a proxy wrote, and never one holding the credential.
 		if (res.StatusCode == 400 || res.StatusCode == 404) && problem.Type == "about:blank" && problem.Status == res.StatusCode &&
-			len(problem.Detail) <= 500 && (c.Token == "" || !strings.Contains(problem.Detail, c.Token)) {
+			len(problem.Detail) <= 500 && (c.Token == "" || !strings.Contains(problem.Detail, c.Token)) &&
+			(usedToken == "" || !strings.Contains(problem.Detail, usedToken)) {
 			e.Detail = problem.Detail
 		}
 		return e
@@ -113,6 +130,9 @@ func (c HTTP) Search(ctx context.Context, q format.SearchQuery, f format.Filters
 	}
 	v := f.Values()
 	v.Set("q", q.Query)
+	if q.Matching != "" {
+		v.Set("matching", q.Matching)
+	}
 	if q.Offset > 0 {
 		v.Set("offset", strconv.Itoa(q.Offset))
 	}

@@ -173,8 +173,17 @@ func identityHint(r *http.Request, field string) string {
 	return hashIdentifier(v)
 }
 
+// Version is what the server reports in the X-Flopwire-Version header
+// of every response; main sets it. Devices compare it with their own
+// version and tell the user when the server runs a newer flopwire.
+var Version = "dev"
+
+// VersionHeader carries the server's version on every response.
+const VersionHeader = "X-Flopwire-Version"
+
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(VersionHeader, Version)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")

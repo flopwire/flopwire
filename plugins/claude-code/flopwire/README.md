@@ -10,7 +10,7 @@ The plugin connects Claude Code to Flopwire. It adds these parts:
 
 Devin CLI loads this plugin too. `flopwire setup` installs this directory
 into Devin with `devin plugins install --local`; see
-[docs/agent.md](../../../docs/agent.md#where-the-plugin-comes-from). Keep
+[docs/harnesses/devin.md](../../../docs/harnesses/devin.md#install). Keep
 the plugin free of fields that Devin would read differently. A change to
 `hooks/hooks.json` or `.mcp.json` changes both harnesses.
 
@@ -49,7 +49,7 @@ fails, for example because the binary is older than the plugin and has no
 `flopwire setup --check`. That command shows which binary the hooks find
 (`hook binary:`), and names the commands that binary lacks. A hook never
 exits 2, so it never blocks a prompt or a stop. See
-[docs/agent.md](../../../docs/agent.md#how-the-hooks-find-the-binary).
+[docs/harnesses/README.md](../../../docs/harnesses/README.md#how-the-hooks-find-the-binary).
 
 If the shim finds no `flopwire`, the MCP server shows as failed in `/mcp`. If the agent is not running, the hooks print nothing and the
 messaging tools return `agent_not_running`. After enrollment, the search tools use the shared
@@ -92,26 +92,6 @@ and `claude plugin marketplace remove flopwire-plugins`. Run
 `flopwire setup --check` to confirm. It keeps the marketplace while
 Claude Code still has a plugin installed from it in another scope or
 project, since removing a marketplace uninstalls every plugin from it.
-
-## Upgrading an existing install
-
-The marketplace was named `flopwire` before issue #162, so older installs
-have `flopwire@flopwire` from the marketplace `flopwire`. There is no
-upgrade path (pre-release): `flopwire setup --check` names the stale
-marketplace and the commands below; run them, then install again:
-
-```sh
-claude plugin marketplace remove flopwire --scope user
-flopwire setup
-```
-
-Then restart your Claude Code sessions.
-
-setup trusts only a `flopwire-plugins` marketplace from its source (`--source`,
-default `flopwire/flopwire`). If a marketplace with that name comes from
-anywhere else, setup installs, updates and removes nothing through it,
-reports an error, and names the commands to switch. Pass the same
-`--source` to `--remove` that you passed to install.
 
 ## Older manual setup
 

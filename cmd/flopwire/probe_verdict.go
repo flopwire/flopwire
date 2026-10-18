@@ -14,26 +14,28 @@ import (
 
 // Probe cases.
 const (
-	casePromptSubmit = "prompt-submit"
-	caseMidTurn      = "mid-turn"
-	caseSubagent     = "subagent"
-	caseIdle         = "idle"
-	caseFraming      = "framing"
-	caseGuardian     = "guardian" // Codex only: a message queued during an auto-review pass
+	casePromptSubmit         = "prompt-submit"
+	casePromptSubmitObserved = "prompt-submit-observed" // opt-in: one local inbox observation, no polling
+	caseMidTurn              = "mid-turn"
+	caseSubagent             = "subagent"
+	caseIdle                 = "idle"
+	caseFraming              = "framing"
+	caseGuardian             = "guardian" // Codex only: a message queued during an auto-review pass
 )
 
-// probeCases is every case in the order the probe runs them: idle leaves
+// probeCases is the default set in run order: idle leaves
 // its message queued, and the prompt-submit turn then delivers it too.
 var probeCases = []string{caseIdle, casePromptSubmit, caseFraming, caseMidTurn, caseSubagent, caseGuardian}
 
 // probeResult is one case's verdict.
 type probeResult struct {
-	Harness  string `json:"harness"`
-	Case     string `json:"case"`
-	Pass     bool   `json:"pass"`
-	Evidence string `json:"evidence"`
-	Message  string `json:"message_id,omitempty"`
-	Marker   string `json:"marker,omitempty"`
+	Harness    string           `json:"harness"`
+	Case       string           `json:"case"`
+	Pass       bool             `json:"pass"`
+	Evidence   string           `json:"evidence"`
+	Message    string           `json:"message_id,omitempty"`
+	Marker     string           `json:"marker,omitempty"`
+	LocalInbox *probeLocalInbox `json:"local_inbox,omitempty"`
 
 	session string // the session the message was sent to
 	sender  string // the session that sent it

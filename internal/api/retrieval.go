@@ -54,6 +54,7 @@ const (
 )
 
 func (a *API) retrievalRoutes(r chi.Router) {
+	r.Get("/v1/change", a.readerOnly(a.limited(a.change)))
 	r.Get("/v1/search", a.readerOnly(a.limited(a.search)))
 	r.Get("/v1/grep", a.readerOnly(a.limited(a.grep)))
 	r.Get("/v1/sessions", a.readerOnly(a.limited(a.sessions)))
@@ -195,7 +196,11 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := r.URL.Query()
-	sq := format.SearchQuery{Query: v.Get("q"), Limit: f.Limit}
+	sq := format.SearchQuery{Query: v.Get("q"), Limit: f.Limit, Matching: v.Get("matching")}
+	if _, err := format.SearchMatching(sq.Matching); err != nil {
+		problem(w, 400, err.Error())
+		return
+	}
 	var err error
 	if sq.Offset, err = strconv.Atoi(orZero(v.Get("offset"))); err != nil || sq.Offset < 0 {
 		problem(w, 400, "offset: bad value")
@@ -228,13 +233,33 @@ func (a *API) grep(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, err.Error())
 		return
 	}
+	// Bind continuation state to authenticated authority, never a caller's
+	// query parameter. Device rotation preserves the same device authority;
+	// independently minted tokens and login sessions remain separate.
+	p := mustPrincipal(r)
+	gq.Authority = string(p.Credential.Kind) + ":" + p.Credential.ID
+	if p.Credential.Kind == domain.CredentialDevice {
+		gq.Authority = string(p.Credential.Kind) + ":" + p.Credential.DeviceID
+	}
 	ctx, cancel, ok := budgetContext(w, r)
 	if !ok {
 		return
 	}
 	defer cancel()
 	meta := map[string]any{"mode": "grep", "query": gq.Pattern, "fixed": gq.Fixed, "case_sensitive": gq.CaseSensitive, "output": gq.Mode, "offset": gq.Offset, "filters": f}
+	if gq.Continue || gq.Cursor != "" {
+		meta["continuation"] = true
+		meta["resumed"] = gq.Cursor != ""
+	}
 	page, err := a.retrieval.Grep(ctx, gq, f)
+	if err == nil && (gq.Continue || gq.Cursor != "") {
+		// A retained snapshot is not an authorization snapshot. Recheck the
+		// credential after retrieval as well, before auditing or emitting hits.
+		a.authenticate(a.readerOnly(func(w http.ResponseWriter, r *http.Request) {
+			a.answerHits(w, r, "search", meta, page, nil)
+		})).ServeHTTP(w, r)
+		return
+	}
 	a.answerHits(w, r, "search", meta, page, err)
 }
 

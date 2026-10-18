@@ -58,7 +58,10 @@ func (sp *SourceSpec) rewriteProne() bool {
 
 // Config tunes a Syncer. Zero fields take defaults.
 type Config struct {
-	Chunk ChunkParams
+	// UploadWorkers bounds complete operations, including public calls. Default
+	// one preserves serial transport; opt-in two overlaps only network waits.
+	UploadWorkers int
+	Chunk         ChunkParams
 	// MaxRequestBytes caps one request's chunk bodies as sent, compressed
 	// (syncproto codec.go). A flush that has more (the first sync of a
 	// large file, a backlog after an outage) is sent as several requests; steady state is one. The server gives a
@@ -92,6 +95,9 @@ type Config struct {
 }
 
 func (c *Config) defaults() {
+	if c.UploadWorkers == 0 {
+		c.UploadWorkers = 1
+	}
 	if c.Chunk == (ChunkParams{}) {
 		c.Chunk = DefaultChunkParams
 	}
@@ -116,19 +122,19 @@ func (c *Config) defaults() {
 }
 
 // Syncer captures sources into chunked generations and uploads them. It is
-// safe for concurrent use; calls are serialized.
+// safe for concurrent use. Capture and state changes are serialized; opting
+// into two workers permits independent admitted operations to overlap transport.
 type Syncer struct {
 	cfg   Config
 	store *Store
 	spool *Spool
 	tr    syncproto.Transport
 
-	mu   sync.Mutex
-	held map[int64]*os.File
-	buf  []byte
-	// zkeep is a body compressed for a request it did not fit: the next
-	// request starts with it.
-	zkeep part
+	mu            sync.Mutex
+	descriptors   *descriptorOwner
+	serialScratch syncScratch
+	operations    *operationOwner
+	stalls        stallOwner // source/generation no-progress responses across scheduler turns
 
 	refMu   sync.Mutex
 	refused map[string]string // path -> the admin path rule the server refused it under
@@ -191,13 +197,21 @@ var ErrSourceChanged = errors.New("devicesync: source changed since capture")
 
 func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (*Syncer, error) {
 	cfg.defaults()
+	if cfg.UploadWorkers < 1 || cfg.UploadWorkers > 2 {
+		return nil, errors.New("devicesync: UploadWorkers must be one or two")
+	}
 	if err := cfg.Chunk.Validate(); err != nil {
 		return nil, err
 	}
 	if cfg.MaxRequestBytes < int64(cfg.Chunk.Max) {
 		return nil, errors.New("devicesync: MaxRequestBytes below the chunk maximum")
 	}
-	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, held: map[int64]*os.File{}, buf: make([]byte, cfg.Chunk.Max)}
+	s := &Syncer{cfg: cfg, store: store, spool: spool, tr: tr, descriptors: newDescriptorOwner(cfg.MaxHeldFiles), serialScratch: syncScratch{buf: make([]byte, cfg.Chunk.Max)}}
+	slots := []*syncScratch{&s.serialScratch}
+	if cfg.UploadWorkers == 2 {
+		slots = append(slots, &syncScratch{buf: make([]byte, cfg.Chunk.Max)})
+	}
+	s.operations = newOperationOwner(slots)
 	if err := s.sweepSpool(context.Background()); err != nil {
 		return nil, fmt.Errorf("devicesync: sweep spool: %w", err)
 	}
@@ -207,30 +221,24 @@ func NewSyncer(cfg Config, store *Store, spool *Spool, tr syncproto.Transport) (
 // sweepSpool drops spool files nothing pending needs: partial writes, and
 // chunks or tails spooled by a capture that crashed before it committed.
 func (s *Syncer) sweepSpool(ctx context.Context) error {
-	return s.spool.sweep(func(h *syncproto.Hash, sid, gen int64) (bool, error) {
-		if h != nil {
-			ref, err := s.store.referenced(ctx, []syncproto.Hash{*h})
-			return ref[*h], err
-		}
-		return s.store.keepTail(ctx, sid, gen)
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return scope.sweep(ctx)
 	})
 }
 
 // Close releases held descriptors.
 func (s *Syncer) Close() {
+	s.operations.close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, f := range s.held {
-		f.Close()
-		delete(s.held, id)
-	}
+	s.descriptors.close()
 }
 
 // Sync captures the file at spec.Path and uploads everything pending for
 // it. A transport error leaves the capture persisted: the watermark is the
 // queue, and the next Sync resumes from the acknowledged offset.
 func (s *Syncer) Sync(ctx context.Context, spec SourceSpec) error {
-	return s.run(ctx, spec, nil, -1, nil)
+	return s.run(ctx, spec, nil, -1, nil, nil)
 }
 
 // SyncSnapshot captures an immutable staged file under the original source's
@@ -241,7 +249,7 @@ func (s *Syncer) SyncSnapshot(ctx context.Context, spec SourceSpec, snapshot str
 	if snapshot == "" || identity.Size < 0 {
 		return errors.New("devicesync: invalid snapshot")
 	}
-	return s.run(ctx, spec, nil, -1, &snapshotSource{path: snapshot, identity: identity})
+	return s.run(ctx, spec, nil, -1, &snapshotSource{path: snapshot, identity: identity}, nil)
 }
 
 type snapshotSource struct {
@@ -254,7 +262,7 @@ type snapshotSource struct {
 // name a directory a path rule covers, D18). The rest waits for a later
 // sync with a higher bound.
 func (s *Syncer) SyncUpTo(ctx context.Context, spec SourceSpec, upTo int64) error {
-	return s.run(ctx, spec, nil, upTo, nil)
+	return s.run(ctx, spec, nil, upTo, nil, nil)
 }
 
 // SyncExport syncs bytes that exist only in memory, such as rows exported
@@ -265,7 +273,7 @@ func (s *Syncer) SyncExport(ctx context.Context, spec SourceSpec, data []byte) e
 	if data == nil {
 		data = []byte{}
 	}
-	return s.run(ctx, spec, func(context.Context, []byte) (Export, error) { return Export{Data: data}, nil }, -1, nil)
+	return s.run(ctx, spec, func(context.Context, []byte) (Export, error) { return Export{Data: data}, nil }, -1, nil, nil)
 }
 
 // Export is one version of an export source's bytes (SyncExportFunc).
@@ -294,80 +302,205 @@ type ExportFunc func(ctx context.Context, prev []byte) (Export, error)
 // capture: only the appended bytes, and the provisional tail before them,
 // are redacted and chunked.
 func (s *Syncer) SyncExportFunc(ctx context.Context, spec SourceSpec, fn ExportFunc) error {
-	return s.run(ctx, spec, fn, -1, nil)
+	return s.run(ctx, spec, fn, -1, nil, nil)
 }
 
 // Resume uploads what is pending for a source without capturing it again.
-func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	src, err := s.store.source(ctx, spec.Path, &spec)
+func (s *Syncer) Resume(ctx context.Context, spec SourceSpec) error { return s.resume(ctx, spec, nil) }
+func (s *Syncer) resume(ctx context.Context, spec SourceSpec, auth *CaptureAuthorization) error {
+	lease, err := s.acquireOperation(ctx, spec.Path)
 	if err != nil {
 		return err
 	}
-	return s.upload(ctx, src)
+	defer lease.release()
+	_, err = s.operationWithScratch(auth, lease.scratch).resumeTurn(ctx, spec, nil)
+	return err
 }
 
-func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
+func (op *syncOperation) resumeTurn(ctx context.Context, spec SourceSpec, turn *uploadTurn) (syncOutcome, error) {
+	s := op.syncer
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src, err := s.store.source(ctx, spec.Path, &spec)
 	if err != nil {
+		return syncDone, err
+	}
+	if err := op.validateAuthorization(src); err != nil {
+		return syncDone, err
+	}
+	if err := op.protect(ctx, src); err != nil {
+		return syncDone, err
+	}
+	if err := op.preflight(ctx, src, false); err != nil {
+		return syncDone, err
+	}
+	return op.uploadTurn(ctx, src, turn)
+}
+
+func (s *Syncer) run(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, auth *CaptureAuthorization) error {
+	lease, err := s.acquireOperation(ctx, spec.Path)
+	if err != nil {
 		return err
 	}
+	defer lease.release()
+	_, err = s.operationWithScratch(auth, lease.scratch).runTurn(ctx, spec, export, upTo, snapshot, nil)
+	return err
+}
+
+// syncTurn is scheduler-only. Public Sync and import calls still drain fully.
+func (s *Syncer) syncTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, auth *CaptureAuthorization, action syncAction) (syncOutcome, error) {
+	lease, err := s.acquireOperation(ctx, spec.Path)
+	if err != nil {
+		return syncDone, err
+	}
+	defer lease.release()
+	return s.syncTurnWithScratch(ctx, spec, export, upTo, auth, action, lease.scratch)
+}
+
+// syncTurnWithScratch requires the caller's operation lease through permission
+// cleanup. The same workspace survives resume, replacement capture and upload.
+func (s *Syncer) syncTurnWithScratch(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, auth *CaptureAuthorization, action syncAction, scratch *syncScratch) (syncOutcome, error) {
+	if auth != nil {
+		if spec.Export {
+			return syncDone, errors.New("devicesync: authorized file capture cannot export")
+		}
+		a, err := freezeAuthorization(auth)
+		if err != nil {
+			return syncDone, err
+		}
+		auth, upTo = a, a.Proof.Offset
+	}
+	op := s.operationWithScratch(auth, scratch)
+	turn := &uploadTurn{remaining: 1}
+	if action == resumeUpload || spec.Export && export == nil {
+		outcome, err := op.resumeTurn(ctx, spec, turn)
+		if !errors.Is(err, errRestart) || spec.Export && export == nil {
+			return outcome, err
+		}
+		// A rejected current generation needs a durable replacement even
+		// when this turn began upload-only and spent its one request.
+	}
+
+	return op.runTurn(ctx, spec, export, upTo, nil, turn)
+}
+
+func (op *syncOperation) runTurn(ctx context.Context, spec SourceSpec, export ExportFunc, upTo int64, snapshot *snapshotSource, turn *uploadTurn) (syncOutcome, error) {
+	s := op.syncer
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, err := s.store.source(ctx, spec.Path, &spec)
+	if err != nil {
+		return syncDone, err
+	}
+	if err := op.validateAuthorization(src); err != nil {
+		return syncDone, err
+	}
+	if err := op.protect(ctx, src); err != nil {
+		return syncDone, err
+	}
+	if err := op.preflight(ctx, src, true); err != nil {
+		return syncDone, err
+	}
 	for attempt := 0; ; attempt++ {
-		if err := s.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
-			// Uploading what is pending is what frees the spool.
-			if uerr := s.upload(ctx, src); uerr != nil {
-				return errors.Join(err, uerr)
+		if err := op.capture(ctx, src, export, upTo, snapshot); errors.Is(err, ErrSpoolFull) {
+			if uerr := op.checkAuthorization(ctx); uerr != nil {
+				return syncDone, errors.Join(err, uerr)
 			}
-			if err := s.capture(ctx, src, export, upTo, snapshot); err != nil {
-				return err
+			if _, uerr := op.uploadTurn(ctx, src, turn); uerr != nil {
+				return syncDone, errors.Join(err, uerr)
+			}
+			if cerr := op.capture(ctx, src, export, upTo, snapshot); cerr != nil {
+				if turn != nil && turn.remaining == 0 && errors.Is(cerr, ErrSpoolFull) {
+					gens, gerr := s.store.pendingGens(ctx, src.ID)
+					if gerr != nil {
+						return syncDone, gerr
+					}
+					if len(gens) > 0 {
+						return capturePending, nil
+					}
+				}
+				return syncDone, cerr
 			}
 		} else if err != nil {
-			return err
+			return syncDone, err
 		}
-		err := s.upload(ctx, src)
+		pending, err := op.uploadTurn(ctx, src, turn)
 		if !errors.Is(err, errRestart) || attempt > 0 {
-			return err
+			return pending, err
 		}
+		// Even with the Flush budget spent, recapture the rejected current
+		// generation durably before yielding. PendingSpecs can then resume it.
 	}
 }
 
 // capture chunks whatever the source gained since the last capture, up
 // to upTo bytes of a file when upTo >= 0.
-func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
-	var (
-		r  io.ReaderAt
-		id transcript.Identity
-		f  *os.File
-		ex *exportRead
-	)
+func (op *syncOperation) capture(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource) error {
+	s := op.syncer
+	return op.captureWithCommit(ctx, src, export, upTo, snapshot, s.store.saveCapture)
+}
+
+// captureCommit is an explicit per-call persistence operation. Production uses
+// Store.saveCapture directly; tests can guard its transaction or stop after its
+// successful return to prove the actual capture loop's crash boundaries.
+type captureCommit func(context.Context, *sourceRow, *genRow, []syncproto.Entry, *transcript.Watermark, []byte, ...func() error) error
+
+func (op *syncOperation) captureWithCommit(ctx context.Context, src *sourceRow, export ExportFunc, upTo int64, snapshot *snapshotSource, commit captureCommit) error {
+	s := op.syncer
 	now := s.cfg.Now()
 	defer s.captures.Add(1)
+	var ex *exportRead
 	if export != nil {
 		var err error
 		if ex, err = s.readExport(ctx, src, export); err != nil {
 			return err
 		}
+	}
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return op.captureOwnedWithCommit(ctx, scope, src, ex, upTo, snapshot, now, commit)
+	})
+}
+
+func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, ex *exportRead, upTo int64, snapshot *snapshotSource, now time.Time, commit captureCommit) (retErr error) {
+	s := op.syncer
+	var (
+		r  io.ReaderAt
+		id transcript.Identity
+		f  *os.File
+	)
+	keep := false
+	if ex != nil {
 		r, id = ex.r, transcript.Identity{Size: ex.size}
 	} else {
 		var err error
 		path := src.Spec.Path
 		if snapshot != nil {
-			if s.held[src.ID] == nil && len(s.held) >= s.cfg.MaxHeldFiles {
+			if !s.descriptors.canRetain(src.ID) {
 				return errors.New("devicesync: snapshot descriptor limit reached")
 			}
 			path = snapshot.path
 		}
-		f, err = os.Open(path)
+		if op.authorization != nil {
+			f, err = op.authorization.Open(ctx, src.Spec)
+		} else {
+			f, err = os.Open(path)
+		}
 		if errors.Is(err, os.ErrNotExist) {
+			if op.authorization != nil {
+				return err
+			}
 			if snapshot != nil {
 				return err
 			}
-			return s.vanish(ctx, src)
+			return op.vanishOwned(ctx, scope, src)
 		} else if err != nil {
 			return err
+		}
+		if op.authorization != nil {
+			if err := validateProofFile(f, &op.authorization.Proof); err != nil {
+				f.Close()
+				return err
+			}
 		}
 		fi, err := f.Stat()
 		if err != nil {
@@ -392,15 +525,14 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 			id.Size = upTo
 		}
 	}
-	keep := false
 	defer func() {
 		if snapshot != nil && f != nil {
 			// Also retain on the unchanged/pending path: upload must not fall
 			// back to reopening the original source after a retry.
-			if old := s.held[src.ID]; old != nil && old != f {
-				old.Close()
+			keep = s.descriptors.retain(src.ID, f)
+			if !keep {
+				retErr = errors.Join(retErr, errors.New("devicesync: snapshot descriptor retention rejected"))
 			}
-			s.held[src.ID], keep = f, true
 		}
 		if f != nil && !keep {
 			f.Close()
@@ -411,11 +543,26 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	if err != nil {
 		return err
 	}
+	// g may alias cur and mutate it below. Retain the old durable identity by
+	// value so successful append, seal and rewrite can release exactly it.
+	var oldTail syncproto.Tail
+	var oldGen int64
+	if cur != nil {
+		oldTail, oldGen = cur.Tail, cur.Gen
+	}
 	var change transcript.Change
 	if ex != nil {
 		change = ex.change
 	} else if change, err = transcript.Decide(src.Watermark, id, r); err != nil {
 		return err
+	}
+	if op.canReplaceEmptyCurrent(src, cur) {
+		// Materialize and attest a fresh generation even when the file remains empty.
+		change = transcript.Change{Decision: transcript.Rewrite, Reason: "qualify empty native generation"}
+	} else if op.authorization != nil && cur != nil {
+		if err := op.validateGeneration(src, cur); err != nil {
+			return err
+		}
 	}
 	if cur == nil && change.Decision != transcript.Rewrite {
 		change = transcript.Change{Decision: transcript.Rewrite, Reason: "no generation"}
@@ -434,7 +581,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	switch change.Decision {
 	case transcript.Unchanged:
 		if ex != nil {
-			if err := s.keepExport(ctx, src, cur, ex); err != nil {
+			if err := s.keepExportOwned(ctx, scope, src, cur, ex); err != nil {
 				return err
 			}
 		}
@@ -444,9 +591,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 		// Idle with a captured complete-record tail: fall through to seal it.
 	case transcript.Rewrite:
 		if cur != nil && !cur.done() {
-			s.salvage(ctx, src, cur, change.Reason)
-		} else if cur != nil && ex != nil {
-			s.spool.DropTail(src.ID, cur.Gen) // kept for appends (keepTail)
+			op.salvageOwned(ctx, scope, src, cur, change.Reason)
 		}
 		g = &genRow{SourceID: src.ID, Gen: src.Gen + 1, FileID: fileID(id), TailAcked: true}
 		if cur != nil && cur.FileID != g.FileID {
@@ -500,7 +645,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 	}
 	if src.Spec.rewriteProne() {
 		// Worst case: every new byte is a chunk the spool lacks.
-		if err := s.spool.Reserve(end - from); err != nil {
+		if err := s.reserveCaptureOwned(ctx, scope, src.ID, end-from); err != nil {
 			s.cfg.Logger.Error("devicesync: spool full, not capturing rewritten source", "path", src.Spec.Path, "err", err)
 			return err
 		}
@@ -526,7 +671,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 		}
 		for _, p := range pend {
 			if !known[p.hash] {
-				if err := s.spool.PutChunk(p.hash, p.data); err != nil {
+				if err := scope.putChunk(p.hash, p.data); err != nil {
 					return err
 				}
 			}
@@ -534,7 +679,7 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 		pend, pendBytes = pend[:0], 0
 		return nil
 	}
-	tail, err := Scan(s.cfg.Chunk, scan, from, end, s.buf, func(c Chunk, data []byte) error {
+	tail, err := Scan(s.cfg.Chunk, scan, from, end, op.scratch.buf, func(c Chunk, data []byte) error {
 		add = append(add, syncproto.Entry{Ordinal: g.Entries + int64(len(add)), Hash: c.Hash, Offset: c.Offset, Size: c.Size})
 		if !src.Spec.rewriteProne() {
 			return nil
@@ -566,12 +711,12 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 			add = append(add, syncproto.Entry{Ordinal: g.Entries + int64(len(add)), Hash: newTail.Hash, Offset: tail, Size: newTail.Size})
 			newTail = syncproto.Tail{Offset: end}
 			if src.Spec.rewriteProne() {
-				if err := s.spool.PutChunk(add[len(add)-1].Hash, data); err != nil {
+				if err := scope.putChunk(add[len(add)-1].Hash, data); err != nil {
 					return err
 				}
 			}
 		} else if src.Spec.rewriteProne() {
-			if err := s.spool.PutTail(src.ID, g.Gen, data); err != nil {
+			if err := scope.putTailVersion(src.ID, g.Gen, newTail.Hash, data); err != nil {
 				return err
 			}
 		}
@@ -599,17 +744,34 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 		}
 		wm = &w
 	}
-	if err := s.store.saveCapture(ctx, src, g, add, wm, exportState); err != nil {
+	if op.authorization != nil {
+		if err := op.checkAuthorization(ctx); err != nil {
+			return err
+		}
+		if err := validateProofFile(f, &op.authorization.Proof); err != nil {
+			return err
+		}
+		proof := op.authorization.Proof
+		proof.ContentSHA = bytes.Clone(proof.ContentSHA)
+		g.Proof = &proof
+	}
+	var guards []func() error
+	if op.authorization != nil {
+		guards = append(guards, func() error {
+			return validateProofIdentity(f, &op.authorization.Proof)
+		})
+	}
+	if err := commit(ctx, src, g, add, wm, exportState, guards...); err != nil {
 		return err
 	}
+	s.releaseTailOwned(ctx, scope, src.ID, oldGen, oldTail)
+	if op.authorization != nil {
+		if err := validateProofFile(f, &op.authorization.Proof); err != nil {
+			return err // verified capture remains a fact; a changed live source requires reindexing
+		}
+	}
 	if f != nil && !src.Spec.rewriteProne() && !g.done() {
-		if old := s.held[src.ID]; old != nil {
-			old.Close()
-			delete(s.held, src.ID)
-		}
-		if len(s.held) < s.cfg.MaxHeldFiles {
-			s.held[src.ID], keep = f, true
-		}
+		keep = s.descriptors.retain(src.ID, f)
 	}
 	return nil
 }
@@ -617,16 +779,24 @@ func (s *Syncer) capture(ctx context.Context, src *sourceRow, export ExportFunc,
 // vanish handles a source file that disappeared: salvage what is pending
 // from the held descriptor and forget the watermark, so a file that
 // reappears at the path starts a new generation.
-func (s *Syncer) vanish(ctx context.Context, src *sourceRow) error {
+func (op *syncOperation) vanish(ctx context.Context, src *sourceRow) error {
+	s := op.syncer
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return op.vanishOwned(ctx, scope, src)
+	})
+}
+
+func (op *syncOperation) vanishOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow) error {
+	s := op.syncer
 	if src.Watermark == nil {
 		return nil
 	}
 	if g, err := s.store.gen(ctx, src.ID, src.Gen); err != nil {
 		return err
 	} else if g != nil && !g.done() {
-		s.salvage(ctx, src, g, "source disappeared")
+		op.salvageOwned(ctx, scope, src, g, "source disappeared")
 	}
-	return s.store.setWatermark(ctx, src, nil)
+	return scope.setWatermark(ctx, src, nil)
 }
 
 // salvage copies a generation's unacknowledged bytes into the spool before
@@ -634,14 +804,29 @@ func (s *Syncer) vanish(ctx context.Context, src *sourceRow) error {
 // (which still reaches a replaced or unlinked inode). Bytes that cannot be
 // recovered (in-place rewrite, spool full, no held descriptor) are recorded
 // as a gap: the generation is cut back to the recoverable prefix.
-func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why string) {
-	f := s.held[src.ID]
-	defer func() {
-		if f != nil {
-			f.Close()
-			delete(s.held, src.ID)
-		}
-	}()
+func (op *syncOperation) salvage(ctx context.Context, src *sourceRow, g *genRow, why string) {
+	s := op.syncer
+	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		op.salvageOwned(ctx, scope, src, g, why)
+		return nil
+	}); err != nil {
+		s.cfg.Logger.Warn("devicesync: salvage reference ownership failed", "err", err)
+	}
+}
+
+func (op *syncOperation) salvageOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, why string) {
+	s := op.syncer
+	if op.authorization != nil {
+		return
+	} // retain pending generation; raw repair requires a fresh verified open
+
+	borrow := s.descriptors.borrow(src.ID)
+	s.descriptors.retire(src.ID)
+	var f *os.File
+	if borrow != nil {
+		f = borrow.file()
+		defer borrow.release()
+	}
 	var rr *redact.ReaderAt
 	if f != nil {
 		rr = src.Spec.redacted(f)
@@ -674,16 +859,16 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 			continue
 		}
 		data, ok := readVerified(e.Offset, e.Size, e.Hash)
-		if !ok || s.spool.PutChunk(e.Hash, data) != nil {
+		if !ok || scope.putChunk(e.Hash, data) != nil {
 			keep = e.Ordinal
 			break
 		}
 	}
 	tailOK := g.TailAcked || g.Tail.Size == 0 || keep < g.Entries
 	if !tailOK {
-		if _, ok, _ := s.spool.Tail(src.ID, g.Gen); ok {
+		if body, ok, err := s.spool.TailVersion(src.ID, g.Gen, g.Tail.Hash); err == nil && ok && int64(len(body)) == g.Tail.Size {
 			tailOK = true
-		} else if data, ok := readVerified(g.Tail.Offset, g.Tail.Size, g.Tail.Hash); ok && s.spool.PutTail(src.ID, g.Gen, data) == nil {
+		} else if data, ok := readVerified(g.Tail.Offset, g.Tail.Size, g.Tail.Hash); ok && scope.putTailVersion(src.ID, g.Gen, g.Tail.Hash, data) == nil {
 			tailOK = true
 		}
 	}
@@ -691,7 +876,7 @@ func (s *Syncer) salvage(ctx context.Context, src *sourceRow, g *genRow, why str
 		s.cfg.Logger.Warn("devicesync: unacknowledged bytes lost before upload",
 			"path", src.Spec.Path, "generation", g.Gen, "reason", why,
 			"kept_entries", keep, "entries", g.Entries, "tail_bytes", g.Tail.Size, "spool_blocked", s.spool.Blocked())
-		if err := s.cut(ctx, src, g, keep); err != nil {
+		if err := s.cutOwned(ctx, scope, src, g, keep); err != nil {
 			s.cfg.Logger.Error("devicesync: record gap", "path", src.Spec.Path, "err", err)
 		}
 	}
@@ -720,6 +905,13 @@ func entryHashes(ents []syncproto.Entry) []syncproto.Hash {
 // as it was: it is the last evidence of the lost bytes. Spooled chunks
 // only the cut entries needed are released.
 func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.cutOwned(ctx, scope, src, g, keep)
+	})
+}
+
+func (s *Syncer) cutOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, keep int64) error {
+	oldTail := g.Tail
 	var dropped []syncproto.Hash
 	if keep < g.Entries {
 		ents, err := s.store.entries(ctx, src.ID, g.Gen, keep, int(g.Entries-keep))
@@ -731,11 +923,14 @@ func (s *Syncer) cut(ctx context.Context, src *sourceRow, g *genRow, keep int64)
 		}
 	}
 	g.Entries, g.Tail, g.TailAcked = keep, syncproto.Tail{Offset: g.Tail.Offset}, true
-	if err := s.store.updateGen(ctx, g, nil); err != nil {
+	if err := scope.updateGen(ctx, g, nil); err != nil {
 		return err
 	}
-	s.release(ctx, src, g, dropped)
-	s.spool.DropTail(src.ID, g.Gen)
+	if g.done() {
+		s.stalls.forget(stallKey{src.ID, g.Gen})
+	}
+	s.releaseOwned(ctx, scope, src, g, dropped)
+	s.releaseTailOwned(ctx, scope, src.ID, g.Gen, oldTail)
 	return nil
 }
 
@@ -872,7 +1067,7 @@ func (s *Syncer) exportTail(src *sourceRow, g *genRow) ([]byte, bool) {
 	if g.Tail.Size == 0 {
 		return []byte{}, true
 	}
-	data, ok, err := s.spool.Tail(src.ID, g.Gen)
+	data, ok, err := s.spool.TailVersion(src.ID, g.Gen, g.Tail.Hash)
 	if err != nil || !ok || int64(len(data)) != g.Tail.Size || syncproto.Sum(data) != g.Tail.Hash {
 		return nil, false
 	}
@@ -884,9 +1079,15 @@ func (s *Syncer) exportTail(src *sourceRow, g *genRow) ([]byte, bool) {
 // provisional tail again when the spool lost it, so the next change can
 // append.
 func (s *Syncer) keepExport(ctx context.Context, src *sourceRow, g *genRow, ex *exportRead) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.keepExportOwned(ctx, scope, src, g, ex)
+	})
+}
+
+func (s *Syncer) keepExportOwned(ctx context.Context, scope *spoolReferenceScope, src *sourceRow, g *genRow, ex *exportRead) error {
 	if !bytes.Equal(ex.state, src.ExportState) {
 		src.ExportState = ex.state
-		if err := s.store.setWatermark(ctx, src, src.Watermark); err != nil {
+		if err := scope.setWatermark(ctx, src, src.Watermark); err != nil {
 			return err
 		}
 	}
@@ -903,7 +1104,49 @@ func (s *Syncer) keepExport(ctx context.Context, src *sourceRow, g *genRow, ex *
 	if syncproto.Sum(data) != g.Tail.Hash {
 		return nil
 	}
-	return s.spool.PutTail(src.ID, g.Gen, data)
+	return scope.putTailVersion(src.ID, g.Gen, g.Tail.Hash, data)
+}
+
+// reserveCapture only reconciles this source's immutable tail attempts after
+// cap pressure. Failed handoff files stay charged until durable reference reads
+// succeed. It does not reclaim chunks or coordinate concurrent workers.
+func (s *Syncer) reserveCapture(ctx context.Context, sid, bytes int64) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return s.reserveCaptureOwned(ctx, scope, sid, bytes)
+	})
+}
+
+func (s *Syncer) reserveCaptureOwned(ctx context.Context, scope *spoolReferenceScope, sid, bytes int64) error {
+	if err := s.spool.Reserve(bytes); !errors.Is(err, ErrSpoolFull) {
+		return err
+	}
+	if err := scope.reconcileTailVersions(ctx, sid); err != nil {
+		return err
+	}
+	return s.spool.Reserve(bytes)
+}
+
+// releaseTail follows a durable commit/acknowledgement. Reference uncertainty
+// or cleanup failure leaves bytes charged for startup or later pressure retry.
+func (s *Syncer) releaseTail(ctx context.Context, sid, gen int64, old syncproto.Tail) {
+	if err := s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return scope.releaseTail(ctx, sid, gen, old)
+	}); err != nil {
+		s.cfg.Logger.Warn("devicesync: released tail cleanup deferred", "source_id", sid, "generation", gen, "err", err)
+	}
+}
+
+func (s *Syncer) releaseTailOwned(ctx context.Context, scope *spoolReferenceScope, sid, gen int64, old syncproto.Tail) {
+	if err := scope.releaseTail(ctx, sid, gen, old); err != nil {
+		s.cfg.Logger.Warn("devicesync: released tail cleanup deferred", "source_id", sid, "generation", gen, "err", err)
+	}
+}
+
+// setWatermark changes the durable tail-continuation reference outside capture.
+func (s *Syncer) setWatermark(ctx context.Context, src *sourceRow, wm *transcript.Watermark) error {
+	return s.spool.withReferences(s.store, func(scope *spoolReferenceScope) error {
+		return scope.setWatermark(ctx, src, wm)
+	})
 }
 
 // appendReader serves an appended export from the generation's tail

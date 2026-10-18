@@ -186,7 +186,7 @@ func TestSendOutcomeLines(t *testing.T) {
 			"sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at its next tool call"},
 		{busproto.SendResponse{ID: "m7f3b", State: busproto.StateQueued, ExpiresAt: exp,
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/home/g/api", Branch: "main", Live: true}},
-			"sent m7f3b to 4c19e0d2 (gary codex api@main): idle, arrives with its human's next prompt (idle duration unknown)"},
+			"sent m7f3b to 4c19e0d2 (gary codex api@main): idle, arrives when its session resumes (idle duration unknown)"},
 		{busproto.SendResponse{ID: "m7f3c", State: busproto.StateHeld, ExpiresAt: exp, To: busproto.Recipient{User: "sam@example.test", Repo: "api", Live: true}},
 			"held m7f3c for @sam: sam has not accepted messages from you; expires 2026-10-02T14:02Z"},
 		{busproto.SendResponse{ID: "m7f3d", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Repo: "api"}},
@@ -194,7 +194,7 @@ func TestSendOutcomeLines(t *testing.T) {
 		{busproto.SendResponse{ID: "m7f3e", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Repo: "api", Live: true, Busy: true}},
 			"sent m7f3e to @alex: a busy session on api takes it, arrives at its next tool call"},
 		{busproto.SendResponse{ID: "m7f3f", State: busproto.StateQueued, ExpiresAt: exp, To: busproto.Recipient{User: "alex@example.test", Live: true}},
-			"sent m7f3f to @alex: an idle session takes it, arrives with its human's next prompt"},
+			"sent m7f3f to @alex: an idle session takes it, arrives when its session resumes"},
 		{busproto.SendResponse{ID: "m7f40", State: busproto.StateQueued, ExpiresAt: exp,
 			To: busproto.Recipient{Session: "4c19e0d2-2222", Agent: "codex", User: "gary@example.test", Repo: "/home/g/api"}},
 			"sent m7f40 to 4c19e0d2 (gary codex api): not running, arrives only if it resumes; expires 2026-10-02T14:02Z"},
@@ -266,6 +266,67 @@ func TestSendCLI(t *testing.T) {
 	}
 }
 
+func TestExplicitRetryCLIAndMCPReplay(t *testing.T) {
+	asCaller(t, claudeSelf)
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "mretry", RetryOf: "mfailed", Replayed: true,
+			ThreadID: "mthread", State: busproto.StateRead, Intent: busproto.IntentRequest, Sent: t0, ExpiresAt: t0.Add(time.Hour),
+			To: busproto.Recipient{Session: peerID, Agent: "codex", User: "gary@example.test", Live: true, Busy: true}}}
+	})
+	out, err := cli(t, fa, "", "send", peerID, "--retry-of", "mfailed", "--intent", "request", "--reply-to", "mparent", "--ref", "reference/1", "--", "same message")
+	if err != nil || out != "retry of mfailed already recorded as mretry: read; no new message created\n" {
+		t.Fatalf("text replay: %q %v", out, err)
+	}
+	request := fa.requests()[0].Send
+	if op := fa.requests()[0].Op; op != "retry-send-v1" {
+		t.Fatalf("retry used unversioned operation: %s", op)
+	}
+	if request.RetryOf != "mfailed" || request.FromSession != selfID || request.FromAgent != "claude" || request.To != peerID || request.Body != "same message" || request.Intent != "request" || request.ReplyTo != "mparent" || strings.Join(request.Refs, ",") != "reference/1" {
+		t.Fatalf("CLI retry request: %+v", request)
+	}
+	r := &retriever{caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }, busSocket: fa.sock}
+	text, err := mcpCall(t.Context(), r, "flopwire_send", map[string]any{"to": peerID, "message": "same message", "retry_of": "mfailed", "intent": "request", "reply_to": "mparent", "refs": []any{"reference/1"}})
+	var receipt sendJSON
+	if err != nil || json.Unmarshal([]byte(text), &receipt) != nil || !receipt.Replayed || receipt.ID != "mretry" || receipt.State != busproto.StateRead || receipt.Arrives != arriveRecorded || receipt.Next != sendMCPNext(receipt.SendResponse) {
+		t.Fatalf("MCP replay: %q %v", text, err)
+	}
+	if request := fa.requests()[1].Send; request.RetryOf != "mfailed" || request.ReplyTo != "mparent" || request.Body != "same message" {
+		t.Fatalf("MCP retry request: %+v", request)
+	}
+	for _, state := range []busproto.State{busproto.StateQueued, busproto.StateHeld, busproto.StateClaimed, busproto.StateDelivered, busproto.StateRead, busproto.StateUndelivered, busproto.StateExpired} {
+		replay := busproto.SendResponse{ID: "mretry", RetryOf: "mfailed", Replayed: true, State: state, Reason: "session_ended", Intent: busproto.IntentRequest}
+		if out := sendOutcome(replay); !strings.Contains(out, string(state)) || !strings.Contains(out, "no new message created") || strings.Contains(out, "arrives") || arrival(replay) != arriveRecorded || sendNext(replay) != "" {
+			t.Fatalf("%s replay: %s", state, out)
+		}
+	}
+	waiting := busproto.SendResponse{ID: "mwaiting", RetryOf: "mfailed", Admission: busproto.AdmissionNextResume, State: busproto.StateQueued, Intent: busproto.IntentRequest, To: busproto.Recipient{Session: peerID}}
+	if out := sendOutcome(waiting); !strings.Contains(out, "first receiving hook after resume") || !strings.Contains(out, "requires retry support") || arrival(waiting) != arriveIfResumed || sendNext(waiting) != nextNoWait {
+		t.Fatalf("closed retry: %s", out)
+	}
+	liveRetry := waiting
+	liveRetry.Admission, liveRetry.To.Live, liveRetry.To.Busy = "", true, true
+	if out := sendOutcome(liveRetry); !strings.Contains(out, "requires retry support") || strings.Count(out, "requires retry support") != 1 || !strings.Contains(out, "busy, arrives at its next tool call") {
+		t.Fatalf("live retry conditional arrival: %s", out)
+	}
+}
+
+func TestExplicitRetryOldAgentFailsBeforeOrdinarySend(t *testing.T) {
+	asCaller(t, claudeSelf)
+	ordinary := 0
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Op == "send" {
+			ordinary++
+			return agent.Response{OK: true, Sent: &busproto.SendResponse{ID: "unexpected"}}
+		}
+		return agent.Response{Error: "unknown op " + r.Op}
+	})
+	_, err := cli(t, fa, "", "send", peerID, "--retry-of", "mfailed", "--", "same message")
+	var reported *busErr
+	if !errors.As(err, &reported) || reported.Code != codeAgentOutdated || ordinary != 0 {
+		t.Fatalf("old agent retry: %v ordinary sends=%d", err, ordinary)
+	}
+}
+
 // Every refusal prints its cause, the fix and a valid example; over MCP it
 // is an isError result.
 func TestSendRefusals(t *testing.T) {
@@ -291,7 +352,7 @@ func TestSendRefusals(t *testing.T) {
 		{busproto.Error{Status: 409, Code: busproto.CodeReplyToDone, Detail: "m5 closed its thread (intent done); it must not be answered"},
 			[]string{"refused (reply_to_done)", "Fix: do not answer it", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 404, Code: busproto.CodeUnknownRecipient, Detail: "no session id starts with 0b7e2c1a; flopwire peers lists live sessions"},
-			[]string{"refused (unknown_recipient)", "Fix: find the session from history (flopwire sessions --repo R --branch B --json), check it is live with flopwire peers --session ID", "Example: flopwire send @alex"}},
+			[]string{"refused (unknown_recipient)", "Fix: find the session from history (flopwire sessions --repo R --json), verify its command/result evidence, then check exact-session presence with flopwire peers --session ID", "Example: flopwire send @alex"}},
 		{busproto.Error{Status: 409, Code: busproto.CodeAmbiguousRecipient, Detail: "0b7e2c1a matches 2 sessions; use a longer prefix", Candidates: []busproto.Candidate{
 			{Session: selfID, Agent: "claude", User: "gary@example.test", Repo: "/src/api", Branch: "main", Title: "refactor client pagination", Live: true},
 			{Session: alexID, Agent: "codex", User: "alex@example.test", Repo: "/src/web", Title: "old"}}},
@@ -433,7 +494,7 @@ func TestPeersOutput(t *testing.T) {
 	out, err := cli(t, fa, "", "peers", "--repo", "api", "--user", "@alex", "--agent", "claude")
 	want := `4c19e0d2  gary  codex  live idle (idle duration unknown)  api@main  "add cursor to list endpoint"
 9d00e0d2  alex  claude  live busy  api@main  "refactor client pagination"
-[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: with its human's next prompt. Address one by its first column, or a person as @user]
+[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: when its session resumes. Address one by its first column, or a person as @user]
 `
 	if err != nil || out != want {
 		t.Fatalf("peers:\n%s\nwant:\n%s%v", out, want, err)
@@ -566,6 +627,44 @@ m1  sent  2026-10-01 14:02Z  to @alex → 4c19e0d2  request  read 2026-10-01 14:
 	}
 }
 
+func TestInboxEndedSessionRecoveryOnlyForSentTerminalFailure(t *testing.T) {
+	asCaller(t, claudeSelf)
+	var item busproto.InboxItem
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		return agent.Response{OK: true, Inbox: &busproto.InboxResponse{Messages: []busproto.InboxItem{item}}}
+	})
+	c := &busClient{socket: fa.sock, caller: func(context.Context) (local.Caller, bool) { return *claudeSelf, true }}
+	for _, tc := range []struct {
+		name, direction, reason string
+		state                   busproto.State
+		want                    bool
+	}{
+		{"sent ended", "sent", busproto.ReasonSessionEnded, busproto.StateUndelivered, true},
+		{"received ended", "received", busproto.ReasonSessionEnded, busproto.StateUndelivered, false},
+		{"queued for resume", "sent", "", busproto.StateQueued, false},
+		{"unconfirmed", "sent", "unconfirmed", busproto.StateUndelivered, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item = busproto.InboxItem{Envelope: busproto.Envelope{ID: "mstatus", From: peerID, Sent: t0, Intent: busproto.IntentInform, Body: "context"}, Direction: tc.direction, State: tc.state, Reason: tc.reason}
+			var out strings.Builder
+			if err := runInbox(t.Context(), c, inboxArgs{}, &out, busStyle{JSON: true}); err != nil {
+				t.Fatal(err)
+			}
+			var got inboxJSON
+			if err := json.Unmarshal([]byte(out.String()), &got); err != nil || len(got.Messages) != 1 {
+				t.Fatalf("JSON: %s %v", out.String(), err)
+			}
+			if (got.Messages[0].DeliveryHint == sessionEndedDeliveryHint) != tc.want {
+				t.Fatal(out.String())
+			}
+			text, err := cli(t, fa, "", "inbox")
+			if err != nil || strings.Contains(text, sessionEndedDeliveryHint) != tc.want {
+				t.Fatalf("text: %s %v", text, err)
+			}
+		})
+	}
+}
+
 // mcpRoundTrip sends one request line to a fresh MCP server and returns
 // the response line.
 func mcpRoundTrip(t *testing.T, r *retriever, line string) string {
@@ -619,7 +718,7 @@ func TestMCPMetaNamesTheCodexThread(t *testing.T) {
 	}
 	// The instructions carry the messaging guidance.
 	resp = mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{}}`)
-	if !strings.Contains(resp, "do not poll flopwire_peers") {
+	if !strings.Contains(resp, "do not poll or send status nudges") {
 		t.Fatalf("instructions: %s", resp)
 	}
 }
@@ -673,10 +772,10 @@ func TestMCPPeersAndInbox(t *testing.T) {
 		t.Fatalf("peers json: %q %v", text, err)
 	}
 	text, err = mcpCall(t.Context(), r, "flopwire_inbox", map[string]any{"sent": true})
-	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false}` {
+	if err != nil || text != `{"kind":"inbox","session":"`+selfID+`","messages":[],"more":false,"hint":"Continue work using received evidence; a sent delivery receipt is not a reply."}` {
 		t.Fatalf("inbox json: %q %v", text, err)
 	}
-	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_peers, flopwire_read") {
+	if _, err := mcpCall(t.Context(), r, "flopwire_nope", nil); err == nil || !strings.Contains(err.Error(), "flopwire_inbox, flopwire_messages, flopwire_peers, flopwire_read") {
 		t.Fatalf("unknown tool: %v", err)
 	}
 }
@@ -924,7 +1023,11 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 	}
 	for _, name := range []string{"help send", "help inbox", "instructions", "tools"} {
 		s := strings.Join(strings.Fields(texts[name]), " ")
-		if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
+		if name == "instructions" {
+			if !strings.Contains(s, "hooks deliver during a running turn or on a later prompt/resume") {
+				t.Errorf("%s does not say how a message arrives: %s", name, s)
+			}
+		} else if !strings.Contains(s, "flopwire hook") || !strings.Contains(s, "next prompt") {
 			t.Errorf("%s does not say how a message arrives: %s", name, s)
 		}
 	}
@@ -934,8 +1037,8 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 			t.Errorf("%s does not say what inbox is for", name)
 		}
 	}
-	if !strings.Contains(mcpInstructions, "A message never starts a turn") {
-		t.Error("instructions do not say a message never starts a turn")
+	if !strings.Contains(mcpInstructions, "Sending never wakes an idle session") {
+		t.Error("instructions do not say sending never wakes an idle session")
 	}
 }
 
@@ -1022,6 +1125,11 @@ func TestPeersRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	if err := client.Save(client.Config{Server: "https://flopwire.example.test", Token: "device"}); err != nil {
 		t.Fatal(err)
 	}
+	cc, err := client.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	establishEmptyCollectionPolicy(t, cc)
 	asCaller(t, claudeSelf)
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -1308,5 +1416,22 @@ func TestPeersTextUsesAuthoritativeIdleAge(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "idle duration unknown") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestStoppedParentReceiptWaitsForResumption(t *testing.T) {
+	r := busproto.SendResponse{ID: "msynthetic", State: busproto.StateQueued, Intent: busproto.IntentRequest, To: busproto.Recipient{Session: "parent-session", Agent: "claude", Live: true, IdleKnown: true, IdleSince: t0}}
+	if arrival(r) != arriveNextPrompt {
+		t.Fatalf("idle protocol value: %q", arrival(r))
+	}
+	if line := sendOutcome(r); !strings.Contains(line, "arrives when its session resumes") || strings.Contains(line, "next tool call") {
+		t.Fatalf("stopped parent receipt: %s", line)
+	}
+	if sendNext(r) != nextNoWait {
+		t.Fatalf("stopped parent should not wait: %s", sendNext(r))
+	}
+	r.To.Busy = true
+	if arrival(r) != arriveNextToolCall || sendNext(r) != nextBusy {
+		t.Fatalf("resumed parent: %s / %s", arrival(r), sendNext(r))
 	}
 }

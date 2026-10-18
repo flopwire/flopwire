@@ -31,7 +31,8 @@ type hookAgent struct {
 	delay time.Duration
 	fail  string // pending answers this error
 	// confirmFail: confirm answers this error.
-	confirmFail string
+	confirmFail  string
+	confirmDelay time.Duration
 }
 
 func newHookAgent(t *testing.T) *hookAgent {
@@ -75,6 +76,9 @@ func (f *hookAgent) serve(c net.Conn) {
 		resp = agent.Response{Error: f.confirmFail}
 	}
 	delay := f.delay
+	if req.Op == "confirm" {
+		delay += f.confirmDelay
+	}
 	f.mu.Unlock()
 	time.Sleep(delay)
 	b, _ := json.Marshal(resp)
@@ -635,5 +639,22 @@ func TestHookPrintsNoNoticeWhenNoneIsDue(t *testing.T) {
 	fa.resp.Held = []busproto.HeldSender{{User: "alex@example.test", UserID: "u-alex", Count: 2}}
 	if out, _ := runHook(t, fa.sock, claudeIn(evUserPromptSubmit), map[string]string{"CLAUDECODE": "1"}); out != "" {
 		t.Fatalf("printed %q", out)
+	}
+}
+
+// A SessionStart whose agent reports a newer server release prints the
+// upgrade line after the standing instruction; the notice is not part of
+// what the hook confirms.
+func TestHookPrintsUpgradeNotice(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Instruct = true
+	fa.resp.Upgrade = "flopwire v9.9.9 is available; this device runs v0.1.0. Upgrade with: flopwire upgrade"
+	out, _ := runHook(t, fa.sock, claudeIn(evSessionStart), nil)
+	ctxt := decodeHook(t, out).HookSpecificOutput.AdditionalContext
+	if ctxt != busrender.StandingInstruction+busrender.Sep+fa.resp.Upgrade {
+		t.Fatalf("output: %q", out)
+	}
+	if c := fa.requests("confirm"); len(c) != 1 || !c[0].Instruction {
+		t.Fatalf("confirm: %+v", c)
 	}
 }

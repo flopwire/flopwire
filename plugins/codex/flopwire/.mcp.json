@@ -4,7 +4,7 @@
       "command": "/bin/sh",
       "args": ["./bin/flopwire-hook", "mcp"],
       "cwd": ".",
-      "env_vars": ["FLOPWIRE_CONFIG", "FLOPWIRE_INDEX", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"]
+      "env_vars": ["FLOPWIRE_CONFIG", "FLOPWIRE_INDEX", "FLOPWIRE_SOCKET", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"]
     }
   }
 }

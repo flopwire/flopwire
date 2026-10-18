@@ -1,9 +1,12 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +40,7 @@ var syncMinRate int64 = 64 << 10 // bytes per second; client.MinRate
 // and chunk locks a flush takes, for longer by declaring a large body.
 const syncDeadlineBytes = 4<<20 + 1<<20
 
-// ServeSync answers POST /v1/sync/has and /v1/sync/flush for an
+// ServeSync answers device sync and policy-placement requests for an
 // authenticated device. Errors use the syncproto ErrorResponse shape.
 func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID string) {
 	if r.Header.Get(syncproto.HeaderVersion) != strconv.Itoa(syncproto.Version) {
@@ -53,6 +56,54 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, MaxFlushBytes)
 	switch r.URL.Path {
+	case syncproto.PathCapabilities:
+		limit := 1 // Legacy policy clients require an exactly serial response.
+		if r.URL.RawQuery != "" {
+			query, err := url.ParseQuery(r.URL.RawQuery)
+			if err != nil || len(query) != 1 || len(query["max_concurrent_flushes"]) != 1 {
+				writeErr(w, badRequest("capabilities accepts only max_concurrent_flushes=1 or 2"))
+				return
+			}
+			requested, err := strconv.Atoi(query.Get("max_concurrent_flushes"))
+			if err != nil || requested != 1 && requested != 2 {
+				writeErr(w, badRequest("max_concurrent_flushes must be 1 or 2"))
+				return
+			}
+			limit = min(requested, s.flushAdmission().deviceLimit)
+		}
+		writeJSON(w, http.StatusOK, syncproto.CapabilitiesResponse{
+			Version: syncproto.Version, PolicyPlacementsVersion: syncproto.PolicyPlacementsVersion,
+			MaxConcurrentFlushes: limit,
+		})
+	case syncproto.PathPolicyPlacements:
+		r.Body = http.MaxBytesReader(w, r.Body, syncproto.MaxPolicyPlacementsBytes)
+		var req syncproto.PolicyPlacementsRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			var size *http.MaxBytesError
+			if errors.As(err, &size) {
+				writeErr(w, &Error{http.StatusRequestEntityTooLarge, "policy_body_limit", "policy body exceeds supported bound; send a compact limit-held revocation before bounded reference batches"})
+				return
+			}
+			writeErr(w, badRequest("bad policy placements request"))
+			return
+		}
+		if err := dec.Decode(new(any)); err != io.EOF {
+			var size *http.MaxBytesError
+			if errors.As(err, &size) {
+				writeErr(w, &Error{http.StatusRequestEntityTooLarge, "policy_body_limit", "policy body exceeds supported bound; send a compact limit-held revocation before bounded reference batches"})
+				return
+			}
+			writeErr(w, badRequest("trailing policy placements data"))
+			return
+		}
+		resp, err := s.PolicyPlacements(r.Context(), deviceID, &req)
+		if err != nil {
+			s.fail(r.Context(), w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case syncproto.PathHas:
 		var req syncproto.HasRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -61,7 +112,7 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 		}
 		missing, err := s.Has(r.Context(), deviceID, req.Hashes)
 		if err != nil {
-			s.fail(w, err)
+			s.fail(r.Context(), w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, syncproto.HasResponse{Version: syncproto.Version, Missing: missing})
@@ -70,14 +121,14 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 			writeErr(w, badRequest("content type"))
 			return
 		}
-		// One flush per device at a time: a flush holds a pool connection
-		// and chunk locks while its body arrives, and a device's agent
-		// sends one at a time anyway. A second one is told to retry.
-		if _, busy := s.flushing.LoadOrStore(deviceID, struct{}{}); busy {
-			writeErr(w, &Error{http.StatusTooManyRequests, "flush_in_progress", "another flush of this device is in progress; retry later"})
+		// Reserve before reading even the bounded header or acquiring a pool
+		// connection. The handler keeps its slot until all actual work ends.
+		ticket, refusal := s.flushAdmission().acquire(deviceID)
+		if refusal != nil {
+			writeErr(w, refusal)
 			return
 		}
-		defer s.flushing.Delete(deviceID)
+		defer ticket.release()
 		h, pr, err := syncproto.DecodeFlush(r.Body)
 		if err != nil {
 			code := "bad_request"
@@ -89,7 +140,7 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 		}
 		resp, err := s.Flush(r.Context(), deviceID, h, pr)
 		if err != nil {
-			s.fail(w, err)
+			s.fail(r.Context(), w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -98,14 +149,20 @@ func (s *Server) ServeSync(w http.ResponseWriter, r *http.Request, deviceID stri
 	}
 }
 
-func (s *Server) fail(w http.ResponseWriter, err error) {
+func (s *Server) fail(ctx context.Context, w http.ResponseWriter, err error) {
 	var e *Error
 	if errors.As(err, &e) {
 		writeErr(w, e)
 		return
 	}
 	if s.Log != nil {
-		s.Log.Error("sync request failed", "error", err)
+		// Only downgrade cancellation when the request itself was canceled.
+		// An operation canceled under a live request remains a server error.
+		if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+			s.Log.Debug("sync request canceled", "error", err)
+		} else {
+			s.Log.Error("sync request failed", "error", err)
+		}
 	}
 	writeErr(w, &Error{http.StatusServiceUnavailable, "unavailable", "sync temporarily unavailable"})
 }

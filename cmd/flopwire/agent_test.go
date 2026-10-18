@@ -97,7 +97,7 @@ func TestAgentWaitsOutAShortLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.AfterFunc(300*time.Millisecond, func() { held.Close() })
-	s, err := openAgentIndex(t.Context(), db, localindex.Options{}, false, filepath.Join(dir, "a.sock"), log)
+	s, err := openAgentIndex(t.Context(), db, localindex.Options{}, false, filepath.Join(dir, "a.sock"), log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if err != nil {
 		t.Fatalf("daemon after a short-lived lock holder: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestAgentOneWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = openAgentIndex(ctx, db, localindex.Options{}, false, sock, log)
+	_, err = openAgentIndex(ctx, db, localindex.Options{}, false, sock, log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if want := fmt.Sprintf("agent already running (pid %d)", os.Getpid()); err == nil || err.Error() != want {
 		t.Fatalf("second daemon: %v, want %q", err, want)
 	}
@@ -140,11 +140,11 @@ func TestAgentOneWriter(t *testing.T) {
 		c.Write([]byte(`{"ok":true}` + "\n"))
 		c.Close()
 	}()
-	s, err := openAgentIndex(ctx, db, localindex.Options{}, true, sock, log)
+	s, err := openAgentIndex(ctx, db, localindex.Options{}, true, sock, log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if err != nil || s != nil {
 		t.Fatalf("--once with an agent: %v %v", s, err)
 	}
-	if req := <-got; req.Op != "pass" || req.Index != db {
+	if req := <-got; req.Op != "once-v1" || req.Index != db || req.Once == nil || req.Once.Mode != localindex.ModeFull || req.Once.Connection != "local" {
 		t.Fatalf("request %+v", req)
 	}
 	ln.Close()
@@ -152,7 +152,7 @@ func TestAgentOneWriter(t *testing.T) {
 
 	// --once while the holder does not answer: wait until it exits.
 	time.AfterFunc(300*time.Millisecond, func() { held.Close() })
-	s, err = openAgentIndex(ctx, db, localindex.Options{}, true, sock, log)
+	s, err = openAgentIndex(ctx, db, localindex.Options{}, true, sock, log, agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local"})
 	if err != nil || s == nil {
 		t.Fatalf("--once after the holder exits: %v", err)
 	}
@@ -352,7 +352,11 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(dir, "config.json"))
 	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "index.db"))
-	if err := os.WriteFile(filepath.Join(dir, "bus.db"), []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
+	busPath, err := authorityBusPath(dir, client.Config{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(busPath, []byte(strings.Repeat("not a database ", 16)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	empty := t.TempDir()
@@ -360,7 +364,7 @@ func TestAgentRunsWithDamagedInbox(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runAgent(ctx, []string{"--socket", sock, "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
+		_, err := runAgent(ctx, []string{"--socket", sock, "--desktop-code-root", "-", "--cowork-root", "-", "--claude-projects", empty, "--codex-home", empty, "--devin-db", "-", "--opencode-db", "-", "--no-sync"})
 		done <- err
 	}()
 	deadline := time.Now().Add(30 * time.Second)
@@ -395,4 +399,118 @@ func shortSockDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(d) })
 	return d
+}
+
+func TestAgentStatusDesktopCodeScopeAndHold(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{DesktopCode: &agent.DesktopCodeStatus{State: "supported", Sessions: 2, NormalLinks: 3, MetadataOnly: 1, OutOfScope: 4, CoworkAliases: 1, SharedHold: "contained sync authorization support pending"}})
+	for _, want := range []string{"Claude Desktop Code (Local): supported", "2 scoped native sessions", "3 normal-root links", "1 missing linked transcripts", "4 outside local Code scope", "scoped shared uploads held: contained sync authorization support pending", "1 Cowork import aliases retain folder-policy holds"} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatalf("status missing %q", want)
+		}
+	}
+}
+
+func TestAgentStatusDesktopCodeAuthorizationRequirement(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{DesktopCode: &agent.DesktopCodeStatus{State: "supported", Sessions: 1, SharedAuthorization: "each capture requires fresh contained indexed proof; Cowork origins retain folder-policy holds"}})
+	if !strings.Contains(b.String(), "scoped shared authorization: each capture requires fresh contained indexed proof") {
+		t.Fatalf("status does not report capture authorization requirement: %s", b.String())
+	}
+	if strings.Contains(b.String(), "scoped shared uploads held") {
+		t.Fatal("available proof hook must not report prerequisite support pending")
+	}
+}
+
+func TestAgentStatusUnavailableSectionsDoNotPrintZeroCounters(t *testing.T) {
+	var b strings.Builder
+	printAgentStatus(&b, agent.Response{
+		Unavailable: map[string]string{"cowork": "Cowork status busy; capture or policy work is in progress", "redactions": "redaction totals unavailable; retry status", "extraction": "extraction summary unavailable; retry status or run flopwire diagnostics", "inbox": "inbox counts unavailable; retry status"},
+		Sync:        &devicesync.Status{Queued: 17},
+		Bus:         &devicebus.Status{State: devicebus.StateConnected, Sessions: 7},
+	})
+	for _, want := range []string{"Cowork status busy", "redaction totals unavailable", "extraction summary unavailable", "sync: ok", "queued: 17 sources", "inbox counts unavailable", "messaging: connected; 7 live sessions"} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatalf("missing %q: %s", want, b.String())
+		}
+	}
+	for _, unwanted := range []string{"nothing so far", "0 native sessions", "0 eligible for scheduling", "0 pending delivery", "0 receipts unsent"} {
+		if strings.Contains(b.String(), unwanted) {
+			t.Fatalf("unknown diagnostics rendered as zero: %s", b.String())
+		}
+	}
+}
+
+func TestAgentStatusCoworkUsesCurrentDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status agent.CoworkStatus
+		want   []string
+	}{
+		{
+			name:   "known scopes still require a fresh acknowledgement",
+			status: agent.CoworkStatus{State: "supported", Sessions: 2, ScheduleEligible: 2, SharedHold: "fresh server policy acknowledgement required for every capture", LastPolicyAttempt: agent.CoworkPolicyAttempt{State: "acknowledged"}},
+			want:   []string{"2 eligible for scheduling, 0 held", "shared uploads: fresh server policy acknowledgement required for every capture", "latest policy registration: acknowledged"},
+		},
+		{
+			name:   "held history without current transcripts",
+			status: agent.CoworkStatus{State: "supported", Held: 3, Unknown: 1, HistoricalUnknown: 2, SharedHold: "Cowork sharing is not configured", LastPolicyAttempt: agent.CoworkPolicyAttempt{State: "history_unknown"}},
+			want:   []string{"0 eligible for scheduling, 3 held", "unknown mapping: 1 current, 2 historical native scopes", "shared uploads: Cowork sharing is not configured", "latest policy registration: history_unknown"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			printAgentStatus(&b, agent.Response{Cowork: &tc.status})
+			for _, want := range tc.want {
+				if !strings.Contains(b.String(), want) {
+					t.Fatalf("missing %q in status:\n%s", want, b.String())
+				}
+			}
+			if strings.Contains(b.String(), "server host-folder policy support pending") {
+				t.Fatalf("obsolete policy warning in status:\n%s", b.String())
+			}
+		})
+	}
+}
+
+func TestAgentOnceRejectsOldControlProtocol(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "index.db")
+	held, err := localindex.Open(db, localindex.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	socketDir, err := os.MkdirTemp("/tmp", "fw-old-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	sock := filepath.Join(socketDir, "a.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		line, _ := bufio.NewReader(c).ReadBytes('\n')
+		var req agent.Request
+		json.Unmarshal(line, &req)
+		json.NewEncoder(c).Encode(agent.Response{Error: "unknown op " + req.Op})
+	}()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	store, err := openAgentIndex(c, db, localindex.Options{}, true, sock, log, agent.OnceRequest{Mode: "full", Connection: "local"})
+	<-done
+	if store != nil || err == nil || !strings.Contains(err.Error(), "lacks delegated --once support; restart it with the current binary: unknown op once-v1") {
+		t.Fatalf("old protocol claimed completion: %v %v", store, err)
+	}
 }

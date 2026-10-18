@@ -15,7 +15,7 @@ import (
 )
 
 const busUpgradeDurableSnapshot = `SELECT jsonb_build_object(
- 'messages', (SELECT jsonb_agg(to_jsonb(m)-'attempts'-'last_at' ORDER BY id) FROM bus_messages m),
+ 'messages', (SELECT jsonb_agg(to_jsonb(m)-'attempts'-'last_at'-'from_remote'-'from_main'-'retry_of'-'admission' ORDER BY id) FROM bus_messages m),
  'audit', (SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM audit_events a),
  'users', (SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u),
  'devices', (SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM devices d),
@@ -149,6 +149,7 @@ func TestBusUpgradePreservesDataAndLedger(t *testing.T) {
 			if got := busUpgradeSnapshot(t, pool, busUpgradeDurableSnapshot); got != durable {
 				t.Fatal("upgrade changed durable data")
 			}
+			assertLegacyRetryDefaults(t, pool)
 			if got := busUpgradeSnapshot(t, pool, busUpgradePriorLedgerSnapshot); got != ledger {
 				t.Fatal("upgrade changed historical checksums or applied_at")
 			}
@@ -174,6 +175,10 @@ func TestBusUpgradePreservesDataAndLedger(t *testing.T) {
 				if err := pool.QueryRow(ctx, `SELECT checksum FROM flopwire_schema_migrations WHERE name=$1`, file.name).Scan(&checksum); err != nil || checksum != file.checksum {
 					t.Fatalf("%s checksum=%s err=%v", file.name, checksum, err)
 				}
+			}
+			var unknownPlacement bool
+			if err := pool.QueryRow(ctx, `SELECT bool_and(from_remote='' AND from_main='') FROM bus_messages`).Scan(&unknownPlacement); err != nil || !unknownPlacement {
+				t.Fatalf("historical placement must remain unknown: %v err=%v", unknownPlacement, err)
 			}
 			var defaults, refusalPreserved bool
 			if err := pool.QueryRow(ctx, `SELECT bool_and(attempts=1 AND last_at IS NULL) FROM bus_messages WHERE id<>'refusal'`).Scan(&defaults); err != nil || !defaults {

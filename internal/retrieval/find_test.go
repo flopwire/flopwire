@@ -131,7 +131,7 @@ func TestFindRE2SemanticsAndRefusesUnindexed(t *testing.T) {
 		}
 	}
 	for _, p := range []string{`.`, `a.b`, `.*`, `\d+`, `^$`, `[a-z]{5}`, `ab|xyz`} {
-		if _, err := f.find(p, true, false); !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "scan every message") {
+		if _, err := f.find(p, true, false); !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "specify a session") {
 			t.Errorf("unindexed %q: %v", p, err)
 		}
 	}
@@ -334,13 +334,13 @@ func TestServerToolsMatchLocalSemantics(t *testing.T) {
 	if p = grepQ(format.GrepQuery{Pattern: "retry", Fixed: true}, format.Filters{ExcludeKinds: []string{"tool_result"}}); len(p.Hits) != 2 {
 		t.Fatalf("exclude kind: %+v", p.Hits)
 	}
-	// Search: copies collapse; no every-term match ranks any term.
+	// Search: copies collapse; missing terms relax around a matching anchor.
 	sp, err := f.s.Search(ctx, format.SearchQuery{Query: "retry once"}, format.Filters{})
 	if err != nil || len(sp.Hits) != 1 || sp.Hits[0].Copies != 1 || sp.Hits[0].Address == "" {
 		t.Fatalf("search copies: %+v %v", sp, err)
 	}
 	sp, err = f.s.Search(ctx, format.SearchQuery{Query: "how did we handle exponential tokenizer"}, format.Filters{})
-	if err != nil || len(sp.Hits) != 1 || len(sp.Notes) != 1 || !strings.Contains(sp.Notes[0], "any of: handle exponential tokenizer") {
+	if err != nil || len(sp.Hits) != 1 || len(sp.Notes) != 1 || !strings.Contains(sp.Notes[0], "rarest matching term: exponential") {
 		t.Fatalf("search any-term: %+v %v", sp, err)
 	}
 	// Prompts and replies outrank tool output that matches as well, even
@@ -423,6 +423,23 @@ func TestServerAgentListAndSelfExclusion(t *testing.T) {
 	in := format.Filters{Session: "sess-1"}
 	if p, err = f.s.Grep(ctx, format.GrepQuery{Pattern: "pangolin"}, in); err != nil || sessionsOf(p.Hits) != "agent-x,agent-y,sess-1" {
 		t.Fatalf("grep session: %s %v", sessionsOf(p.Hits), err)
+	}
+	// The unindexed fallback retains the same session-tree and visibility filters.
+	for _, tc := range []struct {
+		filters format.Filters
+		want    string
+	}{
+		{format.Filters{Session: "sess-1"}, "agent-x,agent-y,sess-1"},
+		{format.Filters{Session: "sess-1", ExcludeSubagents: true}, "sess-1"},
+		{format.Filters{Session: "sess-1", ExcludeSession: "agent-x"}, "sess-1"},
+	} {
+		p, err = f.s.Grep(ctx, format.GrepQuery{Pattern: "."}, tc.filters)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sessionsOf(p.Hits) != tc.want || !p.Exact || p.Truncated {
+			t.Fatalf("unindexed session tree: %+v", p)
+		}
 	}
 	if p, err = f.s.Search(ctx, format.SearchQuery{Query: "pangolin"}, format.Filters{Session: "oth"}); err != nil || sessionsOf(p.Hits) != "other" {
 		t.Fatalf("search session: %s %v", sessionsOf(p.Hits), err)

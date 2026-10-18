@@ -557,14 +557,16 @@ type row struct {
 	Parser     string          `json:"pa,omitempty"`
 	Ordinal    *int64          `json:"co,omitempty"` // Codex's own top-level ordinal
 
-	Commands       []Command `json:"cmds,omitempty"`
-	Paths          []string  `json:"paths,omitempty"`
-	Author         string    `json:"au,omitempty"`
-	Recipient      string    `json:"rc,omitempty"`
-	Window         string    `json:"w,omitempty"`
-	FromCompaction bool      `json:"fc,omitempty"`
-	Enriched       string    `json:"en,omitempty"`
-	HookContext    bool      `json:"hk,omitempty"` // a hook's additionalContext (transcript.EnrichHookContext)
+	CommandCompletion bool      `json:"cc,omitempty"`
+	CompletionLegacy  bool      `json:"cl,omitempty"`
+	Commands          []Command `json:"cmds,omitempty"`
+	Paths             []string  `json:"paths,omitempty"`
+	Author            string    `json:"au,omitempty"`
+	Recipient         string    `json:"rc,omitempty"`
+	Window            string    `json:"w,omitempty"`
+	FromCompaction    bool      `json:"fc,omitempty"`
+	Enriched          string    `json:"en,omitempty"`
+	HookContext       bool      `json:"hk,omitempty"` // a hook's additionalContext (transcript.EnrichHookContext)
 }
 
 func (w *row) setText(full string) {
@@ -612,6 +614,12 @@ func (w *row) message(sessionID string) *transcript.Message {
 	e := map[string]any{}
 	if w.Ordinal != nil {
 		e["codex_ordinal"] = *w.Ordinal
+	}
+	if w.CommandCompletion {
+		e["command_completion"] = true
+	}
+	if w.CompletionLegacy {
+		e["completion_legacy"] = true
 	}
 	if len(w.Commands) > 0 {
 		e["commands"] = append([]Command(nil), w.Commands...)
@@ -1021,7 +1029,7 @@ func (r *run) event(ts time.Time, ord *int64, ev *eventMsg, it *eventItem) error
 				oc.Events = append(oc.Events, r.lineRef())
 				r.cache.events[r.l.Offset] = e
 				r.stats.EventsPaired.Add(1)
-				return nil
+				return r.emitCompletion(e, ts, ord, false)
 			}
 		}
 		oc, err := r.lateCall(ev.TurnID, e)
@@ -1032,9 +1040,15 @@ func (r *run) event(ts time.Time, ord *int64, ev *eventMsg, it *eventItem) error
 			oc.Events = append(oc.Events, r.lineRef())
 			r.cache.events[r.l.Offset] = e
 			r.stats.EventsLate.Add(1)
+			if err := r.emitCompletion(e, ts, ord, false); err != nil {
+				return err
+			}
 			return r.reemit(oc)
 		}
 		r.stats.EventsLoose.Add(1)
+		if e.Command != nil && e.Output != nil {
+			return r.emitCompletion(e, ts, ord, true)
+		}
 		w := unpairedRow(e)
 		loc := r.newRow(kindToolResult, ts, ord, 0)
 		w.TSns, w.LineNo, w.Offset, w.Len, w.Ordinal = loc.TSns, loc.LineNo, loc.Offset, loc.Len, loc.Ordinal
@@ -1042,6 +1056,22 @@ func (r *run) event(ts time.Time, ord *int64, ev *eventMsg, it *eventItem) error
 		return r.emit(w)
 	}
 	return nil
+}
+
+// emitCompletion preserves exact command/output provenance. Only the unpaired
+// path replaces a pre-existing summary row; paired and late records add proof.
+// This marker describes legacy summary accounting, not command ownership.
+func (r *run) emitCompletion(e *event, ts time.Time, ord *int64, legacy bool) error {
+	if e.Command == nil || e.Output == nil {
+		return nil
+	}
+	w := r.newRow(kindToolResult, ts, ord, 0)
+	w.NativeID, w.Role, w.ToolName = e.ID, "tool", "shell"
+	w.ToolCallID, w.Parser, w.Enriched = e.CallID, EventsVersion, EventsVersion
+	w.CommandCompletion, w.CompletionLegacy, w.IsError = true, legacy, e.Failed
+	w.Commands = []Command{*e.Command}
+	r.setText(&w, *e.Output)
+	return r.emit(w)
 }
 
 func (r *run) compacted(ts time.Time, ord *int64, c *compacted) error {

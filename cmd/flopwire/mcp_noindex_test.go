@@ -68,7 +68,7 @@ func TestMCPWithoutIndex(t *testing.T) {
 	if !strings.Contains(lines[0], `"serverInfo"`) {
 		t.Errorf("initialize: %s", lines[0])
 	}
-	for _, tool := range []string{"flopwire_grep", "flopwire_send", "flopwire_peers"} {
+	for _, tool := range []string{"flopwire_change", "flopwire_grep", "flopwire_send", "flopwire_peers"} {
 		if !strings.Contains(lines[1], `"`+tool+`"`) {
 			t.Errorf("tools/list lacks %s: %s", tool, lines[1])
 		}

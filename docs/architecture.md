@@ -199,7 +199,7 @@ They survive a local reindex.
 
 ## Path rules and placement
 
-Decision D18. Details and syntax: [agent.md](agent.md#keep-sessions-out-with-path-rules).
+Decision D18. Details and syntax: [path-rules.md](path-rules.md).
 
 - **Agent (primary).** The agent places each session (cwd, git worktree
   root, main checkout, origin remote, with fallbacks for deleted worktrees)
@@ -278,7 +278,7 @@ Decision D8.
 | Limit | Local | Server |
 |---|---|---|
 | Time budget | 10s default, `--timeout` up to 60s | Same; each call runs in a read-only transaction with a matching `statement_timeout` |
-| Out of budget | grep and search return partial hits plus one line saying what was checked; never an error | Same for grep and search; `sessions`, `read` and raw reads fail with `504` |
+| Out of budget | grep and search retain partial hits and explain the incomplete query. CLI exits 2; MCP marks empty incomplete answers as errors and preserves useful partial answers. Resumable grep reports progress in `scan`. | Same for grep and search (HTTP `200` with `truncated` and `reason`); `sessions`, `read` and raw reads fail with `504` |
 | Byte budget | 1GiB of text verified per grep | 200,000 candidate rows per grep |
 | Ranked search | Ranks the newest 20,000 matches of a very common term, with the note `ranked newest 20k of N matches — add terms or filters` (D2) | Ranks in Postgres (`ts_rank_cd`); no 20k cap |
 | Unindexable regex | Scans the newest 20,000 rows that pass the filters | Refused with `400`: add a literal of 3 or more letters or digits |
@@ -320,7 +320,7 @@ Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
 server, the device agent, the `peers`, `send` and `inbox` commands and MCP
 tools, `flopwire hook` and the plugins for Claude Code, Codex and Devin CLI
 are built, with read receipts, and push delivery into vendor cloud sessions
-(`internal/vendorcloud`, [cloud.md](cloud.md)). opencode is not. The
+(`internal/vendorcloud`, [cloud.md](harnesses/cloud.md)). opencode is not. The
 commands reach the server only through the device agent's control socket.
 Routes and wire types are in `internal/busproto`.
 
@@ -430,11 +430,35 @@ Routes and wire types are in `internal/busproto`.
 in one transaction under an advisory lock and records each file's checksum
 in `flopwire_schema_migrations`. It refuses a database whose ledger has
 edited, missing or unknown entries, and a database with application tables
-but no ledger. Applied historical files and ledger checksums are immutable;
-schema changes use additive migrations that preserve durable data. The
-supported upgrade from `661a48b` recognizes its exact historical
-`009_bus.sql` checksum only with the exact embedded current 009 and
-`013_bus_retention_upgrade.sql` checksums. It preserves the historical
-ledger row and applies the pending migrations. Migrations 011, 012, and 013
-ship together. See [the bus migration upgrade procedure](operations-migration-upgrade.md)
-for the recognition contract, validation, and rollback steps.
+but no ledger. Applied files and ledger checksums are immutable;
+schema changes use additive migrations that preserve durable data.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `cmd/flopwire` | The single binary: server, CLI, MCP, device agent, hooks, backup, bench |
+| `internal/transcript` | Harness-neutral message model and the Claude Code, Codex, Devin, opencode, Claude Desktop Local Code and Cowork readers |
+| `internal/agent` | Device agent: change detection, placement, path rules, re-parse, Cowork and Local Code authorization |
+| `internal/localindex` | Local SQLite index with FTS5 shards |
+| `internal/devicesync`, `internal/syncproto` | Chunking, spool and upload; the sync wire format |
+| `internal/client` | Device configuration, TLS pinning, HTTP client |
+| `internal/pathpolicy` | Path rule parsing and matching, shared by agent and server |
+| `internal/api` | Authenticated HTTP API |
+| `internal/ingest` | Server ingest: flush, parse queue, server path rules |
+| `internal/retrieval` | grep, search, sessions, read and change, local and server |
+| `internal/bus`, `internal/busproto`, `internal/devicebus`, `internal/busrender` | The message bus: server store, wire format, device-side delivery, rendering |
+| `internal/vendorcloud` | Push delivery into Claude Code cloud and Devin cloud sessions |
+| `internal/redact` | Secret redaction, on the device and on the server |
+| `internal/store`, `migrations` | Postgres persistence and the schema |
+| `internal/backup` | Backup and restore |
+| `internal/webapp`, `web` | The embedded admin console and its TypeScript source |
+| `plugins/claude-code`, `.claude-plugin` | The Claude Code plugin (Devin CLI loads it too) and its marketplace manifest |
+| `plugins/codex`, `.agents/plugins` | The Codex plugin and its marketplace manifest |
+| `plugins/opencode` | The opencode plugin, one file |
+| `landing` | flopwire.com |
+| `deploy` | launchd plist, nginx example |
+| `scripts` | e2e, acceptance and release scripts |
+| `testdata`, `tools` | Synthetic fixtures, parity oracles and the fixture tools |
+| `third_party` | Licenses and notices of ported code |
+| `notes` | Design records and dated logs ([index](../notes/README.md)) |

@@ -1,6 +1,7 @@
 # Launch readiness punch list
 
-Status: open. Salvaged from the CASS-era launch gate (PR #2,
+Historical status: open at the end of the original stack. The checkboxes describe that stack
+and do not establish the current implementation or deployment. Salvaged from the CASS-era launch gate (PR #2,
 `origin/launch/readiness`, 3ec5124) with the CASS gates edited out. Retrieval
 is now specified by `notes/local-search/README.md`; where this list and that
 spec disagree, the spec wins. A production launch with real company traces is
@@ -229,5 +230,5 @@ Acceptance evidence:
 ## Launch rule
 
 Do not label a release production-ready while a P0 is open. If a P1 feature is
-deferred, update `notes/mvp_scope.md`, `PRODUCT.md`, README claims, and tests in
+deferred, update `notes/mvp_scope.md`, README claims, and tests in
 the same review so the shipped contract remains truthful.

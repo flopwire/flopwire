@@ -1,0 +1,10 @@
+{"type":"session_meta","payload":{"id":"019a0000-0000-7000-8000-000000000099","cwd":"/tmp/synthetic"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"parallel"}}
+{"type":"response_item","payload":{"type":"function_call","id":"call-a","call_id":"call-a","name":"exec_command","arguments":"{\"cmd\":\"git commit -m first\"}"}}
+{"type":"response_item","payload":{"type":"function_call","id":"call-b","call_id":"call-b","name":"exec_command","arguments":"{\"cmd\":\"git status\"}"}}
+{"type":"event_msg","payload":{"type":"item_completed","turn_id":"parallel","item":{"type":"CommandExecution","id":"completion-a","call_id":"call-a","command":["zsh","-lc","git commit -m first"],"cwd":"file:///tmp/synthetic","exit_code":0,"output":"ignored fallback","aggregated_output":"[topic abc1234] first"}}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-b","output":"prose mentioning call-a and completion-a"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-a","output":"Process running with session ID 77"}}
+{"type":"event_msg","payload":{"type":"item_completed","turn_id":"parallel","item":{"type":"CommandExecution","id":"completion-delayed","command":"git commit -m delayed","exit_code":1,"output":"[topic def5678] delayed\nsubsequent command failed"}}}
+{"type":"event_msg","payload":{"type":"item_completed","turn_id":"other","item":{"type":"CommandExecution","id":"completion-empty","command":"git status","exit_code":0,"aggregated_output":""}}}
+{"type":"event_msg","payload":{"type":"item_completed","turn_id":"other","item":{"type":"CommandExecution","id":"completion-no-output","command":"git status","exit_code":0}}}

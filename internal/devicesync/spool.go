@@ -1,11 +1,12 @@
 package devicesync
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/flopwire/flopwire/internal/syncproto"
@@ -29,6 +30,11 @@ type Spool struct {
 	mu      sync.Mutex
 	used    int64
 	blocked bool
+
+	// Reference owner spans durable publication and conditional cleanup.
+	// Runtime workers remain serial under Syncer.mu; file reads copy under mu.
+	referenceMu    sync.Mutex
+	referenceStore *Store
 }
 
 // OpenSpool opens (creating) a spool directory with a size cap in bytes.
@@ -43,20 +49,21 @@ func OpenSpool(dir string, capBytes int64) (*Spool, error) {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if fi, err := d.Info(); err == nil {
-			s.used += fi.Size()
+		fi, err := d.Info()
+		if err != nil {
+			return err
 		}
+		s.used += fi.Size()
 		return nil
 	})
-	return s, err
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Spool) chunkPath(h syncproto.Hash) string {
 	return filepath.Join(s.dir, "chunks", h.String())
-}
-
-func (s *Spool) tailPath(sid, gen int64) string {
-	return filepath.Join(s.dir, "tails", fmt.Sprintf("%d-%d", sid, gen))
 }
 
 // Used returns the spooled bytes; Blocked reports whether the last write
@@ -64,12 +71,17 @@ func (s *Spool) tailPath(sid, gen int64) string {
 func (s *Spool) Used() int64   { s.mu.Lock(); defer s.mu.Unlock(); return s.used }
 func (s *Spool) Blocked() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.blocked }
 
-// Reserve checks that n more bytes fit, without writing. It sets Blocked
-// when they do not.
+// Reserve checks that n more bytes fit at this moment, without writing or
+// holding a reservation. Another writer may consume capacity before a later
+// PutChunk/PutTailVersion, which checks again. It sets Blocked when bytes do not fit.
 func (s *Spool) Reserve(n int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.used+n > s.cap {
+	return s.checkSpaceLocked(n)
+}
+
+func (s *Spool) checkSpaceLocked(n int64) error {
+	if n < 0 || s.used > s.cap || n > s.cap-s.used {
 		s.blocked = true
 		return fmt.Errorf("%w: %d + %d bytes over cap %d", ErrSpoolFull, s.used, n, s.cap)
 	}
@@ -77,18 +89,65 @@ func (s *Spool) Reserve(n int64) error {
 }
 
 func (s *Spool) write(path string, data []byte) error {
-	if _, err := os.Stat(path); err == nil {
+	return s.writeWithFileWriter(path, data, (*os.File).Write)
+}
+
+func (s *Spool) writeWithFileWriter(path string, data []byte, write func(*os.File, []byte) (int, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fi, err := os.Stat(path); err == nil {
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("devicesync: spool destination is not a regular file: %s", path)
+		}
 		return nil
-	}
-	if err := s.Reserve(int64(len(data))); err != nil {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err := s.checkSpaceLocked(int64(len(data))); err != nil {
+		return err
+	}
+	retained, err := publishSpoolFile(path, data, write)
 	if err != nil {
+		// Failed cleanup can leave a partial temporary file. Charge it while
+		// still owning the spool, so later writers cannot ignore those bytes.
+		s.used += retained
 		return err
 	}
-	_, err = f.Write(data)
+	s.used += int64(len(data))
+	s.blocked = false
+	return nil
+}
+
+// Publication has no mutable fault hooks. The write operation is passed
+// explicitly so tests can prove partial-write/IO failure cleanup with real files.
+func publishSpoolFile(path string, data []byte, write func(*os.File, []byte) (int, error)) (retained int64, err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return 0, err
+	}
+	tmp := f.Name()
+	defer func() {
+		_ = f.Close()
+		if err != nil {
+			if cleanupErr := removeSpoolTemp(tmp); cleanupErr != nil {
+				fi, statErr := os.Stat(tmp)
+				switch {
+				case statErr == nil:
+					retained = fi.Size()
+				case errors.Is(statErr, os.ErrNotExist):
+					retained = 0
+				default:
+					retained = int64(len(data))
+				}
+				err = errors.Join(err, cleanupErr, statErr)
+			}
+		}
+	}()
+	var n int
+	n, err = write(f, data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
 	if err == nil {
 		err = f.Sync()
 	}
@@ -98,18 +157,20 @@ func (s *Spool) write(path string, data []byte) error {
 	if err == nil {
 		err = os.Rename(tmp, path)
 	}
-	if err != nil {
-		os.Remove(tmp)
-		return err
+	return 0, err
+}
+
+func removeSpoolTemp(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	s.mu.Lock()
-	s.used += int64(len(data))
-	s.blocked = false
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 func (s *Spool) read(path string) ([]byte, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
@@ -118,14 +179,14 @@ func (s *Spool) read(path string) ([]byte, bool, error) {
 }
 
 func (s *Spool) remove(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	fi, err := os.Stat(path)
 	if err != nil {
 		return
 	}
 	if os.Remove(path) == nil {
-		s.mu.Lock()
 		s.used -= fi.Size()
-		s.mu.Unlock()
 	}
 }
 
@@ -133,55 +194,32 @@ func (s *Spool) PutChunk(h syncproto.Hash, data []byte) error { return s.write(s
 func (s *Spool) Chunk(h syncproto.Hash) ([]byte, bool, error) { return s.read(s.chunkPath(h)) }
 func (s *Spool) DropChunk(h syncproto.Hash)                   { s.remove(s.chunkPath(h)) }
 
-func (s *Spool) PutTail(sid, gen int64, data []byte) error {
-	// A tail is replaced on each capture; drop the old one first so the
-	// cap counts only the live version.
-	s.remove(s.tailPath(sid, gen))
-	return s.write(s.tailPath(sid, gen), data)
-}
-func (s *Spool) Tail(sid, gen int64) ([]byte, bool, error) { return s.read(s.tailPath(sid, gen)) }
-func (s *Spool) DropTail(sid, gen int64)                   { s.remove(s.tailPath(sid, gen)) }
-
-// sweep deletes partial writes (*.tmp) and every chunk or tail that keep
-// rejects: keep gets a chunk's hash, or nil and a tail's source and
-// generation. Run it before any capture, so nothing is mid-write.
-func (s *Spool) sweep(keep func(h *syncproto.Hash, sid, gen int64) (bool, error)) error {
-	for _, d := range []string{"chunks", "tails"} {
-		ents, err := os.ReadDir(filepath.Join(s.dir, d))
-		if err != nil {
-			return err
-		}
-		for _, de := range ents {
-			path := filepath.Join(s.dir, d, de.Name())
-			if de.IsDir() {
-				continue
-			}
-			var (
-				h        *syncproto.Hash
-				sid, gen int64
-				ok       bool
-			)
-			if strings.HasSuffix(de.Name(), ".tmp") {
-				s.remove(path)
-				continue
-			}
-			if d == "chunks" {
-				var hh syncproto.Hash
-				if hh.UnmarshalText([]byte(de.Name())) == nil {
-					h, ok = &hh, true
-				}
-			} else if _, err := fmt.Sscanf(de.Name(), "%d-%d", &sid, &gen); err == nil {
-				ok = true
-			}
-			if ok {
-				if ok, err = keep(h, sid, gen); err != nil {
-					return err
-				}
-			}
-			if !ok {
-				s.remove(path)
-			}
+// sweep runs before workers start, under the reference owner. All reference
+// queries finish before any deletion; file inspection never encloses SQL.
+func (s *Spool) sweep(ctx context.Context, requiredChunks func(context.Context, []syncproto.Hash) (map[syncproto.Hash]bool, error), required requiredTailFunc) error {
+	hashes, junk, err := s.chunkInventory(ctx)
+	if err != nil {
+		return err
+	}
+	refs, err := requiredChunks(ctx, hashes)
+	if err != nil {
+		return err
+	}
+	tailRefs, err := s.planRequiredTails(ctx, 0, required)
+	if err != nil {
+		return err
+	}
+	var unused []syncproto.Hash
+	for _, h := range hashes {
+		if !refs[h] {
+			unused = append(unused, h)
 		}
 	}
-	return nil
+	if err := s.dropVerifiedChunks(ctx, unused); err != nil {
+		return err
+	}
+	if err := s.dropChunkJunk(ctx, junk); err != nil {
+		return err
+	}
+	return s.sweepTails(ctx, tailRefs)
 }

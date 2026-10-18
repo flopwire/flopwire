@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/digest"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
@@ -73,14 +74,18 @@ type BatchResult struct {
 // from both the batch and the index gets a stub row under the source's agent.
 func (s *Store) ApplyBatch(ctx context.Context, b Batch) (BatchResult, error) {
 	var res BatchResult
-	err := s.write(ctx, func(w *writeTx) error {
+	err := s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionAppend, fn: func(w *writeTx) error {
 		res = BatchResult{}
 		return w.applyBatch(&b, &res)
-	})
+	}})
 	return res, err
 }
 
 func (w *writeTx) applyBatch(b *Batch, res *BatchResult) error {
+	if b.NewGeneration != nil || b.SupersedeAbsent || len(b.RetireSources) > 0 {
+		w.changeCache = nil
+		w.changeAppend = false
+	}
 	if b.NewGeneration != nil {
 		if err := w.startGeneration(b.SourceID, b.NewGeneration, b.NewGenerationReason); err != nil {
 			return err
@@ -401,7 +406,7 @@ func locatorKey(m *transcript.Message) any {
 	return m.ByteOffset
 }
 
-func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, res *BatchResult) (rowChange, error) {
+func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, res *BatchResult) (changeOut rowChange, errOut error) {
 	h, err := w.findHead(b, convID, m)
 	if err != nil {
 		return 0, err
@@ -410,6 +415,30 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 		_, err := w.insertMessage(b, convID, m, p, 1)
 		res.Inserted++
 		return rowAdded, err
+	}
+	if w.changeCache[convID] != nil {
+		before, err := w.changeInput(h.id)
+		if err != nil {
+			return 0, err
+		}
+		defer func() {
+			if errOut != nil {
+				delete(w.changeCache, convID)
+				return
+			}
+			if w.changeCache[convID] == nil {
+				return
+			}
+			after, err := w.changeInput(h.id)
+			if err != nil {
+				errOut = err
+				delete(w.changeCache, convID)
+				return
+			}
+			if before != after {
+				delete(w.changeCache, convID)
+			}
+		}()
 	}
 	enr, err := enrichmentJSON(m)
 	if err != nil {
@@ -432,6 +461,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 			res.Touched++
 			return change, w.refresh(b, h.id, m, enr, nil)
 		}
+		// A non-nil refresh writes text. The metadata comparison alone cannot
+		// prove the old extractor input unchanged across this branch.
+		delete(w.changeCache, convID)
 		res.Grown++
 		if err := w.ftsDelete(h.id); err != nil {
 			return 0, err
@@ -442,6 +474,9 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 		w.ftsInsert(h.id, p)
 		return change, nil
 	}
+	// Replacing an old physical row invalidates its retained prefix before
+	// either the supersede write or the new-version insertion.
+	delete(w.changeCache, convID)
 	res.Versioned++
 	// Clear the head slot before inserting the new version.
 	if _, err := w.exec(`UPDATE messages SET superseded = 1, superseded_by = -1,
@@ -458,7 +493,7 @@ func (w *writeTx) upsertMessage(b *Batch, convID int64, m *transcript.Message, p
 
 const msgCols = `conversation_id, source_id, native_id, part, parent_native_id, ordinal, kind, role, tool_name, tool_call_id,
 	is_error, ts, text, text_len, full_len, content_sha, version, superseded, superseded_in_generation, on_active_path,
-	enrichment, source_generation, line_no, byte_offset, byte_len, locator, parser`
+	enrichment, source_generation, line_no, byte_offset, byte_len, locator, parser, change_result_eligible`
 
 func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p *prepared, version int64) (int64, error) {
 	enr, err := enrichmentJSON(m)
@@ -470,12 +505,12 @@ func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p
 		supGen = b.Generation
 	}
 	row, err := w.queryRow(`INSERT INTO messages (`+msgCols+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		convID, b.SourceID, nullStr(m.NativeID), m.Part, nullStr(m.ParentNativeID), m.Ordinal, m.Kind.String(),
 		nullStr(m.Role), nullStr(m.ToolName), nullStr(m.ToolCallID), boolInt(m.IsError), nullTime(m.TS),
 		p.z, len(m.Text), m.FullLen, m.ContentSHA[:], version, boolInt(m.Superseded), supGen,
 		nullBool(m.OnActivePath), enr, b.Generation, nullInt(m.LineNo), jsonlInt(m, m.ByteOffset), jsonlInt(m, m.ByteLen),
-		nullStr(m.Locator), m.Parser)
+		nullStr(m.Locator), m.Parser, boolInt(digest.MayContainCommitEvidence(p.text)))
 	if err != nil {
 		return 0, err
 	}
@@ -484,6 +519,14 @@ func (w *writeTx) insertMessage(b *Batch, convID int64, m *transcript.Message, p
 		return 0, err
 	}
 	w.ftsInsertNew(id, p)
+	// nullStr and jsonlInt produce canonical identities for fresh rows: a
+	// missing locator always stores a non-NULL byte offset, including zero.
+	if w.changeCache[convID] != nil && (m.Kind == transcript.KindToolCall || m.Kind == transcript.KindToolResult) {
+		if w.changeAdded == nil {
+			w.changeAdded = map[int64][]int64{}
+		}
+		w.changeAdded[convID] = append(w.changeAdded[convID], id)
+	}
 	return id, nil
 }
 
@@ -498,22 +541,24 @@ func (w *writeTx) refresh(b *Batch, id int64, m *transcript.Message, enr any, ne
 	}
 	var text []byte
 	var textLen any
+	var eligible any
 	if newText != nil {
 		text, textLen = newText.z, len(m.Text)
+		eligible = boolInt(digest.MayContainCommitEvidence(newText.text))
 	}
 	_, err := w.exec(`UPDATE messages SET source_id = ?, parent_native_id = ?, kind = ?, role = ?, tool_name = ?, tool_call_id = ?,
 		  is_error = ?, ts = coalesce(?, ts), full_len = ?, content_sha = ?,
 		  superseded = ?, superseded_in_generation = CASE WHEN ? THEN coalesce(superseded_in_generation, ?) ELSE NULL END,
 		  on_active_path = coalesce(?, on_active_path), enrichment = coalesce(?, enrichment), source_generation = ?,
 		  line_no = ?, byte_offset = ?, byte_len = ?, locator = ?, parser = ?,
-		  text = coalesce(?, text), text_len = coalesce(?, text_len)
+		  text = coalesce(?, text), text_len = coalesce(?, text_len), change_result_eligible = coalesce(?, change_result_eligible)
 		WHERE id = ?`,
 		b.SourceID, nullStr(m.ParentNativeID), m.Kind.String(), nullStr(m.Role), nullStr(m.ToolName), nullStr(m.ToolCallID),
 		boolInt(m.IsError), nullTime(m.TS), m.FullLen, m.ContentSHA[:],
 		boolInt(m.Superseded), boolInt(m.Superseded), supGen,
 		nullBool(m.OnActivePath), enr, b.Generation,
 		nullInt(m.LineNo), jsonlInt(m, m.ByteOffset), jsonlInt(m, m.ByteLen), nullStr(m.Locator), m.Parser,
-		text, textLen, id)
+		text, textLen, eligible, id)
 	return err
 }
 
@@ -855,6 +900,9 @@ func (s *Store) PurgeConversation(ctx context.Context, agent transcript.Agent, s
 		}
 		ids.Close()
 		if err := ids.Err(); err != nil {
+			return err
+		}
+		if err := w.removeChangeEvents(convID); err != nil {
 			return err
 		}
 		for _, stmt := range []string{

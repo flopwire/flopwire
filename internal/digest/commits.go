@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 )
@@ -447,10 +448,10 @@ func formatStyle(v string) (string, bool) {
 var logCount = regexp.MustCompile(`^-(n=?)?[0-9]+$|^--max-count=[0-9]+$`)
 
 var (
-	shaLine    = regexp.MustCompile(`(?m)^[*|\\/ ]*([0-9a-f]{7,40})(?:[ \t]|$)`)
-	shaHeader  = regexp.MustCompile(`(?m)^[*|\\/ ]*commit ([0-9a-f]{7,40})\b`)
-	shaBare    = regexp.MustCompile(`(?m)^([0-9a-f]{7,40})\s*$`)
-	pushUpdate = regexp.MustCompile(`(?m)^\s*[+ ]?\s*[0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40})\s+(\S+)\s+->\s+\S+`)
+	shaLine    = regexp.MustCompile(`(?m)^[*|\\/ ]*([0-9a-f]{7,64})(?:[ \t]|$)`)
+	shaHeader  = regexp.MustCompile(`(?m)^[*|\\/ ]*commit ([0-9a-f]{7,64})\b`)
+	shaBare    = regexp.MustCompile(`(?m)^([0-9a-f]{7,64})\s*$`)
+	pushUpdate = regexp.MustCompile(`(?m)^\s*[+ ]?\s*[0-9a-f]{7,64}\.\.\.?([0-9a-f]{7,64})\s+(\S+)\s+->\s+\S+`)
 )
 
 // revealed is the sha a reveal's output shows for HEAD ("" for none).
@@ -703,4 +704,39 @@ func readCall(cmds []shellCmd) (callGit, bool) {
 		c.reveal = ""
 	}
 	return c, true
+}
+
+// literalExecCommands accepts only complete, literal exec wrappers. It is used
+// for ordering barriers, never to associate script output with a command.
+var literalExecStatement = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`^\s*text\(await tools\.exec_command\(\{((?:\s*(?:"(?:cmd|workdir|max_output_tokens|yield_time_ms|login)"|cmd|workdir|max_output_tokens|yield_time_ms|login)\s*:\s*(?:"(?:[^"\\]|\\.)*"|[0-9]+|true|false)\s*,?)+)\}\)\);?`)
+})
+var literalExecKey = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(^|,)\s*(cmd|workdir|max_output_tokens|yield_time_ms|login)\s*:`)
+})
+
+func literalExecCommands(text string) ([]shellCmd, bool) {
+	var out []shellCmd
+	for strings.TrimSpace(text) != "" {
+		m := literalExecStatement().FindStringSubmatch(text)
+		if m == nil {
+			return nil, false
+		}
+		object := literalExecKey().ReplaceAllString(m[1], `${1}"${2}":`)
+		object = strings.TrimSuffix(strings.TrimSpace(object), ",")
+		var args map[string]json.RawMessage
+		if json.Unmarshal([]byte("{"+object+"}"), &args) != nil {
+			return nil, false
+		}
+		var c shellCmd
+		if json.Unmarshal(args["cmd"], &c.line) != nil || c.line == "" {
+			return nil, false
+		}
+		if raw, ok := args["workdir"]; ok && json.Unmarshal(raw, &c.cwd) != nil {
+			return nil, false
+		}
+		out = append(out, c)
+		text = text[len(m[0]):]
+	}
+	return out, len(out) > 0
 }

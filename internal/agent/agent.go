@@ -46,9 +46,12 @@ import (
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
+	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/transcript/cowork"
+	"github.com/flopwire/flopwire/internal/transcript/desktopcode"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
 	"github.com/flopwire/flopwire/internal/transcript/opencode"
 )
@@ -56,8 +59,8 @@ import (
 // Sync is the part of devicesync.Scheduler the agent drives. Every call
 // returns at once; the network never blocks indexing.
 type Sync interface {
-	Notify(devicesync.SourceSpec)
-	NotifyExportFunc(devicesync.SourceSpec, devicesync.ExportFunc)
+	NotifyWithNotice(devicesync.SourceSpec, devicesync.Notice)
+	NotifyExportFuncWithNotice(devicesync.SourceSpec, devicesync.ExportFunc, devicesync.Notice)
 	Flush(devicesync.SourceSpec)
 }
 
@@ -65,10 +68,16 @@ var _ Sync = (*devicesync.Scheduler)(nil)
 
 // Config configures an Agent. Zero fields take defaults.
 type Config struct {
-	ClaudeProjects string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
-	CodexHome      string // default codex.Home() (CODEX_HOME or ~/.codex)
-	DevinDB        string // default devin.DefaultPath; "-" disables Devin
-	OpencodeDB     string // default opencode.DefaultPath; "-" disables opencode
+	// DeviceID and Server describe the initial collector binding for diagnostic
+	// observations. They never authorize collection or upload.
+	DeviceID        string
+	Server          string
+	DesktopCodeRoot string // local Code metadata/scoped container; Darwin default, "-" disables
+	CoworkRoot      string // Claude Desktop Cowork container; Darwin app default, "-" disables
+	ClaudeProjects  string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
+	CodexHome       string // default codex.Home() (CODEX_HOME or ~/.codex)
+	DevinDB         string // default devin.DefaultPath; "-" disables Devin
+	OpencodeDB      string // default opencode.DefaultPath; "-" disables opencode
 	// OpencodeRegistry is the directory where the Flopwire opencode plugin
 	// names each opencode process's sessions (presence.go); default
 	// <client config dir>/opencode, "-" none.
@@ -86,8 +95,24 @@ type Config struct {
 	// across workers (Codex rollouts have lines up to 14MB); default 16MB.
 	LineBudget int64
 
-	Sync   Sync // nil: local indexing only
-	Logger *slog.Logger
+	SyncTokenFingerprint   string                                                                  // SHA-256 token identity, only for credentials with no device ID
+	DrainSync              func(context.Context, time.Duration) error                              // waits for queued uploads; nil cannot complete delegated --once
+	Sync                   Sync                                                                    // nil: local indexing only
+	CoworkPolicy           CoworkPolicyClient                                                      // nil: Cowork sharing remains held
+	RecoveredPolicySources func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) // restriction-only receipts for the bound device
+	Logger                 *slog.Logger
+	// Version is this binary's version and ServerVersion reports the
+	// version the server last answered with (client.ServerVersion); when
+	// that is a newer release, pending and status carry an upgrade
+	// notice (upgrade.Notice). Either empty: no notice.
+	Version       string
+	ServerVersion func() string
+	// ReleaseCheck, when set, resolves the newest published release
+	// (upgrade.Latest); the agent calls it once at start and every
+	// ReleaseEvery (default 24h), so a device with no server, or one whose
+	// server lags, still hears about a newer release. nil: no check.
+	ReleaseCheck func(context.Context) (string, error)
+	ReleaseEvery time.Duration
 
 	// Path rules (D18, see policy.go). UserRules is a file of user rules,
 	// one per line, re-read when it changes; UserRuleList holds more user
@@ -102,6 +127,7 @@ type Config struct {
 	Unplaceable     string
 	AdminRules      func(context.Context) (AdminPolicy, error)
 	AdminRulesCache string
+	PolicyAuthority *PolicyAuthority
 	AdminEvery      time.Duration
 	Home            string
 	// Withhold asks the server to delete what it holds of a session a
@@ -142,6 +168,26 @@ func (c *Config) defaults() {
 	home, _ := os.UserHomeDir()
 	if c.ClaudeProjects == "" {
 		c.ClaudeProjects = claude.ProjectsRoot(os.Getenv, home)
+	}
+	if c.CoworkRoot != "" && c.CoworkRoot != "-" {
+		if root, err := filepath.Abs(c.CoworkRoot); err == nil {
+			c.CoworkRoot = root
+		}
+	}
+	if c.CoworkRoot == "" {
+		c.CoworkRoot = cowork.DefaultRoot(home)
+	} else if c.CoworkRoot == "-" {
+		c.CoworkRoot = ""
+	}
+	if c.DesktopCodeRoot != "" && c.DesktopCodeRoot != "-" {
+		if root, err := filepath.Abs(c.DesktopCodeRoot); err == nil {
+			c.DesktopCodeRoot = root
+		}
+	}
+	if c.DesktopCodeRoot == "" {
+		c.DesktopCodeRoot = desktopcode.DefaultRoot(home)
+	} else if c.DesktopCodeRoot == "-" {
+		c.DesktopCodeRoot = ""
 	}
 	if c.CodexHome == "" {
 		c.CodexHome = codex.Home()
@@ -201,12 +247,39 @@ func (c *Config) defaults() {
 
 // Agent indexes one device's transcripts. Create it with New, then call
 // Run (or Once).
+type sessionActivityReader func(context.Context, transcript.Agent, []string) (map[string]time.Time, error)
+
 type Agent struct {
-	cfg    Config
-	store  *localindex.Store
-	claude transcript.Parser
-	codex  transcript.Parser
-	log    *slog.Logger
+	work agentWork
+
+	// Optional ranking metadata; a failed read must not discard committed sync work.
+	sessionActivities sessionActivityReader
+
+	initializedAt time.Time // distinguishes later-created files from cold directory peers
+
+	captureScopeMu        sync.RWMutex // orders app registration against in-flight native evidence
+	placeWriteMu          sync.Mutex   // orders placement memory and durable writes together
+	cfg                   Config
+	coworkMu              sync.Mutex
+	desktopCodeResult     desktopcode.Result
+	desktopCodeError      string
+	desktopCodeParser     transcript.Parser
+	coworkResult          cowork.Result              // immutable discovery snapshot; guarded by mu
+	coworkError           string                     // guarded by mu
+	coworkPendingUnknown  map[placeKey]bool          // expected historical provenance, guarded by mu
+	coworkHistoryFailures map[placeKey]error         // failed durable fact operations, scoped to affected identities
+	policyEnforcementErr  error                      // unfinished purge/resync; reconstructed by startup enforcement, guarded by mu
+	coworkHistoryReadErr  error                      // unidentified historical origins hold Claude sharing until read recovers
+	coworkFamilies        map[string]map[string]bool // immutable verified relation snapshot, guarded by mu
+	coworkParser          transcript.Parser
+	coworkPolicyAttempt   CoworkPolicyAttempt // latest registration diagnostic only; never authorizes capture
+	coworkReconcileCursor placeKey            // fair metadata progress; guarded by mu
+	store                 *localindex.Store
+	claude                transcript.Parser
+	codex                 transcript.Parser
+	log                   *slog.Logger
+	upgradeLogged         string // the version last logged as an upgrade notice
+	latestRelease         string // ReleaseCheck's last answer, under upgradeLogMu
 	// onReads, when set (tests), takes the read sightings instead of
 	// the message bus.
 	onReads func([]devicebus.Read)
@@ -291,13 +364,15 @@ type Stats struct {
 func New(store *localindex.Store, cfg Config) *Agent {
 	cfg.defaults()
 	budget := transcript.NewLineBudget(cfg.LineBudget)
-	a := &Agent{cfg: cfg, store: store, log: cfg.Logger,
-		claude:  &claude.Parser{Lines: transcript.LineReaderOptions{Budget: budget}},
-		codex:   &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
-		targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
+	a := &Agent{cfg: cfg, store: store, log: cfg.Logger, sessionActivities: store.SessionActivities,
+		claude:        &claude.Parser{Lines: transcript.LineReaderOptions{Budget: budget}},
+		codex:         &codex.Parser{LineOptions: transcript.LineReaderOptions{Budget: budget}},
+		initializedAt: time.Now(), targets: map[string]*target{}, stubbed: map[string]bool{}, notified: map[string]bool{},
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
 		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
+	a.coworkParser = &claude.Parser{FS: cowork.FS{Root: cfg.CoworkRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
+	a.desktopCodeParser = &claude.Parser{FS: cowork.FS{Root: cfg.DesktopCodeRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
 	a.idle = sync.NewCond(&a.mu)
 	a.devin.h, a.opencode.h = devinHarness, opencodeHarness
 	if cfg.DevinDB != "-" {
@@ -314,6 +389,15 @@ func New(store *localindex.Store, cfg Config) *Agent {
 	a.preloadPolicy()
 	if err := a.loadPlaces(context.Background()); err != nil {
 		a.log.Error("agent: reading stored placements; no upload until they load", "err", err)
+	}
+	a.refreshCowork(context.Background())
+	if admission, ok := cfg.Sync.(interface {
+		SetAdmission(func(devicesync.SourceSpec) error)
+	}); ok {
+		admission.SetAdmission(a.admitUpload)
+	}
+	if f, ok := cfg.Sync.(captureAuthorizer); ok {
+		f.SetAuthorize(a.authorizeCapture)
 	}
 	if f, ok := cfg.Sync.(interface {
 		SetFilter(func(devicesync.SourceSpec) bool)
@@ -345,6 +429,9 @@ func (a *Agent) Once(ctx context.Context) error {
 		return err
 	}
 	a.refreshAdmin(ctx)
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -390,6 +477,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		go func() {
 			defer a.bgWG.Done()
 			_ = a.cfg.Bus.Run(ctx)
+		}()
+	}
+	if a.cfg.ReleaseCheck != nil {
+		a.bgWG.Add(1)
+		go func() {
+			defer a.bgWG.Done()
+			a.runReleaseCheck(ctx)
 		}()
 	}
 	var wg sync.WaitGroup
@@ -515,8 +609,13 @@ func (a *Agent) load(ctx context.Context) error {
 // sweep runs a full discovery pass, queues every file whose gate moved and
 // polls the harness stores.
 func (a *Agent) sweep(ctx context.Context) error {
+	defer a.work.sweep.Begin().End()
 	t0, cpu0 := time.Now(), cpuTime()
 	a.refreshPolicy(ctx, false)
+	refreshDone := a.work.refreshFromSweep.Begin()
+	a.refreshCowork(ctx)
+	refreshDone.End()
+	a.reconcileCoworkBounded(ctx)
 	f, err := a.discoverAll()
 	if err != nil {
 		return err
@@ -587,7 +686,7 @@ func (a *Agent) merge(ctx context.Context, f *found, full bool) int {
 	n := 0
 	now := time.Now()
 	for _, s := range sts {
-		if a.gateID(s.t, s.id, now, false) {
+		if a.gateID(s.t, s.id, now, false, time.Unix(0, s.mod)) {
 			n++
 		}
 	}
@@ -616,16 +715,42 @@ func (a *Agent) waitDiscovered(ctx context.Context) error {
 // gate stats t and queues it when its tuple moved or is racy. urgent puts
 // it at the front of the queue.
 func (a *Agent) gate(t *target, now time.Time, urgent bool) bool {
-	id, err := transcript.StatIdentity(t.path)
+	return a.gateWithContracts(t, now, urgent, nil)
+}
+
+func (a *Agent) gateWithContracts(t *target, now time.Time, urgent bool, contracts *gateContracts) bool {
+	fi, err := fsprobe.Stat(t.path)
 	if err != nil {
 		return false // gone; the next full pass retires it
 	}
-	return a.gateID(t, id, now, urgent)
+	return a.gateIDWithContracts(t, transcript.IdentityOf(fi), now, urgent, fi.ModTime(), contracts)
 }
 
 // gateID is gate with the identity already sampled.
-func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent bool) bool {
+func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent bool, activity time.Time) bool {
+	return a.gateIDWithContracts(t, id, now, urgent, activity, nil)
+}
+
+func (a *Agent) gateIDWithContracts(t *target, id transcript.Identity, now time.Time, urgent bool, activity time.Time, contracts *gateContracts) bool {
 	a.mu.Lock()
+	// Discovery establishes historical activity. Only later evidence of an
+	// actual write may promote it; directory urgency is not that evidence.
+	select {
+	case <-a.discovered:
+		known := !t.notice.ActivityAt.IsZero()
+		indexedThisRun := t.seenAt >= a.initializedAt.UnixNano()
+		identityMoved := t.seen != (transcript.Identity{}) && (id.Size != t.seen.Size || id.ID != t.seen.ID)
+		newWrite := known && (activity.After(t.notice.ActivityAt) || indexedThisRun && identityMoved)
+		newSource := !known && !activity.Before(a.initializedAt)
+		changed := id != t.seen && (newWrite || newSource)
+		if changed {
+			t.notice.Kind = devicesync.NoticeChanged
+		}
+	default:
+	}
+	if activity.After(t.notice.ActivityAt) {
+		t.notice.ActivityAt = activity
+	}
 	// Hand every source to sync once per process start (and again after
 	// the path rules change), so a server configured after the index was
 	// built still gets the backlog; the syncer's own watermark makes it a
@@ -634,7 +759,7 @@ func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent 
 	if first {
 		a.notified[t.path] = true
 	}
-	queued := a.gateLocked(t, id, now, urgent)
+	queued := a.gateLocked(t, id, now, urgent, contracts)
 	a.mu.Unlock()
 	if first && !a.notify(t) {
 		// Not placed yet (a young transcript that names no directory):
@@ -646,7 +771,7 @@ func (a *Agent) gateID(t *target, id transcript.Identity, now time.Time, urgent 
 	return queued
 }
 
-func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urgent bool) bool {
+func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urgent bool, contracts *gateContracts) bool {
 	if t.kind == kindCompanion && t.seen == (transcript.Identity{}) {
 		if n, ok := a.companion[t.path]; ok && n == id.Size {
 			// Recorded before this start; companions are written once.
@@ -655,7 +780,7 @@ func (a *Agent) gateLocked(t *target, id transcript.Identity, now time.Time, urg
 		}
 	}
 	if id == t.seen && !t.racy() {
-		if t.stale() {
+		if t.staleWithContracts(contracts) {
 			a.enqueueBackgroundLocked(t)
 		}
 		return false
@@ -777,6 +902,7 @@ func (a *Agent) WaitIdle() {
 }
 
 func (a *Agent) index(ctx context.Context, t *target) error {
+	defer a.work.index.Begin().End()
 	if t.kind == kindCompanion {
 		return a.indexCompanion(ctx, t)
 	}
@@ -790,6 +916,7 @@ func (a *Agent) index(ctx context.Context, t *target) error {
 // warmEvery ticks; the rest wait for the sweep. The change time comes from
 // the last stat, so a session that goes quiet cools down by itself.
 func (a *Agent) fastLane(ctx context.Context) {
+	defer a.work.fastLane.Begin().End()
 	now := time.Now()
 	a.ticks++
 	warm := a.ticks%warmEvery == 0
@@ -813,8 +940,9 @@ func (a *Agent) fastLane(ctx context.Context) {
 		sort.Slice(hot, func(i, j int) bool { return hot[i].seen.CTime > hot[j].seen.CTime })
 		hot = hot[:a.cfg.MaxHot]
 	}
+	var contracts gateContracts
 	for _, t := range hot {
-		a.gate(t, now, true)
+		a.gateWithContracts(t, now, true, &contracts)
 	}
 	a.pollStores(ctx, false, false)
 }
@@ -828,6 +956,7 @@ const warmEvery = 10
 // an event already, and rescanning a project on every write of some other
 // file would cost a discovery per write.
 func (a *Agent) dirEvent(ctx context.Context, ev watchEvent, w *watcher) {
+	defer a.work.watcherEvent.Begin().End()
 	p := ev.path
 	a.mu.Lock()
 	t := a.targets[p]
@@ -1016,6 +1145,7 @@ func (a *Agent) refreshAdmin(ctx context.Context) {
 	}
 	a.polMu.Unlock()
 	a.refreshPolicy(ctx, due)
+	a.reconcileCoworkBounded(ctx)
 }
 
 // shrinkIfIdle hands caches back when nothing is queued: an idle agent
@@ -1027,6 +1157,7 @@ func (a *Agent) shrinkIfIdle(ctx context.Context) {
 	if !idle {
 		return
 	}
+	defer a.work.idleTrim.Begin().End()
 	if err := a.store.ShrinkMemory(ctx); err != nil && ctx.Err() == nil {
 		a.log.Debug("agent: shrink memory", "err", err)
 	}

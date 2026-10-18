@@ -26,6 +26,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -47,10 +49,18 @@ import (
 
 // policyView is the rules in force and their generation; it changes as a
 // whole.
+type policyReadiness uint8
+
+const (
+	policyReady policyReadiness = iota
+	policyUnknown
+)
+
 type policyView struct {
-	pol pathpolicy.Policy
-	gen uint64
-	key string // canonical form, to detect a change
+	readiness policyReadiness
+	pol       pathpolicy.Policy
+	gen       uint64
+	key       string // canonical form, to detect a change
 }
 
 func policyKey(p pathpolicy.Policy) string {
@@ -74,9 +84,10 @@ func (a *Agent) policy() *policyView {
 
 // fileStamp is enough of a stat to notice that a rules file changed.
 type fileStamp struct {
-	ok   bool
-	size int64
-	mod  int64
+	ok    bool
+	size  int64
+	mod   int64
+	ctime int64
 }
 
 func stampOf(path string) fileStamp {
@@ -84,7 +95,7 @@ func stampOf(path string) fileStamp {
 	if err != nil {
 		return fileStamp{}
 	}
-	return fileStamp{true, fi.Size(), fi.ModTime().UnixNano()}
+	return fileStamp{true, fi.Size(), fi.ModTime().UnixNano(), transcript.IdentityOf(fi).CTime}
 }
 
 // refreshPolicy re-reads the user rules file when it changed and, with
@@ -101,10 +112,15 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 			if ctx.Err() == nil {
 				a.log.Info("agent: admin path rules not fetched; using the last known", "err", err)
 			}
+		} else if err := validateAdminPolicy(rules); err != nil {
+			a.log.Error("agent: invalid fetched collection policy; keeping last known rules", "err", err)
 		} else {
 			fetched = &rules
 		}
+
 	}
+	a.captureScopeMu.Lock()
+	defer a.captureScopeMu.Unlock()
 	a.polMu.Lock()
 	defer a.polMu.Unlock()
 	changed := !a.polApplied
@@ -112,22 +128,37 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 		a.userStamp, changed = st, true
 	}
 	if !a.polLoaded {
-		a.adminRaw = a.readAdminCache()
+		a.loadAdminCache()
 	}
-	if fetched != nil && (!slices.Equal(fetched.Rules, a.adminRaw.Rules) || fetched.Unplaceable != a.adminRaw.Unplaceable) {
-		a.adminRaw, changed = *fetched, true
-		a.writeAdminCache(*fetched)
+	if fetched != nil {
+		changed = changed || a.policy().readiness == policyUnknown || !slices.Equal(fetched.Rules, a.adminRaw.Rules) || fetched.Unplaceable != a.adminRaw.Unplaceable
+		a.adminRaw = *fetched
+		if err := a.writeAdminCache(*fetched); err != nil {
+			a.stats.Errors.Add(1)
+			a.log.Error("agent: admin path rules active but cache could not be saved; offline restart may pause collection", "err", err)
+		}
 	}
 	a.polLoaded = true
 	if !changed {
 		return
 	}
+	if a.policy().readiness == policyUnknown && fetched == nil {
+		a.log.Warn("agent: collection and uploads paused until current authority policy is available")
+		return
+	}
 	pol := a.buildPolicy()
 	a.mu.Lock()
-	same := a.pol.key == policyKey(pol)
+	same := a.pol.key == policyKey(pol) && a.pol.readiness == policyReady
+	if a.pol.readiness == policyUnknown {
+		a.pol = &policyView{pol: pol, key: policyKey(pol), gen: a.pol.gen + 1, readiness: policyReady}
+	}
 	a.mu.Unlock()
 	if same && a.polApplied {
 		return
+	}
+	if a.cfg.Bus != nil {
+		a.cfg.Bus.InvalidateReferences()
+		defer a.cfg.Bus.InvalidateReferences()
 	}
 	a.setPolicy(ctx, pol)
 	a.polApplied = true
@@ -139,13 +170,13 @@ func (a *Agent) refreshPolicy(ctx context.Context, fetch bool) {
 func (a *Agent) preloadPolicy() {
 	a.polMu.Lock()
 	defer a.polMu.Unlock()
-	a.adminRaw = a.readAdminCache()
+	a.loadAdminCache()
 	if a.cfg.UserRules != "" {
 		a.userStamp = stampOf(a.cfg.UserRules)
 	}
 	a.polLoaded = true
 	pol := a.buildPolicy()
-	a.pol = &policyView{pol: pol, gen: 1, key: policyKey(pol)}
+	a.pol = &policyView{pol: pol, gen: 1, key: policyKey(pol), readiness: a.pol.readiness}
 }
 
 // buildPolicy parses the user and admin rules, with "~" as this user's
@@ -207,7 +238,7 @@ func DevicePolicy(cfg Config) pathpolicy.Policy {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 	a := &Agent{cfg: cfg, log: cfg.Logger}
-	a.adminRaw = a.readAdminCache()
+	a.loadAdminCache()
 	return a.buildPolicy()
 }
 
@@ -313,39 +344,166 @@ type AdminPolicy struct {
 	Unplaceable string   `json:"unplaceable,omitempty"`
 }
 
-type adminCache struct {
-	AdminPolicy
-	FetchedAt time.Time `json:"fetched_at"`
+// PolicyAuthority identifies the server and enrollment that owns saved rules.
+// A nil Config.PolicyAuthority means standalone local collection. For older
+// credentials without a device ID, TokenFingerprint is SHA256 of the token.
+type PolicyAuthority struct {
+	Server           string
+	DeviceID         string
+	TokenFingerprint string
 }
 
-func (a *Agent) readAdminCache() AdminPolicy {
-	if a.cfg.AdminRulesCache == "" {
-		return AdminPolicy{}
+type adminCache struct {
+	AdminPolicy
+	Authority string    `json:"authority"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+type adminCacheState uint8
+
+const (
+	adminCacheAbsent adminCacheState = iota
+	adminCacheValid
+	adminCacheUnreadable
+)
+
+type adminCacheResult struct {
+	state  adminCacheState
+	policy AdminPolicy
+	err    error
+}
+
+// A cache belongs to one server and enrolled device. Legacy unowned files stay
+// untouched and cannot establish a current authority's collection permission.
+func (a *Agent) adminAuthority() string {
+	if a.cfg.PolicyAuthority == nil {
+		return ""
 	}
-	b, err := fsprobe.ReadFile(a.cfg.AdminRulesCache)
+	owner := a.cfg.PolicyAuthority
+	server, err := client.NormalizeServer(owner.Server)
 	if err != nil {
-		return AdminPolicy{}
+		return ""
+	}
+	identity := "device\x00" + owner.DeviceID
+	if owner.DeviceID == "" {
+		if owner.TokenFingerprint == "" {
+			return ""
+		}
+		identity = "token\x00" + owner.TokenFingerprint
+	}
+	sum := sha256.Sum256([]byte(server + "\x00" + identity))
+	return fmt.Sprintf("%x", sum)
+}
+func (a *Agent) adminCachePath() string {
+	if a.cfg.AdminRulesCache == "" || a.adminAuthority() == "" {
+		return ""
+	}
+	return a.cfg.AdminRulesCache + "." + a.adminAuthority()
+}
+func validateAdminPolicy(p AdminPolicy) error {
+	if _, err := pathpolicy.ParseRules(p.Rules); err != nil {
+		return err
+	}
+	if p.Unplaceable != "" {
+		if _, ok := pathpolicy.ParseUnplaceable(p.Unplaceable); !ok {
+			return errors.New("invalid unplaceable policy")
+		}
+	}
+	return nil
+}
+
+func (a *Agent) readAdminCache() adminCacheResult {
+	path := a.adminCachePath()
+	if path == "" {
+		return adminCacheResult{state: adminCacheAbsent}
+	}
+	b, err := fsprobe.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return adminCacheResult{state: adminCacheAbsent}
+	}
+	if err != nil {
+		return adminCacheResult{state: adminCacheUnreadable, err: err}
 	}
 	var c adminCache
 	if err := json.Unmarshal(b, &c); err != nil {
-		a.log.Error("agent: admin path rules cache unreadable", "file", a.cfg.AdminRulesCache, "err", err)
-		return AdminPolicy{}
+		return adminCacheResult{state: adminCacheUnreadable, err: err}
 	}
-	return c.AdminPolicy
-}
-
-func (a *Agent) writeAdminCache(p AdminPolicy) {
-	if a.cfg.AdminRulesCache == "" {
-		return
+	if c.Authority != a.adminAuthority() || c.FetchedAt.IsZero() {
+		return adminCacheResult{state: adminCacheUnreadable, err: errors.New("cache authority or timestamp missing/mismatched")}
 	}
-	b, _ := json.Marshal(adminCache{AdminPolicy: p, FetchedAt: time.Now().UTC()})
-	tmp := a.cfg.AdminRulesCache + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err == nil {
-		err = os.Rename(tmp, a.cfg.AdminRulesCache)
-		if err != nil {
-			a.log.Warn("agent: admin path rules cache", "err", err)
+	if _, err := pathpolicy.ParseRules(c.Rules); err != nil {
+		return adminCacheResult{state: adminCacheUnreadable, err: err}
+	}
+	if c.Unplaceable != "" {
+		if _, ok := pathpolicy.ParseUnplaceable(c.Unplaceable); !ok {
+			return adminCacheResult{state: adminCacheUnreadable, err: errors.New("invalid cached unplaceable policy")}
 		}
 	}
+	return adminCacheResult{state: adminCacheValid, policy: c.AdminPolicy}
+}
+func (a *Agent) loadAdminCache() {
+	if a.pol == nil {
+		a.pol = &policyView{}
+	}
+	if a.cfg.PolicyAuthority == nil {
+		a.adminRaw = AdminPolicy{}
+		return
+	}
+	r := a.readAdminCache()
+	if r.state == adminCacheValid {
+		a.adminRaw = r.policy
+		return
+	}
+	a.pol.readiness = policyUnknown
+	if r.err != nil {
+		a.log.Error("agent: admin policy cache unreadable; collection paused", "err", r.err)
+	}
+}
+func (a *Agent) writeAdminCache(p AdminPolicy) error {
+	path := a.adminCachePath()
+	if path == "" {
+		return errors.New("admin policy cache has no authority or path")
+	}
+	b, err := json.Marshal(adminCache{AdminPolicy: p, Authority: a.adminAuthority(), FetchedAt: time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".admin-policy-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	dir, err := fsprobe.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+// DeviceUploads applies only known current-authority policy to repository names.
+func DeviceUploads(cfg Config, pl pathpolicy.Placement) bool {
+	cfg.defaults()
+	a := &Agent{cfg: cfg, log: cfg.Logger, pol: &policyView{}}
+	a.loadAdminCache()
+	return a.pol.readiness == policyReady && Uploads(a.buildPolicy(), pl)
 }
 
 // setPolicy puts pol in force after a rule change (or at start): stored
@@ -371,12 +529,19 @@ func (a *Agent) setPolicy(ctx context.Context, pol pathpolicy.Policy) {
 // them in), every source is offered to sync again (a loosened local rule
 // lets it upload), and conversations a deny rule now covers are purged.
 // It also runs after the recovery pass changed placements.
-func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) {
+func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) error {
+	if a.policy().readiness == policyUnknown {
+		return nil
+	}
+	var failures []error
 	a.mu.Lock()
 	a.pol = &policyView{pol: pol, gen: a.pol.gen + 1, key: policyKey(pol)}
 	for _, t := range a.targets {
-		if t.modeGen != 0 && t.mode == pathpolicy.Deny {
+		key, _ := t.placeKeyOf()
+		cw := localindex.IsCoworkPlacement(a.places[key].how) || (t.root != "" && localindex.IsCoworkPlacement(a.places[placeKey{transcript.AgentClaude, t.root}].how))
+		if cw || t.modeGen != 0 && t.mode == pathpolicy.Deny {
 			t.seen, t.seenAt = transcript.Identity{}, 0
+			delete(a.companion, t.path)
 		}
 		t.modeGen = 0
 	}
@@ -392,15 +557,26 @@ func (a *Agent) enforce(ctx context.Context, pol pathpolicy.Policy) {
 		d.mu.Unlock()
 		d.dirty.Store(true)
 	}
-	if err := a.purgeDenied(ctx); err != nil && ctx.Err() == nil {
-		a.stats.Errors.Add(1)
-		a.log.Error("agent: purging sessions a deny rule covers", "err", err)
-	}
-	for _, d := range a.stores() {
-		if err := a.storeResync(ctx, d); err != nil && ctx.Err() == nil {
-			a.log.Warn("agent: store after a path rules change", "agent", d.h.agent, "err", err)
+	if err := a.purgeDenied(ctx); err != nil {
+		failures = append(failures, err)
+		if ctx.Err() == nil {
+			a.stats.Errors.Add(1)
+			a.log.Error("agent: purging sessions a deny rule covers", "err", err)
 		}
 	}
+	for _, d := range a.stores() {
+		if err := a.storeResync(ctx, d); err != nil {
+			failures = append(failures, err)
+			if ctx.Err() == nil {
+				a.log.Warn("agent: store after a path rules change", "agent", d.h.agent, "err", err)
+			}
+		}
+	}
+	err := errors.Join(append(failures, ctx.Err())...)
+	a.mu.Lock()
+	a.policyEnforcementErr = err
+	a.mu.Unlock()
+	return err
 }
 
 // reresolve resolves again every stored placement whose directory still
@@ -442,7 +618,7 @@ func (a *Agent) reresolve() {
 		np := e.p
 		if np.pl.Main == "" && r.pl.Main != "" {
 			np.pl.Worktree, np.pl.Main = r.pl.Worktree, r.pl.Main
-			if e.p.how != localindex.PlacedByFolder {
+			if e.p.how != localindex.PlacedByFolder && !localindex.IsCoworkPlacement(e.p.how) {
 				np.how = cwdHow(np.pl) // the directory exists again: git places it
 			}
 		}
@@ -541,6 +717,20 @@ func (t *target) placeKeyOf() (placeKey, string) {
 // directory the transcript named: a fallback placement is replaced when
 // the transcript later names one, so its decision must not be cached.
 func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, known, final bool) {
+	defer func() {
+		if a.desktopCodeScoped(t.path) && known && !a.desktopCodeSharingConfigured() && !a.coworkMaySchedule(pv, t) {
+			if d.Mode < pathpolicy.Local {
+				d.Mode = pathpolicy.Local
+			}
+			final = false
+		}
+	}()
+	if d, ok := a.coworkMode(pv, t); ok {
+		if d.Mode != pathpolicy.Deny && a.coworkMaySchedule(pv, t) {
+			d.Mode = pathpolicy.Allow
+		}
+		return d, true, false
+	}
 	a.mu.Lock()
 	var parent *target
 	if t.kind == kindCompanion {
@@ -579,6 +769,25 @@ func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, kn
 // it when a rule could deny it (worstMode), and ask again later.
 func (a *Agent) modeOf(t *target) (mode pathpolicy.Mode, known bool) {
 	pv := a.policy()
+	if pv.readiness == policyUnknown {
+		return pathpolicy.Local, false
+	}
+	if a.desktopCodeScoped(t.path) {
+		d, k, _ := a.decisionOf(pv, t)
+		if !k && pv.pol.Empty() {
+			return pathpolicy.Local, true
+		}
+		return d.Mode, k
+	}
+	if d, ok := a.coworkMode(pv, t); ok {
+		if d.Mode != pathpolicy.Deny && a.coworkMaySchedule(pv, t) {
+			d.Mode = pathpolicy.Allow
+		}
+		a.mu.Lock()
+		t.mode, t.modeGen = d.Mode, pv.gen
+		a.mu.Unlock()
+		return d.Mode, true
+	}
 	if pv.pol.Empty() {
 		// Nothing to decide, but the placement is still recorded when the
 		// session is first seen, for rules added after its worktree is gone.
@@ -678,9 +887,38 @@ func (a *Agent) loadStoreModes(ctx context.Context, d *storeState, pv *policyVie
 	a.mu.Unlock()
 }
 
+// ErrPolicyUnknown reports a temporary collection and upload pause, not a deny.
+var ErrPolicyUnknown = errors.New("agent: collection and uploads paused until current authority collection policy is known")
+
+func (a *Agent) admitUpload(devicesync.SourceSpec) error {
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
+	return nil
+}
+
 // allowUpload is the sync scheduler's filter: it drops a queued flush the
 // rules no longer allow (a deny or local rule added after the capture).
 func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
+	if a.policy().readiness == policyUnknown {
+		return false
+	}
+	a.mu.Lock()
+	historyReadErr := a.coworkHistoryReadErr
+	a.mu.Unlock()
+	if spec.Agent == transcript.AgentClaude && historyReadErr != nil {
+		return false
+	}
+	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}
+	if spec.Parent != "" {
+		nt.kind, nt.owner, nt.parent = kindCompanion, spec.SessionKey, spec.Parent
+	}
+	if _, ok := a.coworkMode(a.policy(), nt); ok {
+		return a.coworkMaySchedule(a.policy(), nt)
+	}
+	if a.desktopCodeScoped(spec.Path) && !a.desktopCodeSharingConfigured() {
+		return false
+	}
 	if a.policy().pol.Empty() {
 		return true
 	}
@@ -705,10 +943,6 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	// Not tracked (the file is gone, or not listed yet): place it the way
 	// a tracked file would be, from the stored placement, the transcript
 	// or a fallback.
-	nt := &target{path: spec.Path, kind: kindTranscript, src: transcript.Source{Agent: spec.Agent, SessionKey: spec.SessionKey}}
-	if spec.Parent != "" {
-		nt.kind, nt.owner, nt.parent = kindCompanion, spec.SessionKey, spec.Parent
-	}
 	pv := a.policy()
 	d, known, _ := a.decisionOf(pv, nt)
 	return known && d.Mode == pathpolicy.Allow
@@ -752,16 +986,23 @@ func (a *Agent) purgeDenied(ctx context.Context) error {
 			p.pl = a.resolve(c.cwd, "")
 			p.how = cwdHow(p.pl)
 		}
-		if !ok && !abs {
+		cw, coworkScoped := a.coworkMode(pv, &target{src: transcript.Source{Agent: transcript.Agent(c.agent), SessionKey: c.session}})
+		if !ok && !abs && !coworkScoped {
 			// Never placed (an orphan stub, or a row from before the
 			// placement was stored): not decided here; its files are.
 			continue
 		}
 		d := a.decide(pv.pol, p)
+		if coworkScoped {
+			d = cw
+		}
 		if pd, ok := denied[c.parent]; ok && d.Mode != pathpolicy.Deny {
 			d = pd // a subagent goes with its parent
 		}
 		if d.Mode == pathpolicy.Deny {
+			if err := a.coworkHistoryPurgeError([]placeKey{{transcript.Agent(c.agent), c.session}}); err != nil {
+				return err
+			}
 			denied[c.id] = d
 			c.why = d
 			todo = append(todo, c)
@@ -773,6 +1014,11 @@ func (a *Agent) purgeDenied(ctx context.Context) error {
 // purgeSource removes the conversations recorded from one source (a
 // tracked file a deny rule now covers).
 func (a *Agent) purgeSource(ctx context.Context, sourceID int64, why pathpolicy.Decision) error {
+	if source, err := a.store.Source(ctx, sourceID); err != nil {
+		return err
+	} else if err := a.coworkHistoryPurgeError([]placeKey{{source.Source.Agent, source.Source.SessionKey}}); err != nil {
+		return err
+	}
 	rows, err := a.store.DB().QueryContext(ctx, `SELECT c.id, c.agent, c.session_id, ifnull(s.storage_kind, '')
 		FROM conversations c JOIN sources s ON s.id = c.source_id WHERE c.source_id = ?`, sourceID)
 	if err != nil {
@@ -812,6 +1058,9 @@ func (a *Agent) purge(ctx context.Context, todo []purgeConv) error {
 	sources := map[int64]string{}
 	var names []string
 	for _, c := range todo {
+		a.mu.Lock()
+		delete(a.stubbed, c.session)
+		a.mu.Unlock()
 		if err := a.store.PurgeConversation(ctx, transcript.Agent(c.agent), c.session); err != nil {
 			return err
 		}
@@ -969,7 +1218,7 @@ func (a *Agent) recordCwds(ctx context.Context, t *target, cwds []string) (*tigh
 	tt := &tightening{pv: pv, was: was, now: d, name: fmt.Sprintf("%s:%s (%s)", key.agent, key.session, d.Reason())}
 	// Only an allowed session was handed to sync; one never placed before
 	// was not (uploadBound refuses it).
-	if wasKnown && was.Mode == pathpolicy.Allow && a.cfg.Sync != nil && a.cfg.Withhold != nil {
+	if wasKnown && was.Mode == pathpolicy.Allow && a.cfg.Sync != nil && a.cfg.Withhold != nil && !a.coworkOrigin(key, owner) {
 		if err := a.store.SetWithhold(ctx, owner.agent, owner.session, d.Mode.String(), d.Reason()); err != nil {
 			return nil, err
 		}
@@ -1004,7 +1253,7 @@ func (a *Agent) tighten(ctx context.Context, t *target, sourceID int64, tt *tigh
 	switch {
 	case tt.withhold:
 		a.log.Warn("agent: path rules: asking the server to delete what was uploaded of this session", "session", tt.name)
-		a.kickWithholds(ctx)
+		a.kickWithholdsLocked(ctx)
 	case a.cfg.Sync != nil && tt.was.Mode == pathpolicy.Allow:
 		a.noteServerCopies(1, []string{tt.name})
 		a.log.Warn("agent: path rules: what was uploaded of this session before stays on the server; " +
@@ -1016,6 +1265,15 @@ func (a *Agent) tighten(ctx context.Context, t *target, sourceID int64, tt *tigh
 // kickWithholds sends the server deletions owed (sendWithholds): in the
 // background while Run runs, else now.
 func (a *Agent) kickWithholds(ctx context.Context) {
+	a.kickWithholdsScope(ctx, false)
+}
+
+// kickWithholdsLocked runs while indexing holds the capture scope gate.
+func (a *Agent) kickWithholdsLocked(ctx context.Context) {
+	a.kickWithholdsScope(ctx, true)
+}
+
+func (a *Agent) kickWithholdsScope(ctx context.Context, gateHeld bool) {
 	if a.cfg.Withhold == nil {
 		return
 	}
@@ -1026,7 +1284,11 @@ func (a *Agent) kickWithholds(ctx context.Context) {
 	}
 	a.mu.Unlock()
 	if !bg {
-		a.sendWithholds(ctx)
+		if gateHeld {
+			a.sendWithholdsLocked(ctx)
+		} else {
+			a.sendWithholds(ctx)
+		}
 		return
 	}
 	go func() {
@@ -1040,7 +1302,18 @@ func (a *Agent) kickWithholds(ctx context.Context) {
 // fails stays owed: it is sent again at the next admin refresh and at
 // start.
 func (a *Agent) sendWithholds(ctx context.Context) {
-	if a.cfg.Withhold == nil || !a.withholdMu.TryLock() {
+	a.captureScopeMu.RLock()
+	defer a.captureScopeMu.RUnlock()
+	a.sendWithholdsLocked(ctx)
+}
+
+// sendWithholdsLocked keeps durable origin classification stable through the
+// legacy RPC. Its caller holds the capture scope gate.
+func (a *Agent) sendWithholdsLocked(ctx context.Context) {
+	if a.cfg.Withhold == nil {
+		return
+	}
+	if !a.withholdMu.TryLock() {
 		return
 	}
 	defer a.withholdMu.Unlock()
@@ -1049,7 +1322,38 @@ func (a *Agent) sendWithholds(ctx context.Context) {
 		a.log.Warn("agent: reading the server deletions owed", "err", err)
 		return
 	}
+	placements, err := a.store.Placements(ctx)
+	if err != nil {
+		a.log.Warn("agent: reading durable origins before server deletions", "err", err)
+		return
+	}
+	coworkOrigins := map[placeKey]bool{}
+	facts, historyErr := a.store.CoworkHistoricalUnknownFacts(ctx)
+	for _, session := range facts {
+		coworkOrigins[placeKey{transcript.AgentClaude, session}] = true
+	}
+	a.mu.Lock()
+	for key, p := range a.places {
+		if localindex.IsCoworkPlacement(p.how) {
+			coworkOrigins[key] = true
+		}
+	}
+	for key := range a.coworkPendingUnknown {
+		coworkOrigins[key] = true
+	}
+	a.mu.Unlock()
+	for _, p := range placements {
+		if localindex.IsCoworkPlacement(p.How) {
+			coworkOrigins[placeKey{p.Agent, p.SessionID}] = true
+		}
+	}
 	for _, w := range ws {
+		// Old owed deletions must never escalate a device-bound Cowork scope
+		// into the legacy user-scoped tombstone. Metadata reconciliation owns it.
+		key := placeKey{w.Agent, w.SessionID}
+		if coworkOrigins[key] || w.Agent == transcript.AgentClaude && (historyErr != nil || a.coworkScopePresent([]placeKey{key})) {
+			continue
+		}
 		wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.cfg.Withhold(wctx, w)
 		cancel()
@@ -1108,6 +1412,9 @@ func WithholdSession(server, token string, hc *http.Client) func(context.Context
 // parser yet, or whose verdict is not allow, is not read at all (-1): it
 // is handed to sync again once parsed.
 func (a *Agent) uploadBound(spec devicesync.SourceSpec) (int64, bool) {
+	if a.policy().readiness == policyUnknown {
+		return -1, true
+	}
 	if spec.Export || a.policy().pol.Empty() {
 		return 0, false
 	}

@@ -10,4 +10,4 @@ uses: the path `flopwire setup` recorded, then `PATH`, then
 (`embed.go`), so setup and `flopwire probe` install the copy of the binary
 that runs them.
 
-See [docs/opencode.md](../../docs/opencode.md).
+See [docs/harnesses/opencode.md](../../docs/harnesses/opencode.md).

@@ -9,6 +9,7 @@
 // the credential, never from the request.
 //
 //	POST   /v1/bus/send             SendRequest  -> SendResponse
+//	POST   /v1/bus/retry            SendRequest  -> SendResponse (requires retry_of)
 //	POST   /v1/bus/poll             PollRequest  -> PollResponse (long poll)
 //	POST   /v1/bus/claim            ClaimRequest -> ClaimResponse
 //	POST   /v1/bus/ack              AckRequest   -> AckResponse
@@ -79,14 +80,16 @@ import (
 )
 
 const (
-	PathSend    = "/v1/bus/send"
-	PathPoll    = "/v1/bus/poll"
-	PathClaim   = "/v1/bus/claim"
-	PathAck     = "/v1/bus/ack"
-	PathPeers   = "/v1/bus/peers"
-	PathInbox   = "/v1/bus/inbox"
-	PathAccepts = "/v1/bus/accepts" // DELETE PathAccepts + "/" + user to revoke
-	PathHeld    = "/v1/bus/held"
+	PathSend     = "/v1/bus/send"
+	PathRetry    = "/v1/bus/retry"
+	PathPoll     = "/v1/bus/poll"
+	PathClaim    = "/v1/bus/claim"
+	PathAck      = "/v1/bus/ack"
+	PathPeers    = "/v1/bus/peers"
+	PathMessages = "/v1/bus/messages"
+	PathInbox    = "/v1/bus/inbox"
+	PathAccepts  = "/v1/bus/accepts" // DELETE PathAccepts + "/" + user to revoke
+	PathHeld     = "/v1/bus/held"
 )
 
 const (
@@ -161,6 +164,13 @@ func ParseIntent(s string) (Intent, error) {
 
 // State is a message's delivery state.
 type State string
+
+// Admission records the receiving boundary chosen by the bus at send time.
+// Empty uses ordinary session-end handling. NextResume waits for the first
+// receiving hook (or running cloud push), then uses ordinary lease handling.
+type Admission string
+
+const AdmissionNextResume Admission = "next_resume"
 
 const (
 	StateQueued    State = "queued"
@@ -265,7 +275,11 @@ type SendRequest struct {
 	Intent string `json:"intent,omitempty"`
 	// ReplyTo is a message id the sending session sent or received (or
 	// one its person sent or received); the reply joins its thread.
-	ReplyTo string   `json:"reply_to,omitempty"`
+	ReplyTo string `json:"reply_to,omitempty"`
+	// RetryOf explicitly retries a session-addressed message from this
+	// exact sender that ended with session_ended. All message fields must
+	// match the original. Repeating the request returns its one successor.
+	RetryOf string   `json:"retry_of,omitempty"`
 	Refs    []string `json:"refs,omitempty"`
 	// Repo routes an @user message: a normalized remote (host/owner/name,
 	// or owner/name), which the device resolves a path or a name it knows
@@ -311,6 +325,11 @@ type SendResponse struct {
 	Intent    Intent    `json:"intent"`
 	Sent      time.Time `json:"sent"`
 	ExpiresAt time.Time `json:"expires_at"`
+	RetryOf   string    `json:"retry_of,omitempty"`
+	Replayed  bool      `json:"replayed,omitempty"`
+	// A replay reports the existing successor's current state and reason.
+	Reason    string    `json:"reason,omitempty"`
+	Admission Admission `json:"admission,omitempty"`
 	// Redactions counts secrets the server masked in the body, per rule.
 	Redactions map[string]int `json:"redactions,omitempty"`
 }
@@ -318,9 +337,11 @@ type SendResponse struct {
 // Envelope is a message as a recipient (or its sender's inbox) sees it.
 // Every field but Body, Intent, ReplyTo and Refs is set by the server.
 type Envelope struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"thread_id"`
-	ReplyTo  string `json:"reply_to,omitempty"`
+	ID        string    `json:"id"`
+	ThreadID  string    `json:"thread_id"`
+	ReplyTo   string    `json:"reply_to,omitempty"`
+	RetryOf   string    `json:"retry_of,omitempty"`
+	Admission Admission `json:"admission,omitempty"`
 	// From is the sending session; User its person's email.
 	From      string    `json:"from"`
 	FromAgent string    `json:"agent"`
@@ -375,6 +396,9 @@ type PresenceSession struct {
 
 // PollRequest is POST /v1/bus/poll.
 type PollRequest struct {
+	// ResumeRetries opts into explicit retry attribution and next_resume
+	// admission. Older recipients cannot safely render or schedule retries.
+	ResumeRetries bool `json:"resume_retries,omitempty"`
 	// Sessions is the device's whole presence; it replaces the last one.
 	Sessions []PresenceSession `json:"sessions"`
 	// Cloud is the person's vendor cloud sessions the device listed
@@ -439,9 +463,10 @@ type PollResponse struct {
 // session on this device, or a message to a live cloud session of the
 // device's person (SessionID is that session) for this device to push.
 type ClaimRequest struct {
-	MessageID string `json:"message_id"`
-	SessionID string `json:"session_id"`
-	Agent     string `json:"agent,omitempty"`
+	ResumeRetries bool   `json:"resume_retries,omitempty"`
+	MessageID     string `json:"message_id"`
+	SessionID     string `json:"session_id"`
+	Agent         string `json:"agent,omitempty"`
 }
 
 // ClaimResponse is the claimed message, now addressed to the session.
@@ -721,4 +746,57 @@ type DeliveryFailure struct {
 type FailureAck struct {
 	ID    string `json:"id"`
 	Token string `json:"token"`
+}
+
+// MessagesQuery reads retained bus evidence, never a live session mailbox.
+// Repo identities must be resolved by recorded placement, not a bare name.
+// Lists select latest eligible activity in threads with an eligible repo/filter
+// row. Since (inclusive) and
+// until (exclusive) apply to that row. Opening a thread applies times to each
+// message. Session and User match either participant. Before is created_at|id.
+type MessagesQuery struct {
+	Repo                                        string
+	Roots, Mains, Remotes                       []string
+	User, Session, Thread, Since, Until, Before string
+	Limit, MaxBytes                             int
+}
+
+// MessagesParticipant attributes one account/session in eligible thread rows.
+type MessagesParticipant struct {
+	UserID  string `json:"user_id"`
+	User    string `json:"user"`
+	Session string `json:"session,omitempty"`
+	Agent   string `json:"agent,omitempty"`
+}
+
+// MessagesItem preserves the canonical envelope and delivery state. Thread
+// summaries contain a first-line body preview and omit refs; opening returns full
+// stored bodies and refs. Participants summarize only eligible thread rows. Remote and
+// Main are send-time snapshots; empty values mean unknown for older history.
+type MessagesItem struct {
+	InboxItem
+	Participants          []MessagesParticipant `json:"participants,omitempty"`
+	ParticipantsRemaining int                   `json:"participants_remaining,omitempty"`
+	Remote                string                `json:"remote,omitempty"`
+	Main                  string                `json:"main,omitempty"`
+	RepoIdentityKnown     bool                  `json:"repo_identity_known"`
+}
+
+// MessagesResponse lists latest rows (Threads) or full eligible rows (Messages).
+// Retention can remove parents and rows between pages. No completion is inferred.
+type MessagesResponse struct {
+	RepoRoots        []string       `json:"repo_roots,omitempty"`
+	RepoMains        []string       `json:"repo_mains,omitempty"`
+	RepoRemotes      []string       `json:"repo_remotes,omitempty"`
+	Kind             string         `json:"kind"`
+	Scope            string         `json:"scope"`
+	Repo             string         `json:"repo"`
+	Thread           string         `json:"thread,omitempty"`
+	Threads          []MessagesItem `json:"threads"`
+	Messages         []MessagesItem `json:"messages"`
+	More             bool           `json:"more"`
+	Next             string         `json:"next,omitempty"`
+	Limit            int            `json:"limit"`
+	RetentionSeconds int64          `json:"retention_seconds"`
+	Hint             string         `json:"hint"`
 }

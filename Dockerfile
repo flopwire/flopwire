@@ -1,11 +1,3 @@
-FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web-build
-RUN corepack enable
-WORKDIR /src/web
-COPY web/package.json web/pnpm-lock.yaml ./
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
-COPY web/ .
-RUN pnpm build
-
 FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS go-build
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
@@ -13,8 +5,6 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
-RUN rm -rf internal/webapp/dist && mkdir -p internal/webapp/dist
-COPY --from=web-build /src/web/dist/ internal/webapp/dist/
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" -o /out/flopwire ./cmd/flopwire

@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -42,9 +43,28 @@ import (
 
 var version = "dev"
 
+// resolveVersion prefers the -X main.version ldflag (release builds and the
+// Dockerfile) and falls back to the module version Go records for
+// `go install ...@vX.Y.Z`, so that build does not report "dev".
+func resolveVersion(ldflag string, info *debug.BuildInfo) string {
+	if ldflag != "dev" || info == nil {
+		return ldflag
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return ldflag
+}
+
 func main() {
+	info, _ := debug.ReadBuildInfo()
+	version = resolveVersion(version, info)
 	recordSelf(os.Args[1:])
 	if err := run(context.Background(), os.Args[1:]); err != nil {
+		var incomplete *incompleteRetrieval
+		if errors.As(err, &incomplete) {
+			os.Exit(2) // the CLI wrapper already printed the warning
+		}
 		if !errors.Is(err, errReported) { // already written (JSON on stderr)
 			fmt.Fprintln(os.Stderr, "flopwire:", err)
 		}
@@ -58,10 +78,15 @@ func run(parent context.Context, args []string) error {
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	switch args[0] {
+	case "-h", "--help":
+		fmt.Fprintln(os.Stdout, usageText)
+		return nil
 	case "import":
 		return importCommand(ctx, args[1:], os.Stdout)
 	case "diagnostics":
 		return diagnosticsCommand(ctx, args[1:], os.Stdout)
+	case "upgrade":
+		return upgradeCommand(ctx, args[1:], os.Stdout)
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -97,10 +122,14 @@ func run(parent context.Context, args []string) error {
 		return claim(ctx, args[1:])
 	case "enroll":
 		return enroll(ctx, args[1:])
+	case "trace", "change":
+		return changeCmd(ctx, args[0], args[1:])
 	case "grep", "find":
 		return toolCmd(ctx, "grep", args[1:])
 	case "search", "sessions", "read":
 		return toolCmd(ctx, args[0], args[1:])
+	case "messages":
+		return messagesMain(ctx, args[1:])
 	case "peers", "send", "inbox":
 		return busMain(ctx, args[0], args[1:])
 	case "accept", "revoke", "accepts":
@@ -153,20 +182,23 @@ const usageText = `Usage: flopwire <command>
   claim       claim an invitation
   enroll      bind this installation as a device
   grep        regex search over agent transcripts, like rg (find is an alias)
-  search      ranked search for fuzzy questions
+  trace       find captured commit evidence by repository and full commit IDs
+              change is a compatibility alias
+  search      ranked keyword search
   sessions    list sessions, newest first
   read        read a message or session at an address that grep, search or sessions print
   peers       list live agent sessions you can message
   send        message another agent session, or @user's next session
+  messages    retained coordination threads on this repository
   inbox       this session's messages, received and sent
   accepts     who may message your agents, and messages held until you accept
               their sender (a person at a terminal only, like accept and revoke)
   accept      accept messages from a person's agents (asks for your password)
   revoke      stop accepting a person's messages; undelivered ones are held again
-  mcp         serve grep, search, sessions, read, peers, send and inbox over
-              MCP stdio (the first four read the local index; --server
-              queries the team server; the last three go through the device
-              agent; flopwire <tool> --help shows examples)
+  mcp         serve the retrieval tools (grep, search, sessions, read, change)
+              and the messaging tools (messages, peers, send, inbox) over MCP
+              stdio: the shared server after enrollment, the local index before
+              it or with --local; flopwire <tool> --help shows examples
   diagnostics inspect extraction reports (--server, --source ID, --json)
   raw         plumbing: archived bytes of a source by provenance
   redact      hide a message (or some of its lines) on the server and in the local index
@@ -176,8 +208,10 @@ const usageText = `Usage: flopwire <command>
               through each one's own plugin mechanism (--check reports, --remove uninstalls)
   probe       re-run the message-bus delivery tests against the installed
               harnesses (--local, --json, --notes; docs/probe.md)
-  agent       run the device agent (agent run) or signal it from a hook (agent flush)
+  agent       run the device agent (agent run), check it (agent status,
+              agent diagnostics) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
+  upgrade     install the latest release over this binary (--check, --version vX.Y.Z)
   version     print version`
 
 // usageCommands are the commands a usage text lists: lines indented two
@@ -201,9 +235,13 @@ func usage() error {
 func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", env("FLOPWIRE_ADDR", ":8080"), "listen address")
+	flushPerDevice := fs.Int("flush-per-device", 1, "maximum simultaneous flushes per device (1 or 2)")
 	tlsf := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *flushPerDevice != 1 && *flushPerDevice != 2 {
+		return fmt.Errorf("--flush-per-device must be 1 or 2")
 	}
 	transport, err := resolveServerTLS(tlsf, *addr)
 	if err != nil {
@@ -215,8 +253,26 @@ func serve(ctx context.Context, args []string) error {
 	secret := mustEnv("S3_SECRET_KEY")
 	bucket := env("S3_BUCKET", "flopwire")
 	secure := envBool("S3_SECURE", false)
-	workers := envInt("FLOPWIRE_PARSE_WORKERS", 4)
-	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+1)
+	workers, err := serverParseWorkers(envInt("FLOPWIRE_PARSE_WORKERS", 4))
+	if err != nil {
+		return err
+	}
+	grepContinuations := envBool("FLOPWIRE_GREP_CONTINUATIONS", false)
+	// Retained search snapshots use dedicated admission capacity in the
+	// existing pool, outside the interactive and upload budgets.
+	searchConnections := 0
+	if grepContinuations {
+		searchConnections = 4
+	}
+	poolCfg, err := store.PoolConfig(database, api.RetrievalConcurrency+workers+2+searchConnections)
+	if err != nil {
+		return err
+	}
+	flushSlots, err := flushAdmissionBudget(poolCfg.MaxConns-int32(searchConnections), workers)
+	if err != nil {
+		return err
+	}
+	admission, err := ingest.NewFlushAdmissionPerDevice(flushSlots, *flushPerDevice)
 	if err != nil {
 		return err
 	}
@@ -249,6 +305,13 @@ func serve(ctx context.Context, args []string) error {
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
 	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
+	projectionCtx, stopProjection := context.WithCancel(ctx)
+	projectionDone := make(chan struct{})
+	go func() {
+		defer close(projectionDone)
+		(&ingest.CommitEvidenceWorker{Pool: pool, Log: slog.Default()}).Run(projectionCtx)
+	}()
+	defer func() { stopProjection(); <-projectionDone }()
 	// The server's ctx ends at shutdown: a waiting poll answers then,
 	// inside the shutdown grace, instead of being cut.
 	retention, err := busRetention(os.Getenv("FLOPWIRE_BUS_RETENTION"))
@@ -256,10 +319,15 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 	messageBus := &bus.Store{Pool: pool, Stopping: ctx.Done(), Retention: retention}
+	searchStore := &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession}
+	if grepContinuations {
+		searchStore.GrepContinuations = retrieval.NewGrepContinuations(pool)
+		defer searchStore.GrepContinuations.Close()
+	}
 	slog.Info("message bus retention", "retention", retention.String(), "applies_to", "delivered, read, expired, refused and undelivered messages after their expiry, with their audit rows")
 	app := api.New(durableStore, api.Config{Registry: reg, Logger: slog.Default(),
-		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser}, Parse: parser,
-		Retrieval:         &retrieval.Store{Pool: pool, Objects: objects, RefreshSession: parser.RefreshSession},
+		Sync: &ingest.Server{Pool: pool, Objects: objects, Log: slog.Default(), Queue: parser, Admission: admission}, Parse: parser,
+		Retrieval:         searchStore,
 		Bus:               messageBus,
 		TrustedProxyCIDRs: envList("FLOPWIRE_TRUSTED_PROXY_CIDRS"),
 		AuthRate:          api.Rate{Burst: envInt("FLOPWIRE_AUTH_RATE_BURST", 10), Refill: envDuration("FLOPWIRE_AUTH_RATE_REFILL", time.Minute)}})
@@ -267,6 +335,7 @@ func serve(ctx context.Context, args []string) error {
 	go runCredentialSweeper(ctx, durableStore, slog.Default())
 	go runChunkReconciler(ctx, durableStore, slog.Default())
 	go runBusSweeper(ctx, messageBus, slog.Default())
+	api.Version = version
 	apiHandler := app.Handler(reg)
 	root := http.NewServeMux()
 	root.Handle("/v1/", apiHandler)
@@ -275,7 +344,7 @@ func serve(ctx context.Context, args []string) error {
 	root.Handle("/readyz", apiHandler)
 	root.Handle("/metrics", apiHandler)
 	root.Handle("/", webapp.Handler())
-	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 90 * time.Second}
+	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: serverReadTimeout, WriteTimeout: serverWriteTimeout, IdleTimeout: 90 * time.Second}
 	transport.announce(os.Stderr, *addr)
 	slog.Info("flopwire server listening", "addr", *addr, "tls", transport.mode, "version", version)
 	return serveUntilDone(ctx, server, shutdownGrace, func() error {
@@ -286,8 +355,15 @@ func serve(ctx context.Context, args []string) error {
 	})
 }
 
-// shutdownGrace is how long a shutdown waits for requests in flight.
-const shutdownGrace = 10 * time.Second
+const (
+	serverReadTimeout = 30 * time.Second
+	// HTTP/1 starts the write deadline before reading the request body.
+	// Leave time for that read, the maximum retrieval budget, and encoding
+	// and sending the incomplete response after the query deadline expires.
+	serverWriteTimeout = serverReadTimeout + api.MaxBudget + 10*time.Second
+	// shutdownGrace is how long a shutdown waits for requests in flight.
+	shutdownGrace = 10 * time.Second
+)
 
 // serveUntilDone runs listen until ctx is done, then shuts server down:
 // it stops accepting connections and waits up to grace for requests in
@@ -314,10 +390,14 @@ func serveUntilDone(ctx context.Context, server *http.Server, grace time.Duratio
 func backupCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	output := fs.String("output", "", "new or empty backup directory")
+	workers := fs.Int("object-workers", backupsvc.DefaultObjectWorkers, "concurrent verified object copies (1-32)")
 	encrypted := fs.Bool("encrypted-destination", false, "acknowledge the backup destination is encrypted")
 	allowRepair := fs.Bool("allow-pending-redaction-repair", false, "take the backup even while message redactions still repair archived bytes (the backup may hold redacted text)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *workers < 1 || *workers > backupsvc.MaxObjectWorkers {
+		return fmt.Errorf("object workers must be between 1 and %d", backupsvc.MaxObjectWorkers)
 	}
 	if err := backupsvc.ValidateOutput(*output); err != nil {
 		return err
@@ -326,7 +406,7 @@ func backupCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	manifest, createErr := backupsvc.Create(ctx, mustEnv("DATABASE_URL"), objects, env("S3_BUCKET", "flopwire"), *output, backupsvc.Options{EncryptedDestination: *encrypted, AllowPendingRedactionRepair: *allowRepair})
+	manifest, createErr := backupsvc.Create(ctx, mustEnv("DATABASE_URL"), objects, env("S3_BUCKET", "flopwire"), *output, backupsvc.Options{EncryptedDestination: *encrypted, AllowPendingRedactionRepair: *allowRepair, ObjectWorkers: *workers})
 	pool, err := pgxpool.New(ctx, mustEnv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("record backup status: %w", err)
@@ -975,6 +1055,7 @@ func saveAuthLocked(server, pin string, out map[string]any) error {
 	if current, loadErr := client.LoadFile(); loadErr == nil {
 		cfg.Denylist = append([]string(nil), current.Denylist...)
 		cfg.Unplaceable = current.Unplaceable
+		cfg.Mode = current.Mode
 		currentServer, normalizeErr := client.NormalizeServer(current.Server)
 		if normalizeErr == nil && currentServer == normalized {
 			cfg = current

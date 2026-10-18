@@ -204,6 +204,26 @@ func TestControlBusLocal(t *testing.T) {
 	}
 }
 
+func TestControlExplicitRetryRequiresVersionedOperation(t *testing.T) {
+	f := newFixture(t, "-")
+	b, err := devicebus.Open(filepath.Join(t.TempDir(), "bus.db"), devicebus.Config{User: "gary", Logger: f.cfg.Logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	f.cfg.Bus = b
+	a := New(f.store, f.cfg)
+	for _, req := range []Request{
+		{Op: "send", Send: &busproto.SendRequest{RetryOf: "mfailed"}},
+		{Op: "retry-send-v1", Send: &busproto.SendRequest{}},
+	} {
+		resp := ask(t, a, req)
+		if resp.OK || resp.BusError == nil || resp.BusError.Code != busproto.CodeBadRequest {
+			t.Fatalf("%s: %+v", req.Op, resp)
+		}
+	}
+}
+
 // A hook that gave up (its 200 ms budget ran out) before the agent
 // answered pending never prints the messages. The agent finds the closed
 // connection when it answers and queues them again, so the session's next
@@ -616,5 +636,79 @@ func TestControlFailureNoticeSenderResumeDoesNotRenewAcknowledgement(t *testing.
 	r = ask(t, f.a, Request{Op: "pending", Session: "from-1111", Agent: "claude", Start: "resume", HookStart: time.Now().Add(time.Second).UnixMilli()})
 	if len(r.Failures) != 0 {
 		t.Fatalf("resume renewed a settled failure: %+v", r.Failures)
+	}
+}
+
+func TestControlOnceStandalone(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.Sync = nil
+	f.cfg.Sweep, f.cfg.FastLane = time.Hour, time.Hour
+	f.a = New(f.store, f.cfg)
+	runCtx, cancel := context.WithCancel(ctx)
+	sock := filepath.Join(shortTemp(t), "a.sock")
+	done := make(chan error, 2)
+	go func() { done <- f.a.Run(runCtx) }()
+	go func() { done <- f.a.Serve(runCtx, sock) }()
+	defer func() { cancel(); <-done; <-done }()
+	waitFor(t, func() bool { _, err := Call(ctx, sock, Request{Op: "ping"}); return err == nil })
+	f.a.WaitIdle()
+	appendFile(t, f.path(alphaRel), claudeUser("c1000000-0000-4000-8000-0000000000bf", "standalone delegated pangolin"))
+	bad := OnceRequest{Mode: "full", Connection: "upload", Server: "https://server.example"}
+	if _, err := Call(ctx, sock, Request{Op: "once-v1", Index: f.store.Path(), Once: &bad}); err == nil {
+		t.Fatal("standalone accepted an upload contract")
+	}
+	if len(f.find("standalone delegated pangolin", false)) != 0 {
+		t.Fatal("incompatible request indexed before rejection")
+	}
+	good := OnceRequest{Mode: "full", Connection: "local"}
+	if _, err := Call(ctx, sock, Request{Op: "once-v1", Index: f.store.Path(), Once: &good}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.find("standalone delegated pangolin", false)) != 1 {
+		t.Fatal("compatible standalone pass did not index")
+	}
+	if _, err := Call(ctx, sock, Request{Op: "once-v1", Index: f.store.Path()}); err == nil {
+		t.Fatal("missing contract accepted")
+	}
+}
+
+// The upgrade notice: a SessionStart pending and status carry it when the
+// server last reported a newer release than this agent; a prompt hook
+// and a server at the same version do not.
+func TestControlUpgradeNotice(t *testing.T) {
+	f, _ := busFixture(t)
+	server := "v0.1.0"
+	f.a.cfg.Version = "v0.1.0"
+	f.a.cfg.ServerVersion = func() string { return server }
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222", Start: "startup"}); r.Upgrade != "" {
+		t.Fatalf("same version: %q", r.Upgrade)
+	}
+	server = "v0.2.0"
+	if r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-2222"}); r.Upgrade != "" {
+		t.Fatalf("a prompt hook got the notice: %q", r.Upgrade)
+	}
+	r := hookAsk(t, f.a, Request{Op: "pending", Session: "to-3333", Start: "startup"})
+	if !strings.Contains(r.Upgrade, "v0.2.0 is available") || !strings.Contains(r.Upgrade, "flopwire upgrade") {
+		t.Fatalf("SessionStart notice: %q", r.Upgrade)
+	}
+	s := ask(t, f.a, Request{Op: "status"})
+	if s.Version != "v0.1.0" || s.ServerVersion != "v0.2.0" || s.Upgrade != r.Upgrade {
+		t.Fatalf("status: version %q server %q upgrade %q", s.Version, s.ServerVersion, s.Upgrade)
+	}
+	// The published release wins when it is newer than the server's.
+	f.a.latestRelease = "v0.3.0"
+	if s := ask(t, f.a, Request{Op: "status"}); !strings.Contains(s.Upgrade, "v0.3.0 is available") {
+		t.Fatalf("published release ignored: %q", s.Upgrade)
+	}
+	// A server built from a checkout reports a non-release version, which
+	// hides nothing.
+	f.a.cfg.ServerVersion = func() string { return "abc123def456" }
+	if s := ask(t, f.a, Request{Op: "status"}); !strings.Contains(s.Upgrade, "v0.3.0 is available") || s.Latest != "v0.3.0" {
+		t.Fatalf("dev server hides the published release: %q latest %q", s.Upgrade, s.Latest)
+	}
+	// And feeds a device with no server at all.
+	f.a.cfg.ServerVersion = nil
+	if s := ask(t, f.a, Request{Op: "status"}); !strings.Contains(s.Upgrade, "v0.3.0 is available") || s.ServerVersion != "" {
+		t.Fatalf("no-server device: %q server %q", s.Upgrade, s.ServerVersion)
 	}
 }

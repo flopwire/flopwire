@@ -60,6 +60,10 @@ func TestEnrolledCLIUsesSharedScopeWithoutLocalFallback(t *testing.T) {
 	oracleIndex(t) // a populated local index must not hide a shared outage
 	t.Setenv(client.EnvToken, "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path != "/v1/search" {
 			t.Errorf("path=%s", r.URL.Path)
 		}
@@ -191,7 +195,7 @@ func TestEnrolledLocalReadContinuationsStayLocal(t *testing.T) {
 			if err := toolCmdIO(t.Context(), "read", argv[1:], &next, &stderr); err != nil {
 				t.Fatalf("follow %q: %v", hint, err)
 			}
-			if !strings.HasPrefix(next.String(), "[scope: local device]\n") {
+			if !strings.HasPrefix(withoutCoverageObservation(next.String()), "[scope: local device]\n") {
 				t.Fatalf("continuation lost local scope: %s", next.String())
 			}
 			followed++

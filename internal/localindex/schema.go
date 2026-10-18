@@ -1,7 +1,10 @@
 package localindex
 
 import (
+	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,7 +27,8 @@ import (
 // 13: placements_main and placements_remote, for --repo.
 // Placements are carried across a rebuild (carryPlacements): a session
 // whose worktree is gone cannot be placed again from its transcript.
-const schemaVersion = 13
+// 14: retained commit evidence. 15: conservative result eligibility.
+const schemaVersion = 15
 
 // Column types follow spec §4 with SQLite equivalents: integer row ids
 // (FTS5 keys on the integer rowid), times as unix milliseconds, booleans as
@@ -127,6 +131,7 @@ CREATE TABLE messages (
   byte_len                 INTEGER,
   locator                  TEXT,
   parser                   TEXT NOT NULL,
+  change_result_eligible   INTEGER,              -- NULL: old stored text not classified
   -- Last, so reading the filter columns never walks the blob's overflow pages.
   text                     BLOB NOT NULL         -- zstd of the capped extracted text
 );
@@ -141,6 +146,8 @@ CREATE INDEX messages_conv_ordinal ON messages (conversation_id, ordinal);
 CREATE INDEX messages_default ON messages (conversation_id, ordinal)
   WHERE superseded = 0 AND on_active_path IS NOT 0;
 CREATE INDEX messages_source_gen ON messages (source_id, source_generation);
+CREATE INDEX messages_change_results ON messages (conversation_id)
+ WHERE kind='tool_result' AND superseded=0 AND on_active_path IS NOT 0 AND change_result_eligible IS NOT 0;
 -- Failed tool calls, for the digest's count on append.
 CREATE INDEX messages_failed ON messages (conversation_id, tool_call_id) WHERE is_error = 1;
 -- A subagent's spawning tool call in its parent (resolveLinks).
@@ -243,6 +250,63 @@ func migrate(db *sql.DB, want Details, mode string, force bool) (got Details, re
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return Details{}, false, err
 	}
+	if (v == 13 || v == 14) && !force {
+		var have string
+		if err := db.QueryRow(`SELECT (SELECT value FROM meta WHERE key='tok_detail'),(SELECT value FROM meta WHERE key='tri_detail'),(SELECT CAST(value AS INTEGER) FROM meta WHERE key='tri_parts'),(SELECT value FROM meta WHERE key='mode')`).Scan(&got.Tok, &got.Tri, &got.TriParts, &have); err != nil {
+			return Details{}, false, err
+		}
+		if have == mode {
+			tx, err := db.Begin()
+			if err != nil {
+				return Details{}, false, err
+			}
+			defer tx.Rollback()
+			if _, err = tx.Exec(`ALTER TABLE messages ADD COLUMN change_result_eligible INTEGER`); err != nil {
+				return Details{}, false, err
+			}
+			if _, err = tx.Exec(`CREATE INDEX messages_change_results ON messages (conversation_id) WHERE kind='tool_result' AND superseded=0 AND on_active_path IS NOT 0 AND change_result_eligible IS NOT 0`); err != nil {
+				return Details{}, false, err
+			}
+			if v == 13 {
+				if err = createChangeSchema(tx); err != nil {
+					return Details{}, false, err
+				}
+			}
+			// Replay retained rows once on upgrade to repair stale projections
+			// produced by the former hash-only invalidation. Replay classifies
+			// NULL eligibility from the stored text it already decodes.
+			if mode == ModeFull {
+				rows, err := tx.Query(`SELECT id FROM conversations ORDER BY id`)
+				if err != nil {
+					return Details{}, false, err
+				}
+				var ids []int64
+				for rows.Next() {
+					var id int64
+					if err := rows.Scan(&id); err != nil {
+						rows.Close()
+						return Details{}, false, err
+					}
+					ids = append(ids, id)
+				}
+				rows.Close()
+				if err := rows.Err(); err != nil {
+					return Details{}, false, err
+				}
+				w := &writeTx{s: &Store{}, tx: tx, ctx: context.Background()}
+				defer w.closeStmts()
+				for _, id := range ids {
+					if err := w.refreshChangeEvents(id); err != nil {
+						return Details{}, false, err
+					}
+				}
+			}
+			if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+				return Details{}, false, err
+			}
+			return got, false, tx.Commit()
+		}
+	}
 	if v == schemaVersion {
 		var have string
 
@@ -282,6 +346,9 @@ func migrate(db *sql.DB, want Details, mode string, force bool) (got Details, re
 			return Details{}, false, fmt.Errorf("%w in %s", err, stmt)
 		}
 	}
+	if err := createChangeSchema(tx); err != nil {
+		return Details{}, false, err
+	}
 	if keep {
 		if err := carryPlacements(tx); err != nil {
 			return Details{}, false, err
@@ -311,6 +378,11 @@ func setAsidePlacements(tx *sql.Tx) (bool, error) {
 	}
 	// Its indexes keep their names across the rename, and the new layout
 	// creates them again.
+	for _, trigger := range []string{"change_placement_update", "change_placement_insert", "change_placement_delete"} {
+		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS ` + trigger); err != nil {
+			return false, err
+		}
+	}
 	for _, idx := range []string{"placements_main", "placements_remote"} {
 		if _, err := tx.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
 			return false, err
@@ -369,8 +441,8 @@ func carryPlacements(tx *sql.Tx) error {
 	return err
 }
 
-// ownTables are the tables schemaSQL creates.
-var ownTables = []string{"sources", "generations", "conversations", "messages", "companions", "placements", "fts_queue", "meta"}
+// ownTables are the main and commit-projection tables.
+var ownTables = []string{"sources", "generations", "conversations", "messages", "companions", "placements", "fts_queue", "change_events", "meta"}
 
 // splitSQL splits on statement-ending semicolons; the schema has none inside
 // literals.
@@ -393,4 +465,51 @@ func stripComments(s string) string {
 		b.WriteString(line)
 	}
 	return b.String()
+}
+
+const changeSchemaSQL = `CREATE TABLE change_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ source_id INTEGER NOT NULL,
+ source_generation INTEGER NOT NULL,
+ conversation_id INTEGER NOT NULL,
+ event_key TEXT NOT NULL,
+ observed_hash TEXT NOT NULL,
+ command_id INTEGER NOT NULL,
+ result_id INTEGER NOT NULL,
+ reveal_command_id INTEGER,
+ reveal_result_id INTEGER,
+ evidence TEXT NOT NULL,
+ UNIQUE(conversation_id,event_key)
+);
+CREATE INDEX change_events_hash ON change_events(observed_hash,id);
+CREATE INDEX change_events_source ON change_events(source_id,source_generation);
+`
+
+func createChangeSchema(tx *sql.Tx) error {
+	for _, stmt := range splitSQL(changeSchemaSQL) {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	secret := make([]byte, 32)
+	if _, err := cryptorand.Read(secret); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO meta(key,value) VALUES('change_cursor_secret',?)`, hex.EncodeToString(secret)); err != nil {
+		return err
+	}
+	invalidate := `INSERT INTO meta(key,value) VALUES('change_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1;`
+	triggers := []string{
+		`CREATE TRIGGER change_message_generation AFTER UPDATE OF source_id,source_generation ON messages WHEN (OLD.source_id IS NOT NEW.source_id OR OLD.source_generation IS NOT NEW.source_generation) AND EXISTS(SELECT 1 FROM change_events e WHERE e.command_id=OLD.id OR e.result_id=OLD.id OR e.reveal_command_id=OLD.id OR e.reveal_result_id=OLD.id) BEGIN ` + invalidate + ` END`,
+		`CREATE TRIGGER change_conversation_visibility AFTER UPDATE OF cwd,repo_root,device_id,agent,session_id,parent_session_id,parent_conversation_id,deleted_in_generation,branches,depth ON conversations WHEN (OLD.cwd IS NOT NEW.cwd OR OLD.repo_root IS NOT NEW.repo_root OR OLD.device_id IS NOT NEW.device_id OR OLD.agent IS NOT NEW.agent OR OLD.session_id IS NOT NEW.session_id OR OLD.parent_session_id IS NOT NEW.parent_session_id OR OLD.parent_conversation_id IS NOT NEW.parent_conversation_id OR OLD.deleted_in_generation IS NOT NEW.deleted_in_generation OR OLD.branches IS NOT NEW.branches OR OLD.depth IS NOT NEW.depth) AND EXISTS(SELECT 1 FROM change_events WHERE conversation_id=NEW.id) BEGIN ` + invalidate + ` END`,
+		`CREATE TRIGGER change_placement_update AFTER UPDATE OF main_root,remote,worktree_root,agent,session_id ON placements WHEN (OLD.main_root IS NOT NEW.main_root OR OLD.remote IS NOT NEW.remote OR OLD.worktree_root IS NOT NEW.worktree_root OR OLD.agent IS NOT NEW.agent OR OLD.session_id IS NOT NEW.session_id) AND EXISTS(SELECT 1 FROM change_events e JOIN conversations c ON c.id=e.conversation_id WHERE (c.agent=OLD.agent AND (c.session_id=OLD.session_id OR c.parent_session_id=OLD.session_id)) OR (c.agent=NEW.agent AND (c.session_id=NEW.session_id OR c.parent_session_id=NEW.session_id))) BEGIN ` + invalidate + ` END`,
+		`CREATE TRIGGER change_placement_delete AFTER DELETE ON placements WHEN EXISTS(SELECT 1 FROM change_events e JOIN conversations c ON c.id=e.conversation_id WHERE c.agent=OLD.agent AND (c.session_id=OLD.session_id OR c.parent_session_id=OLD.session_id)) BEGIN ` + invalidate + ` END`,
+		`CREATE TRIGGER change_placement_insert AFTER INSERT ON placements WHEN EXISTS(SELECT 1 FROM change_events e JOIN conversations c ON c.id=e.conversation_id WHERE c.agent=NEW.agent AND (c.session_id=NEW.session_id OR c.parent_session_id=NEW.session_id)) BEGIN ` + invalidate + ` END`,
+	}
+	for _, stmt := range triggers {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }

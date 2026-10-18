@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,6 +113,7 @@ func TestLocalCLIGolden(t *testing.T) {
 			}
 			out := captureStdout(t, func() error { return run(t.Context(), args) })
 			out = strings.ReplaceAll(out, home, "$HOME")
+			out = withoutCoverageObservation(out)
 			golden := filepath.Join("testdata", "golden", c.name+".txt")
 			if *update {
 				os.MkdirAll(filepath.Dir(golden), 0o755)
@@ -160,8 +162,17 @@ func TestLocalMCPRoundTrip(t *testing.T) {
 	if len(got) != 9 {
 		t.Fatalf("want 9 responses (none for the notification), got %d:\n%s", len(got), out.String())
 	}
-	if got[1].Result.ServerInfo["name"] != "flopwire" || !strings.Contains(got[1].Result.Instructions, "SESSION/ORDINAL") || len(got[2].Result.Tools) != 7 {
+	if got[1].Result.ServerInfo["name"] != "flopwire" || got[1].Result.Instructions != r.mcpInstructions() || len(got[2].Result.Tools) != 9 {
 		t.Fatalf("initialize/list: %+v %+v", got[1], got[2])
+	}
+	var toolNames []string
+	for _, tool := range got[2].Result.Tools {
+		toolNames = append(toolNames, tool["name"].(string))
+	}
+	slices.Sort(toolNames)
+	wantTools := []string{"flopwire_change", "flopwire_grep", "flopwire_inbox", "flopwire_messages", "flopwire_peers", "flopwire_read", "flopwire_search", "flopwire_send", "flopwire_sessions"}
+	if !slices.Equal(toolNames, wantTools) {
+		t.Fatalf("tool catalog: %v, want %v", toolNames, wantTools)
 	}
 	text := func(id int) string { return got[id].Result.Content[0].Text }
 	// The caller's own session (97, 98) and its subagent (100) are left
@@ -260,6 +271,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 	type addr struct{ msg, line, session string }
 	var addrs []addr
 	collect := func(out string) {
+		out = withoutCoverageObservation(out)
 		// sessions answers JSON by default: its address and full id both
 		// read the session.
 		var ss sessionsOut
@@ -357,7 +369,7 @@ func TestAddressesRoundTripThroughRead(t *testing.T) {
 		case a.session != "":
 			// A full session id reads the session it names (the
 			// message addresses use its shortest unique prefix).
-			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(out, "[scope: local device]\n# "+a.session+" ") {
+			if !strings.Contains(out, ">> "+a.session+"/") && !strings.HasPrefix(withoutCoverageObservation(out), "[scope: local device]\n# "+a.session+" ") {
 				t.Errorf("read %s: no focus in that session:\n%s", target, out)
 			}
 		case !focusIs(out, a.msg):
@@ -487,7 +499,7 @@ func TestSelfAndLive(t *testing.T) {
 		t.Fatalf("live header: %v\n%s", err, out)
 	}
 	out, err = call("sessions", "--repo", "/tmp/oracle-beta", "--agent", "codex", "--exclude-live")
-	if err != nil || strings.Contains(out, open) || !strings.HasPrefix(out, `{"scope":{"kind":"local"},"kind":"sessions","sessions":[],"has_more":false`) {
+	if err != nil || strings.Contains(out, open) || !strings.HasPrefix(withoutCoverageObservation(out), `{"scope":{"kind":"local"},"kind":"sessions","sessions":[],"has_more":false`) {
 		t.Fatalf("--exclude-live: %v\n%s", err, out)
 	}
 	if out, err = call("grep", "health", "--exclude-live", "--include-self"); err != nil || strings.Contains(out, open) {

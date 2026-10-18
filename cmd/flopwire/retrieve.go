@@ -24,6 +24,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
@@ -51,8 +52,11 @@ type retriever struct {
 	live  func(codex bool) map[string]time.Time
 	close func() error
 	// instructions replace mcpInstructions when set (a sync-only device).
-	instructions string
-	scope        *format.Scope
+	instructions   string
+	scope          *format.Scope
+	coverageConfig *client.Config
+	coverageLocal  func(context.Context) (*coverage.Report, error)
+	coverageParse  func(context.Context) (*coverage.ParseSnapshot, error)
 	// indexHint, set for the MCP server on a local index, is a note each
 	// retrieval tool adds to its answer ("" for none): the index is empty.
 	indexHint func(context.Context) string
@@ -63,6 +67,8 @@ type retriever struct {
 	// so a request's _meta names the calling Codex thread; otherwise _meta
 	// is ignored.
 	underCodex bool
+	// callerCwd resolves an exact MCP caller on this device, per request.
+	callerCwd func(context.Context, local.Caller) (string, error)
 	// teamRepo, set for the server, expands a --repo argument on this
 	// device (local.ExpandRepo with the local index's placements), since
 	// the server cannot read this device's git files.
@@ -87,17 +93,18 @@ func (r *retriever) whoCalls(ctx context.Context) (local.Caller, bool) {
 func openRetriever(server bool, indexPath string) (*retriever, error) {
 	det := local.NewDetector()
 	if server {
-		c, err := serverClient()
+		cfg, err := client.Load()
 		if err != nil {
 			return nil, fmt.Errorf("--server: %w (run flopwire login and enroll first)", err)
 		}
+		c := cfg.RetrievalAPI()
 		if indexPath == "" {
 			indexPath = local.IndexPath()
 		}
 		team := func(ctx context.Context, repo string) (local.Repo, error) {
 			return local.ServerRepo(repo, localRepoDirs(ctx, indexPath), deviceUploads())
 		}
-		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team, scope: &format.Scope{Kind: "shared", Server: c.Server}}, nil
+		return &retriever{backend: c, caller: det.Detect, live: det.Live, close: func() error { return nil }, teamRepo: team, coverageConfig: &cfg, coverageLocal: agentCoverage, coverageParse: parseCoverageReader(cfg), scope: &format.Scope{Kind: "shared", Server: c.Server}}, nil
 	}
 	if indexPath == "" {
 		indexPath = local.IndexPath()
@@ -109,7 +116,7 @@ func openRetriever(server bool, indexPath string) (*retriever, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close, scope: &format.Scope{Kind: "local"}}, nil
+	return &retriever{backend: lb, caller: det.Detect, live: det.Live, close: lb.Store.Close, coverageLocal: agentCoverage, scope: &format.Scope{Kind: "local"}}, nil
 }
 
 // retrievalServer selects the scope once, before opening either backend.
@@ -142,18 +149,10 @@ func scopeNote(scope *format.Scope) string {
 	return "[scope: local device]"
 }
 
-// localRepoDirs is what the local index at indexPath knows of where
-// sessions ran (localindex.Store.RepoDirs), nil when there is no index.
+// localRepoDirs reads retained placement identities independently of local
+// message/FTS availability, nil when metadata is unavailable.
 func localRepoDirs(ctx context.Context, indexPath string) []localindex.RepoDir {
-	if _, err := os.Stat(indexPath); err != nil {
-		return nil
-	}
-	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
-	if err != nil {
-		return nil
-	}
-	defer s.Close()
-	dirs, _ := s.RepoDirs(ctx)
+	dirs, _ := localindex.ReadRepoDirs(ctx, indexPath)
 	return dirs
 }
 
@@ -170,9 +169,11 @@ func deviceUploads() func(pathpolicy.Placement) bool {
 	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
 	if cc, err := client.Load(); err == nil {
 		cfg.UserRuleList, cfg.Unplaceable = cc.Denylist, cc.Unplaceable
+		if cc.Server != "" {
+			cfg.PolicyAuthority = collectionPolicyAuthority(cc)
+		}
 	}
-	pol := agent.DevicePolicy(cfg)
-	return func(pl pathpolicy.Placement) bool { return agent.Uploads(pol, pl) }
+	return func(pl pathpolicy.Placement) bool { return agent.DeviceUploads(cfg, pl) }
 }
 
 // noIndexError: the local index does not exist yet, because the device
@@ -183,18 +184,13 @@ func (e *noIndexError) Error() string {
 	return fmt.Sprintf("no local index at %s (run the device agent, set FLOPWIRE_INDEX, or pass --server)", e.path)
 }
 
-// openLocalBackend opens the local index read-only, with the server client
-// for raw reads of files that are gone when a server is configured.
+// openLocalBackend opens the local index read-only.
 func openLocalBackend(indexPath string) (*local.Backend, error) {
 	s, err := localindex.Open(indexPath, localindex.Options{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	lb := &local.Backend{Store: s}
-	if c, err := serverClient(); err == nil && c.Server != "" {
-		lb.Remote = c
-	}
-	return lb, nil
+	return &local.Backend{Store: s}, nil
 }
 
 func serverClient() (client.HTTP, error) {
@@ -202,7 +198,7 @@ func serverClient() (client.HTTP, error) {
 	if err != nil {
 		return client.HTTP{}, err
 	}
-	return cfg.API(cfg.Token), nil
+	return cfg.RetrievalAPI(), nil
 }
 
 // --- options ---
@@ -228,6 +224,7 @@ type flagDef struct {
 var flagDefs = []flagDef{
 	{"regexp", 'e', fList, "g"},
 	{"only-matching", 'o', fBool, "g"},
+	{"continue", 0, fBool, "g"},
 	{"multiline", 'U', fBool, "g"},
 	{"fixed-strings", 'F', fBool, "g"},
 	{"ignore-case", 'i', fBool, "g"},
@@ -245,8 +242,9 @@ var flagDefs = []flagDef{
 	{"max-count", 'm', fInt, "g"},
 	{"limit", 0, fInt, "gslrpi"},
 	{"offset", 0, fInt, "gs"},
-	{"cursor", 0, fString, "lri"},
+	{"cursor", 0, fString, "glri"},
 	{"sort", 0, fString, "gsl"},
+	{"matching", 0, fString, "s"},
 	{"no-heading", 0, fBool, "gs"},
 	{"timeout", 0, fString, "gs"},
 	{"agent", 0, fString, "gslp"},
@@ -278,6 +276,7 @@ var flagDefs = []flagDef{
 	{"help", 'h', fBool, "gslrpmi"},
 	{"intent", 0, fString, "m"},
 	{"reply-to", 0, fString, "m"},
+	{"retry-of", 0, fString, "m"},
 	{"ref", 0, fList, "m"},
 	{"sent", 0, fBool, "i"},
 	{"thread", 0, fString, "i"},
@@ -613,6 +612,14 @@ func pageInfos(p *format.Page) []*format.ConversationInfo {
 	return out
 }
 
+// incompleteRetrieval follows a rendered partial answer. CLI scans return it;
+// MCP grep and search return it only when no matching candidate was verified.
+type incompleteRetrieval struct{ reason string }
+
+func (e *incompleteRetrieval) Error() string {
+	return "results are incomplete; no absence conclusion is justified: " + format.Clean(e.reason)
+}
+
 // runTool runs one tool and writes its text (or JSON) answer to w.
 func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.Style, p selfPolicy) error {
 	f, err := o.filters()
@@ -637,22 +644,47 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 	}
 	st.Flat = o.on["no-heading"]
 	asJSON := jsonMode(o)
+	finishCoverage := r.startCoverage(ctx)
+	defer finishCoverage.cancel()
 	// emit writes the answer: the readable text, the --json form (grep,
 	// search and read on the CLI: indented, as before), or compact JSON
 	// within the budget (sessions, and every tool over MCP).
 	emit := func(full any, bounded func() any, text func() error) error {
+		scope := finishCoverage.snapshot(r.scope)
+		if st.MCP {
+			scope = mcpCoverageScope(scope, o.vals["coverage"] == "detail", st.Budget)
+			if o.vals["coverage"] == "detail" && scope != nil && st.Budget > 0 {
+				raw, _ := json.Marshal(scope.Coverage)
+				if len(raw)+hintRoom > st.Budget {
+					return badArg(fmt.Errorf("coverage=detail requires at least %d output bytes for metadata; MCP output budget is %d; use coverage=summary", len(raw)+hintRoom, st.Budget))
+				}
+			}
+		} else {
+			scope = budgetCoverageScope(scope, st.Budget)
+		}
 		switch out := full.(type) {
 		case *format.Page:
-			out.Scope = r.scope
+			out.Scope = scope
 		case *format.Sessions:
-			out.Scope = r.scope
+			out.Scope = scope
 		case *format.Context:
-			out.Scope = r.scope
+			out.Scope = scope
 		}
 		switch {
 		case !asJSON:
-			if r.scope != nil {
-				note := scopeNote(r.scope)
+			if scope != nil {
+				note := scopeNote(scope)
+				optional := retrievalCoverageNote(scope, st.MCP)
+				if !st.MCP && st.Budget > 0 && len(note)+len(optional)+1 > st.Budget {
+					optional = " [coverage: unknown]"
+					if len(note)+len(optional)+1 > st.Budget {
+						optional = ""
+					}
+				}
+				note += optional
+				if st.MCP && st.Budget > 0 && len(note)+1 > st.Budget {
+					return badArg(fmt.Errorf("coverage qualification requires at least %d output bytes; budget is %d", len(note)+1, st.Budget))
+				}
 				if _, err := fmt.Fprintln(w, note); err != nil {
 					return err
 				}
@@ -662,9 +694,25 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 			}
 			return text()
 		case st.MCP || o.verb == "sessions":
-			return writeOut(w, bounded())
+			answer := bounded()
+			if st.MCP && !fitsBudget(answer, st.Budget) {
+				return badArg(fmt.Errorf("response requires %d output bytes; MCP output budget is %d; use coverage=summary or narrow the request", jsonSize(answer), st.Budget))
+			}
+			return writeOut(w, answer)
 		}
 		return writeJSON(w, full)
+	}
+	emitPage := func(page *format.Page, bounded func() any, text func() error) error {
+		if err := emit(page, bounded, text); err != nil {
+			return err
+		}
+		// Total is a grep count; ranked search can return useful hits without it.
+		// A resumable scan reports progress separately, even on an empty page.
+		empty := page.Total == 0 && len(page.Hits) == 0 && len(page.Sessions) == 0
+		if page.Scan == nil && page.Truncated && (!st.MCP || empty) {
+			return &incompleteRetrieval{reason: page.Reason}
+		}
+		return nil
 	}
 	switch o.verb {
 	case "grep":
@@ -683,6 +731,8 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		if err := spec.Query(&q); err != nil {
 			return err
 		}
+		q.Cursor = o.vals["cursor"]
+		q.Continue = o.on["continue"] || q.Cursor != ""
 		q.OnlyMatching, q.Multiline = o.on["only-matching"], o.on["multiline"]
 		if q.Timeout, err = o.timeout(); err != nil {
 			return badArg(err)
@@ -713,12 +763,15 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		return emit(page, func() any { return boundPage("grep", page, q.Mode, st.Budget, st.MCP) }, func() error { return format.WriteGrep(w, page, q.Mode, st) })
+		return emitPage(page, func() any { return boundPage("grep", page, q.Mode, st.Budget, st.MCP) }, func() error { return format.WriteGrep(w, page, q.Mode, st) })
 	case "search":
 		if len(o.pos) == 0 {
 			return badArg(errors.New("search needs a QUERY (flopwire search --help)"))
 		}
-		q := format.SearchQuery{Query: strings.Join(o.pos, " "), Limit: f.Limit}
+		q := format.SearchQuery{Query: strings.Join(o.pos, " "), Limit: f.Limit, Matching: o.vals["matching"]}
+		if _, err := format.SearchMatching(q.Matching); err != nil {
+			return badArg(err)
+		}
 		if q.Offset, err = o.int("offset"); err != nil {
 			return badArg(err)
 		}
@@ -732,7 +785,7 @@ func runTool(ctx context.Context, r *retriever, o *opts, w io.Writer, st format.
 		}
 		r.markLive(pageInfos(page)...)
 		page.Excluded = note
-		return emit(page, func() any { return boundPage("search", page, "", st.Budget, st.MCP) }, func() error { return format.WriteSearch(w, page, st) })
+		return emitPage(page, func() any { return boundPage("search", page, "", st.Budget, st.MCP) }, func() error { return format.WriteSearch(w, page, st) })
 	case "sessions":
 		if len(o.pos) > 1 {
 			return badArg(fmt.Errorf("sessions takes one GLOB; got %q", strings.Join(o.pos, " ")))
@@ -897,6 +950,13 @@ func toolCmdIO(ctx context.Context, verb string, args []string, stdout, stderr i
 	if err == nil {
 		return nil
 	}
+	var incomplete *incompleteRetrieval
+	if errors.As(err, &incomplete) {
+		if _, werr := fmt.Fprintln(stderr, "flopwire: warning:", incomplete); werr != nil {
+			return werr
+		}
+		return err
+	}
 	if !asJSON {
 		return errors.New(shortError(err))
 	}
@@ -999,10 +1059,11 @@ var toolHelp = map[string]string{
   flopwire grep -F 'exit status 1' --since 7d -C 2    literal; 2 lines of context
   flopwire grep -l flaky --repo flopwire --agent codex  sessions with matches
 
-Hits group under a header per session: its id, then key=value fields (a value with a space,
-quote or = is a JSON string), newest first; the address for read is SESSION/ORDINAL:LINE.
-  ## SESSION agent=claude ended=2026-09-23 repo=api branch=main failed=1 intent="..."
-  ORDINAL:LINE kind/tool: text        (--no-heading: SESSION/ORDINAL:LINE: [attribution] text)
+Scan     --continue: hosted content, newest/oldest, <=20 hits; expires after 2 minutes.
+         Follow scan.next_cursor as --cursor with unchanged pattern/filters; last 4 pages replay.
+         Use absolute --since/--until: relative times re-resolve and fail cursor binding.
+         Fresh scan replaces your snapshot; complete finishes it; new messages need a new scan.
+Hits     Session header, then ORDINAL:LINE kind/tool: text; read at SESSION/ORDINAL:LINE.
 Pattern  -e PAT (repeat)  -F literal  -i/-s case  -w words  -U multiline (a match spans
          lines of one message)  (-n, -r accepted)
 Output   -o matched text only  -l sessions  -c counts  -A/-B/-C N context  -m N per session
@@ -1015,10 +1076,9 @@ Filters  --agent claude,codex,devin,opencode  --repo .|PATH|NAME|GLOB  --branch 
 Source   shared after enrollment, local before; --local / --server; --index PATH
 Kinds    user assistant tool_call tool_result thinking system agent_message injected (hidden
          unless --kind names it). Times are UTC: 7d, 24h, 2026-09-23, '2026-09-23 10:00Z'.
-Live: active in the last 10 minutes or open in its harness. An agent's own session is left
-out (a human at a terminal sees all); --session self searches only it.
+Live: active within 10m or open in harness; own session excluded; --session self selects it.
 `,
-	"search": `flopwire search — ranked search (BM25) for fuzzy questions; use grep for exact strings
+	"search": `flopwire search — ranked lexical search for natural-language questions; use grep for exact strings
 
   flopwire search sqlite trigram tokenizer
   flopwire search '"exponential backoff" retry' --repo flopwire   quoted phrases must match
@@ -1027,8 +1087,9 @@ out (a human at a terminal sees all); --session self searches only it.
 Hits are grouped under one labeled header per session (as grep's), best first:
   ORDINAL:LINE kind/tool: snippet
 The address for flopwire read is SESSION/ORDINAL:LINE. When no message has every word,
-it ranks messages with any of them (common words dropped) and says so. Identical texts
-show once, "+N copies".
+auto removes filler words and gradually relaxes terms, keeping quoted phrases and
+the rarest matching topic term required. --matching all stays strict; --matching any
+allows broad any-term matches. Fallback notes state required terms; copies show once (+N).
 
 Output   --limit N (20)  --offset N  --sort relevance|newest|oldest  --no-heading  --json
          (--text: the default)  --timeout 30s (max 60s)  --max-bytes N (whole hits)

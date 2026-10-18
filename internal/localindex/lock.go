@@ -31,6 +31,17 @@ func (e *LockedError) Error() string {
 // LockPath is the lock file of the index at path.
 func LockPath(path string) string { return path + ".lock" }
 
+// AcquireMaintenanceLock owns an existing index without opening or migrating
+// it. Offline maintenance must hold the returned file through all state and
+// spool operations. A running collector refuses this lock immediately.
+func AcquireMaintenanceLock(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("localindex: maintenance requires an existing regular index")
+	}
+	return acquireLock(path, nil)
+}
+
 // errWouldBlock is what tryLock returns when the lock is held elsewhere.
 var errWouldBlock = errors.New("lock held")
 

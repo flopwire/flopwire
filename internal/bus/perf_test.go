@@ -75,7 +75,7 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"session on device", SessionOnDeviceSQL, []any{me.DeviceID, "me-session", "", live}},
 		{"session prefix", SessionPrefixSQL, []any{"live-000001%", live}},
 		{"user live", UserLiveSQL, []any{me.UserID, live}},
-		{"deliverable", DeliverableSQL, []any{me.UserID, now, me.DeviceID, live}},
+		{"deliverable", DeliverableSQL, []any{me.UserID, now, me.DeviceID, live, true}},
 		{"cloud session", CloudSessionSQL, []any{me.UserID, "session_01cloud", "claude", live}},
 		{"held", HeldSQL, []any{me.UserID, now}},
 		{"held list", HeldListSQL, []any{me.UserID, now}},

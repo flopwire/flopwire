@@ -158,13 +158,17 @@ func TestSchedulerFlushJumpsBacklog(t *testing.T) {
 	waitFor(t, "backlog queued and failing", func() bool {
 		sc.mu.Lock()
 		defer sc.mu.Unlock()
-		return len(sc.order) == len(backlog) && sc.down
+		return len(sc.ready) == len(backlog) && sc.down
 	})
 	live := e.spec("live.jsonl", transcript.StorageJSONLAppend)
 	appendFile(t, live.Path, jsonlLines(40, 10, 100))
 	sc.Flush(live)
 	sc.mu.Lock()
-	head := sc.order[0]
+	entry, _ := sc.next(time.Now())
+	head := ""
+	if entry != nil {
+		head = entry.path
+	}
 	sc.mu.Unlock()
 	if head != live.Path {
 		t.Fatalf("queue head is %s, want the flushed source", head)

@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/busrender"
+	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
@@ -21,11 +24,25 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
+// OnceRequest specifies a one-shot pass without changing the running agent.
+// Connection is "local" or "upload"; upload binds the server and device.
+type OnceRequest struct {
+	Mode             string        `json:"mode"`
+	Connection       string        `json:"connection"`
+	Server           string        `json:"server,omitempty"`
+	TokenFingerprint string        `json:"token_fingerprint,omitempty"` // only for credentials without a device ID
+	DeviceID         string        `json:"device_id,omitempty"`
+	SyncTimeout      time.Duration `json:"sync_timeout"`
+}
+
 // Request is one control-socket request: a JSON object on one line.
 type Request struct {
-	// "flush", "pass", "status", "repin", "redact" or "ping"; for the
+	Once *OnceRequest `json:"once,omitempty"`
+
+	// "flush", "pass", "once-v1", "status", "coverage", "repin", "redact" or "ping"; for the
 	// message bus "pending", "confirm", "held", "send", "peers", "inbox" or
-	// "root" (the session a subagent's Session belongs to, BusRoot).
+	// "root" (the session a subagent's Session belongs to, BusRoot), or
+	// "caller-context" (the exact local session's recorded working directory).
 	Op      string `json:"op"`
 	Path    string `json:"path,omitempty"`    // flush: the transcript path
 	Session string `json:"session,omitempty"` // flush: or its session id; pending: the session asking
@@ -75,20 +92,39 @@ type Request struct {
 
 // Response answers a Request.
 type Response struct {
-	Extraction *transcript.ExtractionSummary `json:"extraction,omitempty"`
-	OK         bool                          `json:"ok"`
-	Path       string                        `json:"path,omitempty"` // flush: the source indexed
-	Error      string                        `json:"error,omitempty"`
+	Diagnostics *DiagnosticsSnapshot `json:"diagnostics,omitempty"`
+	Coverage    *coverage.Report     `json:"coverage,omitempty"`
+	// Unavailable names status sections that could not be read. Their absent
+	// counters are unknown, rather than zero. Other health fields remain useful.
+	Unavailable map[string]string             `json:"unavailable,omitempty"`
+	DesktopCode *DesktopCodeStatus            `json:"desktop_code,omitempty"`
+	Cowork      *CoworkStatus                 `json:"cowork,omitempty"`
+	Extraction  *transcript.ExtractionSummary `json:"extraction,omitempty"`
+	OK          bool                          `json:"ok"`
+	Cwd         string                        `json:"cwd,omitempty"`  // caller-context, local only
+	Path        string                        `json:"path,omitempty"` // flush: the source indexed
+	Error       string                        `json:"error,omitempty"`
 	// Sync is the upload state (status); nil when sync is off.
 	Sync *devicesync.Status `json:"sync,omitempty"`
 	// ServerCopies (status): sessions path rules removed locally whose
 	// uploaded copies stay on the server (D18); nil when there are none.
-	ServerCopies *ServerCopies `json:"server_copies,omitempty"`
+	ServerCopies     *ServerCopies `json:"server_copies,omitempty"`
+	CollectionPolicy string        `json:"collection_policy,omitempty"`
 	// Placements (status): stored session placements by what placed them
 	// (localindex.PlacedBy*).
 	Placements map[string]int `json:"placements,omitempty"`
 	// Redacted (redact): rows masked in the local index.
 	Redacted int `json:"redacted,omitempty"`
+	// Version (status) is the agent's version and ServerVersion the one
+	// the server last reported. Upgrade (status; pending at a
+	// SessionStart) is the one-line notice when the server runs a newer
+	// release than this device, else "".
+	Version       string `json:"version,omitempty"`
+	ServerVersion string `json:"server_version,omitempty"`
+	Upgrade       string `json:"upgrade,omitempty"`
+	// Latest (status) is the release Upgrade names: the server's version
+	// or the published release, whichever is newer; "" without a notice.
+	Latest string `json:"latest,omitempty"`
 
 	// Message bus. Messages (pending): the session's undelivered messages,
 	// oldest first, now leased to the caller; each one's Attempt above 1
@@ -199,8 +235,32 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 	switch {
 	case err != nil:
 		resp.Error = "bad request: " + err.Error()
+	case req.Op == "caller-context":
+		resp.Cwd, err = a.callerCwd(req.Agent, req.Session)
+		resp.OK = err == nil
+		if err != nil {
+			resp.Error = err.Error()
+		}
+	case req.Op == "diagnostics":
+		snapshot := a.Diagnostics()
+		resp.Diagnostics, resp.OK = &snapshot, true
 	case req.Op == "ping":
 		resp.OK = true
+	case req.Op == "once-v1":
+		c.SetDeadline(time.Time{})
+		onceCtx, stop := untilClientLeaves(ctx, c)
+		defer stop()
+		if req.Index == "" || !sameFile(req.Index, a.store.Path()) {
+			err = fmt.Errorf("one-shot request names a different index")
+		} else if req.Once == nil {
+			err = fmt.Errorf("one-shot execution contract is required")
+		} else {
+			err = a.OncePass(onceCtx, *req.Once)
+		}
+		resp.OK = err == nil
+		if err != nil {
+			resp.Error = err.Error()
+		}
 	case req.Op == "pass":
 		c.SetDeadline(time.Time{}) // a pass takes as long as the changed sources need
 		if req.Index != "" && !sameFile(req.Index, a.store.Path()) {
@@ -212,6 +272,13 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "coverage":
+		ctx, stop := untilClientLeaves(ctx, c)
+		defer stop()
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		resp.OK = true
+		resp.Coverage = a.coverageReport(ctx)
 	case req.Op == "status":
 		// The index summary scans every source: stop it if the client
 		// gives up, rather than hold a read connection for nobody.
@@ -221,26 +288,69 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			testHookStatus(ctx)
 		}
 		resp.OK = true
-		if st, ok := a.cfg.Sync.(interface{ Status() devicesync.Status }); ok {
+		resp.Version = a.cfg.Version
+		if a.cfg.ServerVersion != nil {
+			resp.ServerVersion = a.cfg.ServerVersion()
+		}
+		resp.Upgrade, resp.Latest = a.upgradeNotice()
+		// Diagnostics must finish before the CLI's five-second socket budget.
+		// Never leave background scans running after that client goes away.
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		unavailable := func(section, reason string) {
+			if resp.Unavailable == nil {
+				resp.Unavailable = map[string]string{}
+			}
+			resp.Unavailable[section] = reason
+		}
+		if a.cfg.Bus != nil {
+			st, err := a.cfg.Bus.StatusContext(ctx)
+			resp.Bus = &st
+			if err != nil {
+				unavailable("inbox", "inbox counts unavailable; retry status")
+			}
+		}
+		if st, ok := a.cfg.Sync.(interface {
+			StatusContext(context.Context) (devicesync.Status, error)
+		}); ok {
+			v, err := st.StatusContext(ctx)
+			resp.Sync = &v
+			if err != nil {
+				unavailable("redactions", "redaction totals unavailable; retry status")
+			}
+		} else if st, ok := a.cfg.Sync.(interface{ Status() devicesync.Status }); ok {
 			v := st.Status()
 			resp.Sync = &v
 		}
 		resp.ServerCopies = a.serverCopiesNotice()
-		resp.Placements = a.placementCounts()
-		if a.cfg.Bus != nil {
-			st := a.cfg.Bus.Status(ctx)
-			resp.Bus = &st
+		resp.CollectionPolicy = "known"
+		if a.cfg.PolicyAuthority == nil {
+			resp.CollectionPolicy = "local"
+		} else if a.policy().readiness == policyUnknown {
+			resp.CollectionPolicy = "unknown"
 		}
+		resp.Placements = a.placementCounts()
+		resp.Cowork, err = a.coworkStatusContext(ctx)
+		if err != nil {
+			resp.Cowork = nil
+			if ctx.Err() != nil {
+				unavailable("cowork", "Cowork status unavailable; diagnostic budget exhausted")
+			} else {
+				unavailable("cowork", "Cowork status busy; capture or policy work is in progress")
+			}
+		}
+		resp.DesktopCode = a.desktopCodeStatus()
 		if a.cfg.Credential != nil {
 			c := a.cfg.Credential()
 			resp.Credential = &c
 		}
-		var err error
 		resp.Extraction, err = a.store.ExtractionSummary(ctx)
 		if err != nil {
-			resp.OK = false
-			resp.Error = err.Error()
+			resp.Extraction = nil
+			unavailable("extraction", "extraction summary unavailable; retry status or run flopwire diagnostics")
 		}
+		resp.Coverage = a.coverageReport(ctx)
+		attachObservedCowork(resp.Coverage, resp.Cowork)
 	case req.Op == "repin":
 		// `flopwire login` saved a server pin: a sync stopped by a pin
 		// mismatch re-reads it and resumes.
@@ -252,6 +362,10 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			a.cfg.Bus.Recheck()
 		}
 	case req.Op == "redact":
+		if a.cfg.Bus != nil {
+			a.cfg.Bus.InvalidateReferences()
+			defer a.cfg.Bus.InvalidateReferences()
+		}
 		resp.Redacted, err = RedactLocal(ctx, a.store, req.Address, req.AllCopies)
 		resp.OK = err == nil
 		if err != nil {
@@ -274,7 +388,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		}
 	case req.Op == "root":
 		resp.Root, resp.OK = a.BusRoot(ctx, req.Agent, req.Session), true
-	case req.Op == "pending", req.Op == "confirm", req.Op == "held", req.Op == "send", req.Op == "peers", req.Op == "inbox":
+	case req.Op == "pending", req.Op == "confirm", req.Op == "held", req.Op == "send", req.Op == "retry-send-v1", req.Op == "peers", req.Op == "inbox":
 		a.serveBus(ctx, req, &resp)
 	default:
 		resp.Error = "unknown op " + req.Op
@@ -338,6 +452,9 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 			}
 		}
 		resp.Excerpts = a.refExcerpts(ctx, resp.Messages)
+		if req.Start != "" {
+			resp.Upgrade, _ = a.upgradeNotice()
+		}
 	case "confirm":
 		err = b.Confirm(ctx, req.Session, req.IDs)
 		if err == nil && req.Instruction {
@@ -349,7 +466,11 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 		cctx, cancel := context.WithTimeout(ctx, busCallTimeout)
 		defer cancel()
 		switch {
-		case req.Op == "send" && req.Send != nil:
+		case (req.Op == "send" || req.Op == "retry-send-v1") && req.Send != nil:
+			if (req.Op == "retry-send-v1") != (req.Send.RetryOf != "") {
+				err = &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: "explicit retries require retry-send-v1 with retry_of"}
+				break
+			}
 			var out busproto.SendResponse
 			if out, err = b.Send(cctx, *req.Send); err == nil {
 				resp.Sent = &out
@@ -394,8 +515,8 @@ func (a *Agent) placementCounts() map[string]int {
 
 // Pass runs one full pass on a running agent: a sweep of every source
 // (and Devin's store), then waits until the queue drains and the index has
-// committed. `flopwire agent run --once` asks for it over the control socket
-// when this agent holds the index lock (decision D12).
+// committed. OncePass adds the delegated one-shot execution contract and
+// remote upload completion when this agent holds the index lock (decision D12).
 //
 // A pass asked while the agent starts waits for the first discovery pass,
 // like a flush: run before load, its full merge would make load skip the
@@ -404,12 +525,74 @@ func (a *Agent) Pass(ctx context.Context) error {
 	if err := a.waitDiscovered(ctx); err != nil {
 		return err
 	}
+	a.refreshPolicy(ctx, false)
+	if a.policy().readiness == policyUnknown {
+		return ErrPolicyUnknown
+	}
 	if err := a.sweep(ctx); err != nil {
 		return err
 	}
 	a.pollStores(ctx, true, true)
 	a.WaitIdle()
+	if err := a.store.Sync(ctx); err != nil {
+		return err
+	}
+	// Match Once: newly discovered deleted-worktree sessions are withheld
+	// until recovery settles their placements. An empty upload queue before
+	// this step does not mean the pass has offered all eligible transcripts.
+	a.recoverAndEnforce(ctx)
+	// A background recovery may have settled placements while this pass
+	// waited for it. Sweep even when our own recovery found nothing new.
+	if err := a.sweep(ctx); err != nil {
+		return err
+	}
+	a.WaitIdle()
 	return a.store.Sync(ctx)
+}
+
+// OncePass validates the execution contract before discovery or mutation, then
+// waits for the same upload completion as a fresh one-shot process.
+func (a *Agent) OncePass(ctx context.Context, req OnceRequest) error {
+	mode := localindex.ModeFull
+	if a.store.SyncOnly() {
+		mode = localindex.ModeSyncOnly
+	}
+	if req.Mode != mode {
+		return fmt.Errorf("running agent mode is %s; requested %s; stop the agent before changing modes", mode, req.Mode)
+	}
+	connection := "local"
+	if a.cfg.Sync != nil {
+		connection = "upload"
+	}
+	if req.Connection != connection {
+		return fmt.Errorf("running agent connection is %s; requested %s; stop the agent before changing connections", connection, req.Connection)
+	}
+	if connection == "upload" {
+		server, err := client.NormalizeServer(a.cfg.Server)
+		if err != nil {
+			return err
+		}
+		requested, err := client.NormalizeServer(req.Server)
+		if err != nil {
+			return err
+		}
+		if server != requested || req.DeviceID != a.cfg.DeviceID {
+			return fmt.Errorf("running agent uses a different server or device; restart it before delegating")
+		}
+		if req.DeviceID == "" && (req.TokenFingerprint == "" || req.TokenFingerprint != a.cfg.SyncTokenFingerprint) {
+			return fmt.Errorf("running agent uses a different credential; restart it before delegating")
+		}
+		if a.cfg.DrainSync == nil {
+			return fmt.Errorf("running agent cannot guarantee upload completion")
+		}
+	}
+	if err := a.Pass(ctx); err != nil {
+		return err
+	}
+	if connection == "upload" {
+		return a.cfg.DrainSync(ctx, req.SyncTimeout)
+	}
+	return nil
 }
 
 func sameFile(a, b string) bool {
@@ -429,6 +612,8 @@ func Call(ctx context.Context, path string, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("agent not running (%s): %w", path, err)
 	}
 	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
 	if dl, ok := ctx.Deadline(); ok {
 		c.SetDeadline(dl)
 	}
@@ -438,6 +623,9 @@ func Call(ctx context.Context, path string, req Request) (Response, error) {
 	}
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
 		return Response{}, err
 	}
 	var resp Response

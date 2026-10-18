@@ -34,26 +34,31 @@ import (
 	"github.com/flopwire/flopwire/internal/agent"
 	"github.com/flopwire/flopwire/internal/busproto"
 	"github.com/flopwire/flopwire/internal/client"
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/recoveryreceipt"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
 	"github.com/flopwire/flopwire/internal/sqlitemem"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/upgrade"
 	"github.com/flopwire/flopwire/internal/vendorcloud"
 )
 
 func agentCmd(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flopwire agent run|flush|status [flags]")
+		return errors.New("usage: flopwire agent run|flush|status|diagnostics [flags]")
 	}
 	switch args[0] {
 	case "run":
 		return agentRun(ctx, args[1:])
 	case "flush":
 		return agentFlush(ctx, args[1:], os.Stdin)
+	case "diagnostics":
+		return agentDiagnosticsCommand(ctx, args[1:], os.Stdout)
 	case "status":
 		fs := flag.NewFlagSet("agent status", flag.ContinueOnError)
 		asJSON := fs.Bool("json", false, "print JSON")
@@ -65,7 +70,7 @@ func agentCmd(ctx context.Context, args []string) error {
 		}
 		return agentStatusOutput(ctx, os.Stdout, *asJSON)
 	default:
-		return fmt.Errorf("unknown agent command %q (want run, flush or status)", args[0])
+		return fmt.Errorf("unknown agent command %q (want run, flush, status or diagnostics)", args[0])
 	}
 }
 
@@ -156,12 +161,15 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	dbPath := fs.String("db", "", "local index database (default $FLOPWIRE_INDEX, else <user cache dir>/flopwire/index.db)")
 	once := fs.Bool("once", false, "index everything that changed, upload it (with a configured server or FLOPWIRE_TOKEN), then exit")
 	syncWait := fs.Duration("sync-timeout", 5*time.Minute, "with --once: how long to wait for the upload to finish")
+	syncWorkers := fs.Int("sync-workers", 1, "upload workers: 1 (default) or 2 (requires server support)")
 	noSync := fs.Bool("no-sync", false, "never upload, even with a configured server")
 	rebuildIndex := fs.Bool("rebuild-index", false, "drop the local index's rows and search files and index every transcript again; keeps sync state, placements and local redactions (see docs/agent.md#recover-the-local-index)")
-	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from the client config's "mode"`)
+	syncOnly := fs.Bool("sync-only", false, `upload only: keep no local message index (local grep/search/read then need --server); default from client config "mode", else minimal when connected and full when standalone`)
 	sweep := fs.Duration("sweep", envDuration("FLOPWIRE_SWEEP", 45*time.Second), "full sweep interval")
 	workers := fs.Int("workers", 0, "parse workers (default GOMAXPROCS)")
 	claudeDir := fs.String("claude-projects", "", "Claude projects root (default CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)")
+	desktopCodeRoot := fs.String("desktop-code-root", "", `Claude Desktop local Code metadata/scoped history container (macOS default; "-" disables); configured normal Claude root remains separate`)
+	coworkRoot := fs.String("cowork-root", "", `Cowork session container (default Claude Desktop app storage on macOS; "-" disables); shared uploads held pending server policy support`)
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
 	opencodeDB := fs.String("opencode-db", "", `opencode.db (default FLOPWIRE_OPENCODE_DB, OPENCODE_DB, or opencode.db under XDG_DATA_HOME or ~/.local/share/opencode; "-" disables)`)
@@ -174,6 +182,9 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	verbose := fs.Bool("v", false, "log every sweep")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if *syncWorkers != 1 && *syncWorkers != 2 {
+		return nil, errors.New("--sync-workers must be 1 or 2")
 	}
 	cc, ccErr := client.Load()
 	if err := resolveSyncOnly(fs, syncOnly, cc, ccErr); err != nil {
@@ -248,7 +259,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	// keeps its footprint flat as the index grows.
 	var a *agent.Agent
 	opts := localindex.Options{ReadConns: 2, ReadCacheMB: 2, WriteCacheMB: 8, ShardCacheMB: 4, DeferCommit: true,
-		SyncOnly: *syncOnly, LockFile: inheritedLock(*dbPath),
+		SyncOnly: *syncOnly, PreserveFullContent: automaticStorageMode(fs, cc), LockFile: inheritedLock(*dbPath),
 		OnCommitError: func(err error) {
 			log.Error("agent: index commit", "err", err)
 			if a != nil {
@@ -257,35 +268,71 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}}
 	// A re-executed agent (it holds the lock already) rebuilt before.
 	opts.RebuildIndex = *rebuildIndex && opts.LockFile == nil
-	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log)
+	contract := agent.OnceRequest{Mode: localindex.ModeFull, Connection: "local", SyncTimeout: *syncWait}
+	if *syncOnly {
+		contract.Mode = localindex.ModeSyncOnly
+	}
+	if !*noSync && ccErr == nil && cc.Server != "" && cc.Token != "" {
+		contract.Connection, contract.Server, contract.DeviceID = "upload", cc.Server, cc.DeviceID
+		if cc.DeviceID == "" {
+			contract.TokenFingerprint = fmt.Sprintf("%x", sha256.Sum256([]byte(cc.Token)))
+		}
+	}
+	if contract.Connection == "upload" {
+		opts.BeforeMigrate = func(db *sql.DB) error { _, err := readSyncAuthority(ctx, db, cc); return err }
+	}
+	store, err := openAgentIndex(ctx, *dbPath, opts, *once, *socket, log, contract)
 	if err != nil || store == nil {
 		return nil, err // store == nil: the running agent did the pass
 	}
 	defer store.Close()
 
-	cfg := agent.Config{ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{DeviceID: cc.DeviceID, Server: cc.Server, DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log,
+		Version: version, ServerVersion: client.ServerVersion}
+	// Once a day the agent asks github.com for the newest release (one
+	// HEAD request, no token), so a device with no server still hears
+	// about upgrades. FLOPWIRE_NO_RELEASE_CHECK=1 turns that off.
+	// A development build is never told to upgrade, so it does not ask.
+	if os.Getenv("FLOPWIRE_NO_RELEASE_CHECK") == "" && upgrade.IsRelease(version) {
+		cfg.ReleaseCheck = func(ctx context.Context) (string, error) { return upgrade.Latest(ctx, nil, "") }
+	}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
 	cfg.UserRules, cfg.AdminRulesCache = pathRuleFiles(dir)
+	loadSyncConfig := client.Load
 	if ccErr == nil {
+		loadSyncConfig = deviceBoundConfig(cc, client.Load)
 		cfg.UserRuleList = cc.Denylist
 		cfg.Unplaceable = cc.Unplaceable
 		if cc.Server != "" && cc.Token != "" && !*noSync {
-			cfg.AdminRules = adminRules(cc)
+			cfg.AdminRules = adminRulesFrom(cc, loadSyncConfig)
+			cfg.PolicyAuthority = collectionPolicyAuthority(cc)
 			cfg.Withhold = withholdSession(cc, client.Load)
+			cfg.CoworkPolicy = coworkPolicyClient(cc, loadSyncConfig)
+			cfg.RecoveredPolicySources = recoveredPolicySources(cc, loadSyncConfig)
 		}
 	}
 	var startSyncRun func()
 	var sched *devicesync.Scheduler
 	if !*noSync {
-		s, tr, start, closeSync, err := startSync(ctx, store, dir, *spoolCap, deviceDirs(*claudeDir, *codexHome), log)
+		var s *devicesync.Scheduler
+		var tr *syncTransport
+		var start, closeSync func()
+		var err error
+		if ccErr == nil {
+			s, tr, start, closeSync, err = startSyncFrom(ctx, store, dir, *spoolCap, *syncWorkers, deviceDirs(*claudeDir, *codexHome), log, cc, loadSyncConfig)
+		} else {
+			s, tr, start, closeSync, err = startSync(ctx, store, dir, *spoolCap, *syncWorkers, deviceDirs(*claudeDir, *codexHome), log)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if s != nil {
 			defer closeSync()
 			sched, cfg.Sync, startSyncRun = s, s, start
+			cfg.SyncTokenFingerprint = contract.TokenFingerprint
+			cfg.DrainSync = func(ctx context.Context, wait time.Duration) error { return drainSync(ctx, s, wait, log) }
 			// An enrolled device rotates its credential daily; a minted
 			// token (FLOPWIRE_TOKEN) never rotates.
 			if !*once && !tr.env {
@@ -305,7 +352,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 		// Vendor cloud sessions (Claude cloud, Devin cloud) through the
 		// vendors' CLIs installed here; FLOPWIRE_CLOUD=off turns it off.
-		if b := openBus(filepath.Join(dir, "bus.db"), devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
+		if b := openAuthorityBus(dir, cc, devicebus.Config{Connect: connect, NoDevice: noDevice, Logger: log, Cloud: vendorcloud.Default()}); b != nil {
 			defer b.Close()
 			cfg.Bus = b
 		}
@@ -334,7 +381,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		if *once && err == nil && sched != nil {
 			err = drainSync(ctx, sched, *syncWait, log)
 		}
-		if *once || err != nil {
+		if *once || err != nil && !errors.Is(err, agent.ErrPolicyUnknown) {
 			return nil, err
 		}
 		if st.Indexed.Load() >= reexecAfter {
@@ -343,12 +390,13 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		}
 	}
 	// A server credential saved or removed while the agent runs restarts
-	// it (watchCredential): the server is wired only here. Sync-only mode
+	// it (watchCredential): the server is wired only here. Automatic mode
+	// follows credentials back to a full standalone index. Explicit sync-only
 	// needs its server, so it keeps the last credential instead.
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
 	var restart atomic.Bool
-	if !*noSync && !*syncOnly {
+	if watchCredentialForMode(*noSync, *syncOnly, automaticStorageMode(fs, cc)) {
 		wired := ccErr == nil && cc.Server != "" && cc.Token != ""
 		go watchCredential(runCtx, credentialWatchEvery, wired, client.Load, func(why string) {
 			log.Info("agent: " + why)
@@ -374,6 +422,10 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 		return nil, err
 	}
 	return nil, nil
+}
+
+func watchCredentialForMode(noSync, syncOnly, automatic bool) bool {
+	return !noSync && (!syncOnly || automatic)
 }
 
 // credentialWatchEvery is how often a running agent re-reads the client
@@ -424,7 +476,8 @@ func watchCredential(ctx context.Context, every time.Duration, wired bool, load 
 
 // resolveSyncOnly settles the index mode: the --sync-only flag when given
 // (--sync-only=false forces a full index), else the client config's
-// "mode" ("full", the default, or "sync-only").
+// "mode" ("full" or "sync-only"). Empty selects minimal when connected
+// and full when standalone; the writer protects an existing full index.
 func resolveSyncOnly(fs *flag.FlagSet, syncOnly *bool, cc client.Config, ccErr error) error {
 	set := false
 	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "sync-only" })
@@ -432,13 +485,29 @@ func resolveSyncOnly(fs *flag.FlagSet, syncOnly *bool, cc client.Config, ccErr e
 		return nil
 	}
 	switch cc.Mode {
-	case "", localindex.ModeFull:
+	case "":
+		*syncOnly = cc.Server != "" && cc.Token != ""
+		if f := fs.Lookup("no-sync"); f != nil && f.Value.String() == "true" {
+			*syncOnly = false
+		}
+	case localindex.ModeFull:
+		*syncOnly = false
 	case localindex.ModeSyncOnly:
 		*syncOnly = true
 	default:
 		return fmt.Errorf("client config: mode %q not understood (want %q or %q)", cc.Mode, localindex.ModeFull, localindex.ModeSyncOnly)
 	}
 	return nil
+}
+
+// automaticStorageMode excludes explicit flags and saved retention choices.
+func automaticStorageMode(fs *flag.FlagSet, cc client.Config) bool {
+	if cc.Mode != "" {
+		return false
+	}
+	explicit := false
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "sync-only" })
+	return !explicit
 }
 
 // agentLockGrace is how long a daemon waits for the index lock before it
@@ -449,10 +518,11 @@ const agentLockGrace = 3 * time.Second
 // openAgentIndex opens the index for writing. The index takes one writer
 // (decision D12): when another process holds it, a daemon fails after
 // agentLockGrace, and --once asks the running agent for a pass over the
-// control socket and waits for it, returning a nil store. A --once whose lock holder does not
+// control socket with its execution contract and waits for indexing and upload
+// completion, returning a nil store. A --once whose lock holder does not
 // answer on the socket (a daemon still in its initial pass, or another
 // --once) waits until it answers or releases the lock.
-func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger) (*localindex.Store, error) {
+func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options, once bool, socket string, log *slog.Logger, contract agent.OnceRequest) (*localindex.Store, error) {
 	waiting := false
 	start := time.Now()
 	for {
@@ -474,13 +544,16 @@ func openAgentIndex(ctx context.Context, dbPath string, opts localindex.Options,
 			}
 			return nil, fmt.Errorf("agent already running (pid %d)", locked.PID)
 		}
-		_, err = agent.Call(ctx, socket, agent.Request{Op: "pass", Index: dbPath})
+		_, err = agent.Call(ctx, socket, agent.Request{Op: "once-v1", Index: dbPath, Once: &contract})
 		if err == nil {
 			log.Info("agent: the running agent did the pass", "pid", locked.PID)
 			return nil, nil
 		}
 		if !strings.HasPrefix(err.Error(), "agent not running") {
-			return nil, fmt.Errorf("agent (pid %d): %w", locked.PID, err)
+			if strings.HasPrefix(err.Error(), "unknown op ") {
+				return nil, fmt.Errorf("agent (pid %d) lacks delegated --once support; restart it with the current binary: %w", locked.PID, err)
+			}
+			return nil, fmt.Errorf("agent (pid %d): delegated --once: %w", locked.PID, err)
 		}
 		if !waiting {
 			waiting = true
@@ -557,6 +630,111 @@ func withholdSession(cc client.Config, load func() (client.Config, error)) func(
 	}
 }
 
+type coworkPolicyClientFunc func(context.Context, *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error)
+
+func (f coworkPolicyClientFunc) PolicyPlacements(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+	return f(ctx, req)
+}
+
+// Cowork policy registration follows credentials and TLS pins saved for this
+// server. Every call still checks the server's durable-policy capability.
+func coworkPolicyClient(cc client.Config, load func() (client.Config, error)) agent.CoworkPolicyClient {
+	var mu sync.Mutex
+	load = deviceBoundConfig(cc, load)
+	server, _ := client.NormalizeServer(cc.Server)
+	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
+	return coworkPolicyClientFunc(func(ctx context.Context, req *syncproto.PolicyPlacementsRequest) (*syncproto.PolicyPlacementsResponse, error) {
+		loaded, loadErr := load()
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if loaded.DeviceID != cc.DeviceID {
+			return nil, errDeviceChanged
+		}
+		mu.Lock()
+		cur := cc
+		if c, same := savedConfig(server, func() (client.Config, error) { return loaded, loadErr }); same {
+			cur = c
+		}
+		if cur.TLSFingerprint != pin {
+			pin, hc = cur.TLSFingerprint, cur.HTTPClient()
+		}
+		policy := devicesync.PolicyClient{Server: cur.Server, Token: cur.Token, HTTP: hc}
+		mu.Unlock()
+		return policy.PolicyPlacements(ctx, req)
+	})
+}
+
+func recoveredPolicySources(cc client.Config, load func() (client.Config, error)) func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) {
+	load = deviceBoundConfig(cc, load)
+	configPath, pathErr := client.Path()
+	binding := recoveryreceipt.Binding{Server: cc.Server, DeviceID: cc.DeviceID}
+	return func(ctx context.Context, nativeUUID string) ([]syncproto.PolicyRecoverySource, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		current, err := load()
+		if err != nil {
+			return nil, err
+		}
+		if current.DeviceID != cc.DeviceID {
+			return nil, errDeviceChanged
+		}
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		receipts, err := recoveryreceipt.Read(filepath.Dir(configPath), binding, nativeUUID)
+		if errors.Is(err, recoveryreceipt.ErrAbsent) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		refs := make([]syncproto.PolicyRecoverySource, 0, len(receipts))
+		for _, r := range receipts {
+			refs = append(refs, syncproto.PolicyRecoverySource{Source: r.Source, OriginalPath: r.OriginalPath})
+		}
+		return refs, nil
+	}
+}
+
+// authorityBusPath keeps message bodies and pending receipts with the server
+// and enrolled device that received them. Credentials and TLS pins can rotate
+// without changing the inbox. Standalone messaging has its own namespace.
+func authorityBusPath(dir string, cc client.Config, connected bool) (string, error) {
+	identity := "standalone"
+	if connected {
+		server, err := client.NormalizeServer(cc.Server)
+		if err != nil {
+			return "", err
+		}
+		identity = "server\x00" + server + "\x00device\x00" + cc.DeviceID
+		if cc.DeviceID == "" {
+			// An unbound token can name a different principal on the same server.
+			identity = "server\x00" + server + "\x00token\x00" + cc.Token
+		}
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return filepath.Join(dir, "bus-"+hex.EncodeToString(sum[:])+".db"), nil
+}
+
+// openAuthorityBus preserves the old ownerless inbox without guessing which
+// server or device received its messages. Only explicitly bound inboxes resume.
+func openAuthorityBus(dir string, cc client.Config, cfg devicebus.Config) *devicebus.Bus {
+	path, err := authorityBusPath(dir, cc, cfg.Connect != nil)
+	if err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Error("agent: messaging off: invalid inbox authority", "err", err)
+		}
+		return nil
+	}
+	legacy := filepath.Join(dir, "bus.db")
+	if _, err := os.Lstat(legacy); err == nil && cfg.Logger != nil {
+		cfg.Logger.Warn("agent: legacy inbox preserved without resuming: its server and device owner are unknown; messaging uses a separate authority inbox", "path", legacy)
+	}
+	return openBus(path, cfg)
+}
+
 // openBus opens the local message inbox. One that cannot be opened (a
 // damaged file, a full disk) turns messaging off with an error in the
 // log; it never stops indexing and upload.
@@ -579,6 +757,7 @@ func openBus(path string, cfg devicebus.Config) *devicebus.Bus {
 // agent's own rotation refuses the old token at its commit, before the
 // config save that names the new one (issue #110), as syncTransport does.
 func busConnect(cc client.Config, load func() (client.Config, error)) func() (devicebus.Server, string) {
+	load = deviceBoundConfig(cc, load)
 	var mu sync.Mutex
 	server, _ := client.NormalizeServer(cc.Server)
 	pin, hc := cc.TLSFingerprint, cc.HTTPClient()
@@ -586,7 +765,7 @@ func busConnect(cc client.Config, load func() (client.Config, error)) func() (de
 		mu.Lock()
 		defer mu.Unlock()
 		cur := cc
-		if c, same := savedConfig(server, load); same {
+		if c, same := savedConfig(server, load); same && (cc.DeviceID != "" || c.Token == cc.Token) {
 			cur = c
 		}
 		if cur.TLSFingerprint != pin {
@@ -640,6 +819,10 @@ func (r rotatingBus) Send(ctx context.Context, req busproto.SendRequest) (buspro
 	return retryRotated(ctx, r, req, client.Bus.Send)
 }
 
+func (r rotatingBus) ReadReference(ctx context.Context, ref string) (string, error) {
+	return retryRotated(ctx, r, ref, client.Bus.ReadReference)
+}
+
 func (r rotatingBus) Poll(ctx context.Context, req busproto.PollRequest) (busproto.PollResponse, error) {
 	return retryRotated(ctx, r, req, client.Bus.Poll)
 }
@@ -667,7 +850,7 @@ func adminRulesFrom(cc client.Config, load func() (client.Config, error)) func(c
 	return func(ctx context.Context) (agent.AdminPolicy, error) {
 		mu.Lock()
 		cur := cc
-		if c, same := savedConfig(server, load); same {
+		if c, same := savedConfig(server, load); same && c.DeviceID == cc.DeviceID && (cc.DeviceID != "" || c.Token == cc.Token) {
 			cur = c
 		}
 		if cur.TLSFingerprint != pin {
@@ -717,35 +900,46 @@ func deviceDirs(claudeProjects, codexHome string) syncproto.DeviceDirs {
 	return syncproto.DeviceDirs{Home: home, ClaudeProjects: claudeProjects, CodexHome: codexHome}
 }
 
-func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, dev syncproto.DeviceDirs, log *slog.Logger) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
+func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, uploadWorkers int, dev syncproto.DeviceDirs, log *slog.Logger) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
 	cfg, err := client.Load()
 	if err != nil {
 		log.Info("agent: no server configured; indexing locally only", "reason", err)
 		return nil, nil, nil, nil, nil
 	}
+	return startSyncFrom(ctx, store, dir, spoolCap, uploadWorkers, dev, log, cfg, client.Load)
+}
+
+// Use the agent's initial credential snapshot for both sync and policy
+// registration. A second config read at construction could select a new device.
+func startSyncFrom(ctx context.Context, store *localindex.Store, dir string, spoolCap int64, uploadWorkers int, dev syncproto.DeviceDirs, log *slog.Logger, cfg client.Config, load func() (client.Config, error)) (*devicesync.Scheduler, *syncTransport, func(), func(), error) {
 	db, err := sql.Open("sqlite", "file:"+store.Path()+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	db.SetMaxOpenConns(1)
+	spoolKey, err := bindSyncAuthority(ctx, db, cfg)
+	if err != nil {
+		db.Close()
+		return nil, nil, nil, nil, err
+	}
 	st, err := devicesync.NewStore(db)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	spool, err := devicesync.OpenSpool(filepath.Join(dir, "spool"), spoolCap)
+	spool, err := devicesync.OpenSpool(filepath.Join(dir, "spool", spoolKey), spoolCap)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	tr := newSyncTransport(cfg, client.Load, log)
+	tr := newSyncTransport(cfg, load, log)
 	live := local.LiveReporter(local.NewDetector(), 30*time.Second, syncproto.MaxLive)
-	sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log, Device: dev, Live: live}, st, spool, tr)
+	sy, err := devicesync.NewSyncer(devicesync.Config{Logger: log, Device: dev, Live: live, UploadWorkers: uploadWorkers}, st, spool, tr)
 	if err != nil {
 		db.Close()
 		return nil, nil, nil, nil, err
 	}
-	sched := devicesync.NewScheduler(sy, devicesync.SchedulerConfig{Repin: tr.repin})
+	sched := devicesync.NewScheduler(sy, devicesync.SchedulerConfig{Repin: tr.repin, Workers: uploadWorkers, NegotiatedWorkers: tr.uploadConcurrency})
 	sctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	start := func() {
@@ -766,7 +960,13 @@ func startSync(ctx context.Context, store *localindex.Store, dir string, spoolCa
 func drainSync(ctx context.Context, sched *devicesync.Scheduler, wait time.Duration, log *slog.Logger) error {
 	deadline := time.Now().Add(wait)
 	for {
-		st := sched.Status()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		st := sched.Progress()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		switch {
 		case st.Stopped != "":
 			return fmt.Errorf("upload stopped: %s", st.Stopped)
@@ -779,7 +979,7 @@ func drainSync(ctx context.Context, sched *devicesync.Scheduler, wait time.Durat
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(min(200*time.Millisecond, max(time.Until(deadline), 0))):
 		}
 	}
 }
@@ -862,6 +1062,26 @@ func agentStatusOutput(ctx context.Context, w io.Writer, asJSON bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	resp, err := agent.Call(ctx, filepath.Join(dir, "agent.sock"), agent.Request{Op: "status"})
+	if err == nil {
+		if resp.Coverage == nil {
+			resp.Coverage = coverage.UnknownReport("running agent coverage unavailable")
+		}
+		// A local agent observation cannot attest to fresh remote parsing.
+		// Only this request's authenticated, bound server probe can do that.
+		resp.Coverage.Parse = nil
+		if resp.Coverage.Unknown == nil {
+			resp.Coverage.Unknown = make(map[string]string)
+		}
+		resp.Coverage.Unknown["parse"] = "server parse progress was not observed for this status request"
+		if cfg, loadErr := client.Load(); loadErr == nil && sameCoverageBinding(resp.Coverage, &cfg) {
+			probeCtx, probeCancel := context.WithTimeout(ctx, retrievalCoverageBudget)
+			if snapshot, probeErr := parseCoverageReader(cfg)(probeCtx); probeErr == nil {
+				resp.Coverage.Parse = snapshot
+				delete(resp.Coverage.Unknown, "parse")
+			}
+			probeCancel()
+		}
+	}
 	if asJSON {
 		if err != nil {
 			return err
@@ -894,10 +1114,66 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	if resp.Version != "" {
+		if resp.ServerVersion != "" {
+			fmt.Fprintf(w, "version: %s (server %s)\n", resp.Version, resp.ServerVersion)
+		} else {
+			fmt.Fprintf(w, "version: %s\n", resp.Version)
+		}
+	}
+	if resp.Upgrade != "" {
+		fmt.Fprintln(w, "upgrade:", resp.Upgrade)
+	}
+	printCoverage(w, resp.Coverage)
+	for _, section := range []string{"cowork", "redactions", "extraction", "inbox"} {
+		if reason := resp.Unavailable[section]; reason != "" {
+			fmt.Fprintln(w, reason)
+		}
+	}
+	if c := resp.DesktopCode; c != nil {
+		fmt.Fprintf(w, "Claude Desktop Code (Local): %s (%d scoped native sessions, %d normal-root links, %d missing linked transcripts, %d outside local Code scope)\n", c.State, c.Sessions, c.NormalLinks, c.MetadataOnly, c.OutOfScope)
+		if c.SharedAuthorization != "" {
+			fmt.Fprintf(w, "  scoped shared authorization: %s\n", c.SharedAuthorization)
+		}
+		if c.SharedHold != "" {
+			fmt.Fprintf(w, "  scoped shared uploads held: %s\n", c.SharedHold)
+		}
+		if c.Error != "" {
+			fmt.Fprintf(w, "  %s\n", c.Error)
+		}
+		if c.CoworkAliases > 0 {
+			fmt.Fprintf(w, "  %d Cowork import aliases retain folder-policy holds\n", c.CoworkAliases)
+		}
+	}
+	if c := resp.Cowork; c != nil {
+		fmt.Fprintf(w, "Cowork: %s (%d native sessions, %d metadata-only, %d excluded paths)\n", c.State, c.Sessions, c.MetadataOnly, c.Excluded)
+		if c.RepositoryScopeUnknown > 0 {
+			fmt.Fprintf(w, "  repository policy scope unresolved for %d native scopes; shared uploads held\n", c.RepositoryScopeUnknown)
+		}
+		if c.Sessions > 0 || c.Held > 0 || c.ScheduleEligible > 0 {
+			fmt.Fprintf(w, "  native scopes: %d eligible for scheduling, %d held\n", c.ScheduleEligible, c.Held)
+			if c.Unknown > 0 || c.HistoricalUnknown > 0 {
+				fmt.Fprintf(w, "  unknown mapping: %d current, %d historical native scopes\n", c.Unknown, c.HistoricalUnknown)
+			}
+			if c.SharedHold != "" {
+				fmt.Fprintf(w, "  shared uploads: %s\n", c.SharedHold)
+			}
+		}
+		if attempt := c.LastPolicyAttempt; attempt.State != "" && attempt.State != "not_attempted" {
+			fmt.Fprintf(w, "  latest policy registration: %s", attempt.State)
+			if !attempt.At.IsZero() {
+				fmt.Fprintf(w, " (%s)", attempt.At.Local().Format(time.DateTime))
+			}
+			fmt.Fprintln(w)
+		}
+	}
 	if resp.Extraction != nil {
 		printExtractionSummary(w, resp.Extraction)
 	}
 	st := resp.Sync
+	if resp.CollectionPolicy == "unknown" {
+		fmt.Fprintln(w, "collection and uploads paused: current server policy unknown; existing data retained")
+	}
 	if c := resp.ServerCopies; c != nil {
 		fmt.Fprintf(w, "path rules removed %d sessions from the local index (latest %s).\n", c.Count, c.At.Local().Format(time.DateTime))
 		fmt.Fprintln(w, "  Uploaded copies stay on the server unless an admin rule covers them (the server deletes those); for the rest the owner or an admin must delete them there:")
@@ -925,7 +1201,7 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 	if resp.Credential != nil {
 		off = resp.Credential.MessagingOff
 	}
-	printBusStatus(w, resp.Bus, off)
+	printBusStatusWithCounts(w, resp.Bus, off, resp.Unavailable["inbox"] == "")
 	if st == nil {
 		fmt.Fprintln(w, "sync: off (no server configured)")
 		return
@@ -942,12 +1218,20 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 	default:
 		fmt.Fprintln(w, "sync: ok")
 	}
+	if st.UploadWorkers > 0 {
+		fmt.Fprintf(w, "upload workers: %d\n", st.UploadWorkers)
+	}
+	if st.ConcurrencyError != "" {
+		fmt.Fprintf(w, "upload capability check: %s (using one worker; retrying)\n", st.ConcurrencyError)
+	}
 	fmt.Fprintf(w, "queued: %d sources; spool: %d bytes", st.Queued, st.SpoolBytes)
 	if st.SpoolBlocked {
 		fmt.Fprint(w, " (full: captures of rewritten sources paused)")
 	}
 	fmt.Fprintln(w)
-	printRedactions(w, st.Redactions, st.RedactedSources)
+	if resp.Unavailable["redactions"] == "" {
+		printRedactions(w, st.Redactions, st.RedactedSources)
+	}
 	if st.RefusedCount > 0 {
 		fmt.Fprintf(w, "server refused %d sources by admin path rule (not stored there):\n", st.RefusedCount)
 		for _, r := range st.Refused {
@@ -969,6 +1253,10 @@ func printAgentStatus(w io.Writer, resp agent.Response) {
 // is the credential's messaging: off reason, which the credential lines
 // print: a bus stopped for that reason does not say it twice.
 func printBusStatus(w io.Writer, b *devicebus.Status, off string) {
+	printBusStatusWithCounts(w, b, off, true)
+}
+
+func printBusStatusWithCounts(w io.Writer, b *devicebus.Status, off string, countsKnown bool) {
 	if b == nil {
 		return
 	}
@@ -988,7 +1276,9 @@ func printBusStatus(w io.Writer, b *devicebus.Status, off string) {
 	default:
 		fmt.Fprintf(w, "messaging: %s\n", b.State)
 	}
-	fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	if countsKnown {
+		fmt.Fprintf(w, "messages: %d pending delivery, %d receipts unsent, %d held for your acceptance\n", b.Pending, b.Unacked, b.Held)
+	}
 	if b.Cloud > 0 {
 		fmt.Fprintf(w, "cloud sessions: %d listed (Claude Code cloud, Devin cloud)\n", b.Cloud)
 	}
@@ -1040,4 +1330,13 @@ func hookSource(raw []byte) (path, session string) {
 		return ""
 	}
 	return str("transcript_path", "rollout_path"), str("session_id", "thread-id", "thread_id")
+}
+
+func collectionPolicyAuthority(cc client.Config) *agent.PolicyAuthority {
+	owner := &agent.PolicyAuthority{Server: cc.Server, DeviceID: cc.DeviceID}
+	if cc.DeviceID == "" {
+		fingerprint := sha256.Sum256([]byte(cc.Token))
+		owner.TokenFingerprint = fmt.Sprintf("%x", fingerprint)
+	}
+	return owner
 }

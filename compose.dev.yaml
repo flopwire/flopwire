@@ -1,4 +1,14 @@
+# Development overrides: build the server image from this checkout under
+# its own tag, so it never shadows the published image, and publish
+# Postgres and MinIO on loopback for the bootstrap step and tests.
 services:
+  flopwire:
+    image: flopwire:dev
+    build:
+      context: .
+      args:
+        VERSION: ${FLOPWIRE_BUILD_VERSION:-dev}
+    pull_policy: build
   postgres:
     ports:
       - "127.0.0.1:${POSTGRES_DEV_PORT:-55432}:5432"

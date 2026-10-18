@@ -2,6 +2,7 @@ package localindex
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,5 +137,48 @@ func TestSyncOnlyModeAndSwitch(t *testing.T) {
 	}
 	if got, err := s.Placements(ctx); err != nil || len(got) != 1 {
 		t.Fatalf("switch to sync-only: placements %+v %v", got, err)
+	}
+}
+
+func TestAutomaticMinimalPreservesFullContent(t *testing.T) {
+	for _, populated := range []bool{false, true} {
+		t.Run(fmt.Sprint(populated), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "index.db")
+			s, err := Open(path, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if populated {
+				src := source(t, s, transcript.AgentClaude, "/synthetic.jsonl")
+				apply(t, s, Batch{SourceID: src.ID, Generation: 1, NewGeneration: &transcript.Generation{Generation: 1}, Conversations: []*transcript.Conversation{{SessionID: "s1"}}, Messages: []*transcript.Message{msg("s1", "m1", 0, transcript.KindUser, "retained synthetic content")}})
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = Open(path, Options{SyncOnly: true, PreserveFullContent: true})
+			if !populated {
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.Close()
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "--sync-only=false") {
+				t.Fatalf("automatic transition: %v", err)
+			}
+			s, err = Open(path, Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := countRows(t, s, "messages"); got != 1 {
+				t.Fatalf("retained messages = %d", got)
+			}
+			s.Close()
+			s, err = Open(path, Options{SyncOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+		})
 	}
 }

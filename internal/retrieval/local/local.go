@@ -9,8 +9,7 @@
 //     any-term retry.
 //   - sessions: conversations by last activity.
 //   - read: a message and its neighbours by ordinal, located by address;
-//     raw bytes from the transcript file, or from the team server when the
-//     file is gone or replaced.
+//     raw bytes from the unchanged indexed transcript file.
 //
 // Message, conversation and source ids are the local index's integer ids,
 // rendered as decimal strings.
@@ -18,6 +17,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,16 +56,9 @@ func IndexPath() string {
 	return filepath.Join(dir, "flopwire", "index.db")
 }
 
-// Remote is the team server, used for raw bytes the local file no longer
-// holds. client.HTTP implements it.
-type Remote interface {
-	RawByPath(ctx context.Context, path, fileID string, generation, offset, length int64) ([]byte, error)
-}
-
 // Backend serves the tools from a local index.
 type Backend struct {
-	Store  *localindex.Store
-	Remote Remote // optional
+	Store *localindex.Store
 }
 
 func bad(format_ string, args ...any) error {
@@ -207,6 +200,9 @@ func ResolveRepo(repo string) string {
 // with every matching line (and context lines), collapsed by identical
 // text, counted for the footer.
 func (b *Backend) Grep(ctx context.Context, q format.GrepQuery, f format.Filters) (*format.Page, error) {
+	if q.Continue || q.Cursor != "" {
+		return nil, fmt.Errorf("%w: resumable grep requires the hosted server; use --server", format.ErrBadRequest)
+	}
 	lf, err := b.filter(ctx, f)
 	if err != nil {
 		return nil, err
@@ -291,51 +287,61 @@ func budgetNote(p localindex.Partial) string {
 	return fmt.Sprintf("%s: checked %d of %s candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", what, p.Checked, total)
 }
 
-// Search is ranked BM25 over the token index. Quoted phrases must appear
-// as written. When no message holds every term, it ranks messages holding
-// any of the terms, stopwords dropped, and says so. Notes carry the rank
-// cap (decision D2) and the budget.
+// Search ranks lexical matches with BM25. Planning and ranking share one
+// deadline; fallback retains phrases and an index-evidenced topic anchor.
 func (b *Backend) Search(ctx context.Context, q format.SearchQuery, f format.Filters) (*format.Page, error) {
 	lf, err := b.filter(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	words, phrases := format.SplitQuery(q.Query)
-	if len(words)+len(phrases) == 0 {
+	if strings.TrimSpace(q.Query) == "" {
 		return nil, bad("query is empty")
 	}
-	// One hit past the page says whether a next page exists.
+	if _, err := format.SearchMatching(q.Matching); err != nil {
+		return nil, bad("%s", err)
+	}
 	n := limit(q.Limit)
 	sort, err := format.SortFor("search", f.Sort)
 	if err != nil {
 		return nil, err
 	}
-	o := localindex.SearchOptions{Filter: lf, Limit: n + 1, Offset: q.Offset, Phrases: phrases, Budget: localindex.Budget{Timeout: q.Timeout}}
+	timeout := q.Timeout
+	if timeout <= 0 {
+		timeout = localindex.DefaultTimeout
+	}
+	timeout = min(timeout, localindex.MaxTimeout)
+	searchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	o := localindex.SearchOptions{Filter: lf, Limit: n + 1, Offset: q.Offset, Budget: localindex.Budget{Timeout: timeout}}
 	if sort != format.SortRelevance {
 		o.ByTime = sort
 	}
-	text := strings.Join(append(append([]string{}, words...), phrases...), " ")
-	res, err := b.Store.Rank(ctx, text, o)
+	page := &format.Page{Hits: []format.Hit{}, Offset: q.Offset}
+	match, err := format.PlanSearch(searchCtx, q.Query, q.Matching, func(ctx context.Context, m format.SearchMatch, cap int) (int, error) {
+		opts := o
+		opts.AnyTerm, opts.Phrases = m.Any, m.Phrases
+		return b.Store.SearchCount(ctx, m.Text(), opts, cap)
+	})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || searchCtx.Err() == context.DeadlineExceeded {
+			page.Truncated = true
+			page.Reason = "timed out before lexical matching probes finished; narrow terms or filters"
+			return page, nil
+		}
+		return nil, err
+	}
+	o.AnyTerm, o.Phrases = match.Any, match.Phrases
+	res, err := b.Store.Rank(searchCtx, match.Text(), o)
+	if searchCtx.Err() == context.DeadlineExceeded {
+		page.Truncated = true
+		page.Reason = "timed out before lexical ranking finished; narrow terms or filters"
+		return page, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	page := &format.Page{Hits: []format.Hit{}, Offset: q.Offset}
-	if len(res.Hits) == 0 && !res.Truncated && len(words) > 1 {
-		none := q.Offset == 0
-		if !none { // a later page: did the every-term query match at all?
-			first, err := b.Store.Rank(ctx, text, localindex.SearchOptions{Filter: lf, Limit: 1, Phrases: phrases, ByTime: o.ByTime})
-			none = err == nil && len(first.Hits) == 0 && !first.Truncated
-		}
-		if none {
-			kept := format.DropStopwords(words)
-			o.AnyTerm = true
-			if res, err = b.Store.Rank(ctx, strings.Join(append(kept, phrases...), " "), o); err != nil {
-				return nil, err
-			}
-			if len(res.Hits) > 0 {
-				page.Notes = append(page.Notes, "no message has every term; ranked messages with any of: "+strings.Join(kept, " ")+" (they may not answer the question)")
-			}
-		}
+	if match.Note != "" && !res.Truncated {
+		page.Notes = append(page.Notes, match.Note)
 	}
 	switch {
 	case res.Truncated:
@@ -554,15 +560,13 @@ func (b *Backend) Read(ctx context.Context, q format.ReadQuery, f format.Filters
 	}
 	for i := range msgs {
 		m := &msgs[i]
-		from, chars := 1, max(budget/4, 200)
+		var e format.Excerpt
 		if m.ID == cx.Focus {
-			from, chars = q.LineOffset, budget
-			if from == 0 && line > 0 {
-				from = max(1, line-5)
-			}
+			e = format.CutFocus(m.Text, q.LineOffset, line, budget)
+		} else {
+			e = format.Cut(m.Text, 1, max(budget/4, 200))
 		}
 		stored := rows[i]
-		e := format.Cut(m.Text, from, chars)
 		m.Text, m.Lines, m.LineFrom, m.LineTo, m.Clipped = e.Text, e.Lines, e.From, e.To, e.Clipped
 		if stored.FullLen > len(stored.Text) {
 			m.StoredLen, m.Clipped = len(stored.Text), true
@@ -696,6 +700,7 @@ func (b *Backend) hits(ctx context.Context, rows []*localindex.Row) ([]format.Hi
 	for _, r := range rows {
 		h := format.Hit{Address: format.MessageAddress(short[r.SessionID], r.Ordinal), MessageID: id(r.ID), ConversationID: id(r.ConversationID),
 			Agent: string(r.Agent), SessionID: r.SessionID, Ordinal: r.Ordinal, Title: infos[r.ConversationID].Title, Repo: repoOf(r.RepoRoot, r.Cwd),
+			RepoIdentity: infos[r.ConversationID].RepoIdentity, Worktree: infos[r.ConversationID].Worktree,
 			Device: r.DeviceID, Branches: infos[r.ConversationID].Branches, Kind: r.Kind.String(), ToolName: r.ToolName, IsError: r.IsError, TS: tsPtr(r.TS),
 			Superseded: r.Superseded, OffPath: offPath(r), Provenance: provenance(r, srcs[r.ID])}
 		out = append(out, h)
@@ -716,7 +721,7 @@ func repoOf(root, cwd string) string {
 
 func info(c localindex.ConversationRow, short map[string]string) format.ConversationInfo {
 	i := format.ConversationInfo{Address: short[c.SessionID], ID: id(c.ID), Agent: string(c.Agent), SessionID: c.SessionID, Title: c.Title, Cwd: c.Cwd,
-		Repo: repoOf(c.RepoRoot, c.Cwd), Device: c.DeviceID, StartedAt: tsPtr(c.StartedAt), LastActivityAt: tsPtr(c.LastActivityAt), Depth: c.Depth,
+		Repo: repoOf(c.RepoRoot, c.Cwd), RepoIdentity: c.RepoIdentity, Worktree: c.Worktree, Device: c.DeviceID, StartedAt: tsPtr(c.StartedAt), LastActivityAt: tsPtr(c.LastActivityAt), Depth: c.Depth,
 		Messages: c.Messages, ParentSession: short[c.ParentSessionID], Branches: c.Branches, Digest: format.ParseDigest(c.Digest)}
 	if c.ParentConversationID != 0 {
 		i.ParentConversationID = id(c.ParentConversationID)

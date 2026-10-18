@@ -57,7 +57,7 @@ func startAgent(t *testing.T, home, sock string, extra ...string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runAgent(ctx, append([]string{"--socket", sock, "--claude-projects", filepath.Join(home, ".claude", "projects"),
+		_, err := runAgent(ctx, append([]string{"--socket", sock, "--desktop-code-root", "-", "--cowork-root", "-", "--claude-projects", filepath.Join(home, ".claude", "projects"),
 			"--codex-home", filepath.Join(home, ".codex"), "--devin-db", "-", "--opencode-db", "-", "--mem-limit", "0", "--gc-percent", "100"}, extra...))
 		done <- err
 	}()
@@ -141,7 +141,7 @@ func TestBusEndToEndLocal(t *testing.T) {
 		t.Fatalf("peers:\n%s %v", out, err)
 	}
 	out, err = busCLI(t, sock, e2eA, "Heads-up: the list endpoint returns a cursor now.\nUse it for page 2.\n", "send", "e2e0bbbb", "--intent", "request", "--", "-")
-	if err != nil || !strings.HasPrefix(out, "sent m") || !strings.HasSuffix(out, " to e2e0bbbb ("+osUser(t)+" claude e2e-api@main): idle, arrives with its human's next prompt (idle duration unknown). "+nextNoWait+"\n") {
+	if err != nil || !strings.HasPrefix(out, "sent m") || !strings.HasSuffix(out, " to e2e0bbbb ("+osUser(t)+" claude e2e-api@main): idle, arrives when its session resumes (idle duration unknown). "+nextNoWait+"\n") {
 		t.Fatalf("send: %q %v", out, err)
 	}
 	id := strings.Fields(out)[1]
@@ -240,7 +240,7 @@ func TestBusEndToEndServer(t *testing.T) {
 	waitPeer(t, sock, e2eA, e2eB)
 
 	out, err := busCLI(t, sock, e2eA, "", "send", "e2e0bbbb", "--", "Heads-up: the list endpoint returns a cursor now.")
-	if err != nil || !strings.HasPrefix(out, "sent m") || !strings.HasSuffix(out, " to e2e0bbbb (gary claude e2e-api@main): idle, arrives with its human's next prompt (idle duration unknown)\n") {
+	if err != nil || !strings.HasPrefix(out, "sent m") || !strings.HasSuffix(out, " to e2e0bbbb (gary claude e2e-api@main): idle, arrives when its session resumes (idle duration unknown)\n") {
 		t.Fatalf("send: %q %v", out, err)
 	}
 	id := strings.Fields(out)[1]

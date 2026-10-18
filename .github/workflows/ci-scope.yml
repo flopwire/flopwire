@@ -1,0 +1,36 @@
+name: CI scope
+
+on:
+  workflow_call:
+    outputs:
+      full:
+        description: Whether the full test suite is required
+        value: ${{ jobs.scope.outputs.full }}
+
+permissions:
+  contents: read
+
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify the changed paths
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Always run the full suite on a merge group or a manual run.
+          if [ "$EVENT" != pull_request ]; then
+            echo 'full=true' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base=$(git merge-base "$PR_BASE" "$PR_HEAD")
+          python3 scripts/ci-scope.py "$base" "$PR_HEAD"

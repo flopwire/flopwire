@@ -45,6 +45,8 @@ type tapEntry struct {
 	AgentTranscript string   `json:"agent_transcript,omitempty"`
 	Printed         []string `json:"printed,omitempty"` // message ids in the additionalContext
 	Instruction     bool     `json:"instruction,omitempty"`
+	OutputBytes     int      `json:"output_bytes,omitempty"`
+	OutputStatus    string   `json:"output_status,omitempty"`
 	// Binary is the flopwire that ran the hook and Via how the plugin's
 	// shim found it (FLOPWIRE_HOOK_VIA: recorded, path or known); both are
 	// set only under probe --as-installed, where the plugin's own hook
@@ -126,13 +128,42 @@ func probeTap(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// must reach the hook (PreToolUse marks the turn busy, Confirm
 	// confirms a delivery).
 	if slices.Contains(probeHookEvents, in.Event) || in.Harness == "opencode" {
-		var out bytes.Buffer
+		out := tapOutput{dst: stdout}
 		_ = hookCmd(ctx, []string{"--socket", *socket}, bytes.NewReader(raw), &out, stderr, os.Getenv)
-		_, _ = stdout.Write(out.Bytes())
-		e.Printed, e.Instruction = printedIDs(out.Bytes())
+		e.OutputBytes, e.OutputStatus = out.written, out.status
+		if out.status == "written" {
+			e.Printed, e.Instruction = printedIDs(out.capture.Bytes())
+		}
 	}
 	e.Done = time.Now().UnixMilli()
 	return appendTap(*logPath, e)
+}
+
+// tapOutput observes the real write after forwarding it. The hook receives
+// the downstream writer's exact result before it decides whether to confirm.
+// Captured bytes establish only a successful write, never native context entry.
+type tapOutput struct {
+	dst     io.Writer
+	capture bytes.Buffer
+	written int
+	status  string
+}
+
+func (w *tapOutput) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	w.written += n
+	if n > 0 && n <= len(p) {
+		_, _ = w.capture.Write(p[:n])
+	}
+	switch {
+	case err != nil:
+		w.status = "error"
+	case n != len(p):
+		w.status = "short_write"
+	case w.status == "":
+		w.status = "written"
+	}
+	return n, err
 }
 
 // appendTap appends one entry; a line under PIPE_BUF is written whole

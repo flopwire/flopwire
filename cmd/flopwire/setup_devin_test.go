@@ -866,7 +866,7 @@ func TestDevinHookChanges(t *testing.T) {
 	}
 }
 
-// Devin shows no hook failure, so docs/agent.md sends a Devin user to
+// Devin shows no hook failure, so docs/harnesses/devin.md sends a Devin user to
 // `setup --check`: its Devin entry names a command the plugin Devin
 // loaded runs that the flopwire on PATH does not know (#151 review).
 func TestSetupDevinCheckComparesPluginAndBinary(t *testing.T) {

@@ -1,0 +1,370 @@
+package localindex
+
+import (
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/flopwire/flopwire/internal/perfguard"
+	"github.com/flopwire/flopwire/internal/transcript"
+)
+
+func batchNativeEvidence(t *testing.T, s *Store, path, key string, foreign bool) {
+	t.Helper()
+	src, err := s.EnsureSource(ctx, transcript.Source{Agent: transcript.AgentClaude, Path: path, SessionKey: key, StorageKind: transcript.StorageJSONLAppend, Parser: "claude@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveWatermark(ctx, src.ID, transcript.Watermark{Offset: 9}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if foreign {
+		if err = s.write(ctx, func(w *writeTx) error {
+			_, err := w.exec(`UPDATE sources SET device_id='foreign' WHERE id=?`, src.ID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCapturedClaudeChildrenBatchKeepsPerParentRoots(t *testing.T) {
+	s := openEvidenceTest(t)
+	const a = "12345678-abcd-4321-9876-123456789abc"
+	const b = "12345678-abcd-4321-9876-123456789abd"
+	const c = "12345678-abcd-4321-9876-123456789abe"
+	root := "/synthetic/projects"
+	nested := root + "/project/" + a + "/subagents"
+	batchNativeEvidence(t, s, root+"/project/"+a+"/subagents/agent-native.jsonl", "agent-native", false)
+	batchNativeEvidence(t, s, nested+"/project/"+b+"/subagents/agent-overlap.jsonl", "", false)
+	batchNativeEvidence(t, s, root+"/project/"+b+"/subagents/agent-wrong-root.jsonl", "", false)
+	batchNativeEvidence(t, s, root+"-other/project/"+a+"/subagents/agent-prefix-other.jsonl", "", false)
+	batchNativeEvidence(t, s, nested+"/project/"+b+"/subagents/agent-foreign.jsonl", "", true)
+	batchNativeEvidence(t, s, nested+"/project/"+b+"/subagents/agent-conflict.jsonl", "agent-other", false)
+	// An acknowledged older scheduler companion can outlive its parent file.
+	err := s.write(ctx, func(w *writeTx) error {
+		for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`, `CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,acked INTEGER)`} {
+			if _, err := w.exec(stmt); err != nil {
+				return err
+			}
+		}
+		spec, _ := json.Marshal(map[string]any{"Agent": "claude", "StorageKind": "companion", "Parser": "claude@1", "Parent": nested + "/project/" + b + "/subagents/agent-archived.jsonl", "SessionKey": ""})
+		if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,'/synthetic/companion.txt',?,3)`, string(spec)); err != nil {
+			return err
+		}
+		_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,1,9,1,1)`)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uppercase := strings.ToUpper(a)
+	parents := map[string][]string{a: {root}, uppercase: {root}, b: {nested}, c: {"/same-name/projects"}, "not-a-uuid": {root}}
+	got, err := s.CapturedClaudeChildrenForParents(ctx, parents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{a: {"agent-archived", "agent-native", "agent-overlap"}, uppercase: {"agent-archived", "agent-native", "agent-overlap"}, b: {"agent-archived", "agent-overlap"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("relations=%v want=%v", got, want)
+	}
+	// Existing single-parent compatibility includes uppercase UUID spelling.
+	one, err := s.CapturedClaudeChildren(ctx, parents[uppercase], uppercase)
+	if err != nil || !reflect.DeepEqual(one, want[uppercase]) {
+		t.Fatalf("single=%v error=%v", one, err)
+	}
+}
+
+func TestCapturedClaudeChildrenBatchScansOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	counter := perfguard.CountSQLite(t, "file:"+path+"?")
+	s, err := Open(path, Options{DeviceID: "local-device", DeferCommit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	parents := map[string][]string{}
+	for i := range 32 {
+		parents[fmt.Sprintf("12345678-abcd-4321-9876-%012x", i+1)] = []string{"/synthetic/projects"}
+	}
+	for i := range 2048 {
+		parent := fmt.Sprintf("12345678-abcd-4321-9876-%012x", i%32+1)
+		child := fmt.Sprintf("agent-%04x", i)
+		batchNativeEvidence(t, s, "/synthetic/projects/project/"+parent+"/subagents/"+child+".jsonl", child, false)
+	}
+	if err = s.write(ctx, func(w *writeTx) error {
+		for _, stmt := range []string{`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`, `CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER,closed INTEGER,acked INTEGER)`} {
+			if _, err := w.exec(stmt); err != nil {
+				return err
+			}
+		}
+		for i := range 2048 {
+			parent := fmt.Sprintf("12345678-abcd-4321-9876-%012x", i%32+1)
+			child := fmt.Sprintf("agent-%04x", i)
+			path := "/synthetic/projects/project/" + parent + "/subagents/" + child + ".jsonl"
+			spec, _ := json.Marshal(map[string]any{"Agent": "claude", "StorageKind": "jsonl_append", "Parser": "claude@1", "SessionKey": child})
+			if _, err := w.exec(`INSERT INTO devsync_sources VALUES(?,?,?,3)`, i+1, path, string(spec)); err != nil {
+				return err
+			}
+			if _, err := w.exec(`INSERT INTO devsync_gens VALUES(?,1,9,1,1)`, i+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	counter.Reset()
+	start := time.Now()
+	legacy := map[string][]string{}
+	for parent, roots := range parents {
+		children, err := s.CapturedClaudeChildren(ctx, roots, parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy[parent] = children
+	}
+	legacyElapsed := time.Since(start)
+	legacyScans, legacySyncScans := int64(0), int64(0)
+	for sql, n := range counter.BySQL() {
+		if strings.Contains(sql, "FROM sources src") {
+			legacyScans += n
+		}
+		if strings.Contains(sql, "FROM devsync_sources src JOIN devsync_gens") {
+			legacySyncScans += n
+		}
+	}
+	if err = s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	counter.Reset()
+	start = time.Now()
+	batch, err := s.CapturedClaudeChildrenForParents(ctx, parents)
+	batchElapsed := time.Since(start)
+	if err != nil || !reflect.DeepEqual(batch, legacy) {
+		t.Fatalf("batch differs: error=%v", err)
+	}
+	batchScans, batchSyncScans := int64(0), int64(0)
+	for sql, n := range counter.BySQL() {
+		if strings.Contains(sql, "FROM sources src") {
+			batchScans += n
+		}
+		if strings.Contains(sql, "FROM devsync_sources src JOIN devsync_gens") {
+			batchSyncScans += n
+		}
+	}
+	if legacyScans != 32 || batchScans != 1 || legacySyncScans != 32 || batchSyncScans != 1 {
+		t.Fatalf("evidence scans local legacy=%d batch=%d, scheduler legacy=%d batch=%d", legacyScans, batchScans, legacySyncScans, batchSyncScans)
+	}
+	t.Logf("2048 local sources +2048 retained scheduler generations,32 parents: repeated scans=%d time=%v; batch scans=%d time=%v", legacyScans, legacyElapsed, batchScans, batchElapsed)
+}
+
+func TestCapturedClaudeChildrenBatchSchemaErrorRetainsVerifiedRestrictions(t *testing.T) {
+	s := openEvidenceTest(t)
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	batchNativeEvidence(t, s, root+"/project/"+parent+"/subagents/agent-local.jsonl", "", false)
+	if err := s.write(ctx, func(w *writeTx) error {
+		_, err := w.exec(`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {root}})
+	if err == nil || !reflect.DeepEqual(got[parent], []string{"agent-local"}) {
+		t.Fatalf("partial restrictions=%v error=%v", got, err)
+	}
+}
+
+func TestCapturedClaudeChildrenBatchValidParentWithoutRootsReportsSchemaError(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	for _, roots := range [][]string{nil, {}, {""}, {"relative/projects"}} {
+		t.Run(fmt.Sprint(roots), func(t *testing.T) {
+			s := openEvidenceTest(t)
+			if err := s.write(ctx, func(w *writeTx) error {
+				_, err := w.exec(`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: roots})
+			if err == nil || len(got) != 0 {
+				t.Fatalf("valid parent lost schema failure without usable roots: %v %v", got, err)
+			}
+			if got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{"invalid": {"/projects"}}); err != nil || len(got) != 0 {
+				t.Fatalf("invalid parent unexpectedly scanned evidence: %v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenPrefilterPreservesCleanedPaths(t *testing.T) {
+	s := openEvidenceTest(t)
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	for _, suffix := range []string{
+		"/subagents//agent-double.jsonl",
+		"/subagents/./agent-dot.jsonl",
+		"/discard/../subagents/deep/agent-parent.jsonl",
+		"/subagents/agent-trailing.jsonl/.",
+		"/subagents/agent-up.jsonl/other/..",
+	} {
+		path := root + "/project/" + strings.ToUpper(parent) + suffix
+		batchNativeEvidence(t, s, path, "", false)
+	}
+	got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {root + "/."}})
+	want := []string{"agent-dot", "agent-double", "agent-parent", "agent-trailing", "agent-up"}
+	if err != nil || !reflect.DeepEqual(got[parent], want) {
+		t.Fatalf("cleaned paths=%v error=%v want=%v", got, err, want)
+	}
+}
+
+func TestCapturedClaudeChildrenRootBoundaries(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/subagents/projects"
+	longRoot := root + "/" + strings.Repeat("long-root-", 20)
+	for _, tc := range []struct {
+		name string
+		root string
+		path string
+		want []string
+	}{
+		{"exact_root", root, root, nil},
+		{"shorter_path", root, "/synthetic/subagents", nil},
+		{"sibling_prefix", root, root + "-other/project/" + parent + "/subagents/agent-sibling.jsonl", nil},
+		{"child", root, root + "/project/" + parent + "/subagents/agent-child.jsonl", []string{"agent-child"}},
+		{"nested_root", root + "/nested", root + "/nested/project/" + parent + "/subagents/agent-nested.jsonl", []string{"agent-nested"}},
+		{"cleaned_path", root + "/.", root + "/discard/../project/" + parent + "/subagents/./agent-clean.jsonl", []string{"agent-clean"}},
+		{"long_root", longRoot, longRoot + "/project/" + parent + "/subagents/agent-long.jsonl", []string{"agent-long"}},
+		{"filesystem_root", string(filepath.Separator), "/project/" + parent + "/subagents/agent-root.jsonl", []string{"agent-root"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEvidenceTest(t)
+			batchNativeEvidence(t, s, tc.path, "", false)
+			got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {tc.root}})
+			if err != nil || !reflect.DeepEqual(got[parent], tc.want) {
+				t.Fatalf("relations=%v error=%v want=%v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenNonchildCost(t *testing.T) {
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	for _, n := range []int{256, 2048, 16384} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "index.db")
+			counter := perfguard.CountSQLite(t, "file:"+path+"?")
+			s, err := Open(path, Options{DeviceID: "local-device", DeferCommit: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err := s.write(ctx, func(w *writeTx) error {
+				_, err := w.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
+ INSERT INTO sources(id,device_id,agent,path,file_id,storage_kind,parser,first_seen_at)
+ SELECT i,'local-device','claude','/synthetic/projects/project/session-'||i||'.jsonl','','jsonl_append','claude@1',0 FROM n`, n)
+				if err != nil {
+					return err
+				}
+				_, err = w.exec(`INSERT INTO companions(source_id,path,kind,size,seen_at) SELECT -id,'/synthetic/companion-'||id,'tool_result',9,0 FROM sources`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			cost := perfguard.MeasureSQLite(counter, func() {
+				got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {"/synthetic/projects"}})
+				if err != nil || len(got) != 0 {
+					t.Fatalf("relations=%v error=%v", got, err)
+				}
+			})
+			t.Logf("%d nonchildren and unrelated companions: %v, %s", n, time.Since(start), cost.String())
+			// A candidate filter must prevent a companion-table scan per parent.
+			if cost.SQLitePages > int64(n)*4+100 {
+				t.Fatalf("nonchild evidence cost: %s", cost.String())
+			}
+			if err := s.write(ctx, func(w *writeTx) error {
+				for _, stmt := range []string{
+					`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`,
+					`CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER)`,
+					`INSERT INTO devsync_sources SELECT id,path,json_object('Agent','claude','StorageKind','jsonl_append','Parser','claude@1','SessionKey',''),1 FROM sources`,
+					`INSERT INTO devsync_gens SELECT id,1,9 FROM sources`,
+				} {
+					if _, err := w.exec(stmt); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			counter.Reset()
+			start = time.Now()
+			schedulerCost := perfguard.MeasureSQLite(counter, func() {
+				got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {"/synthetic/projects"}})
+				if err != nil || len(got) != 0 {
+					t.Fatalf("relations=%v error=%v", got, err)
+				}
+			})
+			t.Logf("%d local + scheduler nonchildren: %v, %s", n, time.Since(start), schedulerCost.String())
+			if schedulerCost.SQLitePages > int64(n)*8+100 {
+				t.Fatalf("scheduler evidence cost: %s", schedulerCost.String())
+			}
+
+		})
+	}
+}
+
+func TestCapturedClaudeChildrenSchedulerEscapedParentAndMalformedSpec(t *testing.T) {
+	s := openEvidenceTest(t)
+	const parent = "12345678-abcd-4321-9876-123456789abc"
+	root := "/synthetic/projects"
+	if err := s.write(ctx, func(w *writeTx) error {
+		for _, stmt := range []string{
+			`CREATE TABLE devsync_sources(id INTEGER PRIMARY KEY,path TEXT,spec TEXT,generation INTEGER)`,
+			`CREATE TABLE devsync_gens(source_id INTEGER,generation INTEGER,size INTEGER)`,
+		} {
+			if _, err := w.exec(stmt); err != nil {
+				return err
+			}
+		}
+		spec, _ := json.Marshal(map[string]any{"Agent": "claude", "StorageKind": "companion", "Parser": "claude@1", "Parent": root + "/project/" + strings.ToUpper(parent) + "/subagents/./agent-escaped.jsonl", "SessionKey": ""})
+		escaped := strings.Replace(string(spec), "subagents", `sub\u0061gents`, 1)
+		if _, err := w.exec(`INSERT INTO devsync_sources VALUES(1,'/unrelated/companion.txt',?,1)`, escaped); err != nil {
+			return err
+		}
+		_, err := w.exec(`INSERT INTO devsync_gens VALUES(1,1,9)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: {root}})
+	if err != nil || !reflect.DeepEqual(got[parent], []string{"agent-escaped"}) {
+		t.Fatalf("escaped companion=%v error=%v", got, err)
+	}
+	if err := s.write(ctx, func(w *writeTx) error {
+		_, err := w.exec(`UPDATE devsync_sources SET spec='malformed'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, roots := range [][]string{{root}, nil} {
+		if _, err := s.CapturedClaudeChildrenForParents(ctx, map[string][]string{parent: roots}); err == nil {
+			t.Fatal("malformed retained spec must fail closed")
+		}
+	}
+}

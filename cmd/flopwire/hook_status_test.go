@@ -18,3 +18,14 @@ func TestDeliveryStatusRedeliveryMayHaveBeenShown(t *testing.T) {
 		}
 	}
 }
+
+func TestDeliveryStatusSessionEndedExplainsRecovery(t *testing.T) {
+	out := deliveryStatus([]busproto.DeliveryFailure{{ID: "mended", Reason: busproto.ReasonSessionEnded}})
+	if !strings.Contains(out, sessionEndedDeliveryHint) || strings.Contains(out, "<flopwire-message") {
+		t.Fatal(out)
+	}
+	other := deliveryStatus([]busproto.DeliveryFailure{{ID: "mother", Reason: "unconfirmed"}})
+	if strings.Contains(other, sessionEndedDeliveryHint) {
+		t.Fatal(other)
+	}
+}

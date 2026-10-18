@@ -3,6 +3,7 @@ package localindex
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,18 +11,19 @@ import (
 	"github.com/flopwire/flopwire/internal/transcript"
 )
 
-// How a placement was found. The first two and the last three all start
-// from the working directory the transcript named; they differ in what
-// found its main checkout.
+// How a placement was found. Cowork origins preserve app policy provenance.
+// The other methods describe transcript placement and checkout recovery.
 const (
-	PlacedByCwd         = "cwd"          // the named directory (a main checkout, or no repository)
-	PlacedByWorktree    = "worktree"     // the named directory is in a linked worktree; its gitdir led to the main checkout
-	PlacedByFolder      = "folder"       // decoded from the Claude project folder name
-	PlacedByRemote      = "remote"       // the git remote the transcript recorded (and the one local checkout with that origin)
-	PlacedByBranch      = "branch"       // a deleted worktree, found by the branch it recorded
-	PlacedByWorktreeAdd = "worktree-add" // a deleted worktree, found by the `git worktree add` that made it
-	PlacedByCommit      = "commit"       // a deleted worktree, found by a commit it printed
-	PlacedByNone        = "unplaceable"  // nothing: the session is unplaceable
+	PlacedByCoworkUnknown = "cowork-unknown" // Cowork evidence with unresolved historical host scope
+	PlacedByCowork        = "cowork"         // verified Claude Desktop host-folder policy evidence
+	PlacedByCwd           = "cwd"            // the named directory (a main checkout, or no repository)
+	PlacedByWorktree      = "worktree"       // the named directory is in a linked worktree; its gitdir led to the main checkout
+	PlacedByFolder        = "folder"         // decoded from the Claude project folder name
+	PlacedByRemote        = "remote"         // the git remote the transcript recorded (and the one local checkout with that origin)
+	PlacedByBranch        = "branch"         // a deleted worktree, found by the branch it recorded
+	PlacedByWorktreeAdd   = "worktree-add"   // a deleted worktree, found by the `git worktree add` that made it
+	PlacedByCommit        = "commit"         // a deleted worktree, found by a commit it printed
+	PlacedByNone          = "unplaceable"    // nothing: the session is unplaceable
 )
 
 // PlacedFromCwd reports whether how starts from a directory the transcript
@@ -56,7 +58,13 @@ type Placement struct {
 
 // SavePlacement records (or replaces) a session's placement.
 func (s *Store) SavePlacement(ctx context.Context, p Placement) error {
-	return s.write(ctx, func(w *writeTx) error {
+	return s.send(ctx, savePlacementRequest(ctx, p))
+}
+
+// savePlacementRequest shares the actual API policy and SQL callback with
+// request-level qualification. Placement revision triggers remain active.
+func savePlacementRequest(ctx context.Context, p Placement) writeReq {
+	return writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreservePlacement, fn: func(w *writeTx) error {
 		_, err := w.exec(`INSERT INTO placements (agent, session_id, cwd, worktree_root, main_root, remote, how, resolved_at, checked_at, candidates, other_cwds)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (agent, session_id) DO UPDATE SET cwd = excluded.cwd, worktree_root = excluded.worktree_root,
@@ -65,7 +73,7 @@ func (s *Store) SavePlacement(ctx context.Context, p Placement) error {
 			string(p.Agent), p.SessionID, nullStr(p.Cwd), nullStr(p.Worktree), nullStr(p.Main), nullStr(p.Remote), p.How, time.Now().UnixMilli(),
 			sql.NullInt64{Int64: p.CheckedAt, Valid: p.CheckedAt != 0}, nullStr(p.Candidates), nullStr(p.OtherCwds))
 		return err
-	})
+	}}
 }
 
 // Placements returns every recorded placement.
@@ -145,7 +153,31 @@ type RepoDir struct {
 // facts --repo resolves against. An ambiguous recovery's candidates are
 // not counted: the session keeps matching by its directory only.
 func (s *Store) RepoDirs(ctx context.Context) ([]RepoDir, error) {
-	rows, err := s.DB().QueryContext(ctx, `SELECT DISTINCT ifnull(nullif(worktree_root, ''), ifnull(cwd, '')), ifnull(main_root, ''), ifnull(remote, '')
+	return repoDirs(ctx, s.DB())
+}
+
+// ReadRepoDirs reads retained repository identities without opening the message
+// index or its FTS shards. It supports both full and sync-only retention, never
+// creates an index, and exposes no content-query capability.
+func ReadRepoDirs(ctx context.Context, path string) ([]RepoDir, error) {
+	db, err := sql.Open(sqliteDriver, dsn(path, true, 1, true)+"&mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return nil, err
+	}
+	if version != schemaVersion {
+		return nil, fmt.Errorf("localindex: %s has schema version %d, want %d: the agent rebuilds it on its next start", path, version, schemaVersion)
+	}
+	return repoDirs(ctx, db)
+}
+
+func repoDirs(ctx context.Context, db *sql.DB) ([]RepoDir, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT ifnull(nullif(worktree_root, ''), ifnull(cwd, '')), ifnull(main_root, ''), ifnull(remote, '')
 		FROM placements WHERE ifnull(main_root, '') <> '' OR ifnull(remote, '') <> ''`)
 	if err != nil {
 		return nil, err
@@ -161,3 +193,6 @@ func (s *Store) RepoDirs(ctx context.Context) ([]RepoDir, error) {
 	}
 	return out, rows.Err()
 }
+
+// IsCoworkPlacement reports durable app provenance, including unknown scope.
+func IsCoworkPlacement(how string) bool { return how == PlacedByCowork || how == PlacedByCoworkUnknown }

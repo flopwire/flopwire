@@ -2,10 +2,10 @@ package local
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 
@@ -15,15 +15,14 @@ import (
 )
 
 // ErrNotLocal is returned (wrapped) when the transcript file can no longer
-// serve the requested bytes and no server is configured.
+// serve the requested indexed bytes with verified identity.
 var ErrNotLocal = errors.New("the transcript file no longer holds these bytes")
 
-// Raw returns bytes [offset, offset+length) of a local source generation,
-// read from the transcript file. The file serves them while it still is the
-// indexed file (same device and inode), the generation is the source's
-// current one, and the range lies inside it. When the file is gone,
-// replaced or truncated, the team server serves its latest copy of the
-// source, found by this device's (path, file id), when one is configured.
+// Raw returns bytes [offset, offset+length) of a local source generation.
+// Reads verify a persisted content hash, or require an unchanged non-racy
+// indexed file tuple before and after the read.
+// Archive generations are independent of local generations, so a path lookup
+// cannot safely substitute archived bytes for a local byte range.
 func (b *Backend) Raw(ctx context.Context, sourceID string, generation, offset, length int64) ([]byte, error) {
 	sid, err := strconv.ParseInt(sourceID, 10, 64)
 	if err != nil || sid <= 0 {
@@ -43,27 +42,11 @@ func (b *Backend) Raw(ctx context.Context, sourceID string, generation, offset, 
 		return nil, bad("source %s is a database; its rows have no byte range (use read)", sourceID)
 	}
 	current := generation == st.Generation
-	data, why := readLocal(st.Source.Path, st.Source.FileID, current, offset, length)
+	data, why := readLocal(st.Source.Path, st.Source.FileID, st.Watermark, current, offset, length)
 	if why == "" {
 		return data, nil
 	}
-	if b.Remote == nil {
-		return nil, fmt.Errorf("%w (%s: %s); configure a server to read the archived copy", ErrNotLocal, st.Source.Path, why)
-	}
-	if !current {
-		// The server numbers generations itself; only the latest copy of
-		// the file is addressable by path.
-		return nil, fmt.Errorf("%w (%s: %s)", ErrNotLocal, st.Source.Path, why)
-	}
-	fileID := ""
-	if !st.Source.FileID.IsZero() {
-		fileID = st.Source.FileID.String()
-	}
-	data, err = b.Remote.RawByPath(ctx, st.Source.Path, fileID, -1, offset, length)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %s; server: %w", st.Source.Path, why, err)
-	}
-	return data, nil
+	return nil, fmt.Errorf("%w (%s: %s); read archived evidence using a server address", ErrNotLocal, st.Source.Path, why)
 }
 
 // rawRow returns the raw record bytes of a row.
@@ -80,7 +63,7 @@ func (b *Backend) rawRow(ctx context.Context, r *localindex.Row) ([]byte, error)
 }
 
 // readLocal reads the range from path, or says why the file cannot serve it.
-func readLocal(path string, want transcript.FileID, currentGen bool, offset, length int64) ([]byte, string) {
+func readLocal(path string, want transcript.FileID, wm *transcript.Watermark, currentGen bool, offset, length int64) ([]byte, string) {
 	if !currentGen {
 		return nil, "that generation was rewritten"
 	}
@@ -96,13 +79,42 @@ func readLocal(path string, want transcript.FileID, currentGen bool, offset, len
 	if id := transcript.IdentityOf(fi).ID; !want.IsZero() && !id.IsZero() && id != want {
 		return nil, "file was replaced"
 	}
+	before := transcript.IdentityOf(fi)
+	if wm == nil {
+		return nil, "source has no indexed watermark"
+	}
+	if before.ID.IsZero() || before.ID != wm.Identity.ID {
+		return nil, "indexed file identity is unavailable or changed"
+	}
+	if offset >= wm.Offset || length > wm.Offset-offset {
+		return nil, "range extends beyond indexed bytes"
+	}
 	if offset >= fi.Size() {
 		return nil, "file was truncated"
 	}
-	buf := make([]byte, min(length, fi.Size()-offset))
-	n, err := f.ReadAt(buf, offset)
-	if err != nil && !errors.Is(err, io.EOF) {
+	if before.CTime == 0 || before != wm.Identity || wm.Racy() {
+		// Changed or untrustworthy metadata cannot establish identity.
+		// Return bytes from the buffer whose indexed digest we verify.
+		base, size, sum := int64(0), wm.HeadLen, wm.HeadHash
+		if offset+length > size {
+			base, size, sum = wm.Offset-wm.AnchorLen, wm.AnchorLen, wm.AnchorSum
+		}
+		if offset < base || offset+length > base+size {
+			return nil, "no indexed content hash covers this range; wait for a stable index sweep"
+		}
+		region := make([]byte, size)
+		if _, err := f.ReadAt(region, base); err != nil || sha256.Sum256(region) != sum {
+			return nil, "indexed bytes changed"
+		}
+		return region[offset-base : offset-base+length], ""
+	}
+	buf := make([]byte, length)
+	if _, err := f.ReadAt(buf, offset); err != nil {
 		return nil, err.Error()
 	}
-	return buf[:n], ""
+	after, err := f.Stat()
+	if err != nil || transcript.IdentityOf(after) != before {
+		return nil, "file changed during the read"
+	}
+	return buf, ""
 }

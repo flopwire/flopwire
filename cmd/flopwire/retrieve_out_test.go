@@ -69,7 +69,7 @@ func TestJSONAndTextFlagsOnEveryVerb(t *testing.T) {
 	oracleIndex(t)
 	cli := func(args ...string) string {
 		t.Helper()
-		return captureStdout(t, func() error { return run(t.Context(), args) })
+		return withoutCoverageObservation(captureStdout(t, func() error { return run(t.Context(), args) }))
 	}
 	if a, b := cli("sessions"), cli("sessions", "--json"); a != b || !strings.HasPrefix(a, `{"scope":{"kind":"local"},"kind":"sessions",`) {
 		t.Fatalf("sessions --json is not the default:\n%s\n%s", a, b)
@@ -271,7 +271,8 @@ func TestJSONAnswerBudget(t *testing.T) {
 	info := func(i int) format.ConversationInfo {
 		at := ts.Add(-time.Duration(i) * time.Minute)
 		return format.ConversationInfo{Address: fmt.Sprintf("s%03d", i), ID: fmt.Sprintf("c%03d", i), SessionID: fmt.Sprintf("s%03d-full", i), Agent: "claude",
-			Title: strings.Repeat("t", 300), LastActivityAt: &at, Messages: 3}
+			Title: strings.Repeat("t", 300), LastActivityAt: &at, Messages: 3,
+			Repo: "/tmp/app-ux-audit", RepoIdentity: "github.com/acme/app", Worktree: "/tmp/app-ux-audit"}
 	}
 
 	// grep and search: whole hits, the next offset after the last kept,
@@ -283,7 +284,8 @@ func TestJSONAnswerBudget(t *testing.T) {
 			lines = append(lines, format.Line{N: n + 1, Text: strings.Repeat("x", 300), Match: true})
 		}
 		page.Hits = append(page.Hits, format.Hit{Address: fmt.Sprintf("s%03d/%d", i%50, i), SessionID: fmt.Sprintf("s%03d-full", i%50), Agent: "codex", Kind: "tool_result",
-			TS: &ts, Lines: lines, Snippet: strings.Repeat("y", 300), Score: 1.5})
+			TS: &ts, Lines: lines, Snippet: strings.Repeat("y", 300), Score: 1.5,
+			Repo: "/tmp/app-ux-audit", RepoIdentity: "github.com/acme/app", Worktree: "/tmp/app-ux-audit"})
 	}
 	for i := range 50 {
 		page.SessionInfo = append(page.SessionInfo, info(i))
@@ -381,7 +383,7 @@ func TestJSONAnswerBudget(t *testing.T) {
 	// how to use it.
 	small := &format.Sessions{HasMore: true, Next: "fetched-page-end", Sessions: ss.Sessions[:2]}
 	if s = call(&bigBackend{sessions: small}, "flopwire_sessions", `{}`); s["next_cursor"] != "fetched-page-end" || s["has_more"] != true ||
-		s["hint"] != "pass next_cursor as cursor=C for the next page" {
+		s["hint"] != "If more evidence is needed, pass next_cursor as cursor with unchanged filters." {
 		t.Fatalf("small sessions page: %v", s)
 	}
 
@@ -469,5 +471,22 @@ func TestSessionsShowCommitsWithoutSHA(t *testing.T) {
 	}
 	if !strings.Contains(text.String(), " commits=2") {
 		t.Fatalf("text: %s", text.String())
+	}
+}
+
+func TestSessionBriefRepositoryIdentity(t *testing.T) {
+	c := format.ConversationInfo{SessionID: "full-session", Address: "full-session", Repo: "/tmp/app-ux-audit", Cwd: "/tmp/app-ux-audit/sub", RepoIdentity: "github.com/acme/app", Worktree: "/tmp/app-ux-audit"}
+	b := brief(c)
+	if b.Repo != c.Repo || b.RepoIdentity != c.RepoIdentity || b.Worktree != c.Worktree || b.SessionID != c.SessionID {
+		t.Fatalf("brief labels: %+v", b)
+	}
+	raw, err := json.Marshal(b)
+	if err != nil || !strings.Contains(string(raw), `"repo_identity":"github.com/acme/app"`) {
+		t.Fatalf("identity JSON: %s %v", raw, err)
+	}
+	c.RepoIdentity, c.Worktree = "", ""
+	raw, err = json.Marshal(brief(c))
+	if err != nil || strings.Contains(string(raw), "repo_identity") || strings.Contains(string(raw), "worktree") {
+		t.Fatalf("legacy JSON changed: %s %v", raw, err)
 	}
 }

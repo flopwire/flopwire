@@ -584,6 +584,14 @@ func TestSetupCheckChangesNothing(t *testing.T) {
 				t.Fatal("--check changed the harness")
 			}
 			h := f.claude(rep)
+			if rep.CheckNote != setupCheckNote {
+				t.Fatalf("--check lacks verification limits: %q", rep.CheckNote)
+			}
+			var text bytes.Buffer
+			writeSetupText(&text, rep)
+			if !strings.HasPrefix(text.String(), "check: "+rep.CheckNote+"\n") {
+				t.Fatalf("--text must lead with the JSON check limit: %s", &text)
+			}
 			if h.Installed != installed || len(h.Done) != 0 || rep.Mode != setupCheck {
 				t.Fatalf("--check: %+v", h)
 			}
@@ -1424,5 +1432,34 @@ func TestSetupReportsOldMarketplace(t *testing.T) {
 	}
 	if h := f.claude(rep); hasString(h.Todo, "marketplace remove flopwire ") {
 		t.Fatalf("old marketplace alone: todo %q", h.Todo)
+	}
+}
+
+// --check carries the running agent's upgrade notice as a todo and names
+// the newer release.
+func TestSetupCheckReportsUpgrade(t *testing.T) {
+	fx := newSetupFixture(t, false)
+	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(shortSockDir(t), "config.json"))
+	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
+		if r.Op == "status" {
+			return agent.Response{OK: true, Version: "v0.1.0", ServerVersion: "v0.1.0", Latest: "v0.2.0",
+				Upgrade: "flopwire v0.2.0 is available; this device runs v0.1.0. Upgrade with: flopwire upgrade"}
+		}
+		return agent.Response{OK: true}
+	})
+	t.Setenv("FLOPWIRE_SOCKET", fa.sock)
+	rep, _, err := fx.run("--check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Flopwire.Latest != "v0.2.0" {
+		t.Fatalf("latest: %+v", rep.Flopwire)
+	}
+	found := false
+	for _, todo := range rep.Todo {
+		found = found || strings.Contains(todo, "v0.2.0 is available")
+	}
+	if !found {
+		t.Fatalf("todo lacks the upgrade line: %v", rep.Todo)
 	}
 }

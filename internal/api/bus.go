@@ -19,6 +19,7 @@ import (
 // audit themselves in their transaction; a failure the caller should see
 // is a *busproto.Error.
 type Bus interface {
+	Messages(ctx context.Context, c busproto.Caller, q busproto.MessagesQuery) (busproto.MessagesResponse, error)
 	Send(ctx context.Context, c busproto.Caller, req busproto.SendRequest) (busproto.SendResponse, error)
 	// Poll records the device's presence and holds until it has a message
 	// newer than the cursor or the wait ends.
@@ -35,11 +36,13 @@ type Bus interface {
 
 func (a *API) busRoutes(r chi.Router) {
 	r.Post(busproto.PathSend, a.busDevice(a.busSend))
+	r.Post(busproto.PathRetry, a.busDevice(a.busSend))
 	r.Post(busproto.PathPoll, a.busDevice(a.busPoll))
 	r.Post(busproto.PathClaim, a.busDevice(a.busClaim))
 	r.Post(busproto.PathAck, a.busDevice(a.busAck))
 	r.Get(busproto.PathPeers, a.busDevice(a.busPeers))
 	r.Get(busproto.PathInbox, a.busDevice(a.busInbox))
+	r.Get(busproto.PathMessages, a.busDevice(a.busMessages))
 	// Accepting a sender is the person's act (B7, plan §4 "Permission"):
 	// a login session only, never a device token an agent could use.
 	r.Get(busproto.PathAccepts, a.busLogin(a.busAccepts))
@@ -124,6 +127,10 @@ func (a *API) busFailed(w http.ResponseWriter, r *http.Request, err error) {
 func (a *API) busSend(w http.ResponseWriter, r *http.Request) {
 	var in busproto.SendRequest
 	if !decode(w, r, &in) {
+		return
+	}
+	if (r.URL.Path == busproto.PathRetry) != (in.RetryOf != "") {
+		a.busFailed(w, r, &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: "explicit retries require /v1/bus/retry with retry_of"})
 		return
 	}
 	out, err := a.bus.Send(r.Context(), a.caller(r), in)

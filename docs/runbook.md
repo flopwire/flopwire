@@ -269,7 +269,7 @@ shared deployment on Docker Desktop, put a reverse proxy in front and set
 ## Change admin path rules
 
 Admin path rules and the `unplaceable` floor apply to every device and
-also on the server. Syntax: [agent.md](agent.md#keep-sessions-out-with-path-rules).
+also on the server. Syntax: [path-rules.md](path-rules.md).
 
 1. Edit the rules on the console's Collection policy page, or send
    `PUT /v1/admin/policy` with `path_rules` and `unplaceable`.
@@ -385,8 +385,8 @@ recipient. A late receipt for it is rejected.
 
 1. Create a coordinated backup with `--encrypted-destination`.
 2. Verify the backup.
-3. Pull the new source tag or container image.
-4. Run `docker compose up -d --build`.
+3. Set `FLOPWIRE_IMAGE` in `.env` to the new release, or keep `latest`.
+4. Run `docker compose pull && docker compose up -d --wait`.
 5. Check `/healthz`.
 6. Run one known provenance search.
 
@@ -403,13 +403,9 @@ process sees the message only at its next poll. Before you run more than one
 process, replace the in-process wake-up with Postgres `LISTEN/NOTIFY`.
 
 Database migrations are forward-only and run in one transaction at startup.
-Applied files and ledger checksums are immutable. The supported upgrade from
-`661a48b` preserves its historical `009_bus.sql` checksum and applies the
-additive `013_bus_retention_upgrade.sql`. Migrations 011, 012, and 013 ship
-together. See
-[the bus migration upgrade procedure](operations-migration-upgrade.md) for
-the exact checksum contract and PostgreSQL checks. Unknown checksums and
-incomplete ledger prefixes are refused. Investigate a refusal before changing
+Applied files and ledger checksums are immutable. Unknown checksums and
+incomplete ledger prefixes are refused. Before 1.0, a release may require a
+fresh server database and re-enrollment; the release notes say so. Investigate a refusal before changing
 the deployment. Preserve its database and verified backup.
 
 If migration is refused or its transaction fails, no pending changes commit.
@@ -438,6 +434,10 @@ trace text, PostgreSQL records, and object bytes. Use encrypted host storage
 when the deployment threat model requires encryption at rest. Restrict host
 and volume access. The backup command always requires an explicit
 acknowledgement that its destination is encrypted.
+
+Object copies use 16 workers by default. Set `--object-workers` from 1 to 32 to
+control disk, memory, and object-store load. Use `--object-workers=1` for serial
+copies. Each object is verified and synced before the manifest is published.
 
 The backup command takes one Postgres snapshot, lists the committed chunk
 objects from it, dumps the database from the same snapshot, and copies each
@@ -468,13 +468,10 @@ restored target; do not point traffic at it. Restore writes
 `--state-output` when the backup is mounted read-only. Treat `incomplete` and
 `failed` targets as invalid and non-resumable.
 
-### Upgrade for device-scoped withholding
+### Device-scoped withholding
 
-Migration `006_device_withholds.sql` preserves existing tombstones as
-user-wide and adds device-scoped tombstones for delegated upload credentials.
-Stop all older server instances before starting the upgraded server. Older
-ingesters interpret every tombstone as user-wide and cannot safely share this
-migrated database while the new server accepts device-scoped requests.
+Tombstones are user-wide, or device-scoped for delegated upload credentials.
+Run one server version against a database at a time.
 
 `POST /v1/conversations/withhold` requires a bound device with upload scope.
 A `202` records permanent intent, including before the first upload commits.

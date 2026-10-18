@@ -12,7 +12,7 @@ disagree, the code and `punch-list.md` win.
 | [`local-search/ftsidx.py`](local-search/ftsidx.py) | Prototype FTS5 sidecar used to measure the local index before the Go build. |
 | [`local-search/shape.py`](local-search/shape.py) | Byte accounting over sampled transcripts, used to size the text caps. |
 | [`message-bus/README.md`](message-bus/README.md) | Ways to push a message into a running Claude Code or Codex session (inbox socket, `codex queue`), verified 2026-09-28. Not used in v1, which delivers through hooks; kept for a later opt-in wake. |
-| [`message-bus/plan.md`](message-bus/plan.md) | The v1 message bus design and build plan: decisions B1–B8, the agent interface and syntax, hook delivery, per-harness packaging, build sequence with PR numbers, and an "As built" section (2026-10-03) on where the build diverged. Built except opencode. Supersedes spec section 9. |
+| [`message-bus/plan.md`](message-bus/plan.md) | The v1 message bus design and build plan: decisions B1–B8, the agent interface and syntax, hook delivery, per-harness packaging, build sequence, and how the build ended up. |
 | [`message-bus/probes-2026-10-01.md`](message-bus/probes-2026-10-01.md) | Live tests behind the plan: hook delivery on Claude Code, Codex and Devin, the opencode plugin, Claude cloud and Devin cloud. |
 | [`message-bus/cloud-2026-10-03.md`](message-bus/cloud-2026-10-03.md) | Vendor cloud delivery (#63): the Claude and Devin request and response shapes the adapters use, sending out of a Devin cloud session, and the live checks of discovery, queueing and push delivery. |
 | [`message-bus/exchange-capture/README.md`](message-bus/exchange-capture/README.md) | A real Claude Code ↔ Codex exchange (own user, local-only): `sessions`, `peers`, `send`, both hook deliveries, the reply and `inbox`, captured for the homepage fixtures (#55), with timeline, findings and the substitutions made. Findings 1 (quiet commits) and 2 (`--repo` across worktrees) were fixed later in #103 and #100. |
@@ -22,8 +22,11 @@ disagree, the code and `punch-list.md` win.
 | [`launch-readiness/punch-list.md`](launch-readiness/punch-list.md) | The P0/P1/P2 launch gate carried over from the CASS era. The spec and `punch-list.md` override it. |
 | [`launch-readiness/state-machine-walks.md`](launch-readiness/state-machine-walks.md) | Concrete-state walks for deletion, backup and restore, quotas and collection. |
 | [`agent-ux.md`](agent-ux.md) | The agent UX review of the retrieval tools and MCP server (2026-09-30), with later dated evaluations such as read's `messages_before`/`messages_after`. |
+| [`agent-workflow-comparison.md`](agent-workflow-comparison.md) | Comparison of Flopwire with AgentsView, MCP Agent Mail Rust, Entire, SpecStory and Langfuse: the connected-workflow table, the feature table, workflow pass criteria, and Flopwire's behaviour for those workflows. |
 | [`redaction.md`](redaction.md) | What is redacted, where, and how masks keep byte addresses stable. |
 | [`reparse.md`](reparse.md) | Versioned reparse on the server: parser versions, staleness and the background worker. |
+| [`parallel-sync-design.md`](parallel-sync-design.md) | Why two upload workers overlap only network waits: per-path ownership, server admission, capability negotiation and pressure epochs. |
 | [`perf-guards.md`](perf-guards.md) | The CI performance guards decided 2026-09-30: query plans, scale and query-count tests. |
+| [`log/`](log/) | Dated records: rollouts, qualification runs, recovery plans and perf experiments. Each file records one event and is never edited. |
 | [`reference-repos.md`](reference-repos.md) | Repositories studied or ported from, with licenses and what was taken. |
-| [`mvp_scope.md`](mvp_scope.md) | Historical: the CASS-era MVP scope. The architecture it describes is gone; the product boundaries (one org, invited accounts, raw retention) still hold. |
+| [`mvp_scope.md`](mvp_scope.md) | The product boundaries: one organization, invited accounts, raw retention. |

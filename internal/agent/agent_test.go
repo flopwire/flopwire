@@ -40,21 +40,30 @@ type recorder struct {
 	notify  map[string]devicesync.SourceSpec
 	exports map[string]devicesync.ExportFunc
 	flushed []string
+	notices map[string]devicesync.Notice
 }
 
 func newRecorder() *recorder {
-	return &recorder{notify: map[string]devicesync.SourceSpec{}, exports: map[string]devicesync.ExportFunc{}}
+	return &recorder{notices: map[string]devicesync.Notice{}, notify: map[string]devicesync.SourceSpec{}, exports: map[string]devicesync.ExportFunc{}}
 }
 
-func (r *recorder) Notify(s devicesync.SourceSpec) {
+func (r *recorder) NotifyWithNotice(s devicesync.SourceSpec, notice devicesync.Notice) {
 	r.mu.Lock()
 	r.notify[s.Path] = s
+	if r.notices == nil {
+		r.notices = map[string]devicesync.Notice{}
+	}
+	r.notices[s.Path] = notice
 	r.mu.Unlock()
 }
 
-func (r *recorder) NotifyExportFunc(s devicesync.SourceSpec, fn devicesync.ExportFunc) {
+func (r *recorder) NotifyExportFuncWithNotice(s devicesync.SourceSpec, fn devicesync.ExportFunc, notice devicesync.Notice) {
 	r.mu.Lock()
 	r.notify[s.Path], r.exports[s.Path] = s, fn
+	if r.notices == nil {
+		r.notices = map[string]devicesync.Notice{}
+	}
+	r.notices[s.Path] = notice
 	r.mu.Unlock()
 }
 
@@ -92,7 +101,7 @@ func newFixture(t *testing.T, devinDB string) *fixture {
 	}
 	t.Cleanup(func() { store.Close() })
 	f := &fixture{t: t, home: home, store: store, rec: newRecorder()}
-	f.cfg = Config{ClaudeProjects: filepath.Join(home, ".claude", "projects"), CodexHome: filepath.Join(home, ".codex"),
+	f.cfg = Config{DesktopCodeRoot: "-", CoworkRoot: "-", ClaudeProjects: filepath.Join(home, ".claude", "projects"), CodexHome: filepath.Join(home, ".codex"),
 		DevinDB: devinDB, OpencodeDB: "-", Workers: 3, Sync: f.rec, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	f.a = New(store, f.cfg)
 	return f

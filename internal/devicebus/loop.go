@@ -167,6 +167,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			// differs from it and resumes the bus.
 			_, key := b.cfg.Connect()
 			if why := b.cfg.NoDevice(); why != "" {
+				b.InvalidateReferences()
 				stop, next = &halt{state: StateStopped, reason: why, key: key}, now.Add(b.cfg.RepinEvery)
 				b.log.Error("devicebus: messaging "+stop.state, "reason", why)
 				b.setStatus(func(s *Status) { s.State, s.LastError, s.RetryAt = StateStopped, why, time.Time{} })
@@ -194,7 +195,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
 			inflight, started = true, now
-			req := busproto.PollRequest{Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
+			req := busproto.PollRequest{ResumeRetries: true, Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
 			b.mu.Lock()
 			b.reported = sent
@@ -301,6 +302,7 @@ func (b *Bus) runServer(ctx context.Context) {
 // polling until the saved one changes (as sync does), a server without the
 // bus disables it for a while, anything else backs off.
 func (b *Bus) pollFailed(ctx context.Context, a pollAnswer, backoff time.Duration) (*halt, time.Duration, time.Time) {
+	b.InvalidateReferences()
 	now := b.cfg.Now()
 	var be *busproto.Error
 	var ae *client.APIError
@@ -392,6 +394,11 @@ func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked ti
 	if err := b.st.importFailures(ctx, failures, now); err != nil {
 		return err
 	}
+	references := slices.Clone(resp.Messages)
+	for _, c := range resp.Claimable {
+		references = append(references, c.Message)
+	}
+	b.prepareReferences(ctx, references)
 	if err := b.st.reconcile(ctx, resp.Messages, offered, now); err != nil {
 		return err
 	}
@@ -436,7 +443,7 @@ func (b *Bus) answered(ctx context.Context, resp busproto.PollResponse, asked ti
 func (b *Bus) claimCloud(ctx context.Context, c busproto.Claimable, skip map[string]bool) error {
 	srv, _ := b.cfg.Connect()
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	resp, err := srv.Claim(cctx, busproto.ClaimRequest{MessageID: c.Message.ID, SessionID: c.Message.ToSession, Agent: c.Message.ToAgent})
+	resp, err := srv.Claim(cctx, busproto.ClaimRequest{ResumeRetries: true, MessageID: c.Message.ID, SessionID: c.Message.ToSession, Agent: c.Message.ToAgent})
 	cancel()
 	var be *busproto.Error
 	switch {
@@ -498,7 +505,7 @@ func (b *Bus) claim(ctx context.Context, c busproto.Claimable, all []Session, sk
 	}
 	for _, id := range claimOrder(c, all) {
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		resp, err := srv.Claim(cctx, busproto.ClaimRequest{MessageID: c.Message.ID, SessionID: id, Agent: agents[id]})
+		resp, err := srv.Claim(cctx, busproto.ClaimRequest{ResumeRetries: true, MessageID: c.Message.ID, SessionID: id, Agent: agents[id]})
 		cancel()
 		var be *busproto.Error
 		switch {

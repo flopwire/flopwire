@@ -305,8 +305,8 @@ type peersArgs struct {
 }
 
 type sendArgs struct {
-	To, Text, Intent, ReplyTo, Repo string
-	Refs                            []string
+	To, Text, Intent, ReplyTo, RetryOf, Repo string
+	Refs                                     []string
 }
 
 type inboxArgs struct {
@@ -410,6 +410,9 @@ func runPeers(ctx context.Context, c *busClient, a peersArgs, w io.Writer, st bu
 		return 1
 	})
 	out := peersJSON{Kind: "peers", Peers: peers, Total: len(peers), Limit: a.Limit}
+	if st.MCP {
+		out.Hint = "Continue work; use a relevant returned identity only when coordination is needed."
+	}
 	if len(peers) > a.Limit {
 		out.Peers, out.More = peers[:a.Limit], true
 		out.Hint = fmt.Sprintf("%d of %d shown; narrow with %s, or raise %s (at most %d)", a.Limit, len(peers), st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session"), st.cmd("--limit", "limit"), peersMaxLimit)
@@ -510,7 +513,7 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 	narrow := st.cmd("--repo, --user, --agent or --session", "repo, user, agent or session")
 	switch {
 	case out.Total == 0 && a.Session != "":
-		fmt.Fprintf(&b, "[no live session starts with %s: it ended or is not running now; a message to it waits until it resumes or expires]\n", format.Clean(a.Session))
+		fmt.Fprintf(&b, "[no visible live session starts with %s; check an existing message in your sent inbox; a new send receipt reports whether and when delivery is possible]\n", format.Clean(a.Session))
 	case out.Total == 0 && (a.Repo != "" || a.User != "" || a.Agent != ""):
 		fmt.Fprintf(&b, "[no other live session matches; %s lists every live session]\n", st.cmd("flopwire peers --text without filters", "flopwire_peers without arguments"))
 	case out.Total == 0:
@@ -524,7 +527,7 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 		if cloud > 0 {
 			cloudNote = "; cloud: a vendor cloud session, which gets a message pushed while busy and cannot reply"
 		}
-		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: with its human's next prompt%s. Address one by its first column, or a person as @user]\n",
+		fmt.Fprintf(&b, "[%d live %s (%d yours); busy: a message arrives at its next tool call; idle: when its session resumes%s. Address one by its first column, or a person as @user]\n",
 			shown, plural(shown, "session", "sessions"), own, cloudNote)
 	}
 	_, err := io.WriteString(w, b.String())
@@ -542,12 +545,13 @@ func plural(n int, one, many string) string {
 
 // Arrival is when a sent message reaches its recipient.
 const (
-	arriveNextToolCall = "next_tool_call"  // a busy session: at its next tool call
-	arriveNextPrompt   = "next_prompt"     // an idle session: with its human's next prompt
-	arriveAccepted     = "when_accepted"   // held until the recipient's human accepts the sender
-	arriveNextSession  = "next_session"    // @user with no live session: their next session
-	arriveIfResumed    = "only_if_resumed" // a session that is not running
-	arriveWhenRunning  = "when_running"    // an idle cloud session: pushed when it next runs a turn
+	arriveNextToolCall = "next_tool_call"   // a busy session: at its next tool call
+	arriveNextPrompt   = "next_prompt"      // an idle session: at its next prompt/resumption hook
+	arriveAccepted     = "when_accepted"    // held until the recipient's human accepts the sender
+	arriveNextSession  = "next_session"     // @user with no live session: their next session
+	arriveIfResumed    = "only_if_resumed"  // a session that is not running
+	arriveWhenRunning  = "when_running"     // an idle cloud session: pushed when it next runs a turn
+	arriveRecorded     = "already_recorded" // an explicit retry returned its existing successor
 )
 
 // sendJSON is send's receipt: busproto.SendResponse (id, thread_id,
@@ -556,7 +560,7 @@ const (
 // reply: a reply arrives later as a received message. Next, for a
 // request only, tells the sender what to do until the reply comes
 // (issue #83): Flopwire never starts a turn, so a sender that ends its
-// turn sees the reply only when its human next prompts it.
+// turn sees the reply when its session resumes.
 type sendJSON struct {
 	Kind string `json:"kind"` // "send_receipt"
 	busproto.SendResponse
@@ -590,11 +594,16 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 		return errNoCaller("send", st)
 	}
 	req := busproto.SendRequest{FromSession: self.SessionID, FromAgent: string(self.Agent), To: strings.TrimSpace(a.To), Body: a.Text,
-		Intent: a.Intent, ReplyTo: strings.TrimSpace(a.ReplyTo), Refs: a.Refs, Repo: a.Repo}
+		Intent: a.Intent, ReplyTo: strings.TrimSpace(a.ReplyTo), RetryOf: strings.TrimSpace(a.RetryOf), Refs: a.Refs, Repo: a.Repo}
 	if req.Repo != "" && req.Repo != "*" {
 		req.Repo = local.ResolveRepo(req.Repo)
 	}
-	resp, err := c.callRetry(ctx, agent.Request{Op: "send", Send: &req})
+	op := "send"
+	if req.RetryOf != "" {
+		// Old agents reject this operation before they can ignore retry_of.
+		op = "retry-send-v1"
+	}
+	resp, err := c.callRetry(ctx, agent.Request{Op: op, Send: &req})
 	if err != nil {
 		var be *busproto.Error
 		if errors.As(err, &be) {
@@ -607,6 +616,9 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 	}
 	resp.Sent.Sent, resp.Sent.ExpiresAt = resp.Sent.Sent.UTC(), resp.Sent.ExpiresAt.UTC()
 	r := sendJSON{Kind: "send_receipt", SendResponse: *resp.Sent, From: callerJSON{Session: self.SessionID, Agent: string(self.Agent)}, Arrives: arrival(*resp.Sent), Outcome: sendOutcome(*resp.Sent), Next: sendNext(*resp.Sent)}
+	if st.MCP {
+		r.Next = sendMCPNext(*resp.Sent)
+	}
 	return st.emit(w, r, func() error {
 		line := r.Outcome
 		if r.Next != "" {
@@ -622,15 +634,19 @@ func sendUsage(st busStyle, why string) *busErr {
 		return badUsage(why+"; flopwire_send takes to (a session id prefix from flopwire_peers, or @user) and message", `flopwire_send to="0b7e2c1a" message="Heads-up: the list endpoint now returns a cursor."`)
 	}
 	e := badUsage(why, `flopwire send 0b7e2c1a -- "Heads-up: the list endpoint now returns a cursor."`)
-	e.Fix = "Usage: flopwire send <to> [--intent request|inform|done] [--reply-to ID] [--ref ADDRESS]... [--repo R] -- <text | ->"
+	e.Fix = "Usage: flopwire send <to> [--intent request|inform|done] [--reply-to ID] [--retry-of ID] [--ref ADDRESS]... [--repo R] -- <text | ->"
 	return e
 }
 
 // arrival says when the message arrives (the arrive* values).
 func arrival(r busproto.SendResponse) string {
 	switch {
+	case r.Replayed:
+		return arriveRecorded
 	case r.State == busproto.StateHeld:
 		return arriveAccepted
+	case r.Admission == busproto.AdmissionNextResume:
+		return arriveIfResumed
 	case r.To.Live && r.To.Busy:
 		return arriveNextToolCall
 	case r.To.Live && r.To.Cloud:
@@ -647,12 +663,12 @@ func arrival(r busproto.SendResponse) string {
 // already says when the request arrives and why; next says only what
 // that means for the reply, without repeating it. Both are true in every
 // harness: a reply is delivered at the sender's next tool call or with
-// its human's next prompt, never by starting a turn.
+// a prompt/resumption hook, never by starting a turn.
 const (
 	// The recipient is busy: a reply may come within this turn.
-	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits for your user's next prompt. Keep working, or wait briefly if you need it to continue."
+	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits until your session resumes. Keep working, or wait briefly if you need it to continue."
 	// Idle, held, queued for @user, or not running: no reply until a
-	// human acts.
+	// session resumes.
 	nextNoWait = "Do not wait for the reply; tell your user you asked."
 	// A cloud session gets messages pushed and has no route back.
 	nextCloud = "No reply will come: a cloud session cannot send messages. Tell your user you asked; its human sees the answer in that session."
@@ -661,7 +677,7 @@ const (
 // sendNext is the receipt's next: what to do until the reply comes. Only
 // a request expects a reply; inform and done get "".
 func sendNext(r busproto.SendResponse) string {
-	if r.Intent != busproto.IntentRequest {
+	if r.Intent != busproto.IntentRequest || r.Replayed {
 		return ""
 	}
 	if r.To.Cloud {
@@ -679,6 +695,17 @@ func expiry(t time.Time) string { return t.UTC().Format("2006-01-02T15:04Z") }
 // sendOutcome is the one line a send prints with --text (plan §3), so the
 // sender never polls: where the message went and when it arrives.
 func sendOutcome(r busproto.SendResponse) (out string) {
+	if r.Replayed {
+		state := string(r.State)
+		if r.Reason != "" {
+			state += " (" + r.Reason + ")"
+		}
+		line := fmt.Sprintf("retry of %s already recorded as %s: %s; no new message created", r.RetryOf, r.ID, state)
+		if r.State == busproto.StateUndelivered && r.Reason == busproto.ReasonSessionEnded {
+			line += fmt.Sprintf(". If still needed, check the intended session and explicitly retry %s", r.ID)
+		}
+		return format.Clean(line)
+	}
 	defer func() {
 		if r.To.Live && !r.To.Busy && r.To.Session != "" {
 			out += idleDescription(r.To.IdleSince, r.To.IdleSeconds)
@@ -693,6 +720,12 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 			who = fmt.Sprintf("%s (%s %s %s)", format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		}
 		line = fmt.Sprintf("held %s for %s: %s has not accepted messages from you; expires %s", r.ID, who, shortUser(to.User), expiry(r.ExpiresAt))
+	case r.Admission == busproto.AdmissionNextResume:
+		boundary := "receiving hook"
+		if to.Cloud {
+			boundary = "running cloud push"
+		}
+		line = fmt.Sprintf("queued %s for %s (%s %s): waits for its first %s after resume; expires %s", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, boundary, expiry(r.ExpiresAt))
 	case to.Session != "" && to.Cloud:
 		head := fmt.Sprintf("sent %s to %s (%s %s cloud %s)", r.ID, sessionLabel(to.Session, true, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		if to.Busy {
@@ -706,7 +739,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		case to.Live && to.Busy:
 			line = head + ": busy, arrives at its next tool call"
 		case to.Live:
-			line = head + ": idle, arrives with its human's next prompt"
+			line = head + ": idle, arrives when its session resumes"
 		default:
 			line = head + ": not running, arrives only if it resumes; expires " + expiry(r.ExpiresAt)
 		}
@@ -720,10 +753,13 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		case to.Live && to.Busy:
 			line = fmt.Sprintf("sent %s to %s: a busy session%s takes it, arrives at its next tool call", r.ID, who, on)
 		case to.Live:
-			line = fmt.Sprintf("sent %s to %s: an idle session%s takes it, arrives with its human's next prompt", r.ID, who, on)
+			line = fmt.Sprintf("sent %s to %s: an idle session%s takes it, arrives when its session resumes", r.ID, who, on)
 		default:
 			line = fmt.Sprintf("queued %s for %s: no live session%s; expires %s", r.ID, who, on, expiry(r.ExpiresAt))
 		}
+	}
+	if r.RetryOf != "" {
+		line += "; retry of " + r.RetryOf + "; requires retry support on the recipient device"
 	}
 	if n, rules := redactionCount(r.Redactions); n > 0 {
 		line += fmt.Sprintf("; %d %s masked before it left this device (%s)", n, plural(n, "secret", "secrets"), rules)
@@ -755,7 +791,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 	sentList := st.cmd("flopwire inbox --sent", "flopwire_inbox sent=true")
 	switch be.Code {
 	case busproto.CodeUnknownRecipient:
-		e.Fix = "find the session from history (" + st.cmd("flopwire sessions --repo R --branch B --json", "flopwire_sessions repo=R branch=B") + "), check it is live with " + st.cmd("flopwire peers --session ID", "flopwire_peers session=ID") + ", or address a person as @user (their email or its local part)"
+		e.Fix = "find the session from history (" + st.cmd("flopwire sessions --repo R --json", "flopwire_sessions repo=R") + "), verify its command/result evidence, then check exact-session presence with " + st.cmd("flopwire peers --session ID", "flopwire_peers session=ID") + ", or address a person as @user (their email or its local part)"
 		e.Example = st.cmd(`flopwire send @alex -- "TEXT"`, `flopwire_send to="@alex" message="…"`)
 	case busproto.CodeAmbiguousRecipient:
 		var lines []string
@@ -801,7 +837,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 		e.Fix = "send less: put what you have to say into one message, and wait before sending again"
 		e.Example = sentList + " shows what is still undelivered"
 	case busproto.CodeDuplicate:
-		e.Fix = "do not resend: the first copy is on its way"
+		e.Fix = "do not resend blindly: a matching message already exists; check its state in your sent inbox"
 		e.Example = sentList + " shows its state"
 	case busproto.CodeRecipientFull:
 		e.Fix = "wait until the recipient reads what it has; do not resend"
@@ -832,6 +868,13 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 		u := sendUsage(st, "")
 		e.Fix, e.Example = "check the arguments", u.Example
 	}
+	if req.RetryOf != "" && (strings.HasPrefix(be.Detail, "retry_of:") || strings.HasPrefix(be.Detail, "retry ")) && (be.Code == busproto.CodeNotFound || be.Code == busproto.CodeBadRequest) {
+		e.Fix = "inspect retry_of in your sent inbox; retry only an undelivered/session_ended message from this session, preserving its exact recipient, message, intent, refs and reply_to"
+		if be.Code == busproto.CodeNotFound {
+			e.Fix = "the retry source or its recorded successor is unavailable; verify retry_of in your sent inbox before taking further action"
+		}
+		e.Example = sentList + " lists your messages and their states"
+	}
 	if be.MessageID != "" {
 		e.text += fmt.Sprintf("\nThe refused message %s is listed in %s.", be.MessageID, sentList)
 	}
@@ -847,7 +890,8 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 // names it.
 type inboxEntry struct {
 	busproto.InboxItem
-	IsReply bool `json:"is_reply"`
+	IsReply      bool   `json:"is_reply"`
+	DeliveryHint string `json:"delivery_hint,omitempty"`
 }
 
 // inboxJSON is inbox's answer: one page, newest first. More is true when
@@ -896,7 +940,11 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 			}
 			// A reply whose parent the retention sweep deleted lost its
 			// reply_to; its thread is still another message's.
-			out.Messages = append(out.Messages, inboxEntry{InboxItem: m, IsReply: m.ReplyTo != "" || (m.ThreadID != "" && m.ThreadID != m.ID)})
+			entry := inboxEntry{InboxItem: m, IsReply: m.ReplyTo != "" || (m.ThreadID != "" && m.ThreadID != m.ID)}
+			if m.Direction == "sent" && m.State == busproto.StateUndelivered && m.Reason == busproto.ReasonSessionEnded {
+				entry.DeliveryHint = sessionEndedDeliveryHint
+			}
+			out.Messages = append(out.Messages, entry)
 		}
 		out.Next = resp.Inbox.Next
 	}
@@ -904,8 +952,14 @@ func runInbox(ctx context.Context, c *busClient, a inboxArgs, w io.Writer, st bu
 	// after the last one shown. The size counts more and hint.
 	paging := func() {
 		out.More = out.Next != ""
+		if st.MCP {
+			out.Hint = "Continue work using received evidence; a sent delivery receipt is not a reply."
+		}
 		if out.More {
 			out.Hint = "pass next as " + st.cmd("--cursor", "cursor") + " for the next page"
+			if st.MCP {
+				out.Hint = "If more evidence is needed, pass next as cursor with unchanged filters."
+			}
 			if out.budgetCut {
 				out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s", st.Budget, out.Hint)
 			}
@@ -997,6 +1051,9 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 			}
 			e.WriteString("    " + first + more + "\n")
 		}
+		if m.Direction == "sent" && m.State == busproto.StateUndelivered && m.Reason == busproto.ReasonSessionEnded {
+			e.WriteString("    delivery: " + sessionEndedDeliveryHint + "\n")
+		}
 		if st.Budget > 0 && shown > 0 && b.Len()+e.Len() > st.Budget-300 {
 			break
 		}
@@ -1034,6 +1091,9 @@ func writeInbox(w io.Writer, in inboxJSON, a inboxArgs, st busStyle) error {
 	}
 	if threadHint && !full {
 		fmt.Fprintf(&b, "[bodies show their first line; %s shows a thread's whole text]\n", st.cmd("flopwire inbox --text --thread THREAD", `flopwire_inbox thread="THREAD"`))
+	}
+	if st.MCP && next == "" && (!threadHint || full) {
+		fmt.Fprintf(&b, "[%s]\n", in.Hint)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -1109,7 +1169,7 @@ func runBusVerb(ctx context.Context, verb string, o *opts, stdin io.Reader, stdo
 		if len(o.pos) == 0 {
 			return sendUsage(*st, "send needs a recipient and a text")
 		}
-		a := sendArgs{To: o.pos[0], Intent: o.vals["intent"], ReplyTo: o.vals["reply-to"], Refs: o.list["ref"], Repo: o.vals["repo"]}
+		a := sendArgs{To: o.pos[0], Intent: o.vals["intent"], ReplyTo: o.vals["reply-to"], RetryOf: o.vals["retry-of"], Refs: o.list["ref"], Repo: o.vals["repo"]}
 		text := o.pos[1:]
 		if len(text) == 1 && text[0] == "-" {
 			raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
@@ -1189,14 +1249,14 @@ with --ref ADDRESS (an archive address from grep, search or read).
           thread and must not be answered.
 Do not poll peers or send "are you done?": the receipt says when the message arrives.
 A reply arrives in your own context through the flopwire hook: inside your running turn
-at the next tool call, or with your human's next prompt. Never ask a peer to do
+at the next tool call, or with your next prompt or when your session resumes. Never ask a peer to do
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
-"queued"|"held","to":{"session","agent","user","repo","branch","live","busy","cloud"},
+"queued"|"held" (new sends; replay reports current delivery state),"to":{"session","agent","user","repo","branch","live","busy","cloud"},
 "sender","intent","sent","expires_at","redactions","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed"|"when_running","outcome":TEXT,"next":TEXT (request only: what to do until the
+"only_if_resumed"|"when_running"|"already_recorded","retry_of","replayed","reason","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
 "thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",
@@ -1204,8 +1264,13 @@ reply)}. A refusal is {"kind":"error","error":{"code":
 --text: one line, e.g. sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at
 its next tool call
 
-Flags    --intent request|inform|done  --reply-to ID  --ref ADDRESS (repeat)
+Flags    --intent request|inform|done  --reply-to ID  --retry-of ID  --ref ADDRESS (repeat)
          --repo .|NAME|*  --text  (--json: the default)
+Retry    --retry-of ID explicitly retries your undelivered/session_ended message.
+         Keep the same recipient session, text, intent, refs and reply-to. @user
+         retries are refused. A repeated retry returns its existing message with
+         replayed=true, current state/reason and arrives=already_recorded.
+         A prior hook may have printed without confirming; retry can repeat context.
 Text     after --; "-" reads it from stdin
 Sender   the calling agent session (or FLOPWIRE_SESSION_ID); a send without one is refused
 Socket   --socket PATH (default <config dir>/agent.sock: the device agent sends it)
@@ -1223,12 +1288,12 @@ JSON: {"kind":"inbox","session":FULL ID,"messages":[{"id","thread_id","reply_to"
 direction says who wrote it. A sent message's state is its delivery (queued, held,
 claimed, delivered, read, expired, refused, undelivered): delivered is not answered;
 read (read_at) means its text entered the recipient's context, not that the recipient
-acted on it. An answer is a received message whose reply_to names yours. more=true:
+acted on it. A received message whose reply_to names yours is a reply; inspect its content to determine whether it answers. more=true:
 pass next as --cursor.
 --text: ID  received|sent  TIME  from|to WHO  intent  state (read: with its time), then
 the text indented (a list shows first lines; --thread shows whole texts).
 Received messages arrive in your context through the flopwire hook (inside a running
-turn at the next tool call, or with the human's next prompt); use inbox to check a sent
+turn at the next tool call, or with the next prompt or session resumption); use inbox to check a sent
 message's state or re-read a thread, or where the hook is not set up.
 
 Output   --limit N (20, max 200)  --cursor C (next)  --text  --max-bytes N (text)
@@ -1242,4 +1307,39 @@ func idleDescription(since time.Time, age *int64) string {
 		return " (idle duration unknown)"
 	}
 	return fmt.Sprintf(" (idle for %s; idle_since %s)", (time.Duration(*age) * time.Second).String(), since.UTC().Format(time.RFC3339))
+}
+
+// MCP actions also cover one-way messages and idempotent replays.
+func sendMCPNext(r busproto.SendResponse) string {
+	if r.State == busproto.StateUndelivered {
+		if r.Reason == busproto.ReasonSessionEnded {
+			return "If the message is still needed, check the intended session and the receipt's explicit retry guidance; no reply is established."
+		}
+		return "Review the undelivered reason before deciding whether further coordination is needed; no reply is established."
+	}
+	if r.State == busproto.StateExpired {
+		return "Continue work with the expiry qualification; this receipt establishes no reply."
+	}
+	if r.State == busproto.StateHeld {
+		return "Continue work and report that recipient acceptance is required; do not resend the held message."
+	}
+	if r.Replayed {
+		return "Continue work using the existing receipt; do not resend this message. Delivery is not a reply."
+	}
+	if r.Intent == busproto.IntentDone {
+		return "Continue work; this done message does not request a reply or verify task completion."
+	}
+	if r.Intent != busproto.IntentRequest {
+		return "Continue work; this information message does not request a reply."
+	}
+	if r.To.Cloud {
+		return "Continue work; this cloud session cannot send a reply. Its human sees the response there."
+	}
+	if r.Admission == busproto.AdmissionNextResume {
+		return "Continue work; this request waits for recipient resume. This receipt is not a reply."
+	}
+	if arrival(r) == arriveNextToolCall {
+		return "Continue independent work; inspect any received reply for an answer. This receipt is not a reply."
+	}
+	return "Continue work and report the request's arrival condition; a reply depends on the recipient resuming."
 }

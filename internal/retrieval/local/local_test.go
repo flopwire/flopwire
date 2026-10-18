@@ -84,7 +84,7 @@ func TestGrepSearchAndFilters(t *testing.T) {
 	}
 	// Regex, smart case, grep line semantics, newest message first (D7).
 	page = grepFor(t, b, pat(`^exit (code|status) \d$`), format.Filters{})
-	if hitIDs(page.Hits) != "24,7,97,63" || page.Hits[0].Lines[0].N != 2 || page.Hits[0].Lines[0].Text != "exit code 2" {
+	if hitIDs(page.Hits) != "24,7,101,63" || page.Hits[0].Lines[0].N != 2 || page.Hits[0].Lines[0].Text != "exit code 2" {
 		t.Fatalf("regex: %s %+v", hitIDs(page.Hits), page.Hits[0].Lines)
 	}
 	if page = grepFor(t, b, pat(`CHI\.New(Router|Mux)`), format.Filters{}); len(page.Hits) != 0 {
@@ -100,12 +100,12 @@ func TestGrepSearchAndFilters(t *testing.T) {
 		f    format.Filters
 		want string
 	}{
-		{"agent+kind", format.Filters{Agent: "codex", Kinds: []string{"assistant"}}, "98,100"},
-		{"exclude subagents", format.Filters{Agent: "codex", Kinds: []string{"assistant"}, ExcludeSubagents: true}, "98"},
-		{"tool", format.Filters{Tools: []string{"EXEC_COMMAND"}}, "97,59"},
+		{"agent+kind", format.Filters{Agent: "codex", Kinds: []string{"assistant"}}, "102,104"},
+		{"exclude subagents", format.Filters{Agent: "codex", Kinds: []string{"assistant"}, ExcludeSubagents: true}, "102"},
+		{"tool", format.Filters{Tools: []string{"EXEC_COMMAND"}}, "101,59"},
 		{"exclude kind", format.Filters{Agent: "codex", ExcludeKinds: []string{"tool_result", "assistant"}}, ""},
 		{"repo glob", format.Filters{Repo: "oracle-b*"}, "59"},
-		{"repo path", format.Filters{Repo: "/tmp/oracle-alpha"}, "98,97,100"},
+		{"repo path", format.Filters{Repo: "/tmp/oracle-alpha"}, "102,101,104"},
 	} {
 		if got := hitIDs(grepFor(t, b, grep.Spec{Patterns: []string{"chi.New"}, Fixed: true}, tc.f).Hits); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
@@ -159,10 +159,9 @@ func TestSearch(t *testing.T) {
 	if len(p.Hits) == 0 || p.Hits[0].Snippet == "" || p.Hits[0].Title == "" || p.Hits[0].Address == "" || len(p.Notes) != 0 {
 		t.Fatalf("search: %+v", p)
 	}
-	// Every term matching nothing: an any-term retry without stopwords,
-	// and a note.
+	// Missing terms relax while retaining a matching lexical anchor.
 	p = search("how did we handle the exponential tokenizer?", format.Filters{})
-	if len(p.Hits) == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "any of: handle exponential tokenizer") {
+	if len(p.Hits) == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "rarest matching term: exponential") {
 		t.Fatalf("any-term retry: %+v", p)
 	}
 	// A quoted phrase must appear as written.
@@ -262,28 +261,15 @@ func TestReadAndRaw(t *testing.T) {
 	if _, err := b.Raw(ctx, "1", 2, 0, 10); !errors.Is(err, ErrNotLocal) {
 		t.Fatalf("old generation without a server: %v", err)
 	}
-	// V8: file gone: the server serves its latest copy, found by this
-	// device's path and file id, never by a text search.
+	// Missing local bytes cannot be attributed to an independently numbered
+	// archive generation, even when the configured server has a path match.
 	os.Remove(path)
 	if _, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) {
 		t.Fatalf("gone without a server: %v", err)
 	}
-	remote := &fakeRemote{data: []byte(lines[8])}
-	b.Remote = remote
-	data, err = b.RawAt(ctx, hit.Address)
-	if err != nil || string(data) != lines[8] || remote.got != path+"|-1|3980|605" || !strings.Contains(remote.fileID, ":") {
-		t.Fatalf("server fallback: %q %v %+v", data, err, remote)
+	if data, err := b.RawAt(ctx, hit.Address); !errors.Is(err, ErrNotLocal) || data != nil {
+		t.Fatalf("unverified server fallback: %q %v", data, err)
 	}
-}
-
-type fakeRemote struct {
-	data        []byte
-	got, fileID string
-}
-
-func (f *fakeRemote) RawByPath(_ context.Context, path, fileID string, gen, off, n int64) ([]byte, error) {
-	f.got, f.fileID = fmt.Sprintf("%s|%d|%d|%d", path, gen, off, n), fileID
-	return f.data, nil
 }
 
 // addRows indexes extra messages into one new Claude session.
@@ -565,6 +551,71 @@ func assertEmptyOutline(t *testing.T, cx *format.Context) {
 		}
 		if !strings.Contains(b.String(), "[no prompts or tool calls]") {
 			t.Fatalf("empty outline page renders as\n%s", b.String())
+		}
+	}
+}
+
+func TestRecordedRepositoryAttribution(t *testing.T) {
+	b, _ := oracle(t)
+	initial := grepFor(t, b, grep.Spec{Patterns: []string{"setTimeout(500)"}, Fixed: true}, format.Filters{})
+	h := initial.Hits[0]
+	original, err := b.Read(ctx, format.ReadQuery{Address: h.Address}, format.Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range []string{"github.com/acme/app", "github.com/other/app", "/src/app.git", ""} {
+		p := localindex.Placement{Agent: transcript.Agent(h.Agent), SessionID: h.SessionID, How: localindex.PlacedByWorktree}
+		p.Worktree = "/tmp/app-ux-audit"
+		if strings.HasPrefix(identity, "/") {
+			p.Main = identity
+		} else {
+			p.Remote = identity
+		}
+		if err := b.Store.SavePlacement(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		wantWorktree := p.Worktree
+		if identity == "" {
+			wantWorktree = ""
+		}
+		check := func(c format.ConversationInfo) {
+			t.Helper()
+			if c.RepoIdentity != identity || c.Worktree != wantWorktree || c.Repo != original.Conversation.Repo || c.Cwd != original.Conversation.Cwd || c.Address != original.Conversation.Address {
+				t.Fatalf("conversation attribution changed scope or legacy fields: %+v", c)
+			}
+		}
+		cx, err := b.Read(ctx, format.ReadQuery{Address: h.Address}, format.Filters{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(cx.Conversation)
+		sessions, err := b.Sessions(ctx, "", "", format.Filters{Session: h.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, c := range sessions.Sessions {
+			if c.SessionID == h.SessionID {
+				check(c)
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("session missing")
+		}
+		search, err := b.Search(ctx, format.SearchQuery{Query: "setTimeout"}, format.Filters{Session: h.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, page := range []*format.Page{grepFor(t, b, grep.Spec{Patterns: []string{"setTimeout(500)"}, Fixed: true}, format.Filters{Session: h.SessionID}), search} {
+			if len(page.Hits) == 0 {
+				t.Fatal("hits missing")
+			}
+			for _, got := range page.Hits {
+				if got.SessionID == h.SessionID && (got.RepoIdentity != identity || got.Worktree != wantWorktree || got.Repo != h.Repo) {
+					t.Fatalf("hit attribution: %+v", got)
+				}
+			}
 		}
 	}
 }

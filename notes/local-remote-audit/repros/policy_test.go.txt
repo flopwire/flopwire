@@ -1,0 +1,27 @@
+package agent
+
+import (
+	"github.com/flopwire/flopwire/internal/pathpolicy"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestAuditCorruptAdminCacheDropsFloor(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "admin-path-rules.json")
+	cfg := Config{AdminRulesCache: p}
+	pl := pathpolicy.Placement{Cwd: "/sensitive/project"}
+	if err := os.WriteFile(p, []byte(`{"rules":["deny /sensitive/**"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DevicePolicy(cfg).Mode(pl); got != pathpolicy.Deny {
+		t.Fatalf("valid cache mode=%v", got)
+	}
+	if err := os.WriteFile(p, []byte(`{"rules":["deny /sensitive/**"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DevicePolicy(cfg).Mode(pl); got != pathpolicy.Allow {
+		t.Fatalf("corrupt cache mode=%v", got)
+	}
+	t.Log("actual DevicePolicy changed deny to allow after cached JSON corruption")
+}

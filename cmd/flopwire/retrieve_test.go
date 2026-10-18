@@ -34,6 +34,10 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 		User: "gary@example.test", Lines: []format.Line{{N: 3, Text: "upload.test.ts:9 timeout\x1b]52;c;evil\x07", Match: true}},
 		Provenance: format.Provenance{SourceID: "s1", Path: "/r.jsonl", LineNo: 7, ByteOffset: &off, ByteLen: 40}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			http.NotFound(w, r)
+			return
+		}
 		queries, paths = append(queries, r.URL.Query()), append(paths, r.URL.Path)
 		switch r.URL.Path {
 		case "/v1/grep", "/v1/search":
@@ -58,6 +62,7 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 	out := captureStdout(t, func() error {
 		return run(t.Context(), []string{"grep", "--server", `upload\.Test`, "--agent", "codex", "--since", "24h", "-C", "2", "-m", "3", "--offset", "5"})
 	})
+	out = withoutCoverageObservation(out)
 	q := queries[0]
 	if paths[0] != "/v1/grep" || q.Get("pattern") != `upload\.Test` || q.Get("regex") != "true" || q.Get("case_sensitive") != "true" || q.Get("agent") != "codex" ||
 		q.Get("since") == "" || q.Get("before") != "2" || q.Get("after") != "2" || q.Get("max_per_session") != "3" || q.Get("offset") != "5" {
@@ -98,13 +103,13 @@ func TestRetrievalToolsAgainstServer(t *testing.T) {
 		t.Fatalf("raw query %v", q)
 	}
 	if text, err = mcpCall(t.Context(), c, "flopwire_sessions", map[string]any{"glob": "team*", "agent": "codex"}); err != nil ||
-		text != `{"kind":"sessions","sessions":[{"session_id":"","address":"019a0000","agent":"codex","live":false,"messages":3,"title":"t"}],"has_more":false}` {
+		text != `{"kind":"sessions","sessions":[{"session_id":"","address":"019a0000","agent":"codex","live":false,"messages":3,"title":"t"}],"has_more":false,"hint":"Read a relevant returned session address to inspect its evidence."}` {
 		t.Fatalf("mcp sessions: %q %v", text, err)
 	}
 	if q = queries[len(queries)-1]; q.Get("glob") != "team*" || q.Get("agent") != "codex" {
 		t.Fatalf("sessions query %v", q)
 	}
-	if len(mcpTools()) != 7 {
+	if len(mcpTools()) != 9 {
 		t.Fatal("tool list")
 	}
 }
@@ -408,6 +413,11 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 	}
 	var queries []url.Values
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			// Optional diagnostics are separate from retrieval query arguments.
+			http.NotFound(w, r)
+			return
+		}
 		queries = append(queries, r.URL.Query())
 		_ = json.NewEncoder(w).Encode(format.Sessions{})
 	}))
@@ -415,6 +425,10 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv("FLOPWIRE_INDEX", filepath.Join(t.TempDir(), "missing.db"))
 	if err := client.Save(client.Config{Server: srv.URL, Token: "device"}); err != nil {
+		t.Fatal(err)
+	}
+	cc, err := client.Load()
+	if err != nil {
 		t.Fatal(err)
 	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
@@ -431,6 +445,13 @@ func TestServerRepoExpandsCheckouts(t *testing.T) {
 		}
 	}
 	t.Chdir(main)
+	// Unknown policy must not expand the caller's repository identity.
+	captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
+	if len(queries) != 1 || len(queries[0]["repo_checkout"])+len(queries[0]["repo_root"])+len(queries[0]["repo_remote"]) != 0 {
+		t.Fatalf("unknown policy expanded repository identity: %v", queries)
+	}
+	queries = nil
+	establishEmptyCollectionPolicy(t, cc)
 	captureStdout(t, func() error { return run(t.Context(), []string{"sessions", "--server", "--repo", "."}) })
 	if len(queries) != 1 || queries[0].Get("repo") != main || !slices.Contains(queries[0]["repo_checkout"], main) || !slices.Contains(queries[0]["repo_root"], main) || slices.Contains(queries[0]["repo_root"], wt) {
 		t.Fatalf("sessions --server --repo . sent %v", queries)
@@ -449,6 +470,11 @@ func TestServerRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	}
 	var queries []url.Values
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sync/coverage" {
+			// Optional diagnostics are separate from retrieval query arguments.
+			http.NotFound(w, r)
+			return
+		}
 		queries = append(queries, r.URL.Query())
 		_ = json.NewEncoder(w).Encode(format.Sessions{})
 	}))
@@ -460,6 +486,11 @@ func TestServerRepoLeavesOutWithheldCheckouts(t *testing.T) {
 	if err := client.Save(client.Config{Server: srv.URL, Token: "device"}); err != nil {
 		t.Fatal(err)
 	}
+	cc, err := client.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	establishEmptyCollectionPolicy(t, cc)
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

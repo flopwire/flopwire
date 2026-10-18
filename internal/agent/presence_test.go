@@ -1047,3 +1047,55 @@ func TestPresenceUncertainHoldersStayBoundedWithoutEnding(t *testing.T) {
 		}
 	}
 }
+
+// The Claude registry can stay busy while a stopped parent waits on children.
+func TestPresenceClaudeParentTurnOverridesBackgroundRegistry(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cl := f.pick("claude")
+	f.a.pidAlive = func(int) bool { return true }
+	start := cl.last.Add(-time.Hour).UTC().Truncate(time.Second)
+	f.a.procStart = func(int) (time.Time, bool) { return start, true }
+	writeFile(t, filepath.Join(f.home, ".claude", "sessions", "4242.json"), fmt.Sprintf(`{"sessionId":%q,"status":"busy","procStart":%q}`, cl.id, start.Format(time.ANSIC)))
+	at := cl.last.Add(time.Minute)
+	f.a.now = func() time.Time { return at }
+	if s, ok := f.presence(at)[cl.id]; !ok || !s.Busy || s.IdleKnown {
+		t.Fatalf("registry fallback without hooks: %+v", s)
+	}
+	f.a.noteHookEvent("claude", cl.id, "Stop", at)
+	// Child hooks flush with no event, even when they name the parent session.
+	f.a.noteHookEvent("claude", cl.id, "", at.Add(time.Second))
+	at = at.Add(3 * time.Hour)
+	if s, ok := f.presence(at)[cl.id]; !ok || s.Busy || !s.IdleKnown || !s.IdleSince.Equal(at.Add(-3*time.Hour)) {
+		t.Fatalf("stopped live parent: %+v", s)
+	}
+	for _, event := range []string{"UserPromptSubmit", "PostToolUse"} {
+		at = at.Add(time.Second)
+		f.a.noteHookEvent("claude", cl.id, event, at)
+		f.a.noteHookEvent("claude", cl.id, "Stop", at.Add(-time.Second))
+		if s := f.presence(at)[cl.id]; !s.Busy || s.IdleKnown {
+			t.Fatalf("new %s overwritten by old Stop: %+v", event, s)
+		}
+	}
+	// Clearing in-memory hooks models a daemon restart: no idle claim survives.
+	f.a.turns.mu.Lock()
+	f.a.turns.m = nil
+	f.a.turns.mu.Unlock()
+	if s := f.presence(at)[cl.id]; !s.Busy || s.IdleKnown {
+		t.Fatalf("restart fallback: %+v", s)
+	}
+}
+
+func TestClaudeExpiredRunningHookFallsBackToRegistry(t *testing.T) {
+	f := newFixture(t, "-")
+	at := time.Now()
+	f.a.now = func() time.Time { return at }
+	f.a.noteHookEvent("claude", "parent", "UserPromptSubmit", at)
+	if !f.a.claudeTurnBusy("parent", false) {
+		t.Fatal("fresh parent prompt ignored")
+	}
+	at = at.Add(hookBusyCap + time.Second)
+	if f.a.claudeTurnBusy("parent", false) || !f.a.claudeTurnBusy("parent", true) {
+		t.Fatal("expired running hook did not fall back")
+	}
+}

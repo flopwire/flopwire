@@ -1,7 +1,8 @@
 # Launch readiness
 
-The launch gate from the CASS-era PR stack (#2 to #8), carried onto the fresh
-schema. `notes/local-search/README.md` (§11.3) decides what survived.
+Historical launch gate from the CASS-era PR stack (#2 to #8), carried onto
+the fresh schema. This is a record of that stack, not the current release gate.
+`notes/local-search/README.md` (§11.3) decides what survived.
 
 - `punch-list.md`: P0/P1/P2 gate items and the confirmed decisions behind them.
 - `state-machine-walks.md`: concrete-state walks for deletion, backup and
@@ -20,6 +21,6 @@ Where the salvaged work landed:
 | Release tags and version injection | #4 `validate-release-tag*`, `source-release.yml`, `aa35add` | B1d |
 | Git provenance | #7 `internal/provenance/git.go` | B1d (wiring in B2) |
 
-Still open after B1: search, raw reads, and their audit events (B3); quota
-enforcement for chunk uploads (B2/B3); endpoint concurrency limits (B3);
+Open at the end of B1 (historical status): search, raw reads, and their audit
+events (B3); quota enforcement for chunk uploads (B2/B3); endpoint concurrency limits (B3);
 member offboarding (undecided).

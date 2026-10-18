@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -29,7 +30,6 @@ func TestLiteralRegexpCondition(t *testing.T) {
 		sensitive bool
 		want      []string
 	}{
-		{"1f877ad98|repo/additive-migrations-2049", false, []string{"%1f877ad98%", "%repo/additive-migrations-2049%", "%repo/additive-migrationſ-2049%"}},
 		{"1f877ad98|repo/additive-migrations-2049", true, []string{"%1f877ad98%", "%repo/additive-migrations-2049%"}},
 		{"(foobar)|(foobaz)|quux", true, []string{"%foobar%", "%foobaz%", "%quux%"}},
 		{"foo|foobar", true, []string{"%foo%", "%foobar%"}},
@@ -61,7 +61,7 @@ func TestLiteralRegexpFallback(t *testing.T) {
 	for _, pattern := range []string{
 		"abc.*bcd", "abc.+bcd", "abc(def)?", "abc{2}", "^foobar$", `\bfoobar\b`,
 		"foo|", "foo|x", ".*", "a.b", "", "abc\\x00def", "café", `caf\x{e9}`,
-		strings.Repeat("z", maxRegexpLiteralSourceBytes+1), "ssssss", "kkkkkk", "foo[0-9][0-9]", "[a-z][a-z]foobar",
+		strings.Repeat("z", maxRegexpLiteralSourceBytes+1), "ssssss", "sssss|mdutil", "kkkkkk", "foo[0-9][0-9]", "[a-z][a-z]foobar",
 	} {
 		t.Run(pattern, func(t *testing.T) {
 			plan, err := grep.Compile(format.GrepQuery{Pattern: pattern})
@@ -86,7 +86,7 @@ func TestLiteralRegexpFallback(t *testing.T) {
 }
 
 func TestLiteralRegexpExistingBadRequests(t *testing.T) {
-	for _, pattern := range []string{"", "[", "foo|x", "go to", ".*"} {
+	for _, pattern := range []string{"", "[", "foo|x", ".*"} {
 		_, err := (&Store{}).Grep(context.Background(), format.GrepQuery{Pattern: pattern}, format.Filters{})
 		if !errors.Is(err, ErrBadRequest) {
 			t.Fatalf("pattern %q: want bad request, got %v", pattern, err)
@@ -100,21 +100,31 @@ func TestLiteralRegexpFoldBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := &query{}
-	if literalRegexpCond(q, plan.Re) == "" || len(q.args) != maxRegexpLiterals {
-		t.Fatalf("five long-s positions must yield 32 variants: %v", q.args)
+	if got := literalRegexpCond(q, plan.Re); got != "m.text ~ $1" || len(q.args) != 1 {
+		t.Fatalf("five long-s positions must use one factored predicate: %s %v", got, q.args)
 	}
 }
 
 var literalEquivalenceQueries = []format.GrepQuery{
+	{Pattern: "spotlight|mdutil|mds_stores"},
+	{Pattern: "spotlight|mdutil|mds_stores", CaseSensitive: true},
 	{Pattern: "1f877ad98|repo/additive-migrations-2049"},
 	{Pattern: "1f877ad98|repo/additive-migrations-2049", CaseSensitive: true},
 	{Pattern: "(foobar)|(foobaz)|quux"},
 	{Pattern: "(foo|bar)baz"},
+	{Pattern: "(foo|bar)(baz|quux)"},
 	{Pattern: "foo(|bar)"},
 	{Pattern: `\Qfoo.bar\E`},
 	{Pattern: `a(?i:\x{17f})k`},
 	{Pattern: `a(?i:[k])s`},
 	{Pattern: "(?i:a(?-i:S)b)", CaseSensitive: true},
+	{Pattern: `\*\*\*:ask`},
+	{Pattern: `\(\?i\)ask`},
+	{Pattern: "cass search"},
+	{Pattern: "sssss"},
+	{Pattern: `fook%s_s\\x\.\[\]\(\)\{\}\+\?\*\|\^\$`},
+	{Pattern: "ask\nnext\r\ttab"},
+	{Pattern: "(ask)"},
 	{Pattern: "ask|sky"},
 	{Pattern: "ask|sky", CaseSensitive: true},
 	{Pattern: "(?i:ask)|(?-i:SKY)", CaseSensitive: true},
@@ -122,10 +132,14 @@ var literalEquivalenceQueries = []format.GrepQuery{
 }
 
 var literalEquivalenceTexts = []string{
+	"spotlight", "ſpotlight", "SPOTLIGHT", "mdutil", "MDUTIL",
+	"mds_stores", "mdſ_stores", "mds_ſtores", "mds_storeſ", "mdſ_ſtores", "mdſ_storeſ", "mds_ſtoreſ", "mdſ_ſtoreſ", "MDS_STORES",
+	"spo pot otl tli lig igh ght mdu dut uti til mds sto tor ore res",
+	"fooquux", "barquux", "quuxfoo", "foobarquux", "FOOQUUX", "BARBAZ",
 	"prefix 1f877ad98 suffix", "1F877AD98", "repo/additive-migrations-2049", "REPO/ADDITIVE-MIGRATIONS-2049",
 	"repo/additive-migrationſ-2049", "repo additive migrations 2049", "1f8---877---ad9---98",
 	"foobaz", "barbaz", "foo", "foo.bar", "aSb", "ASB", "asb", "AſB", "foobar\nfoobaz", "FOOBAZ", "quux", "ASK", "aſk", "asK", "aſK", "ſKy", "SKY", "sky", "sKy",
-	`foo%_\bar.baz`, `fooZZZbarXbaz`, "unrelated",
+	`foo%_\bar.baz`, "***:ask", "***:aſK", "(?i)ask", "(?i)aſK", "cass search", "caſſ ſearch", "ſſſſſ", "sssss", "ask\nnext\r\ttab", `fook%s_s\x.[](){}+?*|^$`, `fooK%ſ_ſ\x.[](){}+?*|^$`, `fooZZZbarXbaz`, "unrelated",
 }
 
 // Model ILIKE with ASCII folding only: no PostgreSQL Unicode fold behavior
@@ -138,7 +152,8 @@ func TestLiteralRegexpHitEquivalence(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := &query{}
-		if literalRegexpCond(q, plan.Re) == "" {
+		condition := literalRegexpCond(q, plan.Re)
+		if condition == "" {
 			t.Fatalf("unexpected fallback: %+v", gq)
 		}
 		for _, body := range literalEquivalenceTexts {
@@ -147,7 +162,11 @@ func TestLiteralRegexpHitEquivalence(t *testing.T) {
 				// Remove surrounding wildcards and undo LIKE escaping.
 				s := a.(string)
 				s = strings.NewReplacer(`\\`, `\`, `\%`, `%`, `\_`, `_`).Replace(s[1 : len(s)-1])
-				candidate = candidate || strings.Contains(asciiLower(body), asciiLower(s))
+				if strings.Contains(condition, "m.text ~ ") {
+					candidate = regexp.MustCompile(a.(string)).MatchString(body)
+				} else {
+					candidate = candidate || strings.Contains(asciiLower(body), asciiLower(s))
+				}
 			}
 			want := plan.Re.MatchString(body)
 			if got := candidate && plan.Re.MatchString(body); got != want {

@@ -355,6 +355,15 @@ func TestDevinDeletionAndChainChange(t *testing.T) {
 	sy := e.syncer(devicesync.Config{})
 	f.syncAll(t, sy)
 	e.drain()
+	// The shared fixture contains both additional proof and a pre-existing
+	// unpaired completion. Exercise the summary-count distinction below.
+	if n := e.count(`SELECT count(*) FROM messages WHERE kind='tool_result' AND enrichment->'command_completion'='true'::jsonb AND enrichment->'completion_legacy' IS DISTINCT FROM 'true'::jsonb`); n == 0 {
+		t.Fatal("fixture has no additional completion proof")
+	}
+	if n := e.count(`SELECT count(*) FROM messages WHERE kind='tool_result' AND enrichment->'command_completion'='true'::jsonb AND enrichment->'completion_legacy'='true'::jsonb`); n == 0 {
+		t.Fatal("fixture has no legacy completion row")
+	}
+
 	db, err := sql.Open("sqlite", "file:"+f.devinDB)
 	if err != nil {
 		t.Fatal(err)
@@ -371,11 +380,13 @@ func TestDevinDeletionAndChainChange(t *testing.T) {
 		}
 		e.drain()
 		// Reads take the message count from the digest (retrieval
-		// messageCount): it must match the live rows.
+		// messageCount): it must match the live summary rows. Additional
+		// completion proof is excluded; legacy completion rows still count.
 		if n := e.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE a.digest_stale OR
 			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(a.digest->'messages') x(k,v)) <>
-			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE)`); n != 0 {
-			t.Fatalf("after resyncing %s: %d conversations whose digest count is not their live rows", id, n)
+			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE
+				AND (m.kind<>'tool_result' OR m.enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb OR m.enrichment->'completion_legacy'='true'::jsonb))`); n != 0 {
+			t.Fatalf("after resyncing %s: %d conversations whose digest count is not their live summary rows", id, n)
 		}
 	}
 	onPath := func(native string) string {

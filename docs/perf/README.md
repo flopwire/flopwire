@@ -55,7 +55,8 @@ the [release gate](#release-gate) also calls.
 The workflow is `.github/workflows/perf-release.yml`. It runs on every
 pull request, but it benches only the release-please PR: a PR from the
 branch `release-please--branches--main` of this repository. On every
-other PR its `perf-gate` job passes at once.
+other PR, and in the merge queue, its `perf-gate` job passes at once; the
+release PR is gated while it is a pull request.
 
 On the release PR:
 
@@ -180,10 +181,6 @@ Retrieval command failures appear in A-side query checks and fail the
 compatibility smoke gate, even if the A/B verdict is `CLEAN`.
 Measured launches are never retried to remove flags. The summary shows A's
 error, and the run opens an issue labelled `perf-baseline-broken`.
-
-The historical pin remains `9e4193da7c346ff14a377128920f3943ff14f523`.
-Use the [compatibility smoke commands](issue-136-smoke.md) to compare that
-actual baseline with the current source before drawing performance conclusions.
 
 ## Local acceptance records
 

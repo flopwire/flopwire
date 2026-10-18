@@ -20,8 +20,8 @@
 //     promptAsync without noReply, which would wake an idle session.
 //   - Puts Flopwire's standing instruction and tool guidance into every
 //     model call's system prompt (experimental.chat.system.transform).
-//   - Serves Flopwire's tools (grep, search, sessions, read, peers, send,
-//     inbox) as plugin tools: each call runs `flopwire mcp --call` as the
+//   - Serves Flopwire's tools (grep, search, sessions, read, change,
+//     messages, peers, send, inbox) as plugin tools: each call runs `flopwire mcp --call` as the
 //     calling session (a subagent's calls run as its parent session).
 //   - Keeps <flopwire config dir>/opencode/<pid>.json naming this
 //     process's top-level sessions, for presence, and deletes the files of

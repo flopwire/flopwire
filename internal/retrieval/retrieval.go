@@ -55,8 +55,9 @@ var (
 
 // Store is the server-side retrieval backend.
 type Store struct {
-	Pool    *pgxpool.Pool
-	Objects ingest.Objects
+	GrepContinuations *GrepContinuations
+	Pool              *pgxpool.Pool
+	Objects           ingest.Objects
 	// RefreshSession prioritizes background re-derivation after an authorized read.
 	RefreshSession func(context.Context, string)
 	tx             pgx.Tx // the budgeted transaction, on the copy budgeted hands on
@@ -145,14 +146,17 @@ func lastActivity(c string) string {
 
 // from joins a message to what its filters and output need.
 const from = `messages m JOIN ` + visible + ` c ON c.id=m.conversation_id JOIN devices d ON d.id=c.device_id
-	JOIN users u ON u.id=c.user_id LEFT JOIN sources s ON s.id=m.source_id`
+	JOIN users u ON u.id=c.user_id LEFT JOIN sources s ON s.id=m.source_id
+	LEFT JOIN sources rs ON rs.id=c.source_id`
 
 // hitCols are scanned by scanHit, in order.
 const hitCols = `m.id::text,c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(c.repo_root,c.cwd,''),d.name,u.email,c.branches,
 	m.kind,COALESCE(m.tool_name,''),COALESCE(m.is_error,false),m.ts,m.superseded,COALESCE(m.on_active_path,true),
 	COALESCE(s.id::text,''),COALESCE(s.path,''),COALESCE(s.file_id,''),m.source_generation,COALESCE(m.line_no,0),m.byte_offset,COALESCE(m.byte_len,0),COALESCE(m.locator,''),
 	m.ordinal,CASE WHEN s.storage_kind='cass_export' THEN 'cass_recovery' ELSE '' END,
- CASE WHEN s.storage_kind='cass_export' THEN COALESCE(c.extra->>'cass_source_path','') ELSE '' END`
+ CASE WHEN s.storage_kind='cass_export' THEN COALESCE(c.extra->>'cass_source_path','') ELSE '' END,
+	COALESCE(NULLIF(rs.remote,''),rs.checkout,''),
+	CASE WHEN COALESCE(NULLIF(rs.remote,''),NULLIF(rs.checkout,'')) IS NOT NULL THEN COALESCE(c.repo_root,'') ELSE '' END`
 
 func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	var h format.Hit
@@ -160,7 +164,7 @@ func scanHit(row pgx.Row, extra ...any) (format.Hit, error) {
 	dst := []any{&h.MessageID, &h.ConversationID, &h.Agent, &h.SessionID, &h.Title, &h.Repo, &h.Device, &h.User, &h.Branches,
 		&h.Kind, &h.ToolName, &h.IsError, &h.TS, &h.Superseded, &onPath,
 		&h.Provenance.SourceID, &h.Provenance.Path, &h.Provenance.FileID, &h.Provenance.Generation, &h.Provenance.LineNo, &h.Provenance.ByteOffset, &h.Provenance.ByteLen, &h.Provenance.Locator,
-		&h.Ordinal, &h.Provenance.EvidenceKind, &h.Provenance.OriginalPath}
+		&h.Ordinal, &h.Provenance.EvidenceKind, &h.Provenance.OriginalPath, &h.RepoIdentity, &h.Worktree}
 	err := row.Scan(append(dst, extra...)...)
 	h.OffPath = !onPath
 	if h.Provenance.Locator != "" && strings.HasPrefix(h.Provenance.Locator, "@") {
@@ -321,6 +325,11 @@ func hitFilters(q *query, f format.Filters) error {
 	if len(f.Kinds) == 0 {
 		q.where("m.kind<>'injected'")
 	}
+	if len(f.Kinds) == 1 && f.Kinds[0] == "tool_call" {
+		// A constant lets generic prepared plans prove the partial trigram
+		// index predicate. Keep the shared filters (including kind) intact.
+		q.where("m.kind='tool_call'")
+	}
 	return filters(q, f)
 }
 
@@ -380,6 +389,14 @@ func literalRegexpCond(q *query, re *regexp.Regexp) string {
 			return ""
 		}
 	}
+	// Folded literals can have many Unicode variants (long-s and Kelvin).
+	// One generated expression avoids rechecking the same large body for each
+	// ILIKE alternative. Preserve the existing enumeration/indexability bounds.
+	if len(literals) > 1 {
+		if pattern, ok := foldedLiteralPattern(ast); ok {
+			return "m.text ~ " + q.arg(pattern)
+		}
+	}
 	parts := make([]string, 0, len(literals))
 	for _, s := range literals {
 		parts = append(parts, "m.text ILIKE "+q.arg("%"+likeEscape(s)+"%"))
@@ -388,6 +405,52 @@ func literalRegexpCond(q *query, re *regexp.Regexp) string {
 		return parts[0]
 	}
 	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// foldedLiteralPattern emits PostgreSQL syntax only from folded ASCII literal
+// nodes, their concatenations and alternatives. Explicit Go fold orbits avoid
+// locale-dependent ~*. Mixed scoped case and other syntax retain the ILIKE path.
+func foldedLiteralPattern(ast *syntax.Regexp) (string, bool) {
+	for ast.Op == syntax.OpCapture {
+		ast = ast.Sub[0]
+	}
+	if ast.Op == syntax.OpConcat || ast.Op == syntax.OpAlternate {
+		parts := make([]string, 0, len(ast.Sub))
+		for _, sub := range ast.Sub {
+			pattern, ok := foldedLiteralPattern(sub)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, pattern)
+		}
+		if ast.Op == syntax.OpAlternate {
+			return "(" + strings.Join(parts, "|") + ")", true
+		}
+		return strings.Join(parts, ""), true
+	}
+	if ast.Op != syntax.OpLiteral || ast.Flags&syntax.FoldCase == 0 {
+		return "", false
+	}
+	var out strings.Builder
+	for _, r := range ast.Rune {
+		if r == 0 || r > unicode.MaxASCII {
+			return "", false
+		}
+		if next := unicode.SimpleFold(r); next != r {
+			out.WriteByte('[')
+			out.WriteRune(r)
+			for f := next; f != r; f = unicode.SimpleFold(f) {
+				out.WriteRune(f)
+			}
+			out.WriteByte(']')
+		} else {
+			if strings.ContainsRune(`\.^$[]()|*+?{}`, r) {
+				out.WriteByte('\\')
+			}
+			out.WriteRune(r)
+		}
+	}
+	return out.String(), true
 }
 
 const (
@@ -624,7 +687,11 @@ func followUp(ctx context.Context) (context.Context, context.CancelFunc) {
 // read runs fn in a read-only transaction whose statements Postgres stops
 // after b, so a slow query cannot hold a pooled connection past its budget.
 func (s *Store) read(ctx context.Context, b time.Duration, fn func(pgx.Tx) error) error {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	return s.readTransaction(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly}, fn)
+}
+
+func (s *Store) readTransaction(ctx context.Context, b time.Duration, opts pgx.TxOptions, fn func(pgx.Tx) error) error {
+	tx, err := s.Pool.BeginTx(ctx, opts)
 	if err != nil {
 		return cutShort(ctx, err)
 	}
@@ -701,7 +768,9 @@ const convCols = `c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(
 	c.started_at,c.last_activity_at,COALESCE(c.parent_conversation_id::text,''),COALESCE(c.spawned_by_message_id::text,''),c.depth,
 	COALESCE(pc.session_id,c.parent_native_session_id,''),
 	` + messageCount + `,
-	c.branches,c.digest,` + liveSQL
+	c.branches,c.digest,` + liveSQL + `,
+	COALESCE(NULLIF(rs.remote,''),rs.checkout,''),
+	CASE WHEN COALESCE(NULLIF(rs.remote,''),NULLIF(rs.checkout,'')) IS NOT NULL THEN COALESCE(c.repo_root,'') ELSE '' END`
 
 // messageCount is conversation c's live message count (live rows on the
 // active path). The digest holds it per kind, maintained by every append
@@ -710,7 +779,7 @@ const convCols = `c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(
 // replaced rows has not recounted yet (digest_stale), or before the first
 // digest, the rows are counted.
 const messageCount = `CASE WHEN c.digest IS NULL OR c.digest_stale
-	THEN (SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE)
+	THEN (SELECT count(*) FROM messages mm WHERE mm.conversation_id=c.id AND NOT mm.superseded AND mm.on_active_path IS NOT FALSE AND (mm.kind<>'tool_result' OR mm.enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb OR mm.enrichment->'completion_legacy'='true'::jsonb))
 	ELSE (SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(c.digest->'messages') x(k,v)) END`
 
 // liveSQL is whether a conversation c of device d is live: active within
@@ -725,7 +794,7 @@ func scanConv(row pgx.Row) (format.ConversationInfo, error) {
 	var c format.ConversationInfo
 	var dg []byte
 	err := row.Scan(&c.ID, &c.Agent, &c.SessionID, &c.Title, &c.Cwd, &c.Repo, &c.Device, &c.User, &c.StartedAt, &c.LastActivityAt,
-		&c.ParentConversationID, &c.SpawnedByMessageID, &c.Depth, &c.ParentSession, &c.Messages, &c.Branches, &dg, &c.Live)
+		&c.ParentConversationID, &c.SpawnedByMessageID, &c.Depth, &c.ParentSession, &c.Messages, &c.Branches, &dg, &c.Live, &c.RepoIdentity, &c.Worktree)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -738,9 +807,12 @@ func scanConv(row pgx.Row) (format.ConversationInfo, error) {
 
 const convFrom = listed + ` c` + convJoins
 
-// convJoins joins a conversation c to what convCols needs.
+// convJoins joins a conversation c to what convCols needs. The source
+// lookup stays parameterized per returned conversation: flattening it into
+// a hash join can scan every source even for a small undated session page.
 const convJoins = ` JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id
-	LEFT JOIN ` + visible + ` pc ON pc.id=c.parent_conversation_id`
+	LEFT JOIN ` + visible + ` pc ON pc.id=c.parent_conversation_id
+	LEFT JOIN LATERAL (SELECT remote,checkout FROM sources WHERE id=c.source_id OFFSET 0) rs ON true`
 
 // Raw returns bytes [offset, offset+length) of a source generation,
 // fetching only the chunk objects the range touches (or the provisional

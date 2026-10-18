@@ -15,6 +15,7 @@
 package format
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flopwire/flopwire/internal/coverage"
 	"github.com/flopwire/flopwire/internal/digest"
 )
 
@@ -361,7 +363,9 @@ type Hit struct {
 	SessionID      string `json:"session_id"`
 	Ordinal        int64  `json:"ordinal"`
 	Title          string `json:"title,omitempty"`
-	Repo           string `json:"repo,omitempty"`
+	Repo           string `json:"repo,omitempty"`          // legacy checkout label
+	RepoIdentity   string `json:"repo_identity,omitempty"` // recorded normalized remote, otherwise main checkout
+	Worktree       string `json:"worktree,omitempty"`      // recorded checkout root
 	Device         string `json:"device,omitempty"`
 	User           string `json:"user,omitempty"`
 	// Branches are the session's git branches, first seen first.
@@ -425,7 +429,9 @@ type ConversationInfo struct {
 	SessionID            string     `json:"session_id"`
 	Title                string     `json:"title,omitempty"`
 	Cwd                  string     `json:"cwd,omitempty"`
-	Repo                 string     `json:"repo,omitempty"`
+	Repo                 string     `json:"repo,omitempty"`          // legacy checkout label
+	RepoIdentity         string     `json:"repo_identity,omitempty"` // recorded normalized remote, otherwise main checkout
+	Worktree             string     `json:"worktree,omitempty"`      // recorded checkout root
 	Device               string     `json:"device,omitempty"`
 	User                 string     `json:"user,omitempty"`
 	StartedAt            *time.Time `json:"started_at,omitempty"`
@@ -534,12 +540,22 @@ const (
 	OutlineArgs     = 120
 )
 
+// GrepScan describes bounded progress through a hosted grep snapshot.
+type GrepScan struct {
+	Status     string    `json:"status"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+	Checked    int       `json:"checked"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+}
+
 // Page is a grep or search answer. A page cut short by the query budget
-// is still an answer, never an error: Truncated is set and Reason says
-// what was checked.
+// retains its results: Truncated is set and Reason says what was checked.
+// The CLI reports incompleteness with exit 2; MCP marks an empty incomplete
+// answer as an error. Resumable grep reports progress separately in Scan.
 type Page struct {
-	Scope *Scope `json:"scope,omitempty"`
-	Hits  []Hit  `json:"hits"`
+	Scan  *GrepScan `json:"scan,omitempty"`
+	Scope *Scope    `json:"scope,omitempty"`
+	Hits  []Hit     `json:"hits"`
 	// Sessions is grep's -l/-c answer: sessions with matches, newest hit
 	// first, Hits set on each.
 	Sessions []ConversationInfo `json:"sessions,omitempty"`
@@ -579,8 +595,24 @@ type Sessions struct {
 // Scope identifies the backend that answered a retrieval request.
 // It is attached by the CLI or MCP adapter, not inferred from result rows.
 type Scope struct {
-	Kind   string `json:"kind"` // "local" or "shared"
-	Server string `json:"server,omitempty"`
+	Kind         string                `json:"kind"` // "local" or "shared"
+	Server       string                `json:"server,omitempty"`
+	Coverage     *coverage.Report      `json:"coverage,omitempty"`
+	CoverageMode coverage.Presentation `json:"-"`
+}
+
+// MarshalJSON selects the MCP-only projection without changing the report used
+// by CLI diagnostics or retrieval logic.
+func (s Scope) MarshalJSON() ([]byte, error) {
+	type legacy Scope
+	if s.CoverageMode == "" || s.CoverageMode == coverage.DetailMode {
+		return json.Marshal(legacy(s))
+	}
+	return json.Marshal(struct {
+		Kind     string            `json:"kind"`
+		Server   string            `json:"server,omitempty"`
+		Coverage *coverage.Summary `json:"coverage"`
+	}{s.Kind, s.Server, coverage.Present(s.Coverage, s.Kind == "shared", s.CoverageMode)})
 }
 
 // Attribution names whose evidence a raw read returns: the user and
@@ -606,6 +638,9 @@ const (
 // GrepQuery is a grep request. Pattern is an RE2 regular expression
 // (multi-line: ^ and $ match at line breaks), or a literal when Fixed.
 type GrepQuery struct {
+	Authority     string `json:"-"`
+	Continue      bool   `json:"continue,omitempty"`
+	Cursor        string `json:"cursor,omitempty"`
 	Pattern       string `json:"pattern"`
 	Fixed         bool   `json:"fixed,omitempty"`
 	CaseSensitive bool   `json:"case_sensitive,omitempty"`
@@ -630,6 +665,12 @@ type GrepQuery struct {
 // Values encodes q as URL query parameters (the filters go separately).
 func (q GrepQuery) Values(v url.Values) url.Values {
 	v.Set("pattern", q.Pattern)
+	if q.Continue || q.Cursor != "" {
+		v.Set("continue", "true")
+	}
+	if q.Cursor != "" {
+		v.Set("cursor", q.Cursor)
+	}
 	v.Set("regex", strconv.FormatBool(!q.Fixed))
 	v.Set("case_sensitive", strconv.FormatBool(q.CaseSensitive))
 	setNum(v, "offset", q.Offset)
@@ -654,7 +695,15 @@ func (q GrepQuery) Values(v url.Values) url.Values {
 
 // ParseGrepQuery is the inverse of Values.
 func ParseGrepQuery(v url.Values) (GrepQuery, error) {
-	q := GrepQuery{Pattern: v.Get("pattern"), Mode: v.Get("mode")}
+	q := GrepQuery{Pattern: v.Get("pattern"), Mode: v.Get("mode"), Cursor: v.Get("cursor")}
+	if raw := v.Get("continue"); raw != "" {
+		var err error
+		q.Continue, err = strconv.ParseBool(raw)
+		if err != nil {
+			return q, fmt.Errorf("continue: bad value")
+		}
+	}
+	q.Continue = q.Continue || q.Cursor != ""
 	regex, _ := strconv.ParseBool(v.Get("regex"))
 	q.Fixed = !regex
 	q.CaseSensitive, _ = strconv.ParseBool(v.Get("case_sensitive"))
@@ -683,6 +732,8 @@ type SearchQuery struct {
 	Offset  int           `json:"offset,omitempty"`
 	Limit   int           `json:"limit,omitempty"` // default 20
 	Timeout time.Duration `json:"timeout,omitempty"`
+
+	Matching string `json:"matching,omitempty"` // auto (default), all or any
 }
 
 // ReadQuery is a read request.

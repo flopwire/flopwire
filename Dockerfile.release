@@ -1,0 +1,19 @@
+# Release image: GoReleaser passes a context holding the prebuilt binary
+# per platform (linux/amd64/flopwire, linux/arm64/flopwire). The final
+# stage matches Dockerfile, which builds from source for Compose and CI.
+#
+# trixie ships postgresql-client 17, matching the Compose Postgres major so
+# pg_dump can back it up.
+FROM debian:trixie-slim
+ARG TARGETPLATFORM
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+COPY $TARGETPLATFORM/flopwire /usr/local/bin/flopwire
+RUN groupadd --system --gid 999 flopwire \
+    && useradd --system --uid 10001 --gid flopwire --create-home flopwire \
+    && install -d -o flopwire -g flopwire -m 0700 /var/lib/flopwire
+RUN flopwire version && pg_dump --version
+USER flopwire
+EXPOSE 8080
+ENTRYPOINT ["flopwire"]
+CMD ["serve"]

@@ -48,7 +48,7 @@ var setupStatusBudget = 5 * time.Second
 const setupHelp = `flopwire setup — install Flopwire into the coding-agent harnesses on this machine
 
   flopwire setup            install or update the plugin in each harness found
-  flopwire setup --check    report what is installed; change nothing
+  flopwire setup --check    inspect configuration; change nothing
   flopwire setup --remove   uninstall the plugin through each harness's own command
   flopwire setup --text     a readable report instead of JSON
 
@@ -62,7 +62,10 @@ setup writes the plugin there (~/.config/opencode/plugins/flopwire.js) and
 
 Codex runs a plugin's hooks only after you trust them once: start codex and
 answer its "Hooks need review" prompt, or use /hooks. setup reports whether
-that is still needed and never approves hooks for you.
+that is still needed and never approves hooks for you. Hook trust permits
+hook execution; MCP tool approval is separate and depends on your session.
+--check does not verify current-session tool access or hook delivery. An
+observed MCP process does not prove that a session can discover or use tools.
 
 The plugin's hooks and MCP server run a shim (bin/flopwire-hook) that
 takes the binary path setup records in <config dir>/binary-path (unless
@@ -90,20 +93,25 @@ JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note","recorded"
 "harness_version","plugin","marketplace","installed","enabled","version","scope",
 "done":[…],"todo":[…],"warnings":[…],"error","skipped","hook_trust":{"hooks","trusted",
 "need_review":[…],"disabled":[…]},"hook_binary":{"shim","shell","path","via","error"}}],
-"todo":[…]}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
+"todo":[…],"check_note"}. hook_trust is Codex only. index.state is missing, empty, indexed, sync-only or unreadable.
 server.credential is device login, FLOPWIRE_TOKEN, legacy login or none (the
 running agent's when it answers); server.messaging, when set, is why
 messaging is off and the fix; server.warning says FLOPWIRE_TOKEN hides a saved
 device login; server.differs, when set, says this shell's credential is not
 the running agent's, and why.
+ok reports whether setup completed its checks or changes, not runtime
+readiness. Read todo, warnings and check_note even when ok is true.
 A harness that fails is reported with "error"; setup carries on with the
 others, then sets ok false and exits 1. A harness setup cannot manage because
 you are not logged in to it (Devin) is reported with "skipped" instead; it
 does not change ok or the exit status.
 `
 
+const setupCheckNote = "configuration inspected; current-session tool access and hook delivery unverified"
+
 // setupReport is what setup prints.
 type setupReport struct {
+	CheckNote          string          `json:"check_note,omitempty"`
 	Kind               string          `json:"kind"`
 	Mode               string          `json:"mode"`
 	OK                 bool            `json:"ok"`
@@ -114,6 +122,8 @@ type setupReport struct {
 	Index              setupIndex      `json:"index"`
 	Harnesses          []harnessReport `json:"harnesses"`
 	Todo               []string        `json:"todo"`
+	MCP                []mcpRuntime    `json:"mcp,omitempty"`
+	MCPNote            string          `json:"mcp_note,omitempty"`
 	HookFailureWarning string          `json:"hook_failure_warning,omitempty"`
 }
 
@@ -121,6 +131,9 @@ type setupBinary struct {
 	Path    string `json:"path,omitempty"`
 	Version string `json:"version,omitempty"`
 	Note    string `json:"note,omitempty"`
+	// Latest is the newer release the server reported, when the running
+	// agent says one exists; the todo list then carries the upgrade line.
+	Latest string `json:"latest,omitempty"`
 	// Recorded is the binary path recorded for the plugins' hook shim
 	// (<config dir>/binary-path): install mode writes this binary's path
 	// there; --check and --remove only read it.
@@ -403,7 +416,11 @@ func runHarnessCommand(ctx context.Context, name string, args ...string) ([]byte
 func runSetup(ctx context.Context, env *setupEnv) setupReport {
 	rep := setupReport{Kind: "setup", Mode: env.mode, OK: true, Todo: []string{}}
 	if env.mode == setupCheck {
+		rep.CheckNote = setupCheckNote
 		rep.HookFailureWarning = lastHookFailureWarning()
+		if dir, err := mcpRuntimeDir(); err == nil {
+			rep.MCP, rep.MCPNote = readMCPRuntimes(dir, false)
+		}
 	}
 	if p, err := env.lookPath("flopwire"); err != nil {
 		rep.Flopwire.Note = "flopwire is not on PATH: the plugins find the binary by the path setup records, but your terminal and any MCP server you added by hand run it by name"
@@ -446,6 +463,10 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			resp, err := agent.Call(c, rep.Agent.Socket, agent.Request{Op: "status"})
 			cancel()
 			agentCred = resp.Credential
+			if resp.Upgrade != "" {
+				rep.Flopwire.Latest = resp.Latest
+				rep.Todo = append(rep.Todo, resp.Upgrade)
+			}
 			if agentCred == nil {
 				why := "did not answer status"
 				if err != nil {
@@ -482,7 +503,7 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			rep.Todo = append(rep.Todo, "the local index holds no transcripts yet, so the MCP search tools find nothing: the device agent builds it on its first run (flopwire agent run)")
 		}
 		if !rep.Agent.Running {
-			rep.Todo = append(rep.Todo, "start the device agent and keep it running: flopwire agent run (messages and capture need it; see docs/agent.md)")
+			rep.Todo = append(rep.Todo, "start the device agent and keep it running for capture and live messaging: flopwire agent run; existing indexed/shared history may remain searchable (see docs/agent.md)")
 		}
 		if !rep.Server.Configured {
 			rep.Todo = append(rep.Todo, "optional: no server is configured, so messages go only between this device's sessions; flopwire claim and flopwire enroll join a team")
@@ -1229,6 +1250,9 @@ func tildePath(p, home string) string {
 // writeSetupText prints rep for a person.
 func writeSetupText(w io.Writer, rep setupReport) {
 	var b strings.Builder
+	if rep.CheckNote != "" {
+		fmt.Fprintf(&b, "check: %s\n", rep.CheckNote)
+	}
 	if rep.Flopwire.Path != "" {
 		fmt.Fprintf(&b, "flopwire: %s\n", rep.Flopwire.Path)
 	} else {
@@ -1239,6 +1263,15 @@ func writeSetupText(w io.Writer, rep setupReport) {
 	}
 	if rep.Flopwire.Recorded != "" {
 		fmt.Fprintf(&b, "  recorded for the hooks: %s\n", rep.Flopwire.Recorded)
+	}
+	for _, runtime := range rep.MCP {
+		fmt.Fprintf(&b, "MCP: PID %d, started %s, build %s, credential source %s\n", runtime.PID, runtime.StartedAt.Format(time.RFC3339), runtime.Version, runtime.CredentialSource)
+		if runtime.Note != "" {
+			fmt.Fprintf(&b, "  note: %s\n", runtime.Note)
+		}
+	}
+	if rep.MCPNote != "" {
+		fmt.Fprintf(&b, "MCP coverage: %s\n", rep.MCPNote)
 	}
 	if rep.Agent.Running {
 		b.WriteString("agent: running\n")

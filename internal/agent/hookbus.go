@@ -53,7 +53,8 @@ const hookBusyCap = 15 * time.Minute
 // hookTurns is each session's last hook event: UserPromptSubmit, PreToolUse
 // and PostToolUse mean a turn is running; Stop, SessionStart and SessionEnd
 // mean none is. Every event reaches the agent as the flush request of
-// `flopwire hook`, so this costs nothing extra. Devin's and opencode's
+// `flopwire hook`, so this costs nothing extra. Claude uses witnessed
+// parent turns ahead of its registry. Devin's and opencode's
 // presence use it: neither has another read-only signal of a running turn.
 // Devin fires no Stop for an interrupted turn; presence reads the store's
 // interrupt marker for that (devinTurnBusy).
@@ -126,6 +127,27 @@ func (a *Agent) hookBusy(harness transcript.Agent, session string) (bool, time.T
 	return true, v.start
 }
 
+// claudeTurnBusy prefers witnessed parent-turn evidence over the registry,
+// which can remain busy while only background agents run. With no evidence
+// (including after a device-agent restart), keep the registry's answer. A
+// witnessed Stop stays authoritative for a live holder until a newer parent
+// event; an expired running event cannot prove either busy or idle.
+func (a *Agent) claudeTurnBusy(session string, registryBusy bool) bool {
+	a.turns.mu.Lock()
+	defer a.turns.mu.Unlock()
+	v, ok := a.turns.m[placeKey{transcript.AgentClaude, session}]
+	if !ok {
+		return registryBusy
+	}
+	if !v.idleSince.IsZero() {
+		return false
+	}
+	if v.busy && a.now().Sub(v.at) <= hookBusyCap {
+		return true
+	}
+	return registryBusy
+}
+
 // hookTurnEnded records that the turn whose last event's hook started at
 // start ended without a Stop. A later event stands.
 func (a *Agent) hookTurnEnded(harness transcript.Agent, session string, start time.Time) {
@@ -149,6 +171,9 @@ var ExcerptBudget = 50 * time.Millisecond
 // Other address kinds, sessions the index does not hold or holds more
 // than one match for, and lookups past ExcerptBudget get none.
 func (a *Agent) refExcerpts(ctx context.Context, msgs []busproto.Envelope) map[string]string {
+	if a.cfg.Bus != nil && !a.cfg.Bus.Local() {
+		return a.cfg.Bus.ReferenceExcerpts(msgs)
+	}
 	if a.store == nil {
 		return nil
 	}
@@ -195,14 +220,7 @@ func (a *Agent) excerpt(ctx context.Context, ref string) string {
 		}
 		text = lines[addr.Line-1]
 	}
-	text = strings.Join(strings.Fields(format.Clean(text)), " ")
-	if len(text) > 4*busrender.MaxExcerptBytes {
-		text = format.ClipAround(text, 0, 4*busrender.MaxExcerptBytes)
-	}
-	if row.Role != "" {
-		text = row.Role + ": " + text
-	}
-	return text
+	return busrender.ReferenceText(text, row.Role)
 }
 
 // hookIdleSince exposes only a witnessed Stop. Busy-cap expiry and an

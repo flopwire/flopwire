@@ -92,12 +92,18 @@ type Options struct {
 	// transcript again). Placements, devicesync's tables and the
 	// redaction sidecar are kept.
 	RebuildIndex bool
+	// BeforeMigrate validates external state after the exclusive writer lock is
+	// acquired and before any index rebuild or FTS mutation. It must only read
+	// db. A failure leaves the existing index and shards intact.
+	BeforeMigrate func(db *sql.DB) error
 	// SyncOnly keeps only the agent's bookkeeping (sources, watermarks,
 	// conversations, companions, placements): no message rows and no FTS
 	// shards (ModeSyncOnly). The mode is stored in the index; opening it in
 	// the other mode rebuilds it. A read-only Open of a sync-only index
 	// fails with ErrSyncOnly.
 	SyncOnly bool
+	// PreserveFullContent refuses an automatic switch that would drop message bodies.
+	PreserveFullContent bool
 	// ReadCacheMB is each read connection's page cache. Default 16. The
 	// agent, which reads only source rows, keeps it small: every pooled
 	// connection fills its cache as the database grows.
@@ -135,11 +141,26 @@ type Store struct {
 	keepLock         bool        // LockFile handed the lock to the caller
 }
 
+// Projection policies are explicit at audited request boundaries. Unclassified
+// requests invalidate. Audited source reads and explicit metadata-only writes
+// preserve checkpoints without enabling extraction state mutation.
+type projectionPolicy uint8
+
+const (
+	projectionInvalidate projectionPolicy = iota
+	projectionRead
+	projectionAppend
+	projectionPreservePlacement       // SavePlacement changes visibility metadata, not extractor inputs
+	projectionPreserveSource          // EnsureSource changes metadata, not retained message inputs
+	projectionPreserveStartGeneration // Public StartGeneration changes catalog metadata only
+)
+
 type writeReq struct {
-	ctx  context.Context
-	fn   func(*writeTx) error
-	done chan error
-	wait bool // answer at commit, with its error, even with DeferCommit
+	ctx        context.Context
+	fn         func(*writeTx) error
+	done       chan error
+	projection projectionPolicy
+	wait       bool // answer at commit, with its error, even with DeferCommit
 }
 
 // ErrClosed is returned by writes after Close.
@@ -237,9 +258,30 @@ func openWriter(path string, opts Options) (*Store, error) {
 	wdb.SetMaxOpenConns(1)
 	wdb.SetMaxIdleConns(1)
 	wdb.SetConnMaxLifetime(0)
+	if opts.BeforeMigrate != nil {
+		if err := opts.BeforeMigrate(wdb); err != nil {
+			wdb.Close()
+			return nil, err
+		}
+	}
 	mode := ModeFull
 	if opts.SyncOnly {
 		mode = ModeSyncOnly
+	}
+	if opts.SyncOnly && opts.PreserveFullContent {
+		var exists int
+		err := wdb.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')`).Scan(&exists)
+		if err == nil && exists != 0 {
+			var retained bool
+			err = wdb.QueryRow(`SELECT EXISTS(SELECT 1 FROM messages)`).Scan(&retained)
+			if err == nil && retained {
+				err = errors.New("automatic connected storage would remove local message content; use --sync-only=false to retain it, or --sync-only to explicitly remove the local message index")
+			}
+		}
+		if err != nil {
+			wdb.Close()
+			return nil, err
+		}
 	}
 	details, rebuilt, err := migrate(wdb, Details{Tok: opts.TokDetail, Tri: opts.TriDetail, TriParts: opts.TriParts}, mode, opts.RebuildIndex)
 	if err != nil {
@@ -341,13 +383,14 @@ func (s *Store) Path() string { return s.path }
 // Details reports the FTS tables' detail levels.
 func (s *Store) Details() Details { return s.details }
 
-// Defaults for new databases; see the PR notes for the measurements. The
-// token table keeps positions: FTS5's bm25 over a contentless table at
-// detail=column scores every row 0 (no instance counts), which left
-// ranked search ordered by row id alone.
+// Defaults apply when an index is created or rebuilt. Healthy indexes and
+// missing-shard repairs retain their recorded levels. Token positions preserve
+// bm25 ranking.
+// Trigram candidates are verified against stored text, so their index
+// can omit positions.
 const (
 	DefaultTokDetail = DetailFull
-	DefaultTriDetail = DetailFull
+	DefaultTriDetail = DetailColumn
 )
 
 // Close stops the writer, closes both pools and releases the index lock.
@@ -516,13 +559,22 @@ func (t *txRun) runOne(r writeReq) {
 		return
 	}
 	if err := r.ctx.Err(); err != nil {
+		t.w.changeCache = nil
+		t.w.changeAdded = nil
 		r.done <- err
 		return
 	}
 	w := t.w
+	if r.projection != projectionRead && r.projection != projectionAppend && r.projection != projectionPreservePlacement && r.projection != projectionPreserveSource && r.projection != projectionPreserveStartGeneration {
+		w.changeCache = nil
+	}
+	w.changeAppend = r.projection == projectionAppend
+	w.changeAdded = nil
 	t.n++
 	sp := "r" + itoa(int64(t.n))
 	if _, err := w.tx.ExecContext(context.Background(), "SAVEPOINT "+sp); err != nil {
+		w.changeCache = nil
+		w.changeAdded = nil
 		r.done <- err
 		return
 	}
@@ -533,6 +585,8 @@ func (t *txRun) runOne(r writeReq) {
 	// r.ctx is checked only before the request starts.
 	err := r.fn(w)
 	if err != nil {
+		w.changeCache = nil
+		w.changeAdded = nil
 		w.fts.undo(mark)
 		_, rerr := w.tx.ExecContext(context.Background(), "ROLLBACK TO "+sp)
 		if rerr == nil {
@@ -545,9 +599,12 @@ func (t *txRun) runOne(r writeReq) {
 		return
 	}
 	if _, err := w.tx.ExecContext(context.Background(), "RELEASE "+sp); err != nil {
+		w.changeCache = nil
+		w.changeAdded = nil
 		r.done <- err
 		return
 	}
+	w.changeAdded = nil
 	if t.w.s.opts.DeferCommit && !r.wait {
 		r.done <- nil
 	} else {
@@ -558,6 +615,8 @@ func (t *txRun) runOne(r writeReq) {
 
 func (t *txRun) commit() {
 	w, s := t.w, t.w.s
+	w.changeCache = nil
+	w.changeAdded = nil
 	defer w.closeStmts()
 	w.ctx = context.Background()
 	works, err := w.queueFTS()
@@ -703,12 +762,16 @@ func (s *Store) send(ctx context.Context, r writeReq) error {
 
 // writeTx is the writer's transaction plus a per-transaction statement cache.
 type writeTx struct {
-	s     *Store
-	tx    *sql.Tx
-	ctx   context.Context
-	stmts map[string]*sql.Stmt
-	fts   ftsPending
-	scrub bool // a redaction masked rows: compact the FTS shards after commit
+	s             *Store
+	tx            *sql.Tx
+	ctx           context.Context
+	stmts         map[string]*sql.Stmt
+	fts           ftsPending
+	changeCache   map[int64]*changeCheckpoint
+	changeMapPeak int
+	changeAdded   map[int64][]int64
+	changeAppend  bool
+	scrub         bool // a redaction masked rows: compact the FTS shards after commit
 }
 
 func (w *writeTx) stmt(q string) (*sql.Stmt, error) {
@@ -747,3 +810,6 @@ func (w *writeTx) closeStmts() {
 		st.Close()
 	}
 }
+
+// SyncOnly reports whether this writer retains only upload metadata.
+func (s *Store) SyncOnly() bool { return s.opts.SyncOnly }

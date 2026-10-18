@@ -232,8 +232,9 @@ func TestLateSupersedeRecountsAtomically(t *testing.T) {
 		t.Helper()
 		if n := e.count(`SELECT count(*) FROM conversations c JOIN conversation_activity a ON a.conversation_id=c.id WHERE NOT a.digest_stale AND
 			(SELECT COALESCE(sum(v::bigint),0) FROM jsonb_each_text(a.digest->'messages') x(k,v)) <>
-			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE)`); n != 0 {
-			t.Fatalf("%s: %d conversations whose digest count is not their live rows", when, n)
+			(SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND NOT m.superseded AND m.on_active_path IS NOT FALSE
+				AND (m.kind<>'tool_result' OR m.enrichment->'command_completion' IS DISTINCT FROM 'true'::jsonb OR m.enrichment->'completion_legacy'='true'::jsonb))`); n != 0 {
+			t.Fatalf("%s: %d conversations whose digest count is not their live summary rows", when, n)
 		}
 	}
 	consistent("after the fault")

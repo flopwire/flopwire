@@ -38,11 +38,28 @@ func TestSchedulerHookRespectsServerCooldown(t *testing.T) {
 			sp := e.spec("live.jsonl", transcript.StorageJSONLAppend)
 			data := jsonlLines(77, 10, 100)
 			appendFile(t, sp.Path, data)
+			olderEpoch := sc.gateEpoch
 			sc.Flush(sp)
 			sc.runOnce(context.Background())
 			st := sc.Status()
 			if st.ServerDown == tc.busy || st.ServerBusy != tc.busy || st.RetryAt.Before(time.Now().Add(59*time.Second)) {
 				t.Fatalf("bad pressure status: %+v", st)
+			}
+			// Simulate a success dispatched before this actual rejection. The
+			// current serial executor cannot overlap requests; this tests the
+			// prerequisite completion transition for a future worker pool.
+			sc.mu.Lock()
+			if sc.gateEpoch == olderEpoch {
+				sc.mu.Unlock()
+				t.Fatal("pressure did not invalidate earlier completion stamps")
+			}
+			beforeBackoff := sc.backoff
+			sc.clearPressureLocked(olderEpoch)
+			retainedBackoff := sc.backoff == beforeBackoff
+			sc.mu.Unlock()
+			after := sc.Status()
+			if !retainedBackoff || after.LastError != st.LastError || after.ServerDown != st.ServerDown || after.ServerBusy != st.ServerBusy || !after.RetryAt.Equal(st.RetryAt) {
+				t.Fatal("older success erased a newer rejection")
 			}
 			sc.Flush(sp)
 			sc.runOnce(context.Background())

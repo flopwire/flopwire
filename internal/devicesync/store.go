@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS devsync_sources (
   path         TEXT NOT NULL UNIQUE,
   spec         TEXT NOT NULL,         -- SourceSpec JSON
   generation   INTEGER NOT NULL,      -- current generation, -1 before the first
+  protected_origin TEXT NOT NULL DEFAULT '',
+  protected_root TEXT NOT NULL DEFAULT '',
   watermark    TEXT                   -- storedWatermark JSON of the current generation
 );
 CREATE TABLE IF NOT EXISTS devsync_gens (
@@ -55,6 +57,7 @@ CREATE TABLE IF NOT EXISTS devsync_gens (
   lost          INTEGER NOT NULL,     -- unacked bytes are gone; upload stopped
   srv_tail_off  INTEGER NOT NULL,     -- provisional tail the server holds (last answer),
   srv_tail_size INTEGER NOT NULL,     -- the base for tail deltas
+  capture_proof TEXT,                 -- CaptureProof JSON, nil for legacy or ordinary captures
   redactions    TEXT,                 -- JSON {rule: count} of secrets masked in this generation
   PRIMARY KEY (source_id, generation)
 );
@@ -88,13 +91,33 @@ func OpenStore(path string) (*Store, error) {
 
 // NewStore creates the devsync_ tables in db if needed.
 func NewStore(db *sql.DB) (*Store, error) {
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + scheduleHintsSchema); err != nil {
 		return nil, fmt.Errorf("devicesync: schema: %w", err)
 	}
 	// Tables from an older build lack columns; the state lives in the
 	// index database, which is rebuilt rather than migrated.
 	if _, err := db.Exec(`SELECT redactions FROM devsync_gens LIMIT 0`); err != nil {
 		return nil, fmt.Errorf("devicesync: sync state is from an older version: rebuild the index (%w)", err)
+	}
+	if _, err := db.Exec(`SELECT capture_proof FROM devsync_gens LIMIT 0`); err != nil {
+		if _, err := db.Exec(`ALTER TABLE devsync_gens ADD COLUMN capture_proof TEXT`); err != nil {
+			return nil, fmt.Errorf("devicesync: capture proof migration: %w", err)
+		}
+	}
+	for _, column := range []string{"protected_origin", "protected_root"} {
+		if _, err := db.Exec(`SELECT ` + column + ` FROM devsync_sources LIMIT 0`); err != nil {
+			if _, err := db.Exec(`ALTER TABLE devsync_sources ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return nil, fmt.Errorf("devicesync: source protection migration: %w", err)
+			}
+		}
+	}
+	// A qualified generation from an earlier build must never become ordinary
+	// merely because its generation is later garbage collected.
+	if _, err := db.Exec(`UPDATE devsync_sources SET
+  protected_origin=coalesce(nullif(json_extract((SELECT capture_proof FROM devsync_gens g WHERE g.source_id=devsync_sources.id AND capture_proof IS NOT NULL ORDER BY generation LIMIT 1),'$.Origin'),''),'legacy-qualified'),
+  protected_root=coalesce(json_extract((SELECT capture_proof FROM devsync_gens g WHERE g.source_id=devsync_sources.id AND capture_proof IS NOT NULL ORDER BY generation LIMIT 1),'$.Root'),'')
+  WHERE protected_origin='' AND protected_root='' AND EXISTS(SELECT 1 FROM devsync_gens g WHERE g.source_id=devsync_sources.id AND capture_proof IS NOT NULL)`); err != nil {
+		return nil, fmt.Errorf("devicesync: existing capture protection migration: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -111,7 +134,8 @@ type sourceRow struct {
 	ExportState []byte
 	// RepoSent is Spec.repoKey as a flush last reported it, "" before
 	// any (storedSpec).
-	RepoSent string
+	RepoSent                       string
+	ProtectedOrigin, ProtectedRoot string
 }
 
 // storedSpec is the spec column: the spec, and the repository a flush
@@ -138,6 +162,7 @@ type genRow struct {
 	// Redactions counts the secrets masked in the generation's captured
 	// bytes, per rule (redact.RulesVersion).
 	Redactions map[string]int64
+	Proof      *CaptureProof
 }
 
 // done reports whether nothing of the generation remains to upload.
@@ -150,8 +175,8 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 	row := &sourceRow{}
 	var specJSON string
 	var wm sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, spec, generation, watermark FROM devsync_sources WHERE path = ?`, path).
-		Scan(&row.ID, &specJSON, &row.Gen, &wm)
+	err := s.db.QueryRowContext(ctx, `SELECT id, spec, generation, watermark, protected_origin, protected_root FROM devsync_sources WHERE path = ?`, path).
+		Scan(&row.ID, &specJSON, &row.Gen, &wm, &row.ProtectedOrigin, &row.ProtectedRoot)
 	if errors.Is(err, sql.ErrNoRows) && spec != nil {
 		raw, _ := json.Marshal(spec)
 		res, err := s.db.ExecContext(ctx, `INSERT INTO devsync_sources (path, spec, generation) VALUES (?, ?, -1)`, path, string(raw))
@@ -171,6 +196,9 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 	}
 	row.Spec, row.RepoSent = st.SourceSpec, st.RepoSent
 	if spec != nil && *spec != row.Spec {
+		if (row.ProtectedOrigin != "" || row.ProtectedRoot != "") && !sameProtectedSourceIdentity(row.Spec, *spec) {
+			return nil, fmt.Errorf("%w: protected native source association changed", ErrProtectionMismatch)
+		}
 		raw, _ := json.Marshal(storedSpec{SourceSpec: *spec, RepoSent: row.RepoSent})
 		if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, string(raw), row.ID); err != nil {
 			return nil, err
@@ -213,16 +241,21 @@ func (s *Store) repoSent(ctx context.Context, src *sourceRow) error {
 }
 
 const genCols = `source_id, generation, file_id, previous, parent, size, change_time, captured_at, entries,
-  tail_offset, tail_size, tail_hash, acked, tail_acked, closed, lost, srv_tail_off, srv_tail_size, redactions`
+  tail_offset, tail_size, tail_hash, acked, tail_acked, closed, lost, srv_tail_off, srv_tail_size, redactions, capture_proof`
 
 func scanGen(sc interface{ Scan(...any) error }) (*genRow, error) {
 	g := &genRow{}
-	var prev, parent, red sql.NullString
+	var prev, parent, red, proof sql.NullString
 	var th []byte
 	err := sc.Scan(&g.SourceID, &g.Gen, &g.FileID, &prev, &parent, &g.Size, &g.ChangeTime, &g.CapturedAt, &g.Entries,
-		&g.Tail.Offset, &g.Tail.Size, &th, &g.Acked, &g.TailAcked, &g.Closed, &g.Lost, &g.SrvTailOff, &g.SrvTailLen, &red)
+		&g.Tail.Offset, &g.Tail.Size, &th, &g.Acked, &g.TailAcked, &g.Closed, &g.Lost, &g.SrvTailOff, &g.SrvTailLen, &red, &proof)
 	if err != nil {
 		return nil, err
+	}
+	if proof.Valid {
+		if err := json.Unmarshal([]byte(proof.String), &g.Proof); err != nil {
+			return nil, err
+		}
 	}
 	if red.Valid {
 		if err := json.Unmarshal([]byte(red.String), &g.Redactions); err != nil {
@@ -275,24 +308,40 @@ func (s *Store) pendingGens(ctx context.Context, sid int64) ([]*genRow, error) {
 
 // PendingSpecs lists sources with unacknowledged data: the upload queue.
 func (s *Store) PendingSpecs(ctx context.Context) ([]SourceSpec, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT spec FROM devsync_sources s WHERE EXISTS (
-	  SELECT 1 FROM devsync_gens g WHERE g.source_id = s.id AND g.lost = 0 AND (g.acked < g.entries OR g.tail_acked = 0))
-	  ORDER BY s.path`)
+	pending, err := s.pendingSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SourceSpec, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, p.Spec)
+	}
+	return out, nil
+}
+
+func (s *Store) pendingSources(ctx context.Context) ([]pendingSource, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT s.spec,coalesce(h.activity_at,0),
+ coalesce(nullif(h.waiting_since,0),(SELECT min(g.captured_at) FROM devsync_gens g
+ WHERE g.source_id=s.id AND g.lost=0 AND (g.acked<g.entries OR g.tail_acked=0)),0)
+ FROM devsync_sources s LEFT JOIN devsync_schedule_hints h ON h.path=s.path WHERE EXISTS (
+ SELECT 1 FROM devsync_gens g WHERE g.source_id=s.id AND g.lost=0 AND (g.acked<g.entries OR g.tail_acked=0)) ORDER BY s.path`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []SourceSpec
+	var out []pendingSource
 	for rows.Next() {
 		var raw string
-		var sp SourceSpec
-		if err := rows.Scan(&raw); err != nil {
+		var activity, waiting int64
+		var p pendingSource
+		if err := rows.Scan(&raw, &activity, &waiting); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(raw), &sp); err != nil {
+		if err := json.Unmarshal([]byte(raw), &p.Spec); err != nil {
 			return nil, err
 		}
-		out = append(out, sp)
+		p.Hints = scheduleHints{ActivityAt: hintTime(activity), WaitingSince: hintTime(waiting)}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
@@ -320,7 +369,7 @@ func (s *Store) entries(ctx context.Context, sid, gen, from int64, limit int) ([
 // saveCapture commits one chunking pass atomically: new manifest entries,
 // the generation row, the source's current generation and watermark, and
 // (when a new generation starts) the previous generation's closing.
-func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add []syncproto.Entry, wm *transcript.Watermark, exportState []byte) error {
+func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add []syncproto.Entry, wm *transcript.Watermark, exportState []byte, guards ...func() error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -340,9 +389,9 @@ func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add 
 		raw, _ := json.Marshal(g.Redactions)
 		red = string(raw)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO devsync_gens (`+genCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO devsync_gens (`+genCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		g.SourceID, g.Gen, g.FileID, refJSON(g.Previous), refJSON(g.Parent), g.Size, g.ChangeTime, g.CapturedAt, g.Entries,
-		g.Tail.Offset, g.Tail.Size, g.Tail.Hash[:], g.Acked, g.TailAcked, g.Closed, g.Lost, g.SrvTailOff, g.SrvTailLen, red); err != nil {
+		g.Tail.Offset, g.Tail.Size, g.Tail.Hash[:], g.Acked, g.TailAcked, g.Closed, g.Lost, g.SrvTailOff, g.SrvTailLen, red, captureProofJSON(g.Proof)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE devsync_gens SET closed = 1 WHERE source_id = ? AND generation < ?`, g.SourceID, g.Gen); err != nil {
@@ -350,6 +399,11 @@ func (s *Store) saveCapture(ctx context.Context, src *sourceRow, g *genRow, add 
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE devsync_sources SET generation = ?, watermark = ? WHERE id = ?`, g.Gen, watermarkJSON(wm, exportState), g.SourceID); err != nil {
 		return err
+	}
+	for _, guard := range guards {
+		if err := guard(); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -489,14 +543,51 @@ func referencedSQL(n int) string {
 // whose exporter appends (it saved a state) and has a tail, which the next
 // append resumes from, so its spooled copy is needed.
 func (s *Store) keepTail(ctx context.Context, sid, gen int64) (bool, error) {
-	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM devsync_gens g JOIN devsync_sources s ON s.id = g.source_id
-	  WHERE g.source_id = ? AND g.generation = ? AND g.lost = 0 AND g.tail_size > 0
-	  AND (g.tail_acked = 0 OR s.generation = g.generation AND json_extract(s.watermark, '$.Export') IS NOT NULL)`, sid, gen).Scan(&one)
+	_, needed, err := s.requiredTail(ctx, sid, gen)
+	return needed, err
+}
+
+// requiredTail returns the exact durable tail still needed by pending upload
+// or by the current incremental exporter. A filename alone is not a reference.
+func (s *Store) requiredTail(ctx context.Context, sid, gen int64) (syncproto.Tail, bool, error) {
+	var tail syncproto.Tail
+	var hash []byte
+	var size int64
+	var lost, acked, exportState bool
+	var current sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT g.tail_offset,g.tail_size,g.tail_hash,g.size,g.lost,g.tail_acked,
+	 s.generation,json_extract(s.watermark,'$.Export') IS NOT NULL
+	 FROM devsync_gens g LEFT JOIN devsync_sources s ON s.id=g.source_id
+	 WHERE g.source_id=? AND g.generation=? AND g.tail_size>0`, sid, gen).
+		Scan(&tail.Offset, &tail.Size, &hash, &size, &lost, &acked, &current, &exportState)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		// A source still pointing at a missing generation is uncertainty,
+		// not permission to remove that generation's surviving tail files.
+		var sourceGen int64
+		var exists bool
+		lookup := s.db.QueryRowContext(ctx, `SELECT generation,EXISTS(SELECT 1 FROM devsync_gens WHERE source_id=? AND generation=?) FROM devsync_sources WHERE id=?`, sid, gen, sid).Scan(&sourceGen, &exists)
+		if lookup != nil && !errors.Is(lookup, sql.ErrNoRows) {
+			return syncproto.Tail{}, false, lookup
+		}
+		if lookup == nil && sourceGen == gen && !exists {
+			return syncproto.Tail{}, false, errors.New("devicesync: source lacks current generation metadata")
+		}
+		return syncproto.Tail{}, false, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return syncproto.Tail{}, false, err
+	}
+	if !current.Valid {
+		return syncproto.Tail{}, false, errors.New("devicesync: tail generation lacks source metadata")
+	}
+	if lost || acked && !(current.Int64 == gen && exportState) {
+		return syncproto.Tail{}, false, nil
+	}
+	if tail.Offset < 0 || tail.Size > syncproto.MaxPartBytes || size < tail.Size || tail.Offset != size-tail.Size || len(hash) != len(tail.Hash) {
+		return syncproto.Tail{}, false, errors.New("devicesync: invalid required tail metadata")
+	}
+	copy(tail.Hash[:], hash)
+	return tail, true, nil
 }
 
 // renamedFrom finds the source a new source at spec.Path was moved from
@@ -580,4 +671,41 @@ func (s *Store) RedactionTotals(ctx context.Context) (map[string]int64, int64, e
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM devsync_sources s JOIN devsync_gens g ON g.source_id = s.id AND g.generation = s.generation
 	  WHERE g.redactions IS NOT NULL`).Scan(&srcs)
 	return out, srcs, err
+}
+
+func captureProofJSON(p *CaptureProof) any {
+	if p == nil {
+		return nil
+	}
+	raw, _ := json.Marshal(p)
+	return string(raw)
+}
+
+func (s *Store) protectSource(ctx context.Context, src *sourceRow, origin, root string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET protected_origin=?,protected_root=? WHERE id=? AND protected_origin='' AND protected_root=''`, origin, root, src.ID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT protected_origin,protected_root FROM devsync_sources WHERE id=?`, src.ID).Scan(&src.ProtectedOrigin, &src.ProtectedRoot); err != nil {
+			return err
+		}
+		if src.ProtectedOrigin != origin || src.ProtectedRoot != root {
+			return ErrProtectionMismatch
+		}
+	} else {
+		src.ProtectedOrigin, src.ProtectedRoot = origin, root
+	}
+	return nil
+}
+
+// A lease may change placement metadata, but cannot reattribute prior bytes.
+// A fresh authorization attests the indexed parser version. Native Claude
+// version upgrades preserve ownership; changing its family does not.
+func sameProtectedSourceIdentity(a, b SourceSpec) bool {
+	return a.Path == b.Path && a.Agent == b.Agent && a.SessionKey == b.SessionKey && a.Parent == b.Parent && a.StorageKind == b.StorageKind && a.Export == b.Export && nativeClaudeParser(a.Parser) && nativeClaudeParser(b.Parser)
 }

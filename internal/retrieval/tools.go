@@ -18,6 +18,10 @@ import (
 // maxCandidates bounds the rows one grep reads and verifies.
 const maxCandidates = 200000
 
+// Unindexed session scans bound both verification work and body bytes.
+const grepSessionScanRows = 20000
+const grepSessionScanBytes = 32 << 20
+
 func pageLimit(n int) int {
 	switch {
 	case n <= 0:
@@ -34,11 +38,15 @@ func pageLimit(n int) int {
 // texts collapsed, -m and the offset applied, and totals for the footer.
 // Whole literal alternatives or the planner's required trigrams select
 // candidates through pg_trgm, and Go's regexp verifies each one. A pattern
-// with no trigram the index can use would scan every message; it is refused.
+// with no usable text-index constraint requires an explicit session and uses
+// a bounded filtered scan.
 //
 // The query budget (the context's deadline, else DefaultBudget) bounds the
 // scan; when it runs out, the hits verified so far come back with a reason.
 func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters) (*format.Page, error) {
+	if gq.Continue || gq.Cursor != "" {
+		return s.continueGrep(ctx, gq, f)
+	}
 	if gq.Pattern == "" {
 		return nil, fmt.Errorf("%w: pattern is empty", ErrBadRequest)
 	}
@@ -59,10 +67,9 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	q := &query{}
 	var cond string
 	if !gq.Fixed {
-		// Preserve the existing refusal of regexes with no usable
-		// required trigram, even if a whole ILIKE could index them.
-		if indexable(plan.Query) != nil {
-			cond = literalRegexpCond(q, plan.Re)
+		cond = literalRegexpCond(q, plan.Re)
+		if cond == "" {
+			cond = requiredRegexpCond(q, plan.Re)
 		}
 		if cond == "" {
 			cond = trigramCond(q, plan.Query)
@@ -73,26 +80,44 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		// planner's 3-character runs leave out.
 		cond = "m.text ILIKE " + q.arg("%"+likeEscape(gq.Pattern)+"%")
 	}
+	unindexed := cond == ""
 	page := &format.Page{Hits: []format.Hit{}, Offset: gq.Offset, Exact: true}
 	switch cond {
 	case "false":
 		return page, nil
 	case "":
-		return nil, fmt.Errorf("%w: the pattern has no run of 3 letters or digits that every match must contain, so the index cannot narrow it and it would scan every message; add a literal of at least 3 letters or digits", ErrBadRequest)
+		if f.Session == "" {
+			return nil, fmt.Errorf("%w: the text index cannot narrow every alternative of this pattern; specify a session for a bounded scan, use fixed_strings if you intended one literal string, or add an indexable literal to each alternative (escape dots for literal versions)", ErrBadRequest)
+		}
+		page.Notes = append(page.Notes, "unindexed: scanning messages in the selected session and its permitted subagents with the original pattern")
 	}
-	q.where(cond)
+	if !unindexed {
+		q.where(cond)
+	}
 	if err := hitFilters(q, f); err != nil {
 		return nil, err
 	}
 	col := grep.NewCollector(plan.Re, gq)
 	checked := 0
+	var verifiedBytes int64
 	narrows, broad := grepNarrows(f), false
+	metadataStream := false
 	b := budget(ctx)
 	deadline := time.Now().Add(b)
+	direction := "newest first"
+	if gq.Sort == format.SortOldest {
+		direction = "oldest first"
+	}
+	startupStage := "acquiring the read transaction and setting its timeout"
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
-	err = s.read(ctx, b, func(tx pgx.Tx) error {
+	// The candidate cursor and page hydration must observe one snapshot,
+	// as the previous full-row cursor did, even when another request edits,
+	// hides, redacts or deletes a candidate between these statements.
+	err = s.readTransaction(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
+		var narrowedConversations []string
 		if narrows {
+			startupStage = "resolving filtered sessions"
 			// The filtered conversations first, so the candidate query
 			// reads their messages and not every trigram match
 			// (grepConvCap).
@@ -104,13 +129,75 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 				return nil // no conversation passes the filters: nothing to scan
 			}
 			if ok {
+				narrowedConversations = ids
 				q.where("m.conversation_id=ANY(" + q.arg(ids) + "::uuid[])")
 			}
 			broad = !ok
+			if unindexed && !ok {
+				return fmt.Errorf("%w: the selected session tree exceeds %d conversations; narrow the session or use an indexable pattern", ErrBadRequest, grepConvCap)
+			}
 		}
-		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+grepCandidates(q, gq.Sort == format.SortOldest), q.args...); err != nil {
+		candidateSQL := grepCandidates(q, gq.Sort == format.SortOldest)
+		candidateArgs := q.args
+		if unindexed {
+			candidateSQL = grepCandidatesLimit(q, gq.Sort == format.SortOldest, grepSessionScanRows+1)
+		}
+		// A successful conversation narrowing gives metadata selection an
+		// indexed entry point. Without it, even a metadata-only scan may
+		// visit the entire corpus before applying kind/time filters.
+		if !unindexed && !gq.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
+			startupStage = "planning text candidates"
+			left := time.Until(deadline)
+			if left <= 0 {
+				return context.DeadlineExceeded
+			}
+			if err := setTimeout(ctx, tx, left); err != nil {
+				return err
+			}
+			textBroad, err := grepPlanNeedsMetadata(ctx, tx, q, gq.Sort == format.SortOldest, deadline)
+			if err != nil {
+				return err
+			}
+			if textBroad {
+				startupStage = "resolving filtered messages"
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
+				}
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
+				ids, complete, err := grepMetadataCandidates(ctx, tx, f, narrowedConversations)
+				if err != nil {
+					return err
+				}
+				if complete {
+					if len(ids) == 0 {
+						return nil
+					}
+					candidateSQL = grepFilteredCandidates(q, ids, gq.Sort == format.SortOldest)
+					candidateArgs = q.args
+				} else if grepMetadataStreamEligible(plan.Re) {
+					metadataStream = true
+					candidateSQL, candidateArgs, err = grepMetadataStreamQuery(f, narrowedConversations, gq.Sort == format.SortOldest, maxCandidates)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+		startupStage = "declaring the candidate cursor"
+		left := time.Until(deadline)
+		if left <= 0 {
+			return context.DeadlineExceeded
+		}
+		if err := setTimeout(ctx, tx, left); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+candidateSQL, candidateArgs...); err != nil {
+			return err
+		}
+		startupStage = "fetching the first candidate page"
 		for {
 			left := time.Until(deadline)
 			if left <= 0 {
@@ -123,8 +210,95 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err != nil {
 				return err
 			}
+			ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+			if err != nil {
+				return err
+			}
+			if len(ids) == 0 {
+				break
+			}
+			startupStage = "loading candidate bodies and metadata"
+			left = time.Until(deadline)
+			if left <= 0 {
+				return context.DeadlineExceeded
+			}
+			if err := setTimeout(ctx, tx, left); err != nil {
+				return err
+			}
+			if metadataStream {
+				sizes, sizeErr := tx.Query(ctx, grepCandidateSizes, ids)
+				if sizeErr != nil {
+					return sizeErr
+				}
+				lengths, sizeErr := pgx.CollectRows(sizes, pgx.RowTo[int64])
+				if sizeErr != nil {
+					return sizeErr
+				}
+				for i, length := range lengths {
+					if length > grepContinuationBody {
+						ids = ids[:i]
+						page.Truncated = true
+						page.Reason = fmt.Sprintf("metadata scan candidate exceeds the %d-byte body limit; narrow the search", grepContinuationBody)
+						break
+					}
+				}
+				if len(ids) == 0 {
+					break
+				}
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
+				}
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
+			}
+			if unindexed {
+				// Use actual stored byte lengths, not ingestion's text_len, and
+				// exclude oversized bodies before sending them to the client.
+				rows, err = tx.Query(ctx, grepCandidateSizes, ids)
+				if err != nil {
+					return err
+				}
+				sizes, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+				if err != nil {
+					return err
+				}
+				allowed, bytes := 0, verifiedBytes
+				for _, size := range sizes {
+					if checked+allowed >= grepSessionScanRows || bytes+size > grepSessionScanBytes {
+						page.Truncated = true
+						page.Reason = fmt.Sprintf("unindexed session scan reached its %d-message or %d-byte verification limit; narrow the filters or use an indexable pattern", grepSessionScanRows, grepSessionScanBytes)
+						break
+					}
+					allowed++
+					bytes += size
+				}
+				ids = ids[:allowed]
+				if len(ids) == 0 {
+					break
+				}
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
+				}
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
+			}
+			rows, err = tx.Query(ctx, grepCandidateBodies, ids)
+			if err != nil {
+				return err
+			}
 			got, more := 0, true
 			for rows.Next() {
+				if metadataStream && (ctx.Err() != nil || time.Until(deadline) <= 0) {
+					rows.Close()
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return context.DeadlineExceeded
+				}
 				var sha []byte
 				var body string
 				h, err := scanHit(rows, &sha, &body)
@@ -133,6 +307,8 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 					return err
 				}
 				got++
+
+				verifiedBytes += int64(len(body))
 				checked++
 				r := grep.Row{Session: h.SessionID, Text: body, Ref: h}
 				copy(r.SHA[:], sha)
@@ -145,32 +321,35 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			if err := rows.Err(); err != nil {
 				return err
 			}
-			if !more || got == 0 {
+			if !more || got == 0 || page.Truncated {
 				break
 			}
+			startupStage = "fetching candidate IDs"
 		}
 		if checked >= maxCandidates {
 			page.Truncated = true
-			page.Reason = fmt.Sprintf("stopped after verifying %d candidates, newest first; narrow the pattern or the filters", checked)
+			page.Reason = fmt.Sprintf("stopped after verifying %d candidates, %s; narrow the pattern or the filters", checked, direction)
 		}
 		return nil
 	})
 	if timedOut(err) {
 		page.Truncated = true
 		if checked == 0 {
-			raise := ""
-			if b < MaxBudget {
-				raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
-			}
-			page.Reason = fmt.Sprintf("timed out after %s before the candidate query returned its first page (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), raise)
+			page.Reason = grepStartupTimeoutReason(b, gq.Timeout, startupStage)
 		} else {
-			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, newest first; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked)
+			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, %s; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked, direction)
 		}
 		if broad {
 			page.Notes = append(page.Notes, fmt.Sprintf("the filters admit more than %d conversations, so the scan was not narrowed to them first", grepConvCap))
 		}
 	} else if err != nil {
 		return nil, err
+	}
+	if metadataStream && page.Truncated {
+		page.Notes = append(page.Notes, "hit-offset pagination does not resume an incomplete metadata scan; narrow the filters or use continuation to search the remaining messages")
+	}
+	if unindexed && page.Truncated {
+		page.Notes = append(page.Notes, "hit-offset pagination does not resume an incomplete session scan; narrow the filters to search the remaining messages")
 	}
 	if gq.Sort == format.SortRelevance && page.Truncated {
 		page.Notes = append(page.Notes, "ranked by matches per message among the messages checked")
@@ -226,12 +405,26 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 // 3,100 without the index. Grep's cost stays bounded by its candidates
 // instead (TestGrepOldMatchesScalingConstant).
 func grepCandidates(q *query, oldest bool) string {
+	return grepCandidatesLimit(q, oldest, maxCandidates)
+}
+
+func grepCandidatesLimit(q *query, oldest bool, limit int) string {
 	order := ` ORDER BY m.ts DESC NULLS LAST, m.id LIMIT `
 	if oldest {
 		order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
 	}
-	return `SELECT ` + hitCols + `,m.content_sha,m.text FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
+	return `SELECT m.id FROM ` + from + ` WHERE ` + q.sql() + order + strconv.Itoa(limit)
 }
+
+// Only one cursor page is hydrated. WITH ORDINALITY retains its exact order,
+// including timestamp ties, undated rows, and the oldest-first direction.
+const grepCandidateBodies = `SELECT ` + hitCols + `,m.content_sha,m.text
+ FROM unnest($1::uuid[]) WITH ORDINALITY page(id,n) JOIN ` + from + ` ON page.id=m.id ORDER BY page.n`
+
+// Length inspection preserves cursor order and runs in the same snapshot as
+// body hydration. octet_length is accurate even when text_len is stale.
+const grepCandidateSizes = `SELECT octet_length(m.text)::bigint
+ FROM unnest($1::uuid[]) WITH ORDINALITY page(id,n) JOIN messages m ON page.id=m.id ORDER BY page.n`
 
 // grepConvCap bounds the conversations grep resolves before its scan
 // when a filter names them (grepConversations). Under it, the candidate
@@ -239,7 +432,7 @@ func grepCandidates(q *query, oldest bool) string {
 // and reads only those conversations' messages, so a repo that holds a
 // small share of a large corpus costs its share and not the whole
 // trigram bitmap (a broad pattern over 2.2M messages took 35 s before
-// its first row: docs/perf/shared-stack-2026-10-03.md). Over it, the
+// its first row: notes/log/perf/shared-stack-2026-10-03.md). Over it, the
 // filter is broad, the list itself is work, and the trigram bitmap alone
 // is the better plan, so the query keeps its shape.
 const grepConvCap = 5000
@@ -280,12 +473,12 @@ func grepConvWhere(q *query, f format.Filters) {
 }
 
 // grepConvQuery selects the ids of the visible conversations q admits,
-// newest activity first, at most limit. It walks the sessions list's
-// indexes (conversation_activity_idx, conversations_source_idx,
-// sources_remote_idx), never messages.
+// at most limit. Their order has no result semantics: the caller uses
+// every id through grepConvCap and discards the list above it. The
+// candidate query still orders the final matches by message time.
 func grepConvQuery(q *query, limit int) string {
 	return `SELECT c.id::text FROM ` + listed + ` c LEFT JOIN devices d ON d.id=c.device_id LEFT JOIN users u ON u.id=c.user_id WHERE ` + q.sql() +
-		` ORDER BY c.last_activity_at DESC NULLS LAST,c.aid DESC LIMIT ` + strconv.Itoa(limit)
+		` LIMIT ` + strconv.Itoa(limit)
 }
 
 // grepConversations resolves the conversations f's conversation filters
@@ -310,12 +503,13 @@ func grepConversations(ctx context.Context, tx pgx.Tx, f format.Filters) ([]stri
 	return ids, true, nil
 }
 
-// Search ranks messages matching the query (websearch syntax: words,
-// "phrases", or, -not) by ts_rank_cd, newest first among equals, with
-// identical texts collapsed into one hit. When no message holds every
-// word, it ranks messages holding any of them, stopwords dropped, and says
-// so. When the query budget runs out, the page is empty and says so.
+// Search ranks lexical matches by ts_rank_cd. Auto relaxation retains
+// phrases and a filtered, index-evidenced rarest matching term. Planning
+// and ranking share one deadline and a strategy independent of offset.
 func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filters) (*format.Page, error) {
+	if _, err := format.SearchMatching(sq.Matching); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadRequest, err)
+	}
 	if strings.TrimSpace(sq.Query) == "" {
 		return nil, fmt.Errorf("%w: query is empty", ErrBadRequest)
 	}
@@ -333,29 +527,31 @@ func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filt
 		return nil, err
 	}
 	f.Sort = sort
-	hits, more, err := s.rank(ctx, b, sq.Query, sq.Offset, n, f)
-	words, phrases := format.SplitQuery(sq.Query)
-	if err == nil && len(hits) == 0 && len(words) > 1 && !strings.Contains(strings.ToLower(" "+sq.Query+" "), " or ") {
-		none := sq.Offset == 0
-		if !none {
-			first, _, ferr := s.rank(ctx, b, sq.Query, 0, 1, f)
-			none = ferr == nil && len(first) == 0
+	searchCtx, cancel := context.WithTimeout(ctx, b)
+	defer cancel()
+	match, err := format.PlanSearch(searchCtx, sq.Query, sq.Matching, func(ctx context.Context, m format.SearchMatch, cap int) (int, error) {
+		q := &query{}
+		searchConditions(q, m)
+		if err := hitFilters(q, f); err != nil {
+			return 0, err
 		}
-		if none {
-			kept := format.DropStopwords(words)
-			var any []string
-			for _, p := range phrases {
-				any = append(any, `"`+p+`"`)
-			}
-			any = append(any, strings.Join(kept, " or "))
-			if hits, more, err = s.rank(ctx, b, strings.Join(any, " "), sq.Offset, n, f); err == nil && len(hits) > 0 {
-				page.Notes = append(page.Notes, "no message has every term; ranked messages with any of: "+strings.Join(kept, " ")+" (they may not answer the question)")
-			}
-		}
+		var n int
+		err := s.read(ctx, time.Until(searchDeadline(searchCtx)), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT m.id FROM `+from+` WHERE `+q.sql()+` LIMIT `+strconv.Itoa(cap)+`) matches`, q.args...).Scan(&n)
+		})
+		return n, err
+	})
+	var hits []format.Hit
+	var more bool
+	if err == nil {
+		hits, more, err = s.rank(searchCtx, time.Until(searchDeadline(searchCtx)), match, sq.Offset, n, f)
+	}
+	if err == nil && match.Note != "" {
+		page.Notes = append(page.Notes, match.Note)
 	}
 	if timedOut(err) {
 		page.Truncated = true
-		page.Reason = fmt.Sprintf("timed out after %s before ranking finished; narrow with --agent, --repo, --kind or --since, or more specific terms", b.Round(time.Second))
+		page.Reason = fmt.Sprintf("timed out after %s before lexical matching probes or ranking finished; narrow with --agent, --repo, --kind or --since, or more specific terms", b.Round(time.Second))
 		return page, nil
 	}
 	if err != nil {
@@ -384,6 +580,20 @@ func (s *Store) Search(ctx context.Context, sq format.SearchQuery, f format.Filt
 	return page, nil
 }
 
+// searchDeadline is set once for probes and ranking, never per retry.
+func searchDeadline(ctx context.Context) time.Time { d, _ := ctx.Deadline(); return d }
+
+func searchConditions(q *query, match format.SearchMatch) string {
+	tsq := q.arg(match.WebQuery())
+	q.where("m.tsv @@ websearch_to_tsquery('simple'," + tsq + ")")
+	if match.Any {
+		for _, phrase := range match.Phrases {
+			q.where("m.tsv @@ phraseto_tsquery('simple'," + q.arg(phrase) + ")")
+		}
+	}
+	return tsq
+}
+
 // hitSessions describes the sessions of hits, in order of first hit.
 func (s *Store) hitSessions(ctx context.Context, hits []format.Hit) ([]format.ConversationInfo, error) {
 	var ids []string
@@ -410,19 +620,18 @@ const conversationBoost = 1.5
 
 // rank returns hits offset..offset+n of a websearch query, identical texts
 // collapsed (copies counted among the rows read), and whether more follow.
-func (s *Store) rank(ctx context.Context, b time.Duration, text string, offset, n int, f format.Filters) ([]format.Hit, bool, error) {
+func (s *Store) rank(ctx context.Context, b time.Duration, match format.SearchMatch, offset, n int, f format.Filters) ([]format.Hit, bool, error) {
 	q := &query{}
-	tsq := q.arg(text)
-	q.where("m.tsv @@ websearch_to_tsquery('simple'," + tsq + ")")
+	tsq := searchConditions(q, match)
 	if err := hitFilters(q, f); err != nil {
 		return nil, false, err
 	}
-	terms := queryTerms(text)
+	terms := queryTerms(match.WebQuery())
 	// Read enough rows to fill the page after collapsing copies.
 	window := min((offset+n)*3+16, 3000)
 	var out []format.Hit
 	more := false
-	order := ` ORDER BY score DESC, m.ts DESC NULLS LAST LIMIT `
+	order := ` ORDER BY score DESC, m.ts DESC NULLS LAST, m.id LIMIT `
 	switch f.Sort {
 	case format.SortNewest:
 		order = ` ORDER BY m.ts DESC NULLS LAST, m.id LIMIT `
@@ -912,14 +1121,12 @@ func (s *Store) readAt(ctx context.Context, deviceID string, rq format.ReadQuery
 	for i := range msgs {
 		m := &msgs[i]
 		m.Address = format.MessageAddress(short[m.Address], m.Ordinal)
-		from, chars := 1, max(budget/4, 200)
+		var e format.Excerpt
 		if m.ID == focus {
-			from, chars = rq.LineOffset, budget
-			if from == 0 && line > 0 {
-				from = max(1, line-5)
-			}
+			e = format.CutFocus(m.Text, rq.LineOffset, line, budget)
+		} else {
+			e = format.Cut(m.Text, 1, max(budget/4, 200))
 		}
-		e := format.Cut(m.Text, from, chars)
 		m.Text, m.Lines, m.LineFrom, m.LineTo, m.Clipped = e.Text, e.Lines, e.From, e.To, e.Clipped
 	}
 	out.Messages = msgs
@@ -1090,4 +1297,14 @@ func (s *Store) RawAt(ctx context.Context, deviceID, address string) ([]byte, fo
 		return nil, a, err
 	}
 	return s.fetch(ctx, a, offset, length)
+}
+
+func grepStartupTimeoutReason(b, requested time.Duration, stage string) string {
+	raise := ""
+	// The context budget has already lost preparation time. Also match the
+	// displayed precision when only a caller deadline supplies the budget.
+	if requested < MaxBudget && b.Round(time.Second) < MaxBudget {
+		raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
+	}
+	return fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), stage, raise)
 }

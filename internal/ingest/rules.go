@@ -340,6 +340,17 @@ func (g *gate) check(ctx context.Context, s *sink) error {
 	for _, id := range ids {
 		h := g.hint(ctx, s, id)
 		d := g.rules.decideAll(g.dev, g.src.agent, g.path, h.cwd, h.others, h.remote)
+		policies, err := loadSessionPolicies(ctx, g.pool, g.src.deviceID, g.src.agent, id, "", g.src.id)
+		if err != nil {
+			return err
+		}
+		d = decideWithPolicies(g.rules, g.dev, d, policies)
+		if len(policies) > 0 && d.Mode != pathpolicy.Allow {
+			// Policy is reread after the session lock by the sink. Readiness
+			// holds preserve captured evidence rather than refusing/purging it.
+			g.hide[id] = d
+			continue
+		}
 		if d.Mode == pathpolicy.Allow {
 			delete(g.hide, id)
 			continue
@@ -512,18 +523,18 @@ func parentRefused(ctx context.Context, pool *pgxpool.Pool, parentID *string) (s
 // current ones, so a rule change that the stored-session sweep ran before
 // this parse committed still covers it.
 func recheckStored(ctx context.Context, pool *pgxpool.Pool, r serverRules, src source, path string, dev deviceDirs) (*refusal, []string, error) {
-	rows, err := pool.Query(ctx, `SELECT session_id,COALESCE(cwd,''),COALESCE(extra->'git'->>'repository_url',''),other_cwds FROM conversations
+	rows, err := pool.Query(ctx, `SELECT session_id,COALESCE(cwd,''),COALESCE(extra->'git'->>'repository_url',''),other_cwds,device_id::text FROM conversations
 		WHERE source_id=$1 ORDER BY session_id`, src.id)
 	if err != nil {
 		return nil, nil, err
 	}
 	type conv struct {
-		session, cwd, remote string
-		others               []string
+		session, cwd, remote, device string
+		others                       []string
 	}
 	convs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (conv, error) {
 		var c conv
-		return c, row.Scan(&c.session, &c.cwd, &c.remote, &c.others)
+		return c, row.Scan(&c.session, &c.cwd, &c.remote, &c.others, &c.device)
 	})
 	if err != nil {
 		return nil, nil, err
@@ -532,7 +543,19 @@ func recheckStored(ctx context.Context, pool *pgxpool.Pool, r serverRules, src s
 	var ref *refusal
 	for _, c := range convs {
 		sessions = append(sessions, c.session)
-		if d := r.decideAll(dev, src.agent, path, c.cwd, c.others, c.remote); d.Mode != pathpolicy.Allow && ref == nil {
+		d := r.decideAll(dev, src.agent, path, c.cwd, c.others, c.remote)
+		policies, err := loadSessionPolicies(ctx, pool, c.device, src.agent, c.session, "", src.id)
+		if err != nil {
+			return nil, nil, err
+		}
+		effective := decideWithPolicies(r, dev, d, policies)
+		if !isPolicyHold(effective) {
+			d = effective
+		} else if d.Unplaceable {
+			d = pathpolicy.Decision{}
+		}
+
+		if d.Mode != pathpolicy.Allow && ref == nil {
 			ref = &refusal{d: d, session: c.session}
 		}
 	}

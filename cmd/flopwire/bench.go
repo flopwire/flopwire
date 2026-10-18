@@ -696,6 +696,50 @@ type querySpec struct {
 	Evidence string `yaml:"evidence"` // how the expectation was derived
 }
 
+// loadRepoAliases reads the optional, untracked repo-aliases.local.yaml next
+// to the query set: a map from the synthetic repository name a query filters
+// on (the NAME of ~/Code/NAME) to the real path on this machine. The
+// committed fixture names no real repository; the alias file lets a machine
+// that holds the matching transcripts run the repo-filtered queries against
+// them.
+func loadRepoAliases(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]string
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return m, nil
+}
+
+// resolveQueryRepo turns a fixture repo (~/Code/NAME) into the path to
+// filter on: the alias for NAME when one is configured, else NAME under
+// the bench home.
+func resolveQueryRepo(repo string, aliases map[string]string, home string) string {
+	if repo == "" {
+		return ""
+	}
+	if name := strings.TrimPrefix(repo, "~/Code/"); name != repo {
+		if real, ok := aliases[name]; ok {
+			if rest, ok := strings.CutPrefix(real, "~/"); ok {
+				if h, err := os.UserHomeDir(); err == nil {
+					return filepath.Join(h, rest)
+				}
+			}
+			return real
+		}
+	}
+	if rest, ok := strings.CutPrefix(repo, "~/"); ok {
+		return filepath.Join(home, rest)
+	}
+	return repo
+}
+
 type queryResult struct {
 	Name     string    `json:"name"`
 	Hits     int       `json:"hits"`
@@ -729,6 +773,10 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 		return nil, err
 	}
 	env := b.agentEnv()
+	aliases, err := loadRepoAliases(filepath.Join(filepath.Dir(path), "repo-aliases.local.yaml"))
+	if err != nil {
+		return nil, err
+	}
 	res := &queriesResult{At: time.Now()}
 	for _, q := range specs {
 		verb := q.Verb
@@ -736,10 +784,7 @@ func (b *bench) queries(ctx context.Context, path, db string) (*queriesResult, e
 			verb = "grep"
 		}
 		args := []string{verb, "--index", db, "--include-self", "--json"}
-		// Repos are written ~/Code/NAME so the fixture names no home directory.
-		if rest, ok := strings.CutPrefix(q.Repo, "~/"); ok {
-			q.Repo = filepath.Join(b.home, rest)
-		}
+		q.Repo = resolveQueryRepo(q.Repo, aliases, b.home)
 		for _, kv := range [][2]string{{"repo", q.Repo}, {"agent", q.Agent}, {"since", q.Since}, {"until", q.Until}} {
 			if kv[1] != "" {
 				args = append(args, "--"+kv[0], kv[1])
@@ -852,7 +897,7 @@ func errText(err error) string {
 
 // --- report ---
 
-// Memory targets. Spec §11.2 set 300MB peak and 50MB idle; Gary relaxed
+// Memory targets. Spec §11.2 set 300MB peak and 50MB idle; the maintainer relaxed
 // them to 600MB and 120MB (A4), since the device agent's bulk load runs
 // once per device and the idle numbers were already acceptable.
 const (

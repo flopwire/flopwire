@@ -76,6 +76,8 @@ type sessionBrief struct {
 	User           string     `json:"user,omitempty"`
 	Device         string     `json:"device,omitempty"`
 	Repo           string     `json:"repo,omitempty"`
+	RepoIdentity   string     `json:"repo_identity,omitempty"`
+	Worktree       string     `json:"worktree,omitempty"`
 	Branches       []string   `json:"branches,omitempty"`
 	Live           bool       `json:"live"`
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
@@ -96,7 +98,7 @@ type sessionBrief struct {
 const briefTitle = 160
 
 func brief(c format.ConversationInfo) sessionBrief {
-	b := sessionBrief{SessionID: c.SessionID, Address: c.Address, Agent: c.Agent, User: c.User, Repo: c.Repo, Branches: c.Branches,
+	b := sessionBrief{SessionID: c.SessionID, Address: c.Address, Agent: c.Agent, User: c.User, Repo: c.Repo, RepoIdentity: c.RepoIdentity, Worktree: c.Worktree, Branches: c.Branches,
 		Live: c.Live, LastActivityAt: c.LastActivityAt, Messages: c.Messages, Title: format.ClipAround(c.Title, 0, briefTitle), ParentSession: c.ParentSession}
 	if b.Repo == "" {
 		b.Repo = c.Cwd
@@ -130,6 +132,9 @@ func boundSessions(s *format.Sessions, budget int, mcp, detail bool) sessionsJSO
 		}
 	}
 	out := sessionsJSON{Scope: s.Scope, Kind: "sessions", Sessions: items, HasMore: s.HasMore || s.Next != "", Next: s.Next, Notes: s.Notes, Excluded: s.Excluded}
+	if mcp {
+		out.Hint = format.SessionsAction(s)
+	}
 	if !fitsBudget(out, budget) && len(all) > 1 {
 		n := most(len(all), func(k int) bool {
 			c := out
@@ -143,6 +148,10 @@ func boundSessions(s *format.Sessions, budget int, mcp, detail bool) sessionsJSO
 		}
 	}
 	if out.HasMore {
+		if mcp {
+			out.Hint = format.SessionsAction(s)
+			return out
+		}
 		out.Hint = "pass next_cursor as " + arg(mcp, "--cursor", "cursor", "C") + " for the next page"
 	}
 	return out
@@ -209,11 +218,19 @@ func budgetHint(budget int, next string) string {
 // alone passes the budget keeps its first lines.
 func boundPage(kind string, p *format.Page, mode string, budget int, mcp bool) pageJSON {
 	cp := *p
+	if p.Scan != nil {
+		cp = *format.BoundGrepScan(p, budget)
+	}
 	if cp.Hits == nil {
 		cp.Hits = []format.Hit{}
 	}
 	out := pageJSON{Kind: kind, Page: &cp}
-	if fitsBudget(out, budget) {
+	if mcp {
+		out.Hint = format.PageAction(&cp)
+	}
+	// A snapshot cursor advances past this entire batch. Keep every message
+	// so client output clipping cannot silently skip verified results.
+	if p.Scan != nil || fitsBudget(out, budget) {
 		return out
 	}
 	cut := func(next int) {
@@ -266,7 +283,7 @@ func boundPage(kind string, p *format.Page, mode string, budget int, mcp bool) p
 			}
 		}
 		cp.Hits = []format.Hit{h}
-		if out.Hint == "" {
+		if out.Hint == "" || mcp && !strings.HasPrefix(out.Hint, "output budget") {
 			out.Hint = fmt.Sprintf("output budget of %d bytes reached; %s reads the whole message", budget, arg(mcp, "flopwire read", "flopwire_read address", h.Address))
 		}
 	}
@@ -283,6 +300,9 @@ func boundRead(cx *format.Context, budget int, mcp bool) readJSON {
 		cp.Messages = []format.Message{}
 	}
 	out := readJSON{Kind: "read", Context: &cp}
+	if mcp {
+		out.Hint = format.ReadAction(&cp)
+	}
 	if fitsBudget(out, budget) {
 		return out
 	}
