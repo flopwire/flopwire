@@ -1,18 +1,25 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
   merge_group:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  scope:
+    uses: ./.github/workflows/ci-scope.yml
+
   # Go tests split across shards balanced by package duration
   # (tools/ci-shard, scripts/ci-test-durations.json).
   go-test:
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
     name: go-test (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     # A shard takes about 5 min; a stuck step must not hold the run for the
@@ -112,6 +119,8 @@ jobs:
           if-no-files-found: error
 
   checks:
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -144,6 +153,7 @@ jobs:
       # Builds the console and fails if the committed internal/webapp/dist,
       # which every Go build embeds, is stale.
       - run: scripts/check-webapp-dist.sh
+      - run: python3 scripts/ci-scope_test.py
       - run: scripts/validate-release-tag_test.sh
       - run: sh scripts/install_test.sh
       - run: scripts/perf-baseline_test.sh
@@ -168,24 +178,38 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [go-test, checks]
+    needs: [scope, go-test, checks]
     if: always()
     steps:
       - name: Require every job to pass
         env:
+          SCOPE: ${{ needs.scope.result }}
+          FULL: ${{ needs.scope.outputs.full }}
           GO_TEST: ${{ needs.go-test.result }}
           CHECKS: ${{ needs.checks.result }}
         run: |
+          test "$SCOPE" = success
+          if [ "$FULL" = false ]; then
+            test "$GO_TEST" = skipped
+            test "$CHECKS" = skipped
+            echo "Docs-only PR; full suite runs in the merge queue."
+            exit 0
+          fi
+          test "$FULL" = true
           echo "go-test: $GO_TEST, checks: $CHECKS"
           test "$GO_TEST" = success && test "$CHECKS" = success
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - if: needs.scope.outputs.full == 'true'
+        uses: actions/checkout@v4
+      - if: needs.scope.outputs.full == 'true'
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26.6"
           cache: false
-      - uses: actions/download-artifact@v4
+      - if: needs.scope.outputs.full == 'true'
+        uses: actions/download-artifact@v4
         with:
           pattern: go-test-*
           path: ${{ runner.temp }}/shards
       - name: Every package ran in exactly one shard
+        if: needs.scope.outputs.full == 'true'
         run: go run ./tools/ci-shard -verify "$RUNNER_TEMP"/shards/*/go-test.json

@@ -15,11 +15,16 @@ permissions:
 
 concurrency:
   group: e2e-sync-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  e2e-sync:
-    name: e2e-sync
+  scope:
+    uses: ./.github/workflows/ci-scope.yml
+
+  scenarios:
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
+    name: E2E scenarios
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -83,3 +88,23 @@ jobs:
           path: ${{ runner.temp }}/e2e-report.md*
           if-no-files-found: ignore
           retention-days: 14
+
+  e2e-sync:
+    needs: [scope, scenarios]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require scenarios or a verified docs-only PR
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          FULL: ${{ needs.scope.outputs.full }}
+          SCENARIOS: ${{ needs.scenarios.result }}
+        run: |
+          test "$SCOPE" = success
+          if [ "$FULL" = false ]; then
+            test "$SCENARIOS" = skipped
+            echo "Docs-only PR; full suite runs in the merge queue."
+          else
+            test "$FULL" = true && test "$SCENARIOS" = success
+          fi
