@@ -48,7 +48,8 @@ The owner triages these issues. Authentication, installation and model-access
 failures are reported alongside test failures. There are no automatic probe
 retries, so an intermittent failure remains visible.
 
-Artifacts expire after seven days. `nightly-macos` contains Go test events.
+Artifacts expire after seven days. `nightly-macos` contains race-suite and
+non-race guard test events. The guards still run after a race-suite failure.
 `nightly-codex` contains the probe verdicts, runtime, CLI version, diagnostics
 and token usage grouped by model. Raw transcripts and login files are excluded.
 Temporary credentials are removed when the probe exits.

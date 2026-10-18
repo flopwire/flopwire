@@ -40,17 +40,22 @@ jobs:
       # process detection, local sockets, setup and local message delivery.
       # Server integration tests remain in the Linux CI service jobs.
       - name: Native agent and CLI tests
+        id: native
         run: scripts/ci-go-test.sh -count=1 -timeout=20m -race ./internal/agent ./internal/retrieval/local ./internal/localindex ./cmd/flopwire
       - name: Guards that skip under the race detector
-        run: >-
-          go test -count=1 -timeout=5m -v
-          -run '^(TestLocalRedactionScrubDoesNotStallWriter|TestScanAndSumAllocsBounded|TestParseAllocsPerMessage)$'
-          ./internal/localindex ./internal/devicesync ./internal/transcript/claude
+        if: ${{ !cancelled() && steps.native.outcome != 'skipped' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/guards"
+          RUNNER_TEMP="$RUNNER_TEMP/guards" scripts/ci-go-test.sh -count=1 -timeout=5m \
+            -run '^(TestLocalRedactionScrubDoesNotStallWriter|TestScanAndSumAllocsBounded|TestParseAllocsPerMessage)$' \
+            ./internal/localindex ./internal/devicesync ./internal/transcript/claude
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: nightly-macos
-          path: ${{ runner.temp }}/go-test.json
+          path: |
+            ${{ runner.temp }}/go-test.json
+            ${{ runner.temp }}/guards/go-test.json
           if-no-files-found: warn
           retention-days: 7
 
