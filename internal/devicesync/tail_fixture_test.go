@@ -13,9 +13,8 @@ import (
 // tailFixture is an opened store with one committed tail per added source and
 // an isolated spool, for tests that decide tail retention from committed state.
 type tailFixture struct {
-	dbPath string
-	store  *Store
-	spool  *Spool
+	store *Store
+	spool *Spool
 }
 
 func newTailFixture(t *testing.T) tailFixture {
@@ -26,11 +25,7 @@ func newTailFixture(t *testing.T) tailFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	spool := publicationSpool(t, 4096)
-	if _, err := store.db.Exec(`CREATE TABLE untouched(value TEXT); INSERT INTO untouched VALUES ('literal retained state')`); err != nil {
-		t.Fatal(err)
-	}
-	return tailFixture{path, store, spool}
+	return tailFixture{store, publicationSpool(t, 4096)}
 }
 
 func (f tailFixture) add(t *testing.T, kind transcript.StorageKind, export bool, body []byte, state []byte, acked bool) (int64, syncproto.Hash) {

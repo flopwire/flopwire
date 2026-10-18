@@ -208,11 +208,8 @@ func TestDesktopCodeAuthorizationRejectsSwappedCaptureAndRawRepair(t *testing.T)
 				if err := x.capture(t, spec); err == nil {
 					t.Fatal("outage not captured")
 				}
-				var sid, gen int64
-				if err := x.db.QueryRow(`SELECT id,generation FROM devsync_sources WHERE path=?`, main).Scan(&sid, &gen); err != nil {
-					t.Fatal(err)
-				}
-				x.spool.DropTail(sid, gen)
+				// A native append source spools no tail (only rewrite-prone
+				// sources do), so resume re-reads the raw source.
 				x.restartSync(t)
 				x.server.SetDown(false)
 				x.once()

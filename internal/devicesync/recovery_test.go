@@ -3,6 +3,7 @@ package devicesync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +131,12 @@ func TestSpoolSweptAtStart(t *testing.T) {
 	e.spool.PutChunk(syncproto.Sum(orphan), orphan)
 	orphanTail := []byte("orphan tail from a crashed capture")
 	e.spool.PutTailVersion(99, 3, syncproto.Sum(orphanTail), orphanTail)
+	// Unrecognized regular files in tails (a two-part name nothing writes any
+	// more, a partial publication) are junk for the sweep.
+	junkTail := filepath.Join(e.dir, "spool", "tails", "99-3")
+	junkTemp := filepath.Join(e.dir, "spool", "tails", "99-3-"+syncproto.Sum(orphanTail).String()+"-deadbeef.tmp")
+	os.WriteFile(junkTail, []byte("two-part tail name"), 0o600)
+	os.WriteFile(junkTemp, []byte("partial tail"), 0o600)
 	os.WriteFile(filepath.Join(e.dir, "spool", "chunks", "deadbeef.tmp"), []byte("partial"), 0o600)
 	e.sy.Close()
 
@@ -147,6 +154,14 @@ func TestSpoolSweptAtStart(t *testing.T) {
 	}
 	if _, ok, _ := spool.Chunk(syncproto.Sum(orphan)); ok {
 		t.Fatal("orphan chunk kept")
+	}
+	if _, ok, err := spool.TailVersion(99, 3, syncproto.Sum(orphanTail)); ok || err != nil {
+		t.Fatalf("orphan tail kept: ok=%v err=%v", ok, err)
+	}
+	for _, junk := range []string{junkTail, junkTemp} {
+		if _, err := os.Lstat(junk); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("junk tail file kept: %s: %v", junk, err)
+		}
 	}
 	e.srv.SetDown(false)
 	if err := sy.Resume(ctx, sp); err != nil {

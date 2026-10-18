@@ -72,6 +72,25 @@ func requireTailCaptureLedger(t *testing.T, db *sql.DB, spec SourceSpec, body []
 	}
 }
 
+func TestTailCaptureCapPreservesCommitted(t *testing.T) {
+	e := newEnv(t, Config{SealAfter: -1}, int64(len(tailCaptureH)+len(tailCaptureJ)-1))
+	sp := tailCaptureSpec(e.dir)
+	src := tailCaptureSource(t, e.store, sp)
+	g := &growingExport{log: bytes.Clone(tailCaptureH)}
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); err != nil {
+		t.Fatal(err)
+	}
+	g.log = bytes.Clone(tailCaptureJ)
+	if err := e.sy.ordinaryOperation().capture(t.Context(), src, g.fn, -1, nil); !errors.Is(err, ErrSpoolFull) {
+		t.Fatalf("want cap refusal, got %v", err)
+	}
+	requireTailCaptureLedger(t, e.store.db, sp, tailCaptureH, false)
+	assertReconcileFile(t, filepath.Join(e.spool.dir, "tails", fmt.Sprintf("%d-0-%s", src.ID, syncproto.Sum(tailCaptureH))), tailCaptureH)
+	if e.spool.Used() != int64(len(tailCaptureH)) {
+		t.Fatalf("charged bytes changed on refusal: %d", e.spool.Used())
+	}
+}
+
 func TestTailCaptureRetryReclaimsOnlyUncommittedVersion(t *testing.T) {
 	for _, committed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("commit=%v", committed), func(t *testing.T) {
