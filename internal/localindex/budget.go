@@ -77,6 +77,11 @@ func (d *deadline) expired() bool {
 // result; the caller's own cancellation stays an error.
 func (d *deadline) settle(p *Partial, err error) error {
 	p.Elapsed = time.Since(d.start)
+	// A visitor can stop after rows were loaded successfully, without any
+	// lower-level error. The caller's canceled context must still be returned.
+	if err == nil {
+		err = d.parent.Err()
+	}
 	if err != nil && d.expired() && (errors.Is(err, context.DeadlineExceeded) || isInterrupt(err)) {
 		p.stop(ReasonTimeout)
 		return nil
