@@ -31,6 +31,30 @@ gh attestation verify flopwire_darwin_arm64.tar.gz --repo flopwire/flopwire
 A `go install github.com/flopwire/flopwire/cmd/flopwire@vX.Y.Z` build
 reports the module version from Go's build info.
 
+## Upgrade a device
+
+Every server response carries `X-Flopwire-Version`, and the device agent
+asks github.com for the newest release once a day (one HEAD request, no
+token; `FLOPWIRE_NO_RELEASE_CHECK=1` turns it off), so a device with no
+server, or one whose server lags, hears too. When either source names a
+newer release than the device runs, the agent says so once in its log, in
+`flopwire agent status`, in `flopwire setup --check`, and as one line in
+each new session's context at its SessionStart hook. Nothing is refused.
+
+```sh
+flopwire upgrade            # install the latest release over the hooks' binary
+flopwire upgrade --check    # print this version and the latest release
+flopwire upgrade --version v0.2.0
+```
+
+`flopwire upgrade` downloads the archive for this machine, verifies it
+against the release's `SHA256SUMS`, checks that the binary runs, and
+replaces the recorded binary (the one the plugins' hooks run) with one
+rename, so running hooks keep their old binary. On macOS it restarts a
+launchd `com.flopwire.agent` that runs that binary. Re-running
+`curl -fsSL https://flopwire.com/install.sh | sh` does the same. A
+development build (`dev` or a commit hash) never gets a notice.
+
 ## Bot identity
 
 The workflow selects credentials in this order:

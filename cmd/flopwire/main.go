@@ -85,6 +85,8 @@ func run(parent context.Context, args []string) error {
 		return importCommand(ctx, args[1:], os.Stdout)
 	case "diagnostics":
 		return diagnosticsCommand(ctx, args[1:], os.Stdout)
+	case "upgrade":
+		return upgradeCommand(ctx, args[1:], os.Stdout)
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -209,6 +211,7 @@ const usageText = `Usage: flopwire <command>
   agent       run the device agent (agent run), check it (agent status,
               agent diagnostics) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
+  upgrade     install the latest release over this binary (--check, --version vX.Y.Z)
   version     print version`
 
 // usageCommands are the commands a usage text lists: lines indented two
@@ -332,6 +335,7 @@ func serve(ctx context.Context, args []string) error {
 	go runCredentialSweeper(ctx, durableStore, slog.Default())
 	go runChunkReconciler(ctx, durableStore, slog.Default())
 	go runBusSweeper(ctx, messageBus, slog.Default())
+	api.Version = version
 	apiHandler := app.Handler(reg)
 	root := http.NewServeMux()
 	root.Handle("/v1/", apiHandler)
