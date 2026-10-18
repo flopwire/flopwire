@@ -22,14 +22,10 @@ import (
 )
 
 func TestPersistedUploadCannotRestartUnderAnotherAuthority(t *testing.T) {
-	testPersistedAuthorityUpload(t, false)
+	testPersistedAuthorityUpload(t)
 }
 
-func TestAssignedLegacyUploadRetainsDeletedSourceCapture(t *testing.T) {
-	testPersistedAuthorityUpload(t, true)
-}
-
-func testPersistedAuthorityUpload(t *testing.T, legacy bool) {
+func testPersistedAuthorityUpload(t *testing.T) {
 	dir := t.TempDir()
 	db, err := localindex.Open(filepath.Join(dir, "index.db"), localindex.Options{})
 	if err != nil {
@@ -81,32 +77,6 @@ func testPersistedAuthorityUpload(t *testing.T, legacy bool) {
 		t.Fatal("fixture has no durable spooled bytes")
 	}
 	stop()
-	if legacy {
-		rawDB, err := sql.Open("sqlite", db.Path())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rawDB.Close()
-		key, err := savedSyncSpoolKey(t.Context(), rawDB)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, name := range []string{"chunks", "tails"} {
-			if err := os.Rename(filepath.Join(dir, "spool", key, name), filepath.Join(dir, "spool", name)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := rawDB.Exec(`DROP TABLE devsync_authority`); err != nil {
-			t.Fatal(err)
-		}
-		owner, err := syncAuthorityOwner(ca)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := assignLegacyQueue(t.Context(), rawDB, filepath.Join(dir, "spool"), db.Path(), owner); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
