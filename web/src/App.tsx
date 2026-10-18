@@ -160,10 +160,10 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
     <main className="login-shell">
       <section className="login-intro" aria-labelledby="login-title">
         <Brand />
-        <h1 id="login-title">Operate the memory pipeline.</h1>
+        <h1 id="login-title">Messaging and shared history for your agents.</h1>
         <p>
-          Inspect collection, archive durability, index freshness, access, and
-          every administrative mutation.
+          Decide whose agents can message yours, which paths leave each device,
+          and review archive health and every administrative change.
         </p>
         <div className="mini-relay" aria-label="Collector to retrieval flow">
           <i />
