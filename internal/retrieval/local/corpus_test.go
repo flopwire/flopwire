@@ -46,8 +46,7 @@ func TestCorpus(t *testing.T) {
 	c, ok := NewDetector().Detect(ctx)
 	t.Logf("calling session: %+v found=%v", c, ok)
 
-	type q = corpusQuery
-	queries := []q{
+	queries := []corpusQuery{
 		{"find", "go test -race", false}, {"find", "internal/transcript", false}, {"find", "gh pr create", false},
 		{"find", "no such file or directory", false}, {"find", "ENOENT", false}, {"find", "::", false},
 		{"regex", `func \w+\(ctx context\.Context`, true}, {"regex", `exit (code|status) [1-9]`, true},
@@ -60,7 +59,7 @@ func TestCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived := []q{{"find", token, false}, {"regex", regexp.QuoteMeta(token), true}, {"search", token, false}}
+	derived := []corpusQuery{{"find", token, false}, {"regex", regexp.QuoteMeta(token), true}, {"search", token, false}}
 	queries = append(queries, derived...)
 	presence = append(presence, true, true, true)
 	read, err := b.Read(ctx, format.ReadQuery{Address: strconv.FormatInt(witness.ID, 10), MaxChars: len(witness.Text) + 1}, format.Filters{})
@@ -78,6 +77,10 @@ func TestCorpus(t *testing.T) {
 	}
 	lat := map[string][]time.Duration{}
 	for qi, x := range queries {
+		label := x.text
+		if qi >= len(queries)-3 {
+			label = "derived-visible-witness"
+		}
 		for self := range 2 {
 			f := format.Filters{}
 			if self == 1 && ok {
@@ -98,7 +101,7 @@ func TestCorpus(t *testing.T) {
 			}
 			d := time.Since(t0)
 			if err != nil {
-				t.Fatalf("%s %q: %v", x.kind, x.text, err)
+				t.Fatalf("%s %q: %v", x.kind, label, err)
 			}
 			if self == 0 && (x.kind != "search" || qi >= len(queries)-3) {
 				if err := corpusPresence(presence[qi], page); err != nil {
@@ -122,16 +125,33 @@ func TestCorpus(t *testing.T) {
 					if len(stored) != 1 || !re.MatchString(stored[0].Text) {
 						t.Errorf("%s query %d returned nonmatching text", x.kind, qi)
 					}
+					if self == 0 && qi == len(queries)-3 && len(stored) == 1 {
+						// Exercise the address returned by the positive grep, not
+						// only the independent numeric witness address above.
+						cx, err := b.Read(ctx, format.ReadQuery{Address: h.Address, LineOffset: 1, MaxChars: len(stored[0].Text) + 1}, format.Filters{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						exact := false
+						for _, m := range cx.Messages {
+							if m.ID == h.MessageID && m.ID == cx.Focus && m.Text == stored[0].Text {
+								exact = true
+							}
+						}
+						if !exact {
+							t.Fatal("derived grep address read differs from stored text")
+						}
+					}
 				}
 			}
 			if self == 1 {
 				for _, h := range hits {
 					if ok && h.SessionID == c.SessionID {
-						t.Errorf("%s %q: own session %s not excluded", x.kind, x.text, c.SessionID)
+						t.Errorf("%s %q: own session %s not excluded", x.kind, label, c.SessionID)
 					}
 				}
 				lat[x.kind] = append(lat[x.kind], d)
-				t.Logf("%-6s %-44q hits=%-3d %8s %s", x.kind, x.text, len(hits), d.Round(time.Microsecond), note)
+				t.Logf("%-6s %-44q hits=%-3d %8s %s", x.kind, label, len(hits), d.Round(time.Microsecond), note)
 			}
 		}
 	}
