@@ -33,7 +33,7 @@ jobs:
         with:
           go-version: "1.26.6"
           cache: true
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the server image (layer cache in GitHub Actions)
         uses: docker/build-push-action@v6
         with:
