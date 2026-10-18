@@ -16,8 +16,11 @@ curl -fsSL https://flopwire.com/install.sh | sh
 ```
 
 The script installs `flopwire` for macOS and Linux (arm64 and amd64) into
-`~/.local/bin` and verifies its checksum. Add `~/.local/bin` to your
-shell's persistent `PATH`. To build from source instead, see
+`~/.local/bin` and verifies it against the release checksums. Set
+`FLOPWIRE_INSTALL_DIR` to install elsewhere and `FLOPWIRE_VERSION=vX.Y.Z`
+to pin a release. Run it again to upgrade; on macOS it restarts the
+launchd device agent. Add `~/.local/bin` to your shell's persistent
+`PATH`. To build from source instead, see
 [CONTRIBUTING.md](../CONTRIBUTING.md#build-and-test).
 
 ## Connect your agents

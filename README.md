@@ -71,7 +71,8 @@ curl -fsSL https://flopwire.com/install.sh | sh
 ```
 
 The script installs the `flopwire` binary for macOS and Linux (arm64 and
-amd64) into `~/.local/bin` and verifies its checksum.
+amd64) into `~/.local/bin` and verifies it against the release checksums.
+Run it again to upgrade.
 
 ## Try it on one machine
 
