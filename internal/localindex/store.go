@@ -142,16 +142,17 @@ type Store struct {
 }
 
 // Projection policies are explicit at audited request boundaries. Unclassified
-// requests invalidate. Audited source reads, placement writes, and EnsureSource preserve
-// checkpoints without enabling extraction state mutation.
+// requests invalidate. Audited source reads and explicit metadata-only writes
+// preserve checkpoints without enabling extraction state mutation.
 type projectionPolicy uint8
 
 const (
 	projectionInvalidate projectionPolicy = iota
 	projectionRead
 	projectionAppend
-	projectionPreservePlacement // SavePlacement changes visibility metadata, not extractor inputs
-	projectionPreserveSource    // EnsureSource changes metadata, not retained message inputs
+	projectionPreservePlacement       // SavePlacement changes visibility metadata, not extractor inputs
+	projectionPreserveSource          // EnsureSource changes metadata, not retained message inputs
+	projectionPreserveStartGeneration // Public StartGeneration changes catalog metadata only
 )
 
 type writeReq struct {
@@ -563,7 +564,7 @@ func (t *txRun) runOne(r writeReq) {
 		return
 	}
 	w := t.w
-	if r.projection != projectionRead && r.projection != projectionAppend && r.projection != projectionPreservePlacement && r.projection != projectionPreserveSource {
+	if r.projection != projectionRead && r.projection != projectionAppend && r.projection != projectionPreservePlacement && r.projection != projectionPreserveSource && r.projection != projectionPreserveStartGeneration {
 		w.changeCache = nil
 	}
 	w.changeAppend = r.projection == projectionAppend

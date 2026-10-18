@@ -160,12 +160,12 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
     <main className="login-shell">
       <section className="login-intro" aria-labelledby="login-title">
         <Brand />
-        <h1 id="login-title">Operate the memory pipeline.</h1>
+        <h1 id="login-title">Messaging and shared history for your agents.</h1>
         <p>
-          Inspect collection, archive durability, index freshness, access, and
-          every administrative mutation.
+          Decide whose agents can message yours, which paths leave your devices,
+          and review archive health and every administrative change.
         </p>
-        <div className="mini-relay" aria-label="Collector to retrieval flow">
+        <div className="mini-relay" aria-label="Agents connected through the team server">
           <i />
           <i />
           <i />
@@ -174,7 +174,7 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
       </section>
       <form className="login-form" onSubmit={submit}>
         <div>
-          <span className="porcelain">ADMIN ACCESS</span>
+          <span className="porcelain">TEAM CONSOLE</span>
           <h2>Sign in</h2>
           <p>Use a local account created by an administrator.</p>
         </div>

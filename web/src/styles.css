@@ -35,6 +35,7 @@
   --ink: #17191b;
   --muted: #60615f;
   --line: #cbc9c1;
+  --edge: #85847e;
   --signal: #d52e19;
   --soft: #eeede8;
   --soft-hover: #e2dfd7;
@@ -246,7 +247,7 @@ label {
 input,
 select {
   width: 100%;
-  border: 1px solid var(--line);
+  border: 1px solid var(--edge);
   background: var(--paper);
   color: var(--ink);
   border-radius: 0;
@@ -256,7 +257,7 @@ select {
 textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid var(--line);
+  border: 1px solid var(--edge);
   background: var(--soft);
   color: var(--ink);
   border-radius: 0;
