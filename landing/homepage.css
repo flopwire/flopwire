@@ -105,3 +105,9 @@ button.copy-box{display:block;width:100%;text-align:left;color:var(--ink);cursor
 /* Small accent text needs stronger contrast on tinted code surfaces. */
 :root{--signal-text:#bd2815}
 .connector-label code,.command-tabs button[aria-selected="true"] code,.command-example .shell-prompt{color:var(--signal-text)}
+
+/* Explain agent integration without repeating the capability catalog. */
+.agent-discovery .support-heading{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:48px;align-items:start}
+.agent-discovery .support-heading p{font:18px/1.65 var(--prose);max-width:58ch;margin:0;color:var(--muted)}
+.agent-discovery .support-heading .agent-docs-link{margin-top:16px}
+@media(max-width:760px){.agent-discovery .support-heading{grid-template-columns:1fr;gap:12px}}
