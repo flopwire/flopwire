@@ -19,7 +19,7 @@ import (
 )
 
 const grepContinuationTTL = 2 * time.Minute
-const grepContinuationRows = 256
+const grepContinuationRows = 4096
 const grepContinuationBytes = 8 << 20
 const grepContinuationBody = 2 << 20
 const grepContinuationPages = 4
@@ -379,32 +379,86 @@ func (s *Store) advanceGrepWalk(ctx context.Context, w *grepWalk) (grepFrozenPag
 				break
 			}
 		}
-		id := w.pending[0]
-		var size int64
-		if err := w.tx.QueryRow(ctx, `SELECT octet_length(text)::bigint FROM messages WHERE id=$1`, id).Scan(&size); err != nil {
+		ids := w.pending[:min(len(w.pending), grepContinuationRows-p.checked)]
+		if err := setTimeout(ctx, w.tx, time.Until(deadline)); err != nil {
 			return p, err
 		}
-		if size > grepContinuationBody {
-			return p, fmt.Errorf("candidate exceeds the %d-byte body limit; narrow the search", grepContinuationBody)
+		sizes, err := w.tx.Query(ctx, grepCandidateSizes, ids)
+		if err != nil {
+			return p, err
 		}
-		if bytes+size > grepContinuationBytes {
+		lengths, err := pgx.CollectRows(sizes, pgx.RowTo[int64])
+		if err != nil {
+			return p, err
+		}
+		count, batchBytes := 0, int64(0)
+		for _, size := range lengths {
+			if size > grepContinuationBody {
+				// Do not fail on a later candidate before earlier hits can fill
+				// this page. Leave it pending until verification reaches it.
+				if count == 0 {
+					return p, fmt.Errorf("candidate exceeds the %d-byte body limit; narrow the search", grepContinuationBody)
+				}
+				break
+			}
+			if bytes+batchBytes+size > grepContinuationBytes {
+				break
+			}
+			count++
+			batchBytes += size
+		}
+		if count == 0 {
 			break
 		}
-		var body, session string
-		var ordinal int64
-		if err := w.tx.QueryRow(ctx, `SELECT m.text,c.session_id,m.ordinal FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=$1`, id).Scan(&body, &session, &ordinal); err != nil {
+		if time.Until(deadline) <= 0 {
+			return p, context.DeadlineExceeded
+		}
+		if err := setTimeout(ctx, w.tx, time.Until(deadline)); err != nil {
 			return p, err
 		}
-		w.pending = w.pending[1:]
-		p.checked++
-		bytes += size
-		address := format.MessageAddress(session, ordinal)
-		if !w.seen[address] && w.re.MatchString(body) {
-			if len(w.seen) >= grepContinuationAddresses {
-				return p, fmt.Errorf("retained address limit reached")
+		rows, err := w.tx.Query(ctx, `SELECT m.text,c.session_id,m.ordinal
+ FROM unnest($1::uuid[]) WITH ORDINALITY batch(id,n)
+ JOIN messages m ON m.id=batch.id JOIN conversations c ON c.id=m.conversation_id
+ ORDER BY batch.n`, ids[:count])
+		if err != nil {
+			return p, err
+		}
+		for rows.Next() {
+			if ctx.Err() != nil || time.Until(deadline) <= 0 {
+				rows.Close()
+				if ctx.Err() != nil {
+					return p, ctx.Err()
+				}
+				return p, context.DeadlineExceeded
 			}
-			w.seen[address] = true
-			p.hits = append(p.hits, grepFrozenHit{id: id.String(), session: session, ordinal: ordinal, hash: sha256.Sum256([]byte(body))})
+			var body, session string
+			var ordinal int64
+			if err := rows.Scan(&body, &session, &ordinal); err != nil {
+				rows.Close()
+				return p, err
+			}
+			id := w.pending[0]
+			w.pending = w.pending[1:]
+			p.checked++
+			bytes += int64(len(body))
+			address := format.MessageAddress(session, ordinal)
+			if !w.seen[address] && w.re.MatchString(body) {
+				if len(w.seen) >= grepContinuationAddresses {
+					rows.Close()
+					return p, fmt.Errorf("retained address limit reached")
+				}
+				w.seen[address] = true
+				p.hits = append(p.hits, grepFrozenHit{id: id.String(), session: session, ordinal: ordinal, hash: sha256.Sum256([]byte(body))})
+			}
+			// Hydrated but unverified IDs stay pending for the next call;
+			// historical bodies never become retained continuation state.
+			if len(p.hits) >= w.query.Limit {
+				break
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return p, err
 		}
 	}
 	return p, nil
