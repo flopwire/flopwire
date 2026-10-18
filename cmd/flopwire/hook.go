@@ -311,6 +311,11 @@ func hookCmdObserved(ctx context.Context, args []string, stdin io.Reader, stdout
 		out.SystemMessage = heldNotice(resp.Notice, resp.Console)
 	}
 	status := deliveryStatus(resp.Failures)
+	// The upgrade notice (a SessionStart whose server runs a newer
+	// release) takes one line after the messages, never their budget.
+	if resp.Upgrade != "" {
+		status += busrender.Sep + resp.Upgrade
+	}
 	if text := busrender.Context(resp.Instruct, resp.Messages, resp.Excerpts, busrender.HookBytes-len(status)) + status; text != "" {
 		out.HookSpecificOutput = hookSpecific{HookEventName: in.Event, AdditionalContext: text}
 	}

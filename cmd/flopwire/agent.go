@@ -44,6 +44,7 @@ import (
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
+	"github.com/flopwire/flopwire/internal/upgrade"
 	"github.com/flopwire/flopwire/internal/vendorcloud"
 )
 
@@ -286,7 +287,14 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{DeviceID: cc.DeviceID, Server: cc.Server, DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log}
+	cfg := agent.Config{DeviceID: cc.DeviceID, Server: cc.Server, DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log,
+		Version: version, ServerVersion: client.ServerVersion}
+	// Once a day the agent asks github.com for the newest release (one
+	// HEAD request, no token), so a device with no server still hears
+	// about upgrades. FLOPWIRE_NO_RELEASE_CHECK=1 turns that off.
+	if os.Getenv("FLOPWIRE_NO_RELEASE_CHECK") == "" {
+		cfg.ReleaseCheck = func(ctx context.Context) (string, error) { return upgrade.Latest(ctx, nil, "") }
+	}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client
 	// config's denylist and unplaceable setting, the server's (admin)
 	// cached beside them.
@@ -1105,6 +1113,16 @@ var placementOrder = []string{localindex.PlacedByCwd, localindex.PlacedByWorktre
 // printAgentStatus renders a status answer.
 func printAgentStatus(w io.Writer, resp agent.Response) {
 	fmt.Fprintln(w, "agent: running")
+	if resp.Version != "" {
+		if resp.ServerVersion != "" {
+			fmt.Fprintf(w, "version: %s (server %s)\n", resp.Version, resp.ServerVersion)
+		} else {
+			fmt.Fprintf(w, "version: %s\n", resp.Version)
+		}
+	}
+	if resp.Upgrade != "" {
+		fmt.Fprintln(w, "upgrade:", resp.Upgrade)
+	}
 	printCoverage(w, resp.Coverage)
 	for _, section := range []string{"cowork", "redactions", "extraction", "inbox"} {
 		if reason := resp.Unavailable[section]; reason != "" {

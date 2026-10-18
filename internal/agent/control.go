@@ -115,6 +115,13 @@ type Response struct {
 	Placements map[string]int `json:"placements,omitempty"`
 	// Redacted (redact): rows masked in the local index.
 	Redacted int `json:"redacted,omitempty"`
+	// Version (status) is the agent's version and ServerVersion the one
+	// the server last reported. Upgrade (status; pending at a
+	// SessionStart) is the one-line notice when the server runs a newer
+	// release than this device, else "".
+	Version       string `json:"version,omitempty"`
+	ServerVersion string `json:"server_version,omitempty"`
+	Upgrade       string `json:"upgrade,omitempty"`
 
 	// Message bus. Messages (pending): the session's undelivered messages,
 	// oldest first, now leased to the caller; each one's Attempt above 1
@@ -278,6 +285,11 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 			testHookStatus(ctx)
 		}
 		resp.OK = true
+		resp.Version = a.cfg.Version
+		if a.cfg.ServerVersion != nil {
+			resp.ServerVersion = a.cfg.ServerVersion()
+		}
+		resp.Upgrade = a.upgradeNotice()
 		// Diagnostics must finish before the CLI's five-second socket budget.
 		// Never leave background scans running after that client goes away.
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -437,6 +449,9 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 			}
 		}
 		resp.Excerpts = a.refExcerpts(ctx, resp.Messages)
+		if req.Start != "" {
+			resp.Upgrade = a.upgradeNotice()
+		}
 	case "confirm":
 		err = b.Confirm(ctx, req.Session, req.IDs)
 		if err == nil && req.Instruction {
