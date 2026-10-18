@@ -66,8 +66,13 @@ $ flopwire grep 'next_cursor' --repo api --since 24h
 
 ## Install
 
-Install Git and Go 1.26.6 or later, then
-[build and install Flopwire](docs/quick-start-local.md#install).
+```sh
+curl -fsSL https://flopwire.com/install.sh | sh
+```
+
+The script installs the release binary for macOS or Linux into
+`~/.local/bin` after verifying its checksum. Re-run it to upgrade.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers building from source.
 
 ## Try it on one machine
 
