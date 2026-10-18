@@ -105,3 +105,16 @@ button.copy-box{display:block;width:100%;text-align:left;color:var(--ink);cursor
 /* Small accent text needs stronger contrast on tinted code surfaces. */
 :root{--signal-text:#bd2815}
 .connector-label code,.command-tabs button[aria-selected="true"] code,.command-example .shell-prompt{color:var(--signal-text)}
+
+/* Explain the agent-facing integration beside its architecture, without another demo. */
+.agent-discovery .support-heading{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:48px;align-items:start}
+.agent-discovery .support-heading p{font:18px/1.65 var(--prose);max-width:58ch;margin:0;color:var(--muted)}
+.agent-affordances{margin:36px 0 0}
+.agent-affordances>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:48px}
+.agent-affordances>div+div{margin-top:30px}
+.agent-affordances dt{font:600 20px/1.4 var(--prose)}
+.agent-affordances dd{margin:0;font:18px/1.65 var(--prose);max-width:65ch}
+.affordance-detail{display:block;font:15px/1.65 var(--prose);color:var(--muted);margin-top:8px}
+.agent-scope{font:16px/1.65 var(--prose);max-width:86ch;margin:36px 0 0}
+.agent-guidance-note{font:15px/1.65 var(--prose);color:var(--muted);margin:8px 0 0}
+@media(max-width:760px){.agent-discovery .support-heading,.agent-affordances>div{grid-template-columns:1fr;gap:12px}.agent-affordances{margin-top:28px}.agent-affordances dd{font-size:17px}.agent-affordances>div+div{margin-top:28px}.agent-scope{margin-top:28px}}
