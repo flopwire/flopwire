@@ -152,7 +152,8 @@ func (h *harness) checkFixtureProvenance(t *testing.T, d *device, agent, session
 		}
 		for _, row := range got {
 			if row.Device != d.id || row.Agent != agent || row.Path != path || row.FileID != fileID || row.Generation != generation || !row.GenerationExists {
-				return false, fmt.Errorf("fixture source/generation differs from scenario expectation")
+				return false, fmt.Errorf("fixture source/generation differs from scenario expectation: got device=%q agent=%q path=%q file=%q generation=%d generation_exists=%t; want device=%q agent=%q path=%q file=%q generation=%d generation_exists=true",
+					row.Device, row.Agent, row.Path, row.FileID, row.Generation, row.GenerationExists, d.id, agent, path, fileID, generation)
 			}
 		}
 		return true, nil
