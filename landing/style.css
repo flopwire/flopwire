@@ -17,7 +17,7 @@ footer{display:flex;align-items:center;gap:24px;border-top:1px solid var(--line)
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}*,*:before,*:after{animation:none!important;transition:none!important}.wires circle{display:none}}
 
 /* Story edition: prose reads naturally; tool surfaces retain monospace. */
-@font-face{font-family:PlexSans;src:url('assets/plex-sans.ttf');font-weight:100 900;font-display:swap}
+@font-face{font-family:PlexSans;src:url('assets/plex-sans.ttf');font-weight:100 700;font-display:swap}
 :root{--prose:PlexSans,system-ui,sans-serif;scrollbar-color:#96968e var(--paper)}
 body{font-family:var(--prose);font-size:17px}::selection{background:#f5c8b9;color:var(--ink)}
 h1{font-family:var(--font);letter-spacing:-.04em}.brand,.availability,.example-label,.figure-heading,code,pre,.window-chrome,.session,.result-meta,.harness-line,.feature-footnote,.speaker{font-family:var(--font)}
