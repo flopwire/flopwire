@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"time"
@@ -158,4 +160,55 @@ func grepFilteredCandidates(q *query, ids []uuid.UUID, oldest bool) string {
 		order = ` ORDER BY m.ts NULLS LAST, m.id LIMIT `
 	}
 	return `SELECT m.id FROM ` + filteredFrom + ` WHERE ` + q.sql() + order + strconv.Itoa(maxCandidates)
+}
+
+// Finite folded alternatives can require expensive whole-body GIN rechecks.
+// Keep single literals and unsupported shapes on their existing access path.
+func grepMetadataStreamEligible(re *regexp.Regexp) bool {
+	if len(re.String()) > maxRegexpLiteralSourceBytes {
+		return false
+	}
+	ast, err := syntax.Parse(re.String(), syntax.Perl)
+	if err != nil {
+		return false
+	}
+	if _, ok := regexpLiterals(ast); !ok {
+		return false
+	}
+	if _, ok := foldedLiteralPattern(ast); !ok {
+		return false
+	}
+	var alternate func(*syntax.Regexp) bool
+	alternate = func(node *syntax.Regexp) bool {
+		if node.Op == syntax.OpAlternate {
+			return true
+		}
+		for _, sub := range node.Sub {
+			if alternate(sub) {
+				return true
+			}
+		}
+		return false
+	}
+	return alternate(ast)
+}
+
+// Stream the full metadata cohort when it cannot fit the primary-key probe
+// list. SQL does not evaluate text before the first cursor page; the existing
+// Go matcher verifies each hydrated body. Every visibility filter and the
+// chronological order remain intact. A zero limit is an uncapped snapshot.
+func grepMetadataStreamQuery(f format.Filters, conversations []string, oldest bool, limit int) (string, []any, error) {
+	q := &query{}
+	if err := hitFilters(q, f); err != nil {
+		return "", nil, err
+	}
+	q.where("m.conversation_id=ANY(" + q.arg(conversations) + "::uuid[])")
+	order := " ORDER BY m.ts DESC NULLS LAST,m.id"
+	if oldest {
+		order = " ORDER BY m.ts NULLS LAST,m.id"
+	}
+	if limit > 0 {
+		order += " LIMIT " + strconv.Itoa(limit)
+	}
+	return "SELECT m.id FROM " + from + " WHERE " + q.sql() + order, q.args, nil
 }

@@ -1,6 +1,5 @@
 .git
 .env
-.impeccable
 bin
 coverage
 tmp

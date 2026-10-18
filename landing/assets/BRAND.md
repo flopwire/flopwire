@@ -13,7 +13,7 @@ These files contain vector paths. The admin console imports the primary mark and
 
 ## Placement
 
-Pair the primary mark with the lowercase black wordmark. Keep IBM Plex Mono at weight 500 on the homepage. The admin console retains its existing system-font wordmark.
+Pair the primary mark with the lowercase black wordmark. Keep IBM Plex Mono at weight 500 for the wordmark on the homepage and in the admin console.
 
 Use the mark at 40px high in the desktop homepage header, 34px on mobile, and 32px in the footer and admin console. Keep its aspect ratio. Allow at least one stem width of clear space around it. Use the square favicon asset for isolated icons at 16px and above.
 

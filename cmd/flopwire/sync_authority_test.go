@@ -27,9 +27,9 @@ func TestSyncAuthorityBindingRotationAndIndependentQueues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := savedSyncSpoolKey(t.Context(), db)
-	if err != nil || stored != key {
-		t.Fatal("maintenance resolved wrong spool")
+	var stored string
+	if err := db.QueryRow(`SELECT spool_key FROM devsync_authority WHERE id=1`).Scan(&stored); err != nil || stored != key {
+		t.Fatalf("stored spool key = %q, %v", stored, err)
 	}
 	cc.Server = "https://example.test"
 	cc.Token = "rotated"
@@ -135,9 +135,6 @@ func TestSyncAuthorityCorruptSpoolKeyFailsClosed(t *testing.T) {
 			if _, err := bindSyncAuthority(t.Context(), db, cc); err == nil {
 				t.Fatal("accepted corrupt spool identity")
 			}
-			if _, err := savedSyncSpoolKey(t.Context(), db); err == nil {
-				t.Fatal("maintenance accepted corrupt spool identity")
-			}
 		})
 	}
 }
@@ -156,9 +153,6 @@ func TestSyncAuthorityMissingBindingRowDoesNotAdoptLegacyState(t *testing.T) {
 	}
 	if _, err := bindSyncAuthority(t.Context(), db, cc); err == nil || !strings.Contains(err.Error(), "no recorded") {
 		t.Fatalf("missing-row bind = %v", err)
-	}
-	if key, err := savedSyncSpoolKey(t.Context(), db); err != nil || key != "" {
-		t.Fatalf("legacy maintenance path = %q %v", key, err)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT count(*) FROM devsync_authority`).Scan(&count); err != nil || count != 0 {

@@ -193,10 +193,10 @@ const usageText = `Usage: flopwire <command>
               their sender (a person at a terminal only, like accept and revoke)
   accept      accept messages from a person's agents (asks for your password)
   revoke      stop accepting a person's messages; undelivered ones are held again
-  mcp         serve grep, search, sessions, read and messaging tools over
-              MCP stdio (the first four read the local index; --server
-              queries the team server; the last three go through the device
-              agent; flopwire <tool> --help shows examples)
+  mcp         serve the retrieval tools (grep, search, sessions, read, change)
+              and the messaging tools (messages, peers, send, inbox) over MCP
+              stdio: the shared server after enrollment, the local index before
+              it or with --local; flopwire <tool> --help shows examples
   diagnostics inspect extraction reports (--server, --source ID, --json)
   raw         plumbing: archived bytes of a source by provenance
   redact      hide a message (or some of its lines) on the server and in the local index
@@ -206,7 +206,8 @@ const usageText = `Usage: flopwire <command>
               through each one's own plugin mechanism (--check reports, --remove uninstalls)
   probe       re-run the message-bus delivery tests against the installed
               harnesses (--local, --json, --notes; docs/probe.md)
-  agent       run the device agent (agent run) or signal it from a hook (agent flush)
+  agent       run the device agent (agent run), check it (agent status,
+              agent diagnostics) or signal it from a hook (agent flush)
   bench       bench acceptance: the local-track acceptance checks on this device's transcripts
   version     print version`
 
@@ -339,7 +340,7 @@ func serve(ctx context.Context, args []string) error {
 	root.Handle("/readyz", apiHandler)
 	root.Handle("/metrics", apiHandler)
 	root.Handle("/", webapp.Handler())
-	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 90 * time.Second}
+	server := &http.Server{Addr: *addr, Handler: api.SecurityHeaders(root), TLSConfig: transport.config, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: serverReadTimeout, WriteTimeout: serverWriteTimeout, IdleTimeout: 90 * time.Second}
 	transport.announce(os.Stderr, *addr)
 	slog.Info("flopwire server listening", "addr", *addr, "tls", transport.mode, "version", version)
 	return serveUntilDone(ctx, server, shutdownGrace, func() error {
@@ -350,8 +351,15 @@ func serve(ctx context.Context, args []string) error {
 	})
 }
 
-// shutdownGrace is how long a shutdown waits for requests in flight.
-const shutdownGrace = 10 * time.Second
+const (
+	serverReadTimeout = 30 * time.Second
+	// HTTP/1 starts the write deadline before reading the request body.
+	// Leave time for that read, the maximum retrieval budget, and encoding
+	// and sending the incomplete response after the query deadline expires.
+	serverWriteTimeout = serverReadTimeout + api.MaxBudget + 10*time.Second
+	// shutdownGrace is how long a shutdown waits for requests in flight.
+	shutdownGrace = 10 * time.Second
+)
 
 // serveUntilDone runs listen until ctx is done, then shuts server down:
 // it stops accepting connections and waits up to grace for requests in

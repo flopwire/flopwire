@@ -88,6 +88,14 @@ func TestGrepFilteredCandidateEquivalence(t *testing.T) {
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("ordered IDs differ got=%d want=%d", len(got), len(want))
 				}
+				metadataSQL, metadataArgs, err := grepMetadataStreamQuery(f, conversations, oldest, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				metadataIDs := filteredCandidateIDs(t, tx, metadataSQL, metadataArgs...)
+				if !reflect.DeepEqual(metadataIDs, want) {
+					t.Fatalf("metadata stream changed visibility/order: got=%d want=%d", len(metadataIDs), len(want))
+				}
 				tx.Rollback(ctx)
 				if oldest {
 					f.Sort = format.SortOldest

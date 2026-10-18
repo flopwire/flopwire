@@ -153,7 +153,7 @@ Missing diagnostics are unknown. An empty upload queue does not prove that
 uploaded history has been parsed for search.
 
 Coverage probes run beside retrieval and do not delay its results. A busy
-agent, older server, or small output budget can omit detailed observations.
+agent, a server without the endpoint, or small output budget can omit detailed observations.
 Collection rules and exclusions still apply. See
 [coverage reporting](coverage-reporting.md) for scope and limitations.
 
@@ -543,7 +543,7 @@ it. A second clone of the same remote is then the same repo.
 
 | `--repo` | Matches |
 |---|---|
-| `.`, `./x`, `../x`, or an absolute path in a checkout | Every session of the repository that holds the path: the main checkout, every linked worktree, subdirectories, and worktrees deleted since (see [agent.md](agent.md#sessions-in-deleted-worktrees)) |
+| `.`, `./x`, `../x`, or an absolute path in a checkout | Every session of the repository that holds the path: the main checkout, every linked worktree, subdirectories, and worktrees deleted since (see [agent.md](path-rules.md#sessions-in-deleted-worktrees)) |
 | A path outside git | Sessions in that directory or under it |
 | A path that no longer exists | The repository the device placed sessions there in, or in a deleted directory above it, when they agree on one; else sessions in that directory or under it. A repository above it that still exists (a home directory kept in git) is not its repository |
 | The bare repository's path | Every worktree of it |
@@ -572,7 +572,7 @@ git files. The server matches a main checkout only against sessions that
 the calling device uploaded. A request can carry at most 256 of each
 list. A larger list is an error, never a cut. The request leaves out
 every checkout that a `local` or `deny` path rule covers (see
-[agent.md](agent.md#keep-sessions-out-with-path-rules)), because the
+[path-rules.md](path-rules.md)), because the
 server keeps each query in its audit log. A rule on the main checkout or
 the remote covers every checkout, so then only the path that you gave is
 sent, and no remote.
@@ -706,7 +706,7 @@ default_tools_approval_mode = "approve"
 ```
 
 The approval line also approves `flopwire_send`, which sends messages (see
-[agent.md](agent.md#messaging)). Remove the line to be asked before each
+[agent.md](messaging.md)). Remove the line to be asked before each
 call.
 
 After enrollment, the MCP tools query the shared server by default. Add

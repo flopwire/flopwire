@@ -101,6 +101,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	checked := 0
 	var verifiedBytes int64
 	narrows, broad := grepNarrows(f), false
+	metadataStream := false
 	b := budget(ctx)
 	deadline := time.Now().Add(b)
 	direction := "newest first"
@@ -137,6 +138,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			}
 		}
 		candidateSQL := grepCandidates(q, gq.Sort == format.SortOldest)
+		candidateArgs := q.args
 		if unindexed {
 			candidateSQL = grepCandidatesLimit(q, gq.Sort == format.SortOldest, grepSessionScanRows+1)
 		}
@@ -174,6 +176,13 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 						return nil
 					}
 					candidateSQL = grepFilteredCandidates(q, ids, gq.Sort == format.SortOldest)
+					candidateArgs = q.args
+				} else if grepMetadataStreamEligible(plan.Re) {
+					metadataStream = true
+					candidateSQL, candidateArgs, err = grepMetadataStreamQuery(f, narrowedConversations, gq.Sort == format.SortOldest, maxCandidates)
+					if err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -185,7 +194,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		if err := setTimeout(ctx, tx, left); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+candidateSQL, q.args...); err != nil {
+		if _, err := tx.Exec(ctx, `DECLARE grep_candidates NO SCROLL CURSOR FOR `+candidateSQL, candidateArgs...); err != nil {
 			return err
 		}
 		startupStage = "fetching the first candidate page"
@@ -215,6 +224,34 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			}
 			if err := setTimeout(ctx, tx, left); err != nil {
 				return err
+			}
+			if metadataStream {
+				sizes, sizeErr := tx.Query(ctx, grepCandidateSizes, ids)
+				if sizeErr != nil {
+					return sizeErr
+				}
+				lengths, sizeErr := pgx.CollectRows(sizes, pgx.RowTo[int64])
+				if sizeErr != nil {
+					return sizeErr
+				}
+				for i, length := range lengths {
+					if length > grepContinuationBody {
+						ids = ids[:i]
+						page.Truncated = true
+						page.Reason = fmt.Sprintf("metadata scan candidate exceeds the %d-byte body limit; narrow the search", grepContinuationBody)
+						break
+					}
+				}
+				if len(ids) == 0 {
+					break
+				}
+				left = time.Until(deadline)
+				if left <= 0 {
+					return context.DeadlineExceeded
+				}
+				if err := setTimeout(ctx, tx, left); err != nil {
+					return err
+				}
 			}
 			if unindexed {
 				// Use actual stored byte lengths, not ingestion's text_len, and
@@ -255,6 +292,13 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 			}
 			got, more := 0, true
 			for rows.Next() {
+				if metadataStream && (ctx.Err() != nil || time.Until(deadline) <= 0) {
+					rows.Close()
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return context.DeadlineExceeded
+				}
 				var sha []byte
 				var body string
 				h, err := scanHit(rows, &sha, &body)
@@ -291,11 +335,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	if timedOut(err) {
 		page.Truncated = true
 		if checked == 0 {
-			raise := ""
-			if b < MaxBudget {
-				raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
-			}
-			page.Reason = fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), startupStage, raise)
+			page.Reason = grepStartupTimeoutReason(b, gq.Timeout, startupStage)
 		} else {
 			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, %s; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked, direction)
 		}
@@ -304,6 +344,9 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		}
 	} else if err != nil {
 		return nil, err
+	}
+	if metadataStream && page.Truncated {
+		page.Notes = append(page.Notes, "hit-offset pagination does not resume an incomplete metadata scan; narrow the filters or use continuation to search the remaining messages")
 	}
 	if unindexed && page.Truncated {
 		page.Notes = append(page.Notes, "hit-offset pagination does not resume an incomplete session scan; narrow the filters to search the remaining messages")
@@ -389,7 +432,7 @@ const grepCandidateSizes = `SELECT octet_length(m.text)::bigint
 // and reads only those conversations' messages, so a repo that holds a
 // small share of a large corpus costs its share and not the whole
 // trigram bitmap (a broad pattern over 2.2M messages took 35 s before
-// its first row: docs/perf/shared-stack-2026-10-03.md). Over it, the
+// its first row: notes/log/perf/shared-stack-2026-10-03.md). Over it, the
 // filter is broad, the list itself is work, and the trigram bitmap alone
 // is the better plan, so the query keeps its shape.
 const grepConvCap = 5000
@@ -1254,4 +1297,14 @@ func (s *Store) RawAt(ctx context.Context, deviceID, address string) ([]byte, fo
 		return nil, a, err
 	}
 	return s.fetch(ctx, a, offset, length)
+}
+
+func grepStartupTimeoutReason(b, requested time.Duration, stage string) string {
+	raise := ""
+	// The context budget has already lost preparation time. Also match the
+	// displayed precision when only a caller deadline supplies the budget.
+	if requested < MaxBudget && b.Round(time.Second) < MaxBudget {
+		raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
+	}
+	return fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), stage, raise)
 }

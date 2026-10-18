@@ -102,7 +102,7 @@ what each finding turned out to be and where the fix went.
    after the join, and `ORDER BY m.ts DESC` has no index by design, so
    the first `FETCH` must finish the whole scan, recheck and sort before
    row one returns. `checked 0` means that took longer than 10 s.
-   `docs/perf/shared-stack-2026-10-03.md` had already measured a 35 s
+   `notes/log/perf/shared-stack-2026-10-03.md` had already measured a 35 s
    broad grep, without a repo filter, on this corpus. There is no
    `EXPLAIN` of this exact query, so the scan-before-predicate reading is
    the most likely cause, not a measured one. The retry probably won on

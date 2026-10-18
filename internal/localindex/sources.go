@@ -29,7 +29,14 @@ type SourceState struct {
 // it on first sight. A new file identity at the same path is a new source.
 func (s *Store) EnsureSource(ctx context.Context, src transcript.Source) (SourceState, error) {
 	var st SourceState
-	err := s.write(ctx, func(w *writeTx) error {
+	err := s.send(ctx, s.ensureSourceRequest(ctx, src, &st))
+	return st, err
+}
+
+// ensureSourceRequest shares the actual API policy and SQL callback with
+// transaction-level qualification. Source metadata is not an extractor input.
+func (s *Store) ensureSourceRequest(ctx context.Context, src transcript.Source, st *SourceState) writeReq {
+	return writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreserveSource, fn: func(w *writeTx) error {
 		_, err := w.exec(`INSERT INTO sources (device_id, agent, path, file_id, session_key, storage_kind, parser, first_seen_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (device_id, path, file_id) DO UPDATE SET
@@ -39,10 +46,9 @@ func (s *Store) EnsureSource(ctx context.Context, src transcript.Source) (Source
 		if err != nil {
 			return err
 		}
-		st, err = loadSource(w.ctx, w.tx, `WHERE device_id = ? AND path = ? AND file_id = ?`, s.opts.DeviceID, src.Path, src.FileID.String())
+		*st, err = loadSource(w.ctx, w.tx, `WHERE device_id = ? AND path = ? AND file_id = ?`, s.opts.DeviceID, src.Path, src.FileID.String())
 		return err
-	})
-	return st, err
+	}}
 }
 
 // SourcesByPath returns every source row recorded at path (one per file
@@ -87,12 +93,13 @@ type dbtx interface {
 }
 
 // readSources runs fn on the writer, or on the read pool of a read-only
-// store.
+// store. Callbacks and their callees must issue SELECTs only: this audited
+// boundary preserves existing projection checkpoints, but cannot seed them.
 func (s *Store) readSources(ctx context.Context, fn func(context.Context, dbtx) error) error {
 	if s.readOnly {
 		return fn(ctx, s.rdb)
 	}
-	return s.write(ctx, func(w *writeTx) error { return fn(w.ctx, w.tx) })
+	return s.send(ctx, writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionRead, fn: func(w *writeTx) error { return fn(w.ctx, w.tx) }})
 }
 
 func sourcesWith(ctx context.Context, q dbtx, cols, where string, args ...any) ([]SourceState, error) {
@@ -253,7 +260,15 @@ func (w *writeTx) saveWatermark(sourceID int64, wm *transcript.Watermark, state 
 // Rows written afterwards carry it as source_generation; SupersedeAbsent
 // then retires rows of earlier generations that the new one did not touch.
 func (s *Store) StartGeneration(ctx context.Context, sourceID int64, g transcript.Generation, reason string) error {
-	return s.write(ctx, func(w *writeTx) error { return w.startGeneration(sourceID, &g, reason) })
+	return s.send(ctx, startGenerationRequest(ctx, sourceID, g, reason))
+}
+
+// Only the public metadata write preserves checkpoints. ApplyBatch.NewGeneration
+// keeps its separate reparse invalidation before calling startGeneration.
+func startGenerationRequest(ctx context.Context, sourceID int64, g transcript.Generation, reason string) writeReq {
+	return writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreserveStartGeneration, fn: func(w *writeTx) error {
+		return w.startGeneration(sourceID, &g, reason)
+	}}
 }
 
 func (w *writeTx) startGeneration(sourceID int64, g *transcript.Generation, reason string) error {

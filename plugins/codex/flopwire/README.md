@@ -38,7 +38,7 @@ If it finds none, or the binary fails (for example one too old to know
 fix, and Codex reports a failed hook. It never exits 2.
 `flopwire setup --check` shows which binary the hooks find
 (`hook binary:`). See
-[docs/agent.md](../../../docs/agent.md#how-the-hooks-find-the-binary).
+[docs/harnesses/README.md](../../../docs/harnesses/README.md#how-the-hooks-find-the-binary).
 
 If the agent is not running, the hooks print nothing and the messaging
 tools return `agent_not_running`. After enrollment, the search tools use the shared
@@ -103,8 +103,8 @@ A shell command in Codex's default sandbox (no network access) cannot
 reach the device agent: `flopwire send` fails with `sandbox_blocked`. Use
 the `flopwire_send` tool. The same sandbox keeps `.git` read-only, so
 `git commit` fails there, also in a linked git worktree. See
-[docs/agent.md](../../../docs/agent.md#codex-and-git-commits) for what was
-verified on each OS and the workarounds.
+[docs/harnesses/codex.md](../../../docs/harnesses/codex.md#codex-and-git-commits) for the
+behavior on each OS and the workarounds.
 
 ## Update
 
@@ -129,28 +129,6 @@ setup skips the update and tells you.
 `codex plugin marketplace remove flopwire-plugins`. It keeps the marketplace while
 another plugin from it is installed. The hook approvals stay in
 `~/.codex/config.toml`, so a later install does not ask again.
-
-## Upgrading an existing install
-
-The marketplace was named `flopwire` before issue #162, so older installs
-have `flopwire@flopwire` from the marketplace `flopwire`. There is no
-upgrade path (pre-release): `flopwire setup --check` names the stale
-marketplace and the commands below; run them, then install again:
-
-```sh
-codex plugin remove flopwire@flopwire
-codex plugin marketplace remove flopwire
-flopwire setup
-```
-
-The hook approvals are keyed by plugin id, so approve the hooks once more
-(the "Hooks need review" prompt, or `/hooks`), then restart your Codex
-sessions.
-
-setup trusts only a `flopwire-plugins` marketplace from its source (`--source`,
-default `flopwire/flopwire`). If a marketplace with that name comes from
-anywhere else, setup installs, updates and removes nothing through it, and
-reports an error.
 
 ## Older manual setup
 

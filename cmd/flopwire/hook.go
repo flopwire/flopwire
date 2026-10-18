@@ -88,7 +88,7 @@ var (
 	// killing it: `flopwire hook || true` runs under a shell, and killing
 	// the shell leaves the hook running. Its output then reaches no model,
 	// so it must not confirm. A hook normally exits within tens of
-	// milliseconds (docs/agent.md).
+	// milliseconds (docs/harnesses/README.md).
 	hookLate = 3 * time.Second
 	// hookStart is when this hook started: the process's creation, else
 	// now. Tests replace it.
