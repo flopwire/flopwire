@@ -205,9 +205,11 @@ func (s *Store) MoveSource(ctx context.Context, id int64, path string) error {
 	})
 }
 
-// CompanionSizes returns the recorded size of every companion file by path.
+// CompanionSizes returns sizes for companions with an owner. Old unlinked
+// rows must pass through discovery/indexing again to recover their ownership.
 func (s *Store) CompanionSizes(ctx context.Context) (map[string]int64, error) {
-	rows, err := s.rdb.QueryContext(ctx, `SELECT path, size FROM companions`)
+	rows, err := s.rdb.QueryContext(ctx, `SELECT p.path, p.size FROM companions p
+		JOIN conversations c ON c.id=p.conversation_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -310,13 +312,13 @@ func (s *Store) UpsertCompanion(ctx context.Context, c Companion) error {
 	return s.write(ctx, func(w *writeTx) error {
 		var convID, msgID sql.NullInt64
 		if c.SessionID != "" {
-			row, err := w.queryRow(`SELECT id FROM conversations WHERE device_id = ? AND agent = ? AND session_id = ?`, w.s.opts.DeviceID, string(c.Agent), c.SessionID)
+			// A companion can arrive before its transcript worker. Keep its
+			// identity in a stub, as we do for messages arriving before owners.
+			id, err := w.conversationID(string(c.Agent), c.SessionID, c.SourceID)
 			if err != nil {
 				return err
 			}
-			if err := row.Scan(&convID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
+			convID = sql.NullInt64{Int64: id, Valid: true}
 		}
 		if convID.Valid && c.MessageNativeID != "" {
 			row, err := w.queryRow(`SELECT id FROM messages WHERE conversation_id = ? AND native_id = ? AND superseded_by IS NULL ORDER BY part LIMIT 1`, convID.Int64, c.MessageNativeID)
@@ -336,6 +338,42 @@ func (s *Store) UpsertCompanion(ctx context.Context, c Companion) error {
 			convID, nullInt(c.SourceID), c.Path, c.Kind, c.Size, c.ContentSHA, boolInt(msgID.Valid), msgID, time.Now().UnixMilli())
 		return err
 	})
+}
+
+// LinkCompanionOwner repairs an existing unlinked row using ownership from
+// native discovery. It does not read or change captured bytes or their digest.
+// It returns true when the row belongs to this owner, including on retries.
+// A denied companion needs this repair too, so policy purge can find it.
+func (s *Store) LinkCompanionOwner(ctx context.Context, c Companion) (bool, error) {
+	if c.SessionID == "" || c.Agent == "" {
+		return false, errors.New("companion owner requires agent and session id")
+	}
+	linked := false
+	err := s.write(ctx, func(w *writeTx) error {
+		row, err := w.queryRow(`SELECT p.id FROM companions p WHERE p.path=?
+			AND (NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=p.conversation_id)
+			 OR EXISTS (SELECT 1 FROM conversations c WHERE c.id=p.conversation_id
+			   AND c.device_id=? AND c.agent=? AND c.session_id=?))`, c.Path, s.opts.DeviceID, string(c.Agent), c.SessionID)
+		if err != nil {
+			return err
+		}
+		var id int64
+		if err := row.Scan(&id); errors.Is(err, sql.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		convID, err := w.conversationID(string(c.Agent), c.SessionID, c.SourceID)
+		if err != nil {
+			return err
+		}
+		if _, err := w.exec(`UPDATE companions SET conversation_id=? WHERE id=? AND conversation_id IS NOT ?`, convID, id, convID); err != nil {
+			return err
+		}
+		linked = true
+		return nil
+	})
+	return linked, err
 }
 
 func mustAffect(res sql.Result, what string, id int64) error {
