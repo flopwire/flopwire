@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.1](https://github.com/flopwire/flopwire/compare/v0.2.0...v0.2.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* clarify history and coordination in agent discovery copy ([#405](https://github.com/flopwire/flopwire/issues/405)) ([deb2bac](https://github.com/flopwire/flopwire/commit/deb2bacdbdb3c8acc22c62838922fa865c407fe2))
+* **devicesync:** remove the legacy canonical tail layout ([#402](https://github.com/flopwire/flopwire/issues/402)) ([33c2341](https://github.com/flopwire/flopwire/commit/33c2341b814041509471e81acea7ff8581451a54))
+* **search:** preserve caller cancellation after visiting rows ([#399](https://github.com/flopwire/flopwire/issues/399)) ([1472fa1](https://github.com/flopwire/flopwire/commit/1472fa18cdcaefc667b552fa0663513fd83e0113))
+
+
+### Performance Improvements
+
+* **search:** use column detail for new trigram indexes ([#400](https://github.com/flopwire/flopwire/issues/400)) ([3ca5820](https://github.com/flopwire/flopwire/commit/3ca5820b8f088af397c13837d31b7250ae12fa73))
+
 ## [0.2.0](https://github.com/flopwire/flopwire/compare/v0.1.0...v0.2.0) (2026-10-18)
 
 
