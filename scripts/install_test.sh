@@ -22,7 +22,8 @@ release "$tmp/latest/download" v9.9.9
 release "$tmp/download/v9.9.8" v9.9.8
 
 # curl -o with a file:// URL serves the fake release.
-export FLOPWIRE_DOWNLOAD_BASE="file://$tmp" FLOPWIRE_INSTALL_DIR="$tmp/bin" HOME="$tmp/home"
+# FLOPWIRE_NO_RESTART keeps the test off this machine's real device agent.
+export FLOPWIRE_DOWNLOAD_BASE="file://$tmp" FLOPWIRE_INSTALL_DIR="$tmp/bin" HOME="$tmp/home" FLOPWIRE_NO_RESTART=1
 mkdir -p "$HOME"
 
 out=$(sh "$repo/landing/install.sh")
