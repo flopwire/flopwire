@@ -10,6 +10,8 @@ import (
 
 type requiredTailFunc func(sid, gen int64) (syncproto.Tail, bool, error)
 
+type tailKey struct{ sid, gen int64 }
+
 // planRequiredTails separates file inventory and SQL reference reads. The
 // reference owner spans both phases and later deletion; the file mutex does not.
 // The returned facts exist only for this operation, never as a shared cache.
@@ -124,7 +126,7 @@ func (s *Spool) reconcileTailVersions(ctx context.Context, sid int64, required r
 		}
 		body, found, err := readTailCandidate(root, file.Name())
 		hash := syncproto.Sum(body)
-		if err != nil || !found || name.version && hash != name.hash {
+		if err != nil || !found || hash != name.hash {
 			return errors.New("devicesync: cannot reconcile an invalid tail")
 		}
 		if needed && ref.Hash == hash {
@@ -149,8 +151,9 @@ func (s *Spool) reconcileTailVersions(ctx context.Context, sid int64, required r
 	return nil
 }
 
-// sweepTails chooses exact committed versions. Legacy canonical bodies need
-// their own hash/size check; a matching immutable sibling cannot validate them.
+// sweepTails keeps exactly the committed versions. Each recognized file is
+// verified against its own name and the committed hash/size; an unrecognized
+// regular file is junk.
 func (s *Spool) sweepTails(ctx context.Context, required requiredTailFunc) error {
 	required, err := s.planRequiredTails(ctx, 0, required)
 	if err != nil {
@@ -203,7 +206,7 @@ func (s *Spool) sweepTails(ctx context.Context, required requiredTailFunc) error
 			return errors.New("devicesync: cannot inspect a tail during startup sweep")
 		}
 		hash := syncproto.Sum(body)
-		if name.version && hash != name.hash {
+		if hash != name.hash {
 			return errors.New("devicesync: immutable tail corrupted during startup sweep")
 		}
 		if needed && hash == ref.Hash {
