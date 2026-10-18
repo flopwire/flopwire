@@ -1,7 +1,8 @@
 # Harnesses
 
-Flopwire reads the history of several coding-agent harnesses. It installs
-hooks and tools into some of them, so their sessions can send and receive
+Flopwire reads past and ongoing conversations from supported AI-agent
+harnesses, including research, planning, writing, troubleshooting and coding.
+It installs hooks and tools into some of them, so their sessions can send and receive
 messages. This page shows what each harness supports and how
 `flopwire setup` installs Flopwire. Each harness has its own page for its
 hooks.
@@ -31,10 +32,59 @@ hooks.
   IDE extension, the Codex desktop app and Devin Desktop are untested. To
   check them by hand, see [manual-checks.md](../dev/manual-checks.md).
 
+## What agents discover
+
+Flopwire exposes nine tools and one skill, `flopwire:messaging`. The table
+below summarizes the tools; it is not a verbatim copy of their descriptions.
+
+| Tool | Purpose |
+|---|---|
+| `flopwire_search` | Find prior research, plans, decisions, attempts and results with ranked keyword matching. |
+| `flopwire_grep` | Find exact text or regex matches in captured conversations. |
+| `flopwire_sessions` | Discover past and ongoing sessions by repository, person, time or title. |
+| `flopwire_read` | Read source messages and surrounding context to verify evidence. |
+| `flopwire_change` | Find captured command/result evidence for full commit IDs. The CLI calls this `trace`. |
+| `flopwire_messages` | Read retained repository coordination across devices and ended sessions. Requires enrollment. |
+| `flopwire_peers` | Find live sessions available for contact. |
+| `flopwire_send` | Send an authorized message to a session or to a person's current or next session. |
+| `flopwire_inbox` | Check this session's message delivery or re-read its threads. |
+
+History is available after a session ends and while it is ongoing. Search
+uses this device before enrollment and the shared server after enrollment.
+Configured servers connect machines and team members; results report their
+scope. Presence is needed for live contact, not for reading history.
+
+The MCP server supplies common instructions plus each tool's description
+and argument schema. Harnesses control how and when those definitions
+reach the model. The skill's name and description support discovery; its
+body supplies evidence-recovery and coordination workflows when loaded.
+Hooks deliver incoming messages and the instructions for handling them.
+Descriptions guide tool selection; they do not guarantee a call or grant
+permission to send a message.
+
+Claude Code, Codex and Devin CLI use the skill. opencode has plugin tools
+and system-prompt guidance instead of a separate skill; its plugin reads
+the same tool definitions from the binary.
+
+Exact definitions in this checkout:
+
+- [Retrieval tools and MCP server instructions](../../cmd/flopwire/mcp.go).
+- [Commit-evidence tool](../../cmd/flopwire/change.go).
+- [Messaging tools and MCP messaging instructions](../../cmd/flopwire/mcp_bus.go).
+- [Skill description and full instructions](../../plugins/claude-code/flopwire/skills/messaging/SKILL.md),
+  also copied into the [Codex plugin](../../plugins/codex/flopwire/skills/messaging/SKILL.md).
+
+These links describe this source revision. An installed binary or cached
+plugin may be older. Upgrade the binary for new MCP descriptions, run
+`flopwire setup` to refresh plugins, then reload the integration or restart
+the session as its harness requires. A running MCP process can retain the
+old definitions until it reconnects.
+
 ## Install into the harnesses
 
-`flopwire setup` installs Flopwire into the coding-agent harnesses on this
-device. It installs the Flopwire plugin into Claude Code, Codex and Devin
+`flopwire setup` configures supported harnesses whose CLI commands it finds
+on this device's `PATH`. Installing the binary alone does not configure a
+harness. It installs the Flopwire plugin into Claude Code, Codex and Devin
 CLI: the MCP tools, the hooks and a messaging skill. It runs each harness's
 own plugin commands. It never edits the harness's settings files, and it
 writes no Devin config file. For opencode, which loads every file in its

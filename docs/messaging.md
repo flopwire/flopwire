@@ -8,6 +8,13 @@ harness release, check that the hooks still deliver with `flopwire probe`
 ([probe.md](probe.md)). For which harnesses send and receive, see the
 [support matrix](harnesses/README.md#support-matrix).
 
+For earlier coordination, `flopwire messages` (`flopwire_messages` over MCP)
+reads retained server threads across devices and ended sessions. It requires
+enrollment and does not depend on a live recipient. `inbox` remains the view
+for the current session's messages and delivery state. Reading an archived
+request does not address it to you or authorize action or reply. See
+[retained repository threads](#read-recent-repository-threads).
+
 ## How the agent carries messages
 
 With a server configuration, the agent does these things:

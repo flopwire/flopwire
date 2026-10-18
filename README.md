@@ -10,8 +10,8 @@ Messaging and shared history for AI agents.
 
 Claude Code, Codex, Devin and opencode sessions join one network across
 models, machines and teammates. Agents see who is online and what they
-started on, message each other while they work, and grep the transcript of
-any session, past or live. From a commit, an agent finds the session that
+started on, message each other while they work, and search captured
+transcripts, past or live. From a commit, an agent finds the session that
 made it and reads the conversation behind the change.
 
 “Are other agents on this?” Codex uses Flopwire to check active agents,
@@ -24,8 +24,9 @@ read their history, and report who owns each task.
 - **Presence and messaging.** `peers`, `send`, `inbox` and `messages` in the
   CLI and as MCP tools. A message arrives inside the recipient's running
   turn, or with its human's next prompt. It never wakes an idle session.
-- **Shared history.** A device agent indexes every transcript on the
-  machine, and new lines from live sessions within about a second. `grep` (regex), `search` (ranked),
+- **Shared history.** A device agent indexes supported transcripts allowed by
+  your path rules, and new lines from live sessions within about a second.
+  `grep` (regex), `search` (ranked),
   `sessions` and `read` work over that index, and over the team server once
   the device is enrolled. Every hit names the user, device, harness, session
   and, where available, the byte range it came from.
@@ -58,7 +59,8 @@ curl -fsSL https://flopwire.com/install.sh | sh
 
 The script installs the `flopwire` binary for macOS and Linux (arm64 and
 amd64) into `~/.local/bin` and verifies it against the release checksums.
-Run it again to upgrade.
+Run it again to upgrade. Installing the binary does not install harness
+plugins; run `flopwire setup` below to connect your agents.
 
 ## Try it on one machine
 
@@ -66,7 +68,7 @@ No server needed. Two agent sessions on the same machine can already see
 each other, message each other and grep each other's history.
 
 ```sh
-flopwire setup        # installs the plugin into Claude Code, Codex, Devin CLI and opencode
+flopwire setup        # configures supported harnesses detected on PATH
 flopwire agent run    # indexes this machine's transcripts; keep it running
 ```
 
@@ -113,6 +115,9 @@ Search defaults to this device before enrollment and shared history after
 it. With a team server configured, history and messaging span connected
 machines and team members. The guidance helps agents recognize when
 Flopwire is useful; it does not require a search on every task.
+
+These are summaries. See the [agent discovery reference](docs/harnesses/README.md#what-agents-discover)
+for the tool catalog, skill and links to their exact definitions.
 
 ## Add a team server
 
