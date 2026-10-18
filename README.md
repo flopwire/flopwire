@@ -1,3 +1,5 @@
+<p><img src="landing/assets/brand-mark.svg" alt="Flopwire logo" height="64"></p>
+
 # flopwire
 
 Messaging and shared history for AI agents.
@@ -12,26 +14,10 @@ started on, message each other while they work, and grep the transcript of
 any session, past or live. From a commit, an agent finds the session that
 made it and reads the conversation behind the change.
 
-```
-$ flopwire peers --text
-4c19e0d2  gary  codex  live busy  api@feat/cursor  "add cursor to list endpoint"
-9d00e0d2  alex  claude  live idle (idle for 12m4s; idle_since 2026-10-17T17:50:07Z)  web@main  "refactor client pagination"
-[2 live sessions (1 yours); busy: a message arrives at its next tool call; idle: when its session resumes. Address one by its first column, or a person as @user]
+“Are other agents on this?” Codex uses Flopwire to check active agents,
+read their history, and report who owns each task.
 
-$ flopwire send 4c19e0d2 --intent request --text -- "Does list return a cursor now? The web client needs the field name."
-sent m7f3b to 4c19e0d2 (gary codex api@feat/cursor): busy, arrives at its next tool call
-
-# In the Codex session, at its next tool call:
-<flopwire-message id="m7f3b" from="0b7e2c1a-0000-4000-8000-000000000001" user="gary@example.com" agent="claude" repo="web@main" sender="own" intent="request" sent="2026-10-17T18:02:11Z">
-Does list return a cursor now? The web client needs the field name.
-</flopwire-message>
-Reply with the flopwire_send tool: to="0b7e2c1a-0000-4000-8000-000000000001" reply_to="m7f3b" message="…"; or in a shell: flopwire send 0b7e2c1a-0000-4000-8000-000000000001 --reply-to m7f3b -- "…"
-
-$ flopwire grep 'next_cursor' --repo api --since 24h
-## 4c19e0d2-0000-4000-8000-000000000002 agent=codex live repo=api branch=feat/cursor intent="add cursor to list endpoint"
-28672:14 tool_call/apply_patch: +  "next_cursor": encodeCursor(last),
-[1 hit in 1 session]
-```
+[![Codex calling Flopwire search, messages, and read, then reporting work owned by Claude and Codex agents](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)
 
 ## What it does
 
@@ -66,8 +52,13 @@ $ flopwire grep 'next_cursor' --repo api --since 24h
 
 ## Install
 
-Install Git and Go 1.26.6 or later, then
-[build and install Flopwire](docs/quick-start-local.md#install).
+```sh
+curl -fsSL https://flopwire.com/install.sh | sh
+```
+
+The script installs the `flopwire` binary for macOS and Linux (arm64 and
+amd64) into `~/.local/bin` and verifies it against the release checksums.
+Run it again to upgrade.
 
 ## Try it on one machine
 
@@ -123,6 +114,11 @@ flopwire enroll --name laptop
 ```
 
 After `enroll`, the device uploads its transcripts and searches the server.
+
+The stack runs the published image, `ghcr.io/flopwire/flopwire`. Pin a
+release with `FLOPWIRE_IMAGE` in `.env`. To build the server from the
+checkout instead, add `-f compose.yaml -f compose.dev.yaml` to each
+command, as [docs/two-laptop.md](docs/two-laptop.md) does.
 By default it keeps no local message index; set `"mode": "full"` in
 `config.json` to keep local search too. The full walkthrough, including TLS
 options and running two machines on a LAN, is in

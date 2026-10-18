@@ -641,3 +641,20 @@ func TestHookPrintsNoNoticeWhenNoneIsDue(t *testing.T) {
 		t.Fatalf("printed %q", out)
 	}
 }
+
+// A SessionStart whose agent reports a newer server release prints the
+// upgrade line after the standing instruction; the notice is not part of
+// what the hook confirms.
+func TestHookPrintsUpgradeNotice(t *testing.T) {
+	fa := newHookAgent(t)
+	fa.resp.Instruct = true
+	fa.resp.Upgrade = "flopwire v9.9.9 is available; this device runs v0.1.0. Upgrade with: flopwire upgrade"
+	out, _ := runHook(t, fa.sock, claudeIn(evSessionStart), nil)
+	ctxt := decodeHook(t, out).HookSpecificOutput.AdditionalContext
+	if ctxt != busrender.StandingInstruction+busrender.Sep+fa.resp.Upgrade {
+		t.Fatalf("output: %q", out)
+	}
+	if c := fa.requests("confirm"); len(c) != 1 || !c[0].Instruction {
+		t.Fatalf("confirm: %+v", c)
+	}
+}

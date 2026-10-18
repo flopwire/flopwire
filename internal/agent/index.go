@@ -422,6 +422,18 @@ func (a *Agent) indexCompanion(ctx context.Context, t *target) error {
 	if mode, known := a.modeOf(t); !known && worstMode(a.policy().pol) == pathpolicy.Deny {
 		return nil // its session is not placed yet; asked again at the next change or sweep
 	} else if known && mode == pathpolicy.Deny {
+		// Discovery establishes the scope of this exact file. Older indexes
+		// can retain its metadata without an owner link, outside the normal
+		// conversation purge. Preserve the history barrier before removing it.
+		a.mu.Lock()
+		owner := t.owner
+		a.mu.Unlock()
+		if err := a.coworkHistoryPurgeError([]placeKey{{transcript.AgentClaude, owner}}); err != nil {
+			return err
+		}
+		if err := a.store.PurgeUnlinkedCompanion(ctx, t.path); err != nil {
+			return err
+		}
 		a.markSeen(t, id, sampled, 0, "")
 		return nil
 	}

@@ -240,7 +240,7 @@ func TestSecurityHeadersAndSingleJSONValue(t *testing.T) {
 	if res.StatusCode != 400 {
 		t.Fatalf("trailing JSON status=%d", res.StatusCode)
 	}
-	for header, want := range map[string]string{"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer"} {
+	for header, want := range map[string]string{"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", api.VersionHeader: api.Version} {
 		if got := res.Header.Get(header); got != want {
 			t.Errorf("%s=%q want %q", header, got, want)
 		}

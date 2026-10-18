@@ -14,18 +14,17 @@ import (
 	"github.com/flopwire/flopwire/internal/syncproto"
 )
 
-// tailName recognizes only canonical legacy or immutable tail names. It does
+// tailName recognizes only immutable <sid>-<gen>-<hash> tail names. It does
 // not accept temporary files, signed/zero-padded numbers or trailing text.
 type tailName struct {
 	sid, gen int64
 	hash     syncproto.Hash
-	version  bool
 }
 
 func parseTailName(name string) (tailName, bool) {
 	var n tailName
 	parts := strings.Split(name, "-")
-	if len(parts) != 2 && len(parts) != 3 {
+	if len(parts) != 3 {
 		return n, false
 	}
 	var err error
@@ -35,11 +34,8 @@ func parseTailName(name string) (tailName, bool) {
 	if n.gen, err = strconv.ParseInt(parts[1], 10, 64); err != nil || n.gen < 0 || strconv.FormatInt(n.gen, 10) != parts[1] {
 		return tailName{}, false
 	}
-	if len(parts) == 3 {
-		if n.hash.UnmarshalText([]byte(parts[2])) != nil || n.hash.String() != parts[2] {
-			return tailName{}, false
-		}
-		n.version = true
+	if n.hash.UnmarshalText([]byte(parts[2])) != nil || n.hash.String() != parts[2] {
+		return tailName{}, false
 	}
 	return n, true
 }
@@ -137,8 +133,8 @@ func (s *Spool) PutTailVersion(sid, gen int64, hash syncproto.Hash, data []byte)
 	return nil
 }
 
-// TailVersion first reads the expected immutable version, then a verified
-// legacy canonical file. A mismatching existing candidate is an error.
+// TailVersion reads the expected immutable version. An existing candidate
+// whose bytes do not match the hash is an error, not a miss.
 func (s *Spool) TailVersion(sid, gen int64, hash syncproto.Hash) ([]byte, bool, error) {
 	name, err := tailVersionName(sid, gen, hash)
 	if err != nil {
@@ -151,24 +147,19 @@ func (s *Spool) TailVersion(sid, gen int64, hash syncproto.Hash) ([]byte, bool, 
 		return nil, false, err
 	}
 	defer root.Close()
-	for _, candidate := range []string{name, fmt.Sprintf("%d-%d", sid, gen)} {
-		data, found, err := readTailCandidate(root, candidate)
-		if err != nil {
-			return nil, false, err
-		}
-		if found {
-			if syncproto.Sum(data) != hash {
-				return nil, false, errors.New("devicesync: tail candidate does not match committed hash")
-			}
-			return data, true, nil
-		}
+	data, found, err := readTailCandidate(root, name)
+	if err != nil || !found {
+		return nil, false, err
 	}
-	return nil, false, nil
+	if syncproto.Sum(data) != hash {
+		return nil, false, errors.New("devicesync: tail candidate does not match committed hash")
+	}
+	return data, true, nil
 }
 
-// DropTailVersion removes the named immutable version and a legacy canonical
-// only when its bytes match that hash. Callers must first durably release every
-// reference to the version; this method does not inspect sync state.
+// DropTailVersion removes the named immutable version only when its bytes
+// match that hash. Callers must first durably release every reference to the
+// version; this method does not inspect sync state.
 func (s *Spool) DropTailVersion(sid, gen int64, hash syncproto.Hash) error {
 	return s.dropTailVersion(context.Background(), sid, gen, hash)
 }
@@ -188,38 +179,20 @@ func (s *Spool) dropTailVersion(ctx context.Context, sid, gen int64, hash syncpr
 		return err
 	}
 	defer root.Close()
-	var remove []struct {
-		name string
-		size int64
+	data, found, err := readTailCandidate(root, name)
+	if err != nil || !found {
+		return err
 	}
-	for _, candidate := range []string{name, fmt.Sprintf("%d-%d", sid, gen)} {
-		data, found, err := readTailCandidate(root, candidate)
-		if err != nil {
-			return err
-		}
-		if !found {
-			continue
-		}
-		if syncproto.Sum(data) != hash {
-			if candidate == name {
-				return errors.New("devicesync: refusing to remove mismatching immutable tail")
-			}
-			continue // the canonical now represents another committed version
-		}
-		remove = append(remove, struct {
-			name string
-			size int64
-		}{candidate, int64(len(data))})
+	if syncproto.Sum(data) != hash {
+		return errors.New("devicesync: refusing to remove mismatching immutable tail")
 	}
-	for _, file := range remove {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := root.Remove(file.name); err != nil {
-			return errors.New("devicesync: cannot remove released tail version")
-		}
-		s.used -= file.size
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	if err := root.Remove(name); err != nil {
+		return errors.New("devicesync: cannot remove released tail version")
+	}
+	s.used -= int64(len(data))
 	return nil
 }
 

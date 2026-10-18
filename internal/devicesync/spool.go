@@ -66,10 +66,6 @@ func (s *Spool) chunkPath(h syncproto.Hash) string {
 	return filepath.Join(s.dir, "chunks", h.String())
 }
 
-func (s *Spool) tailPath(sid, gen int64) string {
-	return filepath.Join(s.dir, "tails", fmt.Sprintf("%d-%d", sid, gen))
-}
-
 // Used returns the spooled bytes; Blocked reports whether the last write
 // hit the cap.
 func (s *Spool) Used() int64   { s.mu.Lock(); defer s.mu.Unlock(); return s.used }
@@ -77,7 +73,7 @@ func (s *Spool) Blocked() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.bloc
 
 // Reserve checks that n more bytes fit at this moment, without writing or
 // holding a reservation. Another writer may consume capacity before a later
-// PutChunk/PutTail, which checks again. It sets Blocked when bytes do not fit.
+// PutChunk/PutTailVersion, which checks again. It sets Blocked when bytes do not fit.
 func (s *Spool) Reserve(n int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -197,15 +193,6 @@ func (s *Spool) remove(path string) {
 func (s *Spool) PutChunk(h syncproto.Hash, data []byte) error { return s.write(s.chunkPath(h), data) }
 func (s *Spool) Chunk(h syncproto.Hash) ([]byte, bool, error) { return s.read(s.chunkPath(h)) }
 func (s *Spool) DropChunk(h syncproto.Hash)                   { s.remove(s.chunkPath(h)) }
-
-func (s *Spool) PutTail(sid, gen int64, data []byte) error {
-	// A tail is replaced on each capture; drop the old one first so the
-	// cap counts only the live version.
-	s.remove(s.tailPath(sid, gen))
-	return s.write(s.tailPath(sid, gen), data)
-}
-func (s *Spool) Tail(sid, gen int64) ([]byte, bool, error) { return s.read(s.tailPath(sid, gen)) }
-func (s *Spool) DropTail(sid, gen int64)                   { s.remove(s.tailPath(sid, gen)) }
 
 // sweep runs before workers start, under the reference owner. All reference
 // queries finish before any deletion; file inspection never encloses SQL.

@@ -4,9 +4,12 @@ test:
 	go test -race ./...
 	pnpm --dir web test
 	scripts/validate-release-tag_test.sh
+	sh scripts/install_test.sh
 	scripts/perf-baseline_test.sh
 	sh scripts/e2e-search_test.sh
 	python3 scripts/qualify-agent-workflow_test.py
+	python3 scripts/nightly-codex_test.py
+	node --test scripts/nightly-validation-issue_test.cjs
 
 web:
 	pnpm --dir web build

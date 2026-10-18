@@ -101,6 +101,18 @@ type Config struct {
 	CoworkPolicy           CoworkPolicyClient                                                      // nil: Cowork sharing remains held
 	RecoveredPolicySources func(context.Context, string) ([]syncproto.PolicyRecoverySource, error) // restriction-only receipts for the bound device
 	Logger                 *slog.Logger
+	// Version is this binary's version and ServerVersion reports the
+	// version the server last answered with (client.ServerVersion); when
+	// that is a newer release, pending and status carry an upgrade
+	// notice (upgrade.Notice). Either empty: no notice.
+	Version       string
+	ServerVersion func() string
+	// ReleaseCheck, when set, resolves the newest published release
+	// (upgrade.Latest); the agent calls it once at start and every
+	// ReleaseEvery (default 24h), so a device with no server, or one whose
+	// server lags, still hears about a newer release. nil: no check.
+	ReleaseCheck func(context.Context) (string, error)
+	ReleaseEvery time.Duration
 
 	// Path rules (D18, see policy.go). UserRules is a file of user rules,
 	// one per line, re-read when it changes; UserRuleList holds more user
@@ -266,6 +278,8 @@ type Agent struct {
 	claude                transcript.Parser
 	codex                 transcript.Parser
 	log                   *slog.Logger
+	upgradeLogged         string // the version last logged as an upgrade notice
+	latestRelease         string // ReleaseCheck's last answer, under upgradeLogMu
 	// onReads, when set (tests), takes the read sightings instead of
 	// the message bus.
 	onReads func([]devicebus.Read)
@@ -463,6 +477,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		go func() {
 			defer a.bgWG.Done()
 			_ = a.cfg.Bus.Run(ctx)
+		}()
+	}
+	if a.cfg.ReleaseCheck != nil {
+		a.bgWG.Add(1)
+		go func() {
+			defer a.bgWG.Done()
+			a.runReleaseCheck(ctx)
 		}()
 	}
 	var wg sync.WaitGroup

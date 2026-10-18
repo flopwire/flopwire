@@ -88,6 +88,22 @@ rebuilds the index at the next start: a switch to full parses every
 transcript again, and a switch to sync-only drops the message rows and the
 shard files.
 
+### Local search files
+
+New and rebuilt local indexes keep token search at `full` detail and use
+`column` detail for trigram search. This includes explicit
+`--rebuild-index` requests and rebuilds already required by a schema or
+storage-mode change. Healthy indexes keep their recorded formats on reopen
+and when the agent repairs a missing search file. The defaults do not add
+a rebuild trigger.
+
+Stop the agent before a rebuild. Keep its `--db` path and storage options.
+See the [recovery procedure](troubleshooting.md#the-agent-stops-apply-redactions).
+The rebuild discards indexed message rows and reparses the available
+harness transcripts. It cannot restore content from unavailable transcripts.
+It preserves sync state and ownership, placements, and local redaction
+files and keys. Search is incomplete until the pass finishes.
+
 ### Upload workers
 
 Upload concurrency defaults to one. Start the collector with
@@ -242,6 +258,8 @@ socket and prints these parts:
 | Line | Means |
 |---|---|
 | `agent: running` | The agent answered. |
+| `version: vX.Y.Z (server vA.B.C)` | This binary's version and the one the server last reported. |
+| `upgrade: flopwire vA.B.C is available; …` | The server, or the newest published release (checked daily), is ahead of this device. The same line reaches each new session's context at its SessionStart hook and `flopwire setup --check`. See [Upgrade a device](releases.md#upgrade-a-device). |
 | `Claude Desktop Code (Local): STATE` | Local Code discovery, scoped native sessions, normal-root links, missing linked transcripts and excluded backend records. |
 | `scoped shared uploads held: contained sync authorization support pending` | The active sync implementation cannot acquire scoped Code authorization. Native collection continues locally. |
 | `scoped shared authorization: each capture requires fresh contained indexed proof` | The sync authorization hook is available. Each capture must pass its current linkage, folder rules, indexed byte bound and contained source checks. Cowork origins keep their folder-policy holds. |

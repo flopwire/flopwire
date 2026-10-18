@@ -31,8 +31,10 @@ services:
       - object-data:/data
 
   flopwire:
-    build:
-      context: .
+    # Published by the release workflow for each vX.Y.Z tag. Pin a version
+    # in .env (FLOPWIRE_IMAGE=ghcr.io/flopwire/flopwire:0.2.0) or build from
+    # source with compose.dev.yaml.
+    image: ${FLOPWIRE_IMAGE:-ghcr.io/flopwire/flopwire:latest}
     environment:
       FLOPWIRE_ADDR: :8080
       # TLS (D13): self-signed by default; devices pin its fingerprint
