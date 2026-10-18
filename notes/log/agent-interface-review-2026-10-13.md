@@ -3,7 +3,6 @@
 Record of 2026-10-13. It describes the interfaces of each product as of that
 date, against Flopwire source `208f48b`.
 
-Reviewed 2026-10-13. Flopwire source: `208f48b`.
 Scope: recover prior work, search by meaning, identify the producing session,
 and contact another agent. See the [feature comparison](../agent-workflow-comparison.md)
 for the broader capability inventory.
@@ -61,7 +60,7 @@ These counts describe the catalog, not an agent-performance score. A host can
 present tool descriptions differently from the native server.
 
 Five read-only calls tested the same synthetic rationale used in the
-[earlier spot check](../agent-workflow-comparison.md#agent-ux-spot-check):
+[spot check](#agent-ux-spot-check):
 
 | Call | Observation |
 |---|---|
@@ -88,7 +87,7 @@ No semantic ranking, verified-owner or real-reply outcome is established.
 
 - Flopwire: [MCP schemas](https://github.com/flopwire/flopwire/blob/208f48b33f22d73f5d971e8b6859b4379158ada7/cmd/flopwire/mcp.go),
   [messaging schemas](https://github.com/flopwire/flopwire/blob/208f48b33f22d73f5d971e8b6859b4379158ada7/cmd/flopwire/mcp_bus.go),
-  [current messaging skill](../../plugins/codex/flopwire/skills/messaging/SKILL.md).
+  [messaging skill](https://github.com/flopwire/flopwire/blob/208f48b33f22d73f5d971e8b6859b4379158ada7/plugins/codex/flopwire/skills/messaging/SKILL.md).
 - AgentsView: [MCP](https://www.agentsview.io/docs/mcp/) and
   [semantic search](https://www.agentsview.io/docs/semantic-search/).
   Current docs describe `expected_revision`, readiness, effective modes and
@@ -114,5 +113,61 @@ No semantic ranking, verified-owner or real-reply outcome is established.
   [CLI](https://langfuse.com/docs/api-and-data-platform/features/cli).
   Observation tools require v4; metadata expansion is selective. These
   current contracts were reviewed, not exercised against the pilot stack.
+
+</details>
+
+## Agent UX spot check
+
+Two agents performed the same read-only task on the synthetic corpus
+from the [competitive pilot](competitive-benchmark-pilot-2026-10-13.md):
+
+> Find the previous decision about preventing clients from synchronizing
+> their retries. Quote the rationale and provide a source citation that
+> another agent can reopen.
+
+Both recovered the same statement: "retry jitter: bounded randomness
+prevents synchronized client retries."
+
+| Observation | Flopwire | AgentsView |
+|---|---|---|
+| First query | `prevent clients synchronizing retries` | `synchronizing retries` |
+| Default retrieval behavior | Lexical fallback reported `retries` as the required term and found two sessions | Default substring search returned no matches |
+| Query reformulation | None needed | Simplified to `retry`; found two sessions |
+| Evidence read | `read` using session/ordinal/line address | `session messages` using session ID and ordinal |
+| Calls used | Search + read | Two searches + messages help + read |
+| Correct rationale and reopenable citation | Yes | Yes |
+| Observed friction | Agent assembled the full address from header and hit; read included about 2KB of filler before the addressed line (build `208f48b`) | Context option returned several long adjacent messages; agent checked message-read help |
+
+AgentsView's semantic index was not configured, as in the original pilot.
+Its result explicitly reported lexical readiness and unavailable semantic
+search. This spot check exercises the default lexical path, not its
+documented semantic capability.
+
+The agents were reused from the documentation audit. Their queries and
+tool familiarity differed. This is an informal usability example, not a
+blinded experiment or evidence that one product's agents perform better.
+Neither task established a complete rationale-to-owner-to-reply workflow.
+
+<details>
+<summary>Commands and source addresses</summary>
+
+The commands, excluding local binary and synthetic index paths, were:
+
+```sh
+flopwire search 'prevent clients synchronizing retries' --local --index INDEX --include-self --limit 3
+flopwire read '4f3f0956-4bd7-5308-83f1-698a0e2d8ee0/70828032:2' --local --index INDEX --max-chars 3000
+
+agentsview session search 'synchronizing retries' --limit 5 --json
+agentsview session search retry --context 1 --limit 5 --json
+agentsview session messages --help
+agentsview session messages 'codex:4f3f0956-4bd7-5308-83f1-698a0e2d8ee0' --from 7 --limit 1 --json
+```
+
+All six commands exited successfully. A successful search command can
+still return zero matches. The recovered citations point to the same
+canonical synthetic message: Codex, 2026-10-13 at 12:28:07 UTC. Flopwire's
+address uses its stable byte-derived ordinal; AgentsView uses message
+ordinal 7 and reports transcript revision 1. The ordinals are different
+addressing systems, not different decisions.
 
 </details>

@@ -10,7 +10,8 @@ passed all 30 sequential delivery checks. Both recovered an unread message
 after a graceful service restart using separate recovery identities.
 
 See the [run instructions](competitive-benchmark-run-2026-10-13.md) to reproduce the pilot and the
-[specification](competitive-benchmark-spec-2026-10-13.md) for the larger comparison. Gas Town is excluded.
+[specification](competitive-benchmark-spec-2026-10-13.md) for the larger comparison.
+The runner scripts were not retained. Gas Town is excluded.
 
 ## Retrieval
 
@@ -74,8 +75,8 @@ that an acknowledged message disappears from later history queries.
 
 During initial runner qualification, an extra recovery message after 30
 sends was refused by Flopwire with `session_rate`: its default limit is
-30 sends per hour per session. The qualification artifact retains that
-refusal. The final current-main run uses separate synthetic identities for
+30 sends per hour per session. The qualification record, not retained,
+held that refusal. The final current-main run uses separate synthetic identities for
 recovery and passes both cases without changing the product's limit.
 
 The starting local checkout was behind `origin/main`. Those earlier
@@ -140,7 +141,7 @@ The result files were not retained in the repository. As produced, they were:
   messaging record.
 
 Follow the [runner instructions](competitive-benchmark-run-2026-10-13.md) to
-repeat the experiment with fresh state.
+repeat the experiment with fresh state. The runner scripts were not retained.
 
 All temporary services were stopped after validation. The local scratch
 directory retains source corpora, logs and isolated test credentials for
@@ -158,8 +159,8 @@ rerun against main `f83db684e912ea77c08ac02264996f55cf1f4993`.
 The earlier retrieval run measured the three products together and `rg`
 separately. All applicable exact queries passed. Its extra recovery send
 after 30 messages hit Flopwire's default hourly session allowance. That
-failure remains in `messaging.json.gz`. The subsequent isolated recovery
+failure was recorded in `messaging.json.gz`, which was not retained. The subsequent isolated recovery
 run passed for both products.
 
-The raw records retain the earlier measurements and their limits. They
-are not a controlled A/B comparison with the current-main records.
+The raw records, not retained, held the earlier measurements and their
+limits. They were not a controlled A/B comparison with the current-main records.

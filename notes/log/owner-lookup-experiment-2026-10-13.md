@@ -1,8 +1,8 @@
 # Merged change attribution experiment
 
 Record of 2026-10-13. The experiment's scripts and fixtures under
-`scripts/owner-lookup-experiment/` were not retained; the commit lookup later
-shipped as `flopwire trace`, see [docs/search.md](../../docs/search.md).
+`scripts/owner-lookup-experiment/` were not retained. Editor's note, 2026-10-18:
+the commit lookup later shipped as `flopwire trace`, see [docs/search.md](../../docs/search.md).
 
 A merged SHA can differ from the commits recorded in session history.
 This offline experiment follows a PR's original commits and returns evidence
@@ -65,7 +65,7 @@ Output points into the input JSON, not transcript byte addresses. Use the
 suggested session outline to recover source evidence. Repository scope and
 provenance are trusted input. Hash matching checks this PR's lineage only.
 Rebases, amendments and missing history can hide candidates; several sessions
-can contribute to one change. The [digest parser](../../internal/digest/commits.go)
+can contribute to one change. The [digest parser](https://github.com/flopwire/flopwire/blob/af87e7804cab16a03c32b6208289744815328e0a/internal/digest/commits.go)
 records commit-producing output; `gh pr merge` alone does not establish authorship.
 
 </details>

@@ -6,10 +6,11 @@ and its procedure in [competitive-benchmark-run-2026-10-13.md](competitive-bench
 
 Compare how products help agents recover prior work and coordinate coding
 sessions. Start with the [pilot results](competitive-benchmark-pilot-2026-10-13.md) or
-[run instructions](competitive-benchmark-run-2026-10-13.md). The pilot checks exact retrieval and transport;
+[run instructions](competitive-benchmark-run-2026-10-13.md). The runner scripts
+were not retained. The pilot checks exact retrieval and transport;
 agent task outcomes require a later experiment.
 
-Gas Town is excluded at the user's request.
+Gas Town is excluded.
 
 The initial pilot includes Flopwire, MCP Agent Mail, AgentsView and Langfuse.
 Entire, SpecStory, CASS, LangSmith and Braintrust remain candidates for the

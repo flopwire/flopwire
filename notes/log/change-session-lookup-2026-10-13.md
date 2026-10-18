@@ -1,7 +1,7 @@
 # Find the sessions behind a change
 
-Record of 2026-10-13. The lookup it designs shipped as `flopwire trace` (MCP
-`flopwire_change`); see [docs/search.md](../../docs/search.md).
+Record of 2026-10-13. Editor's note, 2026-10-18: the lookup it designs shipped
+as `flopwire trace` (MCP `flopwire_change`); see [docs/search.md](../../docs/search.md).
 
 **Proposal:** look up a commit ID and get matching sessions, with links to the
 captured commands and results. Several sessions can match; the evidence explains
@@ -242,8 +242,8 @@ candidates by following original PR commits after squash merges.
 
 | Finding | Evidence and consequence |
 |---|---|
-| Session summaries do not establish the command's repository | [Parser tests](../../internal/digest/commits_test.go) count outside-directory commits. Preserve location and uncertainty. |
-| Summaries can be incomplete or stale | [Digest caps](../../internal/digest/digest.go) and [server stale state](../../internal/retrieval/retrieval.go). Report index coverage explicitly. |
+| Session summaries do not establish the command's repository | [Parser tests](https://github.com/flopwire/flopwire/blob/208f48b33f22d73f5d971e8b6859b4379158ada7/internal/digest/commits_test.go) count outside-directory commits. Preserve location and uncertainty. |
+| Summaries can be incomplete or stale | [Digest caps](https://github.com/flopwire/flopwire/blob/208f48b33f22d73f5d971e8b6859b4379158ada7/internal/digest/digest.go) and [server stale state](https://github.com/flopwire/flopwire/blob/208f48b33f22d73f5d971e8b6859b4379158ada7/internal/retrieval/retrieval.go). Report index coverage explicitly. |
 | Entire preserves local squash links | [Tagged tests][entire-squash]. Hooks were source-reviewed, not executed here. |
 | A checkpoint link can lack readable final context | [Push queue][entire-push] and [refs backfill][entire-refs]. Separate the link from source availability. |
 | Plain Git can discard trailers during squash | The POC below. Keep the caller-side PR fallback. |
