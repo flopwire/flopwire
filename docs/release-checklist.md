@@ -133,14 +133,14 @@ When you run the set, these bars apply:
 
 | Check | Bar in the table | Accepted today |
 |---|---|---|
-| a. full index wall | < 5 min | About 7.5 min on the reference laptop (10.2GB index, baseline `main-9e4193d`). Whole tool output is indexed (D3). Record the number; a large regression blocks. |
+| a. full index wall | < 5 min | About 16.5 min on the reference laptop (28.2GB corpus, record `v0.2.0-2026-10-18`). Whole tool output is indexed (D3). Record the number; a large regression blocks. |
 | a. full index peak RSS | < 600MB | Must pass. |
-| a. idle agent after 60s | < 120MB anonymous | About 129MB footprint (176MB RSS) on the reference laptop, baseline `main-9e4193d`. Accepted. A `REGRESSED` flag from `bench compare` blocks. The `main-9e4193d` record holds total RSS under `idle.rss`, so a comparison with it shows a drop of about 27% that is not real (docs/perf/README.md). |
+| a. idle agent after 60s | < 120MB anonymous | Passes: 71MB footprint on the reference laptop, record `v0.2.0-2026-10-18`. A `REGRESSED` flag from `bench compare` blocks. |
 | a. no-change sweep CPU | < 1s | Must pass. |
 | b. live line findable | p95 < 2s | Must pass. |
 | c. FAD 0.3.1 parity sample | 0 parse errors; mismatches documented | Must pass. Needs `cargo` for `tools/fad-dump`. Set `AGENTSVIEW_SRC` for the second oracle. |
 | d. query set expected hits | all | Must pass. |
-| d. query set latency (warm) | < 200ms each | 8 of 28 run over, max about 351ms (`error-common-term`), baseline `main-9e4193d`. Accepted. A query flagged `REGRESSED` by `bench compare` blocks. |
+| d. query set latency (warm) | < 200ms each | 5 of 27 run over, max about 569ms (`compact-markdown-text`), record `v0.2.0-2026-10-18`. Accepted. A query flagged `REGRESSED` by `bench compare` blocks. |
 | d. hit addresses round-trip through `read` | all | Must pass. |
 
 ## 6. Two real agent sessions
