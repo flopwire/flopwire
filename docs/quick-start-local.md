@@ -9,18 +9,16 @@ opencode. Sessions can contain any kind of work.
 If Flopwire is installed, run `flopwire setup --check` and use the existing
 installation. Keep its configuration.
 
-Otherwise, install Git and Go 1.26.6 or newer, then build Flopwire:
+Otherwise, install the binary:
 
 ```sh
-git clone https://github.com/flopwire/flopwire.git
-cd flopwire
-mkdir -p ~/.local/bin
-go build -trimpath -ldflags="-X main.version=$(git rev-parse --short=12 HEAD)" \
-  -o ~/.local/bin/flopwire ./cmd/flopwire
-export PATH="$HOME/.local/bin:$PATH"
+curl -fsSL https://flopwire.com/install.sh | sh
 ```
 
-Add `~/.local/bin` to your shell's persistent `PATH`.
+The script installs `flopwire` for macOS and Linux (arm64 and amd64) into
+`~/.local/bin` and verifies its checksum. Add `~/.local/bin` to your
+shell's persistent `PATH`. To build from source instead, see
+[CONTRIBUTING.md](../CONTRIBUTING.md#build-and-test).
 
 ## Connect your agents
 
