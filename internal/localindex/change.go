@@ -97,6 +97,7 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 	}
 	var unknown []classification
 	cacheCanonical := true
+	var decoder replayTextDecoder
 	for rows.Next() {
 		var source, gen, id int64
 		var isError int
@@ -112,7 +113,7 @@ func (w *writeTx) replayChangeEvents(conv int64) error {
 		cacheCanonical = cacheCanonical && canonical
 		m.Kind, _ = transcript.ParseKind(kind)
 		m.IsError = isError != 0
-		if m.Text, err = decompress(text); err != nil {
+		if m.Text, err = decoder.decode(text); err != nil {
 			rows.Close()
 			return fmt.Errorf("row %d: %w", id, err)
 		}
