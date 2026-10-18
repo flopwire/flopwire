@@ -16,8 +16,8 @@ updates:
     directory: /
     schedule: {interval: weekly}
     groups:
-      actions:
-        patterns: ["*"]
+      actions-minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: docker
     directory: /
     schedule: {interval: weekly}
