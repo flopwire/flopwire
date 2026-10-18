@@ -22,10 +22,6 @@ import (
 )
 
 func TestPersistedUploadCannotRestartUnderAnotherAuthority(t *testing.T) {
-	testPersistedAuthorityUpload(t)
-}
-
-func testPersistedAuthorityUpload(t *testing.T) {
 	dir := t.TempDir()
 	db, err := localindex.Open(filepath.Join(dir, "index.db"), localindex.Options{})
 	if err != nil {

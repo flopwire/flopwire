@@ -79,7 +79,7 @@ func readSyncAuthority(ctx context.Context, db syncStateReader, cfg client.Confi
 			return "", err
 		}
 		if nonempty != 0 {
-			return "", errors.New("sync state has no recorded server/device owner; connected agent startup is refused and saved state is preserved. Point the agent at a fresh index with --db or FLOPWIRE_INDEX and enroll again; this index keeps its queued uploads but cannot send them")
+			return "", errors.New("sync state has no recorded server/device owner; connected agent startup is refused and saved state is preserved. Move this index aside, or point the agent at a new index with --db or FLOPWIRE_INDEX, and restart the agent. The old index keeps its queued uploads but cannot send them")
 		}
 	}
 	return "", nil
@@ -116,29 +116,6 @@ func bindSyncAuthority(ctx context.Context, db *sql.DB, cfg client.Config) (stri
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
-		return "", err
-	}
-	return key, nil
-}
-
-// savedSyncSpoolKey resolves maintenance against existing state without binding
-// ownerless data to whichever credential happens to be installed now.
-func savedSyncSpoolKey(ctx context.Context, db *sql.DB) (string, error) {
-	var exists int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='devsync_authority'`).Scan(&exists); err != nil {
-		return "", err
-	}
-	if exists == 0 {
-		return "", nil
-	}
-	var key string
-	if err := db.QueryRowContext(ctx, `SELECT spool_key FROM devsync_authority WHERE id=1`).Scan(&key); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		return "", err
-	}
-	if err := validateSpoolKey(key); err != nil {
 		return "", err
 	}
 	return key, nil
