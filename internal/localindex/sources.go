@@ -205,9 +205,11 @@ func (s *Store) MoveSource(ctx context.Context, id int64, path string) error {
 	})
 }
 
-// CompanionSizes returns the recorded size of every companion file by path.
+// CompanionSizes returns sizes for companions with an owner. Old unlinked
+// rows must pass through discovery/indexing again to recover their ownership.
 func (s *Store) CompanionSizes(ctx context.Context) (map[string]int64, error) {
-	rows, err := s.rdb.QueryContext(ctx, `SELECT path, size FROM companions`)
+	rows, err := s.rdb.QueryContext(ctx, `SELECT p.path, p.size FROM companions p
+		JOIN conversations c ON c.id=p.conversation_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -310,13 +312,13 @@ func (s *Store) UpsertCompanion(ctx context.Context, c Companion) error {
 	return s.write(ctx, func(w *writeTx) error {
 		var convID, msgID sql.NullInt64
 		if c.SessionID != "" {
-			row, err := w.queryRow(`SELECT id FROM conversations WHERE device_id = ? AND agent = ? AND session_id = ?`, w.s.opts.DeviceID, string(c.Agent), c.SessionID)
+			// A companion can arrive before its transcript worker. Keep its
+			// identity in a stub, as we do for messages arriving before owners.
+			id, err := w.conversationID(string(c.Agent), c.SessionID, c.SourceID)
 			if err != nil {
 				return err
 			}
-			if err := row.Scan(&convID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
+			convID = sql.NullInt64{Int64: id, Valid: true}
 		}
 		if convID.Valid && c.MessageNativeID != "" {
 			row, err := w.queryRow(`SELECT id FROM messages WHERE conversation_id = ? AND native_id = ? AND superseded_by IS NULL ORDER BY part LIMIT 1`, convID.Int64, c.MessageNativeID)
@@ -334,6 +336,18 @@ func (s *Store) UpsertCompanion(ctx context.Context, c Companion) error {
 			  content_sha = excluded.content_sha, indexed_text = excluded.indexed_text,
 			  message_id = coalesce(excluded.message_id, message_id), seen_at = excluded.seen_at`,
 			convID, nullInt(c.SourceID), c.Path, c.Kind, c.Size, c.ContentSHA, boolInt(msgID.Valid), msgID, time.Now().UnixMilli())
+		return err
+	})
+}
+
+// PurgeUnlinkedCompanion removes only orphan metadata at an exact path.
+// The caller must establish the path's policy scope and commit any required
+// historical provenance before deleting this evidence. Linked companions are
+// removed by PurgeConversation instead.
+func (s *Store) PurgeUnlinkedCompanion(ctx context.Context, path string) error {
+	return s.write(ctx, func(w *writeTx) error {
+		_, err := w.exec(`DELETE FROM companions WHERE path=?
+			AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=companions.conversation_id)`, path)
 		return err
 	})
 }
