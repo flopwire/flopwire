@@ -95,9 +95,12 @@ which earlier checks remain applicable if the tested revision differs from
 the final head. Rerun checks affected by later edits or branch updates.
 
 Use squash merges. GitHub uses the PR title as the commit subject and the PR
-description as its body. Main requires an up-to-date branch and passing `test`,
-`e2e-sync`, and `perf-gate` checks, including for administrators. Required
-approvals remain zero. Publishing or deploying remains a separate action.
+description as its body. Main uses a merge queue, including for
+administrators: a PR enters the queue once `test`, `e2e-sync` and `perf-gate`
+pass on its head, the queue runs the same checks on the PR rebased onto main
+(batched with other queued PRs), and GitHub merges it in order. Do not rebase
+or merge main into a branch only to satisfy the queue. `gh pr merge --squash
+--auto` adds a PR to the queue. Required approvals remain zero. Publishing or deploying remains a separate action.
 
 After the PR merges, verify that its worktree is clean and that no session,
 server, or validation process still uses it. Then remove it with
