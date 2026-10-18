@@ -42,7 +42,7 @@ jobs:
           scripts/validate-release-tag.sh "$RELEASE_TAG"
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -71,7 +71,7 @@ jobs:
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
