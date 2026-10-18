@@ -20,7 +20,8 @@ make e2e
 make e2e-sync   # two devices against a Compose server; see docs/two-laptop.md
 ```
 
-A plain `go build ./cmd/flopwire` also works. Both embed the committed console
+`make build` writes `bin/flopwire`; copy it to `~/.local/bin/flopwire` to
+use it as the installed binary. A plain `go build ./cmd/flopwire` also works. Both embed the committed console
 files under `internal/webapp/dist`. After changing `web/`, run `make web` and
 commit the result; `make check-web` fails in CI when the committed files are
 stale.
