@@ -65,7 +65,6 @@ reviewed interfaces. Yes does not imply equal coverage or measured quality.
 - **Agent interface:** this row requires a CLI or API an agent can call, not
   complete parity with Flopwire's retrieval-to-contact workflow.
 
-
 Shared history is part of Flopwire's proposition, not a claim of exclusivity.
 Enrolled devices contribute eligible history to a team archive. AgentsView
 also documents hosted raw sync, SpecStory has Cloud search, Entire uses an
@@ -82,7 +81,7 @@ qualification before claiming parity or superiority.
 | Know what the result covers | Explicit local/shared scope, partial-result warnings, coverage limits, and no silent local fallback on server failure | AgentsView also reports readiness, coverage and exclusions. These are useful shared capabilities; clarity needs task-based comparison. |
 | Retain evidence beyond a summary | Captured source records retain available prompts, responses, commands and tool results; raw reads can expose native structure | AgentsView also documents raw transcript retention. Entire stores transcript checkpoints; SpecStory exposes session Markdown; Langfuse stores instrumented traces. No comparative fidelity ranking has been measured. |
 
-October 16 interface checks: [AgentsView commands](https://github.com/kenn-io/agentsview/blob/main/docs/commands.md),
+2026-10-16 interface checks: [AgentsView commands](https://github.com/kenn-io/agentsview/blob/v0.45.0/docs/commands.md),
 [AgentsView MCP](https://www.agentsview.io/docs/mcp/),
 [SpecStory session retrieval](https://docs.specstory.com/api-reference/sessions/get-session),
 [Entire v0.11.4](https://github.com/entireio/cli/blob/v0.11.4/README.md), and
@@ -97,7 +96,7 @@ in [search](../docs/search.md) and [architecture](../docs/architecture.md).
 
 | Need | Other tools' documented strengths | Flopwire today |
 |---|---|---|
-| Search by meaning | AgentsView's opt-in semantic/hybrid index; Agent Mail's opt-in semantic mail search | Lexical and regex retrieval; semantic search deferred |
+| Search by meaning | AgentsView's opt-in semantic/hybrid index; Agent Mail's opt-in semantic mail search | Lexical and regex retrieval; no semantic search |
 | Reserve files and bundle coordination steps | Agent Mail's advisory reservations and coordination macros | Direct messaging; no file reservation tool |
 | Work from Git checkpoints | Entire's checkpoint-centered session workflow | Captured commit evidence; caller resolves squash lineage |
 | Continue a session in another coding tool | SpecStory's supported cross-tool resume targets | No built-in cross-tool resume |
@@ -108,7 +107,7 @@ reasoning, the producing session, an unanswered question, and a retained reply.
 Label the example synthetic. Sending alone does not guarantee an idle agent
 resumes. Commit lookup provides evidence to inspect, not proof of sole authorship.
 
-The 2026-10-13 pilot is supporting material. Its small synthetic corpus
+The [2026-10-13 pilot](log/competitive-benchmark-pilot-2026-10-13.md) is supporting material. Its small synthetic corpus
 and differing interface transports do not justify headline speed, token-saving,
 or task-success claims.
 
@@ -140,62 +139,6 @@ retrieval; Agent Mail adds reservations; Entire links changes to checkpoints;
 SpecStory supports cross-harness resume; Langfuse adds evaluations. A combined
 CASS and Agent Mail installation also merits a trial.
 
-## Agent UX spot check (2026-10-13)
-
-Two agents performed the same read-only task on the retained synthetic
-corpus from the [competitive pilot](https://github.com/flopwire/flopwire/pull/243):
-
-> Find the previous decision about preventing clients from synchronizing
-> their retries. Quote the rationale and provide a source citation that
-> another agent can reopen.
-
-Both recovered the same statement: "retry jitter: bounded randomness
-prevents synchronized client retries."
-
-| Observation | Flopwire | AgentsView |
-|---|---|---|
-| First query | `prevent clients synchronizing retries` | `synchronizing retries` |
-| Default retrieval behavior | Lexical fallback reported `retries` as the required term and found two sessions | Default substring search returned no matches |
-| Query reformulation | None needed | Simplified to `retry`; found two sessions |
-| Evidence read | `read` using session/ordinal/line address | `session messages` using session ID and ordinal |
-| Calls used | Search + read | Two searches + messages help + read |
-| Correct rationale and reopenable citation | Yes | Yes |
-| Observed friction | Agent assembled the full address from header and hit; read included about 2KB of filler before the addressed line (the build of that day; see [Flopwire status](#flopwire-status-on-the-spot-check-findings)) | Context option returned several long adjacent messages; agent checked message-read help |
-
-AgentsView's semantic index was not configured, as in the original pilot.
-Its result explicitly reported lexical readiness and unavailable semantic
-search. This spot check exercises the default lexical path, not its
-documented semantic capability.
-
-The agents were reused from the documentation audit. Their queries and
-tool familiarity differed. This is an informal usability example, not a
-blinded experiment or evidence that one product's agents perform better.
-Neither task established a complete rationale-to-owner-to-reply workflow.
-
-<details>
-<summary>Commands and source addresses</summary>
-
-The commands, excluding local binary and synthetic index paths, were:
-
-```sh
-flopwire search 'prevent clients synchronizing retries' --local --index INDEX --include-self --limit 3
-flopwire read '4f3f0956-4bd7-5308-83f1-698a0e2d8ee0/70828032:2' --local --index INDEX --max-chars 3000
-
-agentsview session search 'synchronizing retries' --limit 5 --json
-agentsview session search retry --context 1 --limit 5 --json
-agentsview session messages --help
-agentsview session messages 'codex:4f3f0956-4bd7-5308-83f1-698a0e2d8ee0' --from 7 --limit 1 --json
-```
-
-All six commands exited successfully. A successful search command can
-still return zero matches. The recovered citations point to the same
-canonical synthetic message: Codex, 2026-10-13 at 12:28:07 UTC. Flopwire's
-address uses its stable byte-derived ordinal; AgentsView uses message
-ordinal 7 and reports transcript revision 1. The ordinals are different
-addressing systems, not different decisions.
-
-</details>
-
 ## What good agent UX should pass
 
 | Scenario | Observable pass criterion |
@@ -211,19 +154,19 @@ known source labels and equivalent integrations. Record query changes,
 invalid calls, irrelevant context, wrong owners, human help and unsupported
 answers. Keep feature availability separate from successful agent use.
 
-## Flopwire status on the spot check findings
+## Flopwire behaviour for these workflows
 
-| Finding | Flopwire on main |
+| Workflow | Flopwire on main |
 |---|---|
-| Retained-message recovery | The [messaging skill](../plugins/codex/flopwire/skills/messaging/SKILL.md) teaches `flopwire_messages repo=R` for repo-thread listing and `thread=THREAD_ID` for full-thread reads; enrollment is required. |
-| Change-to-session resolution | `flopwire trace` (MCP `flopwire_change`) takes a repository and full commit IDs and returns captured command/result evidence ([commit evidence](../docs/search.md#commit-evidence)). The caller supplies a squash-merged PR's original commits and reads the evidence before attributing a change. |
-| Reads that cut the cited line | Local and shared reads reserve the cited line before adding preceding context ([#284](https://github.com/flopwire/flopwire/pull/284)). An oversized cited line still requires a larger byte budget. |
-| Attribution and request/reply/resume outcomes | The [agent usability qualification](log/agent-usability-qualification-2026-10-16.md) records bounded decision recovery, producing-session attribution, and explicit local CLI request/reply/resume trials. These are Flopwire-only observations. |
+| Recover retained messages | The [messaging skill](../plugins/codex/flopwire/skills/messaging/SKILL.md) teaches `flopwire_messages repo=R` for repo-thread listing and `thread=THREAD_ID` for full-thread reads; enrollment is required. |
+| Resolve a change to its producing session | `flopwire trace` (MCP `flopwire_change`) takes a repository and full commit IDs and returns captured command/result evidence ([commit evidence](../docs/search.md#commit-evidence)). The caller supplies a squash-merged PR's original commits and reads the evidence before attributing a change. |
+| Read a cited line within a tight byte budget | Local and shared reads reserve the cited line before adding preceding context ([#284](https://github.com/flopwire/flopwire/pull/284)). An oversized cited line still requires a larger byte budget. |
+| Attribute a change and complete a request/reply/resume cycle | The [agent usability qualification](log/agent-usability-qualification-2026-10-16.md) records bounded decision recovery, producing-session attribution, and explicit local CLI request/reply/resume trials. These are Flopwire-only observations. |
 
 The contact trial verified a correlated reply and final answer. It did not
 establish automatic wake, a completed code change, or final-server MCP parity.
 
-Semantic search and a separate handoff feature are deferred. Comparative
+Flopwire has no semantic search and no separate handoff feature. Comparative
 agent outcomes would require fresh agents, equivalent integrations, and
 independent task labels. They are optional follow-up work for this matrix.
 
@@ -246,12 +189,12 @@ alias. History is indexed for Claude Code, Codex, Devin CLI and opencode
 sessions, plus Claude Desktop Local Code and Cowork transcripts on macOS;
 messaging is installed for Claude Code, Codex, Devin CLI and opencode.
 
-The 2026-10-13 pilot exercised exact synthetic retrieval, message transport
+The [2026-10-13 pilot](log/competitive-benchmark-pilot-2026-10-13.md) exercised exact synthetic retrieval, message transport
 and graceful restart recovery. It did not exercise live-owner attribution,
 cross-device delivery, canonical server-thread history or an agent acting
 on a reply. The bounded
 [Flopwire task trials](log/agent-usability-qualification-2026-10-16.md)
-followed the retrieval spot check above.
+followed the retrieval [spot check](log/agent-interface-review-2026-10-13.md#agent-ux-spot-check).
 
 ### AgentsView
 
@@ -277,7 +220,7 @@ macros were documentation-reviewed.
 
 ### Entire
 
-Reviewed [v0.11.4](https://github.com/entireio/cli/releases/tag/v0.11.4), latest stable on October 13,
+Reviewed [v0.11.4](https://github.com/entireio/cli/releases/tag/v0.11.4), latest stable on 2026-10-13,
 published 2026-10-06, its
 [tagged README](https://github.com/entireio/cli/blob/v0.11.4/README.md) and
 [search implementation](https://github.com/entireio/cli/blob/v0.11.4/cmd/entire/cli/search_cmd.go).
