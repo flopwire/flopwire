@@ -140,7 +140,7 @@ When you run the set, these bars apply:
 | b. live line findable | p95 < 2s | Must pass. |
 | c. FAD 0.3.1 parity sample | 0 parse errors; mismatches documented | Must pass. Needs `cargo` for `tools/fad-dump`. Set `AGENTSVIEW_SRC` for the second oracle. |
 | d. query set expected hits | all | Must pass. |
-| d. query set latency (warm) | < 200ms each | 8 of 28 run over, max about 351ms (`error-common-term`), baseline `main-9e4193d`. Accepted. A query flagged `REGRESSED` by `bench compare` blocks. |
+| d. query set latency (warm) | < 200ms each | 5 of 27 run over, max about 569ms (`compact-markdown-text`), record `v0.2.0-2026-10-18`. Accepted. A query flagged `REGRESSED` by `bench compare` blocks. |
 | d. hit addresses round-trip through `read` | all | Must pass. |
 
 ## 6. Two real agent sessions
