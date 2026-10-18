@@ -66,8 +66,12 @@ $ flopwire grep 'next_cursor' --repo api --since 24h
 
 ## Install
 
-Install Git and Go 1.26.6 or later, then
-[build and install Flopwire](docs/quick-start-local.md#install).
+```sh
+curl -fsSL https://flopwire.com/install.sh | sh
+```
+
+The script installs the `flopwire` binary for macOS and Linux (arm64 and
+amd64) into `~/.local/bin` and verifies its checksum.
 
 ## Try it on one machine
 
