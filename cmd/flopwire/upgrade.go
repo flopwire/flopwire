@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,10 +52,13 @@ func upgradeCommand(ctx context.Context, args []string, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "flopwire %s; installing %s into %s\n", version, orLatest(*want), target)
 	res, err := upgrade.Install(ctx, upgrade.Options{Version: *want, Dir: target, Restart: upgrade.RestartLaunchd})
+	if res.Binary != "" {
+		// The rename happened: say so even when the restart after it failed.
+		fmt.Fprintf(w, "installed flopwire %s at %s\n", res.Version, res.Binary)
+	}
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "installed flopwire %s at %s\n", res.Version, res.Binary)
 	if res.Restart != "" {
 		fmt.Fprintln(w, res.Restart)
 	}
@@ -92,11 +96,20 @@ func upgradeCheck(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("latest release: %w", err)
 	}
 	fmt.Fprintf(w, "latest release: %s\n", latest)
+	// One unauthenticated readiness request records the server's version
+	// (client.ServerVersion) when a server is configured.
+	if cfg, err := client.Load(); err == nil && cfg.Server != "" {
+		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.Server, "/")+"/healthz", nil); err == nil {
+			if res, err := cfg.HTTPClient().Do(req); err == nil {
+				res.Body.Close()
+			}
+		}
+	}
 	if server := client.ServerVersion(); server != "" {
 		fmt.Fprintf(w, "server: %s\n", server)
-	}
-	if server := client.ServerVersion(); upgrade.Newer(latest, server) {
-		latest = server
+		if upgrade.Newer(latest, server) {
+			latest = server
+		}
 	}
 	switch {
 	case upgrade.Newer(version, latest):

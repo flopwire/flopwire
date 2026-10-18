@@ -21,8 +21,9 @@ func recordServerVersion(v string) {
 }
 
 // ServerVersion is the version the server reported in its last response
-// to this process, "" before any. The device agent compares it with its
-// own version (upgrade.Notice).
+// to this process, "" before any: every response through NewHTTPClient's
+// transport records it. The device agent compares it with its own
+// version (upgrade.Notice).
 func ServerVersion() string {
 	serverVersionMu.Lock()
 	defer serverVersionMu.Unlock()

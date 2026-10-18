@@ -122,6 +122,9 @@ type Response struct {
 	Version       string `json:"version,omitempty"`
 	ServerVersion string `json:"server_version,omitempty"`
 	Upgrade       string `json:"upgrade,omitempty"`
+	// Latest (status) is the release Upgrade names: the server's version
+	// or the published release, whichever is newer; "" without a notice.
+	Latest string `json:"latest,omitempty"`
 
 	// Message bus. Messages (pending): the session's undelivered messages,
 	// oldest first, now leased to the caller; each one's Attempt above 1
@@ -289,7 +292,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		if a.cfg.ServerVersion != nil {
 			resp.ServerVersion = a.cfg.ServerVersion()
 		}
-		resp.Upgrade = a.upgradeNotice()
+		resp.Upgrade, resp.Latest = a.upgradeNotice()
 		// Diagnostics must finish before the CLI's five-second socket budget.
 		// Never leave background scans running after that client goes away.
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -450,7 +453,7 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 		}
 		resp.Excerpts = a.refExcerpts(ctx, resp.Messages)
 		if req.Start != "" {
-			resp.Upgrade = a.upgradeNotice()
+			resp.Upgrade, _ = a.upgradeNotice()
 		}
 	case "confirm":
 		err = b.Confirm(ctx, req.Session, req.IDs)

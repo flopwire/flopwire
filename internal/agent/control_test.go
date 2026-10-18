@@ -700,6 +700,12 @@ func TestControlUpgradeNotice(t *testing.T) {
 	if s := ask(t, f.a, Request{Op: "status"}); !strings.Contains(s.Upgrade, "v0.3.0 is available") {
 		t.Fatalf("published release ignored: %q", s.Upgrade)
 	}
+	// A server built from a checkout reports a non-release version, which
+	// hides nothing.
+	f.a.cfg.ServerVersion = func() string { return "abc123def456" }
+	if s := ask(t, f.a, Request{Op: "status"}); !strings.Contains(s.Upgrade, "v0.3.0 is available") || s.Latest != "v0.3.0" {
+		t.Fatalf("dev server hides the published release: %q latest %q", s.Upgrade, s.Latest)
+	}
 	// And feeds a device with no server at all.
 	f.a.cfg.ServerVersion = nil
 	if s := ask(t, f.a, Request{Op: "status"}); !strings.Contains(s.Upgrade, "v0.3.0 is available") || s.ServerVersion != "" {

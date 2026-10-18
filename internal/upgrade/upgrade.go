@@ -51,6 +51,12 @@ func Parse(v string) (parts [3]int, ok bool) {
 	return parts, true
 }
 
+// IsRelease reports whether v is a release version (vX.Y.Z).
+func IsRelease(v string) bool {
+	_, ok := Parse(v)
+	return ok
+}
+
 // Newer reports whether latest is a release version newer than current.
 // It is false when either is not a release version: a development build
 // is never told to upgrade, and an unparseable server version never

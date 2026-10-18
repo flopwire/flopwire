@@ -68,7 +68,7 @@ func (c HTTP) do(ctx context.Context, method, path string, body io.Reader, heade
 		return err
 	}
 	defer res.Body.Close()
-	recordServerVersion(res.Header.Get(serverVersionHeader))
+	recordServerVersion(res.Header.Get(serverVersionHeader)) // also for a caller-supplied Client
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		// The body is not echoed: a proxy or server error page can carry
 		// request values, and callers print this error.

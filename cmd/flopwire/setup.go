@@ -464,7 +464,7 @@ func runSetup(ctx context.Context, env *setupEnv) setupReport {
 			cancel()
 			agentCred = resp.Credential
 			if resp.Upgrade != "" {
-				rep.Flopwire.Latest = resp.ServerVersion
+				rep.Flopwire.Latest = resp.Latest
 				rep.Todo = append(rep.Todo, resp.Upgrade)
 			}
 			if agentCred == nil {

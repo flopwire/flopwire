@@ -292,7 +292,8 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	// Once a day the agent asks github.com for the newest release (one
 	// HEAD request, no token), so a device with no server still hears
 	// about upgrades. FLOPWIRE_NO_RELEASE_CHECK=1 turns that off.
-	if os.Getenv("FLOPWIRE_NO_RELEASE_CHECK") == "" {
+	// A development build is never told to upgrade, so it does not ask.
+	if os.Getenv("FLOPWIRE_NO_RELEASE_CHECK") == "" && upgrade.IsRelease(version) {
 		cfg.ReleaseCheck = func(ctx context.Context) (string, error) { return upgrade.Latest(ctx, nil, "") }
 	}
 	// Path rules (D18): the user's in <config dir>/path-rules, the client

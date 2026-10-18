@@ -15,11 +15,14 @@ var upgradeLogMu sync.Mutex
 const releaseCheckDelay = time.Minute
 
 // latestKnown is the newest release this agent has heard of: the server's
-// version or the published release, whichever is newer.
+// version or the published release, whichever is newer. A server that
+// reports a development build does not count.
 func (a *Agent) latestKnown() string {
 	latest := ""
 	if a.cfg.ServerVersion != nil {
-		latest = a.cfg.ServerVersion()
+		if v := a.cfg.ServerVersion(); upgrade.IsRelease(v) {
+			latest = v
+		}
 	}
 	upgradeLogMu.Lock()
 	published := a.latestRelease
@@ -30,14 +33,14 @@ func (a *Agent) latestKnown() string {
 	return latest
 }
 
-// upgradeNotice is the upgrade line for this device, "" when no newer
-// release than cfg.Version is known. The first time a given version earns
-// a notice, the agent logs it.
-func (a *Agent) upgradeNotice() string {
-	latest := a.latestKnown()
-	n := upgrade.Notice(a.cfg.Version, latest)
-	if n == "" {
-		return ""
+// upgradeNotice is the upgrade line for this device and the release it
+// names, "" when no newer release than cfg.Version is known. The first
+// time a given version earns a notice, the agent logs it.
+func (a *Agent) upgradeNotice() (notice, latest string) {
+	latest = a.latestKnown()
+	notice = upgrade.Notice(a.cfg.Version, latest)
+	if notice == "" {
+		return "", ""
 	}
 	upgradeLogMu.Lock()
 	logged := a.upgradeLogged == latest
@@ -46,7 +49,7 @@ func (a *Agent) upgradeNotice() string {
 	if !logged && a.log != nil {
 		a.log.Info("agent: a newer flopwire release is available", "device", a.cfg.Version, "latest", latest, "upgrade", upgrade.InstallCommand)
 	}
-	return n
+	return notice, latest
 }
 
 // runReleaseCheck asks ReleaseCheck for the newest release after

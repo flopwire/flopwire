@@ -1442,7 +1442,7 @@ func TestSetupCheckReportsUpgrade(t *testing.T) {
 	t.Setenv("FLOPWIRE_CONFIG", filepath.Join(shortSockDir(t), "config.json"))
 	fa := startFakeAgent(t, func(r agent.Request) agent.Response {
 		if r.Op == "status" {
-			return agent.Response{OK: true, Version: "v0.1.0", ServerVersion: "v0.2.0",
+			return agent.Response{OK: true, Version: "v0.1.0", ServerVersion: "v0.1.0", Latest: "v0.2.0",
 				Upgrade: "flopwire v0.2.0 is available; this device runs v0.1.0. Upgrade with: flopwire upgrade"}
 		}
 		return agent.Response{OK: true}
