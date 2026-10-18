@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -151,23 +152,25 @@ func (h *harness) checkFixtureProvenance(t *testing.T, d *device, agent, session
 			return false, fmt.Errorf("no live fixture rows; %s", h.pathGenerations(d, path))
 		}
 		want := fixtureRow{Device: d.id, Agent: agent, Path: path, FileID: fileID, Generation: generation, GenerationExists: true}
-		var diffs []string
+		var diffs []rowDiff
 		for _, row := range got {
-			if diff := provenanceDiff(want, row); diff != "" {
-				diffs = append(diffs, diff)
+			if pattern := provenanceDiff(want, row); pattern != "" {
+				diffs = append(diffs, rowDiff{pattern, fmt.Sprintf("%s:%s line %d", row.Content.Kind, row.Content.Native, row.Content.Line)})
 			}
 		}
 		if len(diffs) == 0 {
 			return true, nil
 		}
 		// Name what differs, so a failure can tell a harness expectation
-		// defect from a sync lifecycle defect (#410). Pre-boundary rows of
-		// the previous file that were never superseded, or an extra
-		// generation on the new file, each show up as their own line.
+		// defect from a sync lifecycle defect (#410). Live rows left on the
+		// previous file, or an extra generation on the new file, each fold
+		// into their own pattern with sample rows.
 		return false, fmt.Errorf("%d of %d live rows differ from the scenario expectation (file=%s generation=%d):\n%s\n%s",
-			len(diffs), len(got), fileID, generation, strings.Join(summarize(diffs, 8), "\n"), h.pathGenerations(d, path))
+			len(diffs), len(got), fileID, generation, strings.Join(foldDiffs(diffs, 3), "\n"), h.pathGenerations(d, path))
 	})
 }
+
+type rowDiff struct{ pattern, row string }
 
 // provenanceDiff names the identity fields of row that differ from want.
 // Content fields are not compared: the caller verifies those separately.
@@ -188,33 +191,31 @@ func provenanceDiff(want, row fixtureRow) string {
 	if !row.GenerationExists {
 		fields = append(fields, "generation row missing")
 	}
-	if len(fields) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("  %s line %d: %s", row.Content.Kind, row.Content.Line, strings.Join(fields, ", "))
+	return strings.Join(fields, ", ")
 }
 
-// summarize folds identical lines and caps the list so a large session does
-// not flood the failure message.
-func summarize(lines []string, limit int) []string {
-	counts := map[string]int{}
-	var order []string
-	for _, l := range lines {
-		if counts[l] == 0 {
-			order = append(order, l)
-		}
-		counts[l]++
+// foldDiffs groups rows by what differs, sorted by pattern, with up to
+// samples identifying rows per pattern, so a large session stays readable.
+func foldDiffs(diffs []rowDiff, samples int) []string {
+	byPattern := map[string][]string{}
+	for _, d := range diffs {
+		byPattern[d.pattern] = append(byPattern[d.pattern], d.row)
 	}
+	patterns := make([]string, 0, len(byPattern))
+	for p := range byPattern {
+		patterns = append(patterns, p)
+	}
+	sort.Strings(patterns)
 	var out []string
-	for i, l := range order {
-		if i == limit {
-			out = append(out, fmt.Sprintf("  ... %d more distinct lines", len(order)-limit))
-			break
+	for _, p := range patterns {
+		rows := byPattern[p]
+		sort.Strings(rows)
+		shown := rows
+		more := ""
+		if len(rows) > samples {
+			shown, more = rows[:samples], fmt.Sprintf(" ... +%d", len(rows)-samples)
 		}
-		if counts[l] > 1 {
-			l = fmt.Sprintf("%s (x%d)", l, counts[l])
-		}
-		out = append(out, l)
+		out = append(out, fmt.Sprintf("  %d row(s): %s [%s%s]", len(rows), p, strings.Join(shown, "; "), more))
 	}
 	return out
 }
@@ -222,12 +223,18 @@ func summarize(lines []string, limit int) []string {
 // pathGenerations describes every source row and generation the server holds
 // at the path, with live and superseded message counts, for failure output.
 func (h *harness) pathGenerations(d *device, path string) string {
-	rows, err := h.pg.Query(h.ctx, `SELECT s.file_id, g.generation, g.complete,
+	// Messages are grouped by their own generation and joined to the
+	// generation table from there, so rows whose generation row is missing
+	// still appear (as complete=NULL) instead of vanishing from the list.
+	rows, err := h.pg.Query(h.ctx, `SELECT s.file_id, mg.generation, g.complete,
 		count(m.id) FILTER (WHERE NOT m.superseded), count(m.id) FILTER (WHERE m.superseded)
-		FROM sources s LEFT JOIN generations g ON g.source_id=s.id
-		LEFT JOIN messages m ON m.source_id=s.id AND m.source_generation=g.generation
+		FROM sources s
+		LEFT JOIN (SELECT source_id, generation FROM generations
+		           UNION SELECT source_id, source_generation FROM messages WHERE source_id IS NOT NULL) mg ON mg.source_id=s.id
+		LEFT JOIN generations g ON g.source_id=s.id AND g.generation=mg.generation
+		LEFT JOIN messages m ON m.source_id=s.id AND m.source_generation=mg.generation
 		WHERE s.device_id=$1 AND s.path=$2
-		GROUP BY s.id, s.file_id, g.generation, g.complete ORDER BY s.first_seen_at, g.generation`, d.id, path)
+		GROUP BY s.id, s.file_id, mg.generation, g.complete ORDER BY s.first_seen_at, mg.generation`, d.id, path)
 	if err != nil {
 		return "server generations at the path: query failed: " + err.Error()
 	}
@@ -245,7 +252,11 @@ func (h *harness) pathGenerations(d *device, path string) string {
 			out = append(out, fmt.Sprintf("file=%s (no generation rows)", fileID))
 			continue
 		}
-		out = append(out, fmt.Sprintf("file=%s generation=%d complete=%t live=%d superseded=%d", fileID, *gen, *complete, live, superseded))
+		state := "generation row missing"
+		if complete != nil {
+			state = fmt.Sprintf("complete=%t", *complete)
+		}
+		out = append(out, fmt.Sprintf("file=%s generation=%d %s live=%d superseded=%d", fileID, *gen, state, live, superseded))
 	}
 	if err := rows.Err(); err != nil {
 		return "server generations at the path: " + err.Error()
@@ -333,9 +344,8 @@ func TestProvenanceDiffNamesFields(t *testing.T) {
 	}
 	got := want
 	got.FileID, got.Generation, got.GenerationExists = "old", 0, false
-	got.Content.Kind, got.Content.Line = "user", 7
 	d := provenanceDiff(want, got)
-	for _, s := range []string{"user line 7", `file="old" (want "new")`, "generation=0 (want 1)", "generation row missing"} {
+	for _, s := range []string{`file="old" (want "new")`, "generation=0 (want 1)", "generation row missing"} {
 		if !strings.Contains(d, s) {
 			t.Fatalf("diff %q lacks %q", d, s)
 		}
@@ -343,8 +353,8 @@ func TestProvenanceDiffNamesFields(t *testing.T) {
 	if strings.Contains(d, "device=") || strings.Contains(d, "path=") {
 		t.Fatalf("diff %q names a matching field", d)
 	}
-	lines := summarize([]string{"a", "a", "b", "c"}, 2)
-	if len(lines) != 3 || lines[0] != "a (x2)" || lines[1] != "b" || lines[2] != "  ... 1 more distinct lines" {
-		t.Fatalf("summarize: %q", lines)
+	lines := foldDiffs([]rowDiff{{"b", "r3"}, {"a", "r2"}, {"a", "r1"}, {"a", "r0"}}, 2)
+	if len(lines) != 2 || lines[0] != "  3 row(s): a [r0; r1 ... +1]" || lines[1] != "  1 row(s): b [r3]" {
+		t.Fatalf("foldDiffs: %q", lines)
 	}
 }
