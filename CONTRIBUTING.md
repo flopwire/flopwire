@@ -75,9 +75,8 @@ Every pull request has two sections:
 
 Visual changes add a **Before and after** section with captures from the
 running app. Main uses a merge queue: a pull request with passing `test`, `e2e-sync`
-and `perf-gate` checks is queued, the checks run again on top of main,
-and GitHub squash-merges it. `gh pr merge --squash --auto` adds it to the
-queue.
+and `perf-gate` checks is queued, the checks run again on a temporary branch with
+main and the pull requests ahead of it, and GitHub squash-merges it. `gh pr merge --auto` adds it to the queue.
 
 The full policy, including stacked pull requests, evidence, visual captures,
 merge and worktree cleanup, is in
