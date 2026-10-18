@@ -260,7 +260,15 @@ func (w *writeTx) saveWatermark(sourceID int64, wm *transcript.Watermark, state 
 // Rows written afterwards carry it as source_generation; SupersedeAbsent
 // then retires rows of earlier generations that the new one did not touch.
 func (s *Store) StartGeneration(ctx context.Context, sourceID int64, g transcript.Generation, reason string) error {
-	return s.write(ctx, func(w *writeTx) error { return w.startGeneration(sourceID, &g, reason) })
+	return s.send(ctx, startGenerationRequest(ctx, sourceID, g, reason))
+}
+
+// Only the public metadata write preserves checkpoints. ApplyBatch.NewGeneration
+// keeps its separate reparse invalidation before calling startGeneration.
+func startGenerationRequest(ctx context.Context, sourceID int64, g transcript.Generation, reason string) writeReq {
+	return writeReq{ctx: ctx, done: make(chan error, 1), projection: projectionPreserveStartGeneration, fn: func(w *writeTx) error {
+		return w.startGeneration(sourceID, &g, reason)
+	}}
 }
 
 func (w *writeTx) startGeneration(sourceID int64, g *transcript.Generation, reason string) error {
