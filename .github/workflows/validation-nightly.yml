@@ -1,0 +1,132 @@
+name: Nightly validation
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/validation-nightly.yml
+      - scripts/nightly-codex*
+      - scripts/nightly-validation-issue*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS runtime
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test nightly automation without credentials
+        run: |
+          python3 scripts/nightly-codex_test.py
+          node --test scripts/nightly-validation-issue_test.cjs
+      # These packages exercise the native watcher, filesystem identity,
+      # process detection, local sockets, setup and local message delivery.
+      # Server integration tests remain in the Linux CI service jobs.
+      - name: Native agent and CLI tests
+        run: scripts/ci-go-test.sh -count=1 -timeout=20m -race ./internal/agent ./internal/retrieval/local ./internal/localindex ./cmd/flopwire
+      - name: Guards that skip under the race detector
+        run: >-
+          go test -count=1 -timeout=5m -v
+          -run '^(TestLocalRedactionScrubDoesNotStallWriter|TestScanAndSumAllocsBounded|TestParseAllocsPerMessage)$'
+          ./internal/localindex ./internal/devicesync ./internal/transcript/claude
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-macos
+          path: ${{ runner.temp }}/go-test.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  codex:
+    name: Codex installed plugin
+    # Credentials and live model calls are restricted to trusted main runs.
+    if: github.repository == 'flopwire/flopwire' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 20
+    outputs:
+      configured: ${{ steps.credentials.outputs.configured }}
+    steps:
+      - name: Check API credential availability
+        id: credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [[ -z "$OPENAI_API_KEY" ]]; then
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Codex probe not run: add the OPENAI_API_KEY repository Actions secret.'
+            echo '### Codex: setup required' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Add the OPENAI_API_KEY repository Actions secret. No live Codex checks ran.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.credentials.outputs.configured == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        if: steps.credentials.outputs.configured == 'true'
+        with:
+          go-version: "1.26.6"
+      - uses: actions/setup-node@v4
+        if: steps.credentials.outputs.configured == 'true'
+        with:
+          node-version: "24"
+      - name: Install current stable Codex and build Flopwire
+        if: steps.credentials.outputs.configured == 'true'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-cli" @openai/codex@latest
+          echo "$RUNNER_TEMP/codex-cli/node_modules/.bin" >> "$GITHUB_PATH"
+          go build -trimpath -o "$RUNNER_TEMP/flopwire" ./cmd/flopwire
+      - name: Test installed plugin and collect usage
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 scripts/nightly-codex.py "$RUNNER_TEMP/flopwire" "$RUNNER_TEMP/codex-report"
+      # Never upload the scratch home, auth.json, or raw model transcripts.
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.credentials.outputs.configured == 'true'
+        with:
+          name: nightly-codex
+          path: |
+            ${{ runner.temp }}/codex-report/summary.json
+            ${{ runner.temp }}/codex-report/probe.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  report:
+    name: Report nightly failures
+    needs: [macos, codex]
+    if: always() && github.repository == 'flopwire/flopwire' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        env:
+          VALIDATION_NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const report = require('./scripts/nightly-validation-issue.cjs');
+            await report({github, context, core, needs: JSON.parse(process.env.VALIDATION_NEEDS)});

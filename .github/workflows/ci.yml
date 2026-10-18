@@ -148,6 +148,8 @@ jobs:
       - run: scripts/perf-baseline_test.sh
       - run: sh scripts/e2e-search_test.sh
       - run: python3 scripts/qualify-agent-workflow_test.py
+      - run: python3 scripts/nightly-codex_test.py
+      - run: node --test scripts/nightly-validation-issue_test.cjs
       - name: Build the image with the release version
         env:
           FLOPWIRE_BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
