@@ -525,3 +525,50 @@ func TestSyncUpToStopsAtBound(t *testing.T) {
 	e.sync(sp)
 	e.requireServerHas(sp.Path, id, 0, data)
 }
+
+func TestSyncUpToAppendWithUnchangedBoundKeepsGeneration(t *testing.T) {
+	e := newEnv(t, Config{}, 1<<20)
+	sp := e.spec("rollout.jsonl", transcript.StorageJSONLAppend)
+	initial := jsonlLines(4, 20, 250)
+	appendFile(t, sp.Path, initial)
+	e.sync(sp)
+	before, err := transcript.StatIdentity(sp.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := jsonlLines(5, 20, 250)
+	appendFile(t, sp.Path, added)
+	after, err := transcript.StatIdentity(sp.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.CTime == after.CTime {
+		t.Fatal("append did not change ctime")
+	}
+	// The scheduler can retry with the index's old bound while newly
+	// appended records are still waiting for a parse.
+	if err := e.sy.SyncUpTo(t.Context(), sp, int64(len(initial))); err != nil {
+		t.Fatal(err)
+	}
+	src, err := e.store.source(t.Context(), sp.Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Gen != 0 {
+		t.Fatalf("bounded append started generation %d; want 0", src.Gen)
+	}
+	e.requireServerHas(sp.Path, after.ID.String(), 0, initial)
+	e.sync(sp)
+	e.requireServerHas(sp.Path, after.ID.String(), 0, append(initial, added...))
+	// A later real replacement must advance exactly once, as the
+	// two-device compaction scenario requires after append traffic.
+	tmp := sp.Path + ".tmp"
+	if err := os.WriteFile(tmp, added, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, sp.Path); err != nil {
+		t.Fatal(err)
+	}
+	e.sync(sp)
+	e.requireServerHas(sp.Path, fileIDOf(t, sp.Path), 1, added)
+}
