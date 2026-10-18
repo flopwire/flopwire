@@ -12,7 +12,7 @@ description = "Test-only oracle: dumps franken_agent_detection NormalizedConvers
 # FAD, the connector crate underneath CASS (MIT, Jeff Emanuel):
 # https://github.com/Dicklesworthstone/franken_agent_detection, git c06d1cb.
 # Wave-1 harnesses are Claude Code, Codex (both in "connectors") and Devin.
-franken-agent-detection = { version = "=0.3.1", features = ["connectors", "devin"] }
+franken-agent-detection = { version = "=0.3.10", features = ["connectors", "devin"] }
 serde_json = "1"
 
 [workspace]
