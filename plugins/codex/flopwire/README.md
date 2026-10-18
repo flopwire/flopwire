@@ -6,7 +6,7 @@ The plugin connects Codex to Flopwire. It adds these parts:
 |---|---|
 | MCP server `flopwire` | Runs `flopwire mcp` through the shim `bin/flopwire-hook`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
 | Hooks | Run `flopwire hook` through the shim `bin/flopwire-hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout (3 seconds for `SessionEnd`, the most Codex allows). The `Stop` hook is `async`, so Codex ignores text that your shell's startup files print, unless that text starts with `{` or `[`. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
-| Skill `flopwire:messaging` | Tells the model how to find the session behind a change, check that it is live, and write a message to it. The text is the same as in the Claude Code plugin. |
+| Skill `flopwire:messaging` | Tells the model when and how to recover prior research, plans, decisions and results from past or ongoing conversations, and how to contact a live session. Covers local history and shared history across connected machines and team members when configured. The text is the same as in the Claude Code plugin. |
 
 ## Requirements
 

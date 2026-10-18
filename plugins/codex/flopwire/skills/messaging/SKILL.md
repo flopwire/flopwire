@@ -1,9 +1,13 @@
 ---
 name: messaging
-description: Find prior coordination, contact the session behind a change, or answer a <flopwire-message> through Flopwire.
+description: Search past and ongoing agent conversations and coordinate with live sessions, locally or across connected machines and team members when configured. Use when the user references earlier work or conversations; when you need prior research, plans, decisions, attempts or results; when another session's work affects yours; or when you must answer a <flopwire-message>.
 ---
 
-# Coordinate through Flopwire
+# Recover context and coordinate through Flopwire
+
+Flopwire searches conversations from connected agent tools, including research, planning, writing, troubleshooting and coding. Search works after a session has ended and while it is ongoing. By default, before enrollment, search covers this device; after enrollment, it uses the shared server's history across connected machines and team members. Results name their scope. Messaging can also reach sessions across connected machines and team members when configured.
+
+No live session or message is needed to recover history. Contact another session when its unfinished work or an unexplained decision blocks your next step, or when it needs a finding from you, subject to your session's authorization.
 
 ## Route by the question
 

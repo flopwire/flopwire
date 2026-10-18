@@ -88,6 +88,32 @@ reboots: [docs/agent.md](docs/agent.md#run-the-agent). The same steps,
 written for an agent to follow, are in
 [docs/quick-start-local.md](docs/quick-start-local.md).
 
+## What your agents see
+
+After `flopwire setup` and a session restart, agents get:
+
+- **Tools to search and coordinate.** MCP tools search past and ongoing
+  conversations, read source passages, find the sessions behind changes,
+  and message live agents. History includes research, planning, writing,
+  troubleshooting and coding. A session need not be running to read it.
+- **Guidance on when to use them.** The `flopwire:messaging` skill advertises
+  prior-context retrieval and coordination. Its instructions explain how
+  to recover earlier decisions and attempts, check evidence, and contact
+  the right session. The skill description is available for discovery;
+  its full instructions load when the agent uses it.
+- **Incoming messages in their conversation.** Hooks deliver messages and
+  instructions for handling them within the session's existing permissions.
+  Messages do not start a turn in an idle session.
+
+Claude Code, Codex and Devin CLI get the tools, hooks and skill through
+plugins. Codex requires one-time hook approval. opencode gets plugin tools
+and prompt guidance instead of a separate skill.
+
+Search defaults to this device before enrollment and shared history after
+it. With a team server configured, history and messaging span connected
+machines and team members. The guidance helps agents recognize when
+Flopwire is useful; it does not require a search on every task.
+
 ## Add a team server
 
 One self-hosted server joins every teammate's devices into one network and
