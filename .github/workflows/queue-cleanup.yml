@@ -1,0 +1,36 @@
+name: Merge queue cleanup
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [dequeued]
+  delete:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  cleanup:
+    if: >-
+      github.event_name != 'delete' ||
+      (github.event.ref_type == 'branch' && startsWith(github.event.ref, 'gh-readonly-queue/main/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      # Never check out a PR head with the cancellation token.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const cleanup = require('./scripts/cancel-obsolete-merge-groups.cjs');
+            // Allow temporary-ref deletion to propagate after the dequeue event.
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (attempt) await new Promise(resolve => setTimeout(resolve, 20000));
+              await cleanup({github, context, core});
+            }
