@@ -522,7 +522,6 @@ func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoo
 				f.Close()
 				return nil
 			}
-			id.Size = upTo
 		}
 	}
 	defer func() {
@@ -555,6 +554,13 @@ func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoo
 		change = ex.change
 	} else if change, err = transcript.Decide(src.Watermark, id, r); err != nil {
 		return err
+	}
+	// Classify the real file before limiting the capture to indexed bytes.
+	// An append can arrive before the index advances its bound. Capping the
+	// identity first makes that growth look like a same-size ctime change,
+	// which incorrectly starts a replacement generation.
+	if ex == nil && upTo >= 0 && id.Size > upTo {
+		id.Size = upTo
 	}
 	if op.canReplaceEmptyCurrent(src, cur) {
 		// Materialize and attest a fresh generation even when the file remains empty.
