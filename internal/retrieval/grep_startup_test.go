@@ -120,3 +120,35 @@ func TestGrepConversationPreselectionBoundary(t *testing.T) {
 		t.Fatalf("hidden session: page=%+v err=%v", page, err)
 	}
 }
+
+// A server deadline loses time before Grep starts. Advice must not offer
+// more time when the request already selected the maximum budget.
+func TestGrepStartupTimeoutAdvice(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		requested, remaining time.Duration
+		wantRaise            bool
+	}{
+		{"default", 0, DefaultBudget, true},
+		{"below maximum", 59 * time.Second, 59 * time.Second, true},
+		{"maximum", MaxBudget, MaxBudget - time.Millisecond, false},
+		{"maximum after preparation", MaxBudget, 10 * time.Second, false},
+		{"clamped request", 2 * MaxBudget, MaxBudget - time.Millisecond, false},
+		{"context maximum", 0, MaxBudget - time.Millisecond, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), tc.remaining)
+			defer cancel()
+			reason := grepStartupTimeoutReason(budget(ctx), tc.requested, "declaring the candidate cursor")
+			if !strings.Contains(reason, "declaring the candidate cursor (checked 0 candidates)") {
+				t.Fatalf("missing startup diagnostics: %s", reason)
+			}
+			if got := strings.Contains(reason, "raise the timeout"); got != tc.wantRaise {
+				t.Fatalf("raise advice = %v, want %v: %s", got, tc.wantRaise, reason)
+			}
+			if !strings.Contains(reason, "narrow with") {
+				t.Fatalf("missing recovery advice: %s", reason)
+			}
+		})
+	}
+}
