@@ -2,7 +2,9 @@ package local
 
 import (
 	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,9 +20,10 @@ import (
 //	FLOPWIRE_CORPUS=1 FLOPWIRE_CORPUS_DB=/path/index.db go test -run TestCorpus ./internal/localindex/
 //	FLOPWIRE_CORPUS=1 FLOPWIRE_CORPUS_DB=/path/index.db go test -run TestCorpus -v ./internal/retrieval/local/
 //
-// It asserts no errors, non-empty results for common patterns (own session
-// included) and no own-session hits with self-exclusion on, and reports
-// latency and the calling-session detection for the shell running it.
+// Fixed patterns are smoke cases, not assumptions about this machine's text.
+// A complete non-FTS reference establishes grep presence, and visible retained
+// text supplies guaranteed positive witnesses for all three verbs. The test
+// also checks self-exclusion and reports latency and calling-session detection.
 func TestCorpus(t *testing.T) {
 	path := os.Getenv("FLOPWIRE_CORPUS_DB")
 	if os.Getenv("FLOPWIRE_CORPUS") == "" || path == "" {
@@ -32,29 +35,49 @@ func TestCorpus(t *testing.T) {
 	}
 	defer s.Close()
 	var rows, convs int64
-	s.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&rows)
-	s.DB().QueryRow(`SELECT count(*) FROM conversations`).Scan(&convs)
+	if err := s.DB().QueryRow(`SELECT count(*) FROM messages`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM conversations`).Scan(&convs); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("index: %d messages, %d conversations", rows, convs)
 	b := &Backend{Store: s}
 	c, ok := NewDetector().Detect(ctx)
 	t.Logf("calling session: %+v found=%v", c, ok)
 
-	type q struct {
-		kind, text string
-		regex      bool
-		wantHits   bool
-	}
+	type q = corpusQuery
 	queries := []q{
-		{"find", "go test -race", false, true}, {"find", "internal/transcript", false, true}, {"find", "gh pr create", false, true},
-		{"find", "no such file or directory", false, true}, {"find", "ENOENT", false, false}, {"find", "::", false, false},
-		{"regex", `func \w+\(ctx context\.Context`, true, true}, {"regex", `exit (code|status) [1-9]`, true, true},
-		{"regex", `\b[A-Z][a-z]+Error\b`, true, true}, {"regex", `v\d+\.\d+\.\d+`, true, true}, {"regex", `(?i)panic: .*nil pointer`, true, false},
-		{"regex", `https?://github\.com/[\w-]+/[\w-]+/pull/\d+`, true, true}, {"regex", `a.b`, true, true},
-		{"search", "sqlite fts5 trigram", false, true}, {"search", "worktree", false, true}, {"search", "exponential backoff retry", false, true},
-		{"search", "cass search", false, false}, {"search", "devin session", false, false},
+		{"find", "go test -race", false}, {"find", "internal/transcript", false}, {"find", "gh pr create", false},
+		{"find", "no such file or directory", false}, {"find", "ENOENT", false}, {"find", "::", false},
+		{"regex", `func \w+\(ctx context\.Context`, true}, {"regex", `exit (code|status) [1-9]`, true},
+		{"regex", `\b[A-Z][a-z]+Error\b`, true}, {"regex", `v\d+\.\d+\.\d+`, true}, {"regex", `(?i)panic: .*nil pointer`, true},
+		{"regex", `https?://github\.com/[\w-]+/[\w-]+/pull/\d+`, true}, {"regex", `a.b`, true},
+		{"search", "sqlite fts5 trigram", false}, {"search", "worktree", false}, {"search", "exponential backoff retry", false},
+		{"search", "cass search", false}, {"search", "devin session", false},
+	}
+	presence, witness, token, err := corpusReference(s, queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived := []q{{"find", token, false}, {"regex", regexp.QuoteMeta(token), true}, {"search", token, false}}
+	queries = append(queries, derived...)
+	presence = append(presence, true, true, true)
+	read, err := b.Read(ctx, format.ReadQuery{Address: strconv.FormatInt(witness.ID, 10), MaxChars: len(witness.Text) + 1}, format.Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := false
+	for _, m := range read.Messages {
+		if m.ID == read.Focus && m.Text == witness.Text {
+			exact = true
+		}
+	}
+	if !exact {
+		t.Fatal("derived witness read differs from stored text")
 	}
 	lat := map[string][]time.Duration{}
-	for _, x := range queries {
+	for qi, x := range queries {
 		for self := range 2 {
 			f := format.Filters{}
 			if self == 1 && ok {
@@ -77,12 +100,33 @@ func TestCorpus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s %q: %v", x.kind, x.text, err)
 			}
-			if self == 0 && x.wantHits && len(hits) == 0 {
-				t.Errorf("%s %q: no hits", x.kind, x.text)
+			if self == 0 && (x.kind != "search" || qi >= len(queries)-3) {
+				if err := corpusPresence(presence[qi], page); err != nil {
+					t.Errorf("%s query %d: %v", x.kind, qi, err)
+				}
+			}
+			if x.kind != "search" {
+				re, err := corpusPattern(x)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, h := range hits {
+					id, err := strconv.ParseInt(h.MessageID, 10, 64)
+					if err != nil {
+						t.Fatal(err)
+					}
+					stored, err := s.Messages(ctx, []int64{id})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(stored) != 1 || !re.MatchString(stored[0].Text) {
+						t.Errorf("%s query %d returned nonmatching text", x.kind, qi)
+					}
+				}
 			}
 			if self == 1 {
 				for _, h := range hits {
-					if h.SessionID == c.SessionID {
+					if ok && h.SessionID == c.SessionID {
 						t.Errorf("%s %q: own session %s not excluded", x.kind, x.text, c.SessionID)
 					}
 				}
