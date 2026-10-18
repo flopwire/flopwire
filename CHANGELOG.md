@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/flopwire/flopwire/compare/v0.2.1...v0.2.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* **mcp:** clarify agent tool purposes and discovery wording ([#408](https://github.com/flopwire/flopwire/issues/408)) ([8cd6e44](https://github.com/flopwire/flopwire/commit/8cd6e44e3655946410be256962ee3a36f73eaeee))
+
 ## [0.2.1](https://github.com/flopwire/flopwire/compare/v0.2.0...v0.2.1) (2026-10-18)
 
 
