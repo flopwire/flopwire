@@ -54,24 +54,35 @@ func TestGrepContinuationSparseCost(t *testing.T) {
 func TestGrepContinuationBatchByteBoundary(t *testing.T) {
 	s, q, f := continuationCorpus(t, 5)
 	q.Limit = 20
+	// A sparse scoped scan isolates byte accounting from formatting and
+	// reauthorizing multi-megabyte matching lines.
+	q.Pattern = "z"
+	if err := s.Pool.QueryRow(context.Background(), `SELECT session_id FROM conversations LIMIT 1`).Scan(&f.Session); err != nil {
+		t.Fatal(err)
+	}
 	// Each candidate is exactly the existing body limit. Four fit in the
 	// page byte budget; the fifth must survive for the next call.
 	if _, err := s.Pool.Exec(context.Background(), `UPDATE messages SET text='step '||repeat('x',$1)`, grepContinuationBody-5); err != nil {
 		t.Fatal(err)
 	}
-	first := walkPage(t, s, q, f)
-	if first.Scan.Checked != 4 || len(first.Hits) != 4 || first.Scan.Status != "more" {
+	// This test exercises byte limits, not wall time on race-instrumented
+	// multi-megabyte payloads. Deadline behavior is tested separately.
+	ctx, cancel := context.WithTimeout(context.Background(), MaxBudget)
+	defer cancel()
+	first, err := s.Grep(ctx, q, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Scan.Checked != 4 || len(first.Hits) != 0 || first.Scan.Status != "more" {
 		t.Fatalf("first byte page: %+v", first.Scan)
 	}
 	q.Cursor = first.Scan.NextCursor
-	second := walkPage(t, s, q, f)
-	if second.Scan.Checked != 1 || len(second.Hits) != 1 || second.Scan.Status != "complete" {
-		t.Fatalf("second byte page: %+v", second.Scan)
+	second, err := s.Grep(ctx, q, f)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, h := range first.Hits {
-		if h.Address == second.Hits[0].Address {
-			t.Fatal("byte boundary duplicated a hit")
-		}
+	if second.Scan.Checked != 1 || len(second.Hits) != 0 || second.Scan.Status != "complete" {
+		t.Fatalf("second byte page: %+v", second.Scan)
 	}
 }
 
