@@ -1,3 +1,5 @@
+<p><img src="landing/assets/brand-mark.svg" alt="Flopwire logo" height="64"></p>
+
 # flopwire
 
 Messaging and shared history for AI agents.
