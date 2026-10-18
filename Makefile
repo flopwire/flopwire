@@ -10,6 +10,7 @@ test:
 	python3 scripts/qualify-agent-workflow_test.py
 	python3 scripts/nightly-codex_test.py
 	node --test scripts/nightly-validation-issue_test.cjs
+	node --test scripts/cancel-obsolete-merge-groups_test.cjs
 
 web:
 	pnpm --dir web build
