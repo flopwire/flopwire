@@ -463,7 +463,13 @@ func TestTwoDeviceSync(t *testing.T) {
 		tail := boundary + d1.claudeUser("Summary of the earlier conversation.") + d1.claudeUser(post) + d1.claudeAssistant("noted after")
 		appendFile(t, d1.claudePath, tail)
 		h.waitSessionSynced(t, d1, transcript.AgentClaude, d1.claudePath, d1.claudeSID, time.Minute)
-		old, _ := transcript.StatIdentity(d1.claudePath)
+		old, err := transcript.StatIdentity(d1.claudePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Append traffic, including retries with an unchanged indexed bound,
+		// must not consume a replacement generation before compaction.
+		h.checkFixtureProvenance(t, d1, "claude", d1.claudeSID, d1.claudePath, old.ID.String(), 0)
 
 		// Rewrite without the pre-boundary history, as a new inode.
 		tmp := d1.claudePath + ".tmp"
@@ -471,7 +477,10 @@ func TestTwoDeviceSync(t *testing.T) {
 		if err := os.Rename(tmp, d1.claudePath); err != nil {
 			t.Fatal(err)
 		}
-		cur, _ := transcript.StatIdentity(d1.claudePath)
+		cur, err := transcript.StatIdentity(d1.claudePath)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if cur.ID == old.ID {
 			t.Fatal("rewrite kept the inode")
 		}
