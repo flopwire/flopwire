@@ -217,12 +217,12 @@ func TestCodexPluginHooksThroughShim(t *testing.T) {
 }
 
 // codexMCPEnvVars are the variables that choose where flopwire finds its
-// config (and so the agent's socket) and its index. Codex starts an MCP
+// config, agent socket and index. Codex starts an MCP
 // server with only HOME, PATH, USER and a few more, so without env_vars a
 // user who sets one of these gets an MCP server that looks in another
 // place than the agent and the hooks: agent_not_running and "no index
 // yet" for good.
-var codexMCPEnvVars = []string{"FLOPWIRE_CONFIG", "FLOPWIRE_INDEX", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"}
+var codexMCPEnvVars = []string{"FLOPWIRE_CONFIG", "FLOPWIRE_INDEX", "FLOPWIRE_SOCKET", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"}
 
 func TestCodexPluginMCP(t *testing.T) {
 	var m struct {
