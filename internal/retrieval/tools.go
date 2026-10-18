@@ -335,11 +335,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	if timedOut(err) {
 		page.Truncated = true
 		if checked == 0 {
-			raise := ""
-			if b < MaxBudget {
-				raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
-			}
-			page.Reason = fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), startupStage, raise)
+			page.Reason = grepStartupTimeoutReason(b, gq.Timeout, startupStage)
 		} else {
 			page.Reason = fmt.Sprintf("timed out after %s: checked %d candidates, %s; narrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), checked, direction)
 		}
@@ -1301,4 +1297,14 @@ func (s *Store) RawAt(ctx context.Context, deviceID, address string) ([]byte, fo
 		return nil, a, err
 	}
 	return s.fetch(ctx, a, offset, length)
+}
+
+func grepStartupTimeoutReason(b, requested time.Duration, stage string) string {
+	raise := ""
+	// The context budget has already lost preparation time. Also match the
+	// displayed precision when only a caller deadline supplies the budget.
+	if requested < MaxBudget && b.Round(time.Second) < MaxBudget {
+		raise = fmt.Sprintf("raise the timeout (--timeout, or the timeout argument, up to %ds) or ", int(MaxBudget.Seconds()))
+	}
+	return fmt.Sprintf("timed out after %s while %s (checked 0 candidates); %snarrow with --agent, --repo, --kind or --since, or a longer literal", b.Round(time.Second), stage, raise)
 }
