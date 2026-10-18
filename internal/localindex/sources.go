@@ -340,40 +340,16 @@ func (s *Store) UpsertCompanion(ctx context.Context, c Companion) error {
 	})
 }
 
-// LinkCompanionOwner repairs an existing unlinked row using ownership from
-// native discovery. It does not read or change captured bytes or their digest.
-// It returns true when the row belongs to this owner, including on retries.
-// A denied companion needs this repair too, so policy purge can find it.
-func (s *Store) LinkCompanionOwner(ctx context.Context, c Companion) (bool, error) {
-	if c.SessionID == "" || c.Agent == "" {
-		return false, errors.New("companion owner requires agent and session id")
-	}
-	linked := false
-	err := s.write(ctx, func(w *writeTx) error {
-		row, err := w.queryRow(`SELECT p.id FROM companions p WHERE p.path=?
-			AND (NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=p.conversation_id)
-			 OR EXISTS (SELECT 1 FROM conversations c WHERE c.id=p.conversation_id
-			   AND c.device_id=? AND c.agent=? AND c.session_id=?))`, c.Path, s.opts.DeviceID, string(c.Agent), c.SessionID)
-		if err != nil {
-			return err
-		}
-		var id int64
-		if err := row.Scan(&id); errors.Is(err, sql.ErrNoRows) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		convID, err := w.conversationID(string(c.Agent), c.SessionID, c.SourceID)
-		if err != nil {
-			return err
-		}
-		if _, err := w.exec(`UPDATE companions SET conversation_id=? WHERE id=? AND conversation_id IS NOT ?`, convID, id, convID); err != nil {
-			return err
-		}
-		linked = true
-		return nil
+// PurgeUnlinkedCompanion removes only orphan metadata at an exact path.
+// The caller must establish the path's policy scope and commit any required
+// historical provenance before deleting this evidence. Linked companions are
+// removed by PurgeConversation instead.
+func (s *Store) PurgeUnlinkedCompanion(ctx context.Context, path string) error {
+	return s.write(ctx, func(w *writeTx) error {
+		_, err := w.exec(`DELETE FROM companions WHERE path=?
+			AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id=companions.conversation_id)`, path)
+		return err
 	})
-	return linked, err
 }
 
 func mustAffect(res sql.Result, what string, id int64) error {

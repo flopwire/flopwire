@@ -56,12 +56,16 @@ func TestCompanionBeforeOwnerSurvivesRestartAndPurges(t *testing.T) {
 	}
 }
 
-func TestLinkCompanionOwnerPreservesCapturedEvidence(t *testing.T) {
+func TestPurgeUnlinkedCompanionPreservesLinkedAndUnrelatedEvidence(t *testing.T) {
 	s := openEvidenceTest(t)
-	// Legacy row with no stored owner or source identity.
-	c := Companion{Path: "/synthetic/result.txt", Size: 12, ContentSHA: bytes.Repeat([]byte{7}, 32)}
-	if err := s.UpsertCompanion(ctx, c); err != nil {
-		t.Fatal(err)
+	for _, c := range []Companion{
+		{Path: "/synthetic/orphan.txt", Size: 12},
+		{Path: "/synthetic/other-orphan.txt", Size: 9},
+		{Agent: transcript.AgentClaude, SessionID: "owner", Path: "/synthetic/linked.txt", Size: 7, ContentSHA: bytes.Repeat([]byte{7}, 32)},
+	} {
+		if err := s.UpsertCompanion(ctx, c); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -70,40 +74,32 @@ func TestLinkCompanionOwnerPreservesCapturedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := sizes[c.Path]; ok {
-		t.Fatal("unlinked row would skip discovery repair")
+	if len(sizes) != 1 || sizes["/synthetic/linked.txt"] != 7 {
+		t.Fatalf("startup sizes=%v", sizes)
 	}
-	c.Agent, c.SessionID = transcript.AgentClaude, "owner"
-	linked, err := s.LinkCompanionOwner(ctx, c)
-	if err != nil || !linked {
-		t.Fatalf("repair=%v %v", linked, err)
+	for _, path := range []string{"/synthetic/orphan.txt", "/synthetic/orphan.txt", "/synthetic/linked.txt", "/synthetic/missing.txt"} {
+		if err := s.PurgeUnlinkedCompanion(ctx, path); err != nil {
+			t.Fatal(err)
+		}
 	}
-	digest, err := s.CompanionDigest(ctx, c.Path)
-	if err != nil || !bytes.Equal(digest, c.ContentSHA) {
-		t.Fatalf("repair changed digest: %x %v", digest, err)
+	digest, err := s.CompanionDigest(ctx, "/synthetic/linked.txt")
+	if err != nil || !bytes.Equal(digest, bytes.Repeat([]byte{7}, 32)) {
+		t.Fatalf("linked evidence changed: %x %v", digest, err)
 	}
-	requireSessionEvidence(t, s, transcript.AgentClaude, "owner", true)
-	// Existing ownership cannot be reassigned by a later caller.
-	linked, err = s.LinkCompanionOwner(ctx, c)
-	if err != nil || !linked {
-		t.Fatalf("retry lost owner: %v %v", linked, err)
-	}
-	c.SessionID = "other"
-	linked, err = s.LinkCompanionOwner(ctx, c)
-	if err != nil || linked {
-		t.Fatalf("reassigned linked row: %v %v", linked, err)
-	}
-	c.Path = "/synthetic/absent.txt"
-	linked, err = s.LinkCompanionOwner(ctx, c)
-	if err != nil || linked {
-		t.Fatalf("created absent row: %v %v", linked, err)
-	}
-	requireSessionEvidence(t, s, transcript.AgentClaude, "other", false)
 	if err := s.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	sizes, err = s.CompanionSizes(ctx)
-	if err != nil || sizes["/synthetic/result.txt"] != 12 {
-		t.Fatalf("linked sizes=%v %v", sizes, err)
+	var n int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM companions WHERE path='/synthetic/other-orphan.txt'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal("unrelated orphan was deleted")
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM companions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("remaining companions=%d", n)
 	}
 }

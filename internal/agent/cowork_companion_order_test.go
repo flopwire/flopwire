@@ -2,6 +2,8 @@ package agent
 
 import (
 	"database/sql"
+	"errors"
+	"os"
 
 	"github.com/flopwire/flopwire/internal/transcript"
 	"path/filepath"
@@ -74,9 +76,6 @@ func TestCoworkCompanionOwnerInsertionOrder(t *testing.T) {
 			if n := f.count(`SELECT count(*) FROM companions`); n != 0 {
 				t.Fatalf("denial companions=%d want 0", n)
 			}
-			if n := f.count(`SELECT count(*) FROM companions WHERE conversation_id IS NULL`); n != 0 {
-				t.Fatalf("denial NULL companions=%d want 0", n)
-			}
 			// A later purge cannot discover the orphan after its owner is gone.
 			if err := f.a.purgeDenied(ctx); err != nil {
 				t.Fatal(err)
@@ -109,37 +108,137 @@ func TestCoworkCompanionOwnerInsertionOrder(t *testing.T) {
 // companion can have neither a conversation nor a source, so only fresh
 // native discovery can supply its owner.
 func TestCoworkLegacyUnlinkedCompanionDeniedOnRestart(t *testing.T) {
+	for _, subagent := range []bool{false, true} {
+		name := "main-tool-result"
+		if subagent {
+			name = "subagent-meta"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newCoworkFixture(t)
+			f.cfg.UserRuleList = []string{"deny /host/secret"}
+			f.restart()
+			coworkMetadata(t, f, []string{"/host/public"}, nil, nil)
+			path := coworkTranscript(t, f)
+			sub, companion := coworkChildren(t, path)
+			owner := coworkNativeID
+			if subagent {
+				if err := os.Remove(companion); err != nil {
+					t.Fatal(err)
+				}
+				companion = sub[:len(sub)-len(".jsonl")] + ".meta.json"
+				owner = "agent-cafe"
+				coworkWrite(t, companion, `{"agentId":"cafe"}`)
+			}
+			f.once()
+			if err := f.store.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", f.store.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err = db.Exec(`UPDATE companions SET conversation_id=NULL, source_id=NULL WHERE path=?`, companion); err != nil {
+				t.Fatal(err)
+			}
+			for _, session := range []string{coworkNativeID, "agent-cafe"} {
+				if err := f.store.PurgeConversation(ctx, transcript.AgentClaude, session); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.store.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n := f.count(`SELECT count(*) FROM companions`); n != 1 {
+				t.Fatalf("legacy companions=%d", n)
+			}
+			coworkMetadata(t, f, []string{"/host/secret"}, nil, nil)
+			f.restart()
+			if err := f.a.load(ctx); err != nil {
+				t.Fatal(err)
+			}
+			f.a.refreshAdmin(ctx)
+			if err := f.a.sweep(ctx); err != nil {
+				t.Fatal(err)
+			}
+			target := f.a.lookup(companion, "")
+			if target == nil {
+				t.Fatal("companion was not rediscovered")
+			}
+			if err := f.store.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// A failed durable-history write must block metadata deletion, without
+			// inserting a new conversation for the denied session.
+			f.a.mu.Lock()
+			if f.a.coworkHistoryFailures == nil {
+				f.a.coworkHistoryFailures = map[placeKey]error{}
+			}
+			f.a.coworkHistoryFailures[placeKey{transcript.AgentClaude, owner}] = errors.New("synthetic history fact failure")
+			f.a.mu.Unlock()
+			if err := f.a.indexCompanion(ctx, target); err == nil {
+				t.Fatal("history barrier bypassed")
+			}
+			if err := f.store.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n := f.count(`SELECT count(*) FROM companions`); n != 1 {
+				t.Fatalf("history failure lost companion: %d", n)
+			}
+			if n := f.count(`SELECT count(*) FROM conversations WHERE session_id=?`, owner); n != 0 {
+				t.Fatalf("history failure created denied owner: %d", n)
+			}
+			f.a.mu.Lock()
+			delete(f.a.coworkHistoryFailures, placeKey{transcript.AgentClaude, owner})
+			f.a.mu.Unlock()
+			if _, err := db.Exec(`CREATE TRIGGER fail_companion_purge BEFORE DELETE ON companions BEGIN SELECT RAISE(FAIL,'synthetic deletion failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.a.indexCompanion(ctx, target); err == nil {
+				t.Fatal("companion deletion failure ignored")
+			}
+			if err := f.store.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n := f.count(`SELECT count(*) FROM companions`); n != 1 {
+				t.Fatalf("failed purge removed proof: %d", n)
+			}
+			if _, err := db.Exec(`DROP TRIGGER fail_companion_purge`); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.a.indexCompanion(ctx, target); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n := f.count(`SELECT count(*) FROM companions`); n != 0 {
+				t.Fatalf("legacy denied companions=%d", n)
+			}
+			if n := f.count(`SELECT count(*) FROM messages`); n != 0 {
+				t.Fatalf("denied messages=%d", n)
+			}
+			f.restart()
+			f.once()
+			if n := f.count(`SELECT count(*) FROM companions`); n != 0 {
+				t.Fatalf("repeat restart companions=%d", n)
+			}
+		})
+	}
+}
+
+func TestCoworkSubagentCompanionDeniedBeforeTranscriptIndexed(t *testing.T) {
 	f := newCoworkFixture(t)
 	f.cfg.UserRuleList = []string{"deny /host/secret"}
 	f.restart()
 	coworkMetadata(t, f, []string{"/host/public"}, nil, nil)
 	path := coworkTranscript(t, f)
-	_, companion := coworkChildren(t, path)
-	f.once()
-	if err := f.store.Sync(ctx); err != nil {
+	sub, result := coworkChildren(t, path)
+	if err := os.Remove(result); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", f.store.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err = db.Exec(`UPDATE companions SET conversation_id=NULL, source_id=NULL WHERE path=?`, companion); err != nil {
-		t.Fatal(err)
-	}
-	for _, session := range []string{coworkNativeID, "agent-cafe"} {
-		if err := f.store.PurgeConversation(ctx, transcript.AgentClaude, session); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := f.store.Sync(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.count(`SELECT count(*) FROM companions`); n != 1 {
-		t.Fatalf("legacy companions=%d", n)
-	}
-	coworkMetadata(t, f, []string{"/host/secret"}, nil, nil)
-	f.restart()
+	meta := sub[:len(sub)-len(".jsonl")] + ".meta.json"
+	coworkWrite(t, meta, `{"agentId":"cafe"}`)
 	if err := f.a.load(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -147,27 +246,9 @@ func TestCoworkLegacyUnlinkedCompanionDeniedOnRestart(t *testing.T) {
 	if err := f.a.sweep(ctx); err != nil {
 		t.Fatal(err)
 	}
-	target := f.a.lookup(companion, "")
+	target := f.a.lookup(meta, "")
 	if target == nil {
-		t.Fatal("companion was not rediscovered")
-	}
-	if err := f.store.Sync(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TRIGGER fail_companion_purge BEFORE DELETE ON companions BEGIN SELECT RAISE(FAIL,'synthetic deletion failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.a.indexCompanion(ctx, target); err == nil {
-		t.Fatal("companion deletion failure ignored")
-	}
-	if err := f.store.Sync(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.count(`SELECT count(*) FROM companions`); n != 1 {
-		t.Fatalf("failed purge removed proof: %d", n)
-	}
-	if _, err := db.Exec(`DROP TRIGGER fail_companion_purge`); err != nil {
-		t.Fatal(err)
+		t.Fatal("missing subagent metadata target")
 	}
 	if err := f.a.indexCompanion(ctx, target); err != nil {
 		t.Fatal(err)
@@ -175,15 +256,18 @@ func TestCoworkLegacyUnlinkedCompanionDeniedOnRestart(t *testing.T) {
 	if err := f.store.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.count(`SELECT count(*) FROM companions`); n != 0 {
-		t.Fatalf("legacy denied companions=%d", n)
+	if n := f.count(`SELECT count(*) FROM companions p JOIN conversations c ON c.id=p.conversation_id WHERE c.session_id='agent-cafe'`); n != 1 {
+		t.Fatalf("subagent stub links=%d", n)
 	}
 	if n := f.count(`SELECT count(*) FROM messages`); n != 0 {
-		t.Fatalf("denied messages=%d", n)
+		t.Fatalf("unexpected indexed transcripts=%d", n)
 	}
-	f.restart()
+	coworkMetadata(t, f, []string{"/host/secret"}, nil, nil)
 	f.once()
 	if n := f.count(`SELECT count(*) FROM companions`); n != 0 {
-		t.Fatalf("repeat restart companions=%d", n)
+		t.Fatalf("denial missed stub companion=%d", n)
+	}
+	if n := f.count(`SELECT count(*) FROM conversations`); n != 0 {
+		t.Fatalf("denial missed stub=%d", n)
 	}
 }
