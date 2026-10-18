@@ -4,9 +4,9 @@ The plugin connects Claude Code to Flopwire. It adds these parts:
 
 | Part | What it does |
 |---|---|
-| MCP server `flopwire` | Runs `flopwire mcp` through the shim `bin/flopwire-hook`: the tools `flopwire_grep`, `flopwire_search`, `flopwire_sessions`, `flopwire_read`, `flopwire_peers`, `flopwire_send` and `flopwire_inbox`. |
+| MCP server `flopwire` | Runs `flopwire mcp` through the shim `bin/flopwire-hook`: the [nine retrieval and messaging tools](../../../docs/harnesses/README.md#what-agents-discover). |
 | Hooks | Run `flopwire hook` through the shim `bin/flopwire-hook` on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`, with a 5-second timeout. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. |
-| Skill `flopwire:messaging` | Tells the model when and how to recover prior research, plans, decisions and results from past or ongoing conversations, and how to contact a live session. Covers local history and shared history across connected machines and team members when configured. |
+| Skill `flopwire:messaging` | Tells the model when and how to recover prior research, plans, decisions, attempts and results from past or ongoing AI-agent conversations, and how to contact a live session. Covers local history and shared history across connected machines and team members when configured. |
 
 Devin CLI loads this plugin too. `flopwire setup` installs this directory
 into Devin with `devin plugins install --local`; see

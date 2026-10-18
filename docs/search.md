@@ -1,8 +1,10 @@
 # Searching transcripts
 
-Flopwire gives people and agents five tools over coding-agent transcripts
-(Claude Code, Codex, Devin, opencode). The CLI and the MCP server have the same
-tools, with the same query semantics and output. `grep`, `search` and
+Flopwire gives people and agents five retrieval tools over past and ongoing
+AI-agent conversations (Claude Code, Codex, Devin, opencode). History can
+contain research, planning, writing, troubleshooting and coding. A session
+need not be live to search or read it. The CLI and the MCP server have the
+same tools, with the same query semantics and output. `grep`, `search` and
 `read` print text by default (`--json` for JSON). `sessions` prints JSON
 by default (`--text` for readable rows). See [Output](#output).
 
@@ -481,9 +483,11 @@ Text-shaped answers stay text; record-shaped answers are JSON.
   print text by default: JSON would escape every newline and quote.
   `--json` prints the answer as JSON instead.
 - `sessions` prints compact JSON by default, as `peers`, `send` and
-  `inbox` do. `--text` prints readable rows.
-- All seven verbs accept both `--json` and `--text`. Each is a no-op
+  `inbox` and `messages` do. `--text` prints readable rows.
+- `grep`, `search`, `sessions`, `read`, `peers`, `send`, `inbox` and
+  `messages` accept both `--json` and `--text`. Each is a no-op
   where it is the default; `--text` wins when both are given.
+- `trace` (`flopwire_change` over MCP) returns JSON only.
 - In JSON mode a failure prints one JSON object on stderr and exits 1:
   `{"kind":"error","error":{"code":"bad_request","detail":"…","fix":"…","example":"…"}}`.
   Codes: `bad_request`, `not_found`, `forbidden`, `no_index`,
@@ -690,6 +694,12 @@ checks.
 
 ## Register the MCP server
 
+`flopwire setup` configures the supported harness integrations, including
+tools, hooks and guidance. See [agent discovery](harnesses/README.md#what-agents-discover).
+Use the manual configuration below when you need only MCP. Do not add it
+alongside the plugin's MCP entry. Manual MCP registration does not install
+the skill or message-delivery hooks.
+
 Claude Code:
 
 ```sh
@@ -706,20 +716,22 @@ default_tools_approval_mode = "approve"
 ```
 
 The approval line also approves `flopwire_send`, which sends messages (see
-[agent.md](messaging.md)). Remove the line to be asked before each
+[Messaging](messaging.md)). Remove the line to be asked before each
 call.
 
-After enrollment, the MCP tools query the shared server by default. Add
+After enrollment, the MCP retrieval tools query the shared server by default. Add
 `--local` to the arguments to query only this device. The MCP output
 is the same as the CLI's: text for `flopwire_grep`, `flopwire_search` and
 `flopwire_read` (`format: "json"` for JSON), JSON for `flopwire_sessions`
 (`format: "text"` for rows). Every answer is one text block within the
 24,000-byte budget: whole hits, sessions, messages or outline entries,
 and the footer (or `next_offset`, `next_cursor`, `outline_next` and
-`hint` in JSON) says where to go on. No tool returns `structuredContent`:
-Claude Code shows a model only that part of a result, and Codex shows
-both parts, so either would replace or double the answer. The server's instructions describe the addresses and the
-shared filters once.
+`hint` in JSON) says where to go on. JSON output is encoded inside the text
+block; the server does not return `structuredContent` or declare an
+`outputSchema`. The server's instructions explain scope, evidence handling
+and coordination.
+Each tool describes its purpose and constraints; parameter descriptions
+define argument formats and defaults.
 
 The MCP server runs up to 8 tool calls at once. A client's
 `notifications/cancelled` stops a call. A request line over 4MB gets a

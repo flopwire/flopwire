@@ -10,4 +10,7 @@ uses: the path `flopwire setup` recorded, then `PATH`, then
 (`embed.go`), so setup and `flopwire probe` install the copy of the binary
 that runs them.
 
-See [docs/harnesses/opencode.md](../../docs/harnesses/opencode.md).
+The plugin exposes the same nine tools and descriptions as the MCP server,
+with prompt guidance instead of a separate skill. See the
+[agent discovery reference](../../docs/harnesses/README.md#what-agents-discover)
+and [opencode integration](../../docs/harnesses/opencode.md).
