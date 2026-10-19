@@ -2,7 +2,7 @@
 
 This page maps the system as built. The reasons behind it are in the spec,
 [notes/local-search/README.md](../notes/local-search/README.md), and the
-decisions D1–D21 in [notes/punch-list.md](../notes/punch-list.md). Where the
+decisions D1–D21 in [notes/log/punch-list-2026-09-30.md](../notes/log/punch-list-2026-09-30.md). Where the
 spec and this page differ, this page describes the code.
 
 ## Components

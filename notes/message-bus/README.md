@@ -8,7 +8,7 @@ bullets of 9.2 in `notes/local-search/README.md` where they differ.
 > 2026-10-01: the v1 design is in [`plan.md`](plan.md). It delivers through
 > hooks and does not wake idle sessions, so the socket and the queue below
 > are not used in v1; they remain the route for a later opt-in wake.
-> [`probes-2026-10-01.md`](probes-2026-10-01.md) holds the hook, Devin,
+> [`probes-2026-10-01.md`](../log/probes-2026-10-01.md) holds the hook, Devin,
 > opencode and cloud tests. One correction from them: a message queued to a
 > running `codex exec` thread is lost when the process exits.
 

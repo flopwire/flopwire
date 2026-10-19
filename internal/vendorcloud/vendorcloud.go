@@ -3,7 +3,7 @@
 // (notes/message-bus/plan.md §6, decision B6). It lists a person's cloud
 // sessions and pushes text into one, through the vendor's own CLI login on
 // the device. Each vendor sits behind Adapter, because the routes are the
-// vendors' own and partly undocumented; notes/message-bus/cloud-2026-10-03.md
+// vendors' own and partly undocumented; notes/log/cloud-2026-10-03.md
 // records the request and response shapes as verified.
 //
 // The device agent (internal/devicebus) lists sessions for presence and

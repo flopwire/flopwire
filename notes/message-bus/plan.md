@@ -3,7 +3,7 @@
 Date: 2026-10-01. Supersedes section 9 of
 [`../local-search/README.md`](../local-search/README.md) where they differ.
 Evidence: [`README.md`](README.md) (socket and queue, 2026-09-28) and
-[`probes-2026-10-01.md`](probes-2026-10-01.md) (hooks, Devin, opencode,
+[`probes-2026-10-01.md`](../log/probes-2026-10-01.md) (hooks, Devin, opencode,
 cloud). Built as of 2026-10-03 except opencode; where the build diverged, see section 9 and the dated notes in
 sections 3 to 8.
 
@@ -358,7 +358,7 @@ marking, so the wrapper and the B4 rule travel inline in every message.
 Cloud sessions are owned by a user, not a device. Any of that user's
 devices may deliver; the claim call picks one.
 
-2026-10-03 (#63), as built ([`cloud-2026-10-03.md`](cloud-2026-10-03.md),
+2026-10-03 (#63), as built ([`cloud-2026-10-03.md`](../log/cloud-2026-10-03.md),
 [`docs/cloud.md`](../../docs/harnesses/cloud.md)):
 
 - Each vendor is behind `vendorcloud.Adapter`. Claude discovery reads
@@ -430,7 +430,7 @@ across worktrees (#100), commits without a sha (#103), read's
 - **Hook context size caps** per harness are unmeasured. The 4,000-byte
   body cap is a guess that needs checking against each. (2026-10-03, #68:
   Claude Code 10,000 characters, Codex 10,000 bytes, Devin over 1 MiB;
-  the caps stay. See [`hook-caps-2026-10-03.md`](hook-caps-2026-10-03.md).)
+  the caps stay. See [`hook-caps-2026-10-03.md`](../log/hook-caps-2026-10-03.md).)
 - **Hook cost.** `PostToolUse` runs on every tool call. The 200 ms budget
   and the local inbox keep it cheap; measure it. (2026-10-02, #99: about
   20 ms per hook on macOS; the first exec of a new binary can stall for
@@ -450,7 +450,7 @@ across worktrees (#100), commits without a sha (#103), read's
 - **Harness drift.** Claude Code and Codex ship several releases a week.
   Re-run the marker tests against current versions. (2026-10-03, #69:
   `flopwire probe`, run by hand after a harness release, no CI schedule;
-  runs are logged in [`probe-runs.md`](probe-runs.md).)
+  runs are logged in [`probe-runs.md`](../log/probe-runs.md).)
 - **Desktop apps and IDE extensions** probably load the same hooks. Not
   tested.
 

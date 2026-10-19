@@ -36,7 +36,7 @@ a passing replay confirms its presence, not that the product is correct.
 They are kept outside the normal test suite. Run from the repository:
 
 ```sh
-python3 notes/local-remote-audit/replay.py
+python3 notes/log/local-remote-audit/replay.py
 ```
 
 The script exports the audited revision from Git into a temporary directory and

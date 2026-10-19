@@ -290,7 +290,7 @@ information from another person. It asks A before it creates
 ## Record the result
 
 Add one section to
-[`notes/message-bus/probe-runs.md`](../../notes/message-bus/probe-runs.md)
+[`notes/log/probe-runs.md`](../../notes/log/probe-runs.md)
 for each run. Put the sections in date order with the probe runs.
 
 1. Name the section `## YYYY-MM-DD manual: SURFACE`.
