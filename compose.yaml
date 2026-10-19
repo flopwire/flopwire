@@ -87,6 +87,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+      # Migrations run before the server listens; 019 analyzes messages,
+      # about a minute on a few million rows.
+      start_period: 120s
 
 volumes:
   postgres-data:

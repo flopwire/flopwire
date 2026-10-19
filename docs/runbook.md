@@ -384,17 +384,18 @@ recipient. A late receipt for it is rejected.
 ## Size Postgres
 
 `compose.yaml` starts Postgres with `shared_buffers=256MB`,
-`effective_cache_size=1GB` and `random_page_cost=1.1`. Set the first two for
-the host in `.env` or the environment of `docker compose`:
+`effective_cache_size=1GB` and `random_page_cost=1.1`. Set them for the host
+in `.env` or the environment of `docker compose`:
 
 ```sh
 POSTGRES_SHARED_BUFFERS=1GB          # about a quarter of the host's RAM
 POSTGRES_EFFECTIVE_CACHE_SIZE=2500MB # RAM left for the OS page cache after other services
+POSTGRES_RANDOM_PAGE_COST=1.1        # 4 for spinning disks
 docker compose up -d --wait postgres
 ```
 
-A change to either needs a Postgres restart, which `up -d` performs. The
-server reconnects on its own; uploads in flight retry.
+A change to any of them needs a Postgres restart, which `up -d` performs.
+The server reconnects on its own.
 
 Keep the text histogram wide. Migration 019 sets `messages.text` to 1000
 statistics buckets and analyzes the table; without it the planner reads
