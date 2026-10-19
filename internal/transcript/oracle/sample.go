@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Sample parity over real transcripts (A4, spec §11.2). A script copies a
+// Sample parity over real transcripts (spec §11.2). A script copies a
 // sample of the device's transcripts into a scratch home and runs fad-dump
 // on it (scripts/oracle-sample.sh); each parser package's
 // TestOracleCorpusSample diffs its output against FAD's with the same

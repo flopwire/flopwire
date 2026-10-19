@@ -124,9 +124,8 @@ for the tool catalog, skill and links to their exact definitions.
 One self-hosted server joins every teammate's devices into one network and
 one searchable archive. It runs from Docker Compose with Postgres and
 object storage, and always serves TLS. Any S3-compatible object store
-works, set by `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`
-and `S3_SECURE`; the MinIO bundled in `compose.yaml` is the default and is
-what the end-to-end tests run against.
+works; the MinIO bundled in `compose.yaml` is the default and is what the
+end-to-end tests run against. See [Choose object storage](docs/runbook.md#choose-object-storage).
 
 ```sh
 git clone https://github.com/flopwire/flopwire && cd flopwire

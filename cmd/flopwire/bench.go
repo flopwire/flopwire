@@ -897,7 +897,7 @@ func errText(err error) string {
 
 // --- report ---
 
-// Memory targets (spec §11.2, decision A4): 600MB peak during the bulk load,
+// Memory targets (spec §11.2): 600MB peak during the bulk load,
 // which runs once per device, and 120MB idle.
 const (
 	peakRSSTarget = 600

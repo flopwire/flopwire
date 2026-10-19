@@ -38,7 +38,7 @@ import (
 //     (devin.OwnToolCall, devin.SubagentRunning).
 //
 // Messages are addressed to sessions, and a subagent is not one: peers
-// lists sessions, never subagents (B2 in notes/message-bus/plan.md §1). So
+// lists sessions, never subagents (notes/message-bus/plan.md §4). So
 // a hook inside a subagent delivers nothing, takes no standing
 // instruction, and sends its flush without an event. When it cannot tell,
 // a delivering hook delivers nothing: the session's next hook of its own

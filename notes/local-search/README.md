@@ -487,9 +487,8 @@ megabytes.
   are never watched one by one. A fast lane re-stats files that changed in
   the last few minutes, and Devin's `sessions.db` and `-wal`, every 500ms.
   The sweep is the floor and the source of truth.
-- **Hooks as flush signals:** Claude `Stop` and `PostToolUse` and Codex
-  `notify` call `flopwire agent flush`, which flushes the affected source
-  at once.
+- **Hooks as flush signals:** every harness hook runs `flopwire hook`,
+  which asks the agent to flush the affected source at once.
 - **SQLite sources** are polled by rowid or session updated-stamp. Devin
   also checks `main_chain_id`, diffs the session set to detect deleted
   sessions, and re-reads `tool_call_state` rows, which update in place.

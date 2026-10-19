@@ -1,5 +1,5 @@
 // codex-events@1: best-effort enrichment from event_msg/item_completed
-// CommandExecution and FileChange records (spec §5.4, decisions item 9).
+// CommandExecution and FileChange records (spec §5.4).
 //
 // Codex 0.15x writes one CommandExecution per shell command a tool call ran
 // and one FileChange per patch it applied, between the call's response_item
