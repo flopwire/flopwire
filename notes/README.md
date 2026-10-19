@@ -22,7 +22,7 @@ disagree, the code wins.
 | [`reference-repos.md`](reference-repos.md) | Repositories studied or ported from, with licenses and what was taken. |
 | [`log/`](log/) | Dated records: rollouts, qualification runs, recovery plans, probes, audits and perf experiments. Each file records one event and is never edited, except [`log/probe-runs.md`](log/probe-runs.md), which `flopwire probe --notes` appends to. |
 
-Dated records in `log/` that code comments cite:
+Dated records in `log/` that other files cite:
 
 | Log | What it holds |
 |---|---|

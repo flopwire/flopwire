@@ -1,6 +1,6 @@
 # Flopwire pre-landing punch list (2026-09-29)
 
-**Landed on `main` 2026-09-30 in #111.** Follow-up work is tracked in GitHub issues under the "first team" milestone; this file is the record of what landed and the decisions behind it. 
+**Landed on `main` 2026-09-30 in #111.** Follow-up work is tracked in GitHub issues under the "first team" milestone; this file is the record of what landed and the decisions behind it.
 
 Source: five Opus reviews of integ/full plus the search-UX research, and the maintainer's decisions. Work lands on `integ/full`, then gets re-cut into 4 PRs: parsers, local, server+sync, search UX. The 25 stacked PRs close as superseded.
 
