@@ -2,19 +2,116 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/fsprobe"
 	"github.com/flopwire/flopwire/internal/localindex"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
 )
+
+// Recovery owns the exclusive capture gate. A worker that arrives after that
+// acquisition cannot become idle until recovery releases it, so yielding to
+// that worker while scanning would delay every transcript by two seconds.
+func TestRecoveryDoesNotWaitForWorkersBehindItsCaptureGate(t *testing.T) {
+	for _, site := range []string{"signals", "worktree index"} {
+		t.Run(site, func(t *testing.T) {
+			main, _ := repoWithWorktree(t)
+			f := newFixture(t, "-")
+			live := f.claudeSessionAt(liveSid, main, "live checkout")
+			f.once()
+			goneCwd := filepath.Join(t.TempDir(), "deleted-checkout")
+			gone := f.writeSession(goneSid, goneCwd, claudeRecord(goneSid, goneCwd, "", "deleted checkout", 1))
+			a := f.a
+			a.mu.Lock()
+			liveTarget := a.targets[live]
+			a.places[placeKey{transcript.AgentClaude, goneSid}] = placed{pl: pathpolicy.Placement{Cwd: goneCwd}, how: localindex.PlacedByCwd}
+			a.targets[gone] = &target{path: gone, kind: kindTranscript, src: transcript.Source{Agent: transcript.AgentClaude, SessionKey: goneSid}}
+			a.mu.Unlock()
+			a.wtCache = map[string]wtScan{} // the first recovery scan of a live transcript
+			appendFile(t, live, claudeRecord(liveSid, main, "", "worker arrived during recovery", 2))
+
+			atScan, resume := make(chan struct{}), make(chan struct{})
+			var intercepted atomic.Bool
+			path := goneCwd
+			if site == "worktree index" {
+				path = live
+			}
+			fsprobe.SetHook(func(op fsprobe.Op, p string) {
+				if op == fsprobe.OpStat && p == path && intercepted.CompareAndSwap(false, true) {
+					close(atScan)
+					<-resume
+				}
+			})
+			defer fsprobe.SetHook(nil)
+			pass, cancelPass := context.WithCancel(context.Background())
+			recovered := make(chan struct{})
+			work, cancelWork := context.WithCancel(context.Background())
+			var worker sync.WaitGroup
+			var resumed sync.Once
+			release := func() { resumed.Do(func() { close(resume) }) }
+			defer func() {
+				cancelPass()
+				release()
+				<-recovered
+				cancelWork()
+				a.kick()
+				worker.Wait()
+			}()
+			go func() { a.recoverAndEnforce(pass); close(recovered) }()
+			select {
+			case <-atScan:
+			case <-time.After(5 * time.Second):
+				release()
+				cancelPass()
+				<-recovered
+				t.Fatal("recovery did not reach the controlled scan")
+			}
+
+			worker.Add(1)
+			go func() { defer worker.Done(); a.worker(work) }()
+			a.mu.Lock()
+			a.enqueueLocked(liveTarget, true)
+			a.mu.Unlock()
+			waitFor(t, func() bool { return a.work.index.Snapshot("index").InFlight == 1 })
+			a.mu.Lock()
+			busy := a.busy
+			a.mu.Unlock()
+			if busy != 1 {
+				t.Fatalf("busy workers=%d, want one waiting behind recovery", busy)
+			}
+			release()
+			select {
+			case <-recovered:
+			case <-time.After(time.Second):
+				cancelPass()
+				<-recovered
+				t.Fatal("recovery waited for a worker that its capture gate prevents from running")
+			}
+			a.WaitIdle()
+			if err := f.store.Sync(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.placement(goneSid); got.checked == 0 {
+				t.Error("recovery did not record its placement check")
+			}
+			if n := f.sessions(liveSid); n != 2 {
+				t.Errorf("worker did not index the appended record: rows=%d", n)
+			}
+		})
+	}
+}
 
 // claudeRecord writes one Claude user record with the given extra fields.
 func claudeRecord(sid, cwd, extra, text string, n int) string {

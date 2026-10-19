@@ -150,6 +150,10 @@ func (a *Agent) repoChanged(key placeKey) {
 // placement, enforces the rules again with them. It reports whether it
 // did.
 func (a *Agent) recoverAndEnforce(ctx context.Context) bool {
+	// Yield before excluding indexing. Once this gate is held, workers may
+	// become busy waiting for it; they cannot make progress until we release
+	// it, so waiting for them inside the scan would delay every transcript.
+	a.waitQuiet(ctx)
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
 	r := a.recoverPass(ctx)
@@ -246,7 +250,6 @@ func (a *Agent) recoverPass(ctx context.Context) recoverResult {
 		if e.p.pl.Remote != "" {
 			repos, how = rc.byRemote[e.p.pl.Remote], localindex.PlacedByRemote
 		} else if len(rc.repos) > 0 {
-			a.waitQuiet(ctx)
 			sig := scanSignals(e.path)
 			// The `git worktree add` that made the directory precedes the
 			// session, so it is looked for once, at the first check: the
@@ -620,7 +623,6 @@ func (a *Agent) buildWtIndex(ctx context.Context, rc *repoCache, all []placeEntr
 		}
 		sc, hit := a.wtCache[e.path]
 		if !hit || sc.size != fi.Size() || sc.mod != fi.ModTime().UnixNano() {
-			a.waitQuiet(ctx)
 			if buf == nil {
 				buf = bufio.NewReaderSize(nil, 1<<20)
 			}
