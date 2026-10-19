@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/flopwire/flopwire/compare/v0.2.3...v0.2.4) (2026-10-19)
+
+
+### Bug Fixes
+
+* **e2e:** measure initial corpus sync from fixed snapshots ([#426](https://github.com/flopwire/flopwire/issues/426)) ([14101bc](https://github.com/flopwire/flopwire/commit/14101bc8e5b24d544d066780a995c967fd72c1a4))
+
 ## [0.2.3](https://github.com/flopwire/flopwire/compare/v0.2.2...v0.2.3) (2026-10-19)
 
 
