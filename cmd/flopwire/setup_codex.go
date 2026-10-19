@@ -404,7 +404,7 @@ func setupCodex(ctx context.Context, env *setupEnv) harnessReport {
 	installed := findCodexPlugin(list)
 	// An install from the marketplace's old name (legacyMarketplace, from
 	// any source, or orphaned: Codex keeps a plugin whose marketplace went
-	// away) has no upgrade path (pre-release): --check and an install name
+	// away) has no upgrade path: --check and an install name
 	// the commands that remove it, since two installs run every hook twice;
 	// setup never runs them.
 	if mode != setupRemove {

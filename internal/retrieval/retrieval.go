@@ -506,7 +506,7 @@ func regexpLiterals(re *syntax.Regexp) ([]string, bool) {
 		for i := 0; i < len(re.Rune); i += 2 {
 			for r := re.Rune[i]; r <= re.Rune[i+1]; r++ {
 				// Folded ASCII classes can contain these two non-ASCII
-				// runes. Other Unicode classes stay on the old path.
+				// runes. Other Unicode classes stay on the trigram path.
 				if r > unicode.MaxASCII && r != 'ſ' && r != 'K' {
 					return nil, false
 				}

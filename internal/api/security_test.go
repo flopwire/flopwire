@@ -1,8 +1,5 @@
 package api_test
 
-// Ported from the CASS-era hardening stack (#6, #8); the upload, search, and
-// staging cases went with the segment model.
-
 import (
 	"bytes"
 	"context"

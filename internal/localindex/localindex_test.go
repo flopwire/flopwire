@@ -400,7 +400,6 @@ func testFindModes(t *testing.T, s *Store) {
 	if !errors.Is(err, ErrScanLimit) {
 		t.Fatalf("scan limit: %v", err)
 	}
-	// Limit.
 	if ids := findIDs(t, s, "o", FindOptions{Limit: 2}); len(ids) != 2 {
 		t.Fatalf("limit: %v", ids)
 	}

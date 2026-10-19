@@ -128,7 +128,7 @@ func testInjectedHiddenAndCopiesCollapsed(t *testing.T) {
 		msg("c", "c2", 3, transcript.KindAssistant, "other wallaby text"),
 		msg("c", "c3", 4, transcript.KindUser, "wallaby rules from AGENTS.md"),
 	}})
-	// The parsers emit kind "injected"; set it directly until they do.
+	// Mark c3 injected, as the Claude parser marks harness context.
 	if err := s.write(ctx, func(w *writeTx) error {
 		_, err := w.exec(`UPDATE messages SET kind = ? WHERE native_id = 'c3'`, KindInjected)
 		return err

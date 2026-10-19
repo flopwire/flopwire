@@ -1105,8 +1105,7 @@ func TestSetupCodexCheckNewerCodexHash(t *testing.T) {
 }
 
 // TestSetupCodexReportsOldMarketplace: the marketplace was named flopwire
-// before flopwire-plugins (#162). Pre-release, so setup removes nothing
-// itself: --check and an install name the commands when config.toml has
+// before flopwire-plugins (#162). Setup removes nothing itself: --check and an install name the commands when config.toml has
 // flopwire@flopwire, from a flopwire marketplace of any source or orphaned.
 func TestSetupCodexReportsOldMarketplace(t *testing.T) {
 	c := newCodexFixture(t, false)

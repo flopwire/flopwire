@@ -1396,8 +1396,7 @@ func TestSetupReportsHookBinary(t *testing.T) {
 }
 
 // TestSetupReportsOldMarketplace: the marketplace was named flopwire
-// before flopwire-plugins (#162). Pre-release, so setup removes nothing
-// itself: --check and an install name the commands, for a flopwire
+// before flopwire-plugins (#162). Setup removes nothing itself: --check and an install name the commands, for a flopwire
 // marketplace from any source that has flopwire@flopwire installed.
 func TestSetupReportsOldMarketplace(t *testing.T) {
 	f := newSetupFixture(t, true)

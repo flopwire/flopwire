@@ -1,8 +1,7 @@
 package store
 
-// Orphan-chunk reconciliation: the raw-object ledger of the CASS-era stack
-// (#6: d4eb6a1, 4c3ee87), remapped from per-segment objects to
-// content-addressed chunks.
+// Orphan-chunk reconciliation: the raw-object ledger for content-addressed
+// chunks.
 //
 // Contract for the ingest path (B3), which owns reservation and commit:
 //

@@ -92,7 +92,6 @@ func TestLocalSendToSession(t *testing.T) {
 	if again, _ := deliver(lb.Bus, "bbbb3333", "", Limit{}); len(again) != 0 {
 		t.Fatal("delivered twice")
 	}
-	// The sender's and the recipient's inboxes.
 	in, err := lb.Inbox(ctx, busproto.InboxQuery{Session: "aaaa1111"})
 	if err != nil || len(in.Messages) != 1 || in.Messages[0].Direction != "sent" || in.Messages[0].State != busproto.StateDelivered || in.Messages[0].DeliveredAt == nil {
 		t.Fatalf("sender inbox: %+v %v", in, err)

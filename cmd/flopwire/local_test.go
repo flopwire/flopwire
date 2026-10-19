@@ -95,10 +95,9 @@ func TestLocalCLIGolden(t *testing.T) {
 		{"sessions_branch", nil, []string{"sessions", "--branch", "fix/*", "--sort", "oldest", "--text"}},
 		{"read_outline", nil, []string{"read", "0b7e2c1a-0000-4000-8000-000000000002", "--outline"}},
 		{"read_outline_paged", nil, []string{"read", "019a0000-0000-7000-8000-0000000000a1", "--outline", "--limit", "3", "--cursor", "3239936.56"}},
-		// grep, search and read --json are byte-for-byte what they were
-		// before sessions turned JSON by default and the headers were
-		// labeled (issue #64); sessions --json --detail is main's --json, which
-		// TestSessionsJSONKeepsMainFields compares field for field.
+		// grep, search and read --json are pinned byte for byte; sessions
+		// --json --detail is compared field for field by
+		// TestSessionsJSONKeepsMainFields.
 		{"grep_files_json", nil, []string{"grep", "-l", "retr", "--json"}},
 		{"search_json", nil, []string{"search", "exponential backoff", "--limit", "3", "--json"}},
 		{"read_json", nil, []string{"read", "$HOME/.claude/projects/-tmp-oracle-alpha/0b7e2c1a-0000-4000-8000-000000000001.jsonl:8", "--messages-before", "1", "--messages-after", "1", "--json"}},

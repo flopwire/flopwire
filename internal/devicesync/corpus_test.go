@@ -129,7 +129,6 @@ func TestCorpusCodexReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	// Line end offsets and timestamps.
 	var ends []int64
 	var ts []time.Time
 	br := bufio.NewReaderSize(f, 1<<20)

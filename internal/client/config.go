@@ -1,9 +1,7 @@
 package client
 
-// Credential transitions (session vs device token, two-step rotation, a
-// config lock around every transition) and server URL normalization are
-// ported from the CASS-era stack (#6: 031cf6f, 4d2e741; #8: 62d5a64,
-// 4bbf5fe, cb16d94).
+// Credential transitions: session vs device token, two-step rotation, and a
+// config lock around every transition. Also server URL normalization.
 
 import (
 	"context"

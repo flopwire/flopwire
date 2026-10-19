@@ -1,5 +1,5 @@
 // Package devicebus is the device agent's side of the message bus
-// (notes/message-bus/plan.md §4, item 2 of §7): the local inbox, presence,
+// (notes/message-bus/plan.md §4): the local inbox, presence,
 // the long poll, claims and receipts, and routing between the device's own
 // sessions when no server is configured. The server side is internal/bus;
 // the wire types are internal/busproto.

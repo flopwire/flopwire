@@ -112,8 +112,8 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 	// A cursor lets the scan stop without draining the rest of the
 	// candidates; each fetch gets what is left of the budget.
 	// The candidate cursor and page hydration must observe one snapshot,
-	// as the previous full-row cursor did, even when another request edits,
-	// hides, redacts or deletes a candidate between these statements.
+	// even when another request edits, hides, redacts or deletes a
+	// candidate between these statements.
 	err = s.readTransaction(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
 		var narrowedConversations []string
 		if narrows {

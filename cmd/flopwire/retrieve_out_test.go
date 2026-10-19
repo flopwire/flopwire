@@ -252,7 +252,7 @@ func TestJSONAnswerBudget(t *testing.T) {
 		// The text answer stays within the budget too: its entries do; the
 		// notes and footer around them may pass it a little (format's
 		// tests allow the same), and one hit past the budget is not cut
-		// (format's units keep the first whole), a deferred item.
+		// (format's units keep the first whole).
 		resp := mcpRoundTrip(t, r, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+tool+`","arguments":`+withFormat(args, "text")+`}}`)
 		if text, isErr, _ := mcpContent(t, resp); isErr || len(text) > format.MaxOutput+500 && !strings.Contains(args, `"z"`) {
 			t.Fatalf("%s %s text: %d bytes", tool, args, len(text))
