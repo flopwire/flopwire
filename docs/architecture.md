@@ -1,236 +1,73 @@
 # Architecture
 
-This page maps the system as built. The reasons behind it are in the spec,
+This page states where each part runs, the rules that cross components, and
+the limits callers can rely on. The reasons behind it are in the spec,
 [notes/local-search/README.md](../notes/local-search/README.md), and the
 decisions D1–D21 in [notes/log/punch-list-2026-09-30.md](../notes/log/punch-list-2026-09-30.md). Where the
-spec and this page differ, this page describes the code.
+spec and this page differ, this page describes the code. For the package
+layout, run `go list ./...` and read each package's doc comment.
 
 ## Components
 
 | Component | Where it runs | Code | Role |
 |---|---|---|---|
-| Parsers | device and server | `internal/transcript/{claude,codex,devin,opencode}` | Turn harness transcripts into conversations and messages with stable ids. The same code runs on both sides. |
-| Device agent | each developer machine | `internal/agent`, `cmd/flopwire/agent.go` | Finds changed transcripts, places each session, applies path rules, indexes locally, hands sources to sync. |
-| Local index | each developer machine | `internal/localindex` | SQLite database plus three FTS5 shard files. Derived; rebuildable from the transcripts. |
-| Sync client | each developer machine | `internal/devicesync`, `internal/syncproto` | Content-defined chunking, spool, per-source retry, upload over the pinned TLS client. |
-| Client config and transport | each developer machine | `internal/client` | `config.json`, credentials, fingerprint pinning, timeouts. |
-| Server API | server | `internal/api`, `cmd/flopwire` (`serve`) | Authentication, sync endpoints, retrieval, admin, deletion. Always TLS unless a proxy terminates it. |
+| Parsers | device and server | `internal/transcript` | Turn harness transcripts into conversations and messages with stable ids. The same code runs on both sides. |
+| Device agent | each developer machine | `internal/agent` | Finds changed transcripts, places each session, applies path rules, indexes locally, hands sources to sync. |
+| Local index | each developer machine | `internal/localindex` | SQLite database plus FTS5 shard files. Derived; rebuildable from the transcripts. |
+| Sync client | each developer machine | `internal/devicesync` | Content-defined chunking, spool, per-source retry, upload over the pinned TLS client. |
+| Server API | server | `internal/api` | Authentication, sync endpoints, retrieval, admin, deletion. TLS unless a proxy terminates it (or `--tls off`, loopback only). |
 | Ingest | server | `internal/ingest` | Stores chunks and manifests, runs the parse queue, enforces admin path rules. |
 | Postgres | server | `internal/store`, `migrations` | Identity, audit, sources, generations, chunk ledger, manifests, conversations, messages, tombstones, deletion jobs. |
-| S3 (MinIO in Compose) | server | `internal/ingest/objects.go` | Content-addressed chunk objects, each a zstd frame of the chunk (addressed by the BLAKE3 of the uncompressed bytes). The raw evidence. |
-| Retrieval | device and server | `internal/retrieval` (`local`, `regexq`, `grep`, `format`) | grep, search, sessions, read and commit evidence over the local index or Postgres. |
-| CLI and MCP | anywhere | `cmd/flopwire/retrieve.go`, `cmd/flopwire/mcp.go` | Five retrieval tools, including `trace` (MCP `flopwire_change`). Shared after enrollment; local before enrollment or with `--local`. |
-| Message bus (server) | server | `internal/bus`, `internal/busproto`, `internal/api/bus.go` | Direct messages between agent sessions: presence, send, long poll, claim, receipts, peers, inbox, acceptance. The CLI tools are in `cmd/flopwire/bus.go` and `messages.go`; MCP definitions are in `mcp_bus.go`. `messages` reads retained server coordination across devices and ended sessions; `flopwire hook` (`cmd/flopwire/hook.go`, rendering in `internal/busrender`) delivers. |
-| Message bus (device) | each developer machine | `internal/devicebus`, `internal/agent/presence.go`, `internal/client/bus.go` | Local inbox (`bus.db`), presence, the long poll, claims and receipts; routing between the device's own sessions with no server. |
-| Web console | browser | `web/`, served at `/` by `internal/webapp` | Admins: health, people and devices, policy, archive (deletion), audit. Every member: the Messaging page (held messages, accept, revoke). No corpus search. |
+| S3 (MinIO in Compose) | server | `internal/ingest` | Content-addressed chunk objects (BLAKE3 of the uncompressed bytes, stored as zstd frames). The raw evidence. |
+| Retrieval | device and server | `internal/retrieval` | grep, search, sessions, read and commit evidence over the local index or Postgres. |
+| CLI and MCP | anywhere | `cmd/flopwire` | Five retrieval tools, including `trace` (MCP `flopwire_change`). Shared after enrollment; local before enrollment or with `--local`. |
+| Message bus (server) | server | `internal/bus` | Presence, send, long poll, claim, receipts, peers, inbox, acceptance, retained threads. |
+| Message bus (device) | each developer machine | `internal/devicebus` | Local inbox, presence, the long poll, claims and receipts; routing between the device's own sessions with no server. `flopwire hook` delivers. |
+| Web console | browser | `web/`, served at `/` | Admins: health, people and devices, policy, archive (deletion), audit. Every member: the Messaging page (held messages, accept, revoke). No corpus search. |
 | Backup | server host | `internal/backup` | Coordinated Postgres dump plus chunk copy, verify, restore. |
 
-## Local flow
-
-```text
-~/.claude/projects   ~/.codex/sessions   ~/.local/share/devin/cli/sessions.db
-        |                    |              ~/.local/share/opencode/opencode.db
-        |                    |                          |
-        +--------- read only, never written ------------+
-                             |
-   change detection: 45s sweep (identity, size, ctime) + 500ms fast lane
-                     + kqueue/inotify directory events + hook flush
-                             |
-   placement: cwd -> worktree root -> main checkout -> origin remote
-                             |
-   path rules (user + cached admin): allow | local | deny | unplaceable
-          |                                   |
-      deny: skip                        allow / local
-                                             |
-                          parsers (claude@N, codex@N, devin@N, opencode@N)
-                                             |
-            local index writer (one process, flock on index.db.lock)
-                 index.db: sources, generations, conversations,
-                           messages, placements, fts_queue
-                 index.db-tok   FTS5 unicode61 (ranked search)
-                 index.db-tri0/1 FTS5 trigram (grep)
-                                             |
-            allow only: devicesync  -> FastCDC chunks -> spool (if needed)
-                                     -> POST /v1/sync/has, /v1/sync/flush
-                                             |
-   flopwire grep|search|sessions|read, flopwire mcp  (read-only opens, no lock)
-```
-
-## Server flow
-
-```text
-device --TLS (pinned self-signed | ACME | operator proxy)--> flopwire serve
-   |
-   POST /v1/sync/has    which chunk hashes are missing
-   POST /v1/sync/flush  header + chunk bodies + provisional tail (<= 80MB)
-   |
-   ingest: tombstone check -> stream chunks to S3 (chunks/<2 hex>/<blake3>)
-           -> one transaction: commit chunk reservations, append manifest
-              entries, replace the provisional tail, bump parse request
-   |
-   parse queue (4 workers, durable in source_parse_state)
-     -> rebuild the changed bytes from S3 chunks + tail
-     -> parsers -> admin path-rule gate
-          covered: refuse the source (no rows, tombstone, chunks released)
-          allowed: upsert conversations and messages, supersede vanished rows
-   |
-   Postgres messages: text (lz4 TOAST), tsv (GIN), trigram (GIN)
-   |
-   GET /v1/grep|search|sessions|read|raw  (budgeted read-only transactions)
-   |
-   flopwire <tool> --server, flopwire mcp --server, admin console (no search)
-```
-
-## Data model
+## Data invariants
 
 The same model exists in SQLite on the device and in Postgres on the
 server. The device holds only its own sources.
 
-| Entity | Meaning |
-|---|---|
-| Source | One transcript file or store on one device: `(device, path, file_id)`. It has an agent, a storage kind (JSONL append, document, SQLite export, companion), a parser version, an optional parent (subagent, companion) and an optional `previous` (a Codex rollout renamed into `archived_sessions/`, D20). |
-| Generation | One version of a source. Appends extend the current generation. A rewrite, truncation or file-identity change starts a new one. |
-| Chunk | Content-addressed bytes, keyed by BLAKE3-256. Stored once in S3, whatever the number of sources and users that hold it. |
-| Manifest entry | `(source, generation, ordinal) -> (chunk, byte offset)`. Concatenating a generation's chunks in order rebuilds it. The unfinished end of a file is a provisional tail, kept in Postgres until it closes. |
-| Conversation | One harness session on one device: agent, session id, user, device, cwd, repo, title, times, and a parent link and depth for subagents. |
-| Message | One record a parser emitted: kind, role, tool name and call id, `is_error`, time, text, native id and part, ordinal, and provenance (generation, line, byte offset and length). |
-
-Message kinds:
-
-| Kind | Holds |
-|---|---|
-| `user`, `assistant` | Prompts and replies |
-| `tool_call`, `tool_result` | Tool invocations and their output. Every tool result gets a row, empty or not, with `is_error` from the exit code (D19). |
-| `thinking` | Visible reasoning |
-| `system` | Harness system records |
-| `agent_message` | Messages between Codex agents (D6) |
-| `injected` | CLAUDE.md, AGENTS.md and system-reminder text injected into user turns (D6). Hidden unless a query names it. |
-
-Row rules:
-
-- Ids are stable. Claude rows are `uuid#<block index>`, and the ordinal
-  comes from the file position (`offset<<12 | block`) (D16). A parser
-  version change re-parses from the original bytes and replaces rows only
-  when that succeeds.
+- Message ids are stable across re-parses (D16). A parser version change
+  re-parses from the original bytes and replaces rows only when that
+  succeeds.
 - A message absent from a new generation is marked `superseded`, never
-  deleted. A changed text inserts a new version and supersedes the old.
-  Search returns live rows unless `--include-superseded`.
-- `on_active_path=false` marks rows off the chosen branch (Devin alternate
-  copies, P1). Search leaves them out unless `--include-branches`.
-- A transcript file the harness deletes keeps its rows live and
-  searchable (D1). A deleted Devin or opencode session is still
-  superseded, and so are the rows of a turn opencode reverted.
-- Tool text is stored whole, with a safety bound of about 1MB per row
-  (head, tail and error lines).
-- `user_id` and `device_id` come from the uploading credential, never
-  from transcript content.
-
-Placements exist only on the device (`placements` table): for each
-session, its cwd, worktree root, main checkout, normalized remote, the
-method that placed it (`cwd`, `worktree`, `folder`, `remote`, `branch`,
-`worktree-add`, `commit`, `unplaceable`) and any ambiguous candidates.
-They survive a local reindex.
+  deleted. A transcript file the harness deletes keeps its rows live and
+  searchable (D1).
+- Every tool result gets a row, empty or not, with `is_error` from the exit
+  code (D19). `injected` rows (CLAUDE.md, AGENTS.md, system reminders) are
+  hidden unless a query names the kind (D6).
+- `user_id` and `device_id` come from the uploading credential, never from
+  transcript content.
+- The uploaded offset advances only on server acknowledgement. One failing
+  source delays only itself (D15). A provisional tail seals after 5 minutes
+  with no change (D21).
 
 ## Local index
 
-- Files: `index.db`, `index.db-tok`, `index.db-tri0`, `index.db-tri1`,
-  and `index.db.lock`. Default location `<user cache dir>/flopwire/`;
-  `FLOPWIRE_INDEX` or `--db` overrides it.
-- Shards: `fts_tok` uses the unicode61 tokenizer with `_-./` as token
-  characters, so paths and flags stay whole; it serves ranked `search`.
-  `fts_tri` is a trigram table split over two files by message id; it
-  serves `grep`. Both are contentless and index the whole stored text (D3).
-- One writer (D12). The agent holds an exclusive flock on
-  `index.db.lock`. A second `agent run` fails with
-  `agent already running (pid N)`. `agent run --once` asks the running
-  agent for a pass over the control socket.
-- Readers open read-only (`query_only`), take no lock and never replay
-  the queue (L3).
-- Writes reach the shards through `fts_queue`, a sequence log. Each shard
-  records the last sequence it applied and replays the rest at open. A
-  shard that cannot catch up, or a lost shard file, is rebuilt from
-  `messages` (L2, L4).
-- Schema version bump means reindex. On a version mismatch the next
-  writing open drops the index tables and re-parses every transcript.
-  Placements are kept. A reader on a stale index gets an error saying the
-  agent rebuilds it on its next start. There are no migrations of the
-  local index.
-- After a first pass of more than 200 sources, the agent re-executes
-  itself once to return the bulk-load memory, keeping the lock.
-
-## Sync
-
-| Aspect | Behaviour |
-|---|---|
-| Chunking | FastCDC: 128KB minimum, 512KB average, 4MB maximum. Unchanged prefixes of rewritten documents dedupe. |
-| Request size | At most 4MB of compressed chunk bodies per request (`MaxRequestBytes`). Bodies travel as zstd frames; the server decodes each (refusing output past 16MB), checks its BLAKE3, and stores the frame as the object. Tails travel and rest uncompressed. The server accepts up to 80MB per flush and scales its read deadline with the body size. |
-| Has check | When a request would carry more than 1MB of chunks the server was never seen to hold, the client asks `/v1/sync/has` first. |
-| Cadence | Append-only files: 300ms debounce, 2s maximum wait. Documents and exports: 2.5s, 10s maximum. A hook flush sends at once. |
-| Watermark | The uploaded offset advances only on server acknowledgement. For append-only files the file itself is the queue. |
-| Spool | `<config dir>/flopwire/spool`, 1GiB cap (`--spool-cap`). It holds only bytes the source may destroy: intermediate versions of rewritten documents, and chunks of a file about to be rewritten. When full, captures of rewritten sources pause; append-only sources continue. Orphan spool files are cleaned at start (S6). |
-| Salvage | Unacknowledged versions are salvaged into the spool, including those whose chunks the server already holds (S1). |
-| Gaps | Bytes that are gone before upload are recorded as a gap: the generation is cut back and the archive shows the hole. The local index still has the text. |
-| Retry | Per source (D15): one failing source delays only itself. Backoff from 1s to 30s, per source and for the server. A hook flush resets both. Failing sources show in `flopwire agent status`. |
-| Seal | A provisional tail seals after 5 minutes with no change, for files and Devin exports alike (D21). |
-| Pin error | A fingerprint mismatch is permanent. The scheduler stops all uploads, keeps the queue, and shows the error in `agent status` until `flopwire login --fingerprint` re-pins or the agent restarts. |
-
-## TLS
-
-| Mode (`flopwire serve --tls`, `FLOPWIRE_TLS`) | Behaviour |
-|---|---|
-| `auto` (default) | `acme` with a domain, else `self-signed`. |
-| `self-signed` | ECDSA P-256 certificate made on first start in `FLOPWIRE_TLS_DIR`. Devices pin its SHA-256 fingerprint. |
-| `acme` | Let's Encrypt via TLS-ALPN-01 on public port 443. Devices use the system trust store. |
-| `proxy` | Plain HTTP behind the operator's TLS proxy. Logs a warning banner. |
-| `off` | Plain HTTP on loopback only. For tests. |
-
-- The fingerprint rides in the invite string (in the URL fragment) and is
-  saved by `claim`, `bootstrap --fingerprint` or `login --fingerprint`.
-- Every client connection (admin commands, `enroll`, `--server` queries,
-  the raw fallback, device sync, the admin-rules fetch) checks the pin
-  before it sends a credential. The pin replaces chain and hostname checks.
-- The client refuses `http://` to any host that is not loopback, and all
-  `http://` once a pin is saved.
-- Re-pin: when the server's TLS directory is lost, the server has a new
-  identity. Each device runs `flopwire login --fingerprint <new>`; the
-  running agent picks up the new pin and resumes uploads.
-- Client timeouts: 10s dial and handshake, 75s for response headers, and a
-  per-request deadline of 90s plus one second per 64KB of body.
+One writer (D12): the agent holds an exclusive flock on `index.db.lock`, and
+readers open read-only without a lock. The index is derived and has no
+migrations: a schema version mismatch drops the index tables and re-parses
+every transcript, keeping placements. Files:
+[agent.md](agent.md#local-search-files).
 
 ## Path rules and placement
 
-Decision D18. Details and syntax: [path-rules.md](path-rules.md).
+Decision D18. Syntax and matching: [path-rules.md](path-rules.md).
 
-- **Agent (primary).** The agent places each session (cwd, git worktree
-  root, main checkout, origin remote, with fallbacks for deleted worktrees)
-  and decides with the user rules, the admin rules and the `unplaceable`
-  setting before it indexes and before every hand-over to sync. The most
-  restrictive rule wins; admin rules are floors. A new local `deny` purges
-  matching rows from the local index; it never deletes server copies.
-- **Server (floor).** At parse time the server decides each session with
-  the admin rules only, from what the transcript recorded: cwd, the Codex
-  remote, the Claude project folder name, and the home directory the device
-  reports. A covered session is refused: no rows, the source is tombstoned
-  and its unshared chunks are released. The device learns of it on its next
-  flush of that source (`flopwire agent status`). The server cannot resolve
-  worktrees or symlinks, so it can miss what the agent catches.
-- **Rule change on the server.** Changing `path_rules` or `unplaceable`
-  bumps a rules version. The parse queue's sweep re-checks every stored
-  conversation. One the new rules cover is hidden, with its subagents and
-  the same session on the owner's other devices: retrieval leaves it out
-  at once. An admin previews and confirms the purge
-  (`flopwire admin policy preview|purge`, `GET /v1/admin/policy/hidden`,
-  `POST /v1/admin/policy/hidden/purge`), or the sweep purges it after 7
-  days, through the deletion path below. A later rule change that no
-  longer covers it restores it; a purge re-checks the current rules first.
-  New uploads to a hidden session are stored hidden, so a restore is
-  whole. Every hide, restore and purge is audited (`conversation.hidden`,
-  `conversation.restored`, `conversation.purged`).
-- **Home directory.** Each flush carries the device's home, Claude
-  projects and Codex directories; the server uses them for `~` in admin
-  rules. Before a device reports them, the server infers the home from the
-  transcript path, which is wrong when `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
-  lies outside the home.
+- The agent is primary: it applies user rules, admin rules and
+  `unplaceable` before it indexes and before every hand-over to sync. The
+  most restrictive rule wins; admin rules are floors. A local `deny` never
+  deletes server copies.
+- The server is a floor: at parse time it refuses a session its admin rules
+  cover (no rows, source tombstoned). It cannot resolve worktrees or
+  symlinks, so it can miss what the agent catches.
+- An admin rule change hides newly covered conversations at once; an admin
+  purges them (`flopwire admin policy purge`) or the server does after 7
+  days. A later rule change that no longer covers one restores it.
 
 ## Deletion and tombstones
 
@@ -250,26 +87,19 @@ Decision D9. Deletion is manual, except the path-rule purge above.
    re-upload of the session from any of the owner's devices stays deleted.
 5. Backups leave out chunks referenced only by tombstoned sources.
 
-A harness deleting its file deletes nothing (D1). A local `deny` rule
-deletes only local rows. The one automatic purge is of sessions an admin
-path-rule change hid, after 7 days.
-
-A backup copies what exists at that moment: a hidden session, or raw
-evidence uploaded but not yet refused by its parse, can be in it.
+A harness deleting its file deletes nothing (D1). A backup copies what
+exists at that moment: a hidden session, or raw evidence not yet refused by
+its parse, can be in it.
 
 ## Backup and restore
 
-- `flopwire backup` takes one Postgres snapshot, dumps the database from it,
-  lists the committed chunks from it, and copies and verifies each object
-  (BLAKE3). It writes `manifest.json` last. It holds a shared purge lock:
-  uploads continue, deletions take effect at once, and physical purges
-  wait.
-- `flopwire restore` needs empty Postgres and S3 targets, re-verifies every
-  object and checks the restored chunk inventory.
-- Durable state: identity, audit, policy, sources, generations, chunk
-  ledger, manifests, provisional tails, tombstones, and the S3 objects.
-  Conversation and message rows are derived and can be rebuilt by replaying
-  manifests through the parsers.
+`flopwire backup` reads one Postgres snapshot for both the dump and the
+chunk list, verifies each copied object and writes `manifest.json` last.
+Uploads continue; physical purges wait. `flopwire restore` needs empty
+targets. Durable state is identity, audit, policy, sources, generations,
+chunk ledger, manifests, provisional tails, tombstones and the S3 objects;
+conversation and message rows are rebuilt by replaying manifests through
+the parsers. Procedure: [runbook.md](runbook.md#recover).
 
 ## Query budgets and caps
 
@@ -281,8 +111,8 @@ Decision D8.
 | Out of budget | grep and search retain partial hits and explain the incomplete query. CLI exits 2; MCP marks empty incomplete answers as errors and preserves useful partial answers. Resumable grep reports progress in `scan`. | Same for grep and search (HTTP `200` with `truncated` and `reason`); `sessions`, `read` and raw reads fail with `504` |
 | Byte budget | 1GiB of text verified per grep | 200,000 candidate rows per grep |
 | Ranked search | Ranks the newest 20,000 matches of a very common term, with the note `ranked newest 20k of N matches — add terms or filters` (D2) | Ranks in Postgres (`ts_rank_cd`); no 20k cap |
-| Unindexable regex | Scans the newest 20,000 rows that pass the filters | Refused with `400`: add a literal of 3 or more letters or digits |
-| Concurrency | MCP runs up to 8 calls at once and honours `notifications/cancelled` | 16 retrieval requests in flight, then `429`; the pool has 16 + parse workers + 24 connections; other statements stop after 5 minutes |
+| Unindexable regex | Scans the newest 20,000 rows that pass the filters | Refused with `400` unless scoped to one session: add a literal of 3 or more letters or digits |
+| Concurrency | MCP runs up to 8 calls at once and honours `notifications/cancelled` | 16 retrieval requests in flight, then `429`; other statements stop after 5 minutes |
 
 "Newest" means message time everywhere (D7).
 
@@ -293,110 +123,56 @@ second. `grep`, `search` and `sessions` leave out the calling session and
 its subagents when detection finds it by exact evidence, first match wins:
 
 1. Over MCP, the Codex thread id in the call's `_meta` (`threadId`, or
-   `thread_id` in `x-codex-turn-metadata`). Codex starts MCP servers with
-   an empty environment, so this is its only exact evidence. It counts only
-   when Codex launched the server: the nearest harness among the server's
-   ancestor processes is a `codex` process. Any other client's `_meta` is
-   ignored, since it could name any Codex thread.
+   `thread_id` in `x-codex-turn-metadata`). It counts only when Codex
+   launched the server: the nearest harness among the server's ancestor
+   processes is a `codex` process. Any other client's `_meta` is ignored,
+   since it could name any Codex thread.
 2. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
-3. An ancestor process's Claude Code session file, `~/.claude/sessions/<pid>.json`.
-4. An ancestor process whose pid exactly one Devin
+3. An ancestor process's Claude Code session file,
+   `<Claude config dir>/sessions/<pid>.json`.
+4. An ancestor `devin` process whose pid exactly one Devin
    `session_locks/<session>.lock` names.
 5. An ancestor `codex` process: `CODEX_THREAD_ID` (set for its shell
    commands), else exactly one rollout file it holds open.
 6. `CLAUDE_CODE_SESSION_ID`, or `CODEX_THREAD_ID`, when the walk found no
    harness; neither when both are set.
 
-The message bus commands use the same detection to name the sending
-session. `send` and `inbox` refuse to run without one.
-
-MCP calls always apply it. The CLI applies it only when stdin is not a
-terminal. The output names the excluded session. `--include-self` turns it
-off. Code: `internal/retrieval/local/caller.go`.
+There is no guess from the working directory or recent activity. MCP
+calls always apply it; the CLI only when stdin is not a terminal. The
+output names the excluded session; `--include-self` turns it off. The
+message bus uses the same detection to name the sender; `send` and `inbox`
+refuse to run without one.
 
 ## Message bus
 
-Design: [notes/message-bus/plan.md](../notes/message-bus/plan.md). The
-server, the device agent, the `peers`, `send` and `inbox` commands and MCP
-tools, `flopwire hook` and the plugins for Claude Code, Codex and Devin CLI
-are built, with read receipts, and push delivery into vendor cloud sessions
-(`internal/vendorcloud`, [cloud.md](harnesses/cloud.md)). opencode is not. The
-commands reach the server only through the device agent's control socket.
-Routes and wire types are in `internal/busproto`.
+User-facing contract: [messaging.md](messaging.md). Design:
+[notes/message-bus/plan.md](../notes/message-bus/plan.md).
 
-- **Presence.** Each device holds one long poll (`POST /v1/bus/poll`, up to
-  25 s). The request carries every live session on the device (id, agent,
-  repo, branch, busy) and replaces what the server held. A session is live
-  for 75 s after the poll that reported it. A session id that is another
-  person's, uploaded or in their presence, is not recorded. The poll also
-  carries the person's vendor cloud sessions that the device listed
-  (`PollRequest.Cloud`). The server keeps one row per person and session
-  for those (`bus_presence.cloud`, no device), whichever device reported
-  it last; no poll removes it.
-- **Send.** The sending session must be live on the calling device or
-  uploaded from it. `to` is a session id prefix (4+ characters, unique) or
-  `@user`. The server sets the envelope (session, person, agent, repo,
-  `own` or `teammate`, thread, time), redacts the body (4,000-byte cap) and
-  sets a 24-hour expiry. A message from another person is held until the
-  recipient accepts the sender (`/v1/bus/accepts`, login session only).
-- **Limits.** A reply to a `done` message, more than 8 messages per thread
-  per hour, 30 sends per session per hour (120 per device and 300 per
-  person), the same body to the same recipient within 10 minutes, and 50
-  undelivered messages per recipient are refused. A refused message is stored as `refused`.
-- **Delivery.** The poll answers the device's whole deliverable set:
-  messages to its sessions, and `@user` messages it may claim. A claim is
-  atomic. The device acks a message after a hook confirms that it printed
-  it; the ack sets `delivered_at`. The same ack batch reports messages that
-  became `undelivered` (`unconfirmed` after 3 leases, or `session_ended`).
-  A message to a cloud session is offered to every device of its owner
-  that polls. The device claims it only while the vendor reports a turn
-  running, pushes it with the vendor's CLI (`internal/vendorcloud`), and
-  acks it on the vendor's acknowledgement. Three failed pushes become
-  `undelivered` (`push_failed`). An `@user` message never goes to a cloud
-  session.
-- **Read receipts.** A delivered message is `read` once the recipient
-  session's transcript shows it in hook context: its text entered the
-  session's context, which says nothing about what the model did with it.
-  The device agent finds it while it indexes the transcript
-  (`internal/agent/reads.go`): only in rows `transcript.HookContext`
-  names (Claude `hook_additional_context` attachments, Codex developer
-  messages of kind `hooks.additional_context`, Devin `system` nodes that
-  start with the hook's output), and only `<flopwire-message id="…"` at
-  the start of a line, which a body cannot contain. The local inbox keeps
-  the first sighting (`devicebus.MarkRead`); a sighting made while the
-  message is still leased counts from its confirmation. With a server,
-  the device sends it in the ack batch (`AckRequest.Read`) after the
-  delivery receipt; the server sets `read_at` once, cut to
-  `[delivered_at, now]`, on a message delivered to that session and
-  harness of the person on a session the calling device holds (a claim,
-  its presence or its upload), and audits `bus.read`. Each receipt finds
-  its message by primary key. Server-side ingest does not set `read_at`:
-  the device sees every row first, including sessions a path rule keeps
-  local. opencode keeps no hook output in its transcript and is not
-  indexed, so its messages stay `delivered`.
-- **Audit.** Send, claim, ack, read, accept and revoke commit with their
-  audit event (`bus.send`, `bus.claim`, `bus.deliver`, `bus.read`,
-  `bus.accept`, `bus.revoke`). Peers, inbox and polls that return messages are audited
-  like other reads. Bodies are never in the audit log.
-- **Expiry.** A sweep each minute marks undelivered messages past their
-  expiry `expired` and drops presence a day old. The recipient's inbox
-  lists an expired message from another person only while the recipient
-  accepts that person, so a held message never reaches it.
-- **Device agent** (`internal/devicebus`). Presence is what `sessions`
-  prints as live, cross-checked with the harness registries (Claude session
-  files, Codex writer locks, Devin session locks; read, never written; a
-  Codex lock is probed with a non-blocking shared lock under Codex's own
-  coordination lock), with busy from the Claude session file, the Codex
-  rollout's last task event, or Devin's last hook event. A session ends on
-  harness evidence (a `SessionEnd` hook, a dead process, a registry entry
-  gone at two reads), never on idleness. Sessions the path rules keep off the server are not reported. The
-  agent re-polls when presence changes. Each answer reconciles a local
-  inbox (`bus.db` beside the client config, its own SQLite file so a hook
-  never waits on the index writer); offered `@user` messages are claimed
-  for one session; receipts go in batches. A hook's `pending` request on
-  the control socket reads only that inbox. With no server, sends between
-  the device's own sessions go straight into it, with the same envelope
-  and limits.
+The CLI and MCP tools reach the server only through the device agent's
+control socket. The server (or, with no server, the device agent) sets every
+envelope field. `read` is set only by the device that indexes the
+recipient's transcript. Bus operations commit with their audit event;
+bodies are never in the audit log.
+
+## TLS
+
+| Mode (`flopwire serve --tls`, `FLOPWIRE_TLS`) | Behaviour |
+|---|---|
+| `auto` (default) | `acme` with a domain, else `self-signed`. |
+| `self-signed` | ECDSA P-256 certificate made on first start in `FLOPWIRE_TLS_DIR`. Devices pin its SHA-256 fingerprint. |
+| `acme` | Let's Encrypt via TLS-ALPN-01 on public port 443. Devices use the system trust store. |
+| `proxy` | Plain HTTP behind the operator's TLS proxy. Logs a warning banner. |
+| `off` | Plain HTTP on loopback only. For tests. |
+
+- The fingerprint rides in the invite string (in the URL fragment) and is
+  saved by `claim`, `bootstrap --fingerprint` or `login --fingerprint`.
+- Every client connection checks the pin before it sends a credential. The
+  pin replaces chain and hostname checks.
+- The client refuses `http://` to any host that is not loopback, and all
+  `http://` once a pin is saved.
+- A pin mismatch is permanent: the agent stops all uploads and keeps the
+  queue. When the server's TLS directory is lost, each device runs
+  `flopwire login --fingerprint <new>`, and the running agent resumes.
 
 ## Trust boundaries
 
@@ -432,33 +208,3 @@ in `flopwire_schema_migrations`. It refuses a database whose ledger has
 edited, missing or unknown entries, and a database with application tables
 but no ledger. Applied files and ledger checksums are immutable;
 schema changes use additive migrations that preserve durable data.
-
-## Repository layout
-
-| Path | Contents |
-|---|---|
-| `cmd/flopwire` | The single binary: server, CLI, MCP, device agent, hooks, backup, bench |
-| `internal/transcript` | Harness-neutral message model and the Claude Code, Codex, Devin, opencode, Claude Desktop Local Code and Cowork readers |
-| `internal/agent` | Device agent: change detection, placement, path rules, re-parse, Cowork and Local Code authorization |
-| `internal/localindex` | Local SQLite index with FTS5 shards |
-| `internal/devicesync`, `internal/syncproto` | Chunking, spool and upload; the sync wire format |
-| `internal/client` | Device configuration, TLS pinning, HTTP client |
-| `internal/pathpolicy` | Path rule parsing and matching, shared by agent and server |
-| `internal/api` | Authenticated HTTP API |
-| `internal/ingest` | Server ingest: flush, parse queue, server path rules |
-| `internal/retrieval` | grep, search, sessions, read and change, local and server |
-| `internal/bus`, `internal/busproto`, `internal/devicebus`, `internal/busrender` | The message bus: server store, wire format, device-side delivery, rendering |
-| `internal/vendorcloud` | Push delivery into Claude Code cloud and Devin cloud sessions |
-| `internal/redact` | Secret redaction, on the device and on the server |
-| `internal/store`, `migrations` | Postgres persistence and the schema |
-| `internal/backup` | Backup and restore |
-| `internal/webapp`, `web` | The embedded admin console and its TypeScript source |
-| `plugins/claude-code`, `.claude-plugin` | The Claude Code plugin (Devin CLI loads it too) and its marketplace manifest |
-| `plugins/codex`, `.agents/plugins` | The Codex plugin and its marketplace manifest |
-| `plugins/opencode` | The opencode plugin, one file |
-| `landing` | flopwire.com |
-| `deploy` | launchd plist, nginx example |
-| `scripts` | e2e, acceptance and release scripts |
-| `testdata`, `tools` | Synthetic fixtures, parity oracles and the fixture tools |
-| `third_party` | Licenses and notices of ported code |
-| `notes` | Design records and dated logs ([index](../notes/README.md)) |
