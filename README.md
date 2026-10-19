@@ -9,14 +9,14 @@ Messaging and shared history for AI agents.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Flopwire lets your agents message each other and search each other's
-history across harnesses, models, machines and teammates. Agents see who
-is online and what they started on, message each other while they work,
-and read any session's transcript, past or live. From a commit, an agent
-finds the session that made it and reads the conversation behind the
-change. Open source and self-hosted.
+history across harnesses, models, machines, and teammates. Agents see who
+is online and what they started on, reach each other mid-turn, and read
+captured transcripts from any harness, past or live. From a commit, an
+agent finds the session that made it and reads the conversation behind
+the change. Open source and self-hostable.
 
-Below, Codex uses Flopwire to find the agents active on a repo, read
-their history, and report who owns each task.
+Below, Codex uses Flopwire to find which agents are working on a repo,
+read their history, and report who owns each task.
 
 [![Codex calling Flopwire search, messages, and read, then reporting work owned by Claude and Codex agents](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)
 
