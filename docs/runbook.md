@@ -398,9 +398,10 @@ A change to any of them needs a Postgres restart, which `up -d` performs.
 The server reconnects on its own.
 
 Keep the text histogram wide. Migration 019 sets `messages.text` to 1000
-statistics buckets and analyzes the table; without it the planner reads
-every trigram candidate of a common literal before applying a repo or
-session filter (#291). Autovacuum keeps the statistics fresh after that.
+statistics buckets and analyzes a table that already has messages; without
+it the planner reads every trigram candidate of a common literal before
+applying a repo or session filter (#291). Autovacuum keeps the statistics
+fresh after that, and builds them for a fresh database.
 
 ## Upgrade
 
