@@ -47,6 +47,13 @@ func TestMigrateFreshDatabaseCreatesSchemaAndIsIdempotent(t *testing.T) {
 			t.Errorf("missing %s", table)
 		}
 	}
+	// 019: the text histogram must be wide enough for scoped grep planning (#291).
+	var target int
+	if err := pool.QueryRow(ctx, `SELECT attstattarget FROM pg_attribute WHERE attrelid='public.messages'::regclass AND attname='text'`).Scan(&target); err != nil {
+		t.Fatal(err)
+	} else if target != 1000 {
+		t.Errorf("messages.text statistics target %d, want 1000", target)
+	}
 	for _, gone := range []string{"segments", "raw_object_ledger", "session_tombstones"} {
 		if regclass(t, pool, "public."+gone) {
 			t.Errorf("CASS-era relation %s still exists", gone)

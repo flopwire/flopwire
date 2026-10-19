@@ -3,6 +3,18 @@ services:
   postgres:
     restart: unless-stopped
     image: ${POSTGRES_IMAGE:-postgres:17.6-bookworm}
+    # Postgres ships with a 128 MB cache; retrieval over a multi-GB messages
+    # table reads from disk on every query at that size. Size shared_buffers
+    # to about a quarter of the RAM you give this host (docs/runbook.md,
+    # "Size Postgres"). random_page_cost 1.1 matches SSD storage.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
+      - -c
+      - random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}
     environment:
       POSTGRES_DB: flopwire
       POSTGRES_USER: flopwire
@@ -75,6 +87,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+      # Migrations run before the server listens; 019 analyzes messages,
+      # about a minute on a few million rows.
+      start_period: 120s
 
 volumes:
   postgres-data:
