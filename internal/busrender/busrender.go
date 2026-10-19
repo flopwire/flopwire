@@ -83,7 +83,7 @@ func CloudContext(agent string, msgs []busproto.Envelope, excerpts map[string]st
 const (
 	// HookBytes caps the context one hook call prints, measured as
 	// EncodedLen, which is at least its UTF-8 bytes and its characters.
-	// Measured 2026-10-03 (notes/message-bus/hook-caps-2026-10-03.md),
+	// Measured 2026-10-03 (notes/log/hook-caps-2026-10-03.md),
 	// on UserPromptSubmit and PostToolUse alike: Claude Code moves
 	// context over 10,000 characters to a file and shows the model a
 	// 2 KB preview; Codex keeps the head and tail of context over 10,000

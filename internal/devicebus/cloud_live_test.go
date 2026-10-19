@@ -16,7 +16,7 @@ import (
 // FLOPWIRE_CLOUD_LIVE names the session ("claude:session_…" or
 // "devin:devin-…"), and it pushes into that session: use a scratch session
 // on the cheapest model. Results are recorded in
-// notes/message-bus/cloud-2026-10-03.md.
+// notes/log/cloud-2026-10-03.md.
 //
 //  1. Discovery lists the session.
 //  2. While it runs no turn, a message stays queued (nothing is pushed).

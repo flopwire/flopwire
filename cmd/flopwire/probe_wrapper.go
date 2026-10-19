@@ -40,7 +40,7 @@ type wrapper struct {
 	// context whole, when its row holds one: Claude Code's
 	// <persisted-output> stub (past 10,000 characters the model sees a
 	// 2 KB preview) or Codex's truncation (past 10,000 bytes it keeps the
-	// head and the tail). See notes/message-bus/hook-caps-2026-10-03.md.
+	// head and the tail). See notes/log/hook-caps-2026-10-03.md.
 	cut string
 	// answered is whether the model replied after the row: a row after
 	// the turn's last model call was recorded but never read.

@@ -274,7 +274,7 @@ func rows(texts ...string) []hookText {
 // The wrapper as the transcript recorded it is not proof that the model got
 // it whole: Claude Code replaces a hook context past 10,000 characters with
 // a <persisted-output> stub and a 2 KB preview, and Codex keeps the head
-// and tail of one past 10,000 bytes (notes/message-bus/hook-caps-2026-10-03.md).
+// and tail of one past 10,000 bytes (notes/log/hook-caps-2026-10-03.md).
 // A hook context row the model never answered (it came after the turn's
 // last model call) is not proof either.
 func TestFramingNeedsTheWholeWrapperBeforeAReply(t *testing.T) {

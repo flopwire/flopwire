@@ -23,7 +23,7 @@
 // (milliseconds * 4096 + a per-millisecond counter), then random base62.
 //
 // Format knowledge comes from the opencode 1.18.30 store on this machine
-// (read-only) and the probes in notes/message-bus/probes-2026-10-01.md.
+// (read-only) and the probes in notes/log/probes-2026-10-01.md.
 package opencode
 
 import (

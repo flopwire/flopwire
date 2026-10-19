@@ -1,7 +1,7 @@
 package main
 
 // `flopwire probe` re-runs the message-bus delivery marker tests
-// (notes/message-bus/probes-2026-10-01.md, docs/probe.md) against the
+// (notes/log/probes-2026-10-01.md, docs/probe.md) against the
 // harness versions installed on this machine, and fails loudly when a hook
 // stops reaching the model or the wrapper's framing changes.
 //
@@ -175,7 +175,7 @@ func parseProbeFlags(args []string, stderr io.Writer) (probeOpts, error) {
 	o := probeOpts{models: map[transcript.Agent]string{}}
 	fs.BoolVar(&o.asJSON, "json", false, "print the report as JSON")
 	fs.BoolVar(&o.notes, "notes", false, "append the run to --notes-file")
-	fs.StringVar(&o.notesFile, "notes-file", filepath.Join("notes", "message-bus", "probe-runs.md"), "the run log --notes appends to")
+	fs.StringVar(&o.notesFile, "notes-file", filepath.Join("notes", "log", "probe-runs.md"), "the run log --notes appends to")
 	fs.BoolVar(&o.local, "local", false, "start a local-only device agent in the scratch directory instead of using the running one")
 	fs.BoolVar(&o.asInstalled, "as-installed", false, "install the plugins as setup does and run their own hook commands (through the shim and the harness's shell), not the binary by absolute path")
 	fs.StringVar(&o.dir, "dir", "", "scratch directory (default: a new one under the OS temp directory)")

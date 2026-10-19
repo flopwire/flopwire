@@ -19,7 +19,7 @@ Decided 2026-09-30. Goal: a PR that adds a quadratic loop, a full-table rescan, 
    - Heap/allocation bounds for pure-Go paths (extends the `large_test.go` pattern). `-race` adds allocations, so `AllocsPerRun` bounds skip under the race build tag or carry race-specific limits.
 3. **Cost metric = rows and blocks touched**, from per-database `pg_stat_user_tables` / `pg_statio_user_tables` deltas (`seq_tup_read`, `idx_tup_fetch`, `n_tup_ins/upd/del`, `heap_blks_hit+read`, `idx_blks_hit+read`), read only after every backend that did the work has exited: the operation runs on its own pool, the test closes it (backend exit flushes pending stats), then a fresh connection reads the views. `pg_stat_force_next_flush()` flushes only the calling backend, and idle pool backends flush after 1–10 s, so it is not enough on its own. Tuple counts are the primary metric. `seq_tup_read` skips tuples a scan cannot see, so a scan over rows deleted earlier in the same transaction (a foreign-key action after a cascade) costs nothing in tuples; seq pages (`seq_scan` delta times the table's pages) is gated with them. Block counts are secondary, since autovacuum and analyze touch blocks. Fixture tables set `autovacuum_enabled = off`. No `pg_stat_statements`: it needs `shared_preload_libraries`, which a GitHub service container cannot set. `pgtest` already gives each test its own database, and the stats views are per database, so parallel packages on one cluster do not mix counts.
 4. **Small fixtures.** Plan tests run with `SET enable_seqscan = off`; a remaining Seq Scan on a hot table means no usable index (catches missing FK indexes and index-defeating casts such as `c.id::text > $2`). With seq scans disabled the planner falls back to a full index or bitmap scan, so the assertion also fails on any scan of a hot table without an `Index Cond` that bounds it. Scaling tests use a synthetic transcript generator at N≈500 and 8N≈4000 messages. Target: seconds per package under `-race`.
-5. **Each guard lands with its fix** in one small PR. Main stays green; no allowlist. Indexes go into the existing migrations in place (pre-release, see `agent-workflow.md`).
+5. **Each guard lands with its fix** in one small PR. Main stays green; no allowlist. Indexes go into the existing migrations in place (pre-release).
 6. **Thresholds per operation class**, declared by each test:
    - Bulk (reparse, rules upgrade, delete): linear, cost ratio ≤ 12× at k=8.
    - Incremental (append parse, one retrieval page): constant in session/corpus size, ratio ≤ 2×.
@@ -54,6 +54,6 @@ Nightly hosted benchmark: added 2026-10-01 as an A/B run on a synthetic corpus (
 7. **Device** (#6, #7): SQLite plan checks, counting hook, alloc bounds, fixes.
 8. **Acceptance recording**: JSON output, `docs/perf/`, diff in `scripts/acceptance.sh`, release-checklist update.
 
-PRs 2–7 depend only on PR 1 and can run in parallel per `agent-workflow.md`.
+PRs 2–7 depend only on PR 1 and can run in parallel.
 
-Every PR, including this plan, gets an independent reviewer subagent (reviewer rules in `agent-workflow.md`) before it lands. Merge only after the review fixes are in and CI is green.
+Every PR, including this plan, gets an independent reviewer subagent (see [CONTRIBUTING.md](../CONTRIBUTING.md)) before it lands. Merge only after the review fixes are in and CI is green.

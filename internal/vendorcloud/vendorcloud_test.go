@@ -16,7 +16,7 @@ import (
 )
 
 // The fixtures below are synthetic, in the shapes recorded in
-// notes/message-bus/cloud-2026-10-03.md.
+// notes/log/cloud-2026-10-03.md.
 
 func TestClaudeListKeepsActiveCloudSessions(t *testing.T) {
 	var auth []string

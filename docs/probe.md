@@ -28,7 +28,7 @@ CLI and GUI checks by hand.
    ```
 
 3. Read the table. A `FAIL` row names what is missing in its evidence.
-4. Commit the new section of `notes/message-bus/probe-runs.md`.
+4. Commit the new section of `notes/log/probe-runs.md`.
 
 A full run takes about 3 minutes; the harnesses run at the same time.
 Each harness runs about eight short turns on its cheapest model: `haiku`,
@@ -42,7 +42,7 @@ Each harness runs about eight short turns on its cheapest model: `haiku`,
 | `--local` | Start a local-only agent in the scratch directory. Without it the probe uses your running agent, and only Claude Code can run. |
 | `--as-installed` | Run the plugins' own hook commands instead of the tap by absolute path, and add the `hook-binary` case. See [Plugins as installed](#plugins-as-installed). |
 | `--json` | Print the report as JSON. |
-| `--notes` | Append the run to `notes/message-bus/probe-runs.md` (`--notes-file` changes the path). |
+| `--notes` | Append the run to `notes/log/probe-runs.md` (`--notes-file` changes the path). |
 | `--idle-wait 60s` | How long the idle case waits. |
 | `--dir PATH` | Keep the scratch files in PATH. The default is a new directory in the OS temp directory. The probe prints it. |
 

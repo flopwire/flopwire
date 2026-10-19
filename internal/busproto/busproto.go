@@ -94,7 +94,7 @@ const (
 
 const (
 	// MaxBodyBytes bounds a message body. Longer material goes by ref.
-	// Measured 2026-10-03 (notes/message-bus/hook-caps-2026-10-03.md):
+	// Measured 2026-10-03 (notes/log/hook-caps-2026-10-03.md):
 	// Claude Code and Codex take 10,000 characters or bytes of hook
 	// context intact, so a body this size, its usual frame (about 430
 	// bytes) and the standing instruction fit one hook call
