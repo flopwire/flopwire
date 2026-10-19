@@ -381,6 +381,26 @@ The server does not start when the value is not valid.
 A deleted message is gone from `flopwire inbox` for the sender and the
 recipient. A late receipt for it is rejected.
 
+## Size Postgres
+
+`compose.yaml` starts Postgres with `shared_buffers=256MB`,
+`effective_cache_size=1GB` and `random_page_cost=1.1`. Set the first two for
+the host in `.env` or the environment of `docker compose`:
+
+```sh
+POSTGRES_SHARED_BUFFERS=1GB          # about a quarter of the host's RAM
+POSTGRES_EFFECTIVE_CACHE_SIZE=2500MB # RAM left for the OS page cache after other services
+docker compose up -d --wait postgres
+```
+
+A change to either needs a Postgres restart, which `up -d` performs. The
+server reconnects on its own; uploads in flight retry.
+
+Keep the text histogram wide. Migration 019 sets `messages.text` to 1000
+statistics buckets and analyzes the table; without it the planner reads
+every trigram candidate of a common literal before applying a repo or
+session filter (#291). Autovacuum keeps the statistics fresh after that.
+
 ## Upgrade
 
 1. Create a coordinated backup with `--encrypted-destination`.
