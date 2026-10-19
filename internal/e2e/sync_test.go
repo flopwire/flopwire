@@ -30,6 +30,9 @@ import (
 // Scenarios share state and run in order.
 func TestTwoDeviceSync(t *testing.T) {
 	h := newHarness(t)
+	if os.Getenv("FLOPWIRE_E2E_DIAGNOSTICS") == "1" {
+		sampleOwnedDiagnostics(h)
+	}
 	defer h.writeReport()
 	h.setupIdentity("macbook-m1p", "macbook-m5p-sim")
 	d1, d2 := h.devs[0], h.devs[1]
@@ -44,6 +47,8 @@ func TestTwoDeviceSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	var corpus string
+	var initialCorpus *corpusOracle
+	var corpusStarted time.Time
 	for _, d := range h.devs {
 		d.seed()
 		if d == d1 {
@@ -83,10 +88,14 @@ func TestTwoDeviceSync(t *testing.T) {
 		}
 		if n, _ := strconv.Atoi(os.Getenv("FLOPWIRE_E2E_CORPUS")); n > 0 && d == d1 {
 			corpus = d.seedCorpus(t, n).String()
+			initialCorpus = h.prepareCorpusOracle(t, d)
 		}
 		// Growth, offline search and consistency scenarios intentionally test
 		// the fully supported local index rather than automatic retention.
 		d.setMode("full")
+		if d == d1 && initialCorpus != nil {
+			corpusStarted = time.Now()
+		}
 		d.start()
 	}
 	t.Cleanup(func() {
@@ -103,18 +112,8 @@ func TestTwoDeviceSync(t *testing.T) {
 
 	h.scenario("0-initial-sync", func(t *testing.T, r *result) {
 		if corpus != "" {
-			// Let the first sync of the sample finish, so the scenarios
-			// measure steady state.
 			r.Notes = append(r.Notes, corpus)
-			start := time.Now()
-			eventually(t, 5*time.Minute, 2*time.Second, "real-corpus sample synced", func() (bool, error) {
-				_, problems, err := h.consistency(d1, nil)
-				if err == nil && len(problems) > 0 {
-					err = fmt.Errorf("%d mismatches, first: %s", len(problems), strings.Join(head(problems), "; "))
-				}
-				return err == nil, err
-			})
-			r.Timings["corpus_synced"] = ms(time.Since(start))
+			h.checkInitialCorpus(t, d1, initialCorpus, corpusStarted, r)
 		}
 		for _, d := range h.devs {
 			h.checkInitialFixtures(t, d)

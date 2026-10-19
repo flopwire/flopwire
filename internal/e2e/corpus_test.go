@@ -35,6 +35,9 @@ func (s corpusStats) String() string {
 }
 
 func (d *device) seedCorpus(t *testing.T, n int) corpusStats {
+	if frozen := os.Getenv("FLOPWIRE_E2E_FROZEN_CORPUS"); frozen != "" {
+		return d.seedFrozenCorpus(t, frozen)
+	}
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
