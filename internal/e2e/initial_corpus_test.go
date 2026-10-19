@@ -126,11 +126,13 @@ func expectedDevinKeys(ctx context.Context, root, dbPath, session string) (map[s
 }
 
 type corpusSnapshot struct {
-	pg      pgx.Tx
-	localDB *sql.DB
-	local   *sql.Tx
-	pgAt    time.Time
-	localAt time.Time
+	pg         pgx.Tx
+	localDB    *sql.DB
+	local      *sql.Tx
+	pgStart    time.Time
+	pgAt       time.Time
+	localStart time.Time
+	localAt    time.Time
 }
 
 func (s *corpusSnapshot) close(ctx context.Context) {
@@ -158,6 +160,7 @@ func (h *harness) captureCorpus(d *device) (s corpusSnapshot, err error) {
 		return s, err
 	}
 	var marker int
+	s.pgStart = time.Now()
 	err = s.pg.QueryRow(h.ctx, "SELECT 1 FROM messages LIMIT 1").Scan(&marker)
 	if err != nil && err != pgx.ErrNoRows {
 		return s, err
@@ -171,6 +174,7 @@ func (h *harness) captureCorpus(d *device) (s corpusSnapshot, err error) {
 	if err != nil {
 		return s, err
 	}
+	s.localStart = time.Now()
 	err = s.local.QueryRowContext(h.ctx, "SELECT count(*) FROM sqlite_master").Scan(&marker)
 	if err != nil {
 		return s, err
@@ -180,43 +184,91 @@ func (h *harness) captureCorpus(d *device) (s corpusSnapshot, err error) {
 }
 
 func snapshotWithinDeadline(start time.Time, s corpusSnapshot, limit time.Duration) bool {
-	return !s.pgAt.IsZero() && !s.localAt.IsZero() && !s.pgAt.Before(start) && !s.localAt.Before(start) && s.pgAt.Sub(start) <= limit && s.localAt.Sub(start) <= limit
+	return !s.pgStart.IsZero() && !s.localStart.IsZero() && !s.pgAt.Before(s.pgStart) && !s.localAt.Before(s.localStart) && !s.pgStart.Before(start) && !s.localStart.Before(start) && !s.pgAt.After(start.Add(limit)) && !s.localAt.After(start.Add(limit))
+}
+
+func snapshotAfterDeadline(start time.Time, s corpusSnapshot, limit time.Duration) bool {
+	deadline := start.Add(limit)
+	return !s.pgStart.IsZero() && !s.localStart.IsZero() && !s.pgAt.Before(s.pgStart) && !s.localAt.Before(s.localStart) && !s.pgStart.Before(deadline) && !s.localStart.Before(deadline)
+}
+
+type corpusVerdict string
+
+const (
+	corpusPass         corpusVerdict = "pass"
+	corpusFail         corpusVerdict = "fail"
+	corpusInconclusive corpusVerdict = "inconclusive"
+)
+
+func initialCorpusVerdict(start time.Time, limit time.Duration, pre corpusSnapshot, preProblems []string, post corpusSnapshot, postProblems []string) corpusVerdict {
+	if snapshotWithinDeadline(start, pre, limit) && len(preProblems) == 0 {
+		return corpusPass
+	}
+	if snapshotAfterDeadline(start, post, limit) && len(postProblems) > 0 {
+		return corpusFail
+	}
+	return corpusInconclusive
 }
 
 func (h *harness) checkInitialCorpus(t *testing.T, d *device, oracle *corpusOracle, started time.Time, r *result) {
 	t.Helper()
 	const limit = 5 * time.Minute
-	const margin = 5 * time.Second
+	const witnessMargin = 2 * time.Second
 	r.Timings["corpus_oracle_prep"] = ms(oracle.prep)
 	r.Notes = append(r.Notes, fmt.Sprintf("oracle: %d files, %d sessions, %d keys", oracle.files, len(oracle.sessions), oracle.rows))
-	if wait := time.Until(started.Add(limit - margin)); wait > 0 {
+	if wait := time.Until(started.Add(limit - witnessMargin)); wait > 0 {
 		time.Sleep(wait)
 	}
-	snap, err := h.captureCorpus(d)
+	pre, err := h.captureCorpus(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snap.close(h.ctx)
-	r.Timings["corpus_pg_capture"] = ms(snap.pgAt.Sub(started))
-	r.Timings["corpus_local_capture"] = ms(snap.localAt.Sub(started))
-	if !snapshotWithinDeadline(started, snap, limit) {
-		t.Fatalf("corpus snapshot acquired after %s deadline: pg=%s local=%s", limit, r.Timings["corpus_pg_capture"], r.Timings["corpus_local_capture"])
+	defer pre.close(h.ctx)
+	if wait := time.Until(started.Add(limit)); wait > 0 {
+		time.Sleep(wait)
 	}
+	post, err := h.captureCorpus(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer post.close(h.ctx)
+	r.Timings["corpus_pre_pg_marker_start"] = ms(pre.pgStart.Sub(started))
+	r.Timings["corpus_pre_pg_marker_end"] = ms(pre.pgAt.Sub(started))
+	r.Timings["corpus_pre_local_marker_start"] = ms(pre.localStart.Sub(started))
+	r.Timings["corpus_pre_local_marker_end"] = ms(pre.localAt.Sub(started))
+	r.Timings["corpus_post_pg_marker_start"] = ms(post.pgStart.Sub(started))
+	r.Timings["corpus_post_pg_marker_end"] = ms(post.pgAt.Sub(started))
+	r.Timings["corpus_post_local_marker_start"] = ms(post.localStart.Sub(started))
+	r.Timings["corpus_post_local_marker_end"] = ms(post.localAt.Sub(started))
 	readStart := time.Now()
-	problems, err := h.compareCorpusSnapshot(d, oracle, snap)
-	r.Timings["corpus_snapshot_read_compare"] = ms(time.Since(readStart))
-	r.Timings["corpus_post_capture_wall"] = ms(time.Since(snap.localAt))
+	preProblems, err := h.compareCorpusSnapshot(d, oracle, pre)
+	r.Timings["corpus_pre_read_compare"] = ms(time.Since(readStart))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(problems) > 0 {
-		path := filepath.Join(h.cfg.root, "initial-corpus-mismatches.txt")
-		if err := os.WriteFile(path, []byte(strings.Join(problems, "\n")+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		t.Fatalf("corpus not converged at pg=%s local=%s: %d mismatches, first: %s (all: %s)", r.Timings["corpus_pg_capture"], r.Timings["corpus_local_capture"], len(problems), strings.Join(head(problems), "; "), path)
+	if snapshotWithinDeadline(started, pre, limit) && len(preProblems) == 0 {
+		r.Timings["corpus_converged_by"] = ms(max(pre.pgAt.Sub(started), pre.localAt.Sub(started)))
+		r.Timings["corpus_post_capture_wall"] = ms(time.Since(post.localAt))
+		return
 	}
-	r.Timings["corpus_synced"] = r.Timings["corpus_local_capture"]
+	readStart = time.Now()
+	postProblems, err := h.compareCorpusSnapshot(d, oracle, post)
+	r.Timings["corpus_post_read_compare"] = ms(time.Since(readStart))
+	r.Timings["corpus_post_capture_wall"] = ms(time.Since(post.localAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := initialCorpusVerdict(started, limit, pre, preProblems, post, postProblems)
+	path := filepath.Join(h.cfg.root, "initial-corpus-mismatches.txt")
+	data := fmt.Sprintf("pre: %d mismatches\n%s\npost: %d mismatches\n%s\n", len(preProblems), strings.Join(preProblems, "\n"), len(postProblems), strings.Join(postProblems, "\n"))
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := head(postProblems)
+	if len(first) == 0 {
+		first = head(preProblems)
+	}
+	t.Fatalf("initial corpus %s at five-minute boundary: pre=%d post=%d mismatches, first: %s (all: %s)", verdict, len(preProblems), len(postProblems), strings.Join(first, "; "), path)
 }
 
 func (h *harness) compareCorpusSnapshot(d *device, oracle *corpusOracle, s corpusSnapshot) ([]string, error) {

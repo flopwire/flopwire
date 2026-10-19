@@ -11,17 +11,34 @@ import (
 
 func TestCorpusSnapshotVerdictAndMissingRows(t *testing.T) {
 	start := time.Now()
-	clean := corpusSnapshot{pgAt: start.Add(301 * time.Second), localAt: start.Add(301 * time.Second)}
-	if snapshotWithinDeadline(start, clean, 5*time.Minute) {
-		t.Fatal("late clean observation cannot qualify the five-minute gate")
-	}
-	beforeStart := corpusSnapshot{pgAt: start.Add(-time.Second), localAt: start.Add(time.Second)}
+	beforeStart := corpusSnapshot{pgStart: start.Add(-time.Second), pgAt: start.Add(time.Second), localStart: start.Add(time.Second), localAt: start.Add(time.Second)}
 	if snapshotWithinDeadline(start, beforeStart, 5*time.Minute) {
 		t.Fatal("snapshot before agent start cannot qualify the gate")
 	}
-	within := corpusSnapshot{pgAt: start.Add(295 * time.Second), localAt: start.Add(296 * time.Second)}
+	within := corpusSnapshot{pgStart: start.Add(298 * time.Second), pgAt: start.Add(298 * time.Second), localStart: start.Add(298 * time.Second), localAt: start.Add(298 * time.Second)}
 	if !snapshotWithinDeadline(start, within, 5*time.Minute) {
 		t.Fatal("bounded snapshot was rejected")
+	}
+	post := corpusSnapshot{pgStart: start.Add(300 * time.Second), pgAt: start.Add(300*time.Second + time.Millisecond), localStart: start.Add(300*time.Second + time.Millisecond), localAt: start.Add(300*time.Second + 2*time.Millisecond)}
+	if got := initialCorpusVerdict(start, 5*time.Minute, within, nil, post, []string{"missing"}); got != corpusPass {
+		t.Fatalf("predeadline completion must pass even if comparison finishes later: %s", got)
+	}
+	if got := initialCorpusVerdict(start, 5*time.Minute, within, []string{"missing"}, post, []string{"missing"}); got != corpusFail {
+		t.Fatalf("postdeadline incomplete snapshot must fail: %s", got)
+	}
+	if got := initialCorpusVerdict(start, 5*time.Minute, within, []string{"missing"}, post, nil); got != corpusInconclusive {
+		t.Fatalf("convergence between witnesses must be inconclusive: %s", got)
+	}
+	lateClean := corpusSnapshot{pgStart: start.Add(301 * time.Second), pgAt: start.Add(301 * time.Second), localStart: start.Add(301 * time.Second), localAt: start.Add(301 * time.Second)}
+	if got := initialCorpusVerdict(start, 5*time.Minute, within, []string{"missing"}, lateClean, nil); got != corpusInconclusive {
+		t.Fatalf("completion observed at 301 seconds cannot qualify: %s", got)
+	}
+	latePre := corpusSnapshot{pgStart: start.Add(299 * time.Second), pgAt: start.Add(301 * time.Second), localStart: start.Add(301 * time.Second), localAt: start.Add(301 * time.Second)}
+	if got := initialCorpusVerdict(start, 5*time.Minute, latePre, nil, post, nil); got != corpusInconclusive {
+		t.Fatalf("marker spanning deadline cannot certify late success: %s", got)
+	}
+	if got := initialCorpusVerdict(start, 5*time.Minute, within, []string{"missing"}, latePre, []string{"missing"}); got != corpusInconclusive {
+		t.Fatalf("post marker spanning deadline cannot certify miss: %s", got)
 	}
 	wantKeys := map[string]int{"source#0": 1}
 	wantContent := map[string]int{"fingerprint": 1}
