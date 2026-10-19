@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/flopwire/flopwire/internal/localindex"
@@ -22,7 +23,7 @@ func TestCorpusReferencePortableWitness(t *testing.T) {
 		t.Fatal(err)
 	}
 	var messages []*transcript.Message
-	for i, text := range []string{"PortableWitness ordinary prose", "internal/transcript", "internal/transcript", "internal/transcript"} {
+	for i, text := range []string{"PortableWitness ordinary prose\n", "internal/transcript", "internal/transcript", "internal/transcript"} {
 		m := &transcript.Message{SessionID: []string{"visible", "injected", "inactive", "retired"}[i], NativeID: "one", Ordinal: 0, Kind: transcript.KindUser, Text: text, FullLen: len(text), ContentSHA: sha256.Sum256([]byte(text))}
 		if i == 1 {
 			m.Kind = transcript.KindInjected
@@ -88,4 +89,25 @@ func TestCorpusReferencePortableWitness(t *testing.T) {
 	t.Setenv("FLOPWIRE_CORPUS", "1")
 	t.Setenv("FLOPWIRE_CORPUS_DB", s.Path())
 	TestCorpus(t)
+}
+
+func TestCorpusReadMatchesLineExcerpt(t *testing.T) {
+	for _, stored := range []string{"plain", "plain\n", "plain\n\n", "first\nsecond\n", "κόσμος\n"} {
+		want := strings.TrimSuffix(stored, "\n")
+		message := format.Message{Text: want, LineFrom: 1}
+		if !corpusReadMatches(stored, message) {
+			t.Fatal("complete line excerpt rejected")
+		}
+		message.Text += "changed"
+		if corpusReadMatches(stored, message) {
+			t.Fatal("changed read bytes accepted")
+		}
+		message.Text, message.LineFrom = want, 2
+		if corpusReadMatches(stored, message) {
+			t.Fatal("wrong read window accepted")
+		}
+	}
+	if corpusReadMatches("plain\n\n", format.Message{Text: "plain", LineFrom: 1}) {
+		t.Fatal("extra terminal blank line lost")
+	}
 }
