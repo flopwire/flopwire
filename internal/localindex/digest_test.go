@@ -82,7 +82,6 @@ func TestDigestRefreshedOnEveryAppend(t *testing.T) {
 	if rows, err := s.ListConversations(ctx, ListOptions{Filter: Filter{Branches: []string{"main"}}}); err != nil || len(rows) != 2 {
 		t.Fatalf("branch count: %d %v", len(rows), err)
 	}
-	// Oldest first.
 	rows, _ = s.ListConversations(ctx, ListOptions{Oldest: true})
 	if len(rows) != 2 || rows[0].SessionID != "agent-x" {
 		t.Fatalf("oldest first: %+v", rows)

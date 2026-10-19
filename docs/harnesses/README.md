@@ -159,7 +159,6 @@ Follow these steps in order.
 13. Confirm that each installed harness has a `hook_binary.path`. If it
     has `hook_binary.error`, tell your user the error. It names the fix.
 
-
 ## Verify tools in the current session
 
 Use these checks after you address the report's `todo` items. They test the
@@ -325,7 +324,6 @@ each harness and checks which binary they ran. See
 plugin that you installed without `--local`, or a plugin from another
 source. It reports each one in `warnings`.
 
-
 ## Where the plugin comes from
 
 The repository is a plugin marketplace for Claude Code and Codex. Claude Code
@@ -341,17 +339,10 @@ must match the manifests; `TestClaudeMarketplaceManifest` and
 `TestCodexMarketplaceManifest` check that. `flopwire setup` adds the marketplace
 from `flopwire/flopwire` on GitHub. Claude Code installs the plugin at user
 scope; Codex has only user installs. Use `--source` or
-`FLOPWIRE_PLUGIN_SOURCE` to install from a local checkout. See the
-[Claude Code plugin README](../../plugins/claude-code/flopwire/README.md) and
-the [Codex plugin README](../../plugins/codex/flopwire/README.md).
+`FLOPWIRE_PLUGIN_SOURCE` to install from a local checkout.
 
-The source's Claude Code marketplace must be named `flopwire-plugins`. When it
-has another name, Claude Code adds the marketplace under that name.
-setup names it in `done`, sets `error`, and installs nothing from it.
-When setup added that marketplace, setup removes it again. When a
-marketplace with that name was already configured, setup keeps it. Run
-`claude plugin marketplace remove NAME` to remove it.
-
-Devin CLI has no marketplace of its own. setup installs the Claude Code
-plugin into Devin directly. See [Devin CLI](devin.md#install).
-opencode loads one plugin file. See [opencode](opencode.md#install).
+Devin CLI has no marketplace of its own; setup installs the Claude Code
+plugin into it directly. opencode loads one plugin file. Each harness page
+covers its install, update, removal and development:
+[Claude Code](claude-code.md), [Codex](codex.md), [Devin CLI](devin.md),
+[opencode](opencode.md).

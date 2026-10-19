@@ -1,9 +1,8 @@
 package store
 
-// Conversation deletion (spec §10), ported from the CASS-era deletion jobs
-// (#3: 8a3fc34, 4120fba, 9c39cfd) and the deletion-owned states of the
-// raw-object ledger (#6: d4eb6a1, 4c3ee87), remapped from segments to
-// conversations, sources, and content-addressed chunks.
+// Conversation deletion (spec §10) over conversations, sources, and
+// content-addressed chunks, with the deletion-owned states of the raw-object
+// ledger.
 //
 // Request (one transaction): take the conversation's natural-key lock, write
 // the tombstone and a queued job, delete the conversation (messages cascade),

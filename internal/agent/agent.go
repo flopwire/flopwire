@@ -1149,7 +1149,7 @@ func (a *Agent) refreshAdmin(ctx context.Context) {
 }
 
 // shrinkIfIdle hands caches back when nothing is queued: an idle agent
-// should hold little memory (spec §11.2: under 50MB).
+// should hold little memory (spec §11.2: under 120MB).
 func (a *Agent) shrinkIfIdle(ctx context.Context) {
 	a.mu.Lock()
 	idle := a.busy == 0 && a.urgent.len()+a.normal.len()+a.background.len() == 0

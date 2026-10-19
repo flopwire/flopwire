@@ -1,11 +1,9 @@
 package store
 
-// The transactional migration ledger is ported from the CASS-era launch
-// stack (#8: 7bcbe33, 91e1724, b9e6387). Kept: one transaction for the whole
-// pending set, an advisory transaction lock that serializes every caller,
-// per-file checksums, a contiguous-prefix check, and binding to one explicit
-// target schema. Dropped: recognition of pre-ledger CASS-era schemas and the
-// search-server lease. A database created by the old migrations is refused.
+// The transactional migration ledger: one transaction for the whole pending
+// set, an advisory transaction lock that serializes every caller, per-file
+// checksums, a contiguous-prefix check, and binding to one explicit target
+// schema. A database with application tables but no ledger is refused.
 
 import (
 	"context"
@@ -38,7 +36,7 @@ const (
 )
 
 // ErrLegacySchema reports a database that holds application tables but no
-// migration ledger: a CASS-era deployment. It must be backed up and replaced
+// migration ledger: a pre-reset deployment. It must be backed up and replaced
 // by an empty database.
 var ErrLegacySchema = errors.New("database has application tables but no migration ledger (a pre-reset schema); restore into or start from an empty database")
 

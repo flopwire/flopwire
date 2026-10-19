@@ -72,7 +72,7 @@ func TestClaudeMarketplaceManifest(t *testing.T) {
 		t.Fatalf("plugin.json: name %q (entry %q), author %q", man.Name, p.Name, man.Author.Name)
 	}
 	// No version: Claude Code then versions the plugin by commit, so
-	// flopwire setup picks up every change (pre-release).
+	// flopwire setup picks up every change.
 	if man.Version != "" {
 		t.Fatalf("plugin.json pins version %q; see the Decisions in #58", man.Version)
 	}

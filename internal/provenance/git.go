@@ -2,8 +2,6 @@
 // Git state: the normalized remote (upstream, then origin, then the first
 // remote), the HEAD commit, and an explicit override. The device agent (B2)
 // uses it to fill conversations.repo_root.
-//
-// Ported from the CASS-era ingestion hardening (#7, hardening/ingestion).
 package provenance
 
 import (

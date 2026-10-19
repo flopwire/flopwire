@@ -1,8 +1,5 @@
 package store
 
-// Identity and audit transactions are ported from the CASS-era hardening
-// stack (#6: 031cf6f, 4d2e741; #8: 62d5a64), minus the segment paths.
-
 import (
 	"context"
 	"encoding/json"

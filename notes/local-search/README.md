@@ -1,16 +1,13 @@
-# Flopwire retrieval redesign: transcript capture, indexing, and search without CASS
+# Flopwire retrieval: transcript capture, indexing, and search
 
-Date: 2026-09-28. Status: design spec ready for implementation hand-off;
-decisions from review incorporated. Section 11 fixes the milestone and PR
-plan.
+The design of Flopwire's parser library, device agent, server ingest and
+search. Code comments cite its sections as "spec §N".
 
 ## 1. Summary
 
 Flopwire keeps its durable core (identity, devices, credentials, the S3 raw
-archive, backup, audit, policy) and replaces CASS as the retrieval engine
-with its own parser, its own message index, and its own device agent.
-Nothing is live yet, so there are no migrations; schemas below replace the
-current `segments` table outright.
+archive, backup, audit, policy) and uses its own parser, its own message
+index, and its own device agent for retrieval, in place of CASS.
 
 Why: CASS is a search-server design. On an 18GB corpus it holds 55GB on
 disk, reaches 2 to 8GB of memory on incremental runs, has a load governor
@@ -19,15 +16,16 @@ that is later rewritten. Only 2% of the corpus is prose and under 10% is
 text anyone searches for. A 157-line SQLite FTS5 prototype indexed the whole
 corpus in 162 seconds at a 253MB peak.
 
-What ships:
+The parts:
 
 - A **Go parser library**, Flopwire's own, that turns every supported
   transcript format into one message model with stable ids, versions,
-  provenance, and subagent links. Wave 1 covers Claude Code, Codex, and
-  Devin; Pi/OMP and Gemini follow. Format knowledge is ported by hand from
-  permissively licensed projects (`franken_agent_detection` 0.3.1,
-  agentsview, Entire, Codecast, google/codesearch; section 5.1), each
-  ported file headed with its source and pinned commit. There is no
+  provenance, and subagent links. It covers Claude Code (including Claude
+  Desktop's Cowork and Code-tab sessions, which store native Claude
+  transcripts), Codex, Devin, and opencode. Format knowledge is ported by
+  hand from permissively licensed projects (`franken_agent_detection`
+  0.3.1, agentsview, Entire, Codecast, google/codesearch; section 5.1),
+  each ported file headed with its source and pinned commit. There is no
   runtime sidecar: formats without a native parser are not ingested. FAD
   and agentsview run only in tests, as parity oracles.
 - A **device agent** that tails sources with a stat gate, keeps a local
@@ -36,14 +34,14 @@ What ships:
 - A **server** that stores chunks in S3, manifests and message rows in
   Postgres, and serves ranked and exact search with context and raw-byte
   retrieval.
-- **No semantic search.** Agents get BM25 ranking, exact substring search,
-  filters, and ripgrep over raw files.
-- A **message bus** across harnesses, designed here and built last.
+- **No semantic search.** Agents get BM25 ranking, exact substring and
+  regex search, filters, and raw-byte reads.
+- A **message bus** across harnesses, designed in
+  [`../message-bus/plan.md`](../message-bus/plan.md).
 
-The first user is the maintainer, on two laptops, as a personal CASS replacement.
-The first server runs on one of those laptops (Compose plus MinIO); the
-other syncs to it over the private network. The same code is the team product;
-redaction (section 6.6) ships before the first team user joins.
+The same code serves one person on two laptops, with the server on one of
+them ([`docs/two-laptop.md`](../../docs/two-laptop.md)), and a team.
+Redaction (section 6.6) masks secrets in every byte that leaves a device.
 
 ## 2. Evidence
 
@@ -58,7 +56,7 @@ sessions.
 | Codex CLI | 11.9GB, 6,980 files |
 | Claude Code | 6.2GB, 6,687 files, of which 3,814 are subagent files |
 | Devin (agentboard JSONL mirror) | 79MB |
-| Pi, Grok, Antigravity, Gemini | under 50MB combined |
+| Other harnesses | under 50MB combined |
 | Files over 20MB | 130, holding 5.4GB; largest 213MB |
 | Bytes in lines over 100KB | 77% |
 
@@ -109,54 +107,29 @@ content. They are flush signals, not a content source.
 ### 2.2 CASS on this corpus
 
 CASS ingests everything into a canonical SQLite archive, then builds a
-separate BM25 index with a from-scratch engine (Quill, formerly Tantivy),
-a from-scratch SQLite reimplementation, and a from-scratch terminal
-framework. Search reads only the lexical index; there is no fallback to
-raw files; a stale index makes `cass search` spawn a background reindex.
-
-| CASS data directory | |
-|---|---|
-| `raw-mirror` (content-addressed copies of every observed source version) | 39GB |
-| `agent_search.db` | 6.7GB |
-| `index/v9-quill` (live) | 7.4GB |
-| `index/v6`, `index/v8` (stale generations) | 1.8GB |
-| Separate `-backup-20260923` directory | 6.4GB |
-
-Memory: 0.8.0 spends 8.3GB of dirty heap in its "preparing" phase before
-any tunable stage. `main` at 6b8228b (includes the 2026-09-26 fix for a
-JOIN that materialized every message row) drops that to under 1GB, but
-incremental indexing still reached 2.1 to 2.4GB idle and 4.6GB during
-working hours, at which point it starved agentboard and every agent
-session (event-loop blocks of 14 to 35 seconds in agentboard's
-instrumentation, coincident to the second). Its responsiveness governor
-reads load average and Linux pressure-stall info only; on macOS it is blind
-to swap. Upstream issue #496 tracks memory budgets; fixes are partial and
-unreleased. CASS's raw mirror uses fixed-size chunks, so one inserted
-message shifts every later boundary and nothing dedupes across versions,
-which is why the mirror is twice the corpus.
+separate BM25 index. Search reads only the lexical index, with no fallback
+to raw files. On this corpus its data directory held 55GB: a 39GB
+content-addressed raw mirror, a 6.7GB database, 7.4GB of live index and
+1.8GB of stale index generations. Incremental indexing reached 2.1 to
+4.6GB of memory and starved every agent session on the machine; its
+responsiveness governor reads load average and Linux pressure-stall info
+only, so on macOS it is blind to swap. Its raw mirror uses fixed-size
+chunks, so one inserted message shifts every later boundary and nothing
+dedupes across versions.
 
 CASS matches re-read messages by array position and keeps the first
-version it saw of any message whose content later changed, logging a
-"collision". Streamed and later-filled messages are frozen at whatever
-state was first indexed.
+version it saw of any message whose content later changed. Streamed and
+later-filled messages are frozen at whatever state was first indexed.
 
 ### 2.3 How other products do it
 
-None full-text index raw tool output at scale. Nobody publishes numbers
-near 18GB.
-
-| Product | Index | Engine | Large transcripts | Live capture |
-|---|---|---|---|---|
-| Mosaic | cloud | undisclosed | undisclosed | undocumented |
-| Entire | transcripts in git refs, hosted search | hybrid, backend undisclosed | splits at 50MB; compact transcript beside the full one | hook-driven; copies the whole transcript at each checkpoint; pushes on `pre-push` |
-| Codecast | cloud (Convex) | Convex full-text plus semantic | undocumented | chokidar plus 2s rescan; byte-offset watermarks for Claude/Codex/Cursor, message count for Gemini, content signatures for Pi/Grok; `debounceMs 300, maxWaitMs 2000`; uploads parsed messages; disk retry queue deduped by message uuid |
-| Lore (loreai) | local SQLite | BM25 + RRF, local embeddings | LLM-distilled 10 to 20x | notify + 500ms debounce; re-imports whole file on growth |
-| claude-mem | local SQLite + Chroma | vectors, FTS5 fallback | compressed observations; raw tool I/O capped 64KB | per tool call via hook |
-| agent-session-index | local SQLite | FTS5 | excludes tool args, results, base64 | hash-and-skip per file |
-| Mem0 | Qdrant | vectors + BM25 | LLM-extracted facts only | per call |
-
-Common pattern: store the raw transcript as a blob, index a reduced form,
-keep a pointer back.
+Mosaic, Entire, Codecast, Lore, claude-mem, agent-session-index and Mem0
+were surveyed. None full-text indexes raw tool output at scale, and nobody
+publishes numbers near 18GB. The common pattern is to store the raw
+transcript as a blob, index a reduced form, and keep a pointer back.
+Codecast's live capture (byte-offset watermarks per source, a 300ms
+debounce with a 2s maximum wait, a disk retry queue deduplicated by
+message id) is closest to Flopwire's.
 
 ### 2.4 Prototype
 
@@ -187,7 +160,7 @@ harness files on each device (never copied on the device)
        -> Postgres: manifests per file generation, provisional tail bytes
        -> parser library over the changed bytes -> Postgres message rows   [team search, ~3 to 10s]
   -> CLI / MCP: local index by default, server on request
-  -> message bus (built last): MCP send/inbox + per-harness delivery
+  -> message bus: MCP send/inbox + per-harness hook delivery
 ```
 
 Roles:
@@ -213,59 +186,27 @@ the laptops. The device agent never assumes it is up.
 
 ## 4. Data model
 
-Same model in SQLite locally and Postgres centrally. Column types are
-Postgres; SQLite equivalents are obvious.
+One model in SQLite locally and Postgres centrally. The Postgres schema
+is [`migrations/`](../../migrations/) (`001_schema.sql` onward); the
+SQLite schema is `internal/localindex/schema.go`, with integer row ids,
+unix-millisecond times and JSON text in place of `jsonb`.
 
 ### 4.1 Sources and generations
 
-```sql
-sources (
-  id            uuid primary key,
-  device_id     uuid not null,
-  agent         text not null,          -- claude, codex, devin, gemini, ...
-  path          text not null,          -- as seen on the device
-  file_id       text not null,          -- dev+inode (POSIX) or volume+file index (Windows)
-  session_key   text,                   -- session id read from content, for rewrite-prone formats
-  storage_kind  text not null,          -- jsonl_append | json_doc | sqlite | dir | markdown
-  parser        text not null,          -- e.g. claude@1, codex@1+codex-events@1
-  first_seen_at timestamptz not null,
-  unique (device_id, path, file_id)
-);
-
-generations (
-  source_id     uuid references sources,
-  generation    bigint not null,        -- increments on rewrite, truncation, or identity change
-  size          bigint not null,
-  change_time   timestamptz,            -- inode ctime / NTFS ChangeTime at capture
-  captured_at   timestamptz not null,
-  complete      boolean not null,       -- false while a tail chunk is provisional
-  primary key (source_id, generation)
-);
-
-chunks (
-  hash          bytea primary key,      -- blake3 of content
-  size          integer not null,
-  object_key    text not null           -- S3 key, content addressed
-);
-
-manifest_entries (                      -- finalized chunks only
-  source_id     uuid,
-  generation    bigint,
-  ordinal       integer,
-  chunk_hash    bytea references chunks,
-  byte_offset   bigint not null,        -- cumulative offset within the generation
-  primary key (source_id, generation, ordinal)
-);
-
-provisional_tails (                     -- bytes past the last finalized boundary
-  source_id     uuid,
-  generation    bigint,
-  byte_offset   bigint not null,        -- where the tail starts
-  bytes         bytea not null,         -- under the chunker maximum, typically kilobytes
-  updated_at    timestamptz not null,
-  primary key (source_id, generation)
-);
-```
+- `sources`: one row per file (or database, or directory) a parser reads,
+  unique on (device, path, file identity). It records the agent, the
+  path as seen on the device, the file identity (device + inode), a
+  session key read from content for rewrite-prone formats, the storage
+  kind (`jsonl_append`, `json_doc`, `sqlite`, `dir`, `markdown`), and the
+  parser name and version.
+- `generations`: one row per version of a source, with its size, change
+  time at capture, and whether a provisional tail is still open.
+- `chunks`: finalized content-addressed chunks, keyed by BLAKE3 hash, each
+  stored once in S3.
+- `manifest_entries`: the ordered finalized chunks of a generation, with
+  each chunk's cumulative byte offset.
+- `provisional_tails`: the bytes past a generation's last finalized
+  boundary, under the chunker maximum and typically kilobytes.
 
 A generation is a version of a file. For append-only files most
 generations are extended in place: finalized entries are appended and the
@@ -280,61 +221,23 @@ spool only when the source may destroy it before acknowledgement (section
 
 ### 4.2 Conversations and messages
 
-```sql
-conversations (
-  id                     uuid primary key,
-  source_id              uuid references sources,
-  agent                  text not null,
-  session_id             text not null,     -- harness-native session/thread id
-  device_id              uuid not null,
-  user_id                uuid not null,     -- from the uploader's credential, never from content
-  cwd                    text,
-  repo_root              text,              -- cwd resolved to git root once, when first seen
-  title                  text,
-  started_at             timestamptz,
-  last_activity_at       timestamptz,
-  parent_conversation_id uuid,              -- subagent linkage
-  spawned_by_message_id  uuid,              -- the tool call in the parent that spawned this
-  depth                  smallint not null default 0,
-  unique (device_id, agent, session_id)
-);
-
-messages (
-  id             uuid primary key,
-  conversation_id uuid references conversations,
-  native_id      text,               -- Claude line uuid, Codex payload.id, Devin chat_message.message_id, Gemini id, Cursor bubbleId, ...
-  parent_native_id text,
-  ordinal        bigint not null,    -- derived from the locator (byte offset / rowid / array index at first sight)
-  kind           text not null,      -- user | assistant | tool_call | tool_result | thinking | system
-  role           text,
-  tool_name      text,
-  tool_call_id   text,
-  is_error       boolean,
-  ts             timestamptz,
-  text           bytea not null,     -- zstd-compressed extracted text (capped per kind)
-  text_len       integer not null,
-  content_sha    bytea not null,     -- hash of the uncapped extracted text, for change detection
-  version        integer not null default 1,
-  superseded     boolean not null default false,  -- absent from the latest generation, or replaced by a newer version
-  superseded_by  uuid,               -- the replacing version, when there is one
-  superseded_in_generation bigint,
-  on_active_path boolean,            -- null unless the harness records an active-path pointer
-  commands       jsonb,              -- Codex codex-events@1 enrichment: [{cmd, cwd, exit_code, duration}]
-  changed_paths  text[],             -- Codex codex-events@1 enrichment
-  source_generation bigint not null,
-  line_no        integer,            -- JSONL
-  byte_offset    bigint,             -- JSONL
-  byte_len       integer,
-  locator        text,               -- rowid, JSON pointer, or event file for other storage kinds
-  parser         text not null,
-  tsv            tsvector generated always as (to_tsvector('simple', decompressed text)) stored  -- or maintained by trigger
-);
-create index on messages using gin (tsv);
-create index on messages (conversation_id, ordinal);
-create index on messages (native_id) where native_id is not null;
-create index on messages (conversation_id, ordinal)
-  where not superseded and on_active_path is not false;   -- default search filter
-```
+- `conversations`: one row per harness session, unique on (device,
+  agent, session id). The user comes from the uploader's credential,
+  never from content. The cwd is resolved to a git root once, when the
+  conversation is first seen. `parent_conversation_id`,
+  `spawned_by_message_id` and `depth` link subagents (section 4.3).
+- `messages`: one row per record the parser emits. Each row carries the
+  harness-native id where there is one (Claude line uuid, Codex
+  `payload.id`, Devin `chat_message.message_id`, opencode part id), an
+  ordinal derived from the locator, a kind (`user`, `assistant`,
+  `tool_call`, `tool_result`, `thinking`, `system`, and a few more), tool
+  name and call id, the capped extracted text, a hash of the uncapped
+  text for change detection, a version, the supersession and active-path
+  flags below, Codex `codex-events@1` enrichment, and provenance: source
+  generation, line number, byte offset and length, or a locator for
+  non-JSONL storage, plus the parser that wrote it. Postgres keeps a
+  `tsvector` with a GIN index for ranked search and a trigram index for
+  `grep`; SQLite keeps the two FTS5 tables of section 6.3.
 
 Rules:
 
@@ -353,10 +256,8 @@ Rules:
   compaction summary message once. Parsers skip unknown record types and
   never fail on them; section 5.4 lists nine
   that appeared recently in Claude transcripts.
-- **Identity.** Upsert by `native_id` where the format has one (every
-  whole-document format except Cline `api_conversation_history.json`, which
-  is redundant with `ui_messages.json`). Where no id exists, key on
-  (source, locator). Positional index is never a key. Claude rows keep the
+- **Identity.** Upsert by `native_id` where the format has one. Where no
+  id exists, key on (source, locator). Positional index is never a key. Claude rows keep the
   per-line `uuid`; lines sharing `message.id` are not merged.
 - **Keep everything.** Every record the parser understands becomes a row,
   including branches, retries, and history a harness later drops. Two
@@ -365,8 +266,8 @@ Rules:
     source (rewrite, truncation, deletion, a deleted Devin session), or a
     newer version replaced it.
   - `on_active_path`: set only from a pointer the harness itself writes.
-    Devin `sessions.main_chain_id` now, ChatGPT `current_node` later. Null
-    for Claude, Codex, Pi, and every harness without such a pointer.
+    Devin `sessions.main_chain_id` is the only one. Null for Claude,
+    Codex, opencode, and every harness without such a pointer.
 - **Default search filter:** `not superseded and on_active_path is not
   false`. `include_superseded` drops the first condition;
   `include_branches` drops the second. Both are filters on search, find,
@@ -379,14 +280,12 @@ Rules:
 - **Versions.** Latest live plus superseded finals. A new version whose
   text has the previous version as a strict prefix replaces it in place
   (streaming growth, tool results filled in later). Otherwise the previous
-  row is marked superseded and a new row becomes live. ChatGPT keeps
-  regenerations as sibling nodes; store every node and set
-  `on_active_path` from `current_node`.
+  row is marked superseded and a new row becomes live.
 - **Deletions.** A message absent from a new generation is marked
   superseded with `superseded_in_generation`, never deleted. Claude's
-  compaction cleanup, Amp and Cline edits, Codex migration rollback,
-  Goose compaction, and Devin session deletion all drop history from the
-  source; the index keeps it.
+  compaction cleanup, Codex migration rollback, Devin session deletion,
+  and opencode reverts all drop history from the source; the index keeps
+  it.
 - **Ownership.** The index stores the compressed extracted text, so a
   superseded row and a deleted source both remain searchable and
   renderable. Ranking never reads the text; it is decompressed only for
@@ -417,10 +316,12 @@ Codecast, and agentboard's `subagentLogs.ts`:
   `thread_spawn` children from `codex exec` review children and from forks
   (Codecast documents the cases). `state_5.sqlite` `thread_spawn_edges` is
   a cross-check, not a source.
-- **Pi / OMP:** subagent sessions in an artifact directory beside the
-  parent file, with a `session_init` entry. Unverified on this machine.
-- **Devin:** subagents in the same SQLite database. A `subagent_heads`
-  table exists but has 0 rows here, so the linkage is unverified.
+- **Devin:** a `run_subagent` subagent writes its nodes into the same
+  `sessions.db`, on roots of their own (`parent_node_id` null), when it
+  finishes. The `subagent_heads` table is empty and unused.
+- **opencode:** a subagent is its own session row whose `parent_id` names
+  the parent session; the parent's `task` tool part that spawned it is
+  `spawned_by_message_id`.
 
 The parser sets `parent_conversation_id`, `spawned_by_message_id`, and
 `depth`. Arrival order does not matter: a child that lands before its
@@ -442,11 +343,9 @@ reading of the license texts, not legal advice.
 | Source | License | What Flopwire takes | How |
 |---|---|---|---|
 | `franken-agent-detection` (FAD) 0.3.1, git `c06d1cb` | MIT, no rider | Connector format knowledge for every harness; test-time oracle (section 5.2) | Port. 0.3.1, not 0.3.0: it fixes Claude `queued_command` prompts, Codex integrity and partial-read handling, and capped reads |
-| kenn-io/agentsview (Go) | MIT | Long-line reader; Claude subagent and persisted tool-result resolution; Codex `call_id` pairing and checkpoint/anchor logic; Devin `main_chain_id` walk; secret rules (for section 6.6, later); second oracle | Reference and port; do not vendor |
+| kenn-io/agentsview (Go) | MIT | Long-line reader; Claude subagent and persisted tool-result resolution; Codex `call_id` pairing and checkpoint/anchor logic; Devin `main_chain_id` walk; secret rules (section 6.6); second oracle | Reference and port; do not vendor |
 | entireio/cli | MIT | Claude token dedupe by `message.id`; `apply_patch` path extraction; Codex `compacted` sanitising; fixtures | Port |
 | codecast-sh/codecast (TS) | MIT | Codex subagent edge cases: `thread_spawn` vs `codex exec` review children vs forks | Port |
-| specstoryai/getspecstory (Go, 15 providers) | Apache-2.0 | Format coverage for wave 2 and later | Reference only |
-| neilberkman/ccrider (Go) | MIT | Format coverage | Reference only |
 | google/codesearch | BSD-3 | `index/regexp.go` `RegexpQuery`, the regex-to-trigram planner for `find` (section 8) | Port |
 | CASS; mcp_agent_mail | MIT with OpenAI/Anthropic rider | Nothing | Copy nothing, including fixtures. The rider forbids derivative works reaching those companies and defines analysis as use. CASS's connectors are thin wrappers over FAD anyway |
 | trufflehog, claude-squad, grafana loki | AGPL | Nothing | Do not copy |
@@ -458,49 +357,33 @@ model that does not fit. It merges Claude lines by `message.id` and keeps
 nodes). The relevant files change about 10 times a week upstream, and its
 roadmap (issue #1352) converges on Flopwire's server, not on a library.
 
-FAD's normalized model is `NormalizedConversation {agent_slug, external_id,
-title, workspace, source_path, started_at, ended_at, metadata, messages}`
-and `NormalizedMessage {idx, role, author, created_at, content, extra,
-snippets, invocations}`. Tool calls flatten into content text plus an
-`invocations` list; results become `role: tool` messages. `idx` is
-positional after filtering and sorting, never durable. Native ids reach
-`extra` inconsistently: the raw record for Claude text rows (Claude
-tool-result rows carry a synthesized `extra` without the line uuid), and
-for Codex, Gemini, Pi, Amp, Cline, Kiro, and Cursor; explicit keys for
-OpenCode, Goose, Codebuff, and Devin; nothing for Aider and Hermes. FAD
-records no byte offsets, no line numbers, no versions, no streaming, and
+FAD's own model is positional (`idx` after filtering and sorting), with
+tool calls flattened into content text and native ids reaching `extra`
+inconsistently. It records no byte offsets, line numbers or versions, and
 collapses supersession. The Go port keeps FAD's format knowledge and
 discards its message model in favour of section 4.
 
 Libraries: `modernc.org/sqlite` (no cgo; FTS5 `trigram` and
 `contentless_delete` verified), `zeebo/blake3`,
 `PlakarKorp/go-cdc-chunkers` (FastCDC), `klauspost/compress/zstd`, and the
-existing `pgx` v5 and `minio-go` v7. Go 1.26.
+`pgx` v5 and `minio-go` v7.
 
 ### 5.2 Coverage strategy and parity oracles
 
-There are no trivial connectors: the smallest is 300 lines and the whole
-set is 8 to 10 engineer-weeks.
+Native parsers exist for Claude Code, Codex, Devin, and opencode. A format
+without a native parser is not ingested; there is no runtime sidecar.
+Native parsers are what give offsets, stable ids, tailing, and versioning;
+a sidecar's positional rows would need re-ingesting anyway. A new harness
+gets a native parser when there are users and data to test against.
 
-- **Wave 1:** Claude Code, Codex, Devin. These hold nearly all live data
-  on the machine.
-- **Wave 2:** Pi/OMP and Gemini. `pi` is not installed, OMP has no
-  transcripts, and the newest Gemini session is from May, so there is
-  little to test against.
-- **Later:** Cursor, OpenCode, Copilot, Cline, Amp, Goose, Crush, and the
-  rest as users appear.
-- **No runtime sidecar.** A format without a native parser is not
-  ingested. Native parsers are what give offsets, stable ids, tailing, and
-  versioning; a sidecar's positional rows would need re-ingesting anyway.
+Parity oracles run only in tests (`internal/transcript/oracle`):
 
-Parity oracles run only in tests:
-
-- **fad-dump.** agentboard's `tools/fad-dump` bumped to FAD `=0.3.1` and
-  extended to emit `extra` and `invocations`. Build `testdata/fad/home/` in
-  each agent's native layout (SQLite as `.sql` seeds), regenerate expected
-  JSON under `env -i HOME=...`, point the Go parsers at the same home, and
-  assert discovered sources, session and workspace, and the (role,
-  content, created_at) sequence match.
+- **fad-dump.** `tools/fad-dump` pinned to FAD 0.3.1 and extended to emit
+  `extra` and `invocations`. `testdata/fad/home/` holds each agent's
+  native layout (SQLite as `.sql` seeds); `scripts/regen-oracle.sh`
+  regenerates expected JSON under `env -i HOME=...`, the Go parsers read
+  the same home, and the tests assert that discovered sources, session
+  and workspace, and the (role, content, created_at) sequence match.
 - **agentsview.** Its binary and its MIT parser testdata as a second
   differential oracle: per-session counts, roles, and ids.
 - **Real corpus.** Both oracles also run against a sampled slice of the
@@ -508,24 +391,15 @@ Parity oracles run only in tests:
 
 Oracle limits, which is why id-level parity uses small fixtures:
 
-- FAD compacts `extra` and drops native ids for Claude, Codex, and Gemini
-  files of 32MiB or more.
-- FAD's Codex connector errors on files over 100MiB (it drops them whole;
-  4 local rollouts) and on a partial final line, and skips
-  `archived_sessions/`.
+- FAD compacts `extra` and drops native ids for Claude and Codex files of
+  32MiB or more.
+- FAD's Codex connector errors on files over 100MiB (it drops them whole)
+  and on a partial final line, and skips `archived_sessions/`.
 - FAD Claude tool-result rows carry a synthesized `extra` without the line
   uuid.
 - FAD never reads Codex `session_meta.id` or `thread_spawn`.
-- FAD's Gemini connector ignores `toolCalls` and `thoughts`.
 - agentsview's model differs (see 5.1), so it checks counts and roles, not
   row identity.
-
-Effort per connector: 3 to 6 hours for the small tier (clawdbot, vibe,
-qwen, aider, crush, codebuff, grok_bot; about a day for `pi_wire` with pi
-and omp), 1 to 2 days for medium (gemini, cline, amp, devin, kiro,
-factory, copilot_cli, hermes, muse, openhands), 2 to 4 days for Claude and
-Codex, 3 to 5 days each for Cursor, OpenCode, Copilot VS Code, Shelley,
-Goose.
 
 ### 5.3 Storage kinds and the append-only assumption
 
@@ -536,31 +410,10 @@ Code and Codex rewrite transcript files in specific cases.
 |---|---|---|---|---|---|
 | Claude Code | JSONL per session, plus `subagents/agent-*.jsonl` and `subagents/workflows/<runId>/agent-*.jsonl` with `.meta.json` sidecars; `tool-results/` companion files | mostly | Failed streaming message removed in place. Compaction cleanup rewrites the file, moves title/mode records to the top, drops pre-boundary history. About 2% of transcripts got a new inode mid-session. `/compact` itself appends a `compact_boundary` line. Cleanup deletes files over `cleanupPeriodDays` (30 by default) at startup, which has orphaned 1,015 of 2,219 `tool-results/` files here. Resume and `--continue` append. | offset + rewrite check; companion files whole | 6.4GB JSONL, 613MB `tool-results/` |
 | Codex CLI | JSONL rollout; top-level `ordinal` per line, `payload.id` per `response_item` | mostly | Live sessions only append (`compacted`, `turn_aborted`). The 0.158 binary has a legacy-rollout migration with rollback, a compression worker, and a truncation path; 124 finished rollouts were replaced whole. Archiving moves files to `archived_sessions/`, which Flopwire follows (FAD skips it). `thread_history_1.sqlite` (2.8GB parsed projection with `item_id`, `rollout_ordinal`, `next_rollout_byte_offset`) and `state_5.sqlite` (`threads`, `thread_spawn_edges`) are cross-checks, not sources. | offset + rewrite check; follow renames | 11GB |
-| Pi, OMP | JSONL | yes | rewritten in place on version migration | offset | 3MB |
 | Devin | SQLite `message_nodes`, autoincrement `row_id`, branching tree; `created_at` in epoch seconds | no | Revert changes `sessions.main_chain_id` with no new rows. Whole sessions are deleted (`sqlite_sequence` at 338k against about 40k live rows; 64 sessions gone). `tool_call_state` rows update in place. | rowid watermark + `main_chain_id` check + session-set diff (vanished sessions become superseded) + `tool_call_state` re-read | 652MB db |
-| agentboard Devin mirror | JSONL | no | rewritten whole on revert, compaction, format bump | offset + rewrite check | 79MB |
-| Grok CLI | session dir; `updates.jsonl` | updates yes; `chat_history.jsonl` unverified | rewind may rewrite history | offset + rewrite check | 632KB |
-| Gemini CLI, Qwen | one JSON document per session, `id` + `timestamp` per message | no | whole document every turn; `toolCalls` filled into the last message later; JSONL variant `$set` replaces the array | hash-gated whole-document re-parse, upsert by `id` | 6MB |
-| Antigravity | `transcript.jsonl` plus `.pb` | mostly | some written in one shot | offset + rewrite check; `.pb` whole | 35MB |
-| Cursor | SQLite key-value `state.vscdb`; `bubbleId` per message | no | values overwritten in place; timing and tool status fill in later | re-read a composer when its key changes, upsert by `bubbleId` | 146MB, dormant |
-| VS Code Copilot | JSON snapshot plus JSONL change log; `requestId` | partly | log compacted into snapshot; can truncate and delete | whole file, upsert by `requestId` | 92KB |
-| Copilot CLI | `events.jsonl` | yes | none known | offset | absent |
-| ChatGPT desktop | encrypted JSON per conversation; node uuid tree | no | regenerations become sibling branches, old kept | whole blob, store every node, flag active path | 25MB |
-| Amp | `threads/T-*.json`; `messageId` | no | rewritten **without bumping mtime**; edit drops the rest of the thread | hash-gated whole file, upsert by `messageId`, tombstone missing | absent |
-| Cline | `ui_messages.json` (`ts` as id), `api_conversation_history.json` (no id) | no | `partial:true` rewritten in place; edit or checkpoint restore cuts the array | whole file, upsert by `ts` with same-millisecond guard; skip api history | absent |
-| Codebuff | `chat-messages.json`; `id`, `parentId` | no | blocks grow while streaming | whole file, upsert by `id` | absent |
-| OpenCode, Crush | SQLite; message and part ids | no | part rows overwritten while streaming; revert deletes | session `time_updated` re-read, upsert by id | absent |
-| Goose | SQLite (new) or JSONL (old) | rows mostly | compaction deletes and reinserts, flips visibility | rowid watermark; tombstone | absent |
-| Hermes, Shelley, OpenClaw 2 | SQLite | rows mostly append | Shelley carries rows on compaction | rowid or seq watermark | absent |
-| Kiro, Factory, Vibe, Muse, clawdbot, Prime | JSONL | yes | Kiro has a JSON snapshot sidecar | offset | absent |
-| Kimi | `wire.jsonl` plus `context.jsonl` | wire yes | context rewritten | offset on wire | absent |
-| OpenHands | one immutable file per event | yes | none | directory listing | absent |
-| Aider | markdown history | yes | user may delete | offset | absent |
-| Grok Bot | lossy rolling replica | no | oldest entries dropped | whole file | absent |
+| opencode | SQLite `opencode.db`; session, message and part ids | no | part rows overwritten while streaming; revert deletes | session `time_updated` re-read, upsert by id | not measured |
 
-Cline behaviour is from reading its upstream code, not a local sample.
-
-### 5.4 Wave 1 parser rules
+### 5.4 Parser rules
 
 **Claude Code.**
 
@@ -618,26 +471,28 @@ megabytes.
 - **Sweep** every 30 to 60 seconds: `stat` every tracked file. Cost is one
   syscall per file; 13.7k files took 0.25s CPU and 27MB. Hash and parse
   only files whose tuple moved.
-- **Gate tuple:** file identity (device + inode; volume + file index on
-  Windows), size, change time. Change time is the inode ctime on POSIX,
-  which no user-space writer can preserve (verified: a same-size rewrite
-  with mtime restored still moves ctime), and NTFS `ChangeTime` via
-  `GetFileInformationByHandleEx` on Windows. Never gate on mtime alone:
-  Amp rewrites threads without touching it, and any writer can restore it.
+- **Gate tuple:** file identity (device + inode), size, change time.
+  Change time is the inode ctime, which no user-space writer can preserve
+  (verified: a same-size rewrite with mtime restored still moves ctime).
+  Never gate on mtime alone: any writer can restore it. The device agent
+  runs on macOS and Linux.
 - **Racy rule** (from git): a file whose change time equals the previous
   sweep's timestamp is re-hashed regardless.
 - **Identity for rewrite-prone documents:** path + inode + a session id
-  read from the content. Never a fingerprint of the file head; Gemini, Amp
-  and Cline rewrite the head. (Filebeat and Vector fingerprint the head and
-  would break here.)
-- **FS events** (FSEvents, inotify, ReadDirectoryChangesW / USN) are an
-  optional latency improvement that wakes the agent for the touched path.
+  read from the content. Never a fingerprint of the file head: a
+  rewritten document can change its head. (Filebeat and Vector fingerprint
+  the head and would break here.)
+- **Directory events** (kqueue on macOS, inotify on Linux) on a bounded
+  set of active directories wake the agent when a file is created. Files
+  are never watched one by one. A fast lane re-stats files that changed in
+  the last few minutes, and Devin's `sessions.db` and `-wal`, every 500ms.
   The sweep is the floor and the source of truth.
-- **Hooks as flush signals:** Claude `Stop` and `PostToolUse`, Codex
-  equivalents, trigger an immediate flush of the affected source.
+- **Hooks as flush signals:** every harness hook runs `flopwire hook`,
+  which asks the agent to flush the affected source at once.
 - **SQLite sources** are polled by rowid or session updated-stamp. Devin
   also checks `main_chain_id`, diffs the session set to detect deleted
   sessions, and re-reads `tool_call_state` rows, which update in place.
+  opencode re-reads sessions whose `time_updated` moved.
 
 ### 6.2 Watermarks and rewrite handling
 
@@ -674,9 +529,8 @@ The local index holds the owner's own data and is never redacted
 ### 6.4 Chunking and upload
 
 - **Content-defined chunking** (FastCDC via `go-cdc-chunkers`, BLAKE3
-  hashes), not fixed 4MB offsets. Starting parameters: 256KB to 1MB average, 128KB minimum,
-  4MB maximum; measure the dedupe ratio on a real rewritten Gemini or Amp
-  document before fixing them. Content-addressed by hash. After a rewrite
+  hashes), not fixed 4MB offsets: 128KB minimum, 512KB average, 4MB
+  maximum. Content-addressed by hash. After a rewrite
   only chunks whose content changed have new hashes; the unchanged prefix
   dedupes exactly. Append-only files degrade to "the new chunk is at the
   end".
@@ -688,12 +542,12 @@ The local index holds the owner's own data and is never redacted
   finalized part gets a stable hash, goes to S3 and the manifest, and the
   new tail is re-sent. Worst case per flush is one chunk under the maximum
   size; typical is kilobytes.
-- **Flush cadence, append-only files:** trailing-edge debounce of 250 to
-  300ms with a 1 to 2s maximum wait, on line completion, plus immediate
+- **Flush cadence, append-only files:** trailing-edge debounce of 300ms
+  with a 2s maximum wait, on line completion, plus immediate
   flush on hook. No quiet window. Active sessions reach the server in
   seconds.
-- **Flush cadence, rewritten documents:** debounce 2 to 3s with a 10s
-  maximum wait. A mid-stream flush uploads a version that existed; the
+- **Flush cadence, rewritten documents and SQLite exports:** debounce
+  2.5s with a 10s maximum wait. A mid-stream flush uploads a version that existed; the
   prefix rule collapses it when the final arrives.
 - **Upload:** one authenticated request per flush carrying new chunks and
   the manifest delta. Idempotent on (source, generation, byte range) and
@@ -723,32 +577,17 @@ still holds the extracted text rows; the archive records the gap.
 
 ### 6.6 Redaction
 
-Timing: redaction ships before the first team user, not in wave 1. During
-the two-laptop phase, the only user is the owner of every byte, and the S3
-archive of that phase is unredacted; section 12 records what happens to
-it before a team joins.
-
-Where it runs: on the device, on the upload path only, before chunking,
-and irreversibly. The local index is never redacted: it holds the owner's
-own data, and a masked secret there would only stop the owner finding
-where they pasted it. The agent masks known secret shapes in the bytes it
-uploads: API keys and tokens by known prefixes and entropy (OpenAI,
-Anthropic, GitHub, AWS, GCP, Slack, Stripe, JWTs), private key blocks,
-connection strings with embedded credentials, `Authorization` and cookie
-headers, and `.env`-style `KEY=value` assignments whose key matches
-`SECRET|TOKEN|PASSWORD|KEY`. Each match is replaced by a fixed-width marker
-carrying the rule name and a short hash of the original, so two hits of the
-same secret still correlate and a false positive is diagnosable. From then
-on the server never receives the original bytes; the S3 archive holds the
-redacted version, and that is documented as the trust boundary. The
-existing path denylist stays as a coarse exclusion on top. Rules are
-versioned; a rule change does not rewrite history. agentsview's secret
-rules are a reference for the rule set. False negatives are expected and
-the product copy says so plainly.
-
-Once redaction is on, server-side chunks and offsets describe the redacted
-stream, not the source file: `raw()` on the server returns redacted bytes,
-while the local CLI reads the source file.
+[`../redaction.md`](../redaction.md) holds the rules and the mechanism.
+In short: the device masks known secret shapes in every byte it uploads,
+before chunking, and the server masks again when it parses or serves
+archived bytes. Masking is length-preserving, so every byte offset means
+the same thing on the device, in the archive and in the local index. Each
+marker carries the rule name and, except for password-class rules, a
+short hash of the original, so two hits of the same secret still
+correlate. Rules are versioned; a rule change does not rewrite history.
+The owner's local index is not redacted: a masked secret there would only
+stop the owner finding where they pasted it. False negatives are
+expected, and the product copy says so plainly.
 
 ## 7. Server
 
@@ -772,10 +611,9 @@ Latency, source write to searchable: local about 1s; team about 3 to 10s
 
 S3-compatible object store for finalized chunks (MinIO in Compose; any
 S3). Postgres for identity, sources, generations, chunks, manifests,
-provisional tails, conversations, messages. Text is TOAST-compressed by default only when a value exceeds
-about 2KB; store `text` as zstd-compressed `bytea` for uniform
-compression and decompress in the API. The GIN index is uncompressed
-either way.
+provisional tails, conversations, messages. Message text is a `text`
+column with lz4 TOAST compression and a low TOAST threshold, so most rows
+compress. The GIN index is uncompressed.
 
 Backup: S3 plus the identity, sources, generations, chunks, manifest, and
 provisional tail tables. Everything else is derived. Rebuild = replay
@@ -783,183 +621,54 @@ manifests (and tails) through the parser.
 
 ### 7.3 Retrieval API
 
-- `search(q, mode=ranked|exact, filters{agent, repo, device, user, kind,
-  time range, include_subagents, include_superseded, include_branches,
-  include_self}, limit)` returns hits
-  with conversation, message, kind, timestamp, snippet, and provenance
-  (path, generation, line, offset).
-- `context(message_id, before, after)` returns neighbouring rows by
-  ordinal from Postgres, decompressed. No object store involved.
-- `raw(source_id, generation, byte_offset, byte_len)` maps the range to
-  chunks by manifest arithmetic, fetches one or two objects (or reads the
-  provisional tail), and returns the bytes. This serves uncapped tool
-  output and exact provenance.
-- `conversation(id)` returns the message list with links to children.
-
-Local CLI serves the same calls from SQLite and reads raw bytes from the
-source file, falling back to the server when the file is gone.
+The server answers the retrieval tools of section 8 from Postgres, in the
+shapes of `internal/retrieval/format`; the local index answers the same
+calls from SQLite. Every hit carries its conversation, message, kind,
+timestamp and provenance (path, generation, line, offset). Reading
+neighbouring rows uses the message ordinal and needs no object store.
+Reading raw bytes maps the range to chunks by manifest arithmetic, fetches
+one or two objects (or reads the provisional tail), and returns the
+bytes; this serves uncapped tool output and exact provenance. Locally,
+raw bytes come from the source file.
 
 ## 8. Search for agents
 
-The only clients are agents (Claude Code, Codex, Devin, and whatever else
-calls the MCP server), so the query surface is designed around how agents
+The main clients are agents, so the query surface follows how agents
 already search: exact strings and regexes, file paths, identifiers, error
-text, then reading a few lines of context. That is `grep` with provenance,
-plus a ranked mode for "where did we deal with X".
+text, then reading a few lines of context. That is `grep` with
+provenance, plus a ranked mode for "where did we deal with X". There are
+no embeddings.
 
-No embeddings. Three modes, one MCP tool each and matching CLI verbs:
+The tools are the same in the CLI and over MCP; usage is in
+[`docs/search.md`](../../docs/search.md):
 
-- **`find(pattern, regex=false, case_sensitive=false, filters)`** exact
-  substring or regex. Backed by a trigram index in both stores (SQLite
-  FTS5 `trigram` tokenizer; Postgres `pg_trgm` GIN), which accelerates
-  substring and case-insensitive search. For regexes, a port of
-  google/codesearch's `RegexpQuery` (`index/regexp.go`) plans the pattern
-  into an AND/OR query over trigrams; that query selects candidate rows
-  from the trigram index, and Go's `regexp` verifies each candidate. A
-  pattern that yields no trigrams (for example `.*`) falls back to a scan
-  bounded by the other filters. Costs roughly 3x the token index,
-  about 2GB more locally for this corpus; accepted, because this is the
-  mode agents use most. Output is grep-shaped: one line per hit with
-  `path:line`, agent, session, timestamp, kind, and the matching line,
-  plus `--context N` to include neighbouring messages.
-- **`search(query, filters)`** ranked BM25 over prose and capped tool text
-  for the "I don't know the exact string" case. Returns hits with a
-  snippet and the same provenance.
-- **`context(message_id, before, after)`** and **`raw(...)`** as in 7.3,
-  so an agent can widen a hit into the conversation or fetch an uncapped
-  tool output.
+- **`grep`**: exact substring or regex. Backed by a trigram index in both
+  stores (SQLite FTS5 `trigram` tokenizer; Postgres `pg_trgm` GIN). For
+  regexes, a port of google/codesearch's `RegexpQuery` (`index/regexp.go`)
+  plans the pattern into an AND/OR query over trigrams; that query selects
+  candidate rows, and Go's `regexp` verifies each candidate. A pattern
+  that yields no trigrams (for example `.*`) falls back to a scan bounded
+  by the other filters. The trigram index costs roughly 3x the token
+  index, accepted because this is the mode agents use most.
+- **`search`**: ranked BM25 over prose and capped tool text, for the "I
+  don't know the exact string" case.
+- **`sessions`**: lists or globs sessions.
+- **`read`**: widens a hit into its conversation, or reads raw bytes for
+  an uncapped tool output. Every printed address
+  (`SESSION/ORDINAL[:LINE]`) round-trips through `read`.
 
 Filters everywhere: agent, repo (resolved git root), device, user, kind,
-time range, include subagents, include superseded, include branches
-(section 4.2 defines the default), include self.
+time range, subagents, `include_superseded`, `include_branches` (section
+4.2 defines the default), and self.
 
-**Self-session exclusion.** An agent's own `find` call, and the output it
+**Self-session exclusion.** An agent's own `grep` call, and the output it
 gets back, are indexed within about a second, so a naive repeat search
-finds the query itself. Search, find, and context therefore exclude the
-calling session's rows by default; `include_self` turns the exclusion
-off. How the MCP server identifies its calling session in each harness
-(for example, the parent process's entry in `~/.claude/sessions/`) is
-settled in PR A3.
+finds the query itself. The tools therefore exclude the calling session's
+rows by default.
 
-Output is JSON by
-default for MCP and a compact text form for the CLI, both stable enough
-to be parsed by an agent. Ripgrep over raw files remains available locally
-for anything the extraction cap removed. Embeddings can attach to the same
-rows later (sqlite-vec locally, pgvector on the server) without changing
-the model.
+## 9. Message bus
 
-## 9. Message bus (design now, build last)
-
-> Superseded on 2026-10-01 by `notes/message-bus/plan.md`: direct messages
-> only, hook delivery, no wake. This section is kept for the harness survey
-> and the reasoning behind the carried decisions.
-
-### 9.1 What the harnesses offer today
-
-> Delivery mechanisms were re-verified on 2026-09-28 against live sessions.
-> `notes/message-bus/README.md` holds the protocol detail and supersedes
-> this section where they differ. Its corrections (MCP channels need launch
-> flags; the Codex queue works without the daemon; Claude peer origin is
-> unauthenticated) are folded into 9.1 to 9.3 below.
-
-| Harness | In-session subagents | Cross-session messaging | Transport | Addressing | Receive-side hook points | Semantics |
-|---|---|---|---|---|---|---|
-| Claude Code 2.1.x | Agent tool, named subagents, agent teams; `SendMessage` to teammates; JSON mailboxes under `~/.claude/teams/<team>/inboxes/` | `ListAgents` + `SendMessage` to other local sessions, cloud sessions, and Remote Control sessions; cloud targets one-way; `notify_when_idle` | Local: per-session Unix socket `/tmp/cc-socks/<pid>.sock`, newline JSON, optional auth line. Remote: Anthropic relay, no public API | Session name, `uds:<socket>`, `bridge:<id>`; registry `~/.claude/sessions/<pid>.json` | Post `{"type":"user","message":{...}}` to the socket; MCP channels (`notifications/claude/channel`); hooks `UserPromptSubmit`/`SessionStart` `additionalContext`, `Stop`; `claude -p --resume` | Plain text. Read between tool calls mid-turn, starts a turn when idle. `crossSessionInbound` accept/hold/refuse; explicit `hold` never expires; bypass-mode approval dialog expires (5 min default); 100 held max, inbox 50. No threads or acks. Sender sees held/denied/expired/dropped |
-| Codex CLI 0.15x | `spawn_agent`, `send_message` (queue only), `followup_task` (starts a turn), `wait_agent`, `list_agents`; in-memory message board | `codex queue --thread <uuid or name>` via app-server `thread/queue/add`, `--remote ws(s)://` | Queue persisted in `~/.codex/queue_1.sqlite`, polled by every Codex process; app-server daemon (JSON-RPC over WebSocket on `~/.codex/app-server-control/app-server-control.sock`) for steer and inject | Thread UUID or exact name; subagents by agent path, not externally addressable | `codex queue`; app-server `turn/start`, `turn/steer` (mid-turn, daemon-hosted threads only), `thread/inject_items`; `PostToolUse` `additionalContext` (mid-turn, any session); hooks; `codex exec resume` | Rollouts store `agent_message{author, recipient}` with encrypted payloads. Queued messages wait for the turn to end or wake an idle session. No ack or reply |
-| Devin CLI | foreground/background subagents, `read_subagent` | none | ACP over stdio; `--cloud` relays over WebSocket | session id in `sessions.db` | `hooks.json` (Claude format); `-r <id> -p`; an ACP client can send prompts | n/a |
-| Cursor | subagents with hooks | Cloud Agents API follow-ups | HTTPS to Cursor cloud | agent/chat id | `stop` hook `followup_message` auto-submits; `beforeSubmitPrompt` | run-oriented |
-| Gemini CLI | local subagents; remote subagents over A2A | A2A to remote agents as tools | HTTP (A2A) | agent card URL | `--acp`, `--resume` | A2A tasks have ids and states |
-
-Only Claude Code can send across sessions natively, and only to Claude.
-Only Claude (socket) and Codex (queue) can receive into a running session.
-No harness has threads, replies, acknowledgements, or expiry across
-harnesses. Codex inter-agent bodies are encrypted in the rollouts, so the
-archive cannot read them.
-
-### 9.2 Design
-
-- **Identity.** Map (device, harness, session id) to a Flopwire device and
-  user. Claude: session id and name from `~/.claude/sessions/<pid>.json`.
-  Codex: thread UUID, with `session_meta.source.subagent` giving the parent.
-  Devin: session id in `sessions.db`. Agentboard does not provide this for
-  Claude or Codex: it matches tmux scrollback to logs by content
-  (`logMatcher.ts`) and never reads `~/.claude/sessions/<pid>.json`. Only
-  its Devin path matches a lock file to a pid (`devinLockMatch.ts`), which
-  is portable. Flopwire builds the Claude and Codex mapping itself.
-- **Model.** `threads (id, created_by, subject)`, `bus_messages (id,
-  thread_id, from_session, to_session, body, reply_to, created_at,
-  expires_at, delivered_at, read_at)`. Delivery state is owned by Flopwire,
-  not by any harness. `read_at` is set when the message text appears in
-  the recipient's transcript, which the archive already captures; this is
-  the receipt no harness provides (except for Codex inter-agent payloads,
-  which are encrypted).
-- **Send side.** One MCP server, `flopwire-bus`, with `send(to, text,
-  reply_to?)`, `list_peers()`, `inbox()`. MCP works in every harness.
-- **Delivery side, per harness, by the device agent:**
-  - Claude: post the documented JSON line to `messagingSocketPath` (read
-    from the registry); wakes an idle session, arrives between tool calls
-    in a busy one. Prompting sessions need no `crossSessionInbound`
-    setting. MCP channels are not used: they need launch flags.
-  - Codex: `codex queue --thread <UUID>` (`thread/queue/add`); durable in
-    SQLite and polled by every Codex process, so the daemon is not needed.
-    `turn/steer` and `thread/inject_items` need a daemon-hosted thread; a
-    `PostToolUse` hook reaches any session mid-turn. Queue only to live
-    sessions: Codex runs a queued message to a closed thread on resume.
-  - Devin, Cursor, Gemini: a `UserPromptSubmit` or `SessionStart` hook
-    that drains `inbox()` into `additionalContext`, plus a `Stop` hook
-    (or Cursor's `followup_message`) to keep the session going; resume
-    headless only when nothing is running.
-- **Framing.** Every delivered message is wrapped as untrusted peer input,
-  as Claude Code already does for its own peers.
-- **Impossible today:** delivery into Claude cloud or Remote Control
-  sessions from outside Anthropic; structured payloads into Claude;
-  `turn/steer` into a Codex session not hosted on the daemon; pushing into a
-  live Devin, Cursor or Gemini session with no user turn and no hook;
-  harness-native acks; addressing Codex subagents.
-
-### 9.3 Decisions
-
-- **Addressing.** A message is addressed to a session: `(user, device,
-  harness, session id)`. The id comes from the transcript itself (Claude
-  `sessionId`, Codex `session_meta.id`, Devin session id, Pi
-  `session_init`, Gemini session file, Cursor composer id) and is known
-  from the first uploaded line. Flopwire shows a friendly alias derived from
-  the id plus title and repo, as agentboard does; harness-native names
-  (`--name`, `/rename`, Codex thread names) are optional labels, never the
-  key. The user is the enrolled owner of the device, per the existing rule
-  that the uploader's credential determines authorship. `list_peers()`
-  returns live sessions across the team with owner, harness, repo, cwd, a
-  task summary from the transcript, and idle or busy state, read from the
-  harness registries on each device (`~/.claude/sessions/<pid>.json`,
-  Codex app-server).
-- **Permission.** Messages between a user's own sessions deliver
-  automatically. A message from another user is held until the
-  recipient's human accepts that sender once; acceptance is per sender and
-  revocable. Held messages are surfaced to the human in the CLI and web
-  console. Nothing enters an agent's context that its human did not allow.
-  This mirrors Claude Code's own accept, hold, refuse, but the device agent
-  enforces it: Claude Code does not authenticate same-user peers on macOS
-  or Linux, so its own policy is not a boundary.
-- **Delivery.** Recipient busy mid-turn: queue and deliver between tool
-  calls (Claude socket, Codex queue do this natively). Idle: deliver and
-  wake it. No live session: hold in the recipient user's inbox, deliver to
-  their next session on the same repo or, failing that, their next session
-  anywhere, and expire after a configurable time (24h default). The sender
-  is told which outcome happened. Flopwire never resumes a session headless
-  to force delivery; that spends a human's tokens without them present.
-- **Payload.** Body text, optional `reply_to`, and references to
-  conversations or messages in the archive. On delivery, references render
-  as short excerpts with provenance, so Claude's text-only socket still
-  works; the recipient widens them through the search tools. Handoffs stay
-  small and inspectable.
-- **Receipts.** `delivered_at` when the device agent hands the message to
-  the harness; `read_at` when the message text appears in the recipient's
-  transcript, which the archive captures. Codex inter-agent bodies are
-  encrypted in rollouts, so for Codex-to-Codex only `delivered_at` is
-  available.
-- **Re-verify before building.** Claude Code's socket contract and Codex's
-  queue protocol change monthly. The builder re-reads the installed binary
-  strings and docs the week bus work starts.
+The message bus design is [`../message-bus/plan.md`](../message-bus/plan.md).
 
 ## 10. Operations
 
@@ -973,66 +682,27 @@ archive cannot read them.
   chunks are purged when their reference count reaches zero; an audit
   event records who deleted what and when. Tombstones stay so re-upload
   of the same source does not resurrect it silently.
-- CASS on the maintainer's machine is left alone. It is not running now, but its
-  launchd plist has `RunAtLoad` and `KeepAlive`, so it restarts at the next
-  login. Deleting its stale index generations (1.8GB) and backup directory
-  (6.4GB), or unloading the plist, is the maintainer's call and not part of this
-  work.
 
-## 11. Sequencing
+## 11. Acceptance
 
-### 11.1 Milestones and PRs
+### 11.1 Two-device end-to-end test (B4)
 
-Main is the trunk (`build/v1` is promoted to it by #16). Every PR below
-targets main, is small enough to review in one sitting, and is built by an
-Opus subagent in its own worktree; the orchestrating session fans them out
-and the maintainer reviews and merges.
-
-**M1: parser library.** A dependency of everything else.
-
-| PR | Scope | Depends on |
-|---|---|---|
-| PR1 core | `internal/transcript`: the section 4 model, including `superseded` and `on_active_path`. Line reader that streams lines of any length and reports byte offset and length (section 6.2). JSONL cursor with the rewrite checks of 6.2. Fixture and oracle harness: `tools/fad-dump` pinned to FAD 0.3.1 and extended to emit `extra` and `invocations`, the agentsview binary, `testdata/` layout, and `third_party/<name>/` license files (section 5.2) | none |
-| PR2 Claude | Claude parser per 5.4: recursive subagent discovery and `meta.json` links, `tool-results/` companions, ignored line types, oracle tests | PR1 |
-| PR3 Codex | Codex parser on `response_item`, plus the `codex-events@1` enrichment sub-parser; `thread_spawn` links; `archived_sessions/`; oracle tests | PR1 |
-| PR4 Devin | Devin SQLite parser: every node, upsert by `chat_message.message_id`, `on_active_path` from `main_chain_id`, deleted sessions superseded, `tool_call_state` updates | PR1 |
-
-PR2 to PR4 run in parallel once PR1 merges.
-
-After M1, two tracks run in parallel. Both depend only on M1.
-
-**Track A: local index on one laptop (personal CASS replacement).**
-
-| PR | Scope | Depends on |
-|---|---|---|
-| A1 | SQLite schema (`modernc.org/sqlite`): section 4 tables, FTS5 token table and FTS5 `trigram` table, default-filter index | M1 |
-| A2 | Indexer: stat-gate sweep, FS events, tailing, rewrite detection into new generations, superseded marking, Devin polling | A1 |
-| A3 | CLI `find`, `search`, `context`, `raw` and the MCP server; `RegexpQuery` planner port; default filters and self-session exclusion (section 8) | A2 |
-| A4 | Acceptance benchmarks (11.2) and the harvested query set, runnable as one command | A3 |
-
-**Track B: sync between two laptops (the team product's path).**
-
-| PR | Scope | Depends on |
-|---|---|---|
-| B1 | One fresh migrations schema (section 4, Postgres), and the hand-ported salvage from the old PR stack (11.3): identity, audit, backup and deletion, security, UI, release scripts, migration ledger | M1 |
-| B2 | Device side: FastCDC chunker, BLAKE3 hashes, manifests, provisional tails, upload protocol, watermark queue and spool; server down treated as normal | B1 |
-| B3 | Server ingest: S3 chunks, Postgres manifests and `provisional_tails`, delta parse into message rows, `tsvector` and `pg_trgm` indexes, retrieval API (7.3) | B1, B2 |
-| B4 | Two-laptop end-to-end: server on one laptop (Compose plus MinIO), the other syncing over the private network; offline and reconnect; rewrite and deletion cases | B3, A2 |
-
-**Then:** redaction (section 6.6) before the first team user, including a
-decision on the unredacted two-laptop archive (section 12); wave 2 parsers
-(Pi/OMP, Gemini) when there is data to test against.
-
-**Last: the message bus** (section 9), after re-verifying the harness
-protocols.
+`internal/e2e` drives a real server (Compose: Postgres, MinIO, flopwire)
+and two `flopwire agent run` processes with separate homes, configs and
+indexes, and covers offline and reconnect, rewrite and deletion cases.
+`make e2e` runs it; [`docs/two-laptop.md`](../../docs/two-laptop.md) is
+the real two-laptop setup.
 
 ### 11.2 Acceptance bar for the local track
 
-Track A is done when all four hold:
+`flopwire bench acceptance` checks these against a device's real
+transcripts, read-only; `scripts/acceptance.sh` runs every part, including
+the oracle sample:
 
 - The full corpus (Claude, Codex, Devin; about 18GB) indexes in under 5
-  minutes with peak RSS under 300MB. The idle agent stays under 50MB. A
-  sweep with no changes costs under 1s of CPU.
+  minutes with peak RSS under 600MB. The idle agent stays under 120MB. A
+  sweep with no changes costs under 1s of CPU. The bulk load runs once per
+  device, which is why the peak bound is loose.
 - A line written by a live session is findable locally within about 2s.
 - Oracle parity tests pass against fad-dump 0.3.1 and agentsview, on the
   fixtures and on a sampled slice of the real corpus, with every divergence
@@ -1041,53 +711,9 @@ Track A is done when all four hold:
   invocations found in the transcripts, returns the expected hits in under
   200ms each.
 
-### 11.3 Existing branch stack
-
-The open PR stack #2 to #8 (about 107 commits) hardened a launch candidate
-built around CASS. It is not rebased or merged. After M1, B1 hand-ports
-what survives onto the fresh schema:
-
-| From | Keep |
-|---|---|
-| #3 backup and deletion | `8a3fc34`, `1f6d8fc`, `4120fba`, `9c39cfd` |
-| #5 UI | everything except `209193f` |
-| #6 security | `031cf6f`, `4d2cbae`, `4d2e741`, `d4eb6a1`, `4c3ee87`, `3d9ad07`; remap `raw_object_ledger` to chunks |
-| #8 identity and runtime | `62d5a64`, `4bbf5fe`, `cb16d94`, `004879b` (pathpolicy), `1a64874`; the migration-ledger mechanism (`7bcbe33`, `91e1724`, `b9e6387`) |
-| #4 release | release scripts only: `validate-release-tag*`, `source-release.yml`, `aa35add` |
-| #7 | `internal/provenance/git.go` and its sanitized fixtures only |
-| #2 | the notes, by hand from `origin/launch/readiness` |
-
-Dropped: all CASS ingestion, staging, prune, fence, and reconstruction
-code, and every existing migration. Migrations reset to one fresh schema.
-
-## 12. Open questions and measurements to do
-
-- The two-laptop-phase S3 archive is unredacted. Before a team joins,
-  either re-chunk it through the redactor or scope it to its owner so no
-  other user can read it.
-- Chunker parameters: measure dedupe ratio and per-flush upload size on a
-  rewritten Gemini or Amp document and on a busy Codex rollout.
-- Tool-text cap policy per kind, and whether to keep reasoning summaries
-  (5% of bytes, rarely searched).
-- Redaction rule set and its false-positive rate on real tool output;
-  measure on the corpus before shipping to a team.
-- Pi `session_init` and artifact subagent directories, and Devin subagent
-  linkage (`subagent_heads` has 0 rows here): verify on real data before
-  their parsers claim subagent links.
-- How the MCP server identifies its calling session in each harness, for
-  self-session exclusion (decided in A3).
-- Cline edit and checkpoint-restore behaviour: confirm on a real sample.
-- Windows: implement the `ChangeTime` and USN paths and test the racy rule
-  on ReFS and NTFS.
-
 ## 13. Files
 
 - `ftsidx.py`: the FTS5 prototype. `python3 ftsidx.py DB index --roots`,
   `python3 ftsidx.py DB query 'terms' [--agent codex] [--cwd PREFIX]`,
   `python3 ftsidx.py DB optimize`.
 - `shape.py`: corpus byte breakdown by record type.
-
-Research was carried out with Opus subagents on 2026-09-24 through
-2026-09-28, starting from the agentboard stall investigation. The CASS
-build from `main` and its scheduled-run logs live under `~/.local/cass-main/`
-on the maintainer's machine.

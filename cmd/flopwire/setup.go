@@ -278,14 +278,12 @@ const (
 
 // setupEnv is what a harness entry needs: the request and the machine.
 type setupEnv struct {
-	mode   string
-	source string // marketplace source as given to the harness
-	scope  string
-	cwd    string
-	home   string
-	// run runs a harness command and returns its stdout, stderr and error.
-	run func(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
-	// lookPath finds a harness binary.
+	mode     string
+	source   string // marketplace source as given to the harness
+	scope    string
+	cwd      string
+	home     string
+	run      func(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 	lookPath func(string) (string, error)
 	// binary is the flopwire on PATH, which the plugins run.
 	binary *setupBinary
@@ -568,8 +566,8 @@ const (
 	marketplaceName = "flopwire-plugins"
 	pluginName      = "flopwire"
 	pluginID        = pluginName + "@" + marketplaceName
-	// legacyMarketplace is the marketplace's name before #162. Pre-release,
-	// so there is no upgrade path: --check only names a stale install.
+	// legacyMarketplace is the marketplace's name before #162. There is no
+	// upgrade path: --check only names a stale install.
 	legacyMarketplace = "flopwire"
 )
 
@@ -804,7 +802,7 @@ func setupClaude(ctx context.Context, env *setupEnv) harnessReport {
 	scopeArgs := []string{"--scope", env.scope}
 
 	// An install from the marketplace's old name (legacyMarketplace, from
-	// any source) has no upgrade path (pre-release): --check and an install
+	// any source) has no upgrade path: --check and an install
 	// name the commands that remove it, since two installs run every hook
 	// twice; setup never runs them.
 	if env.mode != setupRemove {

@@ -266,6 +266,21 @@ to each account from any address, so password guessing stays bounded. For a
 shared deployment on Docker Desktop, put a reverse proxy in front and set
 `FLOPWIRE_TRUSTED_PROXY_CIDRS`, or raise `FLOPWIRE_AUTH_RATE_BURST`.
 
+## Choose object storage
+
+The server stores transcript chunks in any S3-compatible object store,
+read from `S3_ENDPOINT` (host and port), `S3_ACCESS_KEY`, `S3_SECRET_KEY`,
+`S3_BUCKET` (default `flopwire`) and `S3_SECURE` (`true` for TLS to the
+store, default `false`). The MinIO service in `compose.yaml` is the
+default and is what the end-to-end tests run against.
+
+`compose.yaml` fixes the server's `S3_*` values to that MinIO service, so
+setting them in `.env` has no effect. To use another store under Compose,
+add an override file that sets the five `S3_*` values on the `server`
+service and resets its `depends_on` so `minio` is not required, then pass
+it with `-f`. Outside Compose, set the variables in the server's
+environment.
+
 ## Change admin path rules
 
 Admin path rules and the `unplaceable` floor apply to every device and

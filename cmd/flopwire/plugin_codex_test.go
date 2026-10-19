@@ -75,7 +75,7 @@ func TestCodexPluginManifest(t *testing.T) {
 		t.Fatalf("plugin.json: %+v", man)
 	}
 	// No version: Codex then caches the plugin as "local" and setup
-	// reinstalls it on every run (pre-release).
+	// reinstalls it on every run.
 	if man.Version != "" {
 		t.Fatalf("plugin.json pins version %q", man.Version)
 	}

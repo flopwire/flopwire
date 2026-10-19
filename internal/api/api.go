@@ -1,8 +1,6 @@
 package api
 
-// Identity, audit, rate-limit, rotation, and admin-scope behaviour is ported
-// from the CASS-era hardening stack (#6: 031cf6f, 4d2e741, d4eb6a1, 4c3ee87;
-// #8: 62d5a64, 004879b). Every handler that reads organization data or
+// Every handler that reads organization data or
 // changes state writes an audit event first and fails closed (503) when the
 // audit store is unavailable.
 

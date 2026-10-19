@@ -34,5 +34,5 @@ make e2e        # end-to-end; required for auth, ingest, storage, search, deleti
 - After changing `web/`, run `make web` and commit `internal/webapp/dist`; CI checks it.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has setup, tests and the pull request
-policy. [docs/architecture.md](docs/architecture.md) maps the packages.
+policy. [docs/architecture.md](docs/architecture.md) maps the components and trust boundaries.
 Design records are under [notes/](notes/README.md).

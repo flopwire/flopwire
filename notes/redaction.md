@@ -34,7 +34,7 @@ Keeping the length has these consequences:
 
 ## The two-laptop archive (decision 4)
 
-Recommendation: wipe the server and re-sync from both laptops with redacting agents before the first team user joins. Flopwire is pre-release, so we build no re-chunk tool for our own old format. Until then, the server-side pass already masks rows and raw reads. The only exposure left is the bytes at rest in S3 and in backups. Cost: sessions whose local file has since been deleted (Claude's 30-day cleanup) exist only in the archive and would be lost. Alternative: scope the old sources to their owner, which needs a new visibility flag on sources (question Q3).
+Recommendation: wipe the server and re-sync from both laptops with redacting agents before the first team user joins. The server was reset before release, so no re-chunk tool exists for the pre-reset format. Until then, the server-side pass already masks rows and raw reads. The only exposure left is the bytes at rest in S3 and in backups. Cost: sessions whose local file has since been deleted (Claude's 30-day cleanup) exist only in the archive and would be lost. Alternative: scope the old sources to their owner, which needs a new visibility flag on sources (question Q3).
 
 ## Redaction record
 

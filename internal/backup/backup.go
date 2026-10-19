@@ -2,13 +2,12 @@
 // durable state: one Postgres snapshot plus every chunk object that snapshot
 // references (spec §7.2, §10).
 //
-// Ported from the CASS-era recovery hardening (#3: 8a3fc34, 1f6d8fc, 4120fba,
-// 9c39cfd): an explicit encrypted-destination acknowledgement, a shared purge
-// lock so deletion cannot remove objects mid-backup, one exported snapshot for
-// both the inventory and pg_dump, synced files, a state file, and
-// manifest.json as the durable commit point. Restore refuses non-empty
-// targets and cross-checks the restored inventory. The inventory now comes
-// from chunks, and every object is verified against its BLAKE3 content
+// A backup requires an explicit encrypted-destination acknowledgement, takes
+// a shared purge lock so deletion cannot remove objects mid-backup, uses one
+// exported snapshot for both the inventory and pg_dump, syncs its files,
+// keeps a state file, and writes manifest.json as the durable commit point.
+// Restore refuses non-empty targets and cross-checks the restored inventory.
+// The inventory comes from chunks, and every object is verified against its BLAKE3 content
 // address on backup and on restore.
 package backup
 

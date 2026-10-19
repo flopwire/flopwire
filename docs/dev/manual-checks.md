@@ -310,11 +310,11 @@ Example:
 ```markdown
 ## 2026-10-05 manual: Claude Code for VS Code
 
-flopwire 0.9.0. Claude Code for VS Code 2.1.290, claude 2.1.290.
+flopwire X.Y.Z. Claude Code for VS Code 2.1.290, claude 2.1.290.
 
 | Check | Result | Evidence |
 |---|---|---|
-| install | PASS | plugin: flopwire@flopwire-plugins 0.9.0, user scope, enabled |
+| install | PASS | plugin: flopwire@flopwire-plugins X.Y.Z, user scope, enabled |
 | load | PASS | model named flopwire_peers, flopwire_send, flopwire_inbox |
 | prompt-submit | PASS | m1a2b3c4d5e6f7a8 quoted with MANUAL-PROMPTSUBMIT-3f9a1c; read |
 | mid-turn | PASS | quoted MANUAL-MIDTURN-77b0e2 after sleep 30 |

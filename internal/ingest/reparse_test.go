@@ -267,7 +267,7 @@ func TestReplacingParseFoldsDigest(t *testing.T) {
 	sy := e.syncer(devicesync.Config{SealAfter: -1})
 	sync1(t, sy, sp)
 	e.drain()
-	// A rewrite: the first prompt is grows (its row is replaced in place) and
+	// A rewrite: the first prompt grows (its row is replaced in place) and
 	// a reply follows.
 	if err := os.WriteFile(path, []byte(line("user", "u1", "", "fix the flux capacitor now", 1)+line("assistant", "a1", "u1", "first answer", 2)+
 		line("user", "u2", "a1", "and the warp core", 3)+line("assistant", "a2", "u2", "second answer", 4)), 0o644); err != nil {

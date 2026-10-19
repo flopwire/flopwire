@@ -1,8 +1,5 @@
 package main
 
-// Credential-transition tests ported from the CASS-era stack (#8: 62d5a64,
-// 4bbf5fe, cb16d94); the collect and backup-audit cases went with CASS.
-
 import (
 	"bufio"
 	"bytes"
