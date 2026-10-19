@@ -1,20 +1,40 @@
 # Codex
 
-Flopwire installs a Codex plugin. The plugin runs `flopwire hook` through
-its shim on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and
-`SessionEnd`, and serves the MCP tools. Codex runs the hooks only after you
-approve them.
+Flopwire installs a Codex plugin. The plugin delivers messages through
+hooks, serves the MCP tools and adds the `flopwire:messaging` skill. Codex
+runs the hooks only after you approve them.
+
+## What the plugin installs
+
+| Part | What it does |
+|---|---|
+| MCP server `flopwire` | Runs `flopwire mcp` through the shim `bin/flopwire-hook`: the [nine retrieval and messaging tools](README.md#what-agents-discover). |
+| Hooks | Run `flopwire hook` through the shim on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd`. They print the standing instruction and pending messages into the session, tell the device agent when the session ends, and ask it to index the transcript. See [Hooks](#hooks). |
+| Skill `flopwire:messaging` | The same text as in the [Claude Code plugin](claude-code.md#what-the-plugin-installs). |
+
+## Requirements
+
+- A `flopwire` binary the shim can find: the path `flopwire setup`
+  recorded, `PATH` or a known directory. See
+  [How the hooks find the binary](README.md#how-the-hooks-find-the-binary).
+- The device agent runs (`flopwire agent run`). Messages and capture go
+  through it. See [agent.md](../agent.md). If it is not running, the
+  hooks print nothing and the messaging tools return `agent_not_running`.
+- You approve the plugin's hooks once in Codex. See
+  [Approve the Codex hooks](#approve-the-codex-hooks).
 
 ## Install
 
 1. Run `flopwire setup`. See
    [Install into the harnesses](README.md#install-into-the-harnesses).
-2. Approve the hooks. See [Approve the Codex hooks](#approve-the-codex-hooks).
+2. Read the report. Do each `todo` item.
+3. Approve the hooks. See [Approve the Codex hooks](#approve-the-codex-hooks).
+4. Restart your Codex sessions.
 
 setup runs `codex plugin marketplace add flopwire/flopwire --json
 --sparse .agents/plugins --sparse plugins/codex`, then
-`codex plugin add flopwire@flopwire-plugins --json`. Codex then has these
-entries:
+`codex plugin add flopwire@flopwire-plugins --json`. You can run these
+commands yourself instead. Codex then has these entries:
 
 - `config.toml` has `[marketplaces.flopwire-plugins]` with
   `source_type = "git"`, `source = "https://github.com/flopwire/flopwire.git"`
@@ -24,8 +44,27 @@ entries:
   `plugins/cache/flopwire-plugins/flopwire/local` and lists five plugin
   hooks, all waiting for review.
 
-A second `flopwire setup` runs `codex plugin marketplace upgrade
-flopwire-plugins` and reinstalls the plugin.
+## Update
+
+1. Run `flopwire setup` again.
+2. Restart your Codex sessions.
+
+setup runs `codex plugin marketplace upgrade flopwire-plugins` and
+`codex plugin add flopwire@flopwire-plugins` again, which copies the
+current files into Codex's plugin cache. The plugin has no pinned version,
+so Codex lists it as `local`. A disabled plugin stays disabled:
+`codex plugin add` would enable it, so setup skips the update and adds a
+`todo` to enable it in `/plugins`.
+
+## Remove
+
+1. Run `flopwire setup --remove`.
+2. Restart your Codex sessions.
+
+setup runs `codex plugin remove flopwire@flopwire-plugins` and
+`codex plugin marketplace remove flopwire-plugins`. It keeps the
+marketplace while another plugin from it is installed. The hook approvals
+stay in `~/.codex/config.toml`, so a later install does not ask again.
 
 ## What setup --check reads
 
@@ -147,9 +186,8 @@ At exit, Codex drops the async `Stop` hook of the last turn; the
 Keep your shell startup files silent when they are not interactive:
 on the other events the printed text goes into the session as context.
 
-Codex 0.160 runs hook commands with `zsh -lc`, so a bare `flopwire`
-resolves through the `PATH` your login profile sets, not the `PATH` Codex
-started with. The plugin's shim tries the recorded binary path first (see
+The plugin's shim tries the recorded binary path before the hook shell's
+`PATH` (see
 [How the hooks find the binary](README.md#how-the-hooks-find-the-binary)). An
 isolated test must set `FLOPWIRE_CONFIG` to a directory whose
 `binary-path` names the binary under test, or the shim runs the binary
@@ -179,8 +217,10 @@ worktrees. To commit:
 ## Manual configuration
 
 Use the manual configuration below only when you cannot install the
-plugin. Do not use both: each hook would then run twice.
-`flopwire setup` warns when it finds both.
+plugin. Do not use both: each hook would then run twice. `flopwire setup`
+names each manual entry it finds next to the plugin: a `flopwire hook`
+hook in `~/.codex/hooks.json`, a `notify = ["flopwire", "agent", "flush"]`
+line or an `[mcp_servers.flopwire]` entry. Remove them yourself.
 
 1. Open `~/.codex/hooks.json`. Create the file if it does not exist.
 2. Add these entries:
@@ -211,6 +251,16 @@ plugin. Do not use both: each hook would then run twice.
 4. Start Codex in a terminal.
 5. Codex shows "Hooks need review". Approve the five hooks.
 
-Codex runs a hook only after you approve it. It asks again when the
-event, the matcher, the command, the timeout, `async`, `statusMessage`,
-`additionalContextLimit` or the hook's position in the list changes.
+## Development
+
+The plugin is in `plugins/codex/flopwire`. Point `flopwire setup` at a
+checkout to install it from there:
+
+```sh
+flopwire setup --source /path/to/flopwire
+```
+
+Codex copies the plugin into its cache at install. Run `flopwire setup`
+again after you edit the plugin. The skill in `skills/messaging/SKILL.md`
+and the shim in `bin/flopwire-hook` are copies of the Claude Code
+plugin's; edit those and copy them here. A test fails when they differ.
