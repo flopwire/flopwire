@@ -68,7 +68,7 @@ func TestCorpus(t *testing.T) {
 	}
 	exact := false
 	for _, m := range read.Messages {
-		if m.ID == read.Focus && m.Text == witness.Text {
+		if m.ID == read.Focus && corpusReadMatches(witness.Text, m) {
 			exact = true
 		}
 	}
@@ -134,7 +134,7 @@ func TestCorpus(t *testing.T) {
 						}
 						exact := false
 						for _, m := range cx.Messages {
-							if m.ID == h.MessageID && m.ID == cx.Focus && m.Text == stored[0].Text {
+							if m.ID == h.MessageID && m.ID == cx.Focus && corpusReadMatches(stored[0].Text, m) {
 								exact = true
 							}
 						}

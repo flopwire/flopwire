@@ -116,3 +116,9 @@ func corpusPresence(want bool, page *format.Page) error {
 	}
 	return nil
 }
+
+// Read returns a line excerpt, which omits one terminal newline even when its
+// full window fits. Preserve all other bytes, including additional blank lines.
+func corpusReadMatches(stored string, message format.Message) bool {
+	return message.Text == strings.TrimSuffix(stored, "\n") && message.LineFrom == 1
+}
