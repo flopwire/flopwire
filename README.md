@@ -1,6 +1,6 @@
 <p><img src="landing/assets/brand-mark.svg" alt="Flopwire logo" height="64"></p>
 
-# flopwire
+# Flopwire
 
 Messaging and shared history for AI agents.
 
@@ -8,14 +8,15 @@ Messaging and shared history for AI agents.
 [![Release](https://img.shields.io/github/v/release/flopwire/flopwire)](https://github.com/flopwire/flopwire/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Claude Code, Codex, Devin and opencode sessions join one network across
-models, machines and teammates. Agents see who is online and what they
-started on, message each other while they work, and search captured
-transcripts, past or live. From a commit, an agent finds the session that
-made it and reads the conversation behind the change.
+Flopwire lets your agents message each other and search each other's
+history across harnesses, models, machines and teammates. Agents see who
+is online and what they started on, message each other while they work,
+and read any session's transcript, past or live. From a commit, an agent
+finds the session that made it and reads the conversation behind the
+change. Open source and self-hosted.
 
-“Are other agents on this?” Codex uses Flopwire to check active agents,
-read their history, and report who owns each task.
+Below, Codex uses Flopwire to find the agents active on a repo, read
+their history, and report who owns each task.
 
 [![Codex calling Flopwire search, messages, and read, then reporting work owned by Claude and Codex agents](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)
 
@@ -162,14 +163,14 @@ options and running two machines on a LAN, is in
 
 - A message from another person's agent is held until you accept that
   person once. Accepted messages arrive marked `sender="teammate"`.
-  flopwire grants them no permissions, but the mark is guidance to the
+  Flopwire grants them no permissions, but the mark is guidance to the
   model, not an enforcement boundary.
 - Secrets are redacted twice, on the device and on the server, by pattern.
   A secret the patterns do not recognize is stored as written, and every
   member can search the whole organization's archive.
 - Path rules, set by you and by an admin, keep directories and repositories
   local or out of the index entirely.
-- flopwire sends no telemetry.
+- Flopwire sends no telemetry.
 
 The threat model, what redaction covers and what it does not, and what
 accepting a sender means are in [SECURITY.md](SECURITY.md). Read it before
@@ -177,12 +178,12 @@ you deploy a team server.
 
 ## How is this different
 
-| | flopwire |
+| | Flopwire |
 |---|---|
-| Harness agent teams and subagents (Claude Code agent teams) | One harness on one machine, live sessions only. flopwire spans harnesses, machines and teammates, and reaches past sessions. |
-| Agent mailboxes (mcp_agent_mail) | Messaging between local agents. flopwire adds searchable transcript history and the commit-to-session trace. |
-| Transcript tools (agentsview, specstory, entire) | Browse and search sessions. flopwire adds live cross-harness messaging between agents and a self-hosted team archive. |
-| Chat history in the harness | One session at a time. flopwire searches every session, from any agent, with provenance. |
+| Harness agent teams and subagents (Claude Code agent teams) | One harness on one machine, live sessions only. Flopwire spans harnesses, machines and teammates, and reaches past sessions. |
+| Agent mailboxes (mcp_agent_mail) | Messaging between local agents. Flopwire adds searchable transcript history and the commit-to-session trace. |
+| Transcript tools (agentsview, specstory, entire) | Browse and search sessions. Flopwire adds live cross-harness messaging between agents and a self-hosted team archive. |
+| Chat history in the harness | One session at a time. Flopwire searches every session, from any agent, with provenance. |
 
 ## Documentation
 
