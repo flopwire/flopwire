@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.3](https://github.com/flopwire/flopwire/compare/v0.2.2...v0.2.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* **agent:** yield before locking the recovery scope ([#423](https://github.com/flopwire/flopwire/issues/423)) ([fe1d5d9](https://github.com/flopwire/flopwire/commit/fe1d5d9cda16e4ad6f2873dd6b83d1d9adfd769d))
+* **e2e:** use the pinned MinIO image from compose.yaml ([#416](https://github.com/flopwire/flopwire/issues/416)) ([9e4f579](https://github.com/flopwire/flopwire/commit/9e4f5797c78eb3b0087e4bd2f5da771cffc1203e))
+* **server:** widen messages.text statistics so scoped grep intersects indexes ([#425](https://github.com/flopwire/flopwire/issues/425)) ([fc3d637](https://github.com/flopwire/flopwire/commit/fc3d63722007e636eb3cce994fbcf067d1b5d844))
+* **sync:** classify growth before applying indexed byte bounds ([#412](https://github.com/flopwire/flopwire/issues/412)) ([64a64a1](https://github.com/flopwire/flopwire/commit/64a64a187dc503dab319195234275ed98add6676))
+
 ## [0.2.2](https://github.com/flopwire/flopwire/compare/v0.2.1...v0.2.2) (2026-10-18)
 
 
