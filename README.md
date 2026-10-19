@@ -15,10 +15,11 @@ captured transcripts from any harness, past or live. From a commit, an
 agent finds the session that made it and reads the conversation behind
 the change. Open source and self-hostable.
 
-Below, Codex uses Flopwire to find which agents are working on a repo,
-read their history, and report who owns each task.
+Below, on one machine: Codex finds the Claude Code session working on
+the same repo, reads what it is doing, and messages it to agree a split.
+Claude confirms and sends its results back. Recorded at 4x.
 
-[![Codex calling Flopwire search, messages, and read, then reporting work owned by Claude and Codex agents](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)](https://github.com/user-attachments/assets/96d54c32-0570-4faa-858b-f2e200509a14)
+![Claude Code and Codex side by side. Codex calls flopwire sessions, grep, peers, read and send; Claude replies through Flopwire with its results and Codex confirms the split.](docs/assets/hero.gif)
 
 ## What it does
 
