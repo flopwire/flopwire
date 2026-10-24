@@ -115,7 +115,7 @@ jobs:
           } | tee perf-out/summary.md >>"$GITHUB_STEP_SUMMARY"
           verdict="$(jq -r .verdict perf-out/ab.json)"
           echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact }}
           path: perf-out/
