@@ -57,7 +57,7 @@ func TestTrigramColumnLifecycleMutations(t *testing.T) {
 		t.Run(string(detail), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "index.db")
 			s := columnLifecycleOpen(t, path, detail, false)
-			src := source(t, s, transcript.AgentClaude, "/synthetic/lifecycle.jsonl")
+			src := source(t, s, transcript.AgentClaude, "/synthetic/fixture-4417/lifecycle.jsonl")
 			put := func(native string, ordinal int64, text string) {
 				apply(t, s, Batch{SourceID: src.ID, Generation: 1, Messages: []*transcript.Message{msg("column-life", native, ordinal, transcript.KindAssistant, text)}})
 			}
@@ -67,9 +67,11 @@ func TestTrigramColumnLifecycleMutations(t *testing.T) {
 			put("grow", 0, "replacementneedle")
 			columnLifecycleHits(t, s, "appendedneedle", 0)
 			columnLifecycleHits(t, s, "replacementneedle", 1)
-			put("secret", 1, "neighbour\nzebracorn 4417\nremaining")
+			// A short numeric marker can also occur in retained paths or hashes.
+			// Keep 4417 in the source path and scrub a distinct long numeric token.
+			put("secret", 1, "neighbour\nzebracorn 44174417441744174417\nremaining")
 			columnLifecycleHits(t, s, "zebracorn", 1)
-			if !columnLifecycleStoredToken(t, path, "zebracorn") || !columnLifecycleStoredToken(t, path, "4417") {
+			if !columnLifecycleStoredToken(t, path, "zebracorn") || !columnLifecycleStoredToken(t, path, "44174417441744174417") {
 				t.Fatal("physical scrub fixture tokens absent before redaction")
 			}
 			if n, err := s.RedactMessage(ctx, LocalRedaction{Session: "column-life", Ordinal: transcript.OrdinalAt(1, 0), From: 2, To: 2}); err != nil || n != 1 {
@@ -94,7 +96,7 @@ func TestTrigramColumnLifecycleMutations(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if bytes.Contains(bytes.ToLower(b), []byte("zebracorn")) || bytes.Contains(b, []byte("4417")) {
+				if bytes.Contains(bytes.ToLower(b), []byte("zebracorn")) || bytes.Contains(b, []byte("44174417441744174417")) {
 					t.Fatalf("redacted token retained in %s", filepath.Base(file))
 				}
 			}
