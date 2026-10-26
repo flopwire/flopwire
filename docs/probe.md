@@ -61,6 +61,36 @@ a recipient. Every message goes through the device agent's bus, as a real
 | `mid-turn` | A message queued while a tool runs is printed by the next `PostToolUse` hook, before the turn ends, and reaches the model. |
 | `subagent` | A message queued while a subagent runs is never printed by a hook inside the subagent and is not in the subagent's transcript. The session's own next hook prints it once, after the subagent returns. |
 | `guardian` (Codex) | A message queued while Codex's auto-review subagent reviews an escalated command is not taken by a hook during the review. The session's next hook prints it. |
+| `native-wake` (opt-in, Claude/Codex, `--local`) | An ordinary message stays queued while idle. Explicit wake starts a real recipient turn without a submitted prompt. The recipient sends a marker reply over Flopwire. Both messages reach native hook context with read receipts. The reply does not wake the sender. |
+
+### Test real native wakes
+
+This case spends model usage. It is excluded from default probes and CI.
+It uses four short model turns per harness on a successful run.
+
+```sh
+flopwire probe --local --harness claude,codex --case native-wake --idle-wait 10s --json
+```
+
+The probe creates fresh sender and recipient sessions. It does not submit a
+recipient prompt after requesting wake. Claude uses its native inbox socket.
+Codex uses `codex queue` against a disposable daemon in a scratch home.
+The daemon connects through the same WebSocket control socket as native
+clients. The probe stops that daemon and its verified scratch updater before
+deleting its copied login.
+It does not restart the user's active daemon.
+
+The Codex recipient uses Flopwire MCP for its reply, so its shell sandbox
+stays enabled. The scratch configuration exposes only inbox/send and
+approves the synthetic send tool for this test. Claude uses the scratch binary's CLI. Native transcripts,
+hook output, message identity, and read receipts determine the result.
+A model echoing a marker alone is insufficient. The sender gets a manual
+probe prompt only after the reply stays queued without waking it.
+
+This case qualifies local routing and the installed native transports.
+Cross-device server routing has separate integration tests; this probe
+does not claim a real two-machine wake. Run with `--as-installed` to also
+qualify the installed plugin command path.
 
 To compare the immediate prompt boundary with an observed local row, run:
 

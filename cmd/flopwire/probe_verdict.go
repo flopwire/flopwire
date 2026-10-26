@@ -19,6 +19,7 @@ const (
 	caseMidTurn              = "mid-turn"
 	caseSubagent             = "subagent"
 	caseIdle                 = "idle"
+	caseNativeWake           = "native-wake" // opt-in: paid native wake and marker reply
 	caseFraming              = "framing"
 	caseGuardian             = "guardian" // Codex only: a message queued during an auto-review pass
 )

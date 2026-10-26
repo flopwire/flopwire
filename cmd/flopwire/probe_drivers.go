@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -361,12 +362,24 @@ type codexNote struct {
 // codexStartOpts are the thread's approval settings.
 type codexStartOpts struct {
 	Model, ApprovalPolicy, Reviewer, Sandbox string
+	NativeDaemon                             bool
 }
 
 // startCodex starts `codex app-server` in CODEX_HOME (env), trusts the
 // project's hooks in that home's config, and starts a thread.
 func startCodex(ctx context.Context, dir, home string, env []string, errLog string, o codexStartOpts) (*codexSession, error) {
-	p, err := startProc(ctx, dir, env, errLog, "codex", "app-server")
+	name, args := "codex", []string{"app-server"}
+	if o.NativeDaemon {
+		var err error
+		name, err = os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		args = []string{"probe", "native-proxy", "--socket", filepath.Join(home, "app-server-control", "app-server-control.sock")}
+	}
+	setupCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	p, err := startProc(ctx, dir, env, errLog, name, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -377,14 +390,14 @@ func startCodex(ctx context.Context, dir, home string, env []string, errLog stri
 		return map[string]any{"decision": "decline"}
 	})
 	fail := func(err error) (*codexSession, error) { p.stop(5 * time.Second); return nil, err }
-	if err := s.rpc.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "flopwire-probe", "version": version},
+	if err := s.rpc.call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "flopwire-probe", "version": version},
 		"capabilities": map[string]any{"experimentalApi": true}}, nil); err != nil {
 		return fail(err)
 	}
 	if err := s.rpc.notify("initialized", nil); err != nil {
 		return fail(err)
 	}
-	if err := codexTrustHooks(ctx, s.rpc, dir, home); err != nil {
+	if err := codexTrustHooks(setupCtx, s.rpc, dir, home); err != nil {
 		return fail(err)
 	}
 	params := map[string]any{"cwd": dir, "model": o.Model, "approvalPolicy": o.ApprovalPolicy, "sandbox": o.Sandbox}
@@ -396,7 +409,7 @@ func startCodex(ctx context.Context, dir, home string, env []string, errLog stri
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	if err := s.rpc.call(ctx, "thread/start", params, &r); err != nil {
+	if err := s.rpc.call(setupCtx, "thread/start", params, &r); err != nil {
 		return fail(err)
 	}
 	s.id = r.Thread.ID
