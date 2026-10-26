@@ -80,6 +80,7 @@ import (
 )
 
 const (
+	PathWakeSend = "/v1/bus/wake-send-v1"
 	PathSend     = "/v1/bus/send"
 	PathRetry    = "/v1/bus/retry"
 	PathPoll     = "/v1/bus/poll"
@@ -257,6 +258,8 @@ type Candidate struct {
 
 // SendRequest is POST /v1/bus/send.
 type SendRequest struct {
+	// Wake explicitly permits native delivery to start a potentially billable turn.
+	Wake bool `json:"wake,omitempty"`
 	// FromSession is the sending session's id; it must be on the calling
 	// device. FromAgent narrows it when two harnesses share an id.
 	FromSession string `json:"from_session"`
@@ -285,6 +288,7 @@ type SendRequest struct {
 
 // Recipient describes where a sent message is going.
 type Recipient struct {
+	WakeSupported bool `json:"wake_supported"`
 	// Session is set for a message to a session.
 	Session string `json:"session,omitempty"`
 	Agent   string `json:"agent,omitempty"`
@@ -311,16 +315,17 @@ type Recipient struct {
 
 // SendResponse is the outcome of a send that was not refused.
 type SendResponse struct {
-	ID        string    `json:"id"`
-	ThreadID  string    `json:"thread_id"`
-	State     State     `json:"state"` // queued or held
-	To        Recipient `json:"to"`
-	Sender    string    `json:"sender"`
-	Intent    Intent    `json:"intent"`
-	Sent      time.Time `json:"sent"`
-	ExpiresAt time.Time `json:"expires_at"`
-	RetryOf   string    `json:"retry_of,omitempty"`
-	Replayed  bool      `json:"replayed,omitempty"`
+	WakeRequested bool      `json:"wake_requested,omitempty"`
+	ID            string    `json:"id"`
+	ThreadID      string    `json:"thread_id"`
+	State         State     `json:"state"` // queued or held
+	To            Recipient `json:"to"`
+	Sender        string    `json:"sender"`
+	Intent        Intent    `json:"intent"`
+	Sent          time.Time `json:"sent"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	RetryOf       string    `json:"retry_of,omitempty"`
+	Replayed      bool      `json:"replayed,omitempty"`
 	// A replay reports the existing successor's current state and reason.
 	Reason    string    `json:"reason,omitempty"`
 	Admission Admission `json:"admission,omitempty"`
@@ -329,13 +334,14 @@ type SendResponse struct {
 }
 
 // Envelope is a message as a recipient (or its sender's inbox) sees it.
-// Every field but Body, Intent, ReplyTo and Refs is set by the server.
+// The server validates WakeRequested and sets sender authority and routing.
 type Envelope struct {
-	ID        string    `json:"id"`
-	ThreadID  string    `json:"thread_id"`
-	ReplyTo   string    `json:"reply_to,omitempty"`
-	RetryOf   string    `json:"retry_of,omitempty"`
-	Admission Admission `json:"admission,omitempty"`
+	WakeRequested bool      `json:"wake_requested,omitempty"`
+	ID            string    `json:"id"`
+	ThreadID      string    `json:"thread_id"`
+	ReplyTo       string    `json:"reply_to,omitempty"`
+	RetryOf       string    `json:"retry_of,omitempty"`
+	Admission     Admission `json:"admission,omitempty"`
 	// From is the sending session; User its person's email.
 	From      string    `json:"from"`
 	FromAgent string    `json:"agent"`
@@ -365,8 +371,9 @@ type Envelope struct {
 
 // PresenceSession is one live session in a poll's heartbeat.
 type PresenceSession struct {
-	SessionID string `json:"session_id"`
-	Agent     string `json:"agent"`
+	WakeSupported bool   `json:"wake_supported,omitempty"`
+	SessionID     string `json:"session_id"`
+	Agent         string `json:"agent"`
 	// Repo is the repo root as the device placed the session (an absolute
 	// path); Branch its current git branch.
 	Repo string `json:"repo,omitempty"`
@@ -516,22 +523,23 @@ type AckResponse struct {
 
 // Peer is one live session, the row `flopwire peers` prints.
 type Peer struct {
-	Session     string    `json:"session"`
-	Agent       string    `json:"agent"`
-	User        string    `json:"user"`
-	UserID      string    `json:"user_id"`
-	UserName    string    `json:"user_name,omitempty"`
-	Device      string    `json:"device,omitempty"`
-	Repo        string    `json:"repo,omitempty"`
-	Remote      string    `json:"remote,omitempty"`
-	Main        string    `json:"main,omitempty"`
-	Branch      string    `json:"branch,omitempty"`
-	Title       string    `json:"title,omitempty"`
-	Busy        bool      `json:"busy"`
-	IdleSince   time.Time `json:"idle_since,omitzero"`
-	IdleKnown   bool      `json:"idle_known"`
-	IdleSeconds *int64    `json:"idle_seconds"`
-	Own         bool      `json:"own"` // the caller's own person
+	WakeSupported bool      `json:"wake_supported"`
+	Session       string    `json:"session"`
+	Agent         string    `json:"agent"`
+	User          string    `json:"user"`
+	UserID        string    `json:"user_id"`
+	UserName      string    `json:"user_name,omitempty"`
+	Device        string    `json:"device,omitempty"`
+	Repo          string    `json:"repo,omitempty"`
+	Remote        string    `json:"remote,omitempty"`
+	Main          string    `json:"main,omitempty"`
+	Branch        string    `json:"branch,omitempty"`
+	Title         string    `json:"title,omitempty"`
+	Busy          bool      `json:"busy"`
+	IdleSince     time.Time `json:"idle_since,omitzero"`
+	IdleKnown     bool      `json:"idle_known"`
+	IdleSeconds   *int64    `json:"idle_seconds"`
+	Own           bool      `json:"own"` // the caller's own person
 	// Cloud: a vendor cloud session, owned by User and on no device
 	// (Device is empty). A message is pushed into it while it is busy;
 	// it cannot reply.

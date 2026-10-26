@@ -26,6 +26,9 @@ import (
 // server when one is configured, else into the local inbox. A refusal is a
 // *busproto.Error with the server's codes either way.
 func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	if req.Wake && (strings.HasPrefix(strings.TrimSpace(req.To), "@") || req.RetryOf != "") {
+		return busproto.SendResponse{}, badRequest("wake requires a session recipient and cannot be combined with retry_of")
+	}
 	if len(req.RetryOf) > 64 || strings.TrimSpace(req.RetryOf) != req.RetryOf {
 		return busproto.SendResponse{}, badRequest("retry_of must be a message id of at most 64 bytes")
 	}
@@ -801,7 +804,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		return out, fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is not live on this device", fromID)
 	}
 	now := b.cfg.Now().UTC().Truncate(time.Microsecond)
-	e := busproto.Envelope{ID: newID(), From: from.SessionID, FromAgent: from.Agent, User: b.cfg.User, UserID: b.localUserID(),
+	e := busproto.Envelope{WakeRequested: req.Wake, ID: newID(), From: from.SessionID, FromAgent: from.Agent, User: b.cfg.User, UserID: b.localUserID(),
 		Repo: from.Repo, Branch: from.Branch, Sender: busproto.SenderOwn, Intent: in.intent, Body: in.body, Refs: in.refs,
 		Sent: now, ExpiresAt: now.Add(busproto.DefaultTTL), ToUser: b.cfg.User, ToUserID: b.localUserID()}
 	var to Session
@@ -834,9 +837,12 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		if v.SessionID == from.SessionID && v.Agent == from.Agent {
 			return out, badRequest("a session cannot message itself")
 		}
+		if req.Wake && (!isLive || v.Cloud || !v.WakeSupported) {
+			return out, badRequest("wake requires your own live session with wake_supported=true; no message was sent")
+		}
 		to, toKey = v, "session:"+v.Agent+":"+v.SessionID
 		e.Addressed = "session"
-		out.To = busproto.Recipient{Session: v.SessionID, Agent: v.Agent, User: b.cfg.User, UserID: b.localUserID(), Repo: v.Repo, Branch: v.Branch, Live: isLive, Busy: isLive && v.Busy, Cloud: v.Cloud, IdleSince: v.IdleSince, IdleKnown: busproto.IdleAge(v.Busy, v.IdleSince, now) != nil, IdleSeconds: busproto.IdleAge(v.Busy, v.IdleSince, now)}
+		out.To = busproto.Recipient{WakeSupported: v.WakeSupported, Session: v.SessionID, Agent: v.Agent, User: b.cfg.User, UserID: b.localUserID(), Repo: v.Repo, Branch: v.Branch, Live: isLive, Busy: isLive && v.Busy, Cloud: v.Cloud, IdleSince: v.IdleSince, IdleKnown: busproto.IdleAge(v.Busy, v.IdleSince, now) != nil, IdleSeconds: busproto.IdleAge(v.Busy, v.IdleSince, now)}
 	}
 	e.ToSession, e.ToAgent = to.SessionID, to.Agent
 	var refusal *busproto.Error
@@ -894,6 +900,7 @@ func (b *Bus) sendLocal(ctx context.Context, req busproto.SendRequest) (busproto
 		refusal.MessageID = e.ID
 		return busproto.SendResponse{}, refusal
 	}
+	out.WakeRequested = req.Wake
 	out.RetryOf, out.Admission = e.RetryOf, e.Admission
 	out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = e.ID, e.ThreadID, busproto.StateQueued, e.Sender, e.Intent, e.Sent, e.ExpiresAt
 	if len(in.redactions) > 0 {
@@ -1054,7 +1061,7 @@ func (b *Bus) peersLocal(ctx context.Context, q busproto.PeersQuery) (busproto.P
 			(q.User != "" && !b.isLocalUser(q.User)) {
 			continue
 		}
-		p := busproto.Peer{Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
+		p := busproto.Peer{WakeSupported: s.WakeSupported, Session: s.SessionID, Agent: s.Agent, User: b.cfg.User, UserID: b.localUserID(), UserName: b.cfg.User,
 			Device: host, Repo: s.Repo, Remote: s.Remote, Main: s.Main, Branch: s.Branch, Title: s.Title, Busy: s.Busy, Own: true, Cloud: s.Cloud, SeenAt: now, IdleSince: s.IdleSince, IdleKnown: busproto.IdleAge(s.Busy, s.IdleSince, now) != nil, IdleSeconds: busproto.IdleAge(s.Busy, s.IdleSince, now)}
 		if s.Cloud {
 			p.Device = ""

@@ -35,6 +35,9 @@ func (b Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.SendR
 		// A dedicated route makes that server refuse before storing a send.
 		path = busproto.PathRetry
 	}
+	if req.Wake {
+		path = busproto.PathWakeSend
+	}
 	return out, b.do(ctx, "POST", path, req, &out)
 }
 

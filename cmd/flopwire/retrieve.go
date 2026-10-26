@@ -277,6 +277,7 @@ var flagDefs = []flagDef{
 	{"intent", 0, fString, "m"},
 	{"reply-to", 0, fString, "m"},
 	{"retry-of", 0, fString, "m"},
+	{"wake", 0, fBool, "m"},
 	{"ref", 0, fList, "m"},
 	{"sent", 0, fBool, "i"},
 	{"thread", 0, fString, "i"},

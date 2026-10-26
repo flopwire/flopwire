@@ -49,10 +49,51 @@ A message arrives inside a running turn, at the next tool call, or with the
 session's next prompt or resumption hook, including a background task
 notification. A parent that has stopped while background agents run waits
 until it resumes, through a human prompt or a harness task notification.
-Child tool calls do not deliver messages to the parent. A message never
-wakes an idle session and never starts a turn. The receipt's `next_prompt`
+Child tool calls do not deliver messages to the parent. An ordinary send
+never wakes an idle session or starts a turn. The receipt's `next_prompt`
 value includes these prompt and resumption hooks. For the hook events, see
 [What the hooks do](harnesses/README.md#what-the-hooks-do).
+
+### Explicit wake
+
+Use `flopwire peers --session ID` or `flopwire_peers session=ID` to check
+`wake_supported`, owner, and busy/idle state. Ordinary sends wait for hooks.
+Set `--wake` (CLI) or `wake=true` (MCP) only when starting work is intended:
+
+```sh
+flopwire send SESSION --wake --intent request -- "Please check the failed build."
+```
+
+Wake can start a new turn and consume usage. Codex queues native input even
+if the target is busy, so it may run another turn after the current turn.
+There is no token or spending cap per wake. Prefer ordinary sends for
+progress updates, acknowledgments, and anything that can wait. Wake is a
+choice on each send; replies do not inherit it.
+
+Wake supports your own live Claude Code inbox sockets and local Codex
+sessions using the existing Codex daemon and `codex queue`, including on
+another connected device. Custom indexed Codex homes do not advertise wake
+unless they match the device agent's active Codex home. Transport availability is advertised as `wake_supported`; native
+submission can still fail. Teammates, `@user`, vendor cloud, unsupported
+harnesses, ended sessions, and `retry_of` are refused before sending. Older
+agents and servers reject the versioned wake operation.
+
+A successful send reports `wake_requested=true` and `arrives=wake_requested`.
+This confirms the request was stored, not that native input was submitted,
+a turn started, or the message was read. Normal delivery and read receipts
+still apply. Each recipient device records an attempt before submitting
+native input, batches pending wake messages for a session into one input,
+and never automatically repeats an attempt, including after an ambiguous
+failure or restart. Messages stay in the normal hook queue after a native
+failure; the device agent logs the failure. A crash before submission can
+therefore leave the wake unperformed. A manual prompt still delivers the
+queued messages.
+
+The native input is a fixed Flopwire notice. The message body and sender
+authority still arrive through Flopwire's inbox and hooks. No permissions
+or settings change. Claude's inbound controls continue to apply. Codex can
+retain queued input if a live session closes while submission is in
+progress; that input may run when the user later resumes the session.
 
 Delivery is at least once. The hook takes the session's messages under a
 10-second lease, prints them, then confirms them; only a confirmation marks

@@ -54,7 +54,7 @@ a recipient. Every message goes through the device agent's bus, as a real
 
 | Case | What it proves |
 |---|---|
-| `idle` | A message sent to an idle session does not start a turn within the wait, and stays `queued`. Flopwire never wakes a session. |
+| `idle` | A message sent to an idle session does not start a turn within the wait, and stays `queued`. Ordinary sends never wake a session; this probe does not request explicit wake. |
 | `prompt-submit` | A message queued before the user's prompt is printed by the `UserPromptSubmit` hook, once, and reaches the model. |
 | `prompt-submit-observed` (opt-in, `--local`) | One recipient inbox read establishes that the exact message is visible locally as `queued` before the generic prompt. The session's `UserPromptSubmit` prints it once and its native transcript records the hook context. |
 | `framing` | The `<flopwire-message>` wrapper arrives intact. The transcript holds it closed, with the sent message's id, sender session (`from`), harness (`agent`), `sender="own"`, intent and marker. |

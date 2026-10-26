@@ -15,12 +15,12 @@ import (
 )
 
 const busUpgradeDurableSnapshot = `SELECT jsonb_build_object(
- 'messages', (SELECT jsonb_agg(to_jsonb(m)-'attempts'-'last_at'-'from_remote'-'from_main'-'retry_of'-'admission' ORDER BY id) FROM bus_messages m),
+ 'messages', (SELECT jsonb_agg(to_jsonb(m)-'attempts'-'last_at'-'from_remote'-'from_main'-'retry_of'-'admission'-'wake_requested' ORDER BY id) FROM bus_messages m),
  'audit', (SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM audit_events a),
  'users', (SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u),
  'devices', (SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM devices d),
  'accepts', (SELECT jsonb_agg(to_jsonb(a) ORDER BY recipient_user,sender_user) FROM bus_accepts a),
- 'presence', (SELECT jsonb_agg(to_jsonb(p)-'idle_since' ORDER BY session_id) FROM bus_presence p)
+ 'presence', (SELECT jsonb_agg(to_jsonb(p)-'idle_since'-'wake_supported' ORDER BY session_id) FROM bus_presence p)
 )::text`
 
 const busUpgradePriorLedgerSnapshot = `SELECT jsonb_agg(to_jsonb(m) ORDER BY name)::text
@@ -150,6 +150,10 @@ func TestBusUpgradePreservesDataAndLedger(t *testing.T) {
 				t.Fatal("upgrade changed durable data")
 			}
 			assertLegacyRetryDefaults(t, pool)
+			var wakes, supported int
+			if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM bus_messages WHERE wake_requested),(SELECT count(*) FROM bus_presence WHERE wake_supported)`).Scan(&wakes, &supported); err != nil || wakes != 0 || supported != 0 {
+				t.Fatalf("upgrade must not enable wake on existing data: %d %d %v", wakes, supported, err)
+			}
 			if got := busUpgradeSnapshot(t, pool, busUpgradePriorLedgerSnapshot); got != ledger {
 				t.Fatal("upgrade changed historical checksums or applied_at")
 			}

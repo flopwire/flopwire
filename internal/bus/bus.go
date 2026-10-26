@@ -230,6 +230,7 @@ type session struct {
 	repo, branch, title     string
 	remote, main            string
 	busy, live, cloud       bool
+	wakeSupported           bool
 	deviceID                string
 	idleSince               time.Time
 }
@@ -336,12 +337,12 @@ func resolvePerson(ctx context.Context, q querier, name string) (person, error) 
 // hidden by the path rules (peers leaves those out too).
 // Subagent transcripts and service identities' uploads are left out: no
 // hook delivers to them.
-const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true,p.cloud,p.idle_since
+const SessionPrefixSQL = `SELECT p.session_id,p.agent,p.user_id::text,u.email,p.repo,p.branch,p.title,p.busy,true,p.cloud,p.idle_since,p.wake_supported
 	FROM bus_presence p JOIN users u ON u.id=p.user_id LEFT JOIN devices d ON d.id=p.device_id
 	WHERE p.session_id COLLATE "C" LIKE $1 AND p.seen_at>$2 AND (p.device_id IS NULL OR d.revoked_at IS NULL) AND NOT u.disabled AND u.identity_type='human'
 		AND NOT COALESCE((SELECT c.hidden_at IS NOT NULL FROM conversations c WHERE c.device_id=p.device_id AND c.agent=p.agent AND c.session_id=p.session_id),false)
 	UNION ALL
-	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false,false,NULL::timestamptz
+	SELECT c.session_id,c.agent,c.user_id::text,u.email,COALESCE(c.repo_root,c.cwd,''),COALESCE(c.branches[cardinality(c.branches)],''),COALESCE(c.title,''),false,false,false,NULL::timestamptz,false
 	FROM conversations c JOIN users u ON u.id=c.user_id
 	WHERE c.session_id COLLATE "C" LIKE $1 AND c.hidden_at IS NULL AND c.depth=0 AND NOT u.disabled AND u.identity_type='human'
 	LIMIT 500`
@@ -363,7 +364,7 @@ func resolveSession(ctx context.Context, q querier, prefix string, now time.Time
 	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (session, error) {
 		var v session
 		var idle *time.Time
-		err := r.Scan(&v.id, &v.agent, &v.userID, &v.user, &v.repo, &v.branch, &v.title, &v.busy, &v.live, &v.cloud, &idle)
+		err := r.Scan(&v.id, &v.agent, &v.userID, &v.user, &v.repo, &v.branch, &v.title, &v.busy, &v.live, &v.cloud, &idle, &v.wakeSupported)
 		if idle != nil && !v.busy {
 			v.idleSince = *idle
 		}
@@ -399,7 +400,7 @@ func resolveSession(ctx context.Context, q querier, prefix string, now time.Time
 			break
 		}
 		v := byKey[k]
-		e.Candidates = append(e.Candidates, busproto.Candidate{Session: v.id, Agent: v.agent, User: v.user, Repo: v.repo, Branch: v.branch, Title: v.title, Live: v.live})
+		e.Candidates = append(e.Candidates, busproto.Candidate{ Session: v.id, Agent: v.agent, User: v.user, Repo: v.repo, Branch: v.branch, Title: v.title, Live: v.live})
 	}
 	return session{}, e
 }
@@ -515,7 +516,10 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 		if err != nil {
 			return err
 		}
-		m := message{id: newID(), from: from, intent: intent, body: body, sha: sum[:], refs: refs, created: now, expires: now.Add(busproto.DefaultTTL)}
+		m := message{wakeRequested: req.Wake, id: newID(), from: from, intent: intent, body: body, sha: sum[:], refs: refs, created: now, expires: now.Add(busproto.DefaultTTL)}
+		if req.Wake && (strings.HasPrefix(to, "@") || req.RetryOf != "") {
+			return badRequest("wake requires an exact session recipient and cannot be combined with retry_of")
+		}
 		if strings.HasPrefix(to, "@") {
 			p, err := resolvePerson(ctx, tx, to)
 			if err != nil {
@@ -540,8 +544,11 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 			if v.id == from.id && v.agent == from.agent {
 				return badRequest("a session cannot message itself")
 			}
+			if req.Wake && (v.userID != c.UserID || !v.live || v.cloud || !v.wakeSupported) {
+				return badRequest("wake requires your own live session with wake_supported=true; no message was sent")
+			}
 			m.addressed, m.toUser, m.toEmail, m.toSession, m.toAgent = "session", v.userID, v.user, v.id, v.agent
-			out.To = busproto.Recipient{Session: v.id, Agent: v.agent, User: v.user, UserID: v.userID, Repo: v.repo, Branch: v.branch, Live: v.live, Busy: v.busy, Cloud: v.cloud, IdleSince: v.idleSince, IdleKnown: busproto.IdleAge(v.busy, v.idleSince, now) != nil, IdleSeconds: busproto.IdleAge(v.busy, v.idleSince, now)}
+			out.To = busproto.Recipient{WakeSupported: v.wakeSupported, Session: v.id, Agent: v.agent, User: v.user, UserID: v.userID, Repo: v.repo, Branch: v.branch, Live: v.live, Busy: v.busy, Cloud: v.cloud, IdleSince: v.idleSince, IdleKnown: busproto.IdleAge(v.busy, v.idleSince, now) != nil, IdleSeconds: busproto.IdleAge(v.busy, v.idleSince, now)}
 		}
 		if err := lockSend(ctx, tx, m); err != nil {
 			return err
@@ -606,7 +613,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 			}
 		}
 		meta := map[string]any{"to": to, "to_user": m.toUser, "addressed": m.addressed, "from_session": from.id, "from_agent": from.agent,
-			"intent": string(intent), "thread_id": m.thread, "state": string(m.state), "body_bytes": len(body), "refs": len(refs), "sender": m.sender}
+			"wake_requested": req.Wake, "intent": string(intent), "thread_id": m.thread, "state": string(m.state), "body_bytes": len(body), "refs": len(refs), "sender": m.sender}
 		if m.toSession != "" {
 			meta["to_session"] = m.toSession
 		}
@@ -646,6 +653,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 				}
 			}
 		}
+		out.WakeRequested = req.Wake
 		out.RetryOf, out.Admission = m.retryOf, m.admission
 		out.ID, out.ThreadID, out.State, out.Sender, out.Intent, out.Sent, out.ExpiresAt = m.id, m.thread, m.state, m.sender, intent, now, m.expires
 		if len(redactions) > 0 {
@@ -667,6 +675,7 @@ func (s *Store) Send(ctx context.Context, c busproto.Caller, req busproto.SendRe
 
 // message is a message being stored.
 type message struct {
+	wakeRequested                bool
 	id, thread, replyTo, retryOf string
 	retryAncestors               []string
 	admission                    busproto.Admission
@@ -685,10 +694,10 @@ type message struct {
 
 func (m *message) insert(ctx context.Context, tx pgx.Tx, c busproto.Caller) error {
 	_, err := tx.Exec(ctx, `INSERT INTO bus_messages(id,thread_id,reply_to,from_user,from_device,from_agent,from_session,from_repo,from_branch,
-		to_user,to_agent,to_session,to_repo,addressed,sender,intent,body,body_sha,refs,state,reason,created_at,expires_at,from_remote,from_main,retry_of,admission)
-		VALUES($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::uuid,$6,$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NULLIF($26,''),$27)`,
+		to_user,to_agent,to_session,to_repo,addressed,sender,intent,body,body_sha,refs,state,reason,created_at,expires_at,from_remote,from_main,retry_of,admission,wake_requested)
+		VALUES($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::uuid,$6,$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NULLIF($26,''),$27,$28)`,
 		m.id, m.thread, m.replyTo, c.UserID, c.DeviceID, m.from.agent, m.from.id, m.from.repo, m.from.branch,
-		m.toUser, m.toAgent, m.toSession, m.toRepo, m.addressed, m.sender, string(m.intent), m.body, m.sha, m.refs, string(m.state), m.refused, m.created, m.expires, m.from.remote, m.from.main, m.retryOf, string(m.admission))
+		m.toUser, m.toAgent, m.toSession, m.toRepo, m.addressed, m.sender, string(m.intent), m.body, m.sha, m.refs, string(m.state), m.refused, m.created, m.expires, m.from.remote, m.from.main, m.retryOf, string(m.admission), m.wakeRequested)
 	return err
 }
 

@@ -305,6 +305,7 @@ type peersArgs struct {
 }
 
 type sendArgs struct {
+	Wake                                     bool
 	To, Text, Intent, ReplyTo, RetryOf, Repo string
 	Refs                                     []string
 }
@@ -493,6 +494,9 @@ func writePeers(w io.Writer, out peersJSON, a peersArgs, st busStyle) error {
 		if !p.Busy {
 			state += idleDescription(p.IdleSince, p.IdleSeconds)
 		}
+		if p.WakeSupported && p.Own {
+			state += " wake_supported"
+		}
 		fields := []string{sessionLabel(p.Session, p.Cloud, ids), format.Clean(shortUser(p.User)), format.Clean(p.Agent), state, repoBranch(p.Repo, p.Branch)}
 		if t := quoted(p.Title, 80); t != "" {
 			fields = append(fields, t)
@@ -559,7 +563,7 @@ const (
 // it, when it arrives, and the --text line. It is a receipt, never a
 // reply: a reply arrives later as a received message. Next, for a
 // request only, tells the sender what to do until the reply comes
-// (issue #83): Flopwire never starts a turn, so a sender that ends its
+// (issue #83): ordinary sends never start a turn, so a sender that ends its
 // turn sees the reply when its session resumes.
 type sendJSON struct {
 	Kind string `json:"kind"` // "send_receipt"
@@ -572,6 +576,9 @@ type sendJSON struct {
 
 // runSend sends one message as the calling session and prints its receipt.
 func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busStyle) error {
+	if a.Wake && (a.RetryOf != "" || strings.HasPrefix(strings.TrimSpace(a.To), "@")) {
+		return badUsage("wake requires a session recipient and cannot be combined with retry_of", st.cmd("flopwire send SESSION --wake -- TEXT", `flopwire_send to="SESSION" wake=true message="…"`))
+	}
 	if strings.TrimSpace(a.To) == "" {
 		return sendUsage(st, "a recipient is required")
 	}
@@ -593,7 +600,7 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 	if !ok {
 		return errNoCaller("send", st)
 	}
-	req := busproto.SendRequest{FromSession: self.SessionID, FromAgent: string(self.Agent), To: strings.TrimSpace(a.To), Body: a.Text,
+	req := busproto.SendRequest{Wake: a.Wake, FromSession: self.SessionID, FromAgent: string(self.Agent), To: strings.TrimSpace(a.To), Body: a.Text,
 		Intent: a.Intent, ReplyTo: strings.TrimSpace(a.ReplyTo), RetryOf: strings.TrimSpace(a.RetryOf), Refs: a.Refs, Repo: a.Repo}
 	if req.Repo != "" && req.Repo != "*" {
 		req.Repo = local.ResolveRepo(req.Repo)
@@ -602,6 +609,9 @@ func runSend(ctx context.Context, c *busClient, a sendArgs, w io.Writer, st busS
 	if req.RetryOf != "" {
 		// Old agents reject this operation before they can ignore retry_of.
 		op = "retry-send-v1"
+	}
+	if req.Wake {
+		op = "wake-send-v1"
 	}
 	resp, err := c.callRetry(ctx, agent.Request{Op: op, Send: &req})
 	if err != nil {
@@ -645,6 +655,8 @@ func arrival(r busproto.SendResponse) string {
 		return arriveRecorded
 	case r.State == busproto.StateHeld:
 		return arriveAccepted
+	case r.WakeRequested:
+		return "wake_requested"
 	case r.Admission == busproto.AdmissionNextResume:
 		return arriveIfResumed
 	case r.To.Live && r.To.Busy:
@@ -683,7 +695,7 @@ func sendNext(r busproto.SendResponse) string {
 	if r.To.Cloud {
 		return nextCloud
 	}
-	if arrival(r) == arriveNextToolCall {
+	if arrival(r) == arriveNextToolCall || r.WakeRequested {
 		return nextBusy
 	}
 	return nextNoWait
@@ -736,6 +748,8 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 	case to.Session != "":
 		head := fmt.Sprintf("sent %s to %s (%s %s %s)", r.ID, format.ShortPrefix(to.Session, nil), shortUser(to.User), to.Agent, repoBranch(to.Repo, to.Branch))
 		switch {
+		case r.WakeRequested:
+			line = head + ": native wake requested; may start a new turn and consume usage even if currently busy; submission, turn start and delivery are not confirmed"
 		case to.Live && to.Busy:
 			line = head + ": busy, arrives at its next tool call"
 		case to.Live:
@@ -1169,7 +1183,7 @@ func runBusVerb(ctx context.Context, verb string, o *opts, stdin io.Reader, stdo
 		if len(o.pos) == 0 {
 			return sendUsage(*st, "send needs a recipient and a text")
 		}
-		a := sendArgs{To: o.pos[0], Intent: o.vals["intent"], ReplyTo: o.vals["reply-to"], RetryOf: o.vals["retry-of"], Refs: o.list["ref"], Repo: o.vals["repo"]}
+		a := sendArgs{Wake: o.on["wake"], To: o.pos[0], Intent: o.vals["intent"], ReplyTo: o.vals["reply-to"], RetryOf: o.vals["retry-of"], Refs: o.list["ref"], Repo: o.vals["repo"]}
 		text := o.pos[1:]
 		if len(text) == 1 && text[0] == "-" {
 			raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
@@ -1245,6 +1259,9 @@ the person's live session on --repo (default: yours), else their next session.
 Write for a reader who knows nothing of your session: say what, why, and what you need.
 The first line is the preview a human sees. At most 4000 bytes; attach longer material
 with --ref ADDRESS (an archive address from grep, search or read).
+--wake explicitly requests native input for your own live, supported session. It may
+start a new turn and consume usage, even if busy. Use only when that is intended.
+Omit it for updates or acknowledgments that can wait. It never enables wake on replies.
 --intent  request: expects a reply; inform (default): no reply; done: closes the
           thread and must not be answered.
 Do not poll peers or send "are you done?": the receipt says when the message arrives.
@@ -1254,9 +1271,9 @@ something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
 "queued"|"held" (new sends; replay reports current delivery state),"to":{"session","agent","user","repo","branch","live","busy","cloud"},
-"sender","intent","sent","expires_at","redactions","from":{"session","agent"},
+"sender","intent","sent","expires_at","redactions","wake_requested","from":{"session","agent"},
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
-"only_if_resumed"|"when_running"|"already_recorded","retry_of","replayed","reason","outcome":TEXT,"next":TEXT (request only: what to do until the
+"only_if_resumed"|"when_running"|"wake_requested"|"already_recorded","retry_of","replayed","reason","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
 "device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",
@@ -1264,7 +1281,7 @@ reply)}. A refusal is {"kind":"error","error":{"code":
 --text: one line, e.g. sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at
 its next tool call
 
-Flags    --intent request|inform|done  --reply-to ID  --retry-of ID  --ref ADDRESS (repeat)
+Flags    --wake  --intent request|inform|done  --reply-to ID  --retry-of ID  --ref ADDRESS (repeat)
          --repo .|NAME|*  --text  (--json: the default)
 Retry    --retry-of ID explicitly retries your undelivered/session_ended message.
          Keep the same recipient session, text, intent, refs and reply-to. @user
@@ -1338,7 +1355,7 @@ func sendMCPNext(r busproto.SendResponse) string {
 	if r.Admission == busproto.AdmissionNextResume {
 		return "Continue work; this request waits for recipient resume. This receipt is not a reply."
 	}
-	if arrival(r) == arriveNextToolCall {
+	if arrival(r) == arriveNextToolCall || r.WakeRequested {
 		return "Continue independent work; inspect any received reply for an answer. This receipt is not a reply."
 	}
 	return "Continue work and report the request's arrival condition; a reply depends on the recipient resuming."
