@@ -153,6 +153,27 @@ func TestWakeEndToEndWithoutModels(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
+					// The sender has a verified native endpoint too, so passive reply
+					// checks cannot pass merely because the sender cannot be woken.
+					idle := exec.Command("/bin/sleep", "120")
+					if err := idle.Start(); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = idle.Process.Kill(); _ = idle.Wait() })
+					senderNativePath := filepath.Join(home, "sender.sock")
+					senderEvents := fakeWakeEndpoint(t, senderNativePath)
+					started, err := exec.Command("ps", "-p", fmt.Sprint(idle.Process.Pid), "-o", "lstart=").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					registry := filepath.Join(home, ".claude", "sessions")
+					if err := os.MkdirAll(registry, 0700); err != nil {
+						t.Fatal(err)
+					}
+					entry, _ := json.Marshal(map[string]any{"sessionId": e2eA, "status": "idle", "procStart": strings.TrimSpace(string(started)), "messagingSocketPath": senderNativePath})
+					if err := os.WriteFile(filepath.Join(registry, fmt.Sprint(idle.Process.Pid)+".json"), entry, 0600); err != nil {
+						t.Fatal(err)
+					}
 					writeClaudeSession(t, projects, e2eA, "/tmp/e2e-api", "synthetic sender")
 					pathA := filepath.Join(projects, "-tmp-e2e-api", e2eA+".jsonl")
 					target := e2eB
@@ -211,16 +232,21 @@ func TestWakeEndToEndWithoutModels(t *testing.T) {
 					}
 					startAgent(t, home, sock, extra...)
 					waitPeer(t, sock, e2eA, target)
-					e2eWait(t, "native wake capability", func() bool {
-						r, err := agent.Call(t.Context(), sock, agent.Request{Op: "peers", Peers: &busproto.PeersQuery{Session: e2eA}})
-						if err == nil && r.Peers != nil {
-							for _, p := range r.Peers.Peers {
-								if p.Session == target && p.WakeSupported {
-									return true
-								}
+					e2eWait(t, "sender and recipient native wake capabilities", func() bool {
+						r, err := agent.Call(t.Context(), sock, agent.Request{Op: "peers", Peers: &busproto.PeersQuery{}})
+						if err != nil || r.Peers == nil {
+							return false
+						}
+						var sender, recipient bool
+						for _, p := range r.Peers.Peers {
+							if p.Session == target && p.WakeSupported {
+								recipient = true
+							}
+							if p.Session == e2eA && p.WakeSupported {
+								sender = true
 							}
 						}
-						return false
+						return sender && recipient
 					})
 					passive, err := busCLI(t, sock, e2eA, "", "send", target, "--", "PASSIVE-SYNTHETIC")
 					if err != nil {
@@ -231,7 +257,9 @@ func TestWakeEndToEndWithoutModels(t *testing.T) {
 						t.Helper()
 						select {
 						case event := <-events:
-							t.Fatalf("unintended native wake: %+v", event)
+							t.Fatalf("unintended recipient native wake: %+v", event)
+						case event := <-senderEvents:
+							t.Fatalf("unintended sender native wake: %+v", event)
 						case <-time.After(2200 * time.Millisecond):
 						}
 					}
