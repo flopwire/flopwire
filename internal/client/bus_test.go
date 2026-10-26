@@ -109,3 +109,30 @@ func TestBusRetryDedicatedRoutePreservesPayloadAndReplay(t *testing.T) {
 		t.Fatalf("retry payload: got %+v want %+v", got, want)
 	}
 }
+
+func TestBusWakeUnsupportedServerNeverSendsOrdinaryMessage(t *testing.T) {
+	var ordinarySends, retryCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == busproto.PathSend {
+			ordinarySends++
+			// An older server silently ignores wake and stores an ordinary send.
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"unsafe-ordinary-send","state":"queued"}`))
+			return
+		}
+		if r.URL.Path == busproto.PathWakeSend {
+			retryCalls++
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	b := Bus{Server: srv.URL, Token: "synthetic-token", HTTP: srv.Client()}
+	_, err := b.Send(context.Background(), busproto.SendRequest{FromSession: "sender", To: "recipient", Body: "synthetic wake", Wake: true})
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusNotFound {
+		t.Fatalf("unsupported wake: %v", err)
+	}
+	if ordinarySends != 0 || retryCalls != 1 {
+		t.Fatalf("ordinary sends=%d retry calls=%d", ordinarySends, retryCalls)
+	}
+}

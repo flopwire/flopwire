@@ -1037,7 +1037,7 @@ func TestBusTextDescribesDelivery(t *testing.T) {
 			t.Errorf("%s does not say what inbox is for", name)
 		}
 	}
-	if !strings.Contains(mcpInstructions, "Sending never wakes an idle session") {
+	if !strings.Contains(mcpInstructions, "Sending without wake=true never wakes an idle session") {
 		t.Error("instructions do not say sending never wakes an idle session")
 	}
 }

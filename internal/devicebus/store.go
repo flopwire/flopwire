@@ -33,7 +33,7 @@ type store struct {
 	skew atomic.Int64
 }
 
-// schemaVersion stays 5: status and retries use additive tables, so older v5
+// schemaVersion stays 5: status, retries and wake deduplication use additive tables, so older v5
 // agents do not invoke their destructive version-mismatch reset on rollback.
 // Version 4 has the same tables and columns; version 5 added only an index.
 // Other unsupported versions fail closed without deleting durable data.
@@ -156,7 +156,7 @@ func openStore(path string) (*store, error) {
 		return nil, fmt.Errorf("devicebus: unsupported schema version %d; inbox preserved", version)
 	}
 	if err := inTx(context.Background(), db, func(tx *sql.Tx) error {
-		_, err := tx.Exec(schema + failureSchema + retrySchema + fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion))
+		_, err := tx.Exec(schema + failureSchema + retrySchema + wakeSchema + fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion))
 		return err
 	}); err != nil {
 		db.Close()
@@ -597,6 +597,10 @@ func (s *store) purge(ctx context.Context, now time.Time) error {
 		OR (origin='local' AND expires_at<?)`,
 		ms(now.Add(-serverKeep)), ms(now.Add(-localKeep)))
 	if err != nil {
+		return err
+	}
+	// Keep wake deduplication past message TTL, including reconciliation gaps.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM devbus_wakes WHERE attempted_at<? AND NOT EXISTS (SELECT 1 FROM devbus_messages m WHERE m.id=devbus_wakes.message_id)`, ms(now.Add(-localKeep-busproto.DefaultTTL))); err != nil {
 		return err
 	}
 	// A missing source can no longer be retried. Keep mappings while the

@@ -13,7 +13,7 @@ User-facing behaviour is in [`docs/messaging.md`](../../docs/messaging.md).
 |---|---|
 | B1 | **Direct messages only.** No channels and no repo broadcast in v1. |
 | B2 | **Address a session or a person.** A session is addressed by its session id prefix, the same key `sessions`, `grep` and `read` print. `@user` addresses a person. |
-| B3 | **No wake.** A message never starts a turn. It arrives inside a running turn, or with the human's next prompt. |
+| B3 | **Explicit wake only.** Ordinary sends arrive through hooks. A send with `wake=true` may start a potentially billable turn in your own live, supported session. Wake does not propagate to replies. See [messaging](../../docs/messaging.md#explicit-wake). |
 | B4 | **Authority depends on the sender.** From the recipient's own user: a teammate request, acted on within the recipient session's permissions. From another user: information; the agent confirms with its human before consequential actions. A message never changes permissions or settings. |
 | B5 | **v1 harnesses:** Claude Code, Codex, Devin CLI, opencode. |
 | B6 | **Vendor cloud in v1:** Claude cloud sessions and Devin cloud, pushed only while the session is running. An occasional wake from a send that races the end of a turn is accepted. See section 6. |
@@ -27,9 +27,9 @@ Accepted risks and limits:
   session's permissions, including sessions that skip permission prompts.
   The information-only rule for teammate messages (B4) is guidance to the
   model, not a boundary; smaller models do not follow it.
-- **Idle recipients (#66).** With no wake, a request to an idle session
-  waits until someone types, and nothing tells that person. The sender's
-  receipt says the recipient is idle.
+- **Idle recipients (#66).** An ordinary send waits until the recipient
+  resumes. Explicit wake may start a turn and consume usage; its receipt
+  confirms the request, not native submission or turn start.
 - **Poll before revoke (#70): won't fix.** A device that took a message
   just before a revoke can still print it once. Its receipt is then
   rejected, so the sender sees it held, then expired.

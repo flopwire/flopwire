@@ -158,6 +158,8 @@ func TestExplicitRetryRequiresDedicatedRouteAndSource(t *testing.T) {
 		req  busproto.SendRequest
 	}{
 		{busproto.PathRetry, busproto.SendRequest{FromSession: "not-a-session", To: "unknown", Body: "text"}},
+		{busproto.PathWakeSend, busproto.SendRequest{FromSession: "not-a-session", To: "unknown", Body: "text"}},
+		{busproto.PathSend, busproto.SendRequest{FromSession: "not-a-session", To: "unknown", Body: "text", Wake: true}},
 		{busproto.PathSend, busproto.SendRequest{FromSession: "not-a-session", To: "unknown", Body: "text", RetryOf: "mfailed"}},
 	} {
 		if status, code := busCall(t, "POST", b.url+tc.path, b.gary.device, tc.req, nil); status != 400 || code != busproto.CodeBadRequest {

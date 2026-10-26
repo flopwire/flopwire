@@ -388,7 +388,7 @@ func (a *Agent) serveConn(ctx context.Context, c net.Conn) {
 		}
 	case req.Op == "root":
 		resp.Root, resp.OK = a.BusRoot(ctx, req.Agent, req.Session), true
-	case req.Op == "pending", req.Op == "confirm", req.Op == "held", req.Op == "send", req.Op == "retry-send-v1", req.Op == "peers", req.Op == "inbox":
+	case req.Op == "pending", req.Op == "confirm", req.Op == "held", req.Op == "send", req.Op == "retry-send-v1", req.Op == "wake-send-v1", req.Op == "peers", req.Op == "inbox":
 		a.serveBus(ctx, req, &resp)
 	default:
 		resp.Error = "unknown op " + req.Op
@@ -466,9 +466,13 @@ func (a *Agent) serveBus(ctx context.Context, req Request, resp *Response) {
 		cctx, cancel := context.WithTimeout(ctx, busCallTimeout)
 		defer cancel()
 		switch {
-		case (req.Op == "send" || req.Op == "retry-send-v1") && req.Send != nil:
+		case (req.Op == "send" || req.Op == "retry-send-v1" || req.Op == "wake-send-v1") && req.Send != nil:
 			if (req.Op == "retry-send-v1") != (req.Send.RetryOf != "") {
 				err = &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: "explicit retries require retry-send-v1 with retry_of"}
+				break
+			}
+			if (req.Op == "wake-send-v1") != req.Send.Wake {
+				err = &busproto.Error{Status: http.StatusBadRequest, Code: busproto.CodeBadRequest, Detail: "explicit wake requires wake-send-v1 with wake=true"}
 				break
 			}
 			var out busproto.SendResponse

@@ -77,6 +77,9 @@ type Session struct {
 
 // Config configures a Bus. Zero fields take defaults.
 type Config struct {
+	// Wake starts native input for a live recipient; never resumes a closed session.
+	Wake          func(context.Context, Session, string) error
+	WakeSupported func(Session) bool
 	// Connect returns the client for the saved server credential and a key
 	// that changes when the token or the TLS pin does (a rotation, a
 	// re-login, a re-pin). nil: no server is configured, and the device
@@ -330,6 +333,9 @@ func (b *Bus) Local() bool { return b.cfg.Connect == nil }
 // backs off and retries, and nothing else in the agent waits for it.
 func (b *Bus) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
+	if b.cfg.Wake != nil {
+		wg.Go(func() { b.runWakes(ctx) })
+	}
 	if len(b.cfg.Cloud) > 0 {
 		wg.Go(func() { b.runCloud(ctx) })
 	}

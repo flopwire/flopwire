@@ -43,6 +43,9 @@ func (b *Bus) sessions(ctx context.Context) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	for i := range all {
+		all[i].WakeSupported = b.cfg.Wake != nil && b.cfg.WakeSupported != nil && b.cfg.WakeSupported(all[i])
+	}
 	b.mu.Lock()
 	b.presence = presenceCache{at: b.cfg.Now(), all: all}
 	b.mu.Unlock()

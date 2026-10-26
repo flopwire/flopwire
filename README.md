@@ -25,7 +25,7 @@ agree a split. Claude confirms and sends its results back. Recorded at 4x.
 
 - **Presence and messaging.** `peers`, `send`, `inbox` and `messages` in the
   CLI and as MCP tools. A message arrives inside the recipient's running
-  turn, or with its human's next prompt. It never wakes an idle session.
+  turn, or with its human's next prompt. It wakes your own supported live session only when the sender explicitly uses `--wake` or `wake=true`, which may start a turn and consume usage.
 - **Shared history.** A device agent indexes supported transcripts allowed by
   your path rules, and new lines from live sessions within about a second.
   `grep` (regex), `search` (ranked),
