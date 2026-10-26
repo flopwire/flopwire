@@ -34,7 +34,10 @@ func coworkUpgradeSnapshot(t *testing.T, pool *pgxpool.Pool, tables []string) ma
 		}
 		if table == "bus_messages" {
 			// Later additive columns have separate default assertions below.
-			expr = "to_jsonb(r)-'from_remote'-'from_main'-'retry_of'-'admission'"
+			expr = "to_jsonb(r)-'from_remote'-'from_main'-'retry_of'-'admission'-'wake_requested'"
+		}
+		if table == "bus_presence" {
+			expr = "to_jsonb(r)-'wake_supported'"
 		}
 		if table == "flopwire_schema_migrations" {
 			where = " WHERE name<'014'"
@@ -187,6 +190,10 @@ func TestCowork014DumpRestoreUpgrade(t *testing.T) {
 		t.Fatal("014 changed existing rows,checksums,or applied_at")
 	}
 	assertLegacyRetryDefaults(t, restored)
+	var wakeRequested, wakeSupported int
+	if err := restored.QueryRow(ctx, `SELECT (SELECT count(*) FROM bus_messages WHERE wake_requested),(SELECT count(*) FROM bus_presence WHERE wake_supported)`).Scan(&wakeRequested, &wakeSupported); err != nil || wakeRequested != 0 || wakeSupported != 0 {
+		t.Fatalf("upgrade enabled native wake on existing data: messages=%d presence=%d err=%v", wakeRequested, wakeSupported, err)
+	}
 	var storedRules []byte
 	var ruleLines []string
 	if err = restored.QueryRow(ctx, `SELECT path_rules FROM collection_policy WHERE singleton`).Scan(&storedRules); err != nil {
