@@ -125,13 +125,7 @@ const (
 
 // Loop and volume limits (plan §3). A send past one is refused.
 const (
-	ThreadPerHour  = 8  // messages per thread per hour
-	SessionPerHour = 30 // sends per sending session per hour, refused ones included (not refusals by a send ceiling)
 	// DevicePerHour and UserPerHour bound sends per device and per person.
-	// The session limit is keyed on a session id the device reports
-	// itself, so these hold a device that invents session ids. Honest use
-	// stays far below them: the device ceiling is four sessions each at
-	// its loop limit, the person ceiling two and a half such devices.
 	DevicePerHour     = 120
 	UserPerHour       = 300
 	DuplicateWindow   = 10 * time.Minute

@@ -492,42 +492,14 @@ func TestLimits(t *testing.T) {
 			t.Fatalf("reply to a stranger's message: %v", err)
 		}
 	})
-	t.Run("thread per hour", func(t *testing.T) {
+	t.Run("session and thread have no hourly cap", func(t *testing.T) {
 		tm := newTeam(t)
-		last := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "m0")
-		for i := 1; i < busproto.ThreadPerHour; i++ {
-			from, to, c := "g-lin-3333", "g-api", tm.garyLinux
-			if i%2 == 0 {
-				from, to, c = "g-api-1111", "g-lin", tm.garyMac
-			}
-			last = tm.mustSend(c, from, to, fmt.Sprintf("m%d", i), replyTo(last.ID))
+		first := tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "start")
+		// More than both former limits, all from one session in one thread.
+		for i := range 40 {
+			tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("reply %d", i), replyTo(first.ID))
 		}
-		if _, err := tm.send(tm.garyLinux, "g-lin-3333", "g-api", "one more", replyTo(last.ID)); code(err) != busproto.CodeThreadRate {
-			t.Fatalf("9th in thread: %v", err)
-		}
-		// A new thread is not limited by the old one.
-		tm.mustSend(tm.garyLinux, "g-lin-3333", "g-api", "fresh thread")
-		tm.advance(time.Hour)
-		tm.presence()
-		tm.mustSend(tm.garyLinux, "g-lin-3333", "g-api", "an hour later", replyTo(last.ID))
 	})
-	t.Run("session per hour", func(t *testing.T) {
-		tm := newTeam(t)
-		for i := range busproto.SessionPerHour {
-			tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("n%d", i))
-		}
-		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "31st"); code(err) != busproto.CodeSessionRate {
-			t.Fatalf("31st send: %v", err)
-		}
-		// Another session is not limited.
-		tm.mustSend(tm.garyMac, "g-web-2222", "g-lin", "other session")
-		tm.advance(time.Hour + time.Second)
-		tm.presence()
-		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
-	})
-	// The session limit is keyed on an id the device reports itself, so a
-	// device that invents session ids is held by ceilings per device and
-	// per person.
 	t.Run("device and person per hour", func(t *testing.T) {
 		tm := newTeam(t)
 		var to []busproto.PresenceSession
@@ -548,12 +520,11 @@ func TestLimits(t *testing.T) {
 			return ids
 		}
 		sent := 0
-		// Rotate the sending session every SessionPerHour sends, so the
-		// session limit never refuses.
+		// Use one sender per device to exercise the remaining shared ceilings.
 		burst := func(c busproto.Caller, ids []string, n int) {
 			t.Helper()
-			for i := range n {
-				tm.mustSend(c, ids[i/busproto.SessionPerHour], to[sent%len(to)].SessionID, fmt.Sprintf("b%d", sent))
+			for range n {
+				tm.mustSend(c, ids[0], to[sent%len(to)].SessionID, fmt.Sprintf("b%d", sent))
 				sent++
 			}
 		}
@@ -569,12 +540,12 @@ func TestLimits(t *testing.T) {
 				t.Fatalf("audit refuse_reason %q %v", reason, err)
 			}
 		}
-		mac := sessions(tm.garyMac, "m", busproto.DevicePerHour/busproto.SessionPerHour+1)
+		mac := sessions(tm.garyMac, "m", 1)
 		burst(tm.garyMac, mac, busproto.DevicePerHour)
 		refused(tm.garyMac, mac[len(mac)-1], busproto.CodeDeviceRate)
 		// Another device of the same person is not limited by the first.
-		lin := sessions(tm.garyLinux, "l", busproto.DevicePerHour/busproto.SessionPerHour)
-		third := sessions(garyThird, "t", busproto.DevicePerHour/busproto.SessionPerHour)
+		lin := sessions(tm.garyLinux, "l", 1)
+		third := sessions(garyThird, "t", 1)
 		burst(tm.garyLinux, lin, busproto.DevicePerHour)
 		// The mac's device_rate refusal does not count toward the person's.
 		burst(garyThird, third, busproto.UserPerHour-2*busproto.DevicePerHour)
@@ -599,20 +570,19 @@ func TestLimits(t *testing.T) {
 				}
 			}
 		}
-		refusedN(tm.garyMac, "g-api-1111", busproto.SessionPerHour)
-		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "something new"); code(err) != busproto.CodeSessionRate {
-			t.Fatalf("after %d attempts, 1 sent: %v", busproto.SessionPerHour, err)
+		refusedN(tm.garyMac, "g-api-1111", busproto.DevicePerHour)
+		if _, err := tm.send(tm.garyMac, "g-api-1111", "@alex", "something new"); code(err) != busproto.CodeDeviceRate {
+			t.Fatalf("after %d attempts, 1 sent: %v", busproto.DevicePerHour, err)
 		}
-		// The device ceiling counts refusals across the device's sessions.
 		tm.advance(time.Hour + time.Second)
 		tm.presence()
 		var ps []busproto.PresenceSession
-		for i := range busproto.DevicePerHour/busproto.SessionPerHour + 1 {
+		for i := range 2 {
 			ps = append(ps, live(fmt.Sprintf("g-r%02d-0000", i), "claude", "/x/api", true))
 		}
 		tm.present(tm.garyMac, ps...)
 		for _, p := range ps[:len(ps)-1] {
-			refusedN(tm.garyMac, p.SessionID, busproto.SessionPerHour)
+			refusedN(tm.garyMac, p.SessionID, busproto.DevicePerHour)
 		}
 		if _, err := tm.send(tm.garyMac, ps[len(ps)-1].SessionID, "g-lin", "fresh"); code(err) != busproto.CodeDeviceRate {
 			t.Fatalf("device after %d attempts: %v", busproto.DevicePerHour, err)
@@ -621,25 +591,23 @@ func TestLimits(t *testing.T) {
 		tm.presence()
 		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
 	})
-	// A refusal by a rate ceiling is not an attempt that counts: an agent
-	// retrying at its session ceiling neither keeps its own window full
-	// nor uses up its device's and person's quota (#70 review).
+	// Refused retries at the shared ceiling must not extend the lockout.
 	t.Run("rate refusals do not count again", func(t *testing.T) {
 		tm := newTeam(t)
-		for i := range busproto.SessionPerHour {
-			tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("n%d", i))
+		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "same")
+		for i := 1; i < busproto.DevicePerHour; i++ {
+			if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", "same"); code(err) != busproto.CodeDuplicate {
+				t.Fatalf("duplicate %d: %v", i, err)
+			}
 		}
-		for i := range busproto.DevicePerHour {
-			tm.advance(time.Second)
+		for i := range 5 {
+			tm.advance(time.Minute)
 			tm.presence()
-			if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("retry %d", i)); code(err) != busproto.CodeSessionRate {
+			if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("retry %d", i)); code(err) != busproto.CodeDeviceRate {
 				t.Fatalf("retry %d: %v", i, err)
 			}
 		}
-		// The device's other sessions are not limited.
-		tm.mustSend(tm.garyMac, "g-web-2222", "g-lin", "other session")
-		// An hour after its counted sends, the looping session sends again.
-		tm.advance(time.Hour - time.Duration(busproto.DevicePerHour-1)*time.Second)
+		tm.advance(55*time.Minute + time.Second)
 		tm.presence()
 		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "next hour")
 	})

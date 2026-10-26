@@ -28,8 +28,9 @@ message's repo, then a busy session.
 Without a server configuration, or with `flopwire agent run --no-sync`,
 the agent routes messages between the sessions on this device. To address
 yourself, use `@` and your account name. The server's limits apply:
-duplicates within 10 minutes, 8 messages per thread per hour, 30 sends per
-session per hour, and 50 undelivered messages per recipient.
+duplicates within 10 minutes, 120 sends per device per hour, and 50
+undelivered messages per recipient. There is no per-session or per-thread
+hourly send cap. The server also limits each person to 300 sends per hour.
 
 A session is live when `flopwire sessions` shows it as live and it has not
 ended. The agent reads the harness's own session files (Claude Code session
@@ -518,8 +519,8 @@ on the sending device.
   there): they are not on the session's main chain. If the hook cannot read
   Devin's session store, it delivers only at a prompt and writes the cause
   to stderr.
-- Without a server, the agent applies the server's per-session,
-  per-device, per-thread, duplicate and recipient limits. It does not
+- Without a server, the agent applies the server's per-device,
+  duplicate and recipient limits. It does not
   apply the per-person ceiling: it is higher than the per-device ceiling,
   and without a server the person has one device.
 - An `@user` message from a session without a remote is routed by repo

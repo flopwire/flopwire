@@ -768,19 +768,14 @@ const (
 	// counted is the send attempts the hourly sender ceilings count.
 	// Refused ones count too, so an agent looping on a refusal reaches
 	// the ceiling, but not a refusal by one of these ceilings: counting
-	// it would keep a retrying session's window full for as long as it
-	// retries, and let one session at its own ceiling use up its
-	// device's and person's quota. A refused row counts its attempts,
+	// it would keep the device or person locked out for as long as
+	// the sender retries. A refused row counts its attempts,
 	// which leave the window together an hour after the first.
 	counted = ` AND (state<>'refused' OR reason NOT IN ('` + busproto.CodeSessionRate + `','` + busproto.CodeDeviceRate + `','` + busproto.CodeUserRate + `'))`
-	// SessionSendsSQL counts the session $1's send attempts since $2.
-	SessionSendsSQL = `SELECT COALESCE(sum(attempts),0) FROM bus_messages WHERE from_session=$1 AND created_at>$2` + counted
 	// DeviceSendsSQL counts the device $1's send attempts since $2.
 	DeviceSendsSQL = `SELECT COALESCE(sum(attempts),0) FROM bus_messages WHERE from_device=$1 AND created_at>$2` + counted
 	// UserSendsSQL counts the person $1's send attempts since $2.
 	UserSendsSQL = `SELECT COALESCE(sum(attempts),0) FROM bus_messages WHERE from_user=$1 AND created_at>$2` + counted
-	// ThreadSendsSQL counts the thread $1's messages since $2.
-	ThreadSendsSQL = `SELECT count(*) FROM bus_messages WHERE thread_id=$1 AND created_at>$2 AND state<>'refused'`
 	// SessionPendingSQL counts the session $1's undelivered messages
 	// that expire after $2. Held messages count only for their own
 	// sender $3: a sender the recipient has not accepted cannot fill the
@@ -834,14 +829,6 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 		return fail(http.StatusConflict, busproto.CodeDuplicate, "dropped: this session sent the same text to the same recipient in the last %s", busproto.DuplicateWindow), nil
 	}
 	var n int
-	if err := tx.QueryRow(ctx, SessionSendsSQL, m.from.id, now.Add(-time.Hour)).Scan(&n); err != nil {
-		return nil, err
-	}
-	if n >= busproto.SessionPerHour {
-		return fail(http.StatusTooManyRequests, busproto.CodeSessionRate, "this session sent %d messages in the last hour; the limit is %d", n, busproto.SessionPerHour), nil
-	}
-	// The session id is the device's own report, so a device that invents
-	// ids passes the session limit; these two do not depend on it.
 	if err := tx.QueryRow(ctx, DeviceSendsSQL, c.DeviceID, now.Add(-time.Hour)).Scan(&n); err != nil {
 		return nil, err
 	}
@@ -853,14 +840,6 @@ func (s *Store) check(ctx context.Context, tx pgx.Tx, c busproto.Caller, m *mess
 	}
 	if n >= busproto.UserPerHour {
 		return fail(http.StatusTooManyRequests, busproto.CodeUserRate, "you sent %d messages in the last hour; the limit is %d", n, busproto.UserPerHour), nil
-	}
-	if m.replyTo != "" || m.retryOf != "" {
-		if err := tx.QueryRow(ctx, ThreadSendsSQL, m.thread, now.Add(-time.Hour)).Scan(&n); err != nil {
-			return nil, err
-		}
-		if n >= busproto.ThreadPerHour {
-			return fail(http.StatusTooManyRequests, busproto.CodeThreadRate, "thread %s had %d messages in the last hour; the limit is %d", m.thread, n, busproto.ThreadPerHour), nil
-		}
 	}
 	if m.toSession != "" {
 		err := tx.QueryRow(ctx, SessionPendingSQL, m.toSession, now, c.UserID).Scan(&n)
