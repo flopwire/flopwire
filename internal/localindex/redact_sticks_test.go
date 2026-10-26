@@ -604,22 +604,26 @@ func TestLocalRedactionTitleCutAfterUnicodeSpace(t *testing.T) {
 
 // After a redaction, the FTS shard files no longer hold the hidden token:
 // the shards are compacted, so the old segments that indexed it are gone
-// and their pages zeroed (the reviewer found "4417" in index.db-tok).
+// and their pages zeroed. The numeric fixture must not match retained metadata.
 func TestLocalRedactionScrubsFTSShards(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.db")
 	s, err := Open(path, Options{DeferCommit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := source(t, s, transcript.AgentClaude, "/h/s1.jsonl")
+	src := source(t, s, transcript.AgentClaude, "/h/fixture-4417/s1.jsonl")
 	var msgs []*transcript.Message
 	for i := range 300 {
 		msgs = append(msgs, msg("sess-1", fmt.Sprintf("m%d", i), int64(i+1), transcript.KindAssistant, fmt.Sprintf("filler reply %d about the build and the tests", i)))
 	}
 	sinkMsgs(t, s, src.ID, 1, &transcript.Conversation{Agent: transcript.AgentClaude, SessionID: "sess-1"},
-		append([]*transcript.Message{msg("sess-1", "u1", 0, transcript.KindUser, "hello\nmy pin is 4417 zebracorn\nbye")}, msgs...)...)
+		append([]*transcript.Message{msg("sess-1", "u1", 0, transcript.KindUser, "hello\nmy pin is 44174417441744174417 zebracorn\nbye")}, msgs...)...)
 	if err := s.Sync(ctx); err != nil {
 		t.Fatal(err)
+	}
+	// Retained paths can contain a short PIN; require a distinct long token.
+	if !columnLifecycleStoredToken(t, path, "44174417441744174417") {
+		t.Fatal("physical scrub fixture token absent before redaction")
 	}
 	var scrubbed atomic.Int32
 	testHookScrubbed = func(*ftsShard, time.Duration) { scrubbed.Add(1) }
@@ -642,7 +646,7 @@ func TestLocalRedactionScrubsFTSShards(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, tok := range []string{"zebracorn", "4417"} {
+			for _, tok := range []string{"zebracorn", "44174417441744174417"} {
 				if bytes.Contains(bytes.ToLower(b), []byte(tok)) {
 					t.Errorf("%s: %s still holds %q", when, e.Name(), tok)
 				}
