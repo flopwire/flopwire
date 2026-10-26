@@ -110,7 +110,7 @@ jobs:
           # shellcheck disable=SC2046
           scripts/ci-go-test.sh -race $(cat "$RUNNER_TEMP/packages")
       # Feeds the coverage check in `test` and refreshes of the duration file.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: go-test-${{ matrix.shard }}
