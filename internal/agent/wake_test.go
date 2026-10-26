@@ -68,3 +68,40 @@ func TestClaudeWakeUsesVerifiedRegistryAndNativeInput(t *testing.T) {
 		t.Fatal("stale process received native input")
 	}
 }
+
+func TestCodexWakeQueuesOnlyForWitnessedLiveSession(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	cx := f.pick("codex")
+	writeFile(t, filepath.Join(f.home, ".codex", "thread-writer-locks", cx.id+".lock"), "")
+	f.a.now = func() time.Time { return cx.last.Add(2 * time.Hour) }
+	f.a.codexWriter = func(string) int { return codexHeld }
+	bin := t.TempDir()
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("PATH", bin)
+	t.Setenv("FLOPWIRE_WAKE_TEST_ARGS", args)
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FLOPWIRE_WAKE_TEST_ARGS\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := devicebus.Session{}
+	s.SessionID = cx.id
+	s.Agent = "codex"
+	text := "synthetic wake $(never-execute)"
+	if err := f.a.wakeSession(t.Context(), s, text); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(args)
+	if err != nil || string(raw) != "queue\n--thread\n"+cx.id+"\n--message\n"+text+"\n" {
+		t.Fatalf("native queue arguments: %q %v", raw, err)
+	}
+	if err := os.Remove(args); err != nil {
+		t.Fatal(err)
+	}
+	f.a.codexWriter = func(string) int { return codexReleased }
+	if err := f.a.wakeSession(t.Context(), s, "must not queue"); err == nil {
+		t.Fatal("ended recipient was queued")
+	}
+	if _, err := os.Stat(args); !os.IsNotExist(err) {
+		t.Fatal("queue CLI invoked after recipient ended")
+	}
+}
