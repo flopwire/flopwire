@@ -1258,7 +1258,7 @@ JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
 "arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
 "only_if_resumed"|"when_running"|"already_recorded","retry_of","replayed","reason","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
-"thread_rate"|"session_rate"|"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
+"device_rate"|"user_rate"|"duplicate"|"recipient_full"|
 "reply_to_done"|"unknown_recipient"|"ambiguous_recipient"|…,"detail","fix","example",
 "message_id","candidates"}} on stderr, exit 1.
 --text: one line, e.g. sent m7f3a to 0b7e2c1a (alex claude api@main): busy, arrives at

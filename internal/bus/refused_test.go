@@ -3,7 +3,6 @@ package bus_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -26,16 +25,14 @@ func (f *fixture) count(sql string, args ...any) int {
 func TestRefusalsCoalesce(t *testing.T) {
 	tm := newTeam(t)
 	ctx := context.Background()
-	for i := range busproto.SessionPerHour {
-		tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("n%d", i))
-	}
+	tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "same")
 	refusedRows := `SELECT count(*) FROM bus_messages WHERE from_session='g-api-1111' AND state='refused'`
 	refusedAudit := `SELECT count(*) FROM audit_events WHERE action='bus.send' AND metadata->>'refuse_reason' IS NOT NULL`
 	var first string
 	for i := range 100 {
-		_, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", fmt.Sprintf("loop %d", i))
+		_, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", "same")
 		var be *busproto.Error
-		if code(err) != busproto.CodeSessionRate || !errors.As(err, &be) {
+		if code(err) != busproto.CodeDuplicate || !errors.As(err, &be) {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
 		if first == "" {
@@ -72,7 +69,7 @@ func TestRefusalsCoalesce(t *testing.T) {
 			t.Fatalf("a single send with attempts %+v", m)
 		}
 	}
-	if !found || len(in.Messages) != busproto.SessionPerHour+1 {
+	if !found || len(in.Messages) != 2 {
 		t.Fatalf("inbox lists %d, refused row found %v", len(in.Messages), found)
 	}
 	// Another code is another row; so is another session.
@@ -88,11 +85,8 @@ func TestRefusalsCoalesce(t *testing.T) {
 	// An hour after the first refusal, a refusal starts a new row.
 	tm.now = tm.now.Add(time.Hour)
 	tm.presence()
-	// Spread over recipients: each takes at most MaxUndelivered.
-	for i := range busproto.SessionPerHour {
-		tm.mustSend(tm.garyMac, "g-api-1111", []string{"g-web", "a-api"}[i%2], fmt.Sprintf("h2 %d", i))
-	}
-	if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", "again"); code(err) != busproto.CodeSessionRate {
+	tm.mustSend(tm.garyMac, "g-api-1111", "g-lin", "again")
+	if _, err := tm.send(tm.garyMac, "g-api-1111", "g-lin", "again"); code(err) != busproto.CodeDuplicate {
 		t.Fatalf("next hour: %v", err)
 	}
 	if got := tm.count(refusedRows); got != 2 {

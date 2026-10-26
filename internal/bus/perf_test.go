@@ -81,8 +81,6 @@ func TestPerfBusPlansUseIndexes(t *testing.T) {
 		{"held list", HeldListSQL, []any{me.UserID, now}},
 		{"reply to", ReplyToSQL, []any{"m1-0"}},
 		{"duplicate", DuplicateSQL, []any{"me-session", sha, me.UserID, "session", "live-000001", now}},
-		{"session sends", SessionSendsSQL, []any{"me-session", now}},
-		{"thread sends", ThreadSendsSQL, []any{"m1-0", now}},
 		{"session pending", SessionPendingSQL, []any{"live-000001", now, me.UserID}},
 		{"user pending", UserPendingSQL, []any{me.UserID, now, me.UserID}},
 		{"foreign sessions", ForeignSessionsSQL, []any{[]string{"up-000001", "me-session"}, me.UserID}},

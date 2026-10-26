@@ -221,10 +221,9 @@ models tested refused requests. The tested text is in the probes note.
 Enforced by the server, reported to the sender as a refusal:
 
 - A reply to a `done` message is refused.
-- At most 8 messages per thread per hour between agent sessions.
-- At most 30 sends per session per hour.
-- At most 120 sends per device and 300 per person per hour. The session id is the device's own report, so these ceilings hold a device that invents session ids.
-- A refused send counts toward these three ceilings like a sent one, so an agent looping on a refusal reaches them. A refusal by one of these three ceilings does not count: it would keep the window of a retrying session full, and one session at its ceiling would use up its device and person quota.
+- No per-session or per-thread hourly send cap.
+- At most 120 sends per device and 300 per person per hour.
+- A refused send counts toward these two ceilings like a sent one, so an agent looping on a refusal reaches them. A refusal by one of these two ceilings does not count: it would keep a retrying device or person locked out.
 - Repeated refusals of one session with the same code, recipient and thread within an hour of the first are one stored row and one audit row, with `attempts` and `last_at`. The ceilings sum `attempts`.
 - The same body to the same recipient within 10 minutes is dropped.
 - At most 50 undelivered messages per recipient session.

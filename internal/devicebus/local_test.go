@@ -219,66 +219,19 @@ func TestLocalLimits(t *testing.T) {
 			t.Fatalf("after the window: %v", err)
 		}
 	})
-	t.Run("session_rate", func(t *testing.T) {
+	t.Run("session and thread have no hourly cap", func(t *testing.T) {
 		lb := newLocalBus(t)
-		for i := range busproto.SessionPerHour {
-			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("n", i)); err != nil {
-				t.Fatal(i, err)
-			}
-			deliver(lb.Bus, "bbbb3333", "", Limit{}) // keep the recipient under its cap
-		}
-		_, err := lb.send(t, "aaaa1111", "bbbb", "one more")
-		var be *busproto.Error
-		if !errors.As(err, &be) || be.Code != busproto.CodeSessionRate || be.Status != 429 {
-			t.Fatalf("rate: %v", err)
-		}
-		lb.advance(time.Hour + time.Second)
-		if _, err := lb.send(t, "aaaa1111", "bbbb", "an hour later"); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("session_rate_no_lockout", func(t *testing.T) {
-		// Retrying at the ceiling does not extend it: 30 sends refused by
-		// session_rate, spread over the hour, do not count, so the
-		// session sends again an hour after the sends that filled it.
-		lb := newLocalBus(t)
-		for i := range busproto.SessionPerHour {
-			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("n", i)); err != nil {
-				t.Fatal(i, err)
-			}
-			deliver(lb.Bus, "bbbb3333", "", Limit{})
-		}
-		for i := range 30 {
-			lb.advance(time.Minute)
-			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("retry", i)); code(err) != busproto.CodeSessionRate {
-				t.Fatalf("retry %d: %v", i, err)
-			}
-		}
-		lb.advance(30*time.Minute + time.Second)
-		if _, err := lb.send(t, "aaaa1111", "bbbb", "an hour later"); err != nil {
-			t.Fatalf("locked out by its own refused retries: %v", err)
-		}
-	})
-	t.Run("thread_rate", func(t *testing.T) {
-		lb := newLocalBus(t)
-		first, err := lb.send(t, "aaaa1111", "bbbb", "start", func(r *busproto.SendRequest) { r.Intent = "request" })
+		first, err := lb.send(t, "aaaa1111", "bbbb", "start")
 		if err != nil {
 			t.Fatal(err)
 		}
-		from := []string{"bbbb3333", "aaaa1111"}
-		to := []string{"aaaa1111", "bbbb3333"}
-		for i := 1; i < busproto.ThreadPerHour; i++ {
-			if _, err := lb.send(t, from[i%2], to[i%2], fmt.Sprint("reply ", i), func(r *busproto.SendRequest) { r.ReplyTo = first.ID }); err != nil {
+		deliver(lb.Bus, "bbbb3333", "", Limit{})
+		// More than both former limits, all from one session in one thread.
+		for i := range 40 {
+			if _, err := lb.send(t, "aaaa1111", "bbbb", fmt.Sprint("reply ", i), func(r *busproto.SendRequest) { r.ReplyTo = first.ID }); err != nil {
 				t.Fatal(i, err)
 			}
-		}
-		_, err = lb.send(t, "aaaa2222", "bbbb", "one more", func(r *busproto.SendRequest) { r.ReplyTo = first.ID })
-		if code(err) != busproto.CodeThreadRate {
-			t.Fatalf("thread rate: %v", err)
-		}
-		in, _ := lb.Inbox(ctx, busproto.InboxQuery{Session: "bbbb3333", Thread: first.ID})
-		if len(in.Messages) != busproto.ThreadPerHour {
-			t.Fatalf("thread listing: %d", len(in.Messages))
+			deliver(lb.Bus, "bbbb3333", "", Limit{})
 		}
 	})
 	t.Run("reply_to_done", func(t *testing.T) {
@@ -302,7 +255,7 @@ func TestLocalLimits(t *testing.T) {
 				t.Fatal(i, err)
 			}
 			if i%20 == 19 {
-				lb.advance(time.Hour + time.Second) // stay under the session rate
+				lb.advance(time.Hour + time.Second) // keep time advancing
 			}
 		}
 		if _, err := lb.send(t, "aaaa1111", "bbbb", "the 51st"); code(err) != busproto.CodeRecipientFull {
@@ -313,25 +266,9 @@ func TestLocalLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("session_rate_counts_refusals", func(t *testing.T) {
-		// As on the server, a refused send counts toward the session's
-		// hourly ceiling: an agent looping on a refusal reaches it.
-		lb := newLocalBus(t)
-		if _, err := lb.send(t, "aaaa1111", "bbbb", "same"); err != nil {
-			t.Fatal(err)
-		}
-		for i := 1; i < busproto.SessionPerHour; i++ {
-			if _, err := lb.send(t, "aaaa1111", "bbbb", "same"); code(err) != busproto.CodeDuplicate {
-				t.Fatal(i, err)
-			}
-		}
-		if _, err := lb.send(t, "aaaa1111", "bbbb", "new text"); code(err) != busproto.CodeSessionRate {
-			t.Fatalf("refusals not counted: %v", err)
-		}
-	})
 	t.Run("device_rate", func(t *testing.T) {
 		// The server's per-device ceiling (#51) holds without a server:
-		// sessions each under their own ceiling cannot pass it together.
+		// a single session cannot pass it.
 		lb := newLocalBus(t)
 		senders := []string{"dddd0001", "dddd0002", "dddd0003", "dddd0004", "dddd0005"}
 		all := []Session{sess("ffff6666", "claude", "/src/api", false)}
@@ -340,15 +277,11 @@ func TestLocalLimits(t *testing.T) {
 		}
 		lb.p.set(all...)
 		lb.advance(time.Second)
-		n := 0
-		for _, from := range senders[:busproto.DevicePerHour/busproto.SessionPerHour] {
-			for range busproto.SessionPerHour {
-				if _, err := lb.send(t, from, "ffff6666", fmt.Sprint("n", n)); err != nil {
-					t.Fatal(n, err)
-				}
-				n++
-				deliver(lb.Bus, "ffff6666", "", Limit{}) // keep the recipient under its cap
+		for i := range busproto.DevicePerHour {
+			if _, err := lb.send(t, senders[0], "ffff6666", fmt.Sprint("n", i)); err != nil {
+				t.Fatal(i, err)
 			}
+			deliver(lb.Bus, "ffff6666", "", Limit{})
 		}
 		last := senders[len(senders)-1]
 		_, err := lb.send(t, last, "ffff6666", "one more")
