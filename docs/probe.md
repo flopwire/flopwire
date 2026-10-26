@@ -63,6 +63,27 @@ a recipient. Every message goes through the device agent's bus, as a real
 | `guardian` (Codex) | A message queued while Codex's auto-review subagent reviews an escalated command is not taken by a hook during the review. The session's next hook prints it. |
 | `native-wake` (opt-in, Claude/Codex, `--local`) | An ordinary message stays queued while idle. Explicit wake starts a real recipient turn without a submitted prompt. The recipient sends a marker reply over Flopwire. Both messages reach native hook context with read receipts. The reply does not wake the sender. |
 
+### Test wake routing without models
+
+The standard Go suite runs `TestWakeEndToEndWithoutModels` automatically.
+It starts the real device agent and uses synthetic Claude inbox sockets and
+a synthetic Codex queue executable. Cloud adapters are disabled. Test homes
+contain no model credentials. No installed harness or model is invoked.
+
+```sh
+go test -race ./cmd/flopwire -run '^TestWakeEndToEndWithoutModels$' -count=1
+```
+
+The test checks CLI cost warnings, passive delivery, native wake submission,
+real hook output, transcript parsing, MCP replies, read receipts, and duplicate
+wake rejection. Local scenarios always run. Server scenarios use the real
+HTTP API and Postgres when `FLOPWIRE_TEST_DATABASE_URL` is set, as in CI.
+Without that variable, server scenarios are reported as skipped.
+
+This validates Flopwire's behavior against the native protocol fixtures.
+Use the opt-in live probe below after a harness update to detect changes in
+the actual Claude or Codex implementation.
+
 ### Test real native wakes
 
 This case spends model usage. It is excluded from default probes and CI.
