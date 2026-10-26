@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/flopwire/flopwire/compare/v0.2.3...v0.3.0) (2026-10-26)
+
+
+### Features
+
+* require explicit intent for native session wakes ([#441](https://github.com/flopwire/flopwire/issues/441)) ([924014c](https://github.com/flopwire/flopwire/commit/924014c8e89fa5c3a40640a5757adfc1fff479ed))
+
+
+### Bug Fixes
+
+* **e2e:** measure initial corpus sync from fixed snapshots ([#426](https://github.com/flopwire/flopwire/issues/426)) ([14101bc](https://github.com/flopwire/flopwire/commit/14101bc8e5b24d544d066780a995c967fd72c1a4))
+* remove session and thread message rate caps ([#440](https://github.com/flopwire/flopwire/issues/440)) ([7e06380](https://github.com/flopwire/flopwire/commit/7e063804318e7f8b6a070fc76ac05f8f1e237f01))
+
 ## [0.2.3](https://github.com/flopwire/flopwire/compare/v0.2.2...v0.2.3) (2026-10-19)
 
 
