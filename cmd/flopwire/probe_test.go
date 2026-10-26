@@ -388,7 +388,7 @@ func TestParseProbeFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"--model", "haiku"}, // bare model, no single harness
 		{"--harness", "cursor"},
-		{"--case", "wake"},
+		{"--case", "native-wake"}, // requires --local
 		{"--local", "--socket", "/tmp/a.sock"},
 		{"--model", "cursor=x", "--harness", "claude"},
 	} {

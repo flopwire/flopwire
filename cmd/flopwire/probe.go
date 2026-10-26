@@ -76,7 +76,8 @@ a scratch project with project-scope hooks only. Each case prints PASS or
 FAIL with its evidence; the command exits non-zero on any FAIL.
 
 Cases: idle, prompt-submit, framing, mid-turn, subagent, guardian (Codex
-only). Optional prompt-submit-observed requires --local and snapshots the
+only). Optional native-wake (Claude and Codex, --local) starts potentially
+billable native turns in fresh sessions. Optional prompt-submit-observed requires --local and snapshots the
 recipient inbox once before the prompt, without waiting for readiness.
 Codex, Devin and opencode run in scratch homes the running agent
 does not watch, so they need --local. --as-installed installs this
@@ -123,6 +124,9 @@ type probeVersion struct {
 }
 
 func probeMain(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "native-proxy" {
+		return probeNativeProxy(ctx, args[1:])
+	}
 	if len(args) > 0 && args[0] == "tap" {
 		return probeTap(ctx, args[1:], os.Stdin, os.Stdout, os.Stderr)
 	}
@@ -196,7 +200,7 @@ func parseProbeFlags(args []string, stderr io.Writer) (probeOpts, error) {
 		o.harnesses = append(o.harnesses, a)
 	}
 	for _, c := range splitList(*cases) {
-		if !slices.Contains(probeCases, c) && c != casePromptSubmitObserved {
+		if !slices.Contains(probeCases, c) && c != casePromptSubmitObserved && c != caseNativeWake {
 			return o, fmt.Errorf("probe: unknown case %q (%s)", c, strings.Join(probeCases, ", "))
 		}
 		o.cases = append(o.cases, c)
@@ -219,6 +223,9 @@ func parseProbeFlags(args []string, stderr io.Writer) (probeOpts, error) {
 	}
 	if slices.Contains(o.cases, casePromptSubmitObserved) && !o.local {
 		return o, errors.New("probe: prompt-submit-observed requires --local; a connected inbox is server state, not local readiness")
+	}
+	if slices.Contains(o.cases, caseNativeWake) && !o.local {
+		return o, errors.New("probe: native-wake requires --local")
 	}
 	if o.local && o.socket != "" {
 		return o, errors.New("probe: --socket names a running agent; --local starts its own")
@@ -377,6 +384,9 @@ func (l *lockedWriter) Write(b []byte) (int, error) {
 func casesFor(h transcript.Agent, cases []string) []string {
 	var out []string
 	for _, c := range cases {
+		if c == caseNativeWake && h != transcript.AgentClaude && h != transcript.AgentCodex {
+			continue
+		}
 		if c == caseGuardian && h != transcript.AgentCodex {
 			continue
 		}
@@ -519,6 +529,9 @@ func (p *prober) startAgent(ctx context.Context) (stop func(), err error) {
 		"FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"),
 		"FLOPWIRE_INDEX="+filepath.Join(p.dir, "flopwire", "index.db"),
 		client.EnvToken+"=", client.EnvServer+"=")
+	if slices.Contains(p.o.cases, caseNativeWake) {
+		cmd.Env = append(cmd.Env, "CODEX_HOME="+p.scratchHome(transcript.AgentCodex))
+	}
 	cmd.Stdout, cmd.Stderr = logf, logf
 	if err := cmd.Start(); err != nil {
 		mcancel()
@@ -713,6 +726,19 @@ func (p *prober) runHarness(ctx context.Context, h transcript.Agent, model strin
 			return fail("", err.Error())
 		}
 	}
+	if h == transcript.AgentCodex && slices.Contains(p.o.cases, caseNativeWake) {
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := r.nativeDaemon(stopCtx, "stop"); err != nil {
+				fmt.Fprintf(p.log, "probe: scratch daemon stop failed: %v\n", err)
+				results = append(results, probeResult{Harness: string(h), Case: "native-daemon-cleanup", Evidence: err.Error()})
+			}
+		}()
+		if err := r.nativeDaemon(ctx, "start"); err != nil {
+			return fail("", err.Error())
+		}
+	}
 	var err error
 	if r.sender, err = r.session(ctx, "sender", nil); err != nil {
 		return fail("", err.Error())
@@ -783,6 +809,15 @@ func (r *harnessRun) setup() error {
 		return os.WriteFile(path, b, 0o600)
 	}
 	r.env, r.home = r.p.harnessEnv(r.name), r.p.scratchHome(r.name)
+	if slices.Contains(r.p.o.cases, caseNativeWake) {
+		r.env = append(r.env, "FLOPWIRE_SOCKET="+r.p.sock, "FLOPWIRE_CONFIG="+filepath.Join(r.p.dir, "flopwire", "config.json"), "FLOPWIRE_INDEX="+filepath.Join(r.p.dir, "flopwire", "index.db"))
+		instructions := "This is a bounded Flopwire delivery test. Do not read files or do implementation work. If asked to check the Flopwire inbox, use only the shell command " + q(r.p.exe) + " inbox --socket " + q(r.p.sock) + ". For a reply, use the absolute Flopwire binary and --socket shown in the message. Run each command once. Do not retry or poll.\n"
+		for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+			if err := os.WriteFile(filepath.Join(r.proj, name), []byte(instructions), 0600); err != nil {
+				return err
+			}
+		}
+	}
 	switch r.name {
 	case transcript.AgentClaude:
 		return write(filepath.Join(r.proj, ".claude", "settings.json"), map[string]any{"hooks": hooks})
@@ -793,6 +828,13 @@ func (r *harnessRun) setup() error {
 		}
 		r.login = &l
 		cfg := fmt.Sprintf("[projects.%q]\ntrust_level = \"trusted\"\n", r.proj)
+		if slices.Contains(r.p.o.cases, caseNativeWake) {
+			cfg += fmt.Sprintf("\n[mcp_servers.flopwire]\ncommand = %q\nargs = [\"mcp\", \"--local\"]\nenabled_tools = [\"flopwire_send\", \"flopwire_inbox\"]\n[mcp_servers.flopwire.tools.flopwire_send]\napproval_mode = \"approve\"\n[mcp_servers.flopwire.env]\nFLOPWIRE_SOCKET = %q\nFLOPWIRE_CONFIG = %q\nFLOPWIRE_INDEX = %q\n", r.p.exe, r.p.sock, filepath.Join(r.p.dir, "flopwire", "config.json"), filepath.Join(r.p.dir, "flopwire", "index.db"))
+			instructions := "This is a bounded Flopwire delivery test. Use the Flopwire MCP tools for inbox and replies. Shell commands cannot reach the inbox from this sandbox. Do not read files, run shell commands, or do implementation work. Call each requested tool once. Do not poll or retry.\n"
+			if err := os.WriteFile(filepath.Join(r.proj, "AGENTS.md"), []byte(instructions), 0600); err != nil {
+				return err
+			}
+		}
 		if err := os.WriteFile(filepath.Join(r.home, "config.toml"), []byte(cfg), 0o600); err != nil {
 			return err
 		}
@@ -969,7 +1011,7 @@ func (r *harnessRun) session(ctx context.Context, role string, codex *codexStart
 	case transcript.AgentClaude:
 		s, err = startClaude(ctx, r.proj, r.env, errLog, r.model, r.claudePluginArgs()...)
 	case transcript.AgentCodex:
-		o := codexStartOpts{Model: r.model, ApprovalPolicy: "never", Sandbox: "workspace-write"}
+		o := codexStartOpts{NativeDaemon: slices.Contains(r.p.o.cases, caseNativeWake), Model: r.model, ApprovalPolicy: "never", Sandbox: "workspace-write"}
 		if codex != nil {
 			o = *codex
 		}
@@ -1123,6 +1165,8 @@ func (r *harnessRun) runCase(ctx context.Context, c string) probeResult {
 		return res
 	}
 	switch c {
+	case caseNativeWake:
+		return r.nativeWake(tctx, res, m)
 	case caseIdle:
 		r.settle(ctx)
 		start := time.Now().UnixMilli()
