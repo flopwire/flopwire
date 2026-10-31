@@ -35,7 +35,7 @@ jobs:
           cache: true
       - uses: docker/setup-buildx-action@v4
       - name: Build the server image (layer cache in GitHub Actions)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
