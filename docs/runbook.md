@@ -213,6 +213,19 @@ flopwire admin token-ttl 0      # restore the default (24h)
 
 A mint request for a longer TTL fails with `ttl_exceeds_max`.
 
+## Temporary VM and checkpoint cleanup
+
+When creating a profiling VM or upgrade snapshot, record its purpose and a
+cleanup date or removal condition in the deployment notes. Give temporary
+snapshots an expiry when the required rollback window is known. Remove
+profiling VMs after saving the results needed for the investigation.
+
+After an upgrade is verified, review its rollback copies and remove those
+superseded by a verified recovery copy. Keep any copy still required for an
+open incident or rollback. Application retention does not remove host-level
+VM snapshots or encrypted checkpoint files; include their cleanup in the
+upgrade's completion checks.
+
 ## Recover a locked-out administrator
 
 Flopwire has no email, reset-link, or self-service password recovery. Keep at
