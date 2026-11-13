@@ -9,6 +9,23 @@ import (
 	"github.com/flopwire/flopwire/internal/store"
 )
 
+func TestServerParseBacklog(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int64
+	}{{"", 20000}, {"1", 1}, {"150000", 150000}} {
+		got, err := serverParseBacklog(tc.raw)
+		if err != nil || got != tc.want {
+			t.Fatalf("%q: got %d, %v; want %d", tc.raw, got, err, tc.want)
+		}
+	}
+	for _, raw := range []string{"0", "-1", "invalid", "9223372036854775808"} {
+		if _, err := serverParseBacklog(raw); err == nil {
+			t.Fatalf("accepted invalid backlog %q", raw)
+		}
+	}
+}
+
 func TestFlushAdmissionPoolBudget(t *testing.T) {
 	for _, tc := range []struct {
 		pool          int32
