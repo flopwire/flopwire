@@ -472,6 +472,8 @@ transcripts at its next start. Search works again when the rebuild ends.
 
 ## Recover
 
+For scheduled, cumulative off-site backups, see [Off-site disaster recovery](offsite-backup.md).
+
 1. Stop writes to the damaged deployment.
 2. Provision empty Postgres and object storage targets.
 3. Run `flopwire backup-verify` against the selected backup.
