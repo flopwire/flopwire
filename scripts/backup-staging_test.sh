@@ -36,6 +36,20 @@ if PATH="$root/fake-bin:$PATH" FLOPWIRE_BACKUP_STATE_DIR="$root/no-reserve" \
     exit 1
 fi
 test ! -e "$root/no-reserve/staging.img"
+# A numeric value outside the shell integer range must fail before allocation.
+printf '#!/bin/sh\n: > "$FLOPWIRE_TEST_ALLOCATION_MARKER"\nexit 1\n' >"$root/fake-bin/fallocate"
+chmod +x "$root/fake-bin/fallocate"
+if PATH="$root/fake-bin:$PATH" FLOPWIRE_BACKUP_STATE_DIR="$root/overflow-reserve" \
+    FLOPWIRE_BACKUP_STAGING_DIR="$root/overflow-reserve-mount" \
+    FLOPWIRE_TEST_ALLOCATION_MARKER="$root/overflow-allocation-attempted" \
+    FLOPWIRE_BACKUP_MIN_FREE_BYTES=9223372036854775808 \
+    sh "$script" start 2>/dev/null; then
+    echo 'overflowing server reserve was accepted' >&2
+    exit 1
+fi
+test ! -e "$root/overflow-reserve/staging.img"
+test ! -e "$root/overflow-allocation-attempted"
+rm "$root/fake-bin/fallocate"
 # A failed allocation must leave neither a partial image nor a stale marker
 # that could authorize formatting the failed allocation on the next run.
 printf '#!/bin/sh\nprintf partial >"$3"\nexit 1\n' >"$root/fake-bin/fallocate"

@@ -14,6 +14,7 @@ case "$mapping" in ''|*[!a-zA-Z0-9_-]*) echo 'invalid mapper name' >&2; exit 1;;
 case "$bytes" in ''|*[!0-9]*) echo 'invalid staging size' >&2; exit 1;; esac
 case "$reserve" in ''|*[!0-9]*) echo 'invalid free-space reserve' >&2; exit 1;; esac
 [ "$bytes" -ge 67108864 ]
+[ "$reserve" -ge 0 ]
 [ ! -L "$state" ] && [ ! -L "$staging" ] && [ ! -L "$image" ] && [ ! -L "$marker" ]
 mkdir -p "$state" "$staging"
 chmod 700 "$state" "$staging"
