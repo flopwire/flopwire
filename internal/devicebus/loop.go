@@ -138,6 +138,9 @@ func (b *Bus) runServer(ctx context.Context) {
 	purge := time.NewTicker(time.Minute)
 	defer purge.Stop()
 	var (
+		// Start with a response before holding. After cancellation, also
+		// reconcile immediately so presence churn cannot starve answers.
+		pollWait time.Duration
 		inflight bool
 		cancel   context.CancelFunc = func() {}
 		sent     []busproto.PresenceSession
@@ -198,7 +201,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			pctx, pcancel := context.WithCancel(ctx)
 			cancel = pcancel
 			inflight, started = true, now
-			req := busproto.PollRequest{ResumeRetries: true, Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(b.cfg.PollWait / time.Second)}
+			req := busproto.PollRequest{ResumeRetries: true, Sessions: b.pollPresence(sent), Cloud: sentCld, Cursor: cursor, Gen: gen, WaitSeconds: int(pollWait / time.Second)}
 			b.setStatus(func(s *Status) { s.Sessions = len(sent) })
 			b.mu.Lock()
 			b.reported = sent
@@ -272,6 +275,7 @@ func (b *Bus) runServer(ctx context.Context) {
 				return
 			}
 			if errors.Is(a.err, context.Canceled) {
+				pollWait = 0
 				next = started.Add(250 * time.Millisecond)
 				continue
 			}
@@ -282,6 +286,7 @@ func (b *Bus) runServer(ctx context.Context) {
 				}
 				continue
 			}
+			pollWait = b.cfg.PollWait
 			backoff = 0
 			cursor, gen = a.resp.Cursor, a.resp.Gen
 			if err := b.answered(ctx, a.resp, started, skip); err != nil {
