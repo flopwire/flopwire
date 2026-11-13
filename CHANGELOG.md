@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/flopwire/flopwire/compare/v0.3.0...v0.4.0) (2026-11-13)
+
+
+### Features
+
+* automate verified off-site backups with restic ([#453](https://github.com/flopwire/flopwire/issues/453)) ([fc821b3](https://github.com/flopwire/flopwire/commit/fc821b38a757f06c5d9f5fced61ad3d68556e1e8))
+
+
+### Bug Fixes
+
+* make parse backlog admission threshold configurable ([#455](https://github.com/flopwire/flopwire/issues/455)) ([0accb3c](https://github.com/flopwire/flopwire/commit/0accb3cc7b98a1f5005ef1d723056a8f47e5431d))
+* poll overflowing hot transcripts fairly ([#457](https://github.com/flopwire/flopwire/issues/457)) ([ee2e0b2](https://github.com/flopwire/flopwire/commit/ee2e0b29d35f2232e02d4872cc6f6344a664f868))
+* preserve server disk headroom during backup staging ([#454](https://github.com/flopwire/flopwire/issues/454)) ([09a65cc](https://github.com/flopwire/flopwire/commit/09a65cccacda1365e37dd763e8dadf3c04020d54))
+
 ## [0.3.0](https://github.com/flopwire/flopwire/compare/v0.2.3...v0.3.0) (2026-10-26)
 
 
