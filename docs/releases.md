@@ -6,6 +6,13 @@ Merging the release PR creates a `vX.Y.Z` tag and GitHub release. The
 Release workflow then attaches binaries to that release and publishes the
 server image.
 
+Use the [release checklist](release-checklist.md) to select qualification
+based on the changes. Routine releases require CI, the synthetic performance
+gate and targeted regression/runtime evidence. Full real-data corpus and
+restore drills are reserved for major data-path changes and planned recovery
+drills. Record failures and deferred scope in the release PR; do not report
+an unrun check as passing.
+
 `fix:` and `perf:` bump the patch, and `feat:` bumps the minor. Breaking
 changes bump the minor before `1.0.0` and the major after it. Release-please owns subsequent manifest and changelog updates.
 
