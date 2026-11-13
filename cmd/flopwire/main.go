@@ -257,6 +257,10 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	maxBacklog, err := serverParseBacklog(os.Getenv("FLOPWIRE_PARSE_MAX_BACKLOG"))
+	if err != nil {
+		return err
+	}
 	grepContinuations := envBool("FLOPWIRE_GREP_CONTINUATIONS", false)
 	// Retained search snapshots use dedicated admission capacity in the
 	// existing pool, outside the interactive and upload budgets.
@@ -303,7 +307,7 @@ func serve(ctx context.Context, args []string) error {
 	reg := prometheus.NewRegistry()
 	durableStore := store.NewPostgres(pool, mc, bucket)
 	objects := ingest.MinIO{Client: mc, Bucket: bucket}
-	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
+	parser := &ingest.Queue{Pool: pool, Objects: objects, Log: slog.Default(), Workers: workers, MaxBacklog: maxBacklog, RefreshInterval: envDuration("FLOPWIRE_REPARSE_INTERVAL", 2*time.Second)}
 	go parser.Run(ctx)
 	projectionCtx, stopProjection := context.WithCancel(ctx)
 	projectionDone := make(chan struct{})

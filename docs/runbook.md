@@ -18,7 +18,7 @@ refresh fails.
 | Field | Means |
 |---|---|
 | `storage.used_bytes`, `storage.quota_bytes` | Stored bytes against the deployment quota |
-| `index.queue_depth`, `index.queue_capacity` | Sources waiting to parse, and the backlog at which flushes get `503 parse_backlog` (20,000) |
+| `index.queue_depth`, `index.queue_capacity` | Sources waiting to parse, and the backlog at which flushes get `503 parse_backlog` (20,000 by default) |
 | `index.parse_lag_seconds` | Age of the oldest pending parse |
 | `index.failing_sources` | Sources whose parse failed and waits for a retry |
 | `index.quarantined_sources`, `index.quarantined` | Sources that failed 12 parses in a row, with the last error (at most 20 listed) |
@@ -30,6 +30,13 @@ refresh fails.
 ingest or search metrics yet.
 
 Inspect structured server logs for quota, parse and audit errors.
+
+`FLOPWIRE_PARSE_MAX_BACKLOG` sets a positive source-count threshold for
+upload backpressure; the default is 20,000. During a bulk recovery, a higher
+threshold can admit new uploads while historical sources are indexed.
+This does not increase parser workers, the in-memory queue, or concurrent
+upload capacity. Monitor queue growth, query latency, memory and disk space,
+and return to the normal threshold after the recovery backlog drains.
 
 ## Release a quarantined source
 

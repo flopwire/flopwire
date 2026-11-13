@@ -3,10 +3,22 @@ package main
 import (
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/flopwire/flopwire/internal/api"
 	"github.com/flopwire/flopwire/internal/store"
 )
+
+func serverParseBacklog(raw string) (int64, error) {
+	if raw == "" {
+		return 20000, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("FLOPWIRE_PARSE_MAX_BACKLOG must be a positive integer")
+	}
+	return n, nil
+}
 
 const (
 	maxActiveFlushes       = 8
