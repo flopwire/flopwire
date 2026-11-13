@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -67,6 +68,42 @@ func TestFastLaneOverflowKeepsStatBudget(t *testing.T) {
 		cost := counter.Measure(func() { f.a.fastLane(ctx) })
 		if cost.Stats != 2 {
 			t.Fatalf("fast-lane tick made %d stats, want budget 2", cost.Stats)
+		}
+	}
+}
+
+func TestFastLaneWarmOverflowSurvivesInterveningHotTicks(t *testing.T) {
+	f := newFixture(t, "-")
+	f.once()
+	var paths []string
+	for path, candidate := range f.a.targets {
+		if candidate.kind == kindTranscript {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	if len(paths) < 3 {
+		t.Fatal("need three fixture transcripts")
+	}
+	targets := map[string]*target{}
+	cold := time.Now().Add(-time.Hour).UnixNano()
+	for _, path := range paths[:3] {
+		targets[path] = f.a.targets[path]
+		targets[path].seen.CTime = cold
+		targets[path].hotUntil = time.Time{}
+	}
+	f.a.targets, f.a.cfg.MaxHot = targets, 2
+	runCtx, cancel := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	f.a.startWorkers(runCtx, &workers)
+	defer func() { cancel(); f.a.kick(); workers.Wait() }()
+	for range 3 * warmEvery {
+		f.a.fastLane(runCtx)
+		f.a.WaitIdle()
+	}
+	for path, target := range targets {
+		if target.seen.CTime == cold {
+			t.Errorf("warm transcript never rechecked: %s", filepath.Base(path))
 		}
 	}
 }
