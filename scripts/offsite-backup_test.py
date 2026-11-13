@@ -99,6 +99,31 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'exit 3'):
                 job.run(['restic', 'backup'], 'upload', capture=True)
 
+    def test_age_check_rejects_stale_and_failed_backups(self):
+        status = self.root / 'status.json'
+        status.write_text(json.dumps({'status': 'complete', 'last_success': job.now()}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            job.check_age(self.config, 36)
+        for state in [
+            {'status': 'complete', 'last_success': '2020-01-01T00:00:00+00:00'},
+            {'status': 'failed', 'last_success': job.now()},
+        ]:
+            status.write_text(json.dumps(state))
+            with self.assertRaises(RuntimeError):
+                job.check_age(self.config, 36)
+
+    def test_recovery_files_are_included_and_missing_files_fail(self):
+        recovery = self.root / 'deployment.env'
+        recovery.write_text('synthetic deployment settings')
+        self.config['recovery_paths'] = [str(recovery)]
+        self.execute()
+        upload = next(command for command, phase in self.calls if phase == 'upload')
+        self.assertEqual(upload[-3:], ['--', 'snapshot', str(recovery)])
+        self.assertTrue(recovery.exists())
+        recovery.unlink()
+        with self.assertRaises(ValueError):
+            self.execute()
+
     def test_missing_snapshot_id_is_failure(self):
         def fake(command, phase, **kwargs):
             return '{}' if phase == 'upload' else self.fake(command, phase, **kwargs)

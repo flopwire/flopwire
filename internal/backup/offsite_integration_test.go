@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -90,7 +89,7 @@ func offsiteRoundTrip(t *testing.T, databaseURL, bucket string) string {
 	// Recover the older snapshot after a second run, without the staging files.
 	target := filepath.Join(work, "download")
 	run("restic", "restore", firstID, "--target", target, "--verify")
-	recovered := filepath.Join(target, strings.TrimPrefix(stage, "/"), "snapshot")
+	recovered := filepath.Join(target, "snapshot")
 	if _, err := Verify(recovered); err != nil {
 		t.Fatal(err)
 	}

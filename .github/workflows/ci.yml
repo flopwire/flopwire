@@ -104,6 +104,12 @@ jobs:
           go run ./tools/ci-shard -shards ${{ strategy.job-total }} -index ${{ matrix.shard }} >"$RUNNER_TEMP/packages"
           cat "$RUNNER_TEMP/packages"
           test -s "$RUNNER_TEMP/packages"
+      - name: Enable off-site recovery test on the backup shard
+        run: |
+          if grep -qx 'github.com/flopwire/flopwire/internal/backup' "$RUNNER_TEMP/packages"; then
+            sudo apt-get install -y -q --no-install-recommends restic
+            echo 'FLOPWIRE_TEST_RESTIC=1' >>"$GITHUB_ENV"
+          fi
       - name: Go tests
         run: |
           # One package path per line, no spaces: word splitting is intended.
@@ -160,6 +166,7 @@ jobs:
       - run: sh scripts/e2e-search_test.sh
       - run: python3 scripts/qualify-agent-workflow_test.py
       - run: python3 scripts/nightly-codex_test.py
+      - run: python3 scripts/offsite-backup_test.py
       - run: node --test scripts/nightly-validation-issue_test.cjs
       - run: node --test scripts/cancel-obsolete-merge-groups_test.cjs
       - name: Build the image with the release version

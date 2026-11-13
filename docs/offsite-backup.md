@@ -108,8 +108,9 @@ restic snapshots --tag flopwire
 restic restore SNAPSHOT_ID --target /mnt/encrypted-recovery --verify
 ```
 
-Restic reconstructs original absolute paths below the target. Locate the
-application `snapshot/manifest.json`, then use the matching Flopwire release:
+The application backup is restored at `/mnt/encrypted-recovery/snapshot`.
+Additional absolute recovery paths are reconstructed below the recovery
+target. Use the matching Flopwire release:
 
 ```sh
 flopwire backup-verify --input RESTORED_SNAPSHOT_DIRECTORY
