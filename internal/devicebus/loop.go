@@ -260,9 +260,10 @@ func (b *Bus) runServer(ctx context.Context) {
 				if err == nil && !slices.Equal(cur, sent) || cld {
 					cancel()
 					// A session's busy or idle flip makes no message newly
-					// deliverable to the device: the cursor stays, and the
-					// next poll holds rather than answering at once (issue
-					// #71). A cloud session's flip may (claimCloud).
+					// deliverable to the device: preserve the cursor (issue
+					// #71). The cancellation handler requests one immediate
+					// response before holding again. A cloud session's flip
+					// may make messages deliverable (claimCloud).
 					if cld || err == nil && !sameButBusy(cur, sent) {
 						cursor = 0
 					}

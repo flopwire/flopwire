@@ -72,5 +72,4 @@ func TestCancelledPresencePollMakesProgress(t *testing.T) {
 	if again, err := deliver(b, "s1", "claude", Limit{}); err != nil || len(again) != 0 {
 		t.Fatalf("duplicate delivery: %v %v", ids(again), err)
 	}
-
 }
