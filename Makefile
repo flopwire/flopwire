@@ -9,6 +9,7 @@ test:
 	sh scripts/e2e-search_test.sh
 	python3 scripts/qualify-agent-workflow_test.py
 	python3 scripts/nightly-codex_test.py
+	python3 scripts/offsite-backup_test.py
 	node --test scripts/nightly-validation-issue_test.cjs
 	node --test scripts/cancel-obsolete-merge-groups_test.cjs
 

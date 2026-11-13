@@ -1,0 +1,15 @@
+[Unit]
+Description=Verified Flopwire off-site backup
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/mnt/flopwire-backup
+
+[Service]
+Type=oneshot
+UMask=0077
+EnvironmentFile=/etc/flopwire-backup/restic.env
+ExecStart=/usr/bin/python3 /opt/flopwire-backup/offsite-backup.py --config /etc/flopwire-backup/config.json
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

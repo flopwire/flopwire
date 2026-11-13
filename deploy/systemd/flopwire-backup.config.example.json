@@ -1,0 +1,12 @@
+{
+  "encrypted_staging": true,
+  "staging_dir": "/mnt/flopwire-backup",
+  "command_staging_dir": "/backup",
+  "host": "flopwire-server",
+  "object_workers": 4,
+  "flopwire_command": [
+    "docker", "compose", "--project-directory", "/opt/flopwire",
+    "run", "--rm", "--no-deps", "--user", "0:0",
+    "--volume", "/mnt/flopwire-backup:/backup", "flopwire"
+  ]
+}
