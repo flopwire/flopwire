@@ -1,0 +1,12 @@
+[Unit]
+Description=Temporary encrypted Flopwire backup staging
+Before=flopwire-backup.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+ExecStart=/bin/sh /opt/flopwire-backup/prepare-backup-staging.sh start
+ExecStop=/bin/sh /opt/flopwire-backup/prepare-backup-staging.sh stop
+TimeoutStartSec=5min
+TimeoutStopSec=2min

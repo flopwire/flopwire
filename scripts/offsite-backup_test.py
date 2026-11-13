@@ -124,6 +124,17 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.execute()
 
+    def test_state_survives_replacement_of_temporary_staging(self):
+        state_dir = self.root / 'persistent'
+        state_dir.mkdir(mode=0o700)
+        self.config['state_dir'] = str(state_dir)
+        self.execute()
+        self.assertTrue((state_dir / 'status.json').exists())
+        self.assertFalse((self.root / 'status.json').exists())
+        self.config['staging_dir'] = str(self.root / 'unmounted')
+        with contextlib.redirect_stdout(io.StringIO()):
+            job.check_age(self.config, 36)
+
     def test_missing_snapshot_id_is_failure(self):
         def fake(command, phase, **kwargs):
             return '{}' if phase == 'upload' else self.fake(command, phase, **kwargs)

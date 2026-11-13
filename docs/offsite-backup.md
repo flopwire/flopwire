@@ -67,9 +67,41 @@ catches up after downtime. The service requires the staging mount. Ensure the
 mount is actually encrypted before enabling it; a directory alone does not
 establish that fact.
 
+## Optional temporary encrypted staging on Linux
+
+`deploy/systemd/prepare-backup-staging.sh` and
+`flopwire-backup-staging.service` create encrypted scratch space with a fresh
+random key each boot. The key stays in the kernel and is never saved. Closing
+the mapping discards access to its contents. Only use this filesystem for
+replaceable staging; completed backups live in the remote restic repository.
+
+Install the script in `/opt/flopwire-backup/` and the unit in
+`/etc/systemd/system/`. It requires cryptsetup, util-linux and e2fsprogs. The
+script reserves a 32 GiB image at `/var/lib/flopwire-backup/staging.img`; allow
+that much free disk space. It refuses an existing image without its ownership
+marker and refuses an interrupted, unmounted mapping until inspected.
+
+Set `state_dir` to `/var/lib/flopwire-backup` in the backup JSON config. Add a
+`flopwire-backup.service.d/staging.conf` drop-in:
+
+```ini
+[Unit]
+Requires=flopwire-backup-staging.service
+After=flopwire-backup-staging.service
+```
+
+Run `systemctl daemon-reload`, start `flopwire-backup-staging.service`, and
+verify that `/mnt/flopwire-backup` is mounted from
+`/dev/mapper/flopwire-backup-staging` before starting the backup. The timer
+starts the required staging service after reboot. The production server does
+not depend on this staging mount.
+
 ## Monitor
 
-The job writes private `status.json` in the staging directory. `last_success`
+The job writes private `status.json` in `state_dir`, which defaults to the
+staging directory. For temporary encrypted staging, set `state_dir` to a
+separate persistent directory with mode `0700`; its status and process lock
+then survive replacement of the staging filesystem. `last_success`
 and `snapshot_id` change only after upload succeeds, restic checks repository
 metadata, and the new snapshot can be listed. A failed attempt preserves the
 previous successful recovery point. Exit code 3 from restic, which indicates

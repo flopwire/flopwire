@@ -42,6 +42,9 @@ def archive(config):
         raise ValueError('staging_dir must be an existing absolute directory, not a symlink')
     if root.stat().st_mode & 0o077:
         raise ValueError('staging_dir must be private (mode 0700)')
+    state_root = Path(config.get('state_dir', str(root)))
+    if not state_root.is_absolute() or state_root.is_symlink() or not state_root.is_dir() or state_root.stat().st_mode & 0o077:
+        raise ValueError('state_dir must be an existing private absolute directory, not a symlink')
     command = config['flopwire_command']
     if not isinstance(command, list) or not command or not all(isinstance(v, str) for v in command):
         raise ValueError('flopwire_command must be a nonempty argv array')
@@ -55,12 +58,12 @@ def archive(config):
     if not mapped.is_absolute():
         raise ValueError('command_staging_dir must be absolute')
     # Hold one lock through creation, upload, verification and cleanup.
-    with (root / 'job.lock').open('a') as lock:
+    with (state_root / 'job.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         snapshot = root / 'snapshot'
         if snapshot.exists() or snapshot.is_symlink():
             raise RuntimeError('stale snapshot directory: inspect and remove it before retrying')
-        status_path = root / 'status.json'
+        status_path = state_root / 'status.json'
         state = json.loads(status_path.read_text()) if status_path.exists() else {}
         state.update(status='running', started_at=now(), phase='backup')
         write_status(status_path, state)
@@ -102,7 +105,7 @@ def archive(config):
 def check_age(config, hours):
     if hours <= 0:
         raise ValueError('maximum backup age must be positive')
-    state = json.loads((Path(config['staging_dir']) / 'status.json').read_text())
+    state = json.loads((Path(config.get('state_dir', config['staging_dir'])) / 'status.json').read_text())
     last = datetime.datetime.fromisoformat(state['last_success'])
     age = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds() / 3600
     if age < 0 or age > hours or state['status'] == 'failed':

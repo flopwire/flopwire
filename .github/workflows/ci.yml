@@ -167,6 +167,10 @@ jobs:
       - run: python3 scripts/qualify-agent-workflow_test.py
       - run: python3 scripts/nightly-codex_test.py
       - run: python3 scripts/offsite-backup_test.py
+      - name: Test temporary encrypted staging
+        run: |
+          sudo apt-get install -y -q --no-install-recommends cryptsetup
+          sudo sh scripts/backup-staging_test.sh
       - run: node --test scripts/nightly-validation-issue_test.cjs
       - run: node --test scripts/cancel-obsolete-merge-groups_test.cjs
       - name: Build the image with the release version
