@@ -1,17 +1,55 @@
 # Release checklist
 
-CI runs `go test -race ./...`, the web tests, the build and the perf
-release gate (section 5). The other checks on this page need real
-transcripts, real agent CLIs or two machines, so CI cannot run them. Run
-every check on a release candidate before you tag it, except the ones
-marked optional. Record the measured numbers in the release PR. See [Releases](releases.md)
-for the release-please workflow and bot setup. The [v0.1.0 qualification
-record](../notes/log/release-readiness-v0.1.0-2026-10-10.md) separates observed evidence from pending
-gates and owner-deferred scope.
+Routine releases require normal CI, the synthetic performance release gate
+(section 5a), and checks targeted to the changed behavior. The full real-data
+corpus suite is not a gate for every release. Sections 1–4, 6 and 7 are a
+manual-check menu: select the relevant checks before running them.
+
+See [Releases](releases.md) for the release-please workflow and bot setup.
+The [v0.1.0 qualification record](../notes/log/release-readiness-v0.1.0-2026-10-10.md)
+shows how to distinguish observed evidence, pending checks and deferred scope.
 
 All corpus checks read the harness directories (`~/.claude`, `~/.codex`,
 `~/.local/share/devin`) read-only. Their output can quote real transcript
 text. Do not commit it.
+
+## Choose the qualification scope
+
+Record the candidate commit, the changes since the previous release, and
+the selected checks in the release PR. Use this table to choose the scope:
+
+| Change | Required evidence beyond normal CI and section 5a |
+|---|---|
+| Bounded bug fix, configuration or operational script | Exercise the changed behavior with a focused test and runtime check. For a bug fix, reproduce the failure before the fix and verify it afterward. Prefer a small synthetic fixture. |
+| Parser, indexing, ingest or retrieval behavior | The affected parser/index/ingest/retrieval checks from sections 2–4. A bounded scheduling fix can use a targeted real CLI or agent probe instead of rebuilding the full corpus. |
+| MCP or harness integration | The affected real-agent checks in section 6. |
+| Device synchronization, connectivity or reconnect behavior | Relevant synthetic E2E scenarios and a targeted two-device check from section 7. Use two physical machines when the changed behavior depends on their network or platform. |
+| Backup automation or backup configuration | A database-and-objects backup/restore round trip, checksum verification and the affected failure-path tests. A synthetic isolated stack is sufficient when the backup format and restore implementation are unchanged. |
+| Schema or stored-format migration, or a major replacement of the ingest/index/storage pipeline | Full qualification: sections 2–4, 6 and 7, plus an isolated restore of representative real data for storage/restore changes. |
+
+Also run full qualification and representative restores during planned
+disaster-recovery drills. Those drills are separate from routine publication;
+record their scope and results when they run.
+
+Before tagging:
+
+1. Require the normal branch and merge-queue checks and section 5a to pass.
+2. Complete the checks selected for the changed behavior. Reuse recorded
+   evidence only when the relevant runtime, test code and dependencies are unchanged;
+   name the tested commit and explain why it still applies. Version and
+   changelog-only updates do not require repeating every manual check.
+3. Record results, failed attempts, environment limitations and any deferred
+   broader checks. A stopped or skipped check is not a pass. Keep raw
+   transcript output private.
+4. Triage failures before publishing. Failing required checks, regressions
+   in the changed behavior, and credible data-integrity or access-control
+   failures block release. An unrelated bulk-import timing limit from a
+   broader drill remains a recorded limitation; it does not automatically
+   require every routine fix to rerun that drill.
+
+Run large corpus and restore jobs in isolated storage with verified free
+space. Run throughput checks without competing qualification jobs. Never
+stop a production server or another workload to perform a release drill.
 
 ## 1. Server test environment
 
@@ -145,7 +183,7 @@ When you run the set, these bars apply:
 
 ## 6. Two real agent sessions
 
-Check that a real agent can use the MCP tools.
+When selected above, check that a real agent can use the MCP tools.
 
 1. Register the MCP server for both CLIs. See
    [search.md](search.md#register-the-mcp-server).
@@ -183,7 +221,8 @@ Compose server with TLS pinning. CI runs it without real data.
 
 Bar: every scenario passes.
 
-Then run the real two-laptop setup once:
+For full qualification, or a change that requires a physical two-device
+check, run the real two-laptop setup once:
 
 1. Follow [two-laptop.md](two-laptop.md) on two machines.
 2. Complete every step of its "Verify" section.
