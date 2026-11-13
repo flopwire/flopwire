@@ -304,7 +304,8 @@ type Agent struct {
 	notified   map[string]bool // sources handed to sync since start
 	devin      storeState
 	opencode   storeState
-	ticks      int // fast-lane ticks
+	ticks      int    // fast-lane ticks
+	fastAfter  string // last path checked when recent transcripts exceed MaxHot
 	// discovered is closed once the first full discovery pass merged (or
 	// Run gave up before one): a hook flush waits for it, since before it
 	// the tracked set holds only placeholders and lookups by session fail.
@@ -938,8 +939,19 @@ func (a *Agent) fastLane(ctx context.Context) {
 	}
 	a.mu.Unlock()
 	if len(hot) > a.cfg.MaxHot {
-		sort.Slice(hot, func(i, j int) bool { return hot[i].seen.CTime > hot[j].seen.CTime })
-		hot = hot[:a.cfg.MaxHot]
+		// Cached change times cannot reveal an append to an unchecked file.
+		// Rotate through a stable path order instead of repeatedly choosing
+		// the same newest identities, especially after a bulk import.
+		sort.Slice(hot, func(i, j int) bool { return hot[i].path < hot[j].path })
+		start := sort.Search(len(hot), func(i int) bool { return hot[i].path > a.fastAfter })
+		selected := make([]*target, a.cfg.MaxHot)
+		for i := range selected {
+			selected[i] = hot[(start+i)%len(hot)]
+		}
+		a.fastAfter = selected[len(selected)-1].path
+		hot = selected
+	} else {
+		a.fastAfter = ""
 	}
 	var contracts gateContracts
 	for _, t := range hot {
