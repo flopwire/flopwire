@@ -99,6 +99,10 @@ func TestBackupVerifyRestoreRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if os.Getenv("FLOPWIRE_TEST_RESTIC") == "1" {
+		dir = offsiteRoundTrip(t, sourceURL, bucket)
+	}
+
 	// A target that is not empty is refused before anything changes.
 	statePath := filepath.Join(t.TempDir(), "restore-state.json")
 	if err = Restore(ctx, sourceURL, objects, bucket, dir, statePath); err == nil {
