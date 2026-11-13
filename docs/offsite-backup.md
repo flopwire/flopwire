@@ -78,8 +78,24 @@ replaceable staging; completed backups live in the remote restic repository.
 Install the script in `/opt/flopwire-backup/` and the unit in
 `/etc/systemd/system/`. It requires cryptsetup, util-linux and e2fsprogs. The
 script reserves a 32 GiB image at `/var/lib/flopwire-backup/staging.img`; allow
-that much free disk space. It refuses an existing image without its ownership
-marker and refuses an interrupted, unmounted mapping until inspected.
+that much free disk space. Size this from the production connection's database
+dump and referenced object inventory, with room for growth. To use 64 GiB,
+add a `flopwire-backup-staging.service.d/size.conf` drop-in:
+
+```ini
+[Service]
+Environment=FLOPWIRE_BACKUP_STAGING_BYTES=68719476736
+```
+
+Set this before creating the image. Changing it does not resize an existing
+image: stop the staging service, confirm it contains only disposable staging,
+remove the managed image, and restart the service. A separate backing disk
+can be selected with `FLOPWIRE_BACKUP_STATE_DIR`; add `RequiresMountsFor` for
+that disk to the staging unit. Keep the backup job's persistent `state_dir`
+outside disposable staging.
+
+The script refuses an existing image without its ownership marker and refuses
+an interrupted, unmounted mapping until inspected.
 
 Set `state_dir` to `/var/lib/flopwire-backup` in the backup JSON config. Add a
 `flopwire-backup.service.d/staging.conf` drop-in:
