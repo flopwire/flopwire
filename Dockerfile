@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.27.0-bookworm AS go-build
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
