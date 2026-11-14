@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/flopwire/flopwire/compare/v0.4.0...v0.4.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* complete messaging polls after presence changes ([#459](https://github.com/flopwire/flopwire/issues/459)) ([7cb5076](https://github.com/flopwire/flopwire/commit/7cb50763cd4f22f7ec86529ac8be623542cdeb23))
+
 ## [0.4.0](https://github.com/flopwire/flopwire/compare/v0.3.0...v0.4.0) (2026-11-13)
 
 
