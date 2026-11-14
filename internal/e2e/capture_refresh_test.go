@@ -15,7 +15,20 @@ import (
 // disabled collector cannot satisfy both the content and operation assertions.
 func (h *harness) checkUnrelatedDesktopCapture(t *testing.T, d, reader *device, r *result) {
 	d.stop(false)
-	defer func() { d.stop(false); d.start() }()
+	original := d
+	defer original.start()
+	// Use the enrolled writer's credentials with a fresh home and index. Its
+	// existing index can legitimately resume Claude uploads after a restart,
+	// which must retain desktop refreshes and would contaminate this counter.
+	d = h.newDevice(3, original.name)
+	defer d.stop(false)
+	config, err := os.ReadFile(original.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, d.cfg, string(config))
+	d.id = original.id
+	d.seed()
 	cowork := filepath.Join(d.dir, "unrelated-cowork")
 	if err := os.MkdirAll(filepath.Join(cowork, "account", "workspace"), 0700); err != nil {
 		t.Fatal(err)

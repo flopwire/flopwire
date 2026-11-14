@@ -130,10 +130,6 @@ func TestTwoDeviceSync(t *testing.T) {
 		}
 	})
 
-	h.scenario("0-codex-capture-with-unrelated-desktop-history", func(t *testing.T, r *result) {
-		h.checkUnrelatedDesktopCapture(t, d1, d2, r)
-	})
-
 	var liveNeedle string
 	h.scenario("a-live-append", func(t *testing.T, r *result) {
 		var local, server []time.Duration
@@ -835,6 +831,9 @@ func TestTwoDeviceSync(t *testing.T) {
 
 	h.scenario("zz-cross-device-ref-excerpts", func(t *testing.T, r *result) {
 		h.checkMessageExcerpts(t, d1, d2, r)
+	})
+	h.scenario("zzz-codex-capture-with-unrelated-desktop-history", func(t *testing.T, r *result) {
+		h.checkUnrelatedDesktopCapture(t, d1, d2, r)
 	})
 }
 
