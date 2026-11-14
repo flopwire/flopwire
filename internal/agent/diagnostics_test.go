@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 func TestDiagnosticsBackgroundCallsites(t *testing.T) {
@@ -83,7 +84,7 @@ func TestDiagnosticsCallsites(t *testing.T) {
 	if err := f.a.sweep(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = f.a.authorizeCapture(ctx, devicesync.SourceSpec{Path: "/synthetic/missing"})
+	_, _ = f.a.authorizeCapture(ctx, devicesync.SourceSpec{Path: "/synthetic/missing", Agent: transcript.AgentClaude})
 	after := f.a.Diagnostics()
 	want := map[string]uint64{"sweep": 1, "discover_all": 1, "authorize_capture": 1, "refresh_cowork": 2, "refresh_cowork_lock_wait": 2, "captured_claude_children": 2, "refresh_from_sweep": 1, "refresh_from_authorization": 1}
 	for i, op := range after.Operations {

@@ -476,7 +476,7 @@ func (d *device) setMode(mode string) {
 }
 
 // start launches `flopwire agent run` for the device.
-func (d *device) start() {
+func (d *device) start(extra ...string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	logf, err := os.OpenFile(d.log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -484,7 +484,8 @@ func (d *device) start() {
 		d.h.t.Fatal(err)
 	}
 	fmt.Fprintf(logf, "=== start %s\n", time.Now().Format(time.RFC3339Nano))
-	cmd := exec.Command(d.h.cfg.bin, "agent", "run", "-v", "--socket", d.sock)
+	args := append([]string{"agent", "run", "-v", "--socket", d.sock}, extra...)
+	cmd := exec.Command(d.h.cfg.bin, args...)
 	cmd.Env = d.env()
 	cmd.Stdout, cmd.Stderr = logf, logf
 	if err := cmd.Start(); err != nil {

@@ -359,9 +359,15 @@ func (a *Agent) mappingSignature(t *target, req *syncproto.PolicyPlacementsReque
 // server call. Eligibility alone never authorizes evidence.
 func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error) {
 	defer a.work.authorize.Begin().End()
-	refreshDone := a.work.refreshFromAuthorization.Begin()
-	a.refreshCowork(ctx)
-	refreshDone.End()
+	// Desktop metadata classifies Claude sources. An unrelated collector must
+	// not rediscover every desktop session and its captured children per upload.
+	// Keep the fresh discovery for all Claude captures and any source declared
+	// inside an app container, including mismatched or recovered source specs.
+	if spec.Agent == transcript.AgentClaude || a.nativeEvidenceRoot(spec.Path) != "" {
+		refreshDone := a.work.refreshFromAuthorization.Begin()
+		a.refreshCowork(ctx)
+		refreshDone.End()
+	}
 	a.refreshPolicy(ctx, false)
 	a.captureScopeMu.Lock()
 	release := a.captureScopeMu.Unlock
