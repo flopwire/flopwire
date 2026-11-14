@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/flopwire/flopwire/compare/v0.4.1...v0.4.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **agent:** avoid unrelated desktop discovery during capture authorization ([#463](https://github.com/flopwire/flopwire/issues/463)) ([63d8f48](https://github.com/flopwire/flopwire/commit/63d8f48e19c6b46d351bc8294d915b6c8a9cedf1))
+
 ## [0.4.1](https://github.com/flopwire/flopwire/compare/v0.4.0...v0.4.1) (2026-11-14)
 
 
