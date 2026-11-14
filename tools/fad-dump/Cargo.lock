@@ -679,9 +679,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "franken-agent-detection"
-version = "0.3.10"
+version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5de54925f885b487eb3cb1026533f05c63983a7323aa68cdfd2c42f676186e45"
+checksum = "688198b2897830405ac2b55218517c66819c7e82c01ed74c19d28e2456405c3d"
 dependencies = [
  "anyhow",
  "asupersync",
