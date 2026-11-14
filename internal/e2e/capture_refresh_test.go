@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,6 +17,9 @@ func (h *harness) checkUnrelatedDesktopCapture(t *testing.T, d, reader *device, 
 	d.stop(false)
 	defer func() { d.stop(false); d.start() }()
 	cowork := filepath.Join(d.dir, "unrelated-cowork")
+	if err := os.MkdirAll(filepath.Join(cowork, "account", "workspace"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	for i := range 64 {
 		metadata := fmt.Sprintf(`{"sessionId":"session-%d","cliSessionId":"11111111-2222-4333-8444-%012d","userSelectedFolders":["/synthetic/selected"]}`, i, i)
 		writeFile(t, filepath.Join(cowork, "account", "workspace", fmt.Sprintf("session-%d.json", i)), metadata)
