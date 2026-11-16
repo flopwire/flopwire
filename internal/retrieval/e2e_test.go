@@ -567,3 +567,44 @@ func TestGrepSinceMatchesMessageTimes(t *testing.T) {
 		}
 	}
 }
+
+// The client must preserve fixed-string semantics together with repository,
+// kind, time and ordering filters through upload, ingestion and HTTP retrieval.
+// The plan-selection regression is covered by the larger synthetic corpus in
+// TestGrepFilteredAdaptivePathUsesPrimaryKeyProbes.
+func TestGrepFilteredFixedStringEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	path := filepath.Join(s.home, "filtered-fixed.jsonl")
+	data := `{"type":"user","uuid":"10000000-0000-4000-8000-000000000001","sessionId":"20000000-0000-4000-8000-000000000001","cwd":"/tmp/filtered-fixed","timestamp":"2026-09-23T10:00:00Z","message":{"role":"user","content":"closing date [A/B] before cutoff"}}
+{"type":"user","uuid":"10000000-0000-4000-8000-000000000002","sessionId":"20000000-0000-4000-8000-000000000001","cwd":"/tmp/filtered-fixed","timestamp":"2026-09-23T11:00:00Z","message":{"role":"user","content":"closing date [A/B] first"}}
+{"type":"assistant","uuid":"10000000-0000-4000-8000-000000000003","sessionId":"20000000-0000-4000-8000-000000000001","cwd":"/tmp/filtered-fixed","timestamp":"2026-09-23T11:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"closing date [A/B] wrong kind"}]}}
+{"type":"user","uuid":"10000000-0000-4000-8000-000000000004","sessionId":"20000000-0000-4000-8000-000000000001","cwd":"/tmp/filtered-fixed","timestamp":"2026-09-23T12:00:00Z","message":{"role":"user","content":"closing date [A/B] second"}}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sy.Sync(ctx, devicesync.SourceSpec{Path: path, Agent: transcript.AgentClaude, StorageKind: transcript.StorageJSONLAppend, Parser: claude.ParserName}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, oldest := range []bool{false, true} {
+		f := format.Filters{Repo: "/tmp/filtered-fixed", Kinds: []string{"user"}, Since: time.Date(2026, 9, 23, 10, 30, 0, 0, time.UTC)}
+		want := []string{"closing date [A/B] second", "closing date [A/B] first"}
+		if oldest {
+			f.Sort = format.SortOldest
+			want[0], want[1] = want[1], want[0]
+		}
+		page, err := s.client.Grep(ctx, format.GrepQuery{Pattern: "closing date [A/B]", Fixed: true}, f)
+		if err != nil || page.Truncated || !page.Exact || page.Total != 2 || len(page.Hits) != 2 {
+			t.Fatalf("fixed filtered grep oldest=%v: %+v %v", oldest, page, err)
+		}
+		for i, hit := range page.Hits {
+			if _, line := firstLine(hit); line != want[i] || hit.Kind != "user" {
+				t.Fatalf("fixed filtered hit oldest=%v: %+v, want %q", oldest, hit, want[i])
+			}
+		}
+	}
+}
