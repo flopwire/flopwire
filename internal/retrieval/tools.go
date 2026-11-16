@@ -145,7 +145,7 @@ func (s *Store) Grep(ctx context.Context, gq format.GrepQuery, f format.Filters)
 		// A successful conversation narrowing gives metadata selection an
 		// indexed entry point. Without it, even a metadata-only scan may
 		// visit the entire corpus before applying kind/time filters.
-		if !unindexed && !gq.Fixed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
+		if !unindexed && len(narrowedConversations) > 0 && grepMetadataUseful(f) {
 			startupStage = "planning text candidates"
 			left := time.Until(deadline)
 			if left <= 0 {
