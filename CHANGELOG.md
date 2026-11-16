@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/flopwire/flopwire/compare/v0.4.2...v0.4.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **search:** apply metadata probes to fixed-string grep ([#465](https://github.com/flopwire/flopwire/issues/465)) ([05ab1f7](https://github.com/flopwire/flopwire/commit/05ab1f7bb5ec3841e5127f34518eea036fabcae9))
+
 ## [0.4.2](https://github.com/flopwire/flopwire/compare/v0.4.1...v0.4.2) (2026-11-14)
 
 
