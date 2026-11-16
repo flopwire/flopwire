@@ -187,7 +187,7 @@ func TestGrepFilteredRarePredicatesKeepGIN(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, `ANALYZE messages`); err != nil {
 		t.Fatal(err)
 	}
-	for _, pattern := range []string{"zebracorn", "rarealpha|rarebeta"} {
+	for _, query := range []format.GrepQuery{{Pattern: "zebracorn"}, {Pattern: "zebracorn", Fixed: true}, {Pattern: "rarealpha|rarebeta"}} {
 		tr := &filteredGrepTrace{}
 		cfg := s.Pool.Config()
 		cfg.ConnConfig.Tracer = tr
@@ -197,7 +197,7 @@ func TestGrepFilteredRarePredicatesKeepGIN(t *testing.T) {
 		}
 		store := &Store{Pool: pool}
 		f := format.Filters{Agent: "claude", Kinds: []string{"assistant"}, Since: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), Sort: format.SortOldest}
-		page, err := store.Grep(ctx, format.GrepQuery{Pattern: pattern}, f)
+		page, err := store.Grep(ctx, query, f)
 		pool.Close()
 		if err != nil || page.Truncated || page.Total != 1 {
 			t.Fatalf("rare old match: %+v %v", page, err)
@@ -262,15 +262,20 @@ func TestGrepFilteredAdaptivePathUsesPrimaryKeyProbes(t *testing.T) {
 	}
 	defer pool.Close()
 	store := &Store{Pool: pool}
-	page, err := store.Grep(ctx, format.GrepQuery{Pattern: "literalmarker", Limit: 500}, format.Filters{Agent: "claude", Kinds: []string{"assistant"}})
-	if err != nil || page.Truncated || !page.Exact || page.Total != 10 {
-		t.Fatalf("adaptive result: %+v %v", page, err)
-	}
-	if !tr.metadata || !tr.filtered {
-		t.Fatalf("production-shaped query did not use adaptive path: metadata=%v filtered=%v", tr.metadata, tr.filtered)
+	// Fixed strings and their equivalent regex must both avoid globally
+	// rechecking tool bodies that the metadata filters exclude.
+	for _, fixed := range []bool{false, true} {
+		tr.metadata, tr.filtered = false, false
+		page, err := store.Grep(ctx, format.GrepQuery{Pattern: "literalmarker", Fixed: fixed, Limit: 500}, format.Filters{Agent: "claude", Kinds: []string{"assistant"}})
+		if err != nil || page.Truncated || !page.Exact || page.Total != 10 {
+			t.Fatalf("adaptive result fixed=%v: %+v %v", fixed, page, err)
+		}
+		if !tr.metadata || !tr.filtered {
+			t.Fatalf("production-shaped query fixed=%v did not use adaptive path: metadata=%v filtered=%v", fixed, tr.metadata, tr.filtered)
+		}
 	}
 	tr.metadata, tr.filtered = false, false
-	page, err = store.Grep(ctx, format.GrepQuery{Pattern: "literalmarker", Limit: 500}, format.Filters{Agent: "claude", Kinds: []string{"missing"}})
+	page, err := store.Grep(ctx, format.GrepQuery{Pattern: "literalmarker", Limit: 500}, format.Filters{Agent: "claude", Kinds: []string{"missing"}})
 	if err != nil || page.Truncated || !page.Exact || page.Total != 0 || !tr.metadata || tr.filtered {
 		t.Fatalf("empty eligible adaptive cohort: %+v %v metadata=%v filtered=%v", page, err, tr.metadata, tr.filtered)
 	}
