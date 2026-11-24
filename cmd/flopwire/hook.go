@@ -1,7 +1,8 @@
 package main
 
-// `flopwire hook` is the one command harness hooks run (Claude Code, Codex,
-// Devin CLI), and the one the opencode plugin runs (hook_opencode.go). It reads the hook's JSON on stdin and, by hook_event_name:
+// `flopwire hook` runs harness hooks for Claude Code, Codex, Devin CLI, and
+// Google Antigravity CLI. The opencode plugin also invokes it (hook_opencode.go).
+// It reads the hook JSON on stdin and, by event:
 //
 //	SessionStart, UserPromptSubmit,  pending messages, after the standing
 //	PostToolUse                      instruction while the session is owed it
@@ -22,10 +23,11 @@ package main
 // at the session's next hook, marked redelivery="true", once the lease
 // ends (devicebus.LeaseFor). A hook older than hookLate takes nothing and
 // confirms nothing: its harness may have stopped waiting for it.
-// Messages print as Claude-format hook JSON, which all three harnesses
-// take for these events:
+// Claude Code, Codex, and Devin use Claude-format hook JSON:
 //
 //	{"hookSpecificOutput":{"hookEventName":EVENT,"additionalContext":TEXT}}
+//
+// Antigravity takes system-message steps before invocation (hook_antigravity.go).
 //
 // It never fails a harness turn: it exits 0 with nothing on stdout when
 // there is nothing to deliver, the agent is not running or slower than

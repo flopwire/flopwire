@@ -34,10 +34,14 @@ package agent
 //     sessions ended, and the agent removes a dead pid's file. While the plugin is installed (the directory
 //     exists), an opencode session is live only on that evidence. Busy or
 //     idle is the session's last plugin event (hookTurns).
+//   - Antigravity CLI: a running agy process keeps the conversation's
+//     presence lock open. The file persists after agy exits, so only an
+//     observed holder counts. Busy or idle comes from invocation and
+//     fully idle Stop hook events (hookTurns).
 //
 // A session that ended is not live (devicebus.Observe, End): its
 // registry entry names a process that is gone (a Claude session file of a
-// dead or reused pid, a released Codex writer lock, a Devin lock of a dead
+// dead or reused pid, a released writer lock, a Devin lock of a dead
 // or non-devin pid), an entry it had is missing for a second, or its
 // SessionEnd hook ran. Idleness never ends a session.
 //

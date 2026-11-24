@@ -29,6 +29,17 @@ func antigravityLockID(dir, path string) string {
 	return id
 }
 
+func (d *Detector) antigravityBrain(env func(string) string) string {
+	root := env("FLOPWIRE_ANTIGRAVITY_ROOT")
+	if root == "" && d.Home != "" {
+		root = filepath.Join(d.Home, ".gemini", "antigravity-cli", "brain")
+	}
+	if !filepath.IsAbs(root) {
+		return ""
+	}
+	return root
+}
+
 func antigravityPresenceDir(brain string) string {
 	dir := filepath.Join(filepath.Dir(brain), "presence")
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
@@ -52,6 +63,9 @@ type AntigravityPresence struct {
 // immediate refresh. The short cache avoids spawning lsof on every agent
 // presence poll and bounds lag when a running agy changes conversations.
 func (p *AntigravityPresence) Holders(ctx context.Context, brain string) (map[string]int, bool) {
+	if st, err := os.Stat(brain); err != nil || !st.IsDir() {
+		return nil, false
+	}
 	dir := antigravityPresenceDir(brain)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, false

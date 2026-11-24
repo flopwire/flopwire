@@ -80,7 +80,7 @@ func (a *Agent) watchAntigravity(now time.Time, add func(string)) {
 	}
 	var recent []conversationDir
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || antigravity.SessionID(antigravityPath(root, entry.Name())) == "" {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
@@ -145,11 +145,10 @@ func (a *Agent) antigravityPlacementReady(id string) bool {
 	a.mu.Lock()
 	catalog := a.agyCatalog
 	a.mu.Unlock()
-	_, ready := catalog.workspaces(id)
-	if _, listed := catalog.rows[id]; ready && !listed {
-		// A workstation with no vendor metadata uses the ordinary
-		// unplaceable policy. A previously catalogued session needs
-		// fresh metadata to keep authorizing its old placement.
+	dirs, ready := catalog.workspaces(id)
+	if ready && len(dirs) == 0 {
+		// A session that never had a placement uses the unplaceable
+		// policy. A prior placement needs fresh workspace evidence.
 		p, _ := a.storedPlace(placeKey{transcript.AgentAntigravity, id})
 		return p.pl.Cwd == ""
 	}

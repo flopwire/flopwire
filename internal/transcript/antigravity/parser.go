@@ -37,9 +37,8 @@ func SessionID(path string) string {
 type Parser struct {
 	Caps  map[transcript.Kind]transcript.CapConfig
 	Lines transcript.LineReaderOptions
-	// CatalogPath reads device-local metadata. Archive parsers leave it empty.
-	CatalogPath string
-	// LookupMetadata overrides CatalogPath, for callers with a shared snapshot.
+	// LookupMetadata reads from the device's shared metadata snapshot.
+	// Archive parsers leave it nil.
 	LookupMetadata func(context.Context, string) (Metadata, error)
 }
 
@@ -104,8 +103,7 @@ func (p *Parser) Parse(ctx context.Context, in transcript.Input, cur transcript.
 	metadata := Metadata{}
 	if p.LookupMetadata != nil {
 		metadata, _ = p.LookupMetadata(ctx, id)
-	} else if p.CatalogPath != "" {
-		metadata, _ = ReadMetadata(ctx, p.CatalogPath, id)
+
 	}
 	conversation := func(s cursorState) error {
 		title := metadata.Title

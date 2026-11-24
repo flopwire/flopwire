@@ -155,7 +155,8 @@ func emptyIndexHint(s *localindex.Store) func(context.Context) string {
 }
 
 // cachedCaller remembers the detected session for ttl: detection may run
-// lsof, and a session changes only on /clear or restart.
+// lsof. Once Antigravity identifies a caller, recheck its lock on each
+// call because the agy process can switch conversations in place.
 func cachedCaller(detect func(context.Context) (local.Caller, bool), ttl time.Duration) func(context.Context) (local.Caller, bool) {
 	var mu sync.Mutex
 	var c local.Caller

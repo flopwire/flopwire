@@ -68,14 +68,19 @@ type Detector struct {
 	OpenFiles func(pid int) []string                         // default: lsof or /proc
 	// For Live: whether a pid runs, and the files codex processes hold
 	// open. Defaults: the OS.
-	PidAlive   func(pid int) bool
-	CodexFiles func() []string
+	PidAlive           func(pid int) bool
+	CodexFiles         func() []string
+	antigravityHolders func(context.Context, string) (map[string]int, bool)
 }
 
 // NewDetector returns a Detector over the real process and environment.
 func NewDetector() *Detector {
 	home, _ := os.UserHomeDir()
-	return &Detector{Getenv: os.Getenv, Home: home, Pid: os.Getppid(), Proc: procInfo, OpenFiles: func(pid int) []string { return openFiles(context.Background(), pid) }}
+	return &Detector{
+		Getenv: os.Getenv, Home: home, Pid: os.Getppid(), Proc: procInfo,
+		OpenFiles:          func(pid int) []string { return openFiles(context.Background(), pid) },
+		antigravityHolders: new(AntigravityPresence).Holders,
+	}
 }
 
 var rolloutRe = regexp.MustCompile(`rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
@@ -112,11 +117,8 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 			if d.OpenFiles == nil {
 				return Caller{}, false
 			}
-			brain := env("FLOPWIRE_ANTIGRAVITY_ROOT")
-			if brain == "" && d.Home != "" {
-				brain = filepath.Join(d.Home, ".gemini", "antigravity-cli", "brain")
-			}
-			if brain == "-" || !filepath.IsAbs(brain) {
+			brain := d.antigravityBrain(env)
+			if brain == "" {
 				return Caller{}, false
 			}
 			dir := antigravityPresenceDir(brain)

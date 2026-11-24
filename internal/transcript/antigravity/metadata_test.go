@@ -19,9 +19,9 @@ func TestReadMetadata(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cache, "conversation_metadata.json"), []byte(cacheJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	meta, err := ReadMetadata(t.Context(), catalog, "cached")
-	if err != nil || meta.Cwd != "/cached" {
-		t.Fatalf("cache fallback before DB exists = %+v, %v", meta, err)
+	fallback, err := ReadAllMetadata(t.Context(), catalog)
+	if err != nil || fallback["cached"].Cwd != "/cached" {
+		t.Fatalf("cache fallback before DB exists = %+v, %v", fallback, err)
 	}
 	if _, err := os.Stat(catalog); !os.IsNotExist(err) {
 		t.Fatalf("read created the SQLite file: %v", err)
@@ -53,19 +53,8 @@ func TestReadMetadata(t *testing.T) {
 	}
 
 	want := Metadata{Cwd: "/workspace one", OtherCwds: []string{"/workspace/two"}, ParentSessionID: "parent", Depth: 2, Title: "Current"}
-	got, err := ReadMetadata(t.Context(), catalog, "database")
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("catalog = %+v, %v, want %+v", got, err, want)
-	}
-	got, err = ReadMetadata(t.Context(), catalog, "cached")
-	if err != nil || !reflect.DeepEqual(got, meta) {
-		t.Fatalf("missing row fallback = %+v, %v, want %+v", got, err, meta)
-	}
-	if got, err := ReadMetadata(t.Context(), catalog, "invalid"); err == nil || got.Cwd != "" || !got.Invalid {
-		t.Fatalf("invalid workspace produced placement %+v and error %v", got, err)
-	}
 	all, err := ReadAllMetadata(t.Context(), catalog)
-	if err != nil || len(all) != 9 || !all["invalid"].Invalid || !reflect.DeepEqual(all["database"], want) || !reflect.DeepEqual(all["cached"], meta) {
+	if err != nil || len(all) != 9 || !all["invalid"].Invalid || !reflect.DeepEqual(all["database"], want) || !reflect.DeepEqual(all["cached"], fallback["cached"]) {
 		t.Fatalf("catalog snapshot = %+v, %v", all, err)
 	}
 	if row := all["null-title"]; row.Invalid || row.Cwd != "/workspace" || row.Title != "" {

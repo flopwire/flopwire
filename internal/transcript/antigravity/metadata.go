@@ -26,30 +26,9 @@ type Metadata struct {
 	Invalid         bool // The recorded workspace or lineage could not be validated.
 }
 
-// ReadMetadata reads the SQLite summary without writing it or checkpointing its
-// WAL. If the catalog or row is missing, consult Antigravity's metadata cache.
-func ReadMetadata(ctx context.Context, catalogPath, sessionID string) (Metadata, error) {
-	if catalogPath == "" {
-		return Metadata{}, nil
-	}
-	db, err := openCatalog(catalogPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return cachedMetadata(catalogPath, sessionID)
-	}
-	if err != nil {
-		return Metadata{}, err
-	}
-	defer db.Close()
-
-	_, meta, err := scanCatalogMetadata(db.QueryRowContext(ctx, catalogSelect+` WHERE conversation_id = ?`, sessionID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return cachedMetadata(catalogPath, sessionID)
-	}
-	return meta, err
-}
-
-// ReadAllMetadata returns a catalog snapshot. Invalid workspace metadata
-// leaves the corresponding session unplaced, even if the cache has a copy.
+// ReadAllMetadata reads the SQLite catalog without writing it or checkpointing
+// its WAL. The cache supplies sessions that have no SQLite row. Invalid
+// authoritative rows stay unplaced.
 func ReadAllMetadata(ctx context.Context, catalogPath string) (map[string]Metadata, error) {
 	if catalogPath == "" {
 		return nil, nil
@@ -100,14 +79,14 @@ func ReadAllMetadata(ctx context.Context, catalogPath string) (map[string]Metada
 // Bound the columns returned to Go. A title is descriptive, while a missing
 // workspace or lineage field makes the catalog row unsafe for placement.
 const catalogSelect = `SELECT
-	CASE WHEN length(CAST(conversation_id AS BLOB)) <= 128 THEN conversation_id END,
-	CASE WHEN length(CAST(workspace_uris AS BLOB)) <= 1048576 THEN workspace_uris END,
-	CASE WHEN length(CAST(title AS BLOB)) <= 65536 THEN title END,
-	CASE WHEN length(CAST(parent_conversation_id AS BLOB)) <= 128 THEN parent_conversation_id END,
+	CASE WHEN octet_length(conversation_id) <= 128 THEN conversation_id END,
+	CASE WHEN octet_length(workspace_uris) <= 1048576 THEN workspace_uris END,
+	CASE WHEN octet_length(title) <= 65536 THEN title END,
+	CASE WHEN octet_length(parent_conversation_id) <= 128 THEN parent_conversation_id END,
 	CASE WHEN typeof(nesting_depth) = 'integer' THEN nesting_depth END
 	FROM conversation_summaries`
 
-func scanCatalogMetadata(row interface{ Scan(...any) error }) (string, Metadata, error) {
+func scanCatalogMetadata(row *sql.Rows) (string, Metadata, error) {
 	var id, workspaceJSON, title, parent sql.NullString
 	var depth sql.NullInt64
 	if err := row.Scan(&id, &workspaceJSON, &title, &parent, &depth); err != nil {
@@ -144,15 +123,6 @@ func openCatalog(path string) (*sql.DB, error) {
 	fsprobe.Note(fsprobe.OpOpen, abs)
 	u := url.URL{Scheme: "file", Path: abs, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(1000)"}
 	return sql.Open("sqlite", u.String())
-}
-
-func cachedMetadata(catalogPath, sessionID string) (Metadata, error) {
-	metadata, err := readMetadataCache(catalogPath)
-	meta := metadata[sessionID]
-	if err == nil && meta.Invalid {
-		err = errors.New("invalid Antigravity workspace or lineage metadata")
-	}
-	return meta, err
 }
 
 func readMetadataCache(catalogPath string) (map[string]Metadata, error) {

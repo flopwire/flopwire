@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -62,5 +63,39 @@ func TestAntigravityHoldersFromFiles(t *testing.T) {
 	holders, ok := antigravityHoldersFromFiles(dir, []byte(raw))
 	if !ok || len(holders) != 2 || holders[agySession] != 17 || holders[agySecond] != 0 {
 		t.Fatalf("holders = %v, read = %v", holders, ok)
+	}
+}
+
+func TestAntigravityLive(t *testing.T) {
+	home := t.TempDir()
+	expected := filepath.Join(home, ".gemini", "antigravity-cli", "brain")
+	root, known, calls := "", true, 0
+	d := Detector{
+		Home: home,
+		Getenv: func(key string) string {
+			if key == "FLOPWIRE_ANTIGRAVITY_ROOT" {
+				return root
+			}
+			return ""
+		},
+		antigravityHolders: func(_ context.Context, path string) (map[string]int, bool) {
+			calls++
+			if path != expected {
+				t.Fatalf("brain = %q, want %q", path, expected)
+			}
+			return map[string]int{agySession: 47, agySecond: 0}, known
+		},
+	}
+	live := d.Live(false)
+	if _, ok := live[agySession]; !ok || len(live) != 1 {
+		t.Fatalf("live sessions = %v", live)
+	}
+	known = false
+	if live := d.Live(false); len(live) != 0 {
+		t.Fatalf("unavailable scan reported live sessions: %v", live)
+	}
+	root = "-"
+	if live := d.Live(false); len(live) != 0 || calls != 2 {
+		t.Fatalf("disabled detector reported=%v and called scanner %d times", live, calls)
 	}
 }

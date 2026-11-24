@@ -126,12 +126,18 @@ func TestAntigravityCatalogTightensUnchangedTranscript(t *testing.T) {
 	if err != nil || auth == nil {
 		t.Fatalf("public Antigravity capture authorization = %v, %v", auth, err)
 	}
-	writeAntigravityWorkspace(t, f.home, f.path("public"), blocked)
+	writeAntigravityWorkspace(t, f.home)
 	err = auth.Check(ctx)
 	auth.Release()
 	if err == nil {
 		t.Fatal("stale workspace catalog authorized capture")
 	}
+	f.once()
+	if f.a.allowUpload(spec) {
+		t.Fatal("vacated workspace metadata retained the previous capture authorization")
+	}
+
+	writeAntigravityWorkspace(t, f.home, f.path("public"), blocked)
 	f.once()
 	if got := f.find("Antigravity canonical test prompt", false); len(got) != 0 {
 		t.Fatalf("Antigravity matches after deny = %d, want 0", len(got))
