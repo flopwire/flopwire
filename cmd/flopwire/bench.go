@@ -311,7 +311,7 @@ func (b *bench) agentEnv() []string {
 		"CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"), "CODEX_HOME="+filepath.Join(home, ".codex"),
 		"FLOPWIRE_CONFIG="+filepath.Join(home, ".config", "flopwire", "config.json"),
 		"FLOPWIRE_CLOUD=off", "FLOPWIRE_TOKEN=", "FLOPWIRE_SERVER=", "FLOPWIRE_FINGERPRINT=",
-		"FLOPWIRE_OPENCODE_DB=-", "OPENCODE_DB=-", "FLOPWIRE_INDEX=")
+		"FLOPWIRE_OPENCODE_DB=-", "OPENCODE_DB=-", "FLOPWIRE_ANTIGRAVITY_ROOT=-", "FLOPWIRE_INDEX=")
 }
 
 func (b *bench) index(ctx context.Context, idleAfter time.Duration) (*indexResult, error) {

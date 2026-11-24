@@ -234,7 +234,7 @@ def main():
     env.update(HOME=str(home), CODEX_HOME=str(codex), XDG_CONFIG_HOME=str(home / ".config"),
                XDG_CACHE_HOME=str(home / ".cache"), XDG_DATA_HOME=str(home / ".local/share"),
                FLOPWIRE_CONFIG=str(root / "config.json"), FLOPWIRE_INDEX=str(root / "index.db"),
-               FLOPWIRE_SOCKET=str(root / "agent.sock"), FLOPWIRE_CLOUD="off")
+               FLOPWIRE_SOCKET=str(root / "agent.sock"), FLOPWIRE_CLOUD="off", FLOPWIRE_ANTIGRAVITY_ROOT="-")
     binary = str(args.flopwire.resolve())
     marker = "fwqual" + secrets.token_hex(6)
     answer = "decision-" + secrets.token_hex(8)

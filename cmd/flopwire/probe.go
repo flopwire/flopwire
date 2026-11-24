@@ -524,6 +524,7 @@ func (p *prober) startAgent(ctx context.Context) (stop func(), err error) {
 		"--codex-home", filepath.Join(p.dir, "codex", "home"),
 		"--devin-db", filepath.Join(p.dir, "devin", "home", ".local", "share", "devin", "cli", "sessions.db"),
 		"--opencode-db", p.opencodeDB(),
+		"--antigravity-root", "-",
 		"--sweep", "5s")
 	cmd.Env = append(probeEnv(os.Environ(), false),
 		"FLOPWIRE_CONFIG="+filepath.Join(p.dir, "flopwire", "config.json"),
