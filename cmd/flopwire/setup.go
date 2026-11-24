@@ -52,11 +52,11 @@ const setupHelp = `flopwire setup — install Flopwire into the coding-agent har
   flopwire setup --remove   uninstall the plugin through each harness's own command
   flopwire setup --text     a readable report instead of JSON
 
-For each harness it finds, setup runs that harness's own plugin commands. It
-never edits the harness's settings files. Harnesses: Claude Code (claude),
-Codex (codex), Devin CLI (devin) and opencode. Devin loads the Claude Code
-plugin; setup installs it with devin plugins install --local, on this
-machine only. opencode loads every file in its global plugin directory:
+Setup uses native plugin commands for Claude Code (claude), Codex (codex),
+Devin CLI (devin) and Antigravity CLI (antigravity). For Devin, it installs
+the Claude Code plugin on this machine using devin plugins install --local.
+For Antigravity, it installs the bundled plugin using agy plugin install.
+opencode loads every file in its global plugin directory:
 setup writes the plugin there (~/.config/opencode/plugins/flopwire.js) and
 --remove deletes it.
 
@@ -86,7 +86,7 @@ Flags
                      (default $FLOPWIRE_PLUGIN_SOURCE, else flopwire/flopwire)
   --scope SCOPE      Claude Code install scope: user (default), project or
                      local; project and local apply to the current directory.
-                     Codex, Devin and opencode install for the user only
+                     Codex, Devin, opencode and Antigravity install for the user only
 
 JSON: {"kind":"setup","mode","ok","flopwire":{"path","version","note","recorded"},"agent":{"running",
 "socket"},"server":{"configured","url","credential","messaging","warning","differs"},"search_scope":{"kind","server"},"index":{"path","state","error"},"harnesses":[{"harness","detected","command",
@@ -303,6 +303,7 @@ var setupHarnesses = []setupHarness{
 	{name: "codex", apply: setupCodex},
 	{name: "devin", apply: setupDevin},
 	{name: "opencode", apply: setupOpencode},
+	{name: "antigravity", apply: setupAntigravity},
 }
 
 func setupMain(ctx context.Context, args []string) error {

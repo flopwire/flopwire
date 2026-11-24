@@ -7,6 +7,7 @@ import (
 
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/antigravity"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
@@ -24,6 +25,8 @@ func serverParserVersion(agent string) string {
 		return devin.Name
 	case transcript.AgentOpencode:
 		return opencode.Name
+	case transcript.AgentAntigravity:
+		return antigravity.ParserName
 	}
 	return ""
 }
@@ -31,16 +34,16 @@ func serverParserVersion(agent string) string {
 // The applied stamps are the durable work state. Minor releases do not
 // change the key; extraction policy or redaction changes still require work.
 const staleParseSQL = `s.tombstoned_at IS NULL AND s.storage_kind<>'companion'
- AND s.agent IN ('claude','codex','devin','opencode') AND (
+ AND s.agent IN ('claude','codex','devin','opencode','antigravity') AND (
  regexp_replace(p.applied_parser,'@([0-9]+)\.[0-9]+','@\1','g') IS DISTINCT FROM
- CASE WHEN s.storage_kind='cass_export' THEN 'cass@1' ELSE CASE s.agent WHEN 'claude' THEN $1 WHEN 'codex' THEN $2 WHEN 'devin' THEN $3 ELSE $7 END END
+ CASE WHEN s.storage_kind='cass_export' THEN 'cass@1' ELSE CASE s.agent WHEN 'claude' THEN $1 WHEN 'codex' THEN $2 WHEN 'devin' THEN $3 WHEN 'opencode' THEN $7 WHEN 'antigravity' THEN $8 END END
  OR p.applied_redaction_rules IS DISTINCT FROM $4
  OR (s.storage_kind<>'cass_export' AND s.agent IN ('claude','codex') AND (
  regexp_replace(p.extraction_report->>'contract','@([0-9]+)\.[0-9]+','@\1','g') IS DISTINCT FROM CASE s.agent WHEN 'claude' THEN $5 ELSE $6 END
  OR p.extraction_report->'report'->>'version' IS DISTINCT FROM '1')))`
 
 func reparseArgs() []any {
-	return []any{transcript.ReparseKey(claude.ParserName), transcript.ReparseKey(codex.Name), transcript.ReparseKey(devin.Name), redact.RulesVersion, serverExtractionContract("claude"), serverExtractionContract("codex"), transcript.ReparseKey(opencode.Name)}
+	return []any{transcript.ReparseKey(claude.ParserName), transcript.ReparseKey(codex.Name), transcript.ReparseKey(devin.Name), redact.RulesVersion, serverExtractionContract("claude"), serverExtractionContract("codex"), transcript.ReparseKey(opencode.Name), transcript.ReparseKey(antigravity.ParserName)}
 }
 
 // refreshPickSQL selects idle stale work: not live ingestion, and not in
@@ -88,7 +91,7 @@ func (q *Queue) nextRefresh(ctx context.Context) (string, error) {
 		}
 		id := q.refreshBacklog[0]
 		var due bool
-		if err := q.Pool.QueryRow(ctx, `SELECT EXISTS(`+refreshPickSQL+` AND s.id=$8::uuid)`, append(args, id)...).Scan(&due); err != nil {
+		if err := q.Pool.QueryRow(ctx, `SELECT EXISTS(`+refreshPickSQL+` AND s.id=$9::uuid)`, append(args, id)...).Scan(&due); err != nil {
 			return "", err
 		}
 		q.refreshBacklog = q.refreshBacklog[1:]
@@ -107,7 +110,7 @@ func (q *Queue) RefreshSession(ctx context.Context, conversation string) {
 	defer cancel()
 	tag, err := q.Pool.Exec(ctx, `UPDATE source_parse_state p SET refresh_requested_at=now()
  FROM sources s WHERE s.id=p.source_id AND `+staleParseSQL+`
- AND EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=$8 AND m.source_id=s.id)`, args...)
+ AND EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=$9 AND m.source_id=s.id)`, args...)
 	if err != nil {
 		q.Log.Warn("ingest: prioritizing stale session refresh", "error", err)
 	} else if tag.RowsAffected() > 0 {

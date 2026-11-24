@@ -41,6 +41,7 @@ func TestMain(m *testing.M) {
 	// An agent a test runs never reaches the vendors' cloud sessions with
 	// the developer's own logins.
 	os.Setenv("FLOPWIRE_CLOUD", "off")
+	os.Setenv("FLOPWIRE_ANTIGRAVITY_ROOT", "-")
 	os.Exit(m.Run())
 }
 

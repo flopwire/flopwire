@@ -37,6 +37,7 @@ import (
 	"github.com/flopwire/flopwire/internal/client"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // busStyle picks the output form (JSON or text), how hints read (CLI
@@ -281,8 +282,8 @@ func (c *busClient) callRetry(ctx context.Context, req agent.Request) (agent.Res
 // errNoCaller is the refusal of a send (and inbox) that cannot name the
 // calling session.
 func errNoCaller(verb string, st busStyle) *busErr {
-	e := &busErr{Code: codeNoCaller, Detail: verb + ": cannot identify the calling session (no Claude Code session file, no Codex thread id, no Devin session lock, no FLOPWIRE_SESSION_ID), and messages always name the session they come from or belong to",
-		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex, devin or opencode) to your session's id",
+	e := &busErr{Code: codeNoCaller, Detail: verb + ": cannot identify the calling session (no Claude Code session file, no Codex thread id, no Devin or Antigravity session lock, no FLOPWIRE_SESSION_ID), and messages always name the session they come from or belong to",
+		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex, devin, opencode or antigravity) to your session's id",
 		Example: "FLOPWIRE_SESSION_ID=0b7e2c1a-… FLOPWIRE_AGENT=claude flopwire " + verb + " …"}
 	if st.MCP {
 		e.Fix = "set FLOPWIRE_SESSION_ID and FLOPWIRE_AGENT in this MCP server's environment, or run flopwire " + verb + " from your shell tool instead"
@@ -549,13 +550,14 @@ func plural(n int, one, many string) string {
 
 // Arrival is when a sent message reaches its recipient.
 const (
-	arriveNextToolCall = "next_tool_call"   // a busy session: at its next tool call
-	arriveNextPrompt   = "next_prompt"      // an idle session: at its next prompt/resumption hook
-	arriveAccepted     = "when_accepted"    // held until the recipient's human accepts the sender
-	arriveNextSession  = "next_session"     // @user with no live session: their next session
-	arriveIfResumed    = "only_if_resumed"  // a session that is not running
-	arriveWhenRunning  = "when_running"     // an idle cloud session: pushed when it next runs a turn
-	arriveRecorded     = "already_recorded" // an explicit retry returned its existing successor
+	arriveNextToolCall        = "next_tool_call"
+	arriveNextModelInvocation = "next_model_invocation" // a busy Antigravity session
+	arriveNextPrompt          = "next_prompt"           // an idle session: at its next prompt/resumption hook
+	arriveAccepted            = "when_accepted"         // held until the recipient's human accepts the sender
+	arriveNextSession         = "next_session"          // @user with no live session: their next session
+	arriveIfResumed           = "only_if_resumed"       // a session that is not running
+	arriveWhenRunning         = "when_running"          // an idle cloud session: pushed when it next runs a turn
+	arriveRecorded            = "already_recorded"      // an explicit retry returned its existing successor
 )
 
 // sendJSON is send's receipt: busproto.SendResponse (id, thread_id,
@@ -660,6 +662,9 @@ func arrival(r busproto.SendResponse) string {
 	case r.Admission == busproto.AdmissionNextResume:
 		return arriveIfResumed
 	case r.To.Live && r.To.Busy:
+		if r.To.Agent == string(transcript.AgentAntigravity) {
+			return arriveNextModelInvocation
+		}
 		return arriveNextToolCall
 	case r.To.Live && r.To.Cloud:
 		return arriveWhenRunning
@@ -674,11 +679,11 @@ func arrival(r busproto.SendResponse) string {
 // What a requester does until the reply comes (issue #83). The outcome
 // already says when the request arrives and why; next says only what
 // that means for the reply, without repeating it. Both are true in every
-// harness: a reply is delivered at the sender's next tool call or with
-// a prompt/resumption hook, never by starting a turn.
+// harness: a reply is delivered by a hook during a turn or as the
+// session resumes.
 const (
 	// The recipient is busy: a reply may come within this turn.
-	nextBusy = "The reply appears in your context at your next tool call after it is sent; if your turn ends first, it waits until your session resumes. Keep working, or wait briefly if you need it to continue."
+	nextBusy = "The reply appears in your context at your next delivery hook after it is sent; if your turn ends first, it waits until your session resumes. Keep working, or wait briefly if you need it to continue."
 	// Idle, held, queued for @user, or not running: no reply until a
 	// session resumes.
 	nextNoWait = "Do not wait for the reply; tell your user you asked."
@@ -695,10 +700,22 @@ func sendNext(r busproto.SendResponse) string {
 	if r.To.Cloud {
 		return nextCloud
 	}
-	if arrival(r) == arriveNextToolCall || r.WakeRequested {
+	if arrivesDuringTurn(r) {
 		return nextBusy
 	}
 	return nextNoWait
+}
+
+func arrivesDuringTurn(r busproto.SendResponse) bool {
+	a := arrival(r)
+	return a == arriveNextToolCall || a == arriveNextModelInvocation || r.WakeRequested
+}
+
+func busyDeliveryBoundary(agent string) string {
+	if agent == string(transcript.AgentAntigravity) {
+		return "next model invocation"
+	}
+	return "next tool call"
 }
 
 // expiry is a time as the outcome line prints it: UTC to the minute.
@@ -751,7 +768,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		case r.WakeRequested:
 			line = head + ": native wake requested; may start a new turn and consume usage even if currently busy; submission, turn start and delivery are not confirmed"
 		case to.Live && to.Busy:
-			line = head + ": busy, arrives at its next tool call"
+			line = head + ": busy, arrives at its " + busyDeliveryBoundary(to.Agent)
 		case to.Live:
 			line = head + ": idle, arrives when its session resumes"
 		default:
@@ -765,7 +782,7 @@ func sendOutcome(r busproto.SendResponse) (out string) {
 		who := "@" + shortUser(to.User)
 		switch {
 		case to.Live && to.Busy:
-			line = fmt.Sprintf("sent %s to %s: a busy session%s takes it, arrives at its next tool call", r.ID, who, on)
+			line = fmt.Sprintf("sent %s to %s: a busy session%s takes it, arrives at its %s", r.ID, who, on, busyDeliveryBoundary(to.Agent))
 		case to.Live:
 			line = fmt.Sprintf("sent %s to %s: an idle session%s takes it, arrives when its session resumes", r.ID, who, on)
 		default:
@@ -1237,11 +1254,11 @@ func init() {
 JSON: {"kind":"peers","peers":[{"session":FULL ID,"agent","user","user_id","device",
 "repo","branch","title","busy","own","seen_at"}…],"total":N,"more":bool,"limit":N,
 "caller":{"session","agent"},"hint"}. Your own session (caller) is left out. busy: a turn
-is running, so a message arrives at its next tool call; idle: it waits for that
+is running, so a message arrives at its next delivery hook; idle: it waits for that
 session's human. more=true: the limit cut the list; hint says how to narrow it.
 --text: SESSION  user  agent  live busy|idle  repo@branch  "title"
 
-Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin|opencode
+Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin|opencode|antigravity
 Output   --limit N (50, max 500)  --text  --max-bytes N (text)  (--json: the default)
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example",…}}; exit 1
 Socket   --socket PATH (default <config dir>/agent.sock: the device agent answers)
@@ -1265,14 +1282,14 @@ Omit it for updates or acknowledgments that can wait. It never enables wake on r
 --intent  request: expects a reply; inform (default): no reply; done: closes the
           thread and must not be answered.
 Do not poll peers or send "are you done?": the receipt says when the message arrives.
-A reply arrives in your own context through the flopwire hook: inside your running turn
-at the next tool call, or with your next prompt or when your session resumes. Never ask a peer to do
+The flopwire hook delivers replies into your context during a running turn,
+with your next prompt, or when your session resumes. Never ask a peer to do
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
 "queued"|"held" (new sends; replay reports current delivery state),"to":{"session","agent","user","repo","branch","live","busy","cloud"},
 "sender","intent","sent","expires_at","redactions","wake_requested","from":{"session","agent"},
-"arrives":"next_tool_call"|"next_prompt"|"when_accepted"|"next_session"|
+"arrives":"next_tool_call"|"next_model_invocation"|"next_prompt"|"when_accepted"|"next_session"|
 "only_if_resumed"|"when_running"|"wake_requested"|"already_recorded","retry_of","replayed","reason","outcome":TEXT,"next":TEXT (request only: what to do until the
 reply)}. A refusal is {"kind":"error","error":{"code":
 "device_rate"|"user_rate"|"duplicate"|"recipient_full"|
@@ -1309,8 +1326,8 @@ acted on it. A received message whose reply_to names yours is a reply; inspect i
 pass next as --cursor.
 --text: ID  received|sent  TIME  from|to WHO  intent  state (read: with its time), then
 the text indented (a list shows first lines; --thread shows whole texts).
-Received messages arrive in your context through the flopwire hook (inside a running
-turn at the next tool call, or with the next prompt or session resumption); use inbox to check a sent
+The flopwire hook delivers messages into your context during a running turn,
+with the next prompt, or when the session resumes. Use inbox to check a sent
 message's state or re-read a thread, or where the hook is not set up.
 
 Output   --limit N (20, max 200)  --cursor C (next)  --text  --max-bytes N (text)
@@ -1355,7 +1372,7 @@ func sendMCPNext(r busproto.SendResponse) string {
 	if r.Admission == busproto.AdmissionNextResume {
 		return "Continue work; this request waits for recipient resume. This receipt is not a reply."
 	}
-	if arrival(r) == arriveNextToolCall || r.WakeRequested {
+	if arrivesDuringTurn(r) {
 		return "Continue independent work; inspect any received reply for an answer. This receipt is not a reply."
 	}
 	return "Continue work and report the request's arrival condition; a reply depends on the recipient resuming."

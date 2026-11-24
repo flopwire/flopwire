@@ -34,10 +34,14 @@ package agent
 //     sessions ended, and the agent removes a dead pid's file. While the plugin is installed (the directory
 //     exists), an opencode session is live only on that evidence. Busy or
 //     idle is the session's last plugin event (hookTurns).
+//   - Antigravity CLI: a running agy process keeps the conversation's
+//     presence lock open. The file persists after agy exits, so only an
+//     observed holder counts. Busy or idle comes from invocation and
+//     fully idle Stop hook events (hookTurns).
 //
 // A session that ended is not live (devicebus.Observe, End): its
 // registry entry names a process that is gone (a Claude session file of a
-// dead or reused pid, a released Codex writer lock, a Devin lock of a dead
+// dead or reused pid, a released writer lock, a Devin lock of a dead
 // or non-devin pid), an entry it had is missing for a second, or its
 // SessionEnd hook ran. Idleness never ends a session.
 //
@@ -87,7 +91,7 @@ type harnessLive struct {
 const procStartLayout = time.ANSIC
 
 // registries reads the harness registries.
-func (a *Agent) registries() harnessLive {
+func (a *Agent) registries(ctx context.Context) harnessLive {
 	h := harnessLive{at: map[string]time.Time{}, busy: map[string]bool{},
 		reg: devicebus.Registry{Held: map[devicebus.Ref]devicebus.Holder{}, Read: map[string]bool{}}}
 	add := func(id string, at time.Time) {
@@ -167,6 +171,26 @@ func (a *Agent) registries() harnessLive {
 	}
 	if a.devin.path != "" {
 		a.devinRegistry(&h, add, dirRead)
+	}
+	if a.cfg.AntigravityRoot != "" {
+		agy := string(transcript.AgentAntigravity)
+		holders, read := a.antigravityPresence.Holders(ctx, a.cfg.AntigravityRoot)
+		h.reg.Read[agy] = read
+		if read {
+			for id, pid := range holders {
+				ref := devicebus.Ref{Agent: agy, Session: id}
+				var start time.Time
+				if pid > 1 && filepath.Base(a.procName(pid)) == "agy" {
+					start, _ = a.procStart(pid)
+				}
+				if start.IsZero() {
+					h.reg.Unknown = append(h.reg.Unknown, ref)
+					continue
+				}
+				add(id, time.Time{})
+				h.reg.Held[ref] = devicebus.Holder{ID: fmt.Sprintf("pid:%d:%d", pid, start.UnixNano()), Start: start}
+			}
+		}
 	}
 	if dir := a.cfg.OpencodeRegistry; dir != "" && a.opencode.path != "" {
 		oc := string(transcript.AgentOpencode)
@@ -517,7 +541,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	reg := a.registries()
+	reg := a.registries(ctx)
 	// Fetch old held sessions by exact key, rather than scanning unbounded
 	// history. Uncertain locks retain the recency bound.
 	seen := map[devicebus.Ref]bool{}
@@ -556,7 +580,11 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 				continue // its lock is gone or names no running devin: ended
 			}
 		}
-		if transcript.Agent(s.Agent) == transcript.AgentOpencode && reg.reg.Read[string(transcript.AgentOpencode)] {
+		_, confirmed := reg.reg.Held[devicebus.Ref{Agent: s.Agent, Session: s.SessionID}]
+		if s.Agent == string(transcript.AgentAntigravity) && !confirmed {
+			continue // recent transcript activity alone cannot show an agy session is open
+		}
+		if s.Agent == string(transcript.AgentOpencode) && reg.reg.Read[s.Agent] {
 			if _, held := reg.at[s.SessionID]; !held {
 				continue // no running opencode with the plugin holds it
 			}
@@ -564,7 +592,6 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 		last := s.LastActive
 		info := format.ConversationInfo{SessionID: s.SessionID, LastActivityAt: &last}
 		local.MarkLive(&info, reg.at, now)
-		_, confirmed := reg.reg.Held[devicebus.Ref{Agent: s.Agent, Session: s.SessionID}]
 		if !info.Live && !confirmed {
 			continue
 		}
@@ -592,8 +619,8 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			}
 		case transcript.AgentDevin:
 			out[i].Busy = a.devinTurnBusy(ctx, s.SessionID)
-		case transcript.AgentOpencode:
-			out[i].Busy, _ = a.hookBusy(transcript.AgentOpencode, s.SessionID)
+		case transcript.AgentOpencode, transcript.AgentAntigravity:
+			out[i].Busy, _ = a.hookBusy(key.agent, s.SessionID)
 		}
 		if !out[i].Busy {
 			out[i].IdleSince = a.hookIdleSince(key)

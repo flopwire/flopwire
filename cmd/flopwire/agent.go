@@ -171,6 +171,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	desktopCodeRoot := fs.String("desktop-code-root", "", `Claude Desktop local Code metadata/scoped history container (macOS default; "-" disables); configured normal Claude root remains separate`)
 	coworkRoot := fs.String("cowork-root", "", `Cowork session container (default Claude Desktop app storage on macOS; "-" disables); shared uploads held pending server policy support`)
 	codexHome := fs.String("codex-home", "", "Codex home (default CODEX_HOME or ~/.codex)")
+	antigravityRoot := fs.String("antigravity-root", "", `Antigravity CLI brain directory (default FLOPWIRE_ANTIGRAVITY_ROOT or ~/.gemini/antigravity-cli/brain; "-" disables)`)
 	devinDB := fs.String("devin-db", "", `Devin sessions.db (default FLOPWIRE_DEVIN_DB or ~/.local/share/devin/cli/sessions.db; "-" disables)`)
 	opencodeDB := fs.String("opencode-db", "", `opencode.db (default FLOPWIRE_OPENCODE_DB, OPENCODE_DB, or opencode.db under XDG_DATA_HOME or ~/.local/share/opencode; "-" disables)`)
 	socket := fs.String("socket", "", "control socket (default <config dir>/agent.sock)")
@@ -287,7 +288,7 @@ func runAgent(ctx context.Context, args []string) (reexecLock *os.File, err erro
 	}
 	defer store.Close()
 
-	cfg := agent.Config{DeviceID: cc.DeviceID, Server: cc.Server, DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log,
+	cfg := agent.Config{DeviceID: cc.DeviceID, Server: cc.Server, DesktopCodeRoot: *desktopCodeRoot, CoworkRoot: *coworkRoot, ClaudeProjects: *claudeDir, CodexHome: *codexHome, AntigravityRoot: *antigravityRoot, DevinDB: *devinDB, OpencodeDB: *opencodeDB, Sweep: *sweep, Workers: *workers, Logger: log,
 		Version: version, ServerVersion: client.ServerVersion}
 	// Once a day the agent asks github.com for the newest release (one
 	// HEAD request, no token), so a device with no server still hears

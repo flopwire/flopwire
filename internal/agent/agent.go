@@ -48,6 +48,7 @@ import (
 	"github.com/flopwire/flopwire/internal/sqlitemem"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/antigravity"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/cowork"
@@ -75,6 +76,7 @@ type Config struct {
 	DesktopCodeRoot string // local Code metadata/scoped container; Darwin default, "-" disables
 	CoworkRoot      string // Claude Desktop Cowork container; Darwin app default, "-" disables
 	ClaudeProjects  string // default claude.ProjectsRoot (CLAUDE_CONFIG_DIR or ~/.claude/projects)
+	AntigravityRoot string // Antigravity CLI brain directory; "-" disables
 	CodexHome       string // default codex.Home() (CODEX_HOME or ~/.codex)
 	DevinDB         string // default devin.DefaultPath; "-" disables Devin
 	OpencodeDB      string // default opencode.DefaultPath; "-" disables opencode
@@ -243,6 +245,19 @@ func (c *Config) defaults() {
 	if c.Home == "" {
 		c.Home = defaultHome()
 	}
+	if c.AntigravityRoot == "" {
+		c.AntigravityRoot = os.Getenv("FLOPWIRE_ANTIGRAVITY_ROOT")
+	}
+	if c.AntigravityRoot == "" && home != "" {
+		c.AntigravityRoot = filepath.Join(home, ".gemini", "antigravity-cli", "brain")
+	}
+	if c.AntigravityRoot == "-" {
+		c.AntigravityRoot = ""
+	} else if c.AntigravityRoot != "" {
+		if root, err := filepath.Abs(c.AntigravityRoot); err == nil {
+			c.AntigravityRoot = root
+		}
+	}
 }
 
 // Agent indexes one device's transcripts. Create it with New, then call
@@ -276,6 +291,8 @@ type Agent struct {
 	coworkReconcileCursor placeKey            // fair metadata progress; guarded by mu
 	store                 *localindex.Store
 	claude                transcript.Parser
+	antigravity           transcript.Parser
+	agyCatalog            antigravityCatalog // guarded by mu
 	codex                 transcript.Parser
 	log                   *slog.Logger
 	upgradeLogged         string // the version last logged as an upgrade notice
@@ -341,10 +358,11 @@ type Agent struct {
 
 	// Process checks and the clock for presence (presence.go); tests
 	// replace them.
-	busTitles map[busTitleKey]string // busTitle's answers; guarded by mu
-	pidAlive  func(pid int) bool
-	procStart func(pid int) (time.Time, bool)
-	procName  func(pid int) string
+	busTitles           map[busTitleKey]string // busTitle's answers; guarded by mu
+	pidAlive            func(pid int) bool
+	antigravityPresence local.AntigravityPresence
+	procStart           func(pid int) (time.Time, bool)
+	procName            func(pid int) string
 	// openFiles lists the files a process has open; nil when unknown,
 	// also when ctx ends first.
 	openFiles func(ctx context.Context, pid int) []string
@@ -372,6 +390,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		wake: make(chan struct{}, 1), discovered: make(chan struct{}), pol: &policyView{},
 		places: map[placeKey]placed{}, folders: map[string]string{}, phys: map[string]string{}, wtCache: map[string]wtScan{},
 		pidAlive: processAlive, procStart: processStart, procName: local.ProcName, openFiles: local.OpenFiles, codexWriter: codexWriter, now: time.Now}
+	a.antigravity = &antigravity.Parser{Lines: transcript.LineReaderOptions{Budget: budget}, LookupMetadata: a.antigravityMetadata}
 	a.coworkParser = &claude.Parser{FS: cowork.FS{Root: cfg.CoworkRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
 	a.desktopCodeParser = &claude.Parser{FS: cowork.FS{Root: cfg.DesktopCodeRoot}, Lines: transcript.LineReaderOptions{Budget: budget}}
 	a.idle = sync.NewCond(&a.mu)
@@ -622,6 +641,7 @@ func (a *Agent) sweep(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	a.refreshAntigravityMetadata(ctx, f)
 	queued := a.merge(ctx, f, true)
 	a.stats.Sweeps.Add(1)
 	a.pollStores(ctx, false, false)
@@ -1065,6 +1085,7 @@ var testHookAfterFirstPass func()
 
 // mergeUrgent is merge for a partial pass: no retirement, urgent queue.
 func (a *Agent) mergeUrgent(ctx context.Context, f *found) {
+	a.refreshAntigravityMetadata(ctx, f)
 	a.applyStubs(ctx, f)
 	a.mu.Lock()
 	var list []*target

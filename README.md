@@ -109,9 +109,9 @@ After `flopwire setup` and a session restart, agents get:
   instructions for handling them within the session's existing permissions.
   Messages do not start a turn in an idle session.
 
-Claude Code, Codex and Devin CLI get the tools, hooks and skill through
-plugins. Codex requires one-time hook approval. opencode gets plugin tools
-and prompt guidance instead of a separate skill.
+Claude Code, Codex, Devin CLI and Google Antigravity CLI get tools, hooks
+and the messaging skill through plugins. Codex requires one-time hook
+approval. opencode gets plugin tools and prompt guidance.
 
 Search defaults to this device before enrollment and shared history after
 it. With a team server configured, history and messaging span connected
@@ -192,7 +192,7 @@ you deploy a team server.
 |---|---|
 | Search: grep, search, sessions, read, trace | [docs/search.md](docs/search.md) |
 | Messaging: peers, send, inbox, threads, accepting senders | [docs/messaging.md](docs/messaging.md) |
-| Harnesses: Claude Code, Codex, Devin, opencode, cloud | [docs/harnesses](docs/harnesses/README.md) |
+| Harnesses: Claude Code, Codex, Devin, opencode, Google Antigravity CLI, cloud | [docs/harnesses](docs/harnesses/README.md) |
 | One machine, step by step | [docs/quick-start-local.md](docs/quick-start-local.md) |
 | Device agent: run, check, recover | [docs/agent.md](docs/agent.md) |
 | Path rules | [docs/path-rules.md](docs/path-rules.md) |

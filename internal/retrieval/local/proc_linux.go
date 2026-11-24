@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 func procInfo(pid int) (int, string, bool) {
@@ -66,4 +67,47 @@ func codexOpenFiles() []string {
 func pidAlive(pid int) bool {
 	_, err := os.Stat("/proc/" + strconv.Itoa(pid))
 	return err == nil
+}
+
+// antigravityPIDs reads names only from processes owned by this user.
+func antigravityPIDs() ([]string, string, bool) {
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, "", false
+	}
+	var pids []string
+	for _, e := range ents {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 1 {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
+			continue
+		}
+		if _, name, ok := procInfo(pid); ok && name == "agy" {
+			pids = append(pids, e.Name())
+		}
+	}
+	return pids, "", true
+}
+
+func antigravityOpenHolders(ctx context.Context, dir string, pids []string) (map[string]int, bool) {
+	holders := make(map[string]int)
+	for _, p := range pids {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		pid, _ := strconv.Atoi(p)
+		files := openFiles(ctx, pid)
+		if files == nil {
+			return nil, false
+		}
+		for _, f := range files {
+			if id := antigravityLockID(dir, f); id != "" {
+				noteAntigravityHolder(holders, id, pid)
+			}
+		}
+	}
+	return holders, true
 }

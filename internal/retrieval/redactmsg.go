@@ -27,6 +27,7 @@ import (
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/store"
+	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -36,6 +37,7 @@ import (
 var beforeRedactTx func()
 
 type redactTarget struct {
+	agent                        transcript.Agent
 	id, text, sourceID, deviceID string
 	conv                         string
 	gen, off, n                  *int64
@@ -191,11 +193,15 @@ func (s *Store) redactOnce(ctx context.Context, userID, deviceID string, admin b
 		if err != nil {
 			return err
 		}
-		sp, found := redact.MaskRecord(rec, needles, from == 0)
+		maskRecord := redact.MaskRecord
+		if t.agent == transcript.AgentAntigravity {
+			maskRecord = redact.MaskAntigravityRecord
+		}
+		sp, found := maskRecord(rec, needles, from == 0)
 		if !found || len(sp) == 0 {
 			// The text was assembled by the parser, or is not in the record
 			// as written: hide the whole record's text instead.
-			sp, _ = redact.MaskRecord(rec, nil, true)
+			sp, _ = maskRecord(rec, nil, true)
 			res.Fallbacks++
 		}
 		add(*t.off, rec, sp)
@@ -488,7 +494,7 @@ type querier interface {
 
 const targetCols = `SELECT m.id::text,m.text,COALESCE(m.source_id::text,''),COALESCE(s.device_id::text,''),
 			m.source_generation,m.byte_offset,m.byte_len,COALESCE(m.enrichment->>'persisted_output',''),m.enrichment,COALESCE(m.native_id,''),m.conversation_id::text,m.content_sha,
-			c.user_id::text,m.first_seen_at
+			c.user_id::text,m.first_seen_at,c.agent
 		FROM messages m JOIN conversations c ON c.id=m.conversation_id LEFT JOIN sources s ON s.id=m.source_id`
 
 // redactTargetsSQL selects a redaction's targets: the row ($1), its other
@@ -631,7 +637,7 @@ func scanTargets(rows pgx.Rows) ([]redactTarget, error) {
 	for rows.Next() {
 		var t redactTarget
 		var gen int64
-		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv, &t.sha, &t.user, &t.firstSeen); err != nil {
+		if err := rows.Scan(&t.id, &t.text, &t.sourceID, &t.deviceID, &gen, &t.off, &t.n, &t.persisted, &t.enrichment, &t.native, &t.conv, &t.sha, &t.user, &t.firstSeen, &t.agent); err != nil {
 			return nil, err
 		}
 		t.gen = &gen

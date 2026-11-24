@@ -667,11 +667,11 @@ func TestSetupAllThreeHarnesses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if got := len(rep.Harnesses); got != 4 {
+	if got := len(rep.Harnesses); got != 5 {
 		t.Fatalf("harnesses: %d", got)
 	}
 	for _, h := range rep.Harnesses {
-		if h.Harness == "opencode" {
+		if h.Harness == "opencode" || h.Harness == "antigravity" {
 			continue // not on this PATH
 		}
 		if !h.Detected || !h.Installed || h.Error != "" {

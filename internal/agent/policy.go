@@ -45,6 +45,7 @@ import (
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/pathpolicy"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/antigravity"
 )
 
 // policyView is the rules in force and their generation; it changes as a
@@ -769,6 +770,9 @@ func (a *Agent) decisionOf(pv *policyView, t *target) (d pathpolicy.Decision, kn
 // it when a rule could deny it (worstMode), and ask again later.
 func (a *Agent) modeOf(t *target) (mode pathpolicy.Mode, known bool) {
 	pv := a.policy()
+	if t.src.Agent == transcript.AgentAntigravity && !a.antigravityPlacementReady(t.src.SessionKey) {
+		return pathpolicy.Local, false
+	}
 	if pv.readiness == policyUnknown {
 		return pathpolicy.Local, false
 	}
@@ -890,9 +894,12 @@ func (a *Agent) loadStoreModes(ctx context.Context, d *storeState, pv *policyVie
 // ErrPolicyUnknown reports a temporary collection and upload pause, not a deny.
 var ErrPolicyUnknown = errors.New("agent: collection and uploads paused until current authority collection policy is known")
 
-func (a *Agent) admitUpload(devicesync.SourceSpec) error {
+func (a *Agent) admitUpload(spec devicesync.SourceSpec) error {
 	if a.policy().readiness == policyUnknown {
 		return ErrPolicyUnknown
+	}
+	if spec.Agent == transcript.AgentAntigravity && a.cfg.AntigravityRoot != "" && !a.antigravityCatalogCurrent() {
+		return errAntigravityCatalogPending
 	}
 	return nil
 }
@@ -906,6 +913,14 @@ func (a *Agent) allowUpload(spec devicesync.SourceSpec) bool {
 	a.mu.Lock()
 	historyReadErr := a.coworkHistoryReadErr
 	a.mu.Unlock()
+	if spec.Agent == transcript.AgentAntigravity {
+		if spec.Root != a.cfg.AntigravityRoot || spec.Root == "" || !a.antigravityPlacementReady(spec.SessionKey) {
+			return false
+		}
+		if antigravityPath(spec.Root, spec.SessionKey) != spec.Path || antigravity.SessionID(spec.Path) != spec.SessionKey {
+			return false
+		}
+	}
 	if spec.Agent == transcript.AgentClaude && historyReadErr != nil {
 		return false
 	}

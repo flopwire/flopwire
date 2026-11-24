@@ -993,3 +993,106 @@ func TestAuthorizedEmptyCurrentAllowanceDoesNotQualifyNonemptyPendingHistory(t *
 		t.Fatalf("pending legacy bytes recertified: %v", err)
 	}
 }
+
+func TestCheckOnlyLeaseGuardsTransportAndKeepsCaptureBound(t *testing.T) {
+	e := newEnv(t, Config{HasThreshold: 1}, 1<<20)
+	ctx := context.Background()
+	sp := e.spec("antigravity.jsonl", transcript.StorageJSONLAppend)
+	sp.Agent, sp.Parser = transcript.AgentAntigravity, "antigravity@1"
+	data := jsonlLines(86, 80, 300)
+	appendFile(t, sp.Path, data)
+	bound := int64(len(data) / 2)
+	sc := NewScheduler(e.sy, SchedulerConfig{})
+	changed, held := false, false
+	releases := 0
+	catalogMoved := errors.New("synthetic catalog changed")
+	tr := &authTransport{
+		Transport: e.client,
+		onHas: func() {
+			if !held {
+				t.Error("lease released before Has")
+			}
+			changed = true
+		},
+		onFlush: func() {
+			if !held {
+				t.Error("lease released before Flush")
+			}
+		},
+	}
+	e.sy.tr = tr
+	acquire := func(context.Context, SourceSpec) (*CaptureAuthorization, error) {
+		held = true
+		return &CaptureAuthorization{
+			LeaseOnly: true,
+			Check: func(context.Context) error {
+				if !held {
+					t.Error("checked a released lease")
+				}
+				if changed {
+					return catalogMoved
+				}
+				return nil
+			},
+			Release: func() {
+				held = false
+				releases++
+			},
+		}, nil
+	}
+	if _, err := sc.syncJobTurn(ctx, &job{spec: sp}, bound, true, acquire); !errors.Is(err, catalogMoved) {
+		t.Fatalf("catalog change returned %v", err)
+	}
+	if tr.has != 1 || tr.flush != 0 || held || releases != 1 {
+		t.Fatalf("changed catalog: Has=%d Flush=%d held=%t releases=%d", tr.has, tr.flush, held, releases)
+	}
+	src, err := e.store.source(ctx, sp.Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Watermark == nil || src.ProtectedOrigin != "" || src.ProtectedRoot != "" {
+		t.Fatalf("check-only lease changed ordinary source state: %+v", src)
+	}
+	gen, err := e.store.gen(ctx, src.ID, src.Gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen == nil || gen.Proof != nil || gen.Size <= 0 || gen.Size > bound {
+		t.Fatalf("check-only lease did not respect ordinary capture bound: %+v", gen)
+	}
+
+	changed = false
+	tr.onHas = nil
+	if _, err := sc.syncJobTurn(ctx, &job{spec: sp, action: resumeUpload}, bound, true, acquire); err != nil {
+		t.Fatal(err)
+	}
+	if tr.flush != 1 || held || releases != 2 {
+		t.Fatalf("retry: Flush=%d held=%t releases=%d", tr.flush, held, releases)
+	}
+	e.requireServerHas(sp.Path, fileIDOf(t, sp.Path), gen.Gen, data[:gen.Size])
+}
+
+func TestCheckOnlyLeaseCannotResumeProtectedSource(t *testing.T) {
+	e := newEnv(t, Config{}, 1<<20)
+	ctx := context.Background()
+	sp := authorizedSpec(e, "protected.jsonl", transcript.StorageJSONLAppend)
+	data := jsonlLines(87, 20, 100)
+	appendFile(t, sp.Path, data)
+	tr := &authTransport{Transport: e.client, fail: true}
+	e.sy.tr = tr
+	if err := e.sy.SyncAuthorized(ctx, sp, fileAuthorization(t, sp, int64(len(data)))); err == nil {
+		t.Fatal("expected outage")
+	}
+	before := tr.has + tr.flush
+	checkOnly := &CaptureAuthorization{
+		LeaseOnly: true,
+		Check:     func(context.Context) error { return nil },
+		Release:   func() {},
+	}
+	if err := e.sy.ResumeAuthorized(ctx, sp, checkOnly); !errors.Is(err, ErrUnprovenCapture) {
+		t.Fatalf("check-only lease for protected source returned %v", err)
+	}
+	if tr.has+tr.flush != before {
+		t.Fatal("check-only lease sent protected source to transport")
+	}
+}

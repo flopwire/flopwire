@@ -185,7 +185,10 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 				h.Bodies = append(h.Bodies, syncproto.Body{Hash: p.e.Hash, Size: p.e.Size, ZSize: int64(len(p.z))})
 			}
 			if pl.err == nil {
-				pl.err = op.checkAuthorization(ctx)
+				if err := op.checkAuthorization(ctx); err != nil {
+					pl.close()
+					return err
+				}
 			}
 			if pl.err == nil && op.authorization != nil && pl.f != nil {
 				pl.err = validateProofFile(pl.f, g.Proof)
@@ -569,7 +572,7 @@ func (p *payload) readSource(data []byte, off int64) error {
 			}
 		} else if borrow := p.op.syncer.descriptors.borrow(p.src.ID); borrow != nil {
 			p.borrowed, p.f = borrow, borrow.file()
-		} else if f, err := os.Open(p.src.Spec.Path); err == nil {
+		} else if f, err := p.src.Spec.open(); err == nil {
 			p.f = f
 		}
 	}

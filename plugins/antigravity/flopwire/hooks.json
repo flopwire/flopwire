@@ -1,0 +1,14 @@
+{
+  "flopwire": {
+    "enabled": true,
+    "SessionStart": [
+      {"type": "command", "command": "./scripts/flopwire-hook hook --antigravity SessionStart"}
+    ],
+    "PreInvocation": [
+      {"type": "command", "command": "./scripts/flopwire-hook hook --antigravity PreInvocation"}
+    ],
+    "Stop": [
+      {"type": "command", "command": "./scripts/flopwire-hook hook --antigravity Stop"}
+    ]
+  }
+}

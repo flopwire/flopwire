@@ -26,8 +26,12 @@ type CaptureProof struct {
 }
 
 // CaptureAuthorization holds the caller's policy lease through capture and
-// network handovers. Open must enforce the source's containment boundary.
+// network handovers. In a proof-bearing authorization Open enforces the
+// source's containment boundary.
 type CaptureAuthorization struct {
+	// LeaseOnly rechecks permission through transport for an ordinary source.
+	// It requires Check and Release. Proof-bearing sources still require proof.
+	LeaseOnly    bool
 	Origin, Root string
 	Proof        CaptureProof
 	Open         func(context.Context, SourceSpec) (*os.File, error)
@@ -61,6 +65,9 @@ func (s *Syncer) unproven(src *sourceRow, g *genRow, reason string) error {
 }
 
 func (op *syncOperation) checkAuthorization(ctx context.Context) error {
+	if op.leaseCheck != nil {
+		return op.leaseCheck(ctx)
+	}
 	if op.authorization != nil {
 		return op.authorization.Check(ctx)
 	}
@@ -224,8 +231,8 @@ func (op *syncOperation) validateAuthorization(src *sourceRow) error {
 	return nil
 }
 
-// SyncAuthorized captures only the proven indexed prefix and retains the
-// supplied lease until return. The caller is responsible for Release.
+// SyncAuthorized retains the supplied lease until return. A proof-bearing lease
+// bounds capture to its indexed prefix. The caller is responsible for Release.
 func (s *Syncer) SyncAuthorized(ctx context.Context, spec SourceSpec, a *CaptureAuthorization) error {
 	if a == nil {
 		return errors.New("devicesync: authorization is required")
@@ -234,7 +241,7 @@ func (s *Syncer) SyncAuthorized(ctx context.Context, spec SourceSpec, a *Capture
 	if err != nil {
 		return err
 	}
-	return s.run(ctx, spec, nil, a.Proof.Offset, nil, a)
+	return s.run(ctx, spec, nil, authorizedOffset(a, -1), nil, a)
 }
 
 func (s *Syncer) ResumeAuthorized(ctx context.Context, spec SourceSpec, a *CaptureAuthorization) error {
@@ -250,10 +257,28 @@ func (s *Syncer) ResumeAuthorized(ctx context.Context, spec SourceSpec, a *Captu
 
 func freezeAuthorization(a *CaptureAuthorization) (*CaptureAuthorization, error) {
 	frozen := *a
+	if frozen.LeaseOnly {
+		p := frozen.Proof
+		hasProof := p.Origin != "" || p.Root != "" || p.PolicyRequestDigest != "" ||
+			p.Identity != (transcript.Identity{}) || p.Offset != 0 || len(p.ContentSHA) != 0
+		if frozen.Check == nil || frozen.Release == nil || frozen.Open != nil || frozen.Origin != "" || frozen.Root != "" || hasProof {
+			return nil, errors.New("devicesync: invalid check-only authorization")
+		}
+		return &frozen, nil
+	}
 	if frozen.Proof.Origin != "" && frozen.Proof.Origin != a.Origin || frozen.Proof.Root != "" && frozen.Proof.Root != a.Root {
 		return nil, ErrProtectionMismatch
 	}
 	frozen.Proof.Origin, frozen.Proof.Root = a.Origin, a.Root
 	frozen.Proof.ContentSHA = bytes.Clone(a.Proof.ContentSHA)
 	return &frozen, nil
+}
+
+// authorizedOffset preserves the ordinary indexed bound for a check-only
+// lease. Protected sources instead use the bound carried by their proof.
+func authorizedOffset(a *CaptureAuthorization, upTo int64) int64 {
+	if a.LeaseOnly {
+		return upTo
+	}
+	return a.Proof.Offset
 }

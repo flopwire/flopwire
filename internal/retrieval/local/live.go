@@ -30,6 +30,7 @@ const LiveCap = time.Hour
 //     sessions, and the OS reuses their pids).
 //   - Codex, with codex set: a rollout a process named codex holds open
 //     (one lsof call); its mtime is the last write.
+//   - Antigravity CLI: a conversation presence lock held open by agy.
 //
 // Sessions whose last write is known and older than LiveCap are left out.
 func (d *Detector) Live(codex bool) map[string]time.Time {
@@ -116,6 +117,15 @@ func (d *Detector) Live(codex bool) map[string]time.Time {
 			if m := rolloutRe.FindStringSubmatch(f); m != nil {
 				if st, err := os.Stat(f); err == nil {
 					add(m[1], st.ModTime())
+				}
+			}
+		}
+	}
+	if root := d.antigravityBrain(env); root != "" && d.antigravityHolders != nil {
+		if holders, ok := d.antigravityHolders(context.Background(), root); ok {
+			for id, pid := range holders {
+				if pid > 1 {
+					add(id, time.Time{})
 				}
 			}
 		}

@@ -1,0 +1,6 @@
+{
+  "name": "flopwire",
+  "description": "Search agent history and coordinate with other sessions through Flopwire.",
+  "version": "0.1.0",
+  "author": {"name": "Flopwire", "url": "https://github.com/flopwire/flopwire"}
+}

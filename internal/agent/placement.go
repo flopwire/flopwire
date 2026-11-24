@@ -99,6 +99,14 @@ func (a *Agent) placeOf(key placeKey, path string) (placed, bool) {
 	if stored && p.final() {
 		return p, true
 	}
+	if key.agent == transcript.AgentAntigravity {
+		// Only the vendor catalog associates an Antigravity trajectory with
+		// its workspaces. A step body cannot establish that association.
+		if stored {
+			return p, true
+		}
+		return a.savePlace(key, placed{how: localindex.PlacedByNone}), true
+	}
 	h := scanHintsWithOpen(path, a.openNativeEvidence)
 	if h.cwd != "" && filepath.IsAbs(h.cwd) {
 		pl := a.resolve(h.cwd, h.remote)
@@ -266,7 +274,7 @@ func (a *Agent) addCwds(key placeKey, path string, cwds []string) (placed, bool)
 	}
 	np := p
 	np.others = mergeOthers(p.others, encodeOthers(add))
-	if !ok {
+	if !ok || key.agent == transcript.AgentAntigravity && p.pl.Cwd == "" {
 		// Never placed: the first directory places it, as a transcript
 		// naming it on its first line would.
 		np = placed{pl: add[0], how: cwdHow(add[0]), others: encodeOthers(add[1:])}

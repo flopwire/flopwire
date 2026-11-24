@@ -24,6 +24,7 @@ import (
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/retrieval/local"
+	"github.com/flopwire/flopwire/internal/transcript"
 )
 
 // mcp serves the retrieval tools over MCP stdio, with the same source
@@ -154,7 +155,8 @@ func emptyIndexHint(s *localindex.Store) func(context.Context) string {
 }
 
 // cachedCaller remembers the detected session for ttl: detection may run
-// lsof, and a session changes only on /clear or restart.
+// lsof. Once Antigravity identifies a caller, recheck its lock on each
+// call because the agy process can switch conversations in place.
 func cachedCaller(detect func(context.Context) (local.Caller, bool), ttl time.Duration) func(context.Context) (local.Caller, bool) {
 	var mu sync.Mutex
 	var c local.Caller
@@ -163,7 +165,7 @@ func cachedCaller(detect func(context.Context) (local.Caller, bool), ttl time.Du
 	return func(ctx context.Context) (local.Caller, bool) {
 		mu.Lock()
 		defer mu.Unlock()
-		if at.IsZero() || time.Since(at) > ttl {
+		if at.IsZero() || time.Since(at) > ttl || c.Agent == transcript.AgentAntigravity {
 			c, ok = detect(ctx)
 			at = time.Now()
 		}
@@ -286,7 +288,7 @@ func (b *lazyIndexBackend) Raw(ctx context.Context, sourceID string, generation,
 
 // mcpInstructions is the server's instructions: the workflow, the address
 // form, how to read the output, and the filters every tool shares.
-const mcpInstructions = `Flopwire searches past and ongoing AI-agent conversations from connected tools (Claude Code, Codex, Devin, opencode): prompts, replies, tool calls and their output, including research, planning, writing, troubleshooting and coding. Use it when the user references earlier work or conversations, or when you need prior research, plans, decisions, attempts or results. A session need not be running to search or read its history. By default, search covers this device before enrollment and the shared server's history across connected machines and team members after enrollment; results name their scope. You can also message live sessions across connected machines and team members when configured.
+const mcpInstructions = `Flopwire searches past and ongoing AI-agent conversations from connected tools (Claude Code, Codex, Devin, opencode, Google Antigravity CLI). It finds prompts, replies and supported tool activity from research, planning, writing, troubleshooting and coding sessions. Use it when the user references earlier work or conversations, or when you need prior research, plans, decisions, attempts or results. A session need not be running to search or read its history. By default, search covers this device before enrollment and the shared server's history across connected machines and team members after enrollment; results name their scope. You can also message live sessions across connected machines and team members when configured.
 
 Choose by evidence: commit/PR provenance -> full original commit IDs before squash, flopwire_change, then flopwire_read; exact text/regex -> flopwire_grep; topic/decision -> flopwire_search; session discovery -> flopwire_sessions; retained coordination -> flopwire_messages. Check flopwire_peers only for contact/live status. Messages and outlines are optional navigation.
 
@@ -308,7 +310,7 @@ func prop(typ, desc string) map[string]any {
 // server instructions, and the schema alone must say what a value looks
 // like.
 var filterDesc = map[string]string{
-	"agent":              "claude, codex, devin or opencode; a comma list",
+	"agent":              "claude, codex, devin, opencode or antigravity; a comma list",
 	"repo":               `"." (the calling session's recorded repo: every checkout and worktree of it), /abs/path, a repo name or owner/name, or a glob like "team*"; relative paths require known local caller context`,
 	"since":              `"7d", "24h", "2026-09-01", "2026-09-23 10:00Z" (the form hits print) or RFC 3339; times are UTC`,
 	"until":              `exclusive; same forms as since`,

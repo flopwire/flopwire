@@ -1,8 +1,9 @@
 # Start locally
 
 Search session history and connect agents on one machine. No account or
-server is required. Supported tools are Claude Code, Codex, Devin CLI and
-opencode. Sessions can contain any kind of work.
+server is required. Sessions can contain any kind of work. See the
+[harness support matrix](harnesses/README.md#support-matrix) for searchable
+history, messaging and setup support.
 
 ## Install
 
