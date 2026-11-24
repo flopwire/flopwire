@@ -49,6 +49,7 @@ func TestTwoDeviceSync(t *testing.T) {
 	var corpus string
 	var initialCorpus *corpusOracle
 	var corpusStarted time.Time
+	antigravity := h.seedAntigravity(d1)
 	for _, d := range h.devs {
 		d.seed()
 		if d == d1 {
@@ -128,6 +129,10 @@ func TestTwoDeviceSync(t *testing.T) {
 				return len(inSession(hitsOn(hits, d), "devin-oracle-001")) == 1, err
 			})
 		}
+	})
+
+	h.scenario("0-antigravity-sync", func(t *testing.T, r *result) {
+		h.checkAntigravitySync(t, d1, d2, antigravity)
 	})
 
 	var liveNeedle string

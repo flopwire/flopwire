@@ -27,17 +27,19 @@ type Caller struct {
 //
 //  1. env: FLOPWIRE_SESSION_ID (with optional FLOPWIRE_AGENT), for harnesses
 //     that can pass it in their MCP server config.
-//  2. claude-sessions: an ancestor process has a Claude Code session file,
+//  2. antigravity-lock: an ancestor agy process holds exactly one conversation
+//     presence lock open. Zero or multiple lock paths give no caller.
+//  3. claude-sessions: an ancestor process has a Claude Code session file,
 //     <claude config dir>/sessions/<pid>.json; its sessionId is the live
 //     session (it follows /clear, which the environment does not).
-//  3. devin-lock: an ancestor process named devin has the pid exactly one
+//  4. devin-lock: an ancestor process named devin has the pid exactly one
 //     <devin dir>/session_locks/<session>.lock names. Devin sets no
 //     variable for its children; its hooks' and MCP servers' parent is the
 //     `devin acp` process, which holds the lock (probes 2026-10-01). Lock
 //     files outlive their sessions and their pids are reused, so a lock
 //     naming a process that is not devin does not count, and a devin pid
 //     two locks name identifies none.
-//  4. codex-env, codex-rollout: an ancestor process is named codex. Its
+//  5. codex-env, codex-rollout: an ancestor process is named codex. Its
 //     shell children carry CODEX_THREAD_ID, the thread id (codex-env).
 //     Without it (an MCP server: Codex scrubs their environment), the
 //     process must hold exactly one <codex home>/sessions/**/
@@ -48,7 +50,7 @@ type Caller struct {
 //     the calling session is the only reason to exclude. An MCP server
 //     under Codex gets its thread id per call from the request's _meta
 //     instead (cmd/flopwire mcp).
-//  5. claude-env, codex-env: CLAUDE_CODE_SESSION_ID, which Claude Code sets
+//  6. claude-env, codex-env: CLAUDE_CODE_SESSION_ID, which Claude Code sets
 //     for MCP servers and tool subprocesses (verified on 2.1.284), or
 //     CODEX_THREAD_ID, when the walk found no harness (a process table
 //     that cannot be read). With both set, the caller is unknown: either
@@ -105,10 +107,38 @@ func (d *Detector) Detect(ctx context.Context) (Caller, bool) {
 		if pid <= 1 || d.Proc == nil {
 			break
 		}
+		ppid, name, ok := d.Proc(pid)
+		if ok && filepath.Base(name) == "agy" {
+			if d.OpenFiles == nil {
+				return Caller{}, false
+			}
+			brain := env("FLOPWIRE_ANTIGRAVITY_ROOT")
+			if brain == "" && d.Home != "" {
+				brain = filepath.Join(d.Home, ".gemini", "antigravity-cli", "brain")
+			}
+			if brain == "-" || !filepath.IsAbs(brain) {
+				return Caller{}, false
+			}
+			dir := antigravityPresenceDir(brain)
+			var id string
+			for _, path := range d.OpenFiles(pid) {
+				next := antigravityLockID(dir, path)
+				if next == "" || next == id {
+					continue
+				}
+				if id != "" {
+					return Caller{}, false
+				}
+				id = next
+			}
+			if id != "" {
+				return Caller{Agent: transcript.AgentAntigravity, SessionID: id, Rule: "antigravity-lock"}, true
+			}
+			return Caller{}, false
+		}
 		if id := claudeSessionFile(filepath.Join(claudeDir, "sessions", itoa(pid)+".json")); id != "" {
 			return Caller{Agent: transcript.AgentClaude, SessionID: id, Rule: "claude-sessions"}, true
 		}
-		ppid, name, ok := d.Proc(pid)
 		if !ok {
 			break
 		}
@@ -190,7 +220,7 @@ func (d *Detector) UnderCodex() bool {
 		// The name first; a Claude Code session file outlives its process,
 		// and the OS may give its pid to a codex process.
 		ppid, name, ok := d.Proc(pid)
-		if !ok || IsDevinProcess(name) {
+		if !ok || IsDevinProcess(name) || filepath.Base(name) == "agy" {
 			return false
 		}
 		if strings.Contains(strings.ToLower(filepath.Base(name)), "codex") {

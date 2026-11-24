@@ -18,6 +18,7 @@ import (
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/cowork"
 )
 
 // SourceSpec describes a source to sync. Path is the device-local key.
@@ -27,6 +28,8 @@ type SourceSpec struct {
 	StorageKind transcript.StorageKind
 	SessionKey  string
 	Parser      string
+	// Root confines device-local reads to regular files beneath this directory.
+	Root string `json:",omitempty"`
 	// Parent is the path of the source a companion file belongs to (Claude
 	// tool-results/*, subagent agent-*.meta.json). Companions sync as their
 	// own sources and carry the link.
@@ -39,6 +42,13 @@ type SourceSpec struct {
 	// bytes are pending.
 	Checkout string `json:",omitempty"`
 	Remote   string `json:",omitempty"`
+}
+
+func (sp SourceSpec) open() (*os.File, error) {
+	if sp.Root != "" {
+		return cowork.OpenFile(sp.Root, sp.Path)
+	}
+	return os.Open(sp.Path)
 }
 
 // repoKey is what of the spec the server must hear again when it changes:
@@ -368,7 +378,7 @@ func (s *Syncer) syncTurnWithScratch(ctx context.Context, spec SourceSpec, expor
 		if err != nil {
 			return syncDone, err
 		}
-		auth, upTo = a, a.Proof.Offset
+		auth, upTo = a, authorizedOffset(a, upTo)
 	}
 	op := s.operationWithScratch(auth, scratch)
 	turn := &uploadTurn{remaining: 1}
@@ -473,17 +483,16 @@ func (op *syncOperation) captureOwnedWithCommit(ctx context.Context, scope *spoo
 		r, id = ex.r, transcript.Identity{Size: ex.size}
 	} else {
 		var err error
-		path := src.Spec.Path
-		if snapshot != nil {
-			if !s.descriptors.canRetain(src.ID) {
-				return errors.New("devicesync: snapshot descriptor limit reached")
-			}
-			path = snapshot.path
+		if snapshot != nil && !s.descriptors.canRetain(src.ID) {
+			return errors.New("devicesync: snapshot descriptor limit reached")
 		}
-		if op.authorization != nil {
+		switch {
+		case op.authorization != nil:
 			f, err = op.authorization.Open(ctx, src.Spec)
-		} else {
-			f, err = os.Open(path)
+		case snapshot != nil:
+			f, err = os.Open(snapshot.path)
+		default:
+			f, err = src.Spec.open()
 		}
 		if errors.Is(err, os.ErrNotExist) {
 			if op.authorization != nil {

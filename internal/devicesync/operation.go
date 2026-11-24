@@ -1,5 +1,7 @@
 package devicesync
 
+import "context"
+
 // syncScratch belongs to a fixed Syncer workspace, not a logical operation.
 // Its admitted operation retains it through network waits and recapture.
 // Capture and materialization still borrow it only under Syncer.mu.
@@ -15,6 +17,7 @@ type syncScratch struct {
 type syncOperation struct {
 	syncer        *Syncer
 	authorization *CaptureAuthorization
+	leaseCheck    func(context.Context) error
 	scratch       *syncScratch // fixed by operation admission; reads/materialization use Syncer.mu
 }
 
@@ -27,5 +30,8 @@ func (s *Syncer) operation(frozen *CaptureAuthorization) *syncOperation {
 func (s *Syncer) ordinaryOperation() *syncOperation { return s.operation(nil) }
 
 func (s *Syncer) operationWithScratch(frozen *CaptureAuthorization, scratch *syncScratch) *syncOperation {
+	if frozen != nil && frozen.LeaseOnly {
+		return &syncOperation{syncer: s, leaseCheck: frozen.Check, scratch: scratch}
+	}
 	return &syncOperation{syncer: s, authorization: frozen, scratch: scratch}
 }

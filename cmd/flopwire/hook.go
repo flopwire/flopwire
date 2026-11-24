@@ -171,9 +171,10 @@ func hookCmdObserved(ctx context.Context, args []string, stdin io.Reader, stdout
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	socket := fs.String("socket", "", "control socket (default <config dir>/agent.sock)")
-	if fs.Parse(args) != nil || fs.NArg() != 0 {
+	agy := fs.Bool("antigravity", false, "read the Antigravity format for the named event")
+	if fs.Parse(args) != nil || !*agy && fs.NArg() != 0 || *agy && fs.NArg() != 1 {
 		d.reason("invalid_arguments")
-		warn("usage: flopwire hook [--socket PATH] < hook JSON")
+		warn("usage: flopwire hook [--socket PATH] [--antigravity EVENT] < hook JSON")
 		return nil
 	}
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
@@ -183,7 +184,7 @@ func hookCmdObserved(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	raw, rerr := io.ReadAll(io.LimitReader(stdin, hookInputMax+1))
 	var in hookInput
-	if rerr != nil || len(raw) > hookInputMax || json.Unmarshal(raw, &in) != nil {
+	if rerr != nil || len(raw) > hookInputMax || !decodeHookInput(raw, fs.Arg(0), &in) {
 		d.reason("invalid_input")
 		warn("the input is not hook JSON; nothing delivered")
 		return nil
@@ -247,6 +248,11 @@ func hookCmdObserved(ctx context.Context, args []string, stdin io.Reader, stdout
 	start := ""
 	switch in.Event {
 	case evSessionStart:
+		// Antigravity leases only when a model invocation is imminent.
+		if harness == transcript.AgentAntigravity {
+			d.reason("non_delivery_event")
+			return nil
+		}
 		start = in.Source
 		if start == "" {
 			start = "startup"
@@ -326,7 +332,11 @@ func hookCmdObserved(ctx context.Context, args []string, stdin io.Reader, stdout
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if enc.Encode(out) != nil {
+	var wire any = out
+	if harness == transcript.AgentAntigravity {
+		wire = antigravityHookOutput(out.HookSpecificOutput.AdditionalContext)
+	}
+	if enc.Encode(wire) != nil {
 		d.reason("encode_error")
 		warn("could not encode the output")
 		return nil
@@ -550,6 +560,8 @@ var codexRollout = regexp.MustCompile(`(^|/)rollout-[^/]*\.jsonl$`)
 // hook asks first gets each message, once.
 func hookHarness(in hookInput, getenv func(string) string) transcript.Agent {
 	switch {
+	case in.Harness == string(transcript.AgentAntigravity):
+		return transcript.AgentAntigravity
 	case in.Harness == string(transcript.AgentOpencode):
 		return transcript.AgentOpencode
 	case getenv("DEVIN_PROJECT_DIR") != "" || getenv("CHISEL_SESSION_DB") != "":

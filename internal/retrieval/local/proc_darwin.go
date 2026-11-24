@@ -6,8 +6,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -70,4 +74,40 @@ func codexOpenFiles() []string {
 func pidAlive(pid int) bool {
 	err := unix.Kill(pid, 0)
 	return err == nil || err == unix.EPERM
+}
+
+// antigravityPIDs checks this user's process table so a stale presence
+// directory does not spawn lsof when Antigravity is closed.
+func antigravityPIDs() ([]string, string, bool) {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Geteuid())
+	if err != nil {
+		return nil, "", false
+	}
+	var pids, identity []string
+	for _, proc := range procs {
+		comm := proc.Proc.P_comm[:]
+		if i := bytes.IndexByte(comm, 0); i >= 0 {
+			comm = comm[:i]
+		}
+		if string(comm) == "agy" {
+			pid := strconv.Itoa(int(proc.Proc.P_pid))
+			start := proc.Proc.P_starttime
+			pids = append(pids, pid)
+			identity = append(identity, fmt.Sprintf("%s:%d:%d", pid, start.Sec, start.Usec))
+		}
+	}
+	sort.Strings(identity)
+	return pids, strings.Join(identity, ","), true
+}
+
+func antigravityOpenHolders(ctx context.Context, dir string, pids []string) (map[string]int, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-a", "-u", strconv.Itoa(os.Geteuid()), "-c", "/^agy$/", "-p", strings.Join(pids, ","), "-Fpcn")
+	cmd.WaitDelay = 100 * time.Millisecond
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	return antigravityHoldersFromFiles(dir, out)
 }

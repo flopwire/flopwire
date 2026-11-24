@@ -75,7 +75,8 @@ func setupAntigravity(ctx context.Context, env *setupEnv) harnessReport {
 	if err != nil {
 		return fail(err)
 	}
-	if mode == setupInstall && (entry.Name == "" || !antigravityPluginCurrent(entry.Path, files)) {
+	current := entry.Name != "" && antigravityPluginCurrent(entry.Path, files)
+	if mode == setupInstall && !current {
 		stage, err := os.MkdirTemp("", "flopwire-antigravity-*")
 		if err != nil {
 			return fail(err)
@@ -102,6 +103,7 @@ func setupAntigravity(ctx context.Context, env *setupEnv) harnessReport {
 		if !antigravityPluginOwned(entry.Path, env.home) || !antigravityPluginCurrent(entry.Path, files) {
 			return fail(errors.New("agy did not install the expected Flopwire plugin files"))
 		}
+		current = true
 	}
 	if mode == setupRemove && entry.Name != "" {
 		_, stderr, err := env.run(ctx, path, "plugin", "uninstall", antigravityPlugin)
@@ -124,10 +126,10 @@ func setupAntigravity(ctx context.Context, env *setupEnv) harnessReport {
 			r.Todo = append(r.Todo, "install the Antigravity plugin: flopwire setup")
 		case !r.Enabled:
 			r.Todo = append(r.Todo, "enable the Antigravity plugin: agy plugin enable flopwire")
-		case !antigravityPluginCurrent(entry.Path, files):
+		case !current:
 			r.Todo = append(r.Todo, "update the Antigravity plugin: flopwire setup")
 		}
-		if r.Installed && antigravityPluginCurrent(entry.Path, files) {
+		if current {
 			applyHookBinary(ctx, env, &r, resolveHookBinary(ctx, env, "antigravity", filepath.Join(entry.Path, antigravityShim)))
 		}
 	}
@@ -191,7 +193,7 @@ func antigravityPluginOwned(root, home string) bool {
 func antigravityPluginCurrent(root string, files []antigravityPluginFile) bool {
 	for _, file := range files {
 		path := filepath.Join(root, file.name)
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() || (file.mode&0o111 != 0 && info.Mode().Perm()&0o100 == 0) {
 			return false
 		}

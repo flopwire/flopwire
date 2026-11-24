@@ -19,6 +19,7 @@ import (
 	"github.com/flopwire/flopwire/internal/redact"
 	"github.com/flopwire/flopwire/internal/store"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/antigravity"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
@@ -32,6 +33,9 @@ import (
 // server indexes all of it, and an empty (non-nil) cap map means no cap
 // for any kind.
 var uncapped = map[transcript.Kind]transcript.CapConfig{}
+
+// Antigravity parse workers share the reservation for large physical records.
+var antigravityLines = transcript.LineReaderOptions{Budget: transcript.NewLineBudget(transcript.DefaultMaxLine)}
 
 // hadStoredSQL reports whether any conversation names source $1.
 const hadStoredSQL = `SELECT EXISTS(SELECT 1 FROM conversations WHERE source_id=$1)`
@@ -56,6 +60,7 @@ const (
 type job struct {
 	src                         source
 	path, fileID, kind, parse   string
+	sessionKey                  string
 	previous                    *string
 	parentID                    *string
 	tombstoned                  bool
@@ -82,11 +87,11 @@ type job struct {
 func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	j := &job{}
 	var st, report []byte
-	err = q.Pool.QueryRow(ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,s.path,s.file_id,s.storage_kind,s.parser,
+	err = q.Pool.QueryRow(ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,s.path,s.file_id,s.storage_kind,s.parser,COALESCE(s.session_key,''),
 			s.previous_source_id::text,s.parent_source_id::text,s.tombstoned_at IS NOT NULL,
 			p.generation,p.cursor_offset,p.cursor_line,p.cursor_state,p.requested_seq,p.reparse,COALESCE(d.home,''),COALESCE(d.claude_projects,''),p.extraction_report,p.applied_parser,p.applied_redaction_rules
 		FROM sources s JOIN devices d ON d.id=s.device_id JOIN source_parse_state p ON p.source_id=s.id WHERE s.id=$1`, sourceID).
-		Scan(&j.src.id, &j.src.deviceID, &j.src.userID, &j.src.agent, &j.path, &j.fileID, &j.kind, &j.parse, &j.previous, &j.parentID, &j.tombstoned,
+		Scan(&j.src.id, &j.src.deviceID, &j.src.userID, &j.src.agent, &j.path, &j.fileID, &j.kind, &j.parse, &j.sessionKey, &j.previous, &j.parentID, &j.tombstoned,
 			&j.cursorGen, &j.cursor.Offset, &j.cursor.LineNo, &st, &j.seq, &j.reparse, &j.dev.home, &j.dev.claudeProjects, &report, &j.appliedParser, &j.appliedRules)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted meanwhile
@@ -206,7 +211,7 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		rr.CountFrom(j.cursor.Offset)
 	}
 	in := transcript.Input{
-		Source: &transcript.Source{Agent: transcript.Agent(j.src.agent), Path: j.path, StorageKind: transcript.StorageKind(j.kind), Parser: j.parse},
+		Source: &transcript.Source{Agent: transcript.Agent(j.src.agent), Path: j.path, SessionKey: j.sessionKey, StorageKind: transcript.StorageKind(j.kind), Parser: j.parse},
 		R:      rr,
 		Size:   r.Size(),
 	}
@@ -225,6 +230,8 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 			archive := &archiveFS{ctx: ctx, pool: q.Pool, objects: q.Objects, deviceID: j.src.deviceID, masks: &q.masks}
 			result, err = (&codex.Parser{Caps: uncapped, OpenRollout: archive.openRollout}).ParseWithReport(ctx, in, j.cursor, sink)
 			next = result.Cursor
+		case transcript.AgentAntigravity:
+			next, err = (&antigravity.Parser{Caps: uncapped, Lines: antigravityLines}).Parse(ctx, in, j.cursor, sink)
 		case transcript.AgentDevin:
 			next, err = parseDevinExport(ctx, in, j, sink)
 		case transcript.AgentOpencode:

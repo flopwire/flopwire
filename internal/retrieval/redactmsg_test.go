@@ -21,6 +21,7 @@ import (
 	"github.com/flopwire/flopwire/internal/retrieval/format"
 	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
+	"github.com/flopwire/flopwire/internal/transcript/antigravity"
 	"github.com/flopwire/flopwire/internal/transcript/claude"
 	"github.com/flopwire/flopwire/internal/transcript/codex"
 	"github.com/flopwire/flopwire/internal/transcript/devin"
@@ -423,5 +424,54 @@ func TestLargeArchivedRecordManualMasks(t *testing.T) {
 	// Proves the raw reader, rather than an archive rewrite, did the masking.
 	if !s.archiveHas("BLUEFALCON") {
 		t.Fatal("historical archive was unexpectedly rewritten")
+	}
+}
+
+func TestRedactAntigravityPromptSurvivesReparse(t *testing.T) {
+	ctx := context.Background()
+	s := newServer(t)
+	const session = "30000000-0000-4000-8000-0000000000a1"
+	root := filepath.Join(s.home, ".gemini", "antigravity-cli", "brain")
+	path := filepath.Join(root, session, ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prompt := jline(map[string]any{
+		"step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE",
+		"created_at": "2026-01-01T00:00:00Z", "content": "<USER_REQUEST>\n" + codename + "\n</USER_REQUEST>",
+		"other": map[string]any{"source": "arbitrary nested source text"},
+	})
+	if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := devicesync.SourceSpec{Path: path, Root: root, Agent: transcript.AgentAntigravity, SessionKey: session, StorageKind: transcript.StorageJSONLAppend, Parser: antigravity.ParserName}
+	if err := s.sy.Sync(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var id, source string
+	if err := s.pool.QueryRow(ctx, `SELECT id::text,source_id::text FROM messages WHERE text=$1`, codename).Scan(&id, &source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.redact(s.client, "/v1/redactions", format.RedactRequest{Address: id}); err != nil {
+		t.Fatal(err)
+	}
+	if s.archiveHas(codename) || s.archiveHas("arbitrary nested source text") {
+		t.Fatal("whole redaction left unmasked text in archive")
+	}
+	raw, err := s.client.RawAt(ctx, id)
+	if err != nil || !bytes.Contains(raw, []byte("USER_EXPLICIT")) || !json.Valid(raw) {
+		t.Fatalf("redacted record lost Antigravity source classification or JSON validity: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE source_parse_state SET reparse=true,requested_seq=requested_seq+1 WHERE source_id=$1`, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.queue.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.count(`SELECT count(*) FROM messages WHERE source_id=$1 AND NOT superseded AND kind='user' AND strpos(text,'[REDACTED')>0`, source); n != 1 || s.rowsWith(codename) != 0 {
+		t.Fatalf("reparse yielded %d masked prompts", n)
 	}
 }

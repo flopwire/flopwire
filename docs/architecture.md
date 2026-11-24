@@ -128,13 +128,15 @@ its subagents when detection finds it by exact evidence, first match wins:
    processes is a `codex` process. Any other client's `_meta` is ignored,
    since it could name any Codex thread.
 2. `FLOPWIRE_SESSION_ID` (with optional `FLOPWIRE_AGENT`).
-3. An ancestor process's Claude Code session file,
+3. An ancestor `agy` process holding exactly one canonical Antigravity
+   conversation lock. Missing or ambiguous locks leave the caller unidentified.
+4. An ancestor process's Claude Code session file,
    `<Claude config dir>/sessions/<pid>.json`.
-4. An ancestor `devin` process whose pid exactly one Devin
+5. An ancestor `devin` process whose pid exactly one Devin
    `session_locks/<session>.lock` names.
-5. An ancestor `codex` process: `CODEX_THREAD_ID` (set for its shell
+6. An ancestor `codex` process: `CODEX_THREAD_ID` (set for its shell
    commands), else exactly one rollout file it holds open.
-6. `CLAUDE_CODE_SESSION_ID`, or `CODEX_THREAD_ID`, when the walk found no
+7. `CLAUDE_CODE_SESSION_ID`, or `CODEX_THREAD_ID`, when the walk found no
    harness; neither when both are set.
 
 There is no guess from the working directory or recent activity. MCP

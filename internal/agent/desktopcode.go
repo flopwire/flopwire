@@ -140,6 +140,9 @@ func (a *Agent) openNativeEvidence(path string) (*os.File, error) {
 	if root := a.nativeEvidenceRoot(path); root != "" {
 		return cowork.OpenFile(root, path)
 	}
+	if _, ok := under(a.cfg.AntigravityRoot, path); ok {
+		return cowork.OpenFile(a.cfg.AntigravityRoot, path)
+	}
 	return fsprobe.Open(path)
 }
 

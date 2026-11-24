@@ -45,6 +45,7 @@ func (a *Agent) watchDirs(now time.Time) []string {
 	dc := a.desktopCodeResult
 	a.mu.Unlock()
 	add(a.cfg.ClaudeProjects)
+	add(a.cfg.AntigravityRoot)
 	sessions := filepath.Join(a.cfg.CodexHome, "sessions")
 	add(sessions)
 	for _, day := range []time.Time{now, now.Add(-24 * time.Hour)} {
@@ -86,6 +87,8 @@ func (a *Agent) watchDirs(now time.Time) []string {
 			add(filepath.Join(sess, "tool-results"))
 		}
 	}
+
+	a.watchAntigravity(now, add)
 
 	// Recently active Claude projects, newest first.
 	entries, _ := fsprobe.ReadDir(a.cfg.ClaudeProjects)

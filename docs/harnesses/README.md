@@ -9,7 +9,7 @@ hooks.
 
 ## Support matrix
 
-| Harness | History indexed | Search | Receives messages | Sends messages | Hooks installed by `flopwire setup` |
+| Harness | History indexed | Search | Receives messages | Sends messages | Integration installed by `flopwire setup` |
 |---|---|---|---|---|---|
 | [Claude Code CLI](claude-code.md) | Yes | Yes | Yes | Yes | Yes: plugin with hooks, MCP tools and a skill |
 | [Claude Code cloud](cloud.md) | No | No | Yes, while a turn runs | No | No: Flopwire installs nothing in the cloud session |
@@ -20,6 +20,7 @@ hooks.
 | [Devin CLI](devin.md) | Yes | Yes | Yes | Yes | Yes: the Claude Code plugin, installed with `--local` |
 | [Devin cloud](cloud.md) | No | No | Yes, while a turn runs | No | No |
 | [opencode](opencode.md) | Yes | Yes | Yes | Yes | Yes: one plugin file in place of hooks |
+| [Google Antigravity CLI](antigravity.md) | Yes | Yes | Before model invocations | Yes, with an identifiable session | Plugin with hooks, MCP tools and a skill |
 
 - Claude Desktop Local Code and Cowork are history only. The agent reads
   their transcripts on macOS. See
@@ -62,9 +63,9 @@ Hooks deliver incoming messages and the instructions for handling them.
 Descriptions guide tool selection; they do not guarantee a call or grant
 permission to send a message.
 
-Claude Code, Codex and Devin CLI use the skill. opencode has plugin tools
-and system-prompt guidance instead of a separate skill; its plugin reads
-the same tool definitions from the binary.
+Claude Code, Codex, Devin CLI and Google Antigravity CLI use the skill.
+opencode supplies tools and system-prompt guidance through its plugin,
+which reads the same tool definitions from the binary.
 
 Exact definitions in this checkout:
 
@@ -89,7 +90,8 @@ CLI: the MCP tools, the hooks and a messaging skill. It runs each harness's
 own plugin commands. It never edits the harness's settings files, and it
 writes no Devin config file. For opencode, which loads every file in its
 plugin directory, it writes the one plugin file there
-([opencode.md](opencode.md)).
+([opencode.md](opencode.md)). For Google Antigravity CLI, setup registers
+the plugin through `agy plugin install`.
 
 `flopwire setup` prints a JSON report. Add `--text` for a readable form.
 The report has these parts:
@@ -149,15 +151,14 @@ Follow these steps in order.
    empty, tell your user to approve the Flopwire hooks in Codex. See
    [Approve the Codex hooks](codex.md#approve-the-codex-hooks). Do not approve
    them yourself, and do not edit `~/.codex/config.toml`.
-10. Tell your user to restart their Claude Code, Codex, Devin and opencode
-    sessions. A running Claude Code session loads the plugin after a
-    restart or after `/reload-plugins`. A running Codex or Devin session
-    loads it after a restart.
+10. Tell your user to restart sessions in harnesses reported as installed.
+    Claude Code can also load the plugin with `/reload-plugins`.
 11. Run `flopwire setup --check`.
 12. Confirm that each detected harness has `installed: true` and
     `enabled: true`.
-13. Confirm that each installed harness has a `hook_binary.path`. If it
-    has `hook_binary.error`, tell your user the error. It names the fix.
+13. For integrations with hooks, confirm that each installed harness has a
+    `hook_binary.path`. If it has `hook_binary.error`, tell your user the
+    error. It names the fix.
 
 ## Verify tools in the current session
 
@@ -173,9 +174,9 @@ session you run them in. They do not grant future send permission.
    `flopwire_read` with a returned address. Confirm the expected text.
    Check the reported search scope. If no history is indexed, capture a
    synthetic transcript first. An absent phrase is not a useful probe.
-4. For live messaging, open a second test session. Keep both test sessions
-   open throughout the messaging check. Identify the receiving session's
-   full session ID. Explicitly authorize one test request/reply roundtrip.
+4. For live messaging, choose two sessions in harnesses that support it.
+   Keep both open throughout the check. Identify the receiving session's
+   full session ID and explicitly authorize one test request/reply roundtrip.
 5. Ask the first session to call `flopwire_peers` for that ID, then
    `flopwire_send` with the authorized test text. Review any tool approval
    prompt. If denied, report the denied tool and stop this check.
@@ -190,17 +191,15 @@ new version exists. It changes nothing when the plugin is current.
 
 ## What the hooks do
 
-The harness hooks run `flopwire hook`. The command does two jobs:
+The harness hooks run `flopwire hook`. The command delivers pending
+messages and asks the agent to index the transcript.
 
-- It prints the messages for this session into the session. See
-  [Messaging](../messaging.md).
-- It tells the running agent to index this transcript and upload it at
-  once. Without hooks, a new line is still findable in about one second.
-  The hooks make the upload immediate and cover a session that was idle
-  for more than two days.
+See [Messaging](../messaging.md) for what the recipient sees. The hooks
+also prompt immediate uploads and cover sessions that were idle for more
+than two days.
 
-`flopwire hook` reads the hook input on stdin. It acts on the
-`hook_event_name` field:
+For Claude Code, Codex and Devin CLI, `flopwire hook` reads the
+`hook_event_name` field from stdin.
 
 | Event | Prints into the session |
 |---|---|
@@ -318,7 +317,7 @@ each harness and checks which binary they ran. See
 1. Run `flopwire setup --remove`.
 2. Run `flopwire setup --check`.
 3. Confirm that each detected harness has `installed: false`.
-4. Restart your Claude Code, Codex, Devin and opencode sessions.
+4. Restart sessions in harnesses where setup removed an integration.
 
 `--remove` removes only what setup installed. It does not remove a Devin
 plugin that you installed without `--local`, or a plugin from another

@@ -1,9 +1,10 @@
 # Device agent
 
 The device agent keeps the local index of this device current. It reads
-Claude Code, Codex, Devin, opencode, local Cowork and Claude Desktop Local
-Code transcripts. It never writes to the harness directories. When the
-device has a server configuration, the agent also uploads the transcripts.
+Claude Code, Codex, Devin, opencode, Google Antigravity CLI, local Cowork
+and Claude Desktop Local Code transcripts. It opens the harness directories
+read-only. When the device has a server configuration, the agent also uploads
+the transcripts.
 To install Flopwire into the harnesses, see [harnesses](harnesses/README.md).
 
 ## Run the agent
@@ -35,6 +36,7 @@ The agent uses these paths:
 | Codex home | `~/.codex` | `--codex-home` or `CODEX_HOME` |
 | Devin store | `~/.local/share/devin/cli/sessions.db` | `--devin-db` or `FLOPWIRE_DEVIN_DB`; `-` disables |
 | opencode store | `~/.local/share/opencode/opencode.db` (`opencode db path`) | `--opencode-db`, `FLOPWIRE_OPENCODE_DB`, opencode's `OPENCODE_DB`, or `XDG_DATA_HOME`; `-` disables |
+| Google Antigravity CLI transcripts | `~/.gemini/antigravity-cli/brain` | `--antigravity-root` or `FLOPWIRE_ANTIGRAVITY_ROOT`; `-` disables |
 
 Message inboxes belong to one normalized server URL and enrolled device ID.
 Switching servers or devices opens a separate inbox. Returning to the same
@@ -189,8 +191,7 @@ crash of the agent.
 
 Local redaction does not protect the files on disk:
 
-- The harness transcripts (`~/.claude`, `~/.codex`, the Devin and opencode stores) are
-  not changed. They still hold the text.
+- The original transcripts in the harness's storage still hold the text.
 - The index database keeps `content_sha`, a SHA-256 of each message's
   original text, for change detection. A person who can read the index
   files can test guesses of a hidden message against it.

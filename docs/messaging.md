@@ -45,10 +45,11 @@ shows the messaging state.
 
 ## How a hook delivers a message
 
-A message arrives inside a running turn, at the next tool call, or with the
-session's next prompt or resumption hook, including a background task
-notification. A parent that has stopped while background agents run waits
-until it resumes, through a human prompt or a harness task notification.
+A message arrives at the next delivery hook. Depending on the harness,
+that may be a tool call or model invocation during a turn, a new prompt,
+or a resumption such as a background task notification. A parent that has
+stopped while background agents run waits for a human prompt or a harness
+task notification.
 Child tool calls do not deliver messages to the parent. An ordinary send
 never wakes an idle session or starts a turn. The receipt's `next_prompt`
 value includes these prompt and resumption hooks. For the hook events, see
@@ -267,7 +268,7 @@ The sender is always the calling session. The commands find it as
 [search](search.md#your-own-session) does. If no session is found, `send`
 and `inbox` stop with an error. `peers` still lists the sessions. To name
 the session, set `FLOPWIRE_SESSION_ID`, and `FLOPWIRE_AGENT` (`claude`,
-`codex`, `devin` or `opencode`).
+`codex`, `devin`, `opencode` or `antigravity`).
 
 A subagent is not a session, so it gets no messages. A hook that runs in
 a subagent prints nothing and takes nothing; the session's own next hook
@@ -549,12 +550,11 @@ on the sending device.
 
 ## Known limits
 
-- Only Claude Code, Codex, Devin CLI and opencode sessions send and
-  receive. Claude Code cloud sessions and Devin cloud sessions only
-  receive, while they run a turn. See the
-  [support matrix](harnesses/README.md#support-matrix) and
-  [cloud.md](harnesses/cloud.md). For opencode, see
-  [opencode.md](harnesses/opencode.md#known-limits).
+- See the [support matrix](harnesses/README.md#support-matrix) for which
+  sessions can send and receive, including the limits for
+  [cloud sessions](harnesses/cloud.md),
+  [opencode](harnesses/opencode.md#known-limits) and
+  [Antigravity CLI](harnesses/antigravity.md#messaging).
 - A Devin hook delivers nothing during a background subagent's tool calls
   (`run_subagent` in the background, or a foreground one that Esc moved
   there): they are not on the session's main chain. If the hook cannot read

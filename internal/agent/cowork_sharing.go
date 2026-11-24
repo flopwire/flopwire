@@ -369,6 +369,9 @@ func (a *Agent) authorizeCapture(ctx context.Context, spec devicesync.SourceSpec
 		refreshDone.End()
 	}
 	a.refreshPolicy(ctx, false)
+	if spec.Agent == transcript.AgentAntigravity {
+		return a.authorizeAntigravityCapture(ctx, spec)
+	}
 	a.captureScopeMu.Lock()
 	release := a.captureScopeMu.Unlock
 	if !a.allowUpload(spec) {

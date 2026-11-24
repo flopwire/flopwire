@@ -39,6 +39,16 @@ var structural = map[string]bool{
 // file) is searched as plain text, or masked entirely when whole. found
 // reports whether every needle was found at least once.
 func MaskRecord(rec []byte, needles []string, whole bool) (spans []Span, found bool) {
+	return maskRecord(rec, needles, whole, false)
+}
+
+// MaskAntigravityRecord keeps the fixed source labels the Antigravity parser
+// uses to distinguish user and model records. Other source values are text.
+func MaskAntigravityRecord(rec []byte, needles []string, whole bool) ([]Span, bool) {
+	return maskRecord(rec, needles, whole, true)
+}
+
+func maskRecord(rec []byte, needles []string, whole, antigravity bool) (spans []Span, found bool) {
 	t := bytes.TrimSpace(rec)
 	if len(t) == 0 || (t[0] != '{' && t[0] != '[') || !json.Valid(t) {
 		if whole {
@@ -62,6 +72,9 @@ func MaskRecord(rec []byte, needles []string, whole bool) (spans []Span, found b
 	identity := func(i int) int { return i }
 	walkJSON(rec, identity, func(key string, dec []byte, pos func(int) int) {
 		if whole {
+			if antigravity && key == "source" && (string(dec) == "USER_EXPLICIT" || string(dec) == "MODEL") {
+				return
+			}
 			if !structural[key] && len(dec) > 0 {
 				spans = append(spans, Span{pos(0), pos(len(dec))})
 			}

@@ -281,8 +281,8 @@ func (c *busClient) callRetry(ctx context.Context, req agent.Request) (agent.Res
 // errNoCaller is the refusal of a send (and inbox) that cannot name the
 // calling session.
 func errNoCaller(verb string, st busStyle) *busErr {
-	e := &busErr{Code: codeNoCaller, Detail: verb + ": cannot identify the calling session (no Claude Code session file, no Codex thread id, no Devin session lock, no FLOPWIRE_SESSION_ID), and messages always name the session they come from or belong to",
-		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex, devin or opencode) to your session's id",
+	e := &busErr{Code: codeNoCaller, Detail: verb + ": cannot identify the calling session (no Claude Code session file, no Codex thread id, no Devin or Antigravity session lock, no FLOPWIRE_SESSION_ID), and messages always name the session they come from or belong to",
+		Fix:     "run it from inside an agent session, or set FLOPWIRE_SESSION_ID (and FLOPWIRE_AGENT: claude, codex, devin, opencode or antigravity) to your session's id",
 		Example: "FLOPWIRE_SESSION_ID=0b7e2c1a-… FLOPWIRE_AGENT=claude flopwire " + verb + " …"}
 	if st.MCP {
 		e.Fix = "set FLOPWIRE_SESSION_ID and FLOPWIRE_AGENT in this MCP server's environment, or run flopwire " + verb + " from your shell tool instead"
@@ -1237,11 +1237,11 @@ func init() {
 JSON: {"kind":"peers","peers":[{"session":FULL ID,"agent","user","user_id","device",
 "repo","branch","title","busy","own","seen_at"}…],"total":N,"more":bool,"limit":N,
 "caller":{"session","agent"},"hint"}. Your own session (caller) is left out. busy: a turn
-is running, so a message arrives at its next tool call; idle: it waits for that
+is running, so a message arrives at its next delivery hook; idle: it waits for that
 session's human. more=true: the limit cut the list; hint says how to narrow it.
 --text: SESSION  user  agent  live busy|idle  repo@branch  "title"
 
-Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin|opencode
+Filters  --session PREFIX  --repo .|NAME|/PATH  --user EMAIL|NAME  --agent claude|codex|devin|opencode|antigravity
 Output   --limit N (50, max 500)  --text  --max-bytes N (text)  (--json: the default)
 Errors   JSON on stderr: {"kind":"error","error":{"code","detail","fix","example",…}}; exit 1
 Socket   --socket PATH (default <config dir>/agent.sock: the device agent answers)
@@ -1265,8 +1265,8 @@ Omit it for updates or acknowledgments that can wait. It never enables wake on r
 --intent  request: expects a reply; inform (default): no reply; done: closes the
           thread and must not be answered.
 Do not poll peers or send "are you done?": the receipt says when the message arrives.
-A reply arrives in your own context through the flopwire hook: inside your running turn
-at the next tool call, or with your next prompt or when your session resumes. Never ask a peer to do
+A reply arrives in your own context at your next delivery hook. This can happen
+during a running turn, with your next prompt, or when your session resumes. Never ask a peer to do
 something your own session was denied.
 
 JSON: a receipt, never a reply: {"kind":"send_receipt","id","thread_id","state":
@@ -1309,8 +1309,8 @@ acted on it. A received message whose reply_to names yours is a reply; inspect i
 pass next as --cursor.
 --text: ID  received|sent  TIME  from|to WHO  intent  state (read: with its time), then
 the text indented (a list shows first lines; --thread shows whole texts).
-Received messages arrive in your context through the flopwire hook (inside a running
-turn at the next tool call, or with the next prompt or session resumption); use inbox to check a sent
+Received messages arrive in your context at the next delivery hook, during a
+running turn, with the next prompt, or when the session resumes. Use inbox to check a sent
 message's state or re-read a thread, or where the hook is not set up.
 
 Output   --limit N (20, max 200)  --cursor C (next)  --text  --max-bytes N (text)

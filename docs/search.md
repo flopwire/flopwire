@@ -1,7 +1,8 @@
 # Searching transcripts
 
 Flopwire gives people and agents five retrieval tools over past and ongoing
-AI-agent conversations (Claude Code, Codex, Devin, opencode). History can
+AI-agent conversations (Claude Code, Codex, Devin, opencode, Google
+Antigravity CLI). History can
 contain research, planning, writing, troubleshooting and coding. A session
 need not be live to search or read it. The CLI and the MCP server have the
 same tools, with the same query semantics and output. `flopwire <tool>
@@ -182,7 +183,7 @@ full session id, then:
 | Key | Value |
 |---|---|
 | `who` | `user@device`, on the team server |
-| `agent` | `claude`, `codex`, `devin` or `opencode` |
+| `agent` | `claude`, `codex`, `devin`, `opencode` or `antigravity` |
 | `live` or `ended` | `live=4m` (since its last activity) or `ended=2026-09-23` |
 | `repo`, `worktree`, `branch` | The recorded repository name; the checkout directory when it differs; the branch, or `a→b` when it switched. Without recorded repository identity, `repo` is the directory name |
 | `files`, `pr`, `prs`, `commits`, `failed` | Files edited, the first PR, how many PRs, commits (with or without a sha), failed tool calls. A `+` means the digest capped the list |
@@ -557,6 +558,12 @@ default_tools_approval_mode = "approve"
 
 The approval line also approves `flopwire_send`, which sends messages (see
 [Messaging](messaging.md)). Remove the line to be asked before each call.
+
+Google Antigravity CLI:
+
+```sh
+agy mcp add flopwire flopwire mcp
+```
 
 After enrollment, the MCP retrieval tools query the shared server; add
 `--local` to the arguments to query only this device. MCP output matches

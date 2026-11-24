@@ -128,6 +128,9 @@ func (a *Agent) specOf(t *target) devicesync.SourceSpec {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	sp := t.spec()
+	if sp.Agent == transcript.AgentAntigravity {
+		sp.Root = a.cfg.AntigravityRoot
+	}
 	if t.kind == kindTranscript {
 		key, _ := t.placeKeyOf()
 		p, ok := a.places[key]
@@ -195,13 +198,13 @@ func (f *found) claudeSessions(sessions []*claude.Session, p transcript.Parser) 
 	}
 }
 
-func (f *found) codexSources(srcs []transcript.Source, p transcript.Parser) {
+func (f *found) transcriptSources(srcs []transcript.Source, p transcript.Parser) {
 	for _, src := range srcs {
 		f.targets = append(f.targets, &target{path: src.Path, kind: kindTranscript, src: src, parser: p})
 	}
 }
 
-// discoverAll lists every Claude and Codex file.
+// discoverAll lists watched transcript and companion sources.
 func (a *Agent) discoverAll() (*found, error) {
 	defer a.work.discover.Begin().End()
 	f := &found{}
@@ -236,13 +239,18 @@ func (a *Agent) discoverAll() (*found, error) {
 	if err != nil {
 		return nil, err
 	}
-	f.codexSources(srcs, a.codex)
+	f.transcriptSources(srcs, a.codex)
+	srcs, err = a.discoverAntigravity()
+	if err != nil {
+		return nil, err
+	}
+	f.transcriptSources(srcs, a.antigravity)
 	return f, nil
 }
 
 // discoverDir lists the files a directory event may have added: the
-// Claude project the directory belongs to, or the Codex rollouts directly
-// in it. It reports whether dir is under a known root.
+// Claude project or Antigravity conversation it belongs to, or the Codex
+// rollouts directly in it. It reports whether dir is under a known root.
 func (a *Agent) discoverDir(dir string) (*found, bool) {
 	f := &found{}
 	if parent := a.nativeClaudeParent(dir); parent != "" && a.desktopCodeCoworkAlias([]placeKey{{transcript.AgentClaude, parent}}) {
@@ -262,6 +270,15 @@ func (a *Agent) discoverDir(dir string) (*found, bool) {
 		f.claudeSessions(sessions, a.claude)
 		return f, true
 	}
+	if rel, ok := under(a.cfg.AntigravityRoot, dir); ok {
+		if rel == "." {
+			return nil, true // the conversation list changed
+		}
+		if src, ok := antigravitySource(a.cfg.AntigravityRoot, firstElem(rel)); ok {
+			f.transcriptSources([]transcript.Source{src}, a.antigravity)
+		}
+		return f, true
+	}
 	if _, ok := under(a.cfg.CodexHome, dir); ok {
 		entries, err := fsprobe.ReadDir(dir)
 		if err != nil {
@@ -275,7 +292,7 @@ func (a *Agent) discoverDir(dir string) (*found, bool) {
 				srcs = append(srcs, codexSource(filepath.Join(dir, e.Name())))
 			}
 		}
-		f.codexSources(srcs, a.codex)
+		f.transcriptSources(srcs, a.codex)
 		return f, true
 	}
 	return f, false

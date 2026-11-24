@@ -1028,7 +1028,7 @@ func TestPresenceUncertainHoldersStayBoundedWithoutEnding(t *testing.T) {
 					if _, ok := f.presence(now)[session.id]; ok {
 						t.Fatal("uncertain old holder bypassed LiveCap")
 					}
-					reg := f.a.registries().reg
+					reg := f.a.registries(t.Context()).reg
 					ref := devicebus.Ref{Agent: harness, Session: session.id}
 					if !slices.Contains(reg.Unknown, ref) {
 						t.Fatalf("not unknown: %+v", reg)
