@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/flopwire/flopwire/compare/v0.4.3...v0.5.0) (2026-11-24)
+
+
+### Features
+
+* support Google Antigravity CLI sessions ([#468](https://github.com/flopwire/flopwire/issues/468)) ([fa73401](https://github.com/flopwire/flopwire/commit/fa7340129efedca517325af06bd2ddf076e5485d))
+
 ## [0.4.3](https://github.com/flopwire/flopwire/compare/v0.4.2...v0.4.3) (2026-11-16)
 
 
