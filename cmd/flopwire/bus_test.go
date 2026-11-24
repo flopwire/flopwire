@@ -173,6 +173,25 @@ func mcpContent(t *testing.T, resp string) (string, bool, map[string]any) {
 	return text, r.Result.IsError, r.Result.Structured
 }
 
+func TestAntigravityBusySendReceipt(t *testing.T) {
+	r := busproto.SendResponse{
+		State: busproto.StateQueued, Intent: busproto.IntentRequest,
+		To: busproto.Recipient{Session: "0b7e2c1a-1111", Agent: "antigravity", User: "alex@example.test", Live: true, Busy: true},
+	}
+	if got := arrival(r); got != "next_model_invocation" {
+		t.Errorf("arrival = %q, want next_model_invocation", got)
+	}
+	if got := sendOutcome(r); !strings.Contains(got, "arrives at its next model invocation") {
+		t.Errorf("outcome = %q, want model invocation delivery", got)
+	}
+	if got := sendNext(r); got != nextBusy {
+		t.Errorf("next = %q, want during-turn guidance", got)
+	}
+	if got := sendMCPNext(r); !strings.Contains(got, "inspect any received reply") {
+		t.Errorf("MCP next = %q, want during-turn guidance", got)
+	}
+}
+
 // The outcome line of every kind of send, as plan §3 prints them, plus
 // the cases the plan leaves out and the redaction note.
 func TestSendOutcomeLines(t *testing.T) {

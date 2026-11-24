@@ -34,8 +34,16 @@ func decodeHookInput(raw []byte, antigravityEvent string, in *hookInput) bool {
 	if err != nil || id.String() != payload.ConversationID {
 		return false
 	}
-	if p := payload.TranscriptPath; p != "" && (!filepath.IsAbs(p) || antigravity.SessionID(p) != payload.ConversationID) {
-		return false
+	if p := payload.TranscriptPath; p != "" {
+		// agy 1.5.16 hooks name the full trajectory. Only its canonical
+		// sibling is indexed, matching background discovery.
+		if filepath.Base(p) == "transcript_full.jsonl" {
+			p = filepath.Join(filepath.Dir(p), "transcript.jsonl")
+		}
+		if !filepath.IsAbs(p) || antigravity.SessionID(p) != payload.ConversationID {
+			return false
+		}
+		payload.TranscriptPath = p
 	}
 
 	switch antigravityEvent {
@@ -59,8 +67,7 @@ func decodeHookInput(raw []byte, antigravityEvent string, in *hookInput) bool {
 }
 
 type antigravitySystemMessage struct {
-	Text     string            `json:"systemMessage"`
-	Metadata map[string]string `json:"metadata"`
+	Text string `json:"systemMessage"`
 }
 
 type antigravityStep struct {
@@ -73,6 +80,6 @@ type antigravityOutput struct {
 
 func antigravityHookOutput(text string) antigravityOutput {
 	return antigravityOutput{InjectSteps: []antigravityStep{{SystemMessage: antigravitySystemMessage{
-		Text: text, Metadata: map[string]string{"source": "flopwire"},
+		Text: text,
 	}}}}
 }

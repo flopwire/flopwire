@@ -19,7 +19,7 @@ func TestAntigravityHookDelivery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brain", id, ".system_generated", "logs", "transcript.jsonl")
 	run := func(event string, idle bool) string {
 		t.Helper()
-		raw := hookJSON(map[string]any{"conversationId": id, "transcriptPath": path, "fullyIdle": idle})
+		raw := hookJSON(map[string]any{"conversationId": id, "transcriptPath": filepath.Join(filepath.Dir(path), "transcript_full.jsonl"), "fullyIdle": idle})
 		var stdout, stderr strings.Builder
 		args := []string{"--socket", f.sock, "--antigravity", event}
 		// Launching agy from another harness must not misclassify its hook.
@@ -34,7 +34,7 @@ func TestAntigravityHookDelivery(t *testing.T) {
 		t.Fatalf("SessionStart took a message: %s", out)
 	}
 	var output antigravityOutput
-	if raw := run("PreInvocation", false); json.Unmarshal([]byte(raw), &output) != nil || len(output.InjectSteps) != 1 ||
+	if raw := run("PreInvocation", false); json.Unmarshal([]byte(raw), &output) != nil || len(output.InjectSteps) != 1 || strings.Contains(raw, `"metadata"`) ||
 		!strings.Contains(output.InjectSteps[0].SystemMessage.Text, "synthetic Antigravity delivery") {
 		t.Fatalf("PreInvocation output = %s", raw)
 	}

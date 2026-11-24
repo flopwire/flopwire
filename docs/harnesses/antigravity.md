@@ -44,5 +44,7 @@ model invocation. Start a turn in an idle session to receive a message.
 Antigravity has no Flopwire wake support or separate user-only hook notice
 for held messages.
 
-Live round-trip delivery has yet to be verified in an authenticated
-Antigravity session.
+Antigravity CLI 1.5.16 supplies the full trajectory path to its hooks.
+Flopwire flushes the adjacent canonical transcript and delivers messages
+through a system step in the current invocation. The delivery receipt
+confirms the hook wrote the message. Antigravity read receipts are unavailable.

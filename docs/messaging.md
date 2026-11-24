@@ -235,7 +235,8 @@ JSON with named fields and full session ids. Add `--text` (MCP:
 
    Put the main point in the first line. Use `-` as the text to read it
    from standard input. The command prints a receipt. The `arrives` field
-   says when the message arrives: `next_tool_call`, `next_prompt`,
+   says when the message arrives: `next_tool_call`, `next_model_invocation`
+   (busy Antigravity sessions), `next_prompt`,
    `when_accepted`, `next_session`, `only_if_resumed`, `when_running` (an
    idle cloud session) or `already_recorded` (a replayed retry). A receipt
    is not a reply.
