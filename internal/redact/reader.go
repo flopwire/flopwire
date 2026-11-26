@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"path"
@@ -36,6 +37,10 @@ const (
 const (
 	SegMax  = 1 << 20
 	Overlap = 64 << 10
+
+	// Match the physical-line limit of the transcript parsers. Beyond it
+	// retain the plaintext masking of ambiguous quoted assignments.
+	maxJSONFramingLine = 16 << 20
 )
 
 var binaryExt = map[string]bool{
@@ -79,7 +84,7 @@ type ReaderAt struct {
 	lineOff int64
 	nl      bool
 	valid   bool
-	// JSON framing for the last oversized line whose prefix was read.
+	// JSON framing for the last multi-segment record validated.
 	jsonLineOff int64
 	jsonLine    bool
 	// raw block cache
@@ -210,18 +215,20 @@ func (x *ReaderAt) load(pos int64) error {
 			ctx = ctx[:e-cs+int64(i)+1]
 		}
 	}
-	jsonFragment := false
-	if x.mode == Lines && (cs > line || !nl && (x.eof < 0 || e < x.eof)) {
-		prefix := ctx
-		if cs > line {
-			prefix = nil
-		}
-		jsonFragment, err = x.jsonLinePrefix(line, prefix)
-		if err != nil {
-			return err
+	isJSON := func() bool { return json.Valid(ctx) }
+	var framingErr error
+	complete := bytes.HasSuffix(ctx, []byte{'\n'}) || x.eof >= 0 && cs+int64(len(ctx)) == x.eof
+	if x.mode == Lines && (cs != line || !complete) {
+		isJSON = func() bool {
+			var valid bool
+			valid, framingErr = x.validJSONLine(line)
+			return valid
 		}
 	}
-	ms := find(ctx, jsonFragment)
+	ms := find(ctx, isJSON)
+	if framingErr != nil {
+		return framingErr
+	}
 	seg := append(x.seg[:0], ctx[s-cs:e-cs]...)
 	for _, m := range ms {
 		ms, me := cs+int64(m.Start), cs+int64(m.End)
@@ -258,37 +265,48 @@ func (x *ReaderAt) load(pos int64) error {
 	return nil
 }
 
-// jsonLinePrefix recognizes a JSON record before any window can begin
-// inside a string. A small direct read leaves the raw cache untouched.
-// Cache the result so a long run of indentation is read at most once.
-func (x *ReaderAt) jsonLinePrefix(line int64, prefix []byte) (bool, error) {
+// validJSONLine confirms framing only for a suspicious assignment match.
+// Cache the result so multiple windows within one line do not reread it.
+// Direct reads leave the active window in the raw block cache intact.
+func (x *ReaderAt) validJSONLine(line int64) (bool, error) {
 	if x.jsonLineOff == line {
 		return x.jsonLine, nil
 	}
-	if first := bytes.TrimLeft(prefix, " \t\r"); len(first) > 0 {
-		x.jsonLineOff, x.jsonLine = line, startsJSON(first[0])
-		return x.jsonLine, nil
+	valid, err := x.readJSONLine(line)
+	if err == nil {
+		x.jsonLineOff, x.jsonLine = line, valid
 	}
-	var buf [4 << 10]byte
-	for off := line + int64(len(prefix)); ; {
-		n, err := x.r.ReadAt(buf[:], off)
+	return valid, err
+}
+
+func (x *ReaderAt) readJSONLine(line int64) (bool, error) {
+	record := make([]byte, Overlap)
+	off := 0
+	for off < maxJSONFramingLine {
+		if off == len(record) {
+			grown := make([]byte, min(2*len(record), maxJSONFramingLine))
+			copy(grown, record)
+			record = grown
+		}
+		n, err := x.r.ReadAt(record[off:min(off+Overlap, len(record))], line+int64(off))
 		if err != nil && !errors.Is(err, io.EOF) {
 			return false, err
 		}
-		if first := bytes.TrimLeft(buf[:n], " \t\r"); len(first) > 0 {
-			x.jsonLineOff, x.jsonLine = line, startsJSON(first[0])
-			return x.jsonLine, nil
+		if end := bytes.IndexByte(record[off:off+n], '\n'); end >= 0 {
+			return json.Valid(record[:off+end]), nil
 		}
+		off += n
 		if n == 0 || errors.Is(err, io.EOF) {
-			x.jsonLineOff, x.jsonLine = line, false
-			return false, nil
+			return json.Valid(record[:off]), nil
 		}
-		off += int64(n)
 	}
-}
-
-func startsJSON(c byte) bool {
-	return c == '{' || c == '[' || c == '"'
+	// The limit is on record bytes, excluding the newline.
+	var newline [1]byte
+	n, err := x.r.ReadAt(newline[:], line+int64(off))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return (n == 0 || newline[0] == '\n') && json.Valid(record[:off]), nil
 }
 
 // lineStart finds the start of the line holding pos. It reads backwards

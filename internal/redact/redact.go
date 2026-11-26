@@ -45,12 +45,12 @@ type Match struct {
 // one segment (a line, or a window of a larger file); matches never span
 // segments.
 func Find(b []byte) []Match {
-	return find(b, false)
+	return find(b, func() bool { return json.Valid(b) })
 }
 
-// jsonFragment is set by the line reader when this window belongs to a
-// long JSON record whose full structure is outside the window.
-func find(b []byte, jsonFragment bool) []Match {
+// isJSON validates the source record when a match crosses a potential
+// JSON string delimiter. The reader's scan window may hold a fragment.
+func find(b []byte, isJSON func() bool) []Match {
 	hp := hitPool.Get().(*[]acHit)
 	defer hitPool.Put(hp)
 	hits := ac.scan(b, (*hp)[:0])
@@ -93,7 +93,7 @@ func find(b []byte, jsonFragment bool) []Match {
 			ms = matchWindow(b, ri, w[0], w[1], ms)
 		}
 	}
-	return normalize(b, ms, jsonFragment)
+	return normalize(b, ms, isJSON)
 }
 
 var hitPool = sync.Pool{New: func() any { return new([]acHit) }}
@@ -154,18 +154,18 @@ func pick(loc []int, group int) (int, int) {
 
 // normalize widens matches to whole JSON escapes, then sorts and merges
 // overlaps (the earlier, higher-priority rule names the merged region).
-func normalize(b []byte, ms []Match, jsonFragment bool) []Match {
+func normalize(b []byte, ms []Match, isJSON func() bool) []Match {
 	if len(ms) == 0 {
 		return nil
 	}
-	framingKnown, framed := jsonFragment, jsonFragment
+	framingKnown, framed := false, false
 	out := ms[:0]
 	for _, m := range ms {
 		m.Start, m.End = widenEscapes(b, m.Start, m.End)
 		if m.Rule == assignRule {
 			if quote := unescapedQuote(b, m.Start, m.End); quote >= 0 {
 				if !framingKnown {
-					framingKnown, framed = true, json.Valid(b)
+					framingKnown, framed = true, isJSON()
 				}
 				if framed {
 					// A quote in shell text can be unterminated. The JSON

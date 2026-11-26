@@ -472,3 +472,35 @@ func TestQuotedAssignmentRetainsPlainTextMasking(t *testing.T) {
 		t.Fatal("a literal double quote inside a shell password must not end its mask")
 	}
 }
+
+func TestOversizedPlainRecordRetainsQuotedAssignmentMasking(t *testing.T) {
+	const secret = `J4t9vQ7z"X3pN2Gq`
+	for _, prefix := range []string{"[INFO]", `{"looks_structured":`} {
+		raw := []byte(prefix + strings.Repeat("x", SegMax) + " password='" + secret + "'\n")
+		want, _ := Redact(raw)
+		const tailSize = 64
+		off := int64(len(raw) - tailSize)
+		got := make([]byte, tailSize)
+		if _, err := NewReaderAt(bytes.NewReader(raw), Lines).ReadAt(got, off); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want[off:]) || bytes.Contains(got, []byte("X3pN2Gq")) {
+			t.Fatal("windowed masking weakened protection of a plaintext credential")
+		}
+	}
+}
+
+func TestLongJSONFramingReadIsCappedAndCached(t *testing.T) {
+	raw := bytes.Repeat([]byte{'x'}, maxJSONFramingLine+1)
+	src := &countingReaderAt{r: bytes.NewReader(raw)}
+	reader := NewReaderAt(src, Lines)
+	for range 2 {
+		valid, err := reader.validJSONLine(0)
+		if err != nil || valid {
+			t.Fatalf("oversized non-JSON line reported valid = %v, err = %v", valid, err)
+		}
+	}
+	if src.n != maxJSONFramingLine+1 {
+		t.Fatalf("framing check read %d bytes, want one bounded read of %d", src.n, maxJSONFramingLine+1)
+	}
+}
