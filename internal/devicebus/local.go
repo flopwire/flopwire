@@ -32,7 +32,7 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	if len(req.RetryOf) > 64 || strings.TrimSpace(req.RetryOf) != req.RetryOf {
 		return busproto.SendResponse{}, badRequest("retry_of must be a message id of at most 64 bytes")
 	}
-	rawRefs := req.Refs
+	rawRefs, rawRepo := req.Refs, req.Repo
 	cleanSend(&req)
 	if b.Local() {
 		// Without a server the path rules do not matter: the sender must
@@ -53,10 +53,10 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 		return b.sendLocal(ctx, req)
 	}
-	if err := b.checkSharedSend(ctx, req, rawRefs, true); err != nil {
+	if err := b.checkSharedSend(ctx, req, rawRefs, rawRepo, true); err != nil {
 		return busproto.SendResponse{}, err
 	}
-	if strings.HasPrefix(req.To, "@") {
+	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
 		if err := b.resolveRepo(ctx, &req); err != nil {
 			return busproto.SendResponse{}, err
 		}
@@ -77,7 +77,7 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		reported := false
 		for b.awaitReported(ctx, req.FromSession, req.FromAgent, deadline) {
 			reported = true
-			if err := b.checkSharedSend(ctx, req, rawRefs, false); err != nil {
+			if err := b.checkSharedSend(ctx, req, rawRefs, rawRepo, false); err != nil {
 				return busproto.SendResponse{}, err
 			}
 			if out, err = srv.Send(ctx, req); !isNotOnDevice(err) || !pause(ctx, deadline, reportRetryEvery) {
@@ -116,7 +116,7 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 }
 
 // checkSharedSend validates every session and repo the request can disclose.
-func (b *Bus) checkSharedSend(ctx context.Context, req busproto.SendRequest, rawRefs []string, wait bool) error {
+func (b *Bus) checkSharedSend(ctx context.Context, req busproto.SendRequest, rawRefs []string, rawRepo string, wait bool) error {
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent, wait); err != nil {
 		return err
 	}
@@ -142,7 +142,10 @@ func (b *Bus) checkSharedSend(ctx context.Context, req busproto.SendRequest, raw
 	if err := b.namesNoWithheld(ctx, req, rawRefs); err != nil {
 		return err
 	}
-	if strings.HasPrefix(req.To, "@") {
+	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
+		if rawRepo != req.Repo {
+			return b.reposNotWithheld(ctx, rawRepo, req.Repo)
+		}
 		return b.reposNotWithheld(ctx, req.Repo)
 	}
 	return nil

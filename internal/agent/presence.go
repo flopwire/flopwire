@@ -1061,28 +1061,24 @@ func (a *Agent) busCheckPlacement(ctx context.Context, s devicebus.Session) (wit
 // BusPlace indexes a session now (devicebus Config.Place): a request
 // names a session presence does not list placed yet.
 func (a *Agent) BusPlace(ctx context.Context, session string) error {
-	if err := a.waitDiscovered(ctx); err != nil {
-		return err
-	}
-	t := a.lookup("", session)
-	a.mu.Lock()
-	isAntigravity := t != nil && t.src.Agent == transcript.AgentAntigravity
-	a.mu.Unlock()
-	if a.cfg.AntigravityRoot != "" {
-		if t == nil {
-			if src, ok := antigravitySource(a.cfg.AntigravityRoot, session); ok {
-				// FlushPath discovers the canonical file and reconciles its
-				// workspace before indexing it.
-				_, err := a.FlushPath(ctx, src.Path, session)
-				return err
-			}
-		} else if isAntigravity {
-			a.refreshAntigravityMetadata(ctx, &found{})
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+	if root := a.cfg.AntigravityRoot; root != "" {
+		if err := a.waitDiscovered(ctx); err != nil {
+			return err
+		}
+		path := antigravityPath(root, session)
+		a.mu.Lock()
+		t := a.targets[path]
+		tracked := t != nil && t.src.Agent == transcript.AgentAntigravity && t.src.SessionKey == session
+		a.mu.Unlock()
+		if tracked {
 			if !a.antigravityCatalogCurrent() {
-				return errAntigravityCatalogPending
+				a.refreshAntigravityMetadata(ctx, &found{})
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if !a.antigravityCatalogCurrent() {
+					return errAntigravityCatalogPending
+				}
 			}
 			a.mu.Lock()
 			indexed := t.indexedWith != ""
@@ -1092,9 +1088,13 @@ func (a *Agent) BusPlace(ctx context.Context, session string) error {
 				// workspace policy is current.
 				return nil
 			}
-			_, err := a.FlushPath(ctx, t.path, session)
-			return err
+		} else if _, ok := antigravitySource(root, session); !ok {
+			path = ""
 		}
+		// With a canonical path, FlushPath can discover a new transcript
+		// and reconcile its workspace before indexing it.
+		_, err := a.FlushPath(ctx, path, session)
+		return err
 	}
 	_, err := a.FlushPath(ctx, "", session)
 	return err

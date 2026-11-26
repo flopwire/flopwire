@@ -123,9 +123,28 @@ func TestBusPlaceDiscoversAntigravitySession(t *testing.T) {
 	}
 }
 
-func TestBusPlaceRefreshesEstablishedAntigravitySession(t *testing.T) {
+type antigravitySendRecorder struct {
+	devicebus.Server
+	requests []busproto.SendRequest
+}
+
+func (r *antigravitySendRecorder) Send(_ context.Context, req busproto.SendRequest) (busproto.SendResponse, error) {
+	r.requests = append(r.requests, req)
+	return busproto.SendResponse{}, nil
+}
+
+func TestSendRefreshesEstablishedAntigravitySession(t *testing.T) {
 	f := newFixture(t, "-")
 	f.cfg.AntigravityRoot = f.path("brain")
+	srv := &antigravitySendRecorder{}
+	b, err := devicebus.Open(f.path("bus.db"), devicebus.Config{
+		Connect: func() (devicebus.Server, string) { return srv, "test" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	f.cfg.Bus = b
 	f.restart()
 
 	path := antigravityPath(f.cfg.AntigravityRoot, agySession)
@@ -166,15 +185,18 @@ func TestBusPlaceRefreshesEstablishedAntigravitySession(t *testing.T) {
 	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); !withheld || !unplaced {
 		t.Fatalf("stale catalog withheld = %v, unplaced = %v", withheld, unplaced)
 	}
-	const later = "{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"source\":\"MODEL\",\"status\":\"DONE\",\"content\":\"Later unindexed response\"}\n"
+	const later = `{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","content":"Later unindexed response","created_at":"2026-11-24T12:04:07Z"}` + "\n"
 	if err := os.WriteFile(path, []byte(agyInput+later), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.a.BusPlace(ctx, agySession); err != nil {
+	if _, err := b.Send(ctx, busproto.SendRequest{FromAgent: s.Agent, FromSession: agySession, To: "recipient", Body: "review requested"}); err != nil {
 		t.Fatal(err)
 	}
 	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); withheld || unplaced {
 		t.Fatalf("unaffected session withheld = %v, unplaced = %v after refresh", withheld, unplaced)
+	}
+	if len(srv.requests) != 1 || srv.requests[0].FromSession != agySession {
+		t.Fatalf("unexpected forwarded sends: %v", srv.requests)
 	}
 	if got := f.find("Later unindexed response", false); len(got) != 0 {
 		t.Fatalf("catalog refresh also indexed %d new transcript messages", len(got))

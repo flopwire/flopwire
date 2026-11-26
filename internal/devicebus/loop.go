@@ -67,7 +67,7 @@ func (b *Bus) serverPresence(ctx context.Context, all []Session) []busproto.Pres
 		if !s.Withheld && check != nil {
 			s.Withheld, s.Unplaced = check(ctx, s)
 		}
-		if !s.Withheld {
+		if !s.Withheld && !s.Unplaced {
 			keep = append(keep, s)
 		}
 	}
@@ -91,6 +91,21 @@ func (b *Bus) serverPresence(ctx context.Context, all []Session) []busproto.Pres
 		return strings.Compare(a.SessionID, b.SessionID)
 	})
 	return out
+}
+
+// recheckReported keeps previously reported sessions whose placement still
+// allows them to be sent when the local presence source is unavailable.
+func (b *Bus) recheckReported(ctx context.Context, sent []busproto.PresenceSession) []busproto.PresenceSession {
+	b.mu.Lock()
+	check := b.checkPlacement
+	b.mu.Unlock()
+	if check == nil {
+		return sent
+	}
+	return slices.DeleteFunc(slices.Clone(sent), func(s busproto.PresenceSession) bool {
+		withheld, unplaced := check(ctx, Session{PresenceSession: s})
+		return withheld || unplaced
+	})
 }
 
 // pollPresence converts a copy to server time. Local comparisons keep
@@ -191,6 +206,10 @@ func (b *Bus) runServer(ctx context.Context) {
 			// report would end every session at the server.
 			if all, err := b.sessions(ctx); err != nil {
 				b.log.Warn("devicebus: presence", "err", err)
+				cur := b.recheckReported(ctx, sent)
+				if len(cur) != len(sent) {
+					cursor, sent = 0, cur
+				}
 			} else {
 				cur := b.serverPresence(ctx, all)
 				if !sameButBusy(cur, sent) {

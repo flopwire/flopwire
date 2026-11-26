@@ -1260,6 +1260,102 @@ func TestSendWhenPresenceReportTimesOut(t *testing.T) {
 	}
 }
 
+func TestSendRechecksRefsBeforeRetryAfterPresenceReport(t *testing.T) {
+	srv := newFakeServer()
+	var sends int
+	srv.sendFn = func(busproto.SendRequest) error {
+		sends++
+		return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session is not on this device")
+	}
+	p := &presenceSrc{}
+	live := sess("open-1", "claude", "/src/api", true)
+	p.set(live)
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	b.SetWithheld(func(_ context.Context, ref string) (string, error) {
+		if ref == "private-session" && sends > 0 {
+			return ref, nil
+		}
+		return "", nil
+	}, nil)
+	b.mu.Lock()
+	b.reported = []busproto.PresenceSession{live.PresenceSession}
+	b.mu.Unlock()
+	var be *busproto.Error
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: live.SessionID, To: "abcd", Body: "x", Refs: []string{"private-session"}}); !errors.As(err, &be) ||
+		be.Code != busproto.CodeWithheldSession {
+		t.Fatalf("retry referring to a withheld session: %v", err)
+	}
+	if sends != 1 {
+		t.Fatalf("server got %d send requests, want 1", sends)
+	}
+}
+
+func TestSendRechecksOriginalAndResolvedRepoBeforeRetry(t *testing.T) {
+	for _, deny := range []string{"api", "example/api"} {
+		t.Run(deny, func(t *testing.T) {
+			srv := newFakeServer()
+			var sends int
+			srv.sendFn = func(busproto.SendRequest) error {
+				sends++
+				return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session is not on this device")
+			}
+			p := &presenceSrc{}
+			live := sess("open-1", "claude", "/src/api", true)
+			p.set(live)
+			b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+			b.SetRepoKey(func(context.Context, string) (string, error) { return "example/api", nil })
+			b.SetWithheld(nil, func(_ context.Context, repo string) (bool, error) {
+				return sends > 0 && repo == deny, nil
+			})
+			b.mu.Lock()
+			b.reported = []busproto.PresenceSession{live.PresenceSession}
+			b.mu.Unlock()
+			var be *busproto.Error
+			if _, err := b.Send(ctx, busproto.SendRequest{FromSession: live.SessionID, To: "@user", Body: "x", Repo: "api"}); !errors.As(err, &be) ||
+				be.Code != busproto.CodeWithheldRepo {
+				t.Fatalf("retry naming a withheld repo: %v", err)
+			}
+			if sends != 1 {
+				t.Fatalf("server got %d send requests, want 1", sends)
+			}
+		})
+	}
+}
+
+func TestServerPresenceRevalidatesCachedPlacement(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	agy := sess("open-1", "antigravity", "/src/api", true)
+	claude := sess("open-2", "claude", "/src/api", true)
+	p.set(agy, claude)
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	stale := false
+	b.SetCheckPlacement(func(_ context.Context, s Session) (bool, bool) {
+		if s.Agent == "antigravity" && stale {
+			return true, true
+		}
+		return s.Withheld, s.Unplaced
+	})
+	all, err := b.sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := b.serverPresence(ctx, all)
+	if len(sent) != 2 {
+		t.Fatalf("initial presence = %v, want both sessions", sent)
+	}
+	stale = true
+	if got := b.serverPresence(ctx, all); len(got) != 1 || got[0].SessionID != claude.SessionID {
+		t.Fatalf("presence after workspace change = %v, want only Claude session", got)
+	}
+	if got := b.recheckReported(ctx, sent); len(got) != 1 || got[0].SessionID != claude.SessionID {
+		t.Fatalf("fallback presence after workspace change = %v, want only Claude session", got)
+	}
+	if all[0].Withheld || all[0].Unplaced {
+		t.Fatal("server presence modified the cached local session")
+	}
+}
+
 // A hook's pending call for a session presence does not list yet reports
 // it now, not at the next presence check.
 func TestNudgeRepolls(t *testing.T) {
