@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1](https://github.com/flopwire/flopwire/compare/v0.5.0...v0.5.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* preserve Antigravity subagent lineage in the shared index ([#471](https://github.com/flopwire/flopwire/issues/471)) ([14995fb](https://github.com/flopwire/flopwire/commit/14995fb4dcb3603b8c3c2d4cd3f133fdffa3dd8a))
+* preserve JSON structure when masking assignments ([#473](https://github.com/flopwire/flopwire/issues/473)) ([a9c811f](https://github.com/flopwire/flopwire/commit/a9c811fb7aaf4c421ebb923088c0946b2205757c))
+* refresh Antigravity workspace placement for messaging ([#470](https://github.com/flopwire/flopwire/issues/470)) ([7f8e8c6](https://github.com/flopwire/flopwire/commit/7f8e8c68fd93a3259c0e7203c00bd07d1200428d))
+
 ## [0.5.0](https://github.com/flopwire/flopwire/compare/v0.4.3...v0.5.0) (2026-11-24)
 
 
