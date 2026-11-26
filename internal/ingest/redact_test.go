@@ -3,6 +3,7 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,6 +179,45 @@ func TestDeviceRedactsBeforeUpload(t *testing.T) {
 	for rule, n := range st.Server {
 		if n != 0 {
 			t.Errorf("server pass masked %d %s in device-redacted bytes", n, rule)
+		}
+	}
+}
+
+func TestCodexRedactionPreservesCompletionRecord(t *testing.T) {
+	e := newEnv(t)
+	const session = "20000000-0000-4000-8000-0000000000c1"
+	const password = "J4t9vQ7z!X3p"
+	path := filepath.Join(t.TempDir(), "rollout-2026-01-01T00-00-00-"+session+".jsonl")
+	data := []byte(`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"` + session + `","cwd":"/synthetic","source":"cli"}}` + "\n" +
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn","item":` +
+		`{"type":"CommandExecution","id":"exec-synthetic","command":["password:'` + password + `"],"cwd":"/synthetic","exit_code":23,"aggregated_output":"synthetic output preserved"}}}` + "\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := devicesync.SourceSpec{Path: path, Agent: transcript.AgentCodex, StorageKind: transcript.StorageJSONLAppend, SessionKey: session, Parser: codex.Name}
+	sy := e.syncer(devicesync.Config{SealAfter: -1})
+	if err := sy.Sync(e.ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	e.drain()
+	if n := e.count(`SELECT count(*) FROM messages WHERE native_id='exec-synthetic' AND kind='tool_result'
+		AND is_error AND text='synthetic output preserved'`); n != 1 {
+		t.Fatalf("archived transcript has %d matching Codex completions, want 1", n)
+	}
+	id, err := transcript.StatIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.reconstruct(path, id.ID.String(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(data) || bytes.Contains(got, []byte(password)) {
+		t.Fatal("redaction changed archive offsets or left the synthetic credential in the archive")
+	}
+	for _, line := range bytes.Split(bytes.TrimSuffix(got, []byte("\n")), []byte("\n")) {
+		if !json.Valid(line) {
+			t.Fatal("archived record is invalid JSON")
 		}
 	}
 }
