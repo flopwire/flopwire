@@ -58,9 +58,15 @@ func (b *Bus) sessions(ctx context.Context) ([]Session, error) {
 // serverPresence is what a poll reports: the live sessions the path rules
 // let reach the server, the most recently active first when there are
 // more than the server takes, in a stable order.
-func serverPresence(all []Session) []busproto.PresenceSession {
+func (b *Bus) serverPresence(ctx context.Context, all []Session) []busproto.PresenceSession {
+	b.mu.Lock()
+	check := b.checkPlacement
+	b.mu.Unlock()
 	var keep []Session
 	for _, s := range all {
+		if !s.Withheld && check != nil {
+			s.Withheld, s.Unplaced = check(ctx, s)
+		}
 		if !s.Withheld {
 			keep = append(keep, s)
 		}
@@ -186,7 +192,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			if all, err := b.sessions(ctx); err != nil {
 				b.log.Warn("devicebus: presence", "err", err)
 			} else {
-				cur := serverPresence(all)
+				cur := b.serverPresence(ctx, all)
 				if !sameButBusy(cur, sent) {
 					// Changed since the last poll (between polls, or during
 					// a backoff): reset the cursor, as the in-flight check
@@ -255,7 +261,7 @@ func (b *Bus) runServer(ctx context.Context) {
 			// that the new presence makes deliverable (a session newly
 			// reported) would otherwise wait for the poll to time out.
 			if inflight && b.cfg.Now().Sub(started) >= time.Second {
-				cur := serverPresence(all)
+				cur := b.serverPresence(ctx, all)
 				cld := !slices.Equal(cloudPresence(b.CloudSessions()), sentCld)
 				if err == nil && !slices.Equal(cur, sent) || cld {
 					cancel()

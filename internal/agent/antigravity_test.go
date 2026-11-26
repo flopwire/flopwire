@@ -6,9 +6,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/flopwire/flopwire/internal/busproto"
+	"github.com/flopwire/flopwire/internal/devicebus"
 	"github.com/flopwire/flopwire/internal/localindex"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/antigravity"
@@ -85,6 +88,99 @@ func TestNewAntigravityConversationListedAfterWatch(t *testing.T) {
 	}
 }
 
+func TestBusPlaceDiscoversAntigravitySession(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.AntigravityRoot = f.path("brain")
+	f.restart()
+	f.once()
+	f.a.markDiscovered()
+
+	path := antigravityPath(f.cfg.AntigravityRoot, agySession)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(agyInput), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityWorkspace(t, f.home, f.home)
+
+	var callers sync.WaitGroup
+	for range 4 {
+		callers.Go(func() {
+			if err := f.a.BusPlace(ctx, agySession); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	callers.Wait()
+
+	if got := f.find("Antigravity canonical test prompt", false); len(got) != 1 {
+		t.Fatalf("Antigravity matches = %d, want 1", len(got))
+	}
+	s := devicebus.Session{PresenceSession: busproto.PresenceSession{Agent: string(transcript.AgentAntigravity), SessionID: agySession}}
+	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); withheld || unplaced {
+		t.Fatalf("newly placed session withheld = %v, unplaced = %v", withheld, unplaced)
+	}
+}
+
+func TestBusPlaceRefreshesEstablishedAntigravitySession(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.AntigravityRoot = f.path("brain")
+	f.restart()
+
+	path := antigravityPath(f.cfg.AntigravityRoot, agySession)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(agyInput), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityWorkspace(t, f.home, f.home)
+	f.once()
+	f.a.markDiscovered()
+
+	s := devicebus.Session{PresenceSession: busproto.PresenceSession{Agent: string(transcript.AgentAntigravity), SessionID: agySession}}
+	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); withheld || unplaced {
+		t.Fatalf("original session withheld = %v, unplaced = %v", withheld, unplaced)
+	}
+	cachePath := f.path("cache/conversation_metadata.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cache struct {
+		Conversations map[string]json.RawMessage `json:"conversations"`
+	}
+	if err := json.Unmarshal(data, &cache); err != nil {
+		t.Fatal(err)
+	}
+	cache.Conversations["ec102b6f-5bea-419a-9dc4-555ef893421b"] = json.RawMessage(`{"is_internal":false,"summary":{"WorkspaceURIs":[]}}`)
+	data, err = json.Marshal(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); !withheld || !unplaced {
+		t.Fatalf("stale catalog withheld = %v, unplaced = %v", withheld, unplaced)
+	}
+	const later = "{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"source\":\"MODEL\",\"status\":\"DONE\",\"content\":\"Later unindexed response\"}\n"
+	if err := os.WriteFile(path, []byte(agyInput+later), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.a.BusPlace(ctx, agySession); err != nil {
+		t.Fatal(err)
+	}
+	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); withheld || unplaced {
+		t.Fatalf("unaffected session withheld = %v, unplaced = %v after refresh", withheld, unplaced)
+	}
+	if got := f.find("Later unindexed response", false); len(got) != 0 {
+		t.Fatalf("catalog refresh also indexed %d new transcript messages", len(got))
+	}
+}
+
 func TestAntigravityCatalogTightensUnchangedTranscript(t *testing.T) {
 	f := newFixture(t, "-")
 	f.cfg.AntigravityRoot = f.path("brain")
@@ -137,8 +233,15 @@ func TestAntigravityCatalogTightensUnchangedTranscript(t *testing.T) {
 		t.Fatal("vacated workspace metadata retained the previous capture authorization")
 	}
 
+	s := devicebus.Session{PresenceSession: busproto.PresenceSession{Agent: string(transcript.AgentAntigravity), SessionID: agySession}}
 	writeAntigravityWorkspace(t, f.home, f.path("public"), blocked)
+	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); !withheld || !unplaced {
+		t.Fatalf("stale catalog withheld = %v, unplaced = %v", withheld, unplaced)
+	}
 	f.once()
+	if withheld, unplaced := f.a.busCheckPlacement(ctx, s); !withheld || unplaced {
+		t.Fatalf("denied session withheld = %v, unplaced = %v", withheld, unplaced)
+	}
 	if got := f.find("Antigravity canonical test prompt", false); len(got) != 0 {
 		t.Fatalf("Antigravity matches after deny = %d, want 0", len(got))
 	}

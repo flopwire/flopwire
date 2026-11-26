@@ -1083,6 +1083,62 @@ func (f *fakeServer) sendCount() int {
 	return len(f.sends)
 }
 
+// A slow placement check should not repeatedly enumerate every live session.
+func TestWaitPlacedWaitsForPlacementWork(t *testing.T) {
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(nil, nil), nil)
+	var reads atomic.Int32
+	b.SetSources(func(context.Context) ([]Session, error) {
+		reads.Add(1)
+		return nil, nil
+	}, nil)
+	b.SetPlace(func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	shortPlaceWait(t, 250*time.Millisecond)
+	_, err := b.waitPlaced(ctx, "waiting", "", func(v sessionVerdict) bool { return v == sessionOK })
+	if err != nil || reads.Load() > 2 {
+		t.Fatalf("slow placement made %d presence reads: %v", reads.Load(), err)
+	}
+}
+
+func TestConcurrentPlacementSharesWork(t *testing.T) {
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(nil, nil), nil)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	b.SetPlace(func(context.Context, string) error {
+		calls.Add(1)
+		<-release
+		return nil
+	})
+	caller, cancel := context.WithCancel(ctx)
+	first := b.requestPlacement(caller, "waiting")
+	second := b.requestPlacement(ctx, "waiting")
+	cancel()
+	close(release)
+	<-first
+	<-second
+	if first != second || calls.Load() != 1 {
+		t.Fatalf("overlapping requests ran placement %d times", calls.Load())
+	}
+}
+
+func TestSendChecksPolicyForCachedSender(t *testing.T) {
+	srv := newFakeServer()
+	p := &presenceSrc{}
+	p.set(sess("sender", "antigravity", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	if _, err := b.sessions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	b.SetCheckPlacement(func(context.Context, Session) (bool, bool) { return true, false })
+	_, err := b.Send(ctx, busproto.SendRequest{FromSession: "sender", To: "abcd", Body: "private"})
+	var be *busproto.Error
+	if !errors.As(err, &be) || !strings.Contains(be.Detail, "path rule") || srv.sendCount() != 0 {
+		t.Fatalf("policy changed after presence was cached: err=%v sends=%d", err, srv.sendCount())
+	}
+}
+
 // A brand-new session that sends before the agent indexed it is not
 // refused: the bus asks the agent to place it, waits up to PlaceWait, and
 // sends once it appears (issue #71).
@@ -1118,9 +1174,8 @@ func TestSendFromNewSessionWaitsForIndex(t *testing.T) {
 }
 
 // A session whose path rules are not decided yet (no complete line has
-// named its directory) is waited for, and refused as not indexed yet
-// rather than as kept off the server by a path rule; nothing reaches the
-// server meanwhile.
+// named its directory) is waited for and refused if its workspace policy
+// is still unresolved. Nothing reaches the server meanwhile.
 func TestSendFromUnplacedSession(t *testing.T) {
 	srv := newFakeServer()
 	p := &presenceSrc{}
@@ -1131,7 +1186,7 @@ func TestSendFromUnplacedSession(t *testing.T) {
 	shortPlaceWait(t, 100*time.Millisecond)
 	var be *busproto.Error
 	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "young-1", To: "abcd", Body: "x"}); !errors.As(err, &be) ||
-		be.Code != busproto.CodeSessionNotOnDevice || !strings.Contains(be.Detail, "not indexed") || strings.Contains(be.Detail, "path rule") {
+		be.Status != http.StatusForbidden || be.Code != busproto.CodeSessionNotOnDevice || !strings.Contains(be.Detail, "workspace policy for session young-1 has not been resolved") {
 		t.Fatalf("send from an unplaced session: %v", err)
 	}
 	if srv.sendCount() != 0 {
@@ -1185,6 +1240,23 @@ func TestSendBeforeFirstPresenceReport(t *testing.T) {
 	}
 	if d := time.Since(start); d > PlaceWait {
 		t.Fatalf("took %s", d)
+	}
+}
+
+func TestSendWhenPresenceReportTimesOut(t *testing.T) {
+	srv := newFakeServer()
+	srv.sendFn = func(busproto.SendRequest) error {
+		return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session is not on this device")
+	}
+	p := &presenceSrc{}
+	p.set(sess("open-1", "claude", "/src/api", true))
+	b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+	shortPlaceWait(t, 100*time.Millisecond)
+	// The poll loop is stopped, so the device cannot report its live session.
+	var be *busproto.Error
+	if _, err := b.Send(ctx, busproto.SendRequest{FromSession: "open-1", FromAgent: "claude", To: "abcd", Body: "x"}); !errors.As(err, &be) ||
+		be.Status != http.StatusForbidden || be.Code != busproto.CodeSessionNotOnDevice || be.Detail != "this device has not reported session open-1 to the team server yet" {
+		t.Fatalf("send without a completed presence report: %v", err)
 	}
 }
 

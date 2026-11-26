@@ -1028,6 +1028,17 @@ func (a *Agent) reportState(ctx context.Context, key placeKey, t *target) (withh
 	} else if key.agent == transcript.AgentDevin || key.agent == transcript.AgentOpencode {
 		return true, false // a store this device does not read
 	}
+	if key.agent == transcript.AgentAntigravity {
+		// A refresh changes workspace placements before publishing the new
+		// catalog. Do not report against the intermediate state.
+		if t == nil || !a.captureScopeMu.TryRLock() {
+			return true, true
+		}
+		defer a.captureScopeMu.RUnlock()
+		if !a.antigravityCatalogCurrent() {
+			return true, true
+		}
+	}
 	if t == nil {
 		return true, false
 	}
@@ -1035,9 +1046,56 @@ func (a *Agent) reportState(ctx context.Context, key placeKey, t *target) (withh
 	return !known || m != pathpolicy.Allow, !known
 }
 
+// busCheckPlacement revalidates Antigravity presence before the bus uses a
+// cached entry to authorize a request.
+func (a *Agent) busCheckPlacement(ctx context.Context, s devicebus.Session) (withheld, unplaced bool) {
+	if transcript.Agent(s.Agent) != transcript.AgentAntigravity {
+		return s.Withheld, s.Unplaced
+	}
+	a.mu.Lock()
+	t := a.targets[antigravityPath(a.cfg.AntigravityRoot, s.SessionID)]
+	a.mu.Unlock()
+	return a.reportState(ctx, placeKey{transcript.AgentAntigravity, s.SessionID}, t)
+}
+
 // BusPlace indexes a session now (devicebus Config.Place): a request
 // names a session presence does not list placed yet.
 func (a *Agent) BusPlace(ctx context.Context, session string) error {
+	if err := a.waitDiscovered(ctx); err != nil {
+		return err
+	}
+	t := a.lookup("", session)
+	a.mu.Lock()
+	isAntigravity := t != nil && t.src.Agent == transcript.AgentAntigravity
+	a.mu.Unlock()
+	if a.cfg.AntigravityRoot != "" {
+		if t == nil {
+			if src, ok := antigravitySource(a.cfg.AntigravityRoot, session); ok {
+				// FlushPath discovers the canonical file and reconciles its
+				// workspace before indexing it.
+				_, err := a.FlushPath(ctx, src.Path, session)
+				return err
+			}
+		} else if isAntigravity {
+			a.refreshAntigravityMetadata(ctx, &found{})
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !a.antigravityCatalogCurrent() {
+				return errAntigravityCatalogPending
+			}
+			a.mu.Lock()
+			indexed := t.indexedWith != ""
+			a.mu.Unlock()
+			if indexed && a.antigravityPlacementReady(session) {
+				// The bus can use an existing index row as soon as its
+				// workspace policy is current.
+				return nil
+			}
+			_, err := a.FlushPath(ctx, t.path, session)
+			return err
+		}
+	}
 	_, err := a.FlushPath(ctx, "", session)
 	return err
 }

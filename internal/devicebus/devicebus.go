@@ -246,12 +246,14 @@ type Bus struct {
 	st  *store
 	log *slog.Logger
 
-	mu       sync.Mutex
-	status   Status
-	held     []busproto.HeldSender
-	presence presenceCache
-	recheck  chan struct{} // Recheck: re-read the saved credential now
-	repoll   chan struct{} // Nudge: poll now with a fresh presence
+	mu             sync.Mutex
+	status         Status
+	held           []busproto.HeldSender
+	placing        map[string]chan struct{} // completion of an in-flight placement by session ID
+	checkPlacement func(context.Context, Session) (withheld, unplaced bool)
+	presence       presenceCache
+	recheck        chan struct{} // Recheck: re-read the saved credential now
+	repoll         chan struct{} // Nudge: poll now with a fresh presence
 	// polled is closed when a poll starts, then replaced; reported is
 	// the presence that poll carries (awaitReported).
 	polled   chan struct{}
@@ -307,6 +309,14 @@ func (b *Bus) SetWithheld(sessions func(context.Context, string) (string, error)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.cfg.Withheld, b.cfg.RepoWithheld = sessions, repos
+}
+
+// SetCheckPlacement installs the agent's policy check for a live session
+// returned by the presence cache. Workspace policy can change during its TTL.
+func (b *Bus) SetCheckPlacement(check func(context.Context, Session) (withheld, unplaced bool)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.checkPlacement = check
 }
 
 // SetPlace installs the agent's request to index and place a session
