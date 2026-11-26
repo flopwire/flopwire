@@ -892,8 +892,8 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 			e.Fix = "messaging is not available from this session: its transcripts stay on this device, so nothing about it may reach the team server"
 			e.Example = "ask your human to send it, or send from a session in another repo"
 		} else {
-			e.Fix = "the device agent has not indexed this session yet (a new session); retry in a few seconds"
-			e.Example = "flopwire agent status shows how many live sessions the agent reports"
+			e.Fix = "retry in a few seconds. If the refusal persists, check the device agent status"
+			e.Example = "flopwire agent status shows indexing and upload progress"
 		}
 	default:
 		u := sendUsage(st, "")

@@ -32,7 +32,7 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	if len(req.RetryOf) > 64 || strings.TrimSpace(req.RetryOf) != req.RetryOf {
 		return busproto.SendResponse{}, badRequest("retry_of must be a message id of at most 64 bytes")
 	}
-	rawRefs := req.Refs
+	rawRefs, rawRepo := req.Refs, req.Repo
 	cleanSend(&req)
 	if b.Local() {
 		// Without a server the path rules do not matter: the sender must
@@ -53,35 +53,10 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 		return b.sendLocal(ctx, req)
 	}
-	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent, true); err != nil {
-		return busproto.SendResponse{}, err
-	}
-	if req.RetryOf != "" {
-		var raw string
-		err := b.st.db.QueryRowContext(ctx, `SELECT envelope FROM devbus_messages WHERE id=?`, req.RetryOf).Scan(&raw)
-		if err != nil && !isNoRows(err) {
-			return busproto.SendResponse{}, err
-		}
-		if err == nil {
-			var source busproto.Envelope
-			if err := json.Unmarshal([]byte(raw), &source); err != nil {
-				return busproto.SendResponse{}, err
-			}
-			if err := b.notWithheld(ctx, source.From, source.FromAgent, false); err != nil {
-				return busproto.SendResponse{}, err
-			}
-			if err := b.namesNoWithheld(ctx, busproto.SendRequest{To: source.ToSession, Refs: source.Refs}, nil); err != nil {
-				return busproto.SendResponse{}, err
-			}
-		}
-	}
-	if err := b.namesNoWithheld(ctx, req, rawRefs); err != nil {
+	if err := b.checkSharedSend(ctx, req, rawRefs, rawRepo, true); err != nil {
 		return busproto.SendResponse{}, err
 	}
 	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
-		if err := b.reposNotWithheld(ctx, req.Repo); err != nil {
-			return busproto.SendResponse{}, err
-		}
 		if err := b.resolveRepo(ctx, &req); err != nil {
 			return busproto.SendResponse{}, err
 		}
@@ -102,13 +77,16 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		reported := false
 		for b.awaitReported(ctx, req.FromSession, req.FromAgent, deadline) {
 			reported = true
-			if out, err = srv.Send(ctx, req); !isNotOnDevice(err) || !pause(ctx, deadline, 4*placeStep) {
+			if err := b.checkSharedSend(ctx, req, rawRefs, rawRepo, false); err != nil {
+				return busproto.SendResponse{}, err
+			}
+			if out, err = srv.Send(ctx, req); !isNotOnDevice(err) || !pause(ctx, deadline, reportRetryEvery) {
 				break // the poll that reported it may not have reached the server yet: else again
 			}
 		}
 		switch {
 		case !reported:
-			err = notIndexedYet(req.FromSession)
+			err = fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "this device has not reported session %s to the team server yet", req.FromSession)
 		case isNotOnDevice(err):
 			// Refused after a poll reported it: another report will not
 			// change that soon, so the next sends do not wait for one.
@@ -135,6 +113,42 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 		}
 	}
 	return out, err
+}
+
+// checkSharedSend validates every session and repo the request can disclose.
+func (b *Bus) checkSharedSend(ctx context.Context, req busproto.SendRequest, rawRefs []string, rawRepo string, wait bool) error {
+	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent, wait); err != nil {
+		return err
+	}
+	if req.RetryOf != "" {
+		var raw string
+		err := b.st.db.QueryRowContext(ctx, `SELECT envelope FROM devbus_messages WHERE id=?`, req.RetryOf).Scan(&raw)
+		if err != nil && !isNoRows(err) {
+			return err
+		}
+		if err == nil {
+			var source busproto.Envelope
+			if err := json.Unmarshal([]byte(raw), &source); err != nil {
+				return err
+			}
+			if err := b.notWithheld(ctx, source.From, source.FromAgent, false); err != nil {
+				return err
+			}
+			if err := b.namesNoWithheld(ctx, busproto.SendRequest{To: source.ToSession, Refs: source.Refs}, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if err := b.namesNoWithheld(ctx, req, rawRefs); err != nil {
+		return err
+	}
+	if strings.HasPrefix(strings.TrimSpace(req.To), "@") {
+		if rawRepo != req.Repo {
+			return b.reposNotWithheld(ctx, rawRepo, req.Repo)
+		}
+		return b.reposNotWithheld(ctx, req.Repo)
+	}
+	return nil
 }
 
 // isNotOnDevice reports whether the server refused a session as not on
@@ -339,12 +353,11 @@ func (b *Bus) Inbox(ctx context.Context, q busproto.InboxQuery) (busproto.InboxR
 }
 
 // PlaceWait bounds how long a request waits for a session the agent has
-// not indexed, placed or reported yet (a brand-new session, issue #71)
-// before it is refused as not indexed yet. A var so tests can shorten it.
+// not indexed, placed or reported yet. A var so tests can shorten it.
 var PlaceWait = 2 * time.Second
 
-// placeStep is how often a waiting request looks again.
-const placeStep = 50 * time.Millisecond
+// Allow time for the server to process the presence report before retrying.
+const reportRetryEvery = 200 * time.Millisecond
 
 // pause waits d, and reports false when ctx or the deadline ends first.
 func pause(ctx context.Context, deadline <-chan time.Time, d time.Duration) bool {
@@ -378,16 +391,20 @@ func (b *Bus) judge(ctx context.Context, session, agent string) (sessionVerdict,
 	if err != nil {
 		return 0, err
 	}
+	b.mu.Lock()
+	check := b.checkPlacement
+	known := b.cfg.Known
+	b.mu.Unlock()
 	var match []Session
 	for _, s := range all {
 		if s.SessionID == session && (agent == "" || s.Agent == agent) {
+			if check != nil {
+				s.Withheld, s.Unplaced = check(ctx, s)
+			}
 			match = append(match, s)
 		}
 	}
 	if len(match) == 0 {
-		b.mu.Lock()
-		known := b.cfg.Known
-		b.mu.Unlock()
 		if known != nil {
 			stored, err := known(ctx, session)
 			if err != nil {
@@ -453,44 +470,62 @@ func (b *Bus) repollNow() {
 	}
 }
 
-// waitPlaced waits, up to PlaceWait, until the device has indexed and
-// placed session (until done holds for the verdict): a brand-new session
-// sends before its first presence report, or before its first complete
-// line names its directory. It asks
-// the agent to index the session (Config.Place) once, then looks again
-// every placeStep with presence read fresh.
+// requestPlacement shares one bounded placement operation across callers.
+func (b *Bus) requestPlacement(ctx context.Context, session string) <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	place := b.cfg.Place
+	if place == nil {
+		return nil
+	}
+	if finished := b.placing[session]; finished != nil {
+		return finished
+	}
+	if b.placing == nil {
+		b.placing = make(map[string]chan struct{})
+	}
+	finished := make(chan struct{})
+	b.placing[session] = finished
+	// Each caller can stop waiting independently.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PlaceWait)
+	go func() {
+		defer cancel()
+		if err := place(pctx, session); err != nil && pctx.Err() == nil {
+			b.log.Debug("devicebus: place session", "session", session, "err", err)
+		}
+		b.mu.Lock()
+		delete(b.placing, session)
+		b.presence = presenceCache{}
+		close(finished)
+		b.mu.Unlock()
+	}()
+	return finished
+}
+
+// waitPlaced rechecks when on-demand placement finishes. Discovery can also
+// advance independently, so look again when the regular presence cache expires.
 func (b *Bus) waitPlaced(ctx context.Context, session, agent string, done func(sessionVerdict) bool) (sessionVerdict, error) {
 	v, err := b.judge(ctx, session, agent)
 	if err != nil || done(v) {
 		return v, err
 	}
-	b.mu.Lock()
-	place := b.cfg.Place
-	b.mu.Unlock()
-	if place != nil {
-		pctx, cancel := context.WithTimeout(ctx, PlaceWait)
-		defer cancel()
-		go func() {
-			if err := place(pctx, session); err != nil && pctx.Err() == nil {
-				b.log.Debug("devicebus: place a new session", "session", session, "err", err)
-			}
-		}()
-	}
+	placed := b.requestPlacement(ctx, session)
 	deadline := time.NewTimer(PlaceWait)
 	defer deadline.Stop()
-	tick := time.NewTicker(placeStep)
+	tick := time.NewTicker(presenceFresh)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return v, nil
 		case <-deadline.C:
-			return v, nil
+			// Discovery may have completed since the last presence check.
+			return b.judge(ctx, session, agent)
+		case <-placed:
+			placed = nil
 		case <-tick.C:
+			// The normal presence TTL bounds refreshes by concurrent waiters.
 		}
-		b.mu.Lock()
-		b.presence = presenceCache{}
-		b.mu.Unlock()
 		if v, err = b.judge(ctx, session, agent); err != nil || done(v) {
 			return v, err
 		}
@@ -506,10 +541,9 @@ func (b *Bus) inPresence(ctx context.Context, session, agent string) bool {
 	})
 }
 
-// notIndexedYet is the refusal of a session the device has not indexed or
-// placed yet: a retry in a few seconds succeeds.
+// notIndexedYet is the refusal of a session the device does not know.
 func notIndexedYet(session string) *busproto.Error {
-	return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is not indexed on this device yet (a new session); retry in a few seconds", session)
+	return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is not indexed on this device yet", session)
 }
 
 // notWithheld refuses to name a session in a request to the server unless
@@ -536,7 +570,9 @@ func (b *Bus) notWithheld(ctx context.Context, session, agent string, wait bool)
 	switch v {
 	case sessionWithheld:
 		return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "session %s is kept off the server by a path rule; it cannot use messaging", session)
-	case sessionUnplaced, sessionUnknown:
+	case sessionUnplaced:
+		return fail(http.StatusForbidden, busproto.CodeSessionNotOnDevice, "workspace policy for session %s has not been resolved on this device yet", session)
+	case sessionUnknown:
 		return notIndexedYet(session)
 	}
 	return nil
@@ -563,7 +599,7 @@ func (b *Bus) mayAwaitReport(ctx context.Context, session, agent string) bool {
 	if err != nil {
 		return false
 	}
-	return slices.ContainsFunc(serverPresence(all), func(s busproto.PresenceSession) bool {
+	return slices.ContainsFunc(b.serverPresence(ctx, all), func(s busproto.PresenceSession) bool {
 		return s.SessionID == session && (agent == "" || s.Agent == agent)
 	})
 }

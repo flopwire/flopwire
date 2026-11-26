@@ -435,6 +435,7 @@ func New(store *localindex.Store, cfg Config) *Agent {
 		cfg.Bus.SetWithheld(a.BusWithheld, a.BusRepoWithheld)
 		cfg.Bus.SetRepoKey(a.BusRepoKey)
 		cfg.Bus.SetPlace(a.BusPlace)
+		cfg.Bus.SetCheckPlacement(a.busCheckPlacement)
 	}
 	return a
 }

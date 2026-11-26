@@ -797,6 +797,12 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	if pv.pol.Empty() {
 		return "", nil
 	}
+	reportable := func(t *target) bool {
+		if t.src.Agent == transcript.AgentAntigravity {
+			return a.reportable(ctx, placeKey{t.src.Agent, t.src.SessionKey}, t)
+		}
+		return a.uploadable(t)
+	}
 	ref = strings.TrimSpace(ref)
 	var prefixes []string
 	if addr, err := format.ParseAddress(ref); err == nil {
@@ -811,7 +817,7 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 			a.mu.Lock()
 			t := a.targets[filepath.Clean(p)]
 			a.mu.Unlock()
-			if t != nil && t.kind == kindTranscript && !a.uploadable(t) {
+			if t != nil && t.kind == kindTranscript && !reportable(t) {
 				if t.src.SessionKey != "" {
 					return t.src.SessionKey, nil
 				}
@@ -846,7 +852,7 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	}
 	a.mu.Unlock()
 	for _, t := range match {
-		if !a.uploadable(t) {
+		if !reportable(t) {
 			return t.src.SessionKey, nil
 		}
 	}
@@ -1028,6 +1034,17 @@ func (a *Agent) reportState(ctx context.Context, key placeKey, t *target) (withh
 	} else if key.agent == transcript.AgentDevin || key.agent == transcript.AgentOpencode {
 		return true, false // a store this device does not read
 	}
+	if key.agent == transcript.AgentAntigravity {
+		// A refresh changes workspace placements before publishing the new
+		// catalog. Do not report against the intermediate state.
+		if t == nil || !a.captureScopeMu.TryRLock() {
+			return true, true
+		}
+		defer a.captureScopeMu.RUnlock()
+		if !a.antigravityCatalogCurrent() {
+			return true, true
+		}
+	}
 	if t == nil {
 		return true, false
 	}
@@ -1035,9 +1052,56 @@ func (a *Agent) reportState(ctx context.Context, key placeKey, t *target) (withh
 	return !known || m != pathpolicy.Allow, !known
 }
 
+// busCheckPlacement revalidates Antigravity presence before the bus uses a
+// cached entry to authorize a request.
+func (a *Agent) busCheckPlacement(ctx context.Context, s devicebus.Session) (withheld, unplaced bool) {
+	if transcript.Agent(s.Agent) != transcript.AgentAntigravity {
+		return s.Withheld, s.Unplaced
+	}
+	a.mu.Lock()
+	t := a.targets[antigravityPath(a.cfg.AntigravityRoot, s.SessionID)]
+	a.mu.Unlock()
+	return a.reportState(ctx, placeKey{transcript.AgentAntigravity, s.SessionID}, t)
+}
+
 // BusPlace indexes a session now (devicebus Config.Place): a request
 // names a session presence does not list placed yet.
 func (a *Agent) BusPlace(ctx context.Context, session string) error {
+	if root := a.cfg.AntigravityRoot; root != "" {
+		if err := a.waitDiscovered(ctx); err != nil {
+			return err
+		}
+		path := antigravityPath(root, session)
+		a.mu.Lock()
+		t := a.targets[path]
+		tracked := t != nil && t.src.Agent == transcript.AgentAntigravity && t.src.SessionKey == session
+		a.mu.Unlock()
+		if tracked {
+			if !a.antigravityCatalogCurrent() {
+				a.refreshAntigravityMetadata(ctx, &found{})
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if !a.antigravityCatalogCurrent() {
+					return errAntigravityCatalogPending
+				}
+			}
+			a.mu.Lock()
+			indexed := t.indexedWith != ""
+			a.mu.Unlock()
+			if indexed && a.antigravityPlacementReady(session) {
+				// The bus can use an existing index row as soon as its
+				// workspace policy is current.
+				return nil
+			}
+		} else if _, ok := antigravitySource(root, session); !ok {
+			path = ""
+		}
+		// With a canonical path, FlushPath can discover a new transcript
+		// and reconcile its workspace before indexing it.
+		_, err := a.FlushPath(ctx, path, session)
+		return err
+	}
 	_, err := a.FlushPath(ctx, "", session)
 	return err
 }

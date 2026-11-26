@@ -24,7 +24,7 @@ func antigravityPath(root, id string) string {
 func antigravitySource(root, id string) (transcript.Source, bool) {
 	dir := filepath.Join(root, id)
 	path := antigravityPath(root, id)
-	if antigravity.SessionID(path) != id {
+	if id == "" || antigravity.SessionID(path) != id {
 		return transcript.Source{}, false
 	}
 	// The CLI creates ordinary nested directories. A linked artifact or
@@ -199,9 +199,14 @@ func (a *Agent) refreshAntigravityMetadata(ctx context.Context, f *found) {
 	if a.cfg.AntigravityRoot == "" {
 		return
 	}
-	stamp, err := a.antigravityCatalogStamp()
 	a.captureScopeMu.Lock()
 	defer a.captureScopeMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	// Read the stamp under the lock so concurrent callers can reuse the
+	// snapshot published by the previous refresh.
+	stamp, err := a.antigravityCatalogStamp()
 	a.mu.Lock()
 	old := a.agyCatalog
 	a.mu.Unlock()
@@ -240,6 +245,7 @@ func (a *Agent) refreshAntigravityMetadata(ctx context.Context, f *found) {
 		previous, wasReady := old.workspaces(t.src.SessionKey)
 		a.mu.Lock()
 		isNew := a.targets[path] == nil
+		sourceID := t.sourceID
 		a.mu.Unlock()
 		if !isNew && ready == wasReady && slices.Equal(dirs, previous) {
 			continue
@@ -247,7 +253,7 @@ func (a *Agent) refreshAntigravityMetadata(ctx context.Context, f *found) {
 		if ready {
 			tt, err := a.recordCwds(ctx, t, dirs)
 			if err == nil {
-				_, err = a.tighten(ctx, t, t.sourceID, tt)
+				_, err = a.tighten(ctx, t, sourceID, tt)
 			}
 			if err != nil {
 				current.ready = false
