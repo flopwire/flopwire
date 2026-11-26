@@ -126,7 +126,6 @@ func (t *target) racy() bool {
 // its root session's (a subagent's).
 func (a *Agent) specOf(t *target) devicesync.SourceSpec {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	sp := t.spec()
 	if sp.Agent == transcript.AgentAntigravity {
 		sp.Root = a.cfg.AntigravityRoot
@@ -140,6 +139,10 @@ func (a *Agent) specOf(t *target) devicesync.SourceSpec {
 		if ok {
 			sp.Checkout, sp.Remote = p.pl.Main, p.pl.Remote
 		}
+	}
+	a.mu.Unlock()
+	if sp.Agent == transcript.AgentAntigravity {
+		sp.AntigravityLineage = a.antigravityLineage(sp.SessionKey)
 	}
 	return sp
 }

@@ -28,7 +28,7 @@ func (s *Store) AcknowledgedSourceRefs(ctx context.Context, spec SourceSpec, ide
 	if err != nil {
 		return nil, err
 	}
-	if src.Spec != spec {
+	if !src.Spec.equal(spec) {
 		return nil, fmt.Errorf("devicesync: recovery source ownership changed")
 	}
 	if src.Gen < 0 {

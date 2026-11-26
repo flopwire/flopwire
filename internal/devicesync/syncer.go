@@ -40,8 +40,24 @@ type SourceSpec struct {
 	// device agent placed it (syncproto.Source.Checkout). A change is
 	// reported to the server with the next flush, header only when no
 	// bytes are pending.
-	Checkout string `json:",omitempty"`
-	Remote   string `json:",omitempty"`
+	Checkout           string                        `json:",omitempty"`
+	Remote             string                        `json:",omitempty"`
+	AntigravityLineage *syncproto.AntigravityLineage `json:",omitempty"`
+}
+
+func (sp SourceSpec) equal(other SourceSpec) bool {
+	if !sameLineage(sp.AntigravityLineage, other.AntigravityLineage) {
+		return false
+	}
+	sp.AntigravityLineage, other.AntigravityLineage = nil, nil
+	return sp == other
+}
+
+func sameLineage(a, b *syncproto.AntigravityLineage) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func (sp SourceSpec) open() (*os.File, error) {

@@ -28,7 +28,7 @@ func TestScheduleHintsSurviveSpecRewritesAndRestartWithoutLane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.store.repoSent(t.Context(), src); err != nil {
+	if err := e.store.recordMetadata(t.Context(), src, &syncproto.FlushResponse{}); err != nil {
 		t.Fatal(err)
 	}
 	// Serving a pending turn resets age; admission cannot invent fresh activity.

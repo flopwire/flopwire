@@ -227,7 +227,7 @@ func (p *Postgres) requestConversationDeletion(ctx context.Context, conversation
 				SELECT id,device_id,agent,session_id,''::text AS parent FROM conversations WHERE user_id=$1 AND agent=$2 AND session_id=$3 AND ($4<>'device' OR device_id=$5)
 				UNION
 				SELECT c.id,c.device_id,c.agent,c.session_id,d.session_id FROM conversations c JOIN d ON c.parent_conversation_id=d.id
-					OR (c.parent_conversation_id IS NULL AND c.user_id=$1 AND c.agent=d.agent AND c.parent_native_session_id=d.session_id)
+					OR (c.parent_conversation_id IS NULL AND c.user_id=$1 AND c.agent=d.agent AND c.parent_native_session_id=d.session_id AND (c.agent<>'antigravity' OR c.device_id=d.device_id))
 				WHERE c.user_id=$1 AND ($4<>'device' OR c.device_id=$5))
 			SELECT id::text,device_id::text,agent,session_id,parent FROM d`, owner, agent, session, scope, scopedDevice)
 		if err != nil {

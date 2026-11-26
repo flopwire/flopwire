@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/url"
 	"os"
@@ -344,5 +345,100 @@ func TestAntigravityInternalCacheCannotAuthorizeUnplaceableUpload(t *testing.T) 
 	}
 	if got := f.find("Antigravity canonical test prompt", false); len(got) != 1 {
 		t.Fatalf("locally searchable Antigravity matches = %d, want 1", len(got))
+	}
+}
+
+func TestAntigravityQuietChildAnnouncesChangedLineage(t *testing.T) {
+	f := newFixture(t, "-")
+	f.cfg.AntigravityRoot = f.path("brain")
+	f.restart()
+
+	path := antigravityPath(f.cfg.AntigravityRoot, agySession)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(agyInput), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", f.path("conversation_summaries.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE conversation_summaries (
+		conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, title TEXT, parent_conversation_id TEXT, nesting_depth INTEGER
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	const before = "ec102b6f-5bea-419a-9dc4-555ef893421b"
+	const after = "84ced349-89e3-4e73-9f15-dcbf5e0a958c"
+	for _, parent := range []string{before, after} {
+		parentPath := antigravityPath(f.cfg.AntigravityRoot, parent)
+		if err := os.MkdirAll(filepath.Dir(parentPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(parentPath, []byte(agyInput), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertLineage := func(parent string, depth int) {
+		t.Helper()
+		var native, resolved string
+		var gotDepth int
+		if err := f.store.DB().QueryRow(`SELECT COALESCE(c.parent_session_id,''), COALESCE(p.session_id,''), c.depth
+			FROM conversations c LEFT JOIN conversations p ON p.id=c.parent_conversation_id
+			WHERE c.agent='antigravity' AND c.session_id=?`, agySession).Scan(&native, &resolved, &gotDepth); err != nil {
+			t.Fatal(err)
+		}
+		if native != parent || resolved != parent || gotDepth != depth {
+			t.Fatalf("local lineage = %q, %q, %d; want parent %q at depth %d", native, resolved, gotDepth, parent, depth)
+		}
+	}
+	workspaces, err := json.Marshal([]string{(&url.URL{Scheme: "file", Path: f.home}).String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO conversation_summaries VALUES
+		(?, ?, '', '', 0), (?, ?, '', '', 0), (?, ?, '', ?, 1)`, before, workspaces, after, workspaces, agySession, workspaces, before); err != nil {
+		t.Fatal(err)
+	}
+	f.once()
+	assertLineage(before, 1)
+	original, ok := f.rec.spec(path)
+	if !ok || original.AntigravityLineage == nil ||
+		original.AntigravityLineage.ParentSessionID != before || original.AntigravityLineage.Depth != 1 {
+		t.Fatalf("initial child spec = %+v, found = %v", original, ok)
+	}
+
+	if _, err := db.Exec(`UPDATE conversation_summaries SET parent_conversation_id = ? WHERE conversation_id = ?`, after, agySession); err != nil {
+		t.Fatal(err)
+	}
+	f.once()
+	assertLineage(after, 1)
+	updated, ok := f.rec.spec(path)
+	if !ok || updated.AntigravityLineage == nil ||
+		updated.AntigravityLineage.ParentSessionID != after || updated.AntigravityLineage.Depth != 1 {
+		t.Fatalf("quiet child spec = %+v, found = %v", updated, ok)
+	}
+	if auth, err := f.a.authorizeCapture(ctx, original); err == nil {
+		auth.Release()
+		t.Fatal("stale child lineage authorized for upload")
+	}
+	if auth, err := f.a.authorizeCapture(ctx, updated); err != nil {
+		t.Fatalf("updated child lineage: %v", err)
+	} else {
+		auth.Release()
+	}
+
+	if _, err := db.Exec(`UPDATE conversation_summaries SET parent_conversation_id = '', nesting_depth = 0
+		WHERE conversation_id = ?`, agySession); err != nil {
+		t.Fatal(err)
+	}
+	f.once()
+	assertLineage("", 0)
+	root, ok := f.rec.spec(path)
+	if !ok || root.AntigravityLineage == nil ||
+		root.AntigravityLineage.ParentSessionID != "" || root.AntigravityLineage.Depth != 0 {
+		t.Fatalf("explicit root spec = %+v, found = %v", root, ok)
 	}
 }

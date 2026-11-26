@@ -769,6 +769,20 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 			return nil, nil, err
 		}
 	}
+	lineageChanged := false
+	if lineage := src.AntigravityLineage; lineage != nil && resp.Status == syncproto.StatusOK {
+		var accepted bool
+		lineageChanged, accepted, err = storeAntigravityLineage(ctx, tx, sourceID, lineage, src.AntigravityLineageObservedAt)
+		if err != nil {
+			return nil, nil, err
+		}
+		if accepted {
+			resp.AntigravityLineage = lineage
+		}
+	}
+	if lineageChanged && !changed {
+		return resp, []string{sourceID}, requestParse(ctx, tx, sourceID, false)
+	}
 	if !changed {
 		return resp, nil, nil
 	}
@@ -792,6 +806,26 @@ func (f *flush) commit(ctx context.Context, tx pgx.Tx, tailData []byte) (*syncpr
 		return nil, nil, err
 	}
 	return resp, []string{sourceID}, requestParse(ctx, tx, sourceID, false)
+}
+
+// storeAntigravityLineage keeps an explicit root distinct from an older
+// client's omitted metadata. An older captured header cannot undo a newer
+// workspace observation, even when both describe the same byte generation.
+func storeAntigravityLineage(ctx context.Context, tx pgx.Tx, sourceID string, lineage *syncproto.AntigravityLineage, observedAt int64) (changed, accepted bool, err error) {
+	var parent *string
+	var depth *int
+	var previous *int64
+	err = tx.QueryRow(ctx, `SELECT antigravity_parent_session_id,antigravity_depth,antigravity_lineage_observed_at FROM sources WHERE id=$1`, sourceID).Scan(&parent, &depth, &previous)
+	if err != nil {
+		return false, false, err
+	}
+	same := depth != nil && *depth == lineage.Depth && deref(parent) == lineage.ParentSessionID
+	if previous != nil && observedAt <= *previous {
+		return false, same, nil
+	}
+	_, err = tx.Exec(ctx, `UPDATE sources SET antigravity_parent_session_id=NULLIF($2,''),antigravity_depth=$3,antigravity_lineage_observed_at=$4 WHERE id=$1`,
+		sourceID, lineage.ParentSessionID, lineage.Depth, observedAt)
+	return !same, err == nil, err
 }
 
 // link records the companion and previous-source links of a source and

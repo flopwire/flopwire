@@ -246,7 +246,7 @@ func filters(q *query, f format.Filters) error {
 		q.where("c.id<>" + q.arg(f.ExcludeConversation))
 	}
 	if f.Session != "" {
-		q.where("c.session_id IN (" + sessionTree(q, f.Session) + ")")
+		q.where(sessionTree(q, f.Session))
 		if f.Self {
 			q.where("c.user_id=" + q.arg(f.Owner) + "::uuid")
 		}
@@ -302,20 +302,40 @@ func convFilters(q *query, f format.Filters) {
 func heldOpen(ids string) string {
 	return `(c.session_id=ANY(` + ids + `) AND ` + lastActivity("c") + `>now()-interval '1 hour'
 		OR c.parent_native_session_id=ANY(` + ids + `) AND EXISTS (SELECT 1 FROM conversations p WHERE p.device_id=c.device_id
-			AND p.session_id=c.parent_native_session_id AND ` + lastActivity("p") + `>now()-interval '1 hour'))`
+			AND p.session_id=c.parent_native_session_id AND (c.agent<>'antigravity' OR (p.agent=c.agent
+				AND p.hidden_at IS NULL AND (c.parent_conversation_id IS NULL OR p.id=c.parent_conversation_id)))
+			AND ` + lastActivity("p") + `>now()-interval '1 hour'))`
 }
 
-// excludeSessionTree is the condition leaving out a session and its
-// subagents at every depth (they name their parent's native session id),
-// as the local index does.
+// excludeSessionTree leaves out the same rows that sessionTree includes.
 func excludeSessionTree(q *query, session string) string {
-	return `c.session_id NOT IN (` + sessionTree(q, session) + `)`
+	return "NOT " + sessionTree(q, session)
 }
 
-// sessionTree selects the session ids of session and its subagents.
+// sessionTree matches a root session and its descendants. Legacy harnesses
+// traverse native session IDs, which can represent mirrored sessions.
+// A visible Antigravity root can share its ID with a legacy root, but
+// cannot stand in for one. Antigravity edges belong to one device.
 func sessionTree(q *query, session string) string {
-	return `WITH RECURSIVE tree(sid) AS (SELECT ` + q.arg(session) + `::text
-		UNION SELECT k.session_id FROM conversations k JOIN tree ON k.parent_native_session_id=tree.sid) SELECT sid FROM tree`
+	sid := q.arg(session)
+	return `(c.agent<>'antigravity' AND c.session_id IN (
+		WITH RECURSIVE tree(sid) AS (
+			SELECT ` + sid + `::text WHERE NOT EXISTS (
+				SELECT 1 FROM conversations WHERE session_id=` + sid + ` AND agent='antigravity' AND hidden_at IS NULL
+			) OR EXISTS (
+				SELECT 1 FROM conversations WHERE session_id=` + sid + ` AND agent<>'antigravity' AND hidden_at IS NULL
+			)
+			UNION SELECT k.session_id FROM conversations k JOIN tree ON k.parent_native_session_id=tree.sid
+				WHERE k.agent<>'antigravity')
+		SELECT sid FROM tree)
+		OR c.agent='antigravity' AND c.id IN (
+		WITH RECURSIVE tree(id,device_id,session_id) AS (
+			SELECT id,device_id,session_id FROM conversations
+				WHERE agent='antigravity' AND hidden_at IS NULL AND session_id=` + sid + `
+			UNION SELECT k.id,k.device_id,k.session_id FROM conversations k JOIN tree t ON k.device_id=t.device_id
+				AND (k.parent_conversation_id=t.id OR (k.parent_conversation_id IS NULL AND k.parent_native_session_id=t.session_id))
+				WHERE k.agent='antigravity' AND k.hidden_at IS NULL)
+		SELECT id FROM tree))`
 }
 
 // hitFilters is filters for search and find: they also leave out injected
@@ -765,8 +785,10 @@ func scanMessage(row pgx.Row) (format.Message, error) {
 }
 
 const convCols = `c.id::text,c.agent,c.session_id,COALESCE(c.title,''),COALESCE(c.cwd,''),COALESCE(c.repo_root,c.cwd,''),d.name,u.email,
-	c.started_at,c.last_activity_at,COALESCE(c.parent_conversation_id::text,''),COALESCE(c.spawned_by_message_id::text,''),c.depth,
-	COALESCE(pc.session_id,c.parent_native_session_id,''),
+	c.started_at,c.last_activity_at,
+	COALESCE(CASE WHEN c.agent='antigravity' THEN COALESCE(pc.id,pa.id)::text ELSE c.parent_conversation_id::text END,''),
+	COALESCE(CASE WHEN c.agent<>'antigravity' OR pc.id IS NOT NULL THEN c.spawned_by_message_id::text END,''),c.depth,
+	COALESCE(pc.session_id,pa.session_id,CASE WHEN c.agent<>'antigravity' THEN c.parent_native_session_id END,''),
 	` + messageCount + `,
 	c.branches,c.digest,` + liveSQL + `,
 	COALESCE(NULLIF(rs.remote,''),rs.checkout,''),
@@ -812,6 +834,11 @@ const convFrom = listed + ` c` + convJoins
 // a hash join can scan every source even for a small undated session page.
 const convJoins = ` JOIN devices d ON d.id=c.device_id JOIN users u ON u.id=c.user_id
 	LEFT JOIN ` + visible + ` pc ON pc.id=c.parent_conversation_id
+		AND (c.agent<>'antigravity' OR (pc.device_id=c.device_id AND pc.agent=c.agent AND pc.id<>c.id))
+	LEFT JOIN LATERAL (SELECT id,session_id FROM conversations p
+		WHERE c.agent='antigravity' AND c.parent_conversation_id IS NULL
+			AND p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id
+			AND p.id<>c.id AND p.hidden_at IS NULL OFFSET 0) pa ON true
 	LEFT JOIN LATERAL (SELECT remote,checkout FROM sources WHERE id=c.source_id OFFSET 0) rs ON true`
 
 // Raw returns bytes [offset, offset+length) of a source generation,

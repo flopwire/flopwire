@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strconv"
@@ -67,13 +68,14 @@ type sink struct {
 	// parent for them (lockFlushSQL). Only another source writing the
 	// same session can give it a parent meanwhile; refreshDigest then
 	// locks that parent late, as before lockFlushSQL.
-	parentless map[string]bool
-	msgs       []*transcript.Message
-	textBytes  int
-	tombstoned bool // some session of this source is deleted
-	written    int
-	gate       *gate           // the admin path rules; nil when there are none
-	tagged     map[string]bool // Codex sessions whose <cwd> tag this parse has recorded
+	parentless            map[string]bool
+	msgs                  []*transcript.Message
+	textBytes             int
+	tombstoned            bool // some session of this source is deleted
+	tombstonedAntigravity string
+	written               int
+	gate                  *gate           // the admin path rules; nil when there are none
+	tagged                map[string]bool // Codex sessions whose <cwd> tag this parse has recorded
 	// maskRevision is the redacted_lines_revision of the catalog the parse
 	// reads through. masksMoved is set when a write found it stale.
 	maskRevision int64
@@ -81,7 +83,8 @@ type sink struct {
 	// devicePolicy is a transaction-local ledger-presence snapshot, read
 	// after the shared device gate. It avoids per-conversation policy reads
 	// for ordinary CLI devices; the gate prevents registration until commit.
-	devicePolicy bool
+	devicePolicy          bool
+	hasAntigravityLineage bool
 }
 
 func newSink(ctx context.Context, pool *pgxpool.Pool, src source) *sink {
@@ -169,6 +172,21 @@ func (s *sink) flush() error {
 			}
 			if c := s.convs[id]; c != nil && c.ParentSessionID != "" && c.ParentSessionID != id {
 				parents = append(parents, c.ParentSessionID)
+			}
+		}
+		if s.src.agent == string(transcript.AgentAntigravity) {
+			// The replacement may already have published the same session.
+			// Check under the session lock before the older source can change
+			// lineage, visibility, or message heads. Its raw archive remains
+			// available and the parse can still checkpoint its redactions.
+			var generation int64
+			err := tx.QueryRow(s.ctx, supersedingGenerationSQL, s.src.id).Scan(&generation)
+			if err == nil {
+				if handled, historyErr := s.writeAntigravityHistory(tx, ids[0], generation); handled || historyErr != nil {
+					return historyErr
+				}
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return err
 			}
 		}
 		learned = nil
@@ -356,7 +374,12 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 		s.src.userID, s.src.agent, sessionID, s.src.deviceID).Scan(&dead); err != nil {
 		return "", err
 	}
-	if !dead && parent != "" {
+	if !dead && parent != "" && s.src.agent == string(transcript.AgentAntigravity) {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_tombstones WHERE user_id=$1 AND agent=$2 AND session_id=$3 AND (scope='user' OR device_id=$4))`,
+			s.src.userID, s.src.agent, parent, s.src.deviceID).Scan(&dead); err != nil {
+			return "", err
+		}
+	} else if !dead && parent != "" {
 		tag, err := tx.Exec(ctx, `INSERT INTO conversation_tombstones(id,user_id,device_id,agent,session_id,conversation_id,job_id,requested_by,requested_at,scope)
 			SELECT $1,user_id,$2,agent,$3,$4,job_id,requested_by,now(),scope FROM conversation_tombstones WHERE user_id=$5 AND agent=$6 AND session_id=$7 AND (scope='user' OR device_id=$2)
 			ORDER BY (scope='user') DESC LIMIT 1
@@ -368,6 +391,9 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	}
 	if dead {
 		s.tombstoned = true
+		if s.src.agent == string(transcript.AgentAntigravity) {
+			s.tombstonedAntigravity = sessionID
+		}
 		s.convIDs[sessionID] = ""
 		return "", nil
 	}
@@ -384,6 +410,7 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 		}
 		return id, err
 	}
+	replaceLineage := c != nil && s.hasAntigravityLineage
 	if c == nil {
 		c = &transcript.Conversation{}
 	}
@@ -394,7 +421,8 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	// A session the admin rules cover that is stored all the same (see
 	// gate.check) is written hidden, as a rule change hides it.
 	var hideAt *time.Time
-	var hideRule, hideBy string
+	var hideRule, hideBy, hideRoot string
+	hideScope := "user"
 	var hideVersion int64
 	var hideD pathpolicy.Decision
 	if s.gate != nil {
@@ -403,8 +431,21 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 			hideAt, hideRule, hideBy, hideVersion, hideD = &at, ruleName(d), s.gate.rules.updatedBy, s.gate.rules.version, d
 		}
 	}
+	if replaceLineage && parent != "" && hideAt == nil {
+		// Match the parent on this device and inherit its active hidden
+		// state before publishing any new child rows.
+		err := tx.QueryRow(ctx, `SELECT hidden_at,hidden_rule,hidden_rules_version,
+			COALESCE(hidden_by::text,''),COALESCE(hidden_root,id)::text,hidden_scope
+			FROM conversations WHERE device_id=$1 AND agent=$2 AND session_id=$3 AND hidden_at IS NOT NULL`,
+			s.src.deviceID, s.src.agent, parent).Scan(&hideAt, &hideRule, &hideVersion, &hideBy, &hideRoot, &hideScope)
+		if err != nil && err != pgx.ErrNoRows {
+			return "", err
+		}
+	}
+
 	var id string
 	var newlyHidden bool
+	var previousParent string
 	branches := c.Branches
 	if branches == nil {
 		branches = []string{}
@@ -415,9 +456,11 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	// the snapshot from before the statement, which holds the stored row
 	// when the upsert skipped it. The hot last activity goes to
 	// conversation_activity with the digest (flush, refreshDigest).
-	err = tx.QueryRow(ctx, `WITH up AS (INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,
-			parent_native_session_id,spawned_by_native_id,depth,extra,hidden_at,hidden_rule,hidden_rules_version,hidden_root,hidden_by,other_cwds,branches)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::timestamptz,$15,$16,CASE WHEN $14::timestamptz IS NULL THEN NULL ELSE $1::uuid END,NULLIF($17,'')::uuid,$18::text[],$19)
+	err = tx.QueryRow(ctx, `WITH prior AS MATERIALIZED (SELECT parent_native_session_id,hidden_at FROM conversations
+		WHERE $20 AND device_id=$5 AND agent=$3 AND session_id=$4),
+		up AS (INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,
+			parent_native_session_id,spawned_by_native_id,depth,extra,hidden_at,hidden_rule,hidden_rules_version,hidden_root,hidden_by,other_cwds,branches,hidden_scope)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::timestamptz,$15,$16,CASE WHEN $14::timestamptz IS NULL THEN NULL ELSE COALESCE(NULLIF($21,'')::uuid,$1::uuid) END,NULLIF($17,'')::uuid,$18::text[],$19,$22)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET source_id=excluded.source_id,
 			cwd=COALESCE(excluded.cwd,conversations.cwd),
 			other_cwds=(SELECT COALESCE(array_agg(d ORDER BY o),'{}') FROM (SELECT d,min(o) o
@@ -425,25 +468,46 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 				WHERE d IS NOT NULL AND d IS DISTINCT FROM COALESCE(excluded.cwd,conversations.cwd) GROUP BY d) x),
 			title=COALESCE(excluded.title,conversations.title),
 			started_at=COALESCE(excluded.started_at,conversations.started_at),
-			parent_native_session_id=COALESCE(excluded.parent_native_session_id,conversations.parent_native_session_id),
+			parent_conversation_id=CASE WHEN $20 AND excluded.parent_native_session_id IS DISTINCT FROM conversations.parent_native_session_id THEN NULL ELSE conversations.parent_conversation_id END,
+			parent_native_session_id=CASE WHEN $20 THEN excluded.parent_native_session_id ELSE COALESCE(excluded.parent_native_session_id,conversations.parent_native_session_id) END,
 			spawned_by_native_id=COALESCE(excluded.spawned_by_native_id,conversations.spawned_by_native_id),
-			depth=GREATEST(excluded.depth,conversations.depth), extra=conversations.extra||excluded.extra,
+			depth=CASE WHEN $20 THEN excluded.depth ELSE GREATEST(excluded.depth,conversations.depth) END, extra=conversations.extra||excluded.extra,
 			branches=CASE WHEN cardinality(excluded.branches)>0 THEN excluded.branches ELSE conversations.branches END,
-			hidden_root=CASE WHEN conversations.hidden_at IS NULL AND excluded.hidden_at IS NOT NULL THEN conversations.id ELSE conversations.hidden_root END,
+			hidden_root=CASE WHEN conversations.hidden_at IS NULL AND excluded.hidden_at IS NOT NULL THEN COALESCE(NULLIF($21,'')::uuid,conversations.id) ELSE conversations.hidden_root END,
 			hidden_rule=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_rule ELSE conversations.hidden_rule END,
 			hidden_rules_version=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_rules_version ELSE conversations.hidden_rules_version END,
 			hidden_by=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_by ELSE conversations.hidden_by END,
+			hidden_scope=CASE WHEN conversations.hidden_at IS NULL AND excluded.hidden_at IS NOT NULL THEN excluded.hidden_scope ELSE conversations.hidden_scope END,
 			hidden_at=COALESCE(conversations.hidden_at,excluded.hidden_at)
-		RETURNING id, $14::timestamptz IS NOT NULL AND hidden_at=$14::timestamptz AS hid)
-	SELECT id::text,hid FROM up UNION ALL
-		SELECT id::text,false FROM conversations WHERE device_id=$5 AND agent=$3 AND session_id=$4 AND NOT EXISTS (SELECT 1 FROM up)`,
+		RETURNING id, $14::timestamptz IS NOT NULL AND hidden_at=$14::timestamptz
+			AND NOT EXISTS (SELECT 1 FROM prior WHERE hidden_at IS NOT NULL) AS hid)
+	SELECT id::text,hid,COALESCE((SELECT parent_native_session_id FROM prior WHERE parent_native_session_id IS DISTINCT FROM $10),'') FROM up UNION ALL
+		SELECT id::text,false,'' FROM conversations WHERE device_id=$5 AND agent=$3 AND session_id=$4 AND NOT EXISTS (SELECT 1 FROM up)`,
 		uuid.NewString(), s.src.id, s.src.agent, sessionID, s.src.deviceID, s.src.userID, nullStr(c.Cwd), nullStr(clean(c.Title)),
 		nullTime(c.StartedAt), nullStr(c.ParentSessionID), nullStr(c.SpawnedByToolCallID), c.Depth, extra,
-		hideAt, nullStr(hideRule), hiddenVersion(hideAt, hideVersion), hideBy, otherCwds(c), branches).Scan(&id, &newlyHidden)
+		hideAt, nullStr(hideRule), hiddenVersion(hideAt, hideVersion), hideBy, otherCwds(c), branches, replaceLineage, hideRoot, hideScope).Scan(&id, &newlyHidden, &previousParent)
 	if err != nil {
 		return "", err
 	}
-	if newlyHidden {
+	if previousParent != "" {
+		// The ordinary digest refresh updates the new parent. The old
+		// parent's row was locked with the child before the upsert.
+		if _, err := tx.Exec(ctx, `UPDATE conversation_activity a SET digest=jsonb_set(a.digest,'{subagents}',to_jsonb((SELECT count(*)
+			FROM conversations k WHERE k.device_id=p.device_id AND k.agent=p.agent
+				AND k.parent_native_session_id=p.session_id AND k.hidden_at IS NULL AND k.id<>p.id)))
+			FROM conversations p WHERE a.conversation_id=p.id AND a.digest IS NOT NULL
+				AND p.device_id=$1 AND p.agent=$2 AND p.session_id=$3`, s.src.deviceID, s.src.agent, previousParent); err != nil {
+			return "", err
+		}
+	}
+	if newlyHidden && hideRoot != "" {
+		if err := store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: hideBy, DeviceID: s.src.deviceID,
+			Action: "conversation.hidden", TargetType: "conversation", TargetID: id,
+			Metadata:  map[string]any{"rule": hideRule, "at": "antigravity_parent", "source_id": s.src.id, "hidden_root": hideRoot},
+			CreatedAt: time.Now().UTC()}); err != nil {
+			return "", err
+		}
+	} else if newlyHidden {
 		if policies, err := loadSessionPolicies(ctx, tx, s.src.deviceID, s.src.agent, sessionID, parent, s.src.id); err != nil {
 			return "", err
 		} else if len(policies) > 0 {
@@ -763,13 +827,19 @@ func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search s
 			conv, nullStr(clean(m.NativeID)), s.src.generation, m.Part, s.src.id, locator(m), id)
 	}
 	r := &row{id: id, version: version, sha: m.ContentSHA[:], textMD5: textMD5(search), text: &search, meta: meta}
-	b.Queue(`INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
-			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
-		r.id, conv, s.src.id, nullStr(clean(m.NativeID)), nullStr(clean(m.ParentNativeID)), m.Part, m.Ordinal, m.Kind.String(), nullStr(clean(m.Role)),
-		nullStr(clean(m.ToolName)), nullStr(clean(m.ToolCallID)), errPtr(m), nullTime(m.TS), search, m.FullLen,
-		m.ContentSHA[:], version, m.OnActivePath, enrichment, s.src.generation, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen), nullStr(locator(m)), m.Parser, s.src.parseAttempt, redact.RulesVersion)
+	b.Queue(insertMessageColumns+`VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,false,NULL,NULL)`,
+		s.messageInsertArgs(r.id, conv, m, search, enrichment, version)...)
 	return r
+}
+
+const insertMessageColumns = `INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
+	text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules,
+	superseded,superseded_in_generation,superseded_by) `
+
+func (s *sink) messageInsertArgs(id, conv string, m *transcript.Message, text string, enrichment []byte, version int) []any {
+	return []any{id, conv, s.src.id, nullStr(clean(m.NativeID)), nullStr(clean(m.ParentNativeID)), m.Part, m.Ordinal, m.Kind.String(), nullStr(clean(m.Role)),
+		nullStr(clean(m.ToolName)), nullStr(clean(m.ToolCallID)), errPtr(m), nullTime(m.TS), text, m.FullLen,
+		m.ContentSHA[:], version, m.OnActivePath, enrichment, s.src.generation, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen), nullStr(locator(m)), m.Parser, s.src.parseAttempt, redact.RulesVersion}
 }
 
 // update queues an in-place update: metadata always, text when withText.

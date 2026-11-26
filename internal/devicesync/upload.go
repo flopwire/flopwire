@@ -68,24 +68,24 @@ func (op *syncOperation) uploadTurn(ctx context.Context, src *sourceRow, turn *u
 		}
 	}
 	s.descriptors.retire(src.ID)
-	if src.RepoSent == src.Spec.repoKey() || src.Gen < 0 {
+	if !src.metadataPending() || src.Gen < 0 {
 		return syncDone, nil
 	}
 	if len(gens) == 0 || turn != nil && !turn.accepted {
 		if turn.spent() {
 			return uploadPending, nil
 		}
-		if err := op.sendRepo(ctx, src, turn); err != nil {
+		if err := op.sendMetadata(ctx, src, turn); err != nil {
 			return syncDone, err
 		}
 	}
-	return syncDone, s.store.repoSent(ctx, src)
+	return syncDone, nil
 }
 
-// sendRepo reports src's repository with a flush of its current
+// sendMetadata reports source metadata with a flush of its current
 // generation that carries no entries and no tail: the server updates the
 // source's row and leaves its bytes as they are.
-func (op *syncOperation) sendRepo(ctx context.Context, src *sourceRow, turn *uploadTurn) error {
+func (op *syncOperation) sendMetadata(ctx context.Context, src *sourceRow, turn *uploadTurn) error {
 	s := op.syncer
 	g, err := s.store.gen(ctx, src.ID, src.Gen)
 	if err != nil || g == nil {
@@ -112,13 +112,19 @@ func (op *syncOperation) sendRepo(ctx context.Context, src *sourceRow, turn *upl
 	}
 	turn.dispatch()
 	resp, err := op.transportFlush(ctx, &syncproto.FlushRequest{Header: h})
-	if err == nil && turn != nil {
+	if err != nil {
+		return err
+	}
+	if turn != nil {
 		turn.accepted = true
 	}
-	if err == nil && resp.Refused != "" {
+	if resp.Refused != "" {
 		s.noteRefused(src.Spec.Path, resp.Refused)
 	}
-	return err
+	if resp.Status == syncproto.StatusOK || resp.Status == syncproto.StatusPartial {
+		return s.store.recordMetadata(ctx, src, resp)
+	}
+	return nil
 }
 
 func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *genRow, turn *uploadTurn) error {
@@ -268,6 +274,9 @@ func (op *syncOperation) uploadGenTurn(ctx context.Context, src *sourceRow, g *g
 			if resp.Refused != "" {
 				s.noteRefused(src.Spec.Path, resp.Refused)
 			}
+			if err := s.store.recordMetadata(ctx, src, resp); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("devicesync: unknown flush status %q", resp.Status)
 		}
@@ -404,16 +413,20 @@ func (s *Syncer) vanished(src *sourceRow) bool {
 
 func (s *Syncer) describe(src *sourceRow, g *genRow) syncproto.Source {
 	d := syncproto.Source{
-		Path:        src.Spec.Path,
-		FileID:      g.FileID,
-		Agent:       string(src.Spec.Agent),
-		StorageKind: string(src.Spec.StorageKind),
-		SessionKey:  src.Spec.SessionKey,
-		Parser:      src.Spec.Parser,
-		Previous:    g.Previous,
-		Parent:      g.Parent,
-		Checkout:    src.Spec.Checkout,
-		Remote:      src.Spec.Remote,
+		Path:               src.Spec.Path,
+		FileID:             g.FileID,
+		Agent:              string(src.Spec.Agent),
+		StorageKind:        string(src.Spec.StorageKind),
+		SessionKey:         src.Spec.SessionKey,
+		Parser:             src.Spec.Parser,
+		Previous:           g.Previous,
+		Parent:             g.Parent,
+		Checkout:           src.Spec.Checkout,
+		Remote:             src.Spec.Remote,
+		AntigravityLineage: src.Spec.AntigravityLineage,
+	}
+	if d.AntigravityLineage != nil {
+		d.AntigravityLineageObservedAt = src.LineageObservedAt
 	}
 	return d
 }
