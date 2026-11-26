@@ -139,6 +139,41 @@ func TestHeaderValidate(t *testing.T) {
 	}
 }
 
+func TestAntigravityLineageHeader(t *testing.T) {
+	const session = "20000000-0000-4000-8000-000000000001"
+	const parent = "20000000-0000-4000-8000-000000000002"
+	base := FlushHeader{Version: Version, Source: Source{
+		Path:  "/brain/" + session + "/.system_generated/logs/transcript.jsonl",
+		Agent: "antigravity", SessionKey: session, StorageKind: "jsonl_append",
+		AntigravityLineageObservedAt: 1,
+	}}
+	for _, lineage := range []AntigravityLineage{{}, {ParentSessionID: parent, Depth: 1}} {
+		h := base
+		h.Source.AntigravityLineage = &lineage
+		if err := h.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, change := range map[string]func(*Source){
+		"orphan timestamp":  func(s *Source) { s.AntigravityLineage = nil },
+		"missing timestamp": func(s *Source) { s.AntigravityLineageObservedAt = 0 },
+		"wrong agent":       func(s *Source) { s.Agent = "codex" },
+		"wrong session":     func(s *Source) { s.SessionKey = parent },
+		"self parent":       func(s *Source) { s.AntigravityLineage.ParentSessionID = session },
+		"missing parent":    func(s *Source) { s.AntigravityLineage.ParentSessionID = "" },
+		"invalid parent":    func(s *Source) { s.AntigravityLineage.ParentSessionID = "x" },
+		"root with parent":  func(s *Source) { s.AntigravityLineage.Depth = 0 },
+		"negative depth":    func(s *Source) { s.AntigravityLineage.Depth = -1 },
+	} {
+		h := base
+		h.Source.AntigravityLineage = &AntigravityLineage{ParentSessionID: parent, Depth: 1}
+		change(&h.Source)
+		if h.Validate() == nil {
+			t.Errorf("%s: invalid lineage accepted", name)
+		}
+	}
+}
+
 func TestHashJSON(t *testing.T) {
 	h := Sum([]byte("x"))
 	raw, _ := json.Marshal(h)

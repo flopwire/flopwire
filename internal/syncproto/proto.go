@@ -78,8 +78,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/zeebo/blake3"
 )
 
@@ -158,6 +160,40 @@ type Source struct {
 	// (issue #102).
 	Checkout string `json:"checkout,omitempty"`
 	Remote   string `json:"remote,omitempty"`
+	// A nil lineage means the device supplied no authoritative catalog row.
+	AntigravityLineage *AntigravityLineage `json:"antigravity_lineage,omitempty"`
+	// Unix microseconds, advanced by the device when the catalog lineage changes.
+	AntigravityLineageObservedAt int64 `json:"antigravity_lineage_observed_at,omitempty"`
+}
+
+// AntigravityLineage identifies a session's parent in its device's native
+// catalog. An explicit zero value identifies a root.
+type AntigravityLineage struct {
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Depth           int    `json:"depth"`
+}
+
+func (s Source) validateAntigravityLineage() error {
+	l := s.AntigravityLineage
+	if l == nil {
+		if s.AntigravityLineageObservedAt != 0 {
+			return errors.New("unexpected Antigravity lineage timestamp")
+		}
+		return nil
+	}
+	if s.AntigravityLineageObservedAt <= 0 || s.Agent != "antigravity" || s.StorageKind != "jsonl_append" ||
+		len(s.SessionKey) != 36 || uuid.Validate(s.SessionKey) != nil ||
+		!strings.HasSuffix(s.Path, "/"+s.SessionKey+"/.system_generated/logs/transcript.jsonl") {
+		return errors.New("invalid Antigravity lineage source")
+	}
+	if l.Depth == 0 && l.ParentSessionID == "" {
+		return nil
+	}
+	if l.Depth <= 0 || l.Depth > math.MaxInt32 || len(l.ParentSessionID) != 36 ||
+		uuid.Validate(l.ParentSessionID) != nil || strings.EqualFold(l.ParentSessionID, s.SessionKey) {
+		return errors.New("invalid Antigravity parent or depth")
+	}
+	return nil
 }
 
 // MaxRepoField bounds Source.Checkout and Source.Remote.
@@ -298,6 +334,8 @@ type FlushResponse struct {
 	// Refused names the admin path rule under which the server refused
 	// the source (D18): its bytes are acknowledged and discarded.
 	Refused string `json:"refused,omitempty"`
+	// Echoed when the server stores the supplied catalog lineage.
+	AntigravityLineage *AntigravityLineage `json:"antigravity_lineage,omitempty"`
 }
 
 // HasRequest asks which chunks the server lacks.
@@ -348,6 +386,9 @@ func (h *FlushHeader) Validate() error {
 	}
 	if h.Source.Path == "" || h.Source.Agent == "" || h.Source.StorageKind == "" {
 		return errors.New("source path, agent and storage_kind are required")
+	}
+	if err := h.Source.validateAntigravityLineage(); err != nil {
+		return err
 	}
 	if len(h.Source.Checkout) > MaxRepoField || len(h.Source.Remote) > MaxRepoField {
 		return errors.New("source checkout or remote too long")
