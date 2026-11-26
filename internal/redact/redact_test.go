@@ -398,3 +398,77 @@ func TestEscapeWideningKeepsUTF8Valid(t *testing.T) {
 		}
 	}
 }
+
+func TestAssignmentCannotConsumeJSONRecordDelimiters(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, secret string
+	}{
+		{"empty command fragment", "password:'", ""},
+		{"unterminated shell quote", "password:'J4t9vQ7z!X3p", "J4t9vQ7z!X3p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const output = "synthetic output preserved"
+			type record struct {
+				Command []string `json:"command"`
+				Code    int      `json:"exit_code"`
+				Output  string   `json:"aggregated_output"`
+				Token   string   `json:"api_key"`
+			}
+			const token = "E2xv8q7m#X3z"
+			raw, err := json.Marshal(record{[]string{tc.command}, 23, output, token})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader := NewReaderAt(bytes.NewReader(raw), Lines)
+			masked, err := io.ReadAll(io.NewSectionReader(reader, 0, int64(len(raw))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got record
+			if err := json.Unmarshal(masked, &got); err != nil {
+				t.Fatalf("redaction corrupted the JSON record: %v", err)
+			}
+			if len(masked) != len(raw) || got.Output != output || got.Code != 23 || got.Token == token {
+				t.Fatalf("redaction must preserve offsets and unrelated fields while masking the API key")
+			}
+			if tc.secret == "" && got.Command[0] != tc.command || tc.secret != "" && strings.Contains(got.Command[0], tc.secret) {
+				t.Fatal("redaction did not isolate the credential inside the command string")
+			}
+		})
+	}
+}
+
+func TestAssignmentRespectsJSONRecordAcrossWindows(t *testing.T) {
+	const secret = "J4t9vQ7z!X3p"
+	raw := []byte(strings.Repeat(" ", 65) + `{"padding":"` + strings.Repeat("x", SegMax) +
+		`","command":["password:'` + secret + `"],"exit_code":23,"aggregated_output":"synthetic output"}` + "\n")
+	whole, _ := Redact(raw)
+	if !json.Valid(whole) || bytes.Contains(whole, []byte(secret)) {
+		t.Fatal("redacting the record must retain valid JSON and mask the credential")
+	}
+	at := int64(bytes.Index(raw, []byte(secret))) - 3
+	for _, start := range []int64{0, at} {
+		reader := NewReaderAt(bytes.NewReader(raw), Lines)
+		got, err := io.ReadAll(io.NewSectionReader(reader, start, int64(len(raw))-start))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, whole[start:]) {
+			t.Fatalf("read from %d changed redaction relative to the whole record", start)
+		}
+	}
+}
+
+func TestQuotedAssignmentRetainsPlainTextMasking(t *testing.T) {
+	const secret = `J4t9vQ7z"X3pN2Gq`
+	raw := []byte("password='" + secret + "'\n")
+	reader := NewReaderAt(bytes.NewReader(raw), Lines)
+	masked, err := io.ReadAll(io.NewSectionReader(reader, 0, int64(len(raw))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(masked) != len(raw) ||
+		bytes.Contains(masked, []byte("J4t9vQ7z")) || bytes.Contains(masked, []byte("X3pN2Gq")) {
+		t.Fatal("a literal double quote inside a shell password must not end its mask")
+	}
+}

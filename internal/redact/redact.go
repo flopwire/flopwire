@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"math"
 	"slices"
 	"sync"
@@ -44,6 +45,12 @@ type Match struct {
 // one segment (a line, or a window of a larger file); matches never span
 // segments.
 func Find(b []byte) []Match {
+	return find(b, false)
+}
+
+// jsonFragment is set by the line reader when this window belongs to a
+// long JSON record whose full structure is outside the window.
+func find(b []byte, jsonFragment bool) []Match {
 	hp := hitPool.Get().(*[]acHit)
 	defer hitPool.Put(hp)
 	hits := ac.scan(b, (*hp)[:0])
@@ -86,7 +93,7 @@ func Find(b []byte) []Match {
 			ms = matchWindow(b, ri, w[0], w[1], ms)
 		}
 	}
-	return normalize(b, ms)
+	return normalize(b, ms, jsonFragment)
 }
 
 var hitPool = sync.Pool{New: func() any { return new([]acHit) }}
@@ -147,12 +154,35 @@ func pick(loc []int, group int) (int, int) {
 
 // normalize widens matches to whole JSON escapes, then sorts and merges
 // overlaps (the earlier, higher-priority rule names the merged region).
-func normalize(b []byte, ms []Match) []Match {
+func normalize(b []byte, ms []Match, jsonFragment bool) []Match {
 	if len(ms) == 0 {
 		return nil
 	}
-	for i := range ms {
-		ms[i].Start, ms[i].End = widenEscapes(b, ms[i].Start, ms[i].End)
+	framingKnown, framed := jsonFragment, jsonFragment
+	out := ms[:0]
+	for _, m := range ms {
+		m.Start, m.End = widenEscapes(b, m.Start, m.End)
+		if m.Rule == assignRule {
+			if quote := unescapedQuote(b, m.Start, m.End); quote >= 0 {
+				if !framingKnown {
+					framingKnown, framed = true, json.Valid(b)
+				}
+				if framed {
+					// A quote in shell text can be unterminated. The JSON
+					// string's delimiter still ends this assignment.
+					// This is encoding safety, independent of detector versions.
+					m.End = quote
+					if !assignValueOK(b[m.Start:m.End]) {
+						continue
+					}
+				}
+			}
+		}
+		out = append(out, m)
+	}
+	ms = out
+	if len(ms) == 0 {
+		return nil
 	}
 	slices.SortFunc(ms, func(x, y Match) int {
 		if x.Start != y.Start {
@@ -163,7 +193,7 @@ func normalize(b []byte, ms []Match) []Match {
 		}
 		return y.End - x.End
 	})
-	out := ms[:1]
+	out = ms[:1]
 	for _, m := range ms[1:] {
 		last := &out[len(out)-1]
 		if m.Start < last.End {
@@ -173,6 +203,27 @@ func normalize(b []byte, ms []Match) []Match {
 		out = append(out, m)
 	}
 	return out
+}
+
+// unescapedQuote finds a quote that delimits a string in JSON source
+// rather than appearing inside the decoded string.
+func unescapedQuote(b []byte, start, end int) int {
+	for i := start; i < end; {
+		quote := bytes.IndexByte(b[i:end], '"')
+		if quote < 0 {
+			break
+		}
+		i += quote
+		before := i
+		for before > 0 && b[before-1] == '\\' {
+			before--
+		}
+		if (i-before)%2 == 0 {
+			return i
+		}
+		i++
+	}
+	return -1
 }
 
 // widenEscapes moves s back and e forward so neither falls inside a JSON

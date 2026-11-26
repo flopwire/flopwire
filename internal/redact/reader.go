@@ -79,6 +79,9 @@ type ReaderAt struct {
 	lineOff int64
 	nl      bool
 	valid   bool
+	// JSON framing for the last oversized line whose prefix was read.
+	jsonLineOff int64
+	jsonLine    bool
 	// raw block cache
 	blk    []byte
 	blkOff int64
@@ -107,7 +110,7 @@ func (x *ReaderAt) SetLineMasks(f *LineCatalog) {
 
 // NewReaderAt wraps r. A zero Mode (Off) returns reads unchanged.
 func NewReaderAt(r io.ReaderAt, mode Mode) *ReaderAt {
-	return &ReaderAt{r: r, mode: mode, eof: -1, countFrom: -1, maskLineOff: -1}
+	return &ReaderAt{r: r, mode: mode, eof: -1, countFrom: -1, maskLineOff: -1, jsonLineOff: -1}
 }
 
 // CountFrom starts counting matches that begin at or after off (each
@@ -207,7 +210,18 @@ func (x *ReaderAt) load(pos int64) error {
 			ctx = ctx[:e-cs+int64(i)+1]
 		}
 	}
-	ms := Find(ctx)
+	jsonFragment := false
+	if x.mode == Lines && (cs > line || !nl && (x.eof < 0 || e < x.eof)) {
+		prefix := ctx
+		if cs > line {
+			prefix = nil
+		}
+		jsonFragment, err = x.jsonLinePrefix(line, prefix)
+		if err != nil {
+			return err
+		}
+	}
+	ms := find(ctx, jsonFragment)
 	seg := append(x.seg[:0], ctx[s-cs:e-cs]...)
 	for _, m := range ms {
 		ms, me := cs+int64(m.Start), cs+int64(m.End)
@@ -242,6 +256,39 @@ func (x *ReaderAt) load(pos int64) error {
 	}
 	x.seg, x.segOff, x.lineOff, x.nl, x.valid = seg, s, line, nl, true
 	return nil
+}
+
+// jsonLinePrefix recognizes a JSON record before any window can begin
+// inside a string. A small direct read leaves the raw cache untouched.
+// Cache the result so a long run of indentation is read at most once.
+func (x *ReaderAt) jsonLinePrefix(line int64, prefix []byte) (bool, error) {
+	if x.jsonLineOff == line {
+		return x.jsonLine, nil
+	}
+	if first := bytes.TrimLeft(prefix, " \t\r"); len(first) > 0 {
+		x.jsonLineOff, x.jsonLine = line, startsJSON(first[0])
+		return x.jsonLine, nil
+	}
+	var buf [4 << 10]byte
+	for off := line + int64(len(prefix)); ; {
+		n, err := x.r.ReadAt(buf[:], off)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, err
+		}
+		if first := bytes.TrimLeft(buf[:n], " \t\r"); len(first) > 0 {
+			x.jsonLineOff, x.jsonLine = line, startsJSON(first[0])
+			return x.jsonLine, nil
+		}
+		if n == 0 || errors.Is(err, io.EOF) {
+			x.jsonLineOff, x.jsonLine = line, false
+			return false, nil
+		}
+		off += int64(n)
+	}
+}
+
+func startsJSON(c byte) bool {
+	return c == '{' || c == '[' || c == '"'
 }
 
 // lineStart finds the start of the line holding pos. It reads backwards
