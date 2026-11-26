@@ -22,6 +22,7 @@ type Metadata struct {
 	OtherCwds       []string
 	ParentSessionID string
 	Depth           int
+	LineageKnown    bool // The native SQLite row records the parent and depth.
 	Title           string
 	Invalid         bool // The recorded workspace or lineage could not be validated.
 }
@@ -98,7 +99,7 @@ func scanCatalogMetadata(row *sql.Rows) (string, Metadata, error) {
 		meta.Invalid = true
 		return id.String, meta, errors.New("invalid Antigravity workspace or lineage metadata")
 	}
-	meta.Depth = int(depth.Int64)
+	meta.Depth, meta.LineageKnown = int(depth.Int64), true
 	meta, err := decodeWorkspaces(meta, workspaceJSON.String)
 	return id.String, meta, err
 }

@@ -299,11 +299,11 @@ func (q *Queue) applyRules(ctx context.Context, r serverRules, sourceID string) 
 // store.LockConversationsSQL: the UPDATE alone would lock it in plan order
 // and could deadlock with a deletion, recount or checkpoint of it.
 const hideTreeSQL = `WITH RECURSIVE t AS (
-		SELECT id,user_id,agent,session_id FROM conversations WHERE id=$1
+		SELECT id,user_id,device_id,agent,session_id FROM conversations WHERE id=$1
 		UNION
-		SELECT c.id,c.user_id,c.agent,c.session_id FROM conversations c JOIN t
+		SELECT c.id,c.user_id,c.device_id,c.agent,c.session_id FROM conversations c JOIN t
 			ON (c.user_id=t.user_id AND c.agent=t.agent AND c.session_id=t.session_id) OR c.parent_conversation_id=t.id
-			OR (c.parent_conversation_id IS NULL AND c.user_id=t.user_id AND c.agent=t.agent AND c.parent_native_session_id=t.session_id)),
+			OR (c.parent_conversation_id IS NULL AND c.user_id=t.user_id AND c.agent=t.agent AND c.parent_native_session_id=t.session_id AND (c.agent<>'antigravity' OR c.device_id=t.device_id))),
 	l AS MATERIALIZED (SELECT id FROM conversations WHERE id IN (SELECT id FROM t) AND hidden_at IS NULL ORDER BY session_id COLLATE "C",id FOR UPDATE)
 	UPDATE conversations SET hidden_at=$2,hidden_rule=$3,hidden_rules_version=$4,hidden_root=$1,hidden_by=NULLIF($5,'')::uuid,hidden_scope='user'
 	WHERE id IN (SELECT id FROM l)`
@@ -416,6 +416,43 @@ func (q *Queue) restore(ctx context.Context, r serverRules, c convRow, reason st
 				"user_id": c.user, "device_id": c.device, "source_id": c.source, "conversations": restored},
 			CreatedAt: time.Now().UTC()})
 	})
+}
+
+// extendAntigravityHidden covers already indexed descendants that acquire
+// hidden ancestry when a source publishes new lineage.
+func (q *Queue) extendAntigravityHidden(ctx context.Context, touched []string) error {
+	if len(touched) == 0 {
+		return nil
+	}
+	rows, err := q.Pool.Query(ctx, `SELECT DISTINCT r.id::text,r.hidden_at,r.hidden_rule,r.hidden_rules_version,COALESCE(r.hidden_by::text,''),r.hidden_scope
+		FROM conversations c JOIN conversations r ON r.id=COALESCE(c.hidden_root,c.id)
+		WHERE c.id=ANY($1::uuid[]) AND c.hidden_at IS NOT NULL AND r.hidden_at IS NOT NULL`, touched)
+	if err != nil {
+		return err
+	}
+	type hiddenRoot struct {
+		id, rule, by, scope string
+		at                  time.Time
+		version             int64
+	}
+	roots, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (hiddenRoot, error) {
+		var r hiddenRoot
+		err := row.Scan(&r.id, &r.at, &r.rule, &r.version, &r.by, &r.scope)
+		return r, err
+	})
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		tree := hideTreeSQL
+		if root.scope == "device" {
+			tree = hideDeviceTreeSQL
+		}
+		if _, err := q.Pool.Exec(ctx, tree, root.id, root.at, root.rule, root.version, root.by); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // extendHidden hides, under each hide, the conversations that joined its

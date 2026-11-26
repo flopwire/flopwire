@@ -461,7 +461,7 @@ func grepNarrows(f format.Filters) bool {
 func grepConvWhere(q *query, f format.Filters) {
 	convWhere(q, f)
 	if f.Session != "" {
-		q.where("c.session_id IN (" + sessionTree(q, f.Session) + ")")
+		q.where(sessionTree(q, f.Session))
 		if f.Self {
 			q.where("c.user_id=" + q.arg(f.Owner) + "::uuid")
 		}
@@ -1207,8 +1207,10 @@ func (s *Store) outlinePage(ctx context.Context, conv, root string, rq format.Re
 	if err != nil {
 		return nil, "", err
 	}
-	rows, err = s.db().Query(ctx, `SELECT spawned_by_message_id::text,session_id FROM conversations
-		WHERE parent_conversation_id=$1 AND spawned_by_message_id::text=ANY($2) AND hidden_at IS NULL ORDER BY started_at,id`, conv, msgIDs)
+	rows, err = s.db().Query(ctx, `SELECT c.spawned_by_message_id::text,c.session_id FROM conversations c JOIN conversations p ON p.id=c.parent_conversation_id
+		WHERE p.id=$1 AND c.spawned_by_message_id::text=ANY($2) AND c.hidden_at IS NULL
+			AND (c.agent<>'antigravity' OR (p.agent=c.agent AND p.device_id=c.device_id AND p.hidden_at IS NULL AND p.id<>c.id))
+		ORDER BY c.started_at,c.id`, conv, msgIDs)
 	if err != nil {
 		return nil, "", err
 	}

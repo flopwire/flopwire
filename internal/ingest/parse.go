@@ -61,6 +61,8 @@ type job struct {
 	src                         source
 	path, fileID, kind, parse   string
 	sessionKey                  string
+	agyParent                   string
+	agyDepth                    *int
 	previous                    *string
 	parentID                    *string
 	tombstoned                  bool
@@ -88,10 +90,10 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 	j := &job{}
 	var st, report []byte
 	err = q.Pool.QueryRow(ctx, `SELECT s.id::text,s.device_id::text,d.user_id::text,s.agent,s.path,s.file_id,s.storage_kind,s.parser,COALESCE(s.session_key,''),
-			s.previous_source_id::text,s.parent_source_id::text,s.tombstoned_at IS NOT NULL,
+			s.previous_source_id::text,s.parent_source_id::text,s.tombstoned_at IS NOT NULL,COALESCE(s.antigravity_parent_session_id,''),s.antigravity_depth,
 			p.generation,p.cursor_offset,p.cursor_line,p.cursor_state,p.requested_seq,p.reparse,COALESCE(d.home,''),COALESCE(d.claude_projects,''),p.extraction_report,p.applied_parser,p.applied_redaction_rules
 		FROM sources s JOIN devices d ON d.id=s.device_id JOIN source_parse_state p ON p.source_id=s.id WHERE s.id=$1`, sourceID).
-		Scan(&j.src.id, &j.src.deviceID, &j.src.userID, &j.src.agent, &j.path, &j.fileID, &j.kind, &j.parse, &j.sessionKey, &j.previous, &j.parentID, &j.tombstoned,
+		Scan(&j.src.id, &j.src.deviceID, &j.src.userID, &j.src.agent, &j.path, &j.fileID, &j.kind, &j.parse, &j.sessionKey, &j.previous, &j.parentID, &j.tombstoned, &j.agyParent, &j.agyDepth,
 			&j.cursorGen, &j.cursor.Offset, &j.cursor.LineNo, &st, &j.seq, &j.reparse, &j.dev.home, &j.dev.claudeProjects, &report, &j.appliedParser, &j.appliedRules)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted meanwhile
@@ -175,6 +177,7 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 		return err
 	}
 	sink := newSink(ctx, q.Pool, j.src)
+	sink.hasAntigravityLineage = j.agyDepth != nil
 	// A parse that fails after replacing rows recounts their digests here:
 	// the rows it committed stay visible until the retry.
 	defer func() {
@@ -231,7 +234,19 @@ func (q *Queue) parseSource(ctx context.Context, sourceID string) (err error) {
 			result, err = (&codex.Parser{Caps: uncapped, OpenRollout: archive.openRollout}).ParseWithReport(ctx, in, j.cursor, sink)
 			next = result.Cursor
 		case transcript.AgentAntigravity:
-			next, err = (&antigravity.Parser{Caps: uncapped, Lines: antigravityLines}).Parse(ctx, in, j.cursor, sink)
+			p := &antigravity.Parser{Caps: uncapped, Lines: antigravityLines}
+			if j.agyDepth != nil {
+				meta := antigravity.Metadata{ParentSessionID: j.agyParent, Depth: *j.agyDepth}
+				p.LookupMetadata = func(context.Context, string) (antigravity.Metadata, error) { return meta, nil }
+				if hadStored && !full && j.sessionKey != "" {
+					// A metadata-only flush has no new transcript records.
+					// Seed the existing row so the ordinary sink applies it.
+					err = sink.Conversation(&transcript.Conversation{Agent: transcript.AgentAntigravity, SessionID: j.sessionKey, ParentSessionID: j.agyParent, Depth: *j.agyDepth})
+				}
+			}
+			if err == nil {
+				next, err = p.Parse(ctx, in, j.cursor, sink)
+			}
 		case transcript.AgentDevin:
 			next, err = parseDevinExport(ctx, in, j, sink)
 		case transcript.AgentOpencode:
@@ -333,6 +348,15 @@ func parseDevinExport(ctx context.Context, in transcript.Input, j *job, sink *si
 // subagent links after a parse's rows are written.
 func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	if sink.tombstoned {
+		if sink.tombstonedAntigravity != "" {
+			// Lineage can arrive after the existing child was indexed and
+			// its parent was deleted. Remove the child's derived rows and
+			// descendants through the ordinary deletion job.
+			p := store.NewPostgres(q.Pool, nil, "")
+			if _, _, err := p.WithholdDeviceSession(ctx, j.src.userID, j.src.deviceID, j.src.agent, sink.tombstonedAntigravity); err != nil {
+				return err
+			}
+		}
 		return tombstoneSource(ctx, q.Pool, j.src.id)
 	}
 	// D20: a newer source already replaced this one (it named this one as
@@ -365,7 +389,13 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 		}
 	}
 	slices.Sort(touched)
-	return resolveLinks(ctx, q.Pool, j.src.deviceID, touched)
+	if err := resolveLinks(ctx, q.Pool, j.src.deviceID, touched); err != nil {
+		return err
+	}
+	if j.src.agent == string(transcript.AgentAntigravity) {
+		return q.extendAntigravityHidden(ctx, touched)
+	}
+	return nil
 }
 
 // retireLateSource retires the live rows of source sourceID, which a newer source

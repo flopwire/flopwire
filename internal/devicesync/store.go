@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -134,8 +135,9 @@ type sourceRow struct {
 	ExportState []byte
 	// RepoSent is Spec.repoKey as a flush last reported it, "" before
 	// any (storedSpec).
-	RepoSent                       string
-	ProtectedOrigin, ProtectedRoot string
+	RepoSent                          string
+	LineageObservedAt, LineageAckedAt int64
+	ProtectedOrigin, ProtectedRoot    string
 }
 
 // storedSpec is the spec column: the spec, and the repository a flush
@@ -143,7 +145,9 @@ type sourceRow struct {
 // and reports its repository once.
 type storedSpec struct {
 	SourceSpec
-	RepoSent string `json:",omitempty"`
+	RepoSent          string `json:",omitempty"`
+	LineageObservedAt int64  `json:",omitempty"`
+	LineageAckedAt    int64  `json:",omitempty"`
 }
 
 type genRow struct {
@@ -178,13 +182,15 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 	err := s.db.QueryRowContext(ctx, `SELECT id, spec, generation, watermark, protected_origin, protected_root FROM devsync_sources WHERE path = ?`, path).
 		Scan(&row.ID, &specJSON, &row.Gen, &wm, &row.ProtectedOrigin, &row.ProtectedRoot)
 	if errors.Is(err, sql.ErrNoRows) && spec != nil {
-		raw, _ := json.Marshal(spec)
-		res, err := s.db.ExecContext(ctx, `INSERT INTO devsync_sources (path, spec, generation) VALUES (?, ?, -1)`, path, string(raw))
+		row.Spec, row.Gen = *spec, -1
+		if spec.AntigravityLineage != nil {
+			row.LineageObservedAt = time.Now().UnixMicro()
+		}
+		res, err := s.db.ExecContext(ctx, `INSERT INTO devsync_sources (path, spec, generation) VALUES (?, ?, -1)`, path, row.specJSON())
 		if err != nil {
 			return nil, err
 		}
 		row.ID, _ = res.LastInsertId()
-		row.Spec, row.Gen = *spec, -1
 		return row, nil
 	}
 	if err != nil {
@@ -195,15 +201,19 @@ func (s *Store) source(ctx context.Context, path string, spec *SourceSpec) (*sou
 		return nil, err
 	}
 	row.Spec, row.RepoSent = st.SourceSpec, st.RepoSent
-	if spec != nil && *spec != row.Spec {
+	row.LineageObservedAt, row.LineageAckedAt = st.LineageObservedAt, st.LineageAckedAt
+	if spec != nil && (!spec.equal(row.Spec) || spec.AntigravityLineage != nil && row.LineageObservedAt == 0) {
 		if (row.ProtectedOrigin != "" || row.ProtectedRoot != "") && !sameProtectedSourceIdentity(row.Spec, *spec) {
 			return nil, fmt.Errorf("%w: protected native source association changed", ErrProtectionMismatch)
 		}
-		raw, _ := json.Marshal(storedSpec{SourceSpec: *spec, RepoSent: row.RepoSent})
-		if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, string(raw), row.ID); err != nil {
-			return nil, err
+		if spec.AntigravityLineage != nil &&
+			(row.LineageObservedAt == 0 || !sameLineage(spec.AntigravityLineage, row.Spec.AntigravityLineage)) {
+			row.LineageObservedAt = max(time.Now().UnixMicro(), row.LineageObservedAt+1)
 		}
 		row.Spec = *spec
+		if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, row.specJSON(), row.ID); err != nil {
+			return nil, err
+		}
 	}
 	if wm.Valid {
 		var st storedWatermark
@@ -230,13 +240,35 @@ func watermarkJSON(wm *transcript.Watermark, exportState []byte) any {
 	return string(raw)
 }
 
-// repoSent records that a flush reported src's current repository.
-func (s *Store) repoSent(ctx context.Context, src *sourceRow) error {
-	raw, _ := json.Marshal(storedSpec{SourceSpec: src.Spec, RepoSent: src.Spec.repoKey()})
-	if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, string(raw), src.ID); err != nil {
+func (src *sourceRow) specJSON() string {
+	raw, _ := json.Marshal(storedSpec{
+		SourceSpec: src.Spec, RepoSent: src.RepoSent,
+		LineageObservedAt: src.LineageObservedAt, LineageAckedAt: src.LineageAckedAt,
+	})
+	return string(raw)
+}
+
+// metadataPending reports which source fields still need to be sent.
+func (src *sourceRow) metadataPending() bool {
+	return src.RepoSent != src.Spec.repoKey() ||
+		src.Spec.AntigravityLineage != nil && (src.LineageObservedAt == 0 || src.LineageAckedAt != src.LineageObservedAt)
+}
+
+// recordMetadata records the repository reported by an accepted flush.
+// Older servers can accept the bytes without persisting lineage.
+func (s *Store) recordMetadata(ctx context.Context, src *sourceRow, resp *syncproto.FlushResponse) error {
+	repo := src.Spec.repoKey()
+	ackedAt := src.LineageAckedAt
+	if resp.Refused == "" && resp.AntigravityLineage != nil && sameLineage(resp.AntigravityLineage, src.Spec.AntigravityLineage) {
+		ackedAt = src.LineageObservedAt
+	}
+	if src.RepoSent == repo && src.LineageAckedAt == ackedAt {
+		return nil
+	}
+	src.RepoSent, src.LineageAckedAt = repo, ackedAt
+	if _, err := s.db.ExecContext(ctx, `UPDATE devsync_sources SET spec = ? WHERE id = ?`, src.specJSON(), src.ID); err != nil {
 		return err
 	}
-	src.RepoSent = src.Spec.repoKey()
 	return nil
 }
 

@@ -52,7 +52,7 @@ func TestReadMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := Metadata{Cwd: "/workspace one", OtherCwds: []string{"/workspace/two"}, ParentSessionID: "parent", Depth: 2, Title: "Current"}
+	want := Metadata{Cwd: "/workspace one", OtherCwds: []string{"/workspace/two"}, ParentSessionID: "parent", Depth: 2, LineageKnown: true, Title: "Current"}
 	all, err := ReadAllMetadata(t.Context(), catalog)
 	if err != nil || len(all) != 9 || !all["invalid"].Invalid || !reflect.DeepEqual(all["database"], want) || !reflect.DeepEqual(all["cached"], fallback["cached"]) {
 		t.Fatalf("catalog snapshot = %+v, %v", all, err)

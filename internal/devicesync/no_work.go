@@ -13,7 +13,7 @@ import (
 // A nonnegative upTo must cover the complete file; -1 means unbounded.
 func (s *Syncer) noWork(ctx context.Context, spec SourceSpec, upTo int64) bool {
 	src, err := s.store.source(ctx, spec.Path, nil)
-	if err != nil || src.Spec != spec || src.RepoSent != spec.repoKey() || src.Gen < 0 || src.ProtectedOrigin != "" || src.ProtectedRoot != "" {
+	if err != nil || !src.Spec.equal(spec) || src.metadataPending() || src.Gen < 0 || src.ProtectedOrigin != "" || src.ProtectedRoot != "" {
 		return false
 	}
 	w := src.Watermark

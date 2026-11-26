@@ -7,10 +7,13 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/flopwire/flopwire/internal/devicesync"
 	"github.com/flopwire/flopwire/internal/fsprobe"
+	"github.com/flopwire/flopwire/internal/pathpolicy"
+	"github.com/flopwire/flopwire/internal/syncproto"
 	"github.com/flopwire/flopwire/internal/transcript"
 	"github.com/flopwire/flopwire/internal/transcript/antigravity"
 )
@@ -138,7 +141,11 @@ func (a *Agent) antigravityMetadata(_ context.Context, id string) (antigravity.M
 	a.mu.Lock()
 	catalog := a.agyCatalog
 	a.mu.Unlock()
-	return catalog.rows[id], nil
+	metadata := catalog.rows[id]
+	if catalog.lineage(id) == nil {
+		metadata.ParentSessionID, metadata.Depth = "", 0
+	}
+	return metadata, nil
 }
 
 func (a *Agent) antigravityPlacementReady(id string) bool {
@@ -191,6 +198,51 @@ func (c antigravityCatalog) workspaces(id string) ([]string, bool) {
 		id = row.ParentSessionID
 	}
 	return dirs, len(dirs) > 0
+}
+
+// lineage returns an authorized candidate only when every link agrees with
+// the catalog's recorded depths. An explicitly known root can clear older
+// child metadata, whereas a missing or malformed entry supplies no facts.
+func (c antigravityCatalog) lineage(id string) *syncproto.AntigravityLineage {
+	if _, ready := c.workspaces(id); !ready {
+		return nil
+	}
+	first, exists := c.rows[id]
+	if !exists || !first.LineageKnown {
+		return nil
+	}
+	for depth := first.Depth; ; depth-- {
+		row, exists := c.rows[id]
+		if id == "" || antigravity.SessionID(antigravityPath("", id)) != id ||
+			!exists || !row.LineageKnown || row.Invalid || row.Depth != depth || (row.ParentSessionID == "") != (depth == 0) || strings.EqualFold(row.ParentSessionID, id) {
+			return nil
+		}
+		if depth == 0 {
+			return &syncproto.AntigravityLineage{ParentSessionID: first.ParentSessionID, Depth: first.Depth}
+		}
+		id = row.ParentSessionID
+	}
+}
+
+func (a *Agent) antigravityLineage(id string) *syncproto.AntigravityLineage {
+	a.mu.Lock()
+	catalog := a.agyCatalog
+	a.mu.Unlock()
+	lineage := catalog.lineage(id)
+	if lineage == nil {
+		return nil
+	}
+	// The child's placement includes current ancestor workspaces. An
+	// ancestor may also have a more restrictive recorded placement from a
+	// workspace it used before the child appeared.
+	pv := a.policy()
+	for parent := lineage.ParentSessionID; parent != ""; parent = catalog.rows[parent].ParentSessionID {
+		if pl, found := a.storedPlace(placeKey{transcript.AgentAntigravity, parent}); found &&
+			(!settled(pv.pol, pl) || a.decide(pv.pol, pl).Mode != pathpolicy.Allow) {
+			return nil
+		}
+	}
+	return lineage
 }
 
 // refreshAntigravityMetadata reconciles catalog edits independently of
@@ -247,13 +299,18 @@ func (a *Agent) refreshAntigravityMetadata(ctx context.Context, f *found) {
 		isNew := a.targets[path] == nil
 		sourceID := t.sourceID
 		a.mu.Unlock()
-		if !isNew && ready == wasReady && slices.Equal(dirs, previous) {
+		lineage := current.lineage(t.src.SessionKey)
+		lineageChanged := !sameAntigravityLineage(lineage, old.lineage(t.src.SessionKey))
+		if !isNew && !lineageChanged && ready == wasReady && slices.Equal(dirs, previous) {
 			continue
 		}
 		if ready {
 			tt, err := a.recordCwds(ctx, t, dirs)
 			if err == nil {
 				_, err = a.tighten(ctx, t, sourceID, tt)
+			}
+			if err == nil && sourceID != 0 && lineageChanged && lineage != nil {
+				err = a.store.UpdateAntigravityLineage(ctx, sourceID, t.src.SessionKey, lineage.ParentSessionID, lineage.Depth)
 			}
 			if err != nil {
 				current.ready = false
@@ -273,13 +330,21 @@ func (a *Agent) refreshAntigravityMetadata(ctx context.Context, f *found) {
 	a.mu.Unlock()
 }
 
+func sameAntigravityLineage(a, b *syncproto.AntigravityLineage) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // authorizeAntigravityCapture keeps the reconciled policy in force across
 // rooted capture and upload. The scheduler rechecks vendor changes before
 // a filesystem or network handover.
 func (a *Agent) authorizeAntigravityCapture(ctx context.Context, spec devicesync.SourceSpec) (*devicesync.CaptureAuthorization, error) {
 	a.captureScopeMu.RLock()
 	check := func(context.Context) error {
-		if !a.antigravityCatalogCurrent() || !a.allowUpload(spec) {
+		if !a.antigravityCatalogCurrent() || !a.allowUpload(spec) ||
+			spec.AntigravityLineage != nil && !sameAntigravityLineage(spec.AntigravityLineage, a.antigravityLineage(spec.SessionKey)) {
 			return errAntigravityCatalogPending
 		}
 		return nil
