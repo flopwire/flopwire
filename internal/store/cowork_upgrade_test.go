@@ -29,6 +29,9 @@ func coworkUpgradeSnapshot(t *testing.T, pool *pgxpool.Pool, tables []string) ma
 	snap := make(map[string][32]byte, len(tables))
 	for _, table := range tables {
 		expr, where := "to_jsonb(r)", ""
+		if table == "sources" {
+			expr = "to_jsonb(r)-'antigravity_parent_session_id'-'antigravity_depth'-'antigravity_lineage_observed_at'"
+		}
 		if table == "conversations" {
 			expr = "to_jsonb(r)-'hidden_scope'"
 		}
@@ -190,6 +193,11 @@ func TestCowork014DumpRestoreUpgrade(t *testing.T) {
 		t.Fatal("014 changed existing rows,checksums,or applied_at")
 	}
 	assertLegacyRetryDefaults(t, restored)
+	var assignedLineage int
+	if err := restored.QueryRow(ctx, `SELECT count(*) FROM sources WHERE antigravity_parent_session_id IS NOT NULL
+		OR antigravity_depth IS NOT NULL OR antigravity_lineage_observed_at IS NOT NULL`).Scan(&assignedLineage); err != nil || assignedLineage != 0 {
+		t.Fatalf("restore assigned Antigravity lineage to %d existing sources: %v", assignedLineage, err)
+	}
 	var wakeRequested, wakeSupported int
 	if err := restored.QueryRow(ctx, `SELECT (SELECT count(*) FROM bus_messages WHERE wake_requested),(SELECT count(*) FROM bus_presence WHERE wake_supported)`).Scan(&wakeRequested, &wakeSupported); err != nil || wakeRequested != 0 || wakeSupported != 0 {
 		t.Fatalf("upgrade enabled native wake on existing data: messages=%d presence=%d err=%v", wakeRequested, wakeSupported, err)
