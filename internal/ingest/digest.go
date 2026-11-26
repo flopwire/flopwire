@@ -78,7 +78,7 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 	c.Last = last
 	var subagents int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM conversations k JOIN conversations c ON c.id=$1
-		WHERE k.device_id=c.device_id AND k.agent=c.agent AND k.parent_native_session_id=c.session_id AND k.id<>c.id`, conv).Scan(&subagents); err != nil {
+		WHERE k.device_id=c.device_id AND k.agent=c.agent AND k.parent_native_session_id=c.session_id AND k.id<>c.id AND (k.agent<>'antigravity' OR k.hidden_at IS NULL)`, conv).Scan(&subagents); err != nil {
 		return err
 	}
 	var out []byte
@@ -112,7 +112,7 @@ func refreshDigest(ctx context.Context, tx pgx.Tx, conv string, msgs []*transcri
 	// conv (lockWithParents, or the flush's lockFlushSQL), so this lock
 	// does not wait.
 	_, err := tx.Exec(ctx, `UPDATE conversation_activity a SET digest=jsonb_set(a.digest,'{subagents}',to_jsonb((SELECT count(*) FROM conversations k
-			WHERE k.device_id=p.device_id AND k.agent=p.agent AND k.parent_native_session_id=p.session_id AND k.id<>p.id)))
+			WHERE k.device_id=p.device_id AND k.agent=p.agent AND k.parent_native_session_id=p.session_id AND k.id<>p.id AND (k.agent<>'antigravity' OR k.hidden_at IS NULL))))
 		FROM (SELECT p.id,p.device_id,p.agent,p.session_id FROM conversations p JOIN conversations c ON c.id=$1
 			WHERE p.device_id=c.device_id AND p.agent=c.agent AND p.session_id=c.parent_native_session_id AND p.id<>c.id
 			FOR NO KEY UPDATE OF p) p

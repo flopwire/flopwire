@@ -429,6 +429,7 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 
 	var id string
 	var newlyHidden bool
+	var previousParent string
 	branches := c.Branches
 	if branches == nil {
 		branches = []string{}
@@ -439,7 +440,9 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 	// the snapshot from before the statement, which holds the stored row
 	// when the upsert skipped it. The hot last activity goes to
 	// conversation_activity with the digest (flush, refreshDigest).
-	err = tx.QueryRow(ctx, `WITH up AS (INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,
+	err = tx.QueryRow(ctx, `WITH prior AS MATERIALIZED (SELECT parent_native_session_id,hidden_at FROM conversations
+		WHERE $20 AND device_id=$5 AND agent=$3 AND session_id=$4),
+		up AS (INSERT INTO conversations(id,source_id,agent,session_id,device_id,user_id,cwd,title,started_at,
 			parent_native_session_id,spawned_by_native_id,depth,extra,hidden_at,hidden_rule,hidden_rules_version,hidden_root,hidden_by,other_cwds,branches,hidden_scope)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::timestamptz,$15,$16,CASE WHEN $14::timestamptz IS NULL THEN NULL ELSE COALESCE(NULLIF($21,'')::uuid,$1::uuid) END,NULLIF($17,'')::uuid,$18::text[],$19,$22)
 		ON CONFLICT (device_id,agent,session_id) DO UPDATE SET source_id=excluded.source_id,
@@ -460,14 +463,26 @@ func (s *sink) conversation(tx pgx.Tx, sessionID string, create bool) (string, e
 			hidden_by=CASE WHEN conversations.hidden_at IS NULL THEN excluded.hidden_by ELSE conversations.hidden_by END,
 			hidden_scope=CASE WHEN conversations.hidden_at IS NULL AND excluded.hidden_at IS NOT NULL THEN excluded.hidden_scope ELSE conversations.hidden_scope END,
 			hidden_at=COALESCE(conversations.hidden_at,excluded.hidden_at)
-		RETURNING id, $14::timestamptz IS NOT NULL AND hidden_at=$14::timestamptz AS hid)
-	SELECT id::text,hid FROM up UNION ALL
-		SELECT id::text,false FROM conversations WHERE device_id=$5 AND agent=$3 AND session_id=$4 AND NOT EXISTS (SELECT 1 FROM up)`,
+		RETURNING id, $14::timestamptz IS NOT NULL AND hidden_at=$14::timestamptz
+			AND NOT EXISTS (SELECT 1 FROM prior WHERE hidden_at IS NOT NULL) AS hid)
+	SELECT id::text,hid,COALESCE((SELECT parent_native_session_id FROM prior WHERE parent_native_session_id IS DISTINCT FROM $10),'') FROM up UNION ALL
+		SELECT id::text,false,'' FROM conversations WHERE device_id=$5 AND agent=$3 AND session_id=$4 AND NOT EXISTS (SELECT 1 FROM up)`,
 		uuid.NewString(), s.src.id, s.src.agent, sessionID, s.src.deviceID, s.src.userID, nullStr(c.Cwd), nullStr(clean(c.Title)),
 		nullTime(c.StartedAt), nullStr(c.ParentSessionID), nullStr(c.SpawnedByToolCallID), c.Depth, extra,
-		hideAt, nullStr(hideRule), hiddenVersion(hideAt, hideVersion), hideBy, otherCwds(c), branches, replaceLineage, hideRoot, hideScope).Scan(&id, &newlyHidden)
+		hideAt, nullStr(hideRule), hiddenVersion(hideAt, hideVersion), hideBy, otherCwds(c), branches, replaceLineage, hideRoot, hideScope).Scan(&id, &newlyHidden, &previousParent)
 	if err != nil {
 		return "", err
+	}
+	if previousParent != "" {
+		// The ordinary digest refresh updates the new parent. The old
+		// parent's row was locked with the child before the upsert.
+		if _, err := tx.Exec(ctx, `UPDATE conversation_activity a SET digest=jsonb_set(a.digest,'{subagents}',to_jsonb((SELECT count(*)
+			FROM conversations k WHERE k.device_id=p.device_id AND k.agent=p.agent
+				AND k.parent_native_session_id=p.session_id AND k.hidden_at IS NULL AND k.id<>p.id)))
+			FROM conversations p WHERE a.conversation_id=p.id AND a.digest IS NOT NULL
+				AND p.device_id=$1 AND p.agent=$2 AND p.session_id=$3`, s.src.deviceID, s.src.agent, previousParent); err != nil {
+			return "", err
+		}
 	}
 	if newlyHidden && hideRoot != "" {
 		if err := store.InsertAudit(ctx, tx, domain.AuditEvent{ID: uuid.NewString(), ActorID: hideBy, DeviceID: s.src.deviceID,

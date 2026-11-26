@@ -148,6 +148,13 @@ func TestAntigravityLineageBackfillsAnExistingConversation(t *testing.T) {
 		}
 	}
 
+	checkParentCount := func(want int) {
+		t.Helper()
+		if n := e.count(`SELECT COALESCE((digest->>'subagents')::int,0) FROM conversation_activity a JOIN conversations c ON c.id=a.conversation_id WHERE c.device_id=$1 AND c.session_id=$2`, e.deviceID, parent); n != want {
+			t.Fatalf("parent digest counts %d children, want %d", n, want)
+		}
+	}
+
 	if resp := send(child, nil, true, captured); resp.AntigravityLineage != nil {
 		t.Fatalf("legacy flush unexpectedly acknowledged lineage: %+v", resp)
 	}
@@ -165,6 +172,7 @@ func TestAntigravityLineageBackfillsAnExistingConversation(t *testing.T) {
 
 	send(parent, nil, true, captured.Add(2*time.Second))
 	check(parent, 1, true)
+	checkParentCount(1)
 
 	send(child, nil, false, captured.Add(3*time.Second))
 	check(parent, 1, true)
@@ -174,6 +182,7 @@ func TestAntigravityLineageBackfillsAnExistingConversation(t *testing.T) {
 		t.Fatalf("explicit root did not clear lineage: %+v", resp)
 	}
 	check("", 0, false)
+	checkParentCount(0)
 	if resp := send(child, lineage, false, captured.Add(time.Second)); resp.AntigravityLineage != nil {
 		t.Fatalf("a stale header unexpectedly acknowledged old lineage: %+v", resp)
 	}
@@ -184,6 +193,7 @@ func TestAntigravityLineageBackfillsAnExistingConversation(t *testing.T) {
 	e.exec(`UPDATE conversations SET hidden_at=now(),hidden_rule='test',hidden_rules_version=1,hidden_root=id,hidden_scope='device'
 		WHERE device_id=$1 AND session_id=$2`, e.deviceID, parent)
 	send(child, lineage, false, captured.Add(6*time.Second))
+	checkParentCount(0)
 	if n := e.count(`SELECT count(*) FROM conversations WHERE device_id=$1 AND session_id IN ($2,$3) AND hidden_at IS NOT NULL`, e.deviceID, child, grandchild); n != 2 {
 		t.Fatalf("hidden parent propagated to %d descendants, want 2", n)
 	}
