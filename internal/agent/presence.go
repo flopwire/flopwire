@@ -797,6 +797,12 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	if pv.pol.Empty() {
 		return "", nil
 	}
+	reportable := func(t *target) bool {
+		if t.src.Agent == transcript.AgentAntigravity {
+			return a.reportable(ctx, placeKey{t.src.Agent, t.src.SessionKey}, t)
+		}
+		return a.uploadable(t)
+	}
 	ref = strings.TrimSpace(ref)
 	var prefixes []string
 	if addr, err := format.ParseAddress(ref); err == nil {
@@ -811,7 +817,7 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 			a.mu.Lock()
 			t := a.targets[filepath.Clean(p)]
 			a.mu.Unlock()
-			if t != nil && t.kind == kindTranscript && !a.uploadable(t) {
+			if t != nil && t.kind == kindTranscript && !reportable(t) {
 				if t.src.SessionKey != "" {
 					return t.src.SessionKey, nil
 				}
@@ -846,7 +852,7 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	}
 	a.mu.Unlock()
 	for _, t := range match {
-		if !a.uploadable(t) {
+		if !reportable(t) {
 			return t.src.SessionKey, nil
 		}
 	}

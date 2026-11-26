@@ -240,6 +240,20 @@ func TestAntigravityCatalogTightensUnchangedTranscript(t *testing.T) {
 		t.Fatal("public Antigravity trajectory was withheld")
 	}
 
+	checkRef := func(want string) {
+		t.Helper()
+		for _, ref := range []string{agySession, agySession[:8], path + ":1"} {
+			got, err := f.a.BusWithheld(ctx, ref)
+			if err != nil || got != want {
+				t.Fatalf("withheld ref %q = %q, %v, want %q", ref, got, err, want)
+			}
+		}
+	}
+	checkRef("")
+	if blocked, err := f.a.BusRepoWithheld(ctx, "public"); err != nil || blocked {
+		t.Fatalf("initial public repo withheld = %v, %v", blocked, err)
+	}
+
 	auth, err := f.a.authorizeCapture(ctx, spec)
 	if err != nil || auth == nil {
 		t.Fatalf("public Antigravity capture authorization = %v, %v", auth, err)
@@ -249,6 +263,10 @@ func TestAntigravityCatalogTightensUnchangedTranscript(t *testing.T) {
 	auth.Release()
 	if err == nil {
 		t.Fatal("stale workspace catalog authorized capture")
+	}
+	checkRef(agySession)
+	if blocked, err := f.a.BusRepoWithheld(ctx, "public"); err != nil || !blocked {
+		t.Fatalf("repo with stale placement withheld = %v, %v", blocked, err)
 	}
 	f.once()
 	if f.a.allowUpload(spec) {
