@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strconv"
@@ -171,6 +172,21 @@ func (s *sink) flush() error {
 			}
 			if c := s.convs[id]; c != nil && c.ParentSessionID != "" && c.ParentSessionID != id {
 				parents = append(parents, c.ParentSessionID)
+			}
+		}
+		if s.src.agent == string(transcript.AgentAntigravity) {
+			// The replacement may already have published the same session.
+			// Check under the session lock before the older source can change
+			// lineage, visibility, or message heads. Its raw archive remains
+			// available and the parse can still checkpoint its redactions.
+			var generation int64
+			err := tx.QueryRow(s.ctx, supersedingGenerationSQL, s.src.id).Scan(&generation)
+			if err == nil {
+				if handled, historyErr := s.writeAntigravityHistory(tx, ids[0], generation); handled || historyErr != nil {
+					return historyErr
+				}
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return err
 			}
 		}
 		learned = nil
@@ -811,13 +827,19 @@ func (s *sink) insert(b *pgx.Batch, conv string, m *transcript.Message, search s
 			conv, nullStr(clean(m.NativeID)), s.src.generation, m.Part, s.src.id, locator(m), id)
 	}
 	r := &row{id: id, version: version, sha: m.ContentSHA[:], textMD5: textMD5(search), text: &search, meta: meta}
-	b.Queue(`INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
-			text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
-		r.id, conv, s.src.id, nullStr(clean(m.NativeID)), nullStr(clean(m.ParentNativeID)), m.Part, m.Ordinal, m.Kind.String(), nullStr(clean(m.Role)),
-		nullStr(clean(m.ToolName)), nullStr(clean(m.ToolCallID)), errPtr(m), nullTime(m.TS), search, m.FullLen,
-		m.ContentSHA[:], version, m.OnActivePath, enrichment, s.src.generation, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen), nullStr(locator(m)), m.Parser, s.src.parseAttempt, redact.RulesVersion)
+	b.Queue(insertMessageColumns+`VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,false,NULL,NULL)`,
+		s.messageInsertArgs(r.id, conv, m, search, enrichment, version)...)
 	return r
+}
+
+const insertMessageColumns = `INSERT INTO messages(id,conversation_id,source_id,native_id,parent_native_id,part,ordinal,kind,role,tool_name,tool_call_id,is_error,ts,
+	text,text_len,content_sha,version,on_active_path,enrichment,source_generation,line_no,byte_offset,byte_len,locator,parser,parse_attempt,redaction_rules,
+	superseded,superseded_in_generation,superseded_by) `
+
+func (s *sink) messageInsertArgs(id, conv string, m *transcript.Message, text string, enrichment []byte, version int) []any {
+	return []any{id, conv, s.src.id, nullStr(clean(m.NativeID)), nullStr(clean(m.ParentNativeID)), m.Part, m.Ordinal, m.Kind.String(), nullStr(clean(m.Role)),
+		nullStr(clean(m.ToolName)), nullStr(clean(m.ToolCallID)), errPtr(m), nullTime(m.TS), text, m.FullLen,
+		m.ContentSHA[:], version, m.OnActivePath, enrichment, s.src.generation, nullInt(m.LineNo), offPtr(m), nullInt(m.ByteLen), nullStr(locator(m)), m.Parser, s.src.parseAttempt, redact.RulesVersion}
 }
 
 // update queues an in-place update: metadata always, text when withText.

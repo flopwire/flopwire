@@ -364,9 +364,7 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	// A source this one names as its own previous is older, not newer: a
 	// path whose file identity came back (inode reuse) links both ways.
 	var gen int64
-	err := q.Pool.QueryRow(ctx, `SELECT COALESCE(max(g.generation),0) FROM sources s JOIN generations g ON g.source_id=s.id
-			WHERE s.previous_source_id=$1 AND s.tombstoned_at IS NULL
-			  AND s.id IS DISTINCT FROM (SELECT previous_source_id FROM sources WHERE id=$1) HAVING count(*)>0`, j.src.id).Scan(&gen)
+	err := q.Pool.QueryRow(ctx, supersedingGenerationSQL, j.src.id).Scan(&gen)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
@@ -397,6 +395,11 @@ func (q *Queue) finish(ctx context.Context, j *job, sink *sink) error {
 	}
 	return nil
 }
+
+// Ignore the reverse link left when a file identity becomes current again.
+const supersedingGenerationSQL = `SELECT COALESCE(max(g.generation),0) FROM sources s JOIN generations g ON g.source_id=s.id
+	WHERE s.previous_source_id=$1 AND s.tombstoned_at IS NULL
+	  AND s.id IS DISTINCT FROM (SELECT previous_source_id FROM sources WHERE id=$1) HAVING count(*)>0`
 
 // retireLateSource retires the live rows of source sourceID, which a newer source
 // replaced in generation gen, and recounts their conversations' digests.
