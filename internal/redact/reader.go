@@ -38,8 +38,8 @@ const (
 	SegMax  = 1 << 20
 	Overlap = 64 << 10
 
-	// Match the physical-line limit of the transcript parsers. Beyond it
-	// retain the plaintext masking of ambiguous quoted assignments.
+	// Bound whole-record validation for ambiguous quoted assignments. Larger
+	// records retain plaintext masking, including on oversized parser paths.
 	maxJSONFramingLine = 16 << 20
 )
 
