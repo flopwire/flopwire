@@ -797,11 +797,17 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	if pv.pol.Empty() {
 		return "", nil
 	}
-	reportable := func(t *target) bool {
-		if t.src.Agent == transcript.AgentAntigravity {
-			return a.reportable(ctx, placeKey{t.src.Agent, t.src.SessionKey}, t)
+	var pending *devicebus.PlacementPending
+	denied := func(t *target) bool {
+		if t.src.Agent != transcript.AgentAntigravity {
+			return !a.uploadable(t)
 		}
-		return a.uploadable(t)
+		withheld, unplaced := a.reportState(ctx, placeKey{t.src.Agent, t.src.SessionKey}, t)
+		if unplaced {
+			pending = &devicebus.PlacementPending{Session: t.src.SessionKey}
+			return false
+		}
+		return withheld
 	}
 	ref = strings.TrimSpace(ref)
 	var prefixes []string
@@ -817,7 +823,7 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 			a.mu.Lock()
 			t := a.targets[filepath.Clean(p)]
 			a.mu.Unlock()
-			if t != nil && t.kind == kindTranscript && !reportable(t) {
+			if t != nil && t.kind == kindTranscript && denied(t) {
 				if t.src.SessionKey != "" {
 					return t.src.SessionKey, nil
 				}
@@ -852,7 +858,7 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	}
 	a.mu.Unlock()
 	for _, t := range match {
-		if !reportable(t) {
+		if denied(t) {
 			return t.src.SessionKey, nil
 		}
 	}
@@ -866,6 +872,9 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 			}
 		}
 		a.mu.Unlock()
+	}
+	if pending != nil {
+		return "", pending
 	}
 	return "", nil
 }

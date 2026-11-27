@@ -1123,6 +1123,48 @@ func TestConcurrentPlacementSharesWork(t *testing.T) {
 	}
 }
 
+func TestPendingRefRechecksEntireSend(t *testing.T) {
+	for _, tc := range []struct{ name, wantCode string }{
+		{"still pending", busproto.CodePlacementPending},
+		{"earlier recipient now private", busproto.CodeWithheldSession},
+		{"sender now private", busproto.CodeSessionNotOnDevice},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newFakeServer()
+			p := &presenceSrc{}
+			sender := sess("sender", "claude", "/src/api", true)
+			p.set(sender)
+			b := openBus(t, filepath.Join(t.TempDir(), "bus.db"), testConfig(srv, nil), p)
+			var placements atomic.Int32
+			b.SetPlace(func(_ context.Context, session string) error {
+				if session != "full-target" {
+					t.Errorf("placing %q", session)
+				}
+				placements.Add(1)
+				if tc.name == "sender now private" {
+					private := sender
+					private.Withheld = true
+					p.set(private)
+				}
+				return nil
+			})
+			b.SetWithheld(func(_ context.Context, ref string) (string, error) {
+				if ref == "receiver" && placements.Load() > 0 && tc.name == "earlier recipient now private" {
+					return "receiver", nil
+				}
+				if ref == "full-tar/1" && (placements.Load() == 0 || tc.name == "still pending") {
+					return "", &PlacementPending{Session: "full-target"}
+				}
+				return "", nil
+			}, nil)
+			_, err := b.Send(ctx, busproto.SendRequest{FromSession: sender.SessionID, To: "receiver", Refs: []string{"full-tar/1"}, Body: "private review"})
+			if code(err) != tc.wantCode || placements.Load() != 1 || srv.sendCount() != 0 {
+				t.Fatalf("err=%v, placements=%d, sends=%d", err, placements.Load(), srv.sendCount())
+			}
+		})
+	}
+}
+
 func TestSendChecksPolicyForCachedSender(t *testing.T) {
 	srv := newFakeServer()
 	p := &presenceSrc{}
