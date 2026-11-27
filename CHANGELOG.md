@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/flopwire/flopwire/compare/v0.5.1...v0.5.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* refresh unresolved Antigravity reply recipients and references ([#474](https://github.com/flopwire/flopwire/issues/474)) ([69bf640](https://github.com/flopwire/flopwire/commit/69bf640058ba0717e67ac4852b4f68631b1b1139))
+
 ## [0.5.1](https://github.com/flopwire/flopwire/compare/v0.5.0...v0.5.1) (2026-11-26)
 
 
