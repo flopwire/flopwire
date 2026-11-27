@@ -450,7 +450,7 @@ func TestAntigravityQuietChildAnnouncesChangedLineage(t *testing.T) {
 }
 
 func TestReplyRefreshesAntigravityRecipientAndRefs(t *testing.T) {
-	for _, target := range []string{"recipient", "address", "path"} {
+	for _, target := range []string{"recipient", "address", "path", "vanished"} {
 		t.Run(target, func(t *testing.T) {
 			f := newFixture(t, "-")
 			f.cfg.AntigravityRoot = f.path("brain")
@@ -486,6 +486,20 @@ func TestReplyRefreshesAntigravityRecipientAndRefs(t *testing.T) {
 				req.To, req.Refs = "remote-recipient", []string{path + ":1"}
 			}
 			writeAntigravityWorkspace(t, f.home, f.home, f.home)
+			if target == "vanished" {
+				b.SetPlace(func(ctx context.Context, _ string) error {
+					if err := os.Remove(path); err != nil {
+						return err
+					}
+					return f.a.Once(ctx)
+				})
+				_, err := b.Send(ctx, req)
+				var refusal *busproto.Error
+				if !errors.As(err, &refusal) || refusal.Code != busproto.CodePlacementPending || len(srv.requests) != 0 {
+					t.Fatalf("vanished local recipient: err=%v, sends=%d", err, len(srv.requests))
+				}
+				return
+			}
 			before := len(srv.requests)
 			if _, err := b.Send(ctx, req); err != nil {
 				t.Fatal(err)

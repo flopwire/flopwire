@@ -117,7 +117,12 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 
 // PlacementPending identifies a local session whose current sharing policy
 // could not be verified while checking a recipient or reference.
-type PlacementPending struct{ Session string }
+type PlacementPending struct {
+	Session string
+	// Confirm rechecks the local identities that triggered placement, even
+	// when discovery no longer finds them by the original ref.
+	Confirm func(context.Context) bool
+}
 
 func (p *PlacementPending) Error() string {
 	return fmt.Sprintf("workspace policy for session %s is unresolved", p.Session)
@@ -143,7 +148,11 @@ func (b *Bus) checkSharedSend(ctx context.Context, req busproto.SendRequest, raw
 			// The refresh may also have changed the sender, an earlier ref,
 			// or the original envelope of a retry. Recheck the entire send.
 			err = b.checkSendPolicy(ctx, req, rawRefs, rawRepo, false)
-			if !errors.As(err, &pending) {
+			if err == nil {
+				if pending.Confirm != nil && pending.Confirm(ctx) {
+					return nil
+				}
+			} else if !errors.As(err, &pending) {
 				return err
 			}
 		}

@@ -797,14 +797,14 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 	if pv.pol.Empty() {
 		return "", nil
 	}
-	var pending *devicebus.PlacementPending
+	var pending []string
 	denied := func(t *target) bool {
 		if t.src.Agent != transcript.AgentAntigravity {
 			return !a.uploadable(t)
 		}
 		withheld, unplaced := a.reportState(ctx, placeKey{t.src.Agent, t.src.SessionKey}, t)
 		if unplaced {
-			pending = &devicebus.PlacementPending{Session: t.src.SessionKey}
+			pending = append(pending, t.src.SessionKey)
 			return false
 		}
 		return withheld
@@ -873,8 +873,17 @@ func (a *Agent) BusWithheld(ctx context.Context, ref string) (string, error) {
 		}
 		a.mu.Unlock()
 	}
-	if pending != nil {
-		return "", pending
+	if len(pending) > 0 {
+		return "", &devicebus.PlacementPending{Session: pending[0], Confirm: func(ctx context.Context) bool {
+			// Discovery may retire a target during placement. Keep every local
+			// match to this ref subject to a positive policy decision.
+			for _, id := range pending {
+				if withheld, unplaced := a.antigravityReportState(ctx, id); withheld || unplaced {
+					return false
+				}
+			}
+			return true
+		}}
 	}
 	return "", nil
 }
@@ -1067,10 +1076,14 @@ func (a *Agent) busCheckPlacement(ctx context.Context, s devicebus.Session) (wit
 	if transcript.Agent(s.Agent) != transcript.AgentAntigravity {
 		return s.Withheld, s.Unplaced
 	}
+	return a.antigravityReportState(ctx, s.SessionID)
+}
+
+func (a *Agent) antigravityReportState(ctx context.Context, id string) (withheld, unplaced bool) {
 	a.mu.Lock()
-	t := a.targets[antigravityPath(a.cfg.AntigravityRoot, s.SessionID)]
+	t := a.targets[antigravityPath(a.cfg.AntigravityRoot, id)]
 	a.mu.Unlock()
-	return a.reportState(ctx, placeKey{transcript.AgentAntigravity, s.SessionID}, t)
+	return a.reportState(ctx, placeKey{transcript.AgentAntigravity, id}, t)
 }
 
 // BusPlace indexes a session now (devicebus Config.Place): a request
