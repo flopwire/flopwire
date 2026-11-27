@@ -280,7 +280,11 @@ same on Claude Code, Codex, Devin CLI and opencode.
 
 A session that a path rule keeps off the server cannot send; the agent
 refuses before anything leaves the device. It also refuses a send whose
-recipient or ref names such a session (`withheld_session`). It does not
+recipient or ref names such a session (`withheld_session`). If an Antigravity
+recipient or ref has unresolved workspace policy, the device waits briefly for
+a placement refresh and checks the send again. A still-unresolved policy
+returns `placement_pending`. The message stays on the device and the caller
+can retry. The agent does not
 check the message text: a withheld session id written in the text reaches
 the server.
 

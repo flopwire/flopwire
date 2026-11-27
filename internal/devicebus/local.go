@@ -115,8 +115,52 @@ func (b *Bus) Send(ctx context.Context, req busproto.SendRequest) (busproto.Send
 	return out, err
 }
 
+// PlacementPending identifies a local session whose current sharing policy
+// could not be verified while checking a recipient or reference.
+type PlacementPending struct {
+	Session string
+	// Confirm rechecks the local identities that triggered placement, even
+	// when discovery no longer finds them by the original ref.
+	Confirm func(context.Context) bool
+}
+
+func (p *PlacementPending) Error() string {
+	return fmt.Sprintf("workspace policy for session %s is unresolved", p.Session)
+}
+
 // checkSharedSend validates every session and repo the request can disclose.
 func (b *Bus) checkSharedSend(ctx context.Context, req busproto.SendRequest, rawRefs []string, rawRepo string, wait bool) error {
+	err := b.checkSendPolicy(ctx, req, rawRefs, rawRepo, wait)
+	var pending *PlacementPending
+	if !errors.As(err, &pending) {
+		return err
+	}
+	if wait {
+		if placed := b.requestPlacement(ctx, pending.Session); placed != nil {
+			timer := time.NewTimer(PlaceWait)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			case <-placed:
+			}
+			// The refresh may also have changed the sender, an earlier ref,
+			// or the original envelope of a retry. Recheck the entire send.
+			err = b.checkSendPolicy(ctx, req, rawRefs, rawRepo, false)
+			if err == nil {
+				if pending.Confirm != nil && pending.Confirm(ctx) {
+					return nil
+				}
+			} else if !errors.As(err, &pending) {
+				return err
+			}
+		}
+	}
+	return fail(http.StatusServiceUnavailable, busproto.CodePlacementPending, "%s; the message was not sent", pending)
+}
+
+func (b *Bus) checkSendPolicy(ctx context.Context, req busproto.SendRequest, rawRefs []string, rawRepo string, wait bool) error {
 	if err := b.notWithheld(ctx, req.FromSession, req.FromAgent, wait); err != nil {
 		return err
 	}

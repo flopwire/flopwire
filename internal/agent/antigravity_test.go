@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -265,7 +266,12 @@ func TestAntigravityCatalogTightensUnchangedTranscript(t *testing.T) {
 	if err == nil {
 		t.Fatal("stale workspace catalog authorized capture")
 	}
-	checkRef(agySession)
+	for _, ref := range []string{agySession, agySession[:8], path + ":1"} {
+		var pending *devicebus.PlacementPending
+		if _, err := f.a.BusWithheld(ctx, ref); !errors.As(err, &pending) || pending.Session != agySession {
+			t.Fatalf("stale ref %q: want pending placement, got %v", ref, err)
+		}
+	}
 	if blocked, err := f.a.BusRepoWithheld(ctx, "public"); err != nil || !blocked {
 		t.Fatalf("repo with stale placement withheld = %v, %v", blocked, err)
 	}
@@ -440,5 +446,73 @@ func TestAntigravityQuietChildAnnouncesChangedLineage(t *testing.T) {
 	if !ok || root.AntigravityLineage == nil ||
 		root.AntigravityLineage.ParentSessionID != "" || root.AntigravityLineage.Depth != 0 {
 		t.Fatalf("explicit root spec = %+v, found = %v", root, ok)
+	}
+}
+
+func TestReplyRefreshesAntigravityRecipientAndRefs(t *testing.T) {
+	for _, target := range []string{"recipient", "address", "path", "vanished"} {
+		t.Run(target, func(t *testing.T) {
+			f := newFixture(t, "-")
+			f.cfg.AntigravityRoot = f.path("brain")
+			blocked := f.path("private")
+			f.cfg.UserRuleList = []string{"deny:" + blocked}
+			srv := &antigravitySendRecorder{}
+			b, err := devicebus.Open(f.path("bus.db"), devicebus.Config{
+				Connect: func() (devicebus.Server, string) { return srv, "test" },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { b.Close() })
+			f.cfg.Bus = b
+			f.restart()
+			path := antigravityPath(f.cfg.AntigravityRoot, agySession)
+			for _, dir := range []string{filepath.Dir(path), blocked} {
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(path, []byte(agyInput), 0600); err != nil {
+				t.Fatal(err)
+			}
+			writeAntigravityWorkspace(t, f.home, f.home)
+			f.once()
+			f.a.markDiscovered()
+			req := busproto.SendRequest{FromAgent: "claude", FromSession: alphaID, To: agySession, Body: "reviewed", ReplyTo: "m0000000000000001"}
+			switch target {
+			case "address":
+				req.To, req.Refs = "remote-recipient", []string{agySession[:8] + "/1"}
+			case "path":
+				req.To, req.Refs = "remote-recipient", []string{path + ":1"}
+			}
+			writeAntigravityWorkspace(t, f.home, f.home, f.home)
+			if target == "vanished" {
+				b.SetPlace(func(ctx context.Context, _ string) error {
+					if err := os.Remove(path); err != nil {
+						return err
+					}
+					return f.a.Once(ctx)
+				})
+				_, err := b.Send(ctx, req)
+				var refusal *busproto.Error
+				if !errors.As(err, &refusal) || refusal.Code != busproto.CodePlacementPending || len(srv.requests) != 0 {
+					t.Fatalf("vanished local recipient: err=%v, sends=%d", err, len(srv.requests))
+				}
+				return
+			}
+			before := len(srv.requests)
+			if _, err := b.Send(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if len(srv.requests) != before+1 || srv.requests[before].ReplyTo != req.ReplyTo {
+				t.Fatal("reply was not forwarded exactly once")
+			}
+			writeAntigravityWorkspace(t, f.home, blocked)
+			_, err = b.Send(ctx, req)
+			var refusal *busproto.Error
+			if !errors.As(err, &refusal) || refusal.Code != busproto.CodeWithheldSession || len(srv.requests) != before+1 {
+				t.Fatalf("denied reply: err=%v, sends=%d", err, len(srv.requests))
+			}
+		})
 	}
 }

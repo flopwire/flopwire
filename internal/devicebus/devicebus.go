@@ -99,7 +99,8 @@ type Config struct {
 	// Withheld names a session of the device that the path rules keep off
 	// the server and that ref would tell the server about: an archive
 	// address (a send's refs) or a session id prefix (its recipient). ""
-	// when there is none. The agent sets it (SetWithheld); nil checks
+	// when there is none. A *PlacementPending requests a policy refresh.
+	// The agent sets it (SetWithheld); nil checks
 	// nothing.
 	Withheld func(ctx context.Context, ref string) (string, error)
 	// RepoWithheld reports whether a repo a request names (an @user

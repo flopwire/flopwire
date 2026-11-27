@@ -381,6 +381,8 @@ func TestSendRefusals(t *testing.T) {
 			[]string{"refused (not_found)", "Example: flopwire inbox lists them"}},
 		{busproto.Error{Status: 403, Code: busproto.CodeSessionNotOnDevice, Detail: "session x is kept off the server by a path rule; it cannot use messaging"},
 			[]string{"refused (session_not_on_device)", "its transcripts stay on this device"}},
+		{busproto.Error{Status: 503, Code: busproto.CodePlacementPending, Detail: "workspace policy for session x is unresolved"},
+			[]string{"refused (placement_pending)", "Fix: retry the same send"}},
 		{busproto.Error{Status: 403, Code: busproto.CodeWithheldSession, Detail: `ref "5ec2e7aa/3" names session 5ec2e7aa-1, which a path rule keeps off the server; nothing about it may reach the team server`},
 			[]string{"refused (withheld_session): ref \"5ec2e7aa/3\"", "Fix: send it without that ref", `Example: flopwire send 0b7e2c1a -- "TEXT"`}},
 		{busproto.Error{Status: 403, Code: busproto.CodeWithheldSession, Detail: `to "0b7e2c1a" names session 0b7e2c1a-1, which a path rule keeps off the server; nothing about it may reach the team server`},
