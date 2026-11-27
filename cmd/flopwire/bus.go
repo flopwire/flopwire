@@ -878,6 +878,7 @@ func refusal(be *busproto.Error, req busproto.SendRequest, st busStyle) *busErr 
 		e.Example = st.cmd("flopwire inbox", "flopwire_inbox") + " lists them"
 	case busproto.CodePlacementPending:
 		e.Fix = "retry the same send after the device resolves the session's workspace policy"
+		e.Example = "flopwire agent status shows device indexing and sync status"
 	case busproto.CodeWithheldSession:
 		e.Fix = "send it without that ref (or recipient): a path rule keeps that session's transcripts on this device, so not even its id may reach the team server"
 		e.Example = st.cmd(fmt.Sprintf(`flopwire send %s -- "TEXT"`, req.To), fmt.Sprintf(`flopwire_send to=%q message="…"`, req.To))
