@@ -40,9 +40,15 @@ reads process file descriptors through `/proc`. An absent or ambiguous
 lock leaves the caller unidentified.
 
 The `PreInvocation` hook inserts pending messages as context before a
-model invocation. Start a turn in an idle session to receive a message.
-Antigravity has no Flopwire wake support or separate user-only hook notice
-for held messages.
+model invocation. Ordinary sends wait for the next turn. An explicit `--wake` can start
+a turn in your own idle session when the device agent can find it on its
+tmux server. Launch `agy` directly as the pane program (or use `exec agy`)
+with the alternate screen enabled. Flopwire matches the conversation lock
+to the pane PID, checks for an empty composer, types a fixed inbox notice,
+and checks the entire draft before submitting it. Drafts, dialogs, copy
+mode, synchronized panes and unrecognized layouts prevent submission. If
+the pane changes during typing, the notice can remain as an unsent draft.
+The message stays queued for the normal hook if submission fails.
 
 Antigravity CLI 1.5.16 supplies the full trajectory path to its hooks.
 Flopwire flushes the adjacent canonical transcript and delivers messages

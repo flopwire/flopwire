@@ -71,9 +71,10 @@ There is no token or spending cap per wake. Prefer ordinary sends for
 progress updates, acknowledgments, and anything that can wait. Wake is a
 choice on each send; replies do not inherit it.
 
-Wake supports your own live Claude Code inbox sockets and local Codex
-sessions using the existing Codex daemon and `codex queue`, including on
-another connected device. Custom indexed Codex homes do not advertise wake
+Wake supports your own live Claude Code inbox sockets, local Codex sessions
+using the existing Codex daemon and `codex queue`, and idle
+[Antigravity CLI sessions in tmux](harnesses/antigravity.md#messaging).
+The recipient can run on another connected device. Custom indexed Codex homes do not advertise wake
 unless they match the device agent's active Codex home. Transport availability is advertised as `wake_supported`; native
 submission can still fail. Teammates, `@user`, vendor cloud, unsupported
 harnesses, ended sessions, and `retry_of` are refused before sending. Older

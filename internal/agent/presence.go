@@ -82,9 +82,10 @@ import (
 // transcript's), the Claude sessions running a turn, and the evidence of
 // which sessions ended (reg, for devicebus.Observe).
 type harnessLive struct {
-	at   map[string]time.Time
-	busy map[string]bool
-	reg  devicebus.Registry
+	agyHolders map[string]int
+	at         map[string]time.Time
+	busy       map[string]bool
+	reg        devicebus.Registry
 }
 
 // procStartLayout is Claude Code's procStart: ps's lstart in UTC.
@@ -176,6 +177,7 @@ func (a *Agent) registries(ctx context.Context) harnessLive {
 		agy := string(transcript.AgentAntigravity)
 		holders, read := a.antigravityPresence.Holders(ctx, a.cfg.AntigravityRoot)
 		h.reg.Read[agy] = read
+		h.agyHolders = holders
 		if read {
 			for id, pid := range holders {
 				ref := devicebus.Ref{Agent: agy, Session: id}
@@ -571,6 +573,7 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 	paths := a.transcriptsBySession()
 	var out []devicebus.Session
 	rollouts := map[string]bool{}
+	var agyPanes map[int]string
 	for _, s := range all {
 		if ended[devicebus.Ref{Agent: s.Agent, Session: s.SessionID}] {
 			continue
@@ -588,6 +591,12 @@ func (a *Agent) BusPresence(ctx context.Context) ([]devicebus.Session, error) {
 			if _, held := reg.at[s.SessionID]; !held {
 				continue // no running opencode with the plugin holds it
 			}
+		}
+		if s.Agent == string(transcript.AgentAntigravity) && confirmed {
+			if agyPanes == nil {
+				agyPanes = antigravityPanes(ctx)
+			}
+			s.WakeSupported = agyPanes[uniqueAntigravityPID(reg.agyHolders, s.SessionID)] != ""
 		}
 		last := s.LastActive
 		info := format.ConversationInfo{SessionID: s.SessionID, LastActivityAt: &last}
