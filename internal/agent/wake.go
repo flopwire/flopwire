@@ -24,6 +24,8 @@ func (a *Agent) wakeSupported(s devicebus.Session) bool {
 		return false
 	}
 	switch s.Agent {
+	case "antigravity":
+		return s.WakeSupported && !s.Busy
 	case "claude":
 		_, err := a.claudeWakeSocket(s.SessionID)
 		return err == nil
@@ -84,6 +86,8 @@ func (a *Agent) claudeWakeSocket(session string) (string, error) {
 
 func (a *Agent) wakeSession(ctx context.Context, s devicebus.Session, text string) error {
 	switch s.Agent {
+	case "antigravity":
+		return a.wakeAntigravity(ctx, s)
 	case "claude":
 		socket, err := a.claudeWakeSocket(s.SessionID)
 		if err != nil {
